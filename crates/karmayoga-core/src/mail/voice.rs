@@ -6,7 +6,7 @@
 //! what the person actually typed -- no quoted reply, no "On ... wrote:"
 //! attribution, no Outlook header block, no signature -- and [`analyze`]
 //! turns a handful of those into a [`VoiceProfile`]: a greeting, a
-//! sign-off, how long their sentences run, whether they use emoji, em
+//! sign-off, how long their messages run, whether they use emoji, em
 //! dashes or contractions. [`VoiceProfile::style_guide`] turns that back
 //! into plain instructions a model can follow, and [`humanize`] is the
 //! last line of defence on the way out: it cleans the tells in
@@ -33,13 +33,17 @@ pub struct VoiceProfile {
     /// replaced by `{name}` -- `"Hi {name},"`, `"Hey {name} -"`. `None`
     /// when they usually open with no greeting at all.
     pub greeting: Option<String>,
+    /// They open with a greeting of some kind ("Hi Sam,", "Hey Sam,", "Morning
+    /// Sam,") in at least 40% of what was read, even when no one wording of it
+    /// is common enough to be [`Self::greeting`]. A bare "Sam," is not
+    /// counted: "Thanks," and "Sure," read the same.
+    #[serde(default)]
+    pub greets: bool,
     /// The closing they use most, as it appears (may span two lines --
     /// `"Thanks,\nHari"`). `None` when they usually just stop.
     pub sign_off: Option<String>,
     /// Median length of one of their messages, in words.
     pub median_words: u32,
-    /// Median length of one of their sentences, in words.
-    pub median_sentence_words: u32,
     /// Most of their sentences start in lowercase.
     pub lowercase_starts: bool,
     /// They use exclamation marks at all, with any regularity.
@@ -58,6 +62,10 @@ pub struct VoiceProfile {
 /// writing prompt forbids them, and [`humanize`] removes the ones that slip
 /// through anyway -- but only the sentence they sit in when that sentence
 /// is pure filler; see that function's own docs for the line it draws.
+///
+/// Stock openers and help-desk lines only. "I'd be happy to" and "looking
+/// forward to hearing from you" were here too, and are how a friendly person
+/// agrees and closes: banned, they left drafts terse and cold.
 pub const AI_TELLS: &[&str] = &[
     "i hope this email finds you well",
     "i hope this message finds you well",
@@ -84,9 +92,6 @@ pub const AI_TELLS: &[&str] = &[
     "certainly!",
     "absolutely!",
     "happy to help!",
-    "i'd be happy to",
-    "i would be happy to",
-    "looking forward to hearing from you",
     "let me know if you have any questions",
     "let me know if there's anything else",
     "should you have any questions",
@@ -112,21 +117,24 @@ pub fn analyze(samples: &[&str]) -> VoiceProfile {
     }
     let total = samples.len();
 
-    let greeting = most_common(samples.iter().map(|s| greeting_candidate(s)).collect());
+    let greetings: Vec<Option<String>> = samples.iter().map(|s| greeting_candidate(s)).collect();
+    // Only greetings with a word before the name: a bare "{name}," is also
+    // what a first line of "Thanks," or "Sure," reads as, and summed together
+    // those would make somebody who never greets look like they do.
+    let led = greetings.iter().flatten().filter(|g| !g.starts_with("{name}")).count();
+    let greets = led as f64 / total as f64 >= 0.4;
+    let greeting = most_common(greetings);
     let sign_off = most_common(samples.iter().map(|s| sign_off_candidate(s)).collect());
 
     let median_words = median(samples.iter().map(|s| word_count(s) as u32).collect());
 
-    let mut sentence_word_counts = Vec::new();
     let mut lowercase_sentences = 0usize;
     let mut determinable_sentences = 0usize;
     for sample in samples {
         for sentence in split_sentences(sample) {
-            let words = word_count(sentence) as u32;
-            if words == 0 {
+            if word_count(sentence) == 0 {
                 continue;
             }
-            sentence_word_counts.push(words);
             if let Some(first_alpha) = sentence.chars().find(|c| c.is_alphabetic()) {
                 determinable_sentences += 1;
                 if first_alpha.is_lowercase() {
@@ -135,7 +143,6 @@ pub fn analyze(samples: &[&str]) -> VoiceProfile {
             }
         }
     }
-    let median_sentence_words = median(sentence_word_counts);
     let lowercase_starts = determinable_sentences > 0
         && (lowercase_sentences as f64 / determinable_sentences as f64) > 0.6;
 
@@ -150,9 +157,9 @@ pub fn analyze(samples: &[&str]) -> VoiceProfile {
     VoiceProfile {
         samples: total as u32,
         greeting,
+        greets,
         sign_off,
         median_words,
-        median_sentence_words,
         lowercase_starts,
         uses_exclamations,
         uses_emoji,
@@ -342,6 +349,13 @@ impl VoiceProfile {
     /// [`VoiceProfile::uses_contractions`] only speaks up when the profile
     /// says to use them. Silence, either way, means "the examples already
     /// show this -- nothing to correct."
+    ///
+    /// Length is the exception: it is said as what is usual for them, never as
+    /// a limit. The median runs over every message they sent, one-line "sounds
+    /// good"s included, and was once put as "keep it to about 25 words; their
+    /// emails are short", beside "short sentences, about 8 words": every draft
+    /// came out clipped and curt. How much a reply needs is the message's to
+    /// say, and the examples beside what they answered show it.
     pub fn style_guide(&self) -> String {
         if self.samples == 0 {
             return String::new();
@@ -352,6 +366,13 @@ impl VoiceProfile {
             Some(greeting) => {
                 lines.push(format!("- Open with \"{greeting}\" using the recipient's first name."))
             }
+            // Greeting people, just not always in the same words, is greeting
+            // people: told not to, every draft started cold.
+            None if self.greets => lines.push(
+                "- Open with a short greeting using the recipient's first name, as they usually \
+                 do."
+                .to_string(),
+            ),
             None => lines.push("- Don't open with a greeting; start with the point.".to_string()),
         }
         match &self.sign_off {
@@ -362,12 +383,10 @@ impl VoiceProfile {
         }
         if self.median_words > 0 {
             lines.push(format!(
-                "- Keep it to about {} words; their emails are short.",
+                "- Their emails are usually about {} words. That is typical, not a limit: say \
+                 everything the message needs, and never cut a reply so short it reads curt.",
                 self.median_words
             ));
-        }
-        if self.median_sentence_words > 0 {
-            lines.push(format!("- Short sentences, about {} words.", self.median_sentence_words));
         }
         if self.lowercase_starts {
             lines.push("- Write in lowercase, as they do.".to_string());
@@ -1484,9 +1503,9 @@ mod tests {
         let profile = VoiceProfile {
             samples: 10,
             greeting: Some("Hi {name},".to_string()),
+            greets: true,
             sign_off: Some("Thanks,\nHari".to_string()),
             median_words: 40,
-            median_sentence_words: 9,
             lowercase_starts: false,
             uses_exclamations: false,
             uses_emoji: false,
@@ -1499,8 +1518,8 @@ mod tests {
 - Close with:
   Thanks,
   Hari
-- Keep it to about 40 words; their emails are short.
-- Short sentences, about 9 words.
+- Their emails are usually about 40 words. That is typical, not a limit: say everything the \
+message needs, and never cut a reply so short it reads curt.
 - No exclamation marks.
 - No emoji.
 - Never use em dashes (—).
@@ -1514,9 +1533,9 @@ mod tests {
         let profile = VoiceProfile {
             samples: 5,
             greeting: None,
+            greets: false,
             sign_off: None,
             median_words: 0,
-            median_sentence_words: 0,
             lowercase_starts: true,
             uses_exclamations: true,
             uses_emoji: true,
@@ -1529,6 +1548,51 @@ mod tests {
 - Don't add a sign-off.
 - Write in lowercase, as they do.";
         assert_eq!(profile.style_guide(), expected);
+    }
+
+    /// Length was once said as a limit, with "short sentences" beside it, and
+    /// every draft read clipped.
+    #[test]
+    fn style_guide_gives_their_usual_length_as_typical_and_never_as_a_limit() {
+        let profile = VoiceProfile { samples: 10, median_words: 25, ..Default::default() };
+        let guide = profile.style_guide();
+        assert!(guide.contains("usually about 25 words"), "{guide}");
+        assert!(guide.contains("not a limit"), "{guide}");
+        assert!(!guide.contains("Keep it to"), "{guide}");
+        assert!(!guide.contains("Short sentences"), "{guide}");
+    }
+
+    /// "Hi Sam," half the time and "Hey Sam," the rest is somebody who greets
+    /// people, though neither wording is common enough to copy.
+    #[test]
+    fn greeting_in_different_words_still_counts_as_greeting() {
+        let samples = [
+            "Hi Sam,\n\nThursday works.",
+            "Hey Dana,\n\nSent it over.",
+            "Hello Lee,\n\nThanks for this.",
+            "Morning Ana,\n\nSee you then.",
+            "Sounds good.",
+        ];
+        let profile = analyze(&samples);
+        assert_eq!(profile.greeting, None, "no one wording is common enough");
+        assert!(profile.greets);
+        let guide = profile.style_guide();
+        assert!(guide.contains("Open with a short greeting"), "{guide}");
+        assert!(!guide.contains("Don't open with a greeting"), "{guide}");
+
+        let rarely = analyze(&["Thursday works.", "Sent it over.", "Hi Sam,\n\nThanks."]);
+        assert!(!rarely.greets);
+        assert!(rarely.style_guide().contains("Don't open with a greeting"));
+
+        // "Thanks," and "Sure," read as a bare "{name}," and are not greetings.
+        let curt = analyze(&[
+            "Hi Sam,\n\nok",
+            "Thanks,\nwill do.",
+            "Sure,\nI can.",
+            "Yes,\nfine.",
+            "Done.",
+        ]);
+        assert!(!curt.greets, "{curt:?}");
     }
 
     // ---- humanize ---------------------------------------------------------

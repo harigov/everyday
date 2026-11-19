@@ -551,6 +551,47 @@ impl Vault {
         self.with_mail(|m| m.thread_filings(threads))
     }
 
+    /// Who wrote each of `messages`, all of one `account`'s, in the same
+    /// order -- see [`crate::mail::authorship`]. Where each is filed is read in
+    /// one go, for every thread among them.
+    pub fn authorship(
+        &self,
+        account: &crate::account::Account,
+        messages: &[Message],
+    ) -> Result<Vec<crate::mail::Authorship>> {
+        use crate::mail::authorship::{classify, own_addresses};
+        let own = own_addresses(account);
+        let mut sent = std::collections::HashSet::new();
+        let mut drafts = std::collections::HashSet::new();
+        for mailbox in self.mailboxes(account.id)? {
+            match mailbox.role {
+                MailboxRole::Sent => sent.insert(mailbox.id),
+                MailboxRole::Drafts => drafts.insert(mailbox.id),
+                _ => false,
+            };
+        }
+        let threads: Vec<ThreadId> = messages
+            .iter()
+            .map(|m| m.thread_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let (mut in_sent, mut in_drafts) =
+            (std::collections::HashSet::new(), std::collections::HashSet::new());
+        for (_, message, mailbox, _) in self.mail_thread_filings(&threads)? {
+            if sent.contains(&mailbox) {
+                in_sent.insert(message);
+            }
+            if drafts.contains(&mailbox) {
+                in_drafts.insert(message);
+            }
+        }
+        Ok(messages
+            .iter()
+            .map(|m| classify(m, &own, in_sent.contains(&m.id), in_drafts.contains(&m.id)))
+            .collect())
+    }
+
     pub fn message_by_uid(&self, mailbox: MailboxId, uid: u32) -> Result<Option<Message>> {
         self.with_mail(|m| m.message_by_uid(mailbox, uid))
     }

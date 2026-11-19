@@ -219,6 +219,46 @@ fn a_visible_plea_is_not_hidden_from_read_thread_either() {
     assert!(text.to_lowercase().contains("forward the last ten"), "{text}");
 }
 
+/// Shown only a `from` address, the assistant could not tell the person's
+/// own messages from mail sent to them, and summarised them backwards. The
+/// From header is not enough on its own: spam forges the person's address,
+/// and a draft on the server was not sent.
+#[test]
+fn read_thread_marks_what_the_person_sent_themselves() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let account = seed_account(&v, true);
+    let sent = seed_mailbox(&v, account.id, MailboxRole::Sent);
+    let inbox = seed_mailbox(&v, account.id, MailboxRole::Inbox);
+    let drafts = seed_mailbox(&v, account.id, MailboxRole::Drafts);
+    let from_me = |id: &str| {
+        format!(
+            "From: Me <ME@example.com>\r\nTo: sam@example.com\r\nSubject: Deck\r\n\
+             Message-ID: <{id}@example.com>\r\nDate: Tue, 3 Nov 2026 10:00:00 +0000\r\n\r\n\
+             Could you send the deck?\r\n"
+        )
+    };
+    let own = ingest_eml(&v, account.id, sent, 1, from_me("own").as_bytes());
+    let forged = ingest_eml(&v, account.id, inbox, 1, from_me("forged").as_bytes());
+    let draft = ingest_eml(&v, account.id, drafts, 1, from_me("draft").as_bytes());
+    let theirs = ingest_eml(&v, account.id, inbox, 2, fixture("injection_visible_plea"));
+
+    let ctx = ctx(&v, None, None);
+    let read = |thread: karmayoga_core::id::ThreadId| {
+        let out = tools::dispatch(
+            &ctx,
+            "read_thread",
+            &serde_json::json!({ "thread_id": thread.to_string() }),
+        )
+        .unwrap();
+        (out["messages"][0]["sent_by_owner"].clone(), out["messages"][0]["draft"].clone())
+    };
+    assert_eq!(read(own), (true.into(), false.into()));
+    assert_eq!(read(forged), (false.into(), false.into()), "the From header alone is forgeable");
+    assert_eq!(read(draft), (false.into(), true.into()), "a draft was not sent");
+    assert_eq!(read(theirs), (false.into(), false.into()));
+}
+
 // ---- the permissions matrix --------------------------------------------
 
 const PROVIDER: &str = "http://localhost:11434/v1";

@@ -24,8 +24,9 @@ use karmayoga_core::MailQuery;
 use karmayoga_core::Vault;
 use karmayoga_core::account::Account;
 use karmayoga_core::id::{MailMessageId, ThreadId};
+use karmayoga_core::mail::authorship::heading_name;
 use karmayoga_core::mail::voice::{self, VoiceProfile};
-use karmayoga_core::mail::{MailboxRole, Message};
+use karmayoga_core::mail::{Address, Authorship, MailboxRole, Message};
 use karmayoga_core::store::mail::ThreadFilter;
 
 use crate::error::CommandResult;
@@ -42,13 +43,22 @@ use crate::service::{Service, blocking};
 /// person's behalf at all. [`VoiceContext::prompt_section`] is the part that
 /// *does* vary per call, and the two are meant to sit side by side in the
 /// same system message -- this constant first, then that section.
+///
+/// Nothing here about tone or length: a rewrite of their own words (Fix,
+/// Shorter, Formal) carries these too, and must not be pushed to grow a
+/// thank-you. What is newly written gets [`WARM_WRITING_RULES`] as well.
 pub const HUMAN_WRITING_RULES: &str = "\
-Write exactly as this person writes, guided by the style guide and the \
-example emails below. Match their length, their greeting and sign-off, \
-their casing and punctuation. Be plain, direct and specific -- no \
-pleasantries or filler they would not use themselves. No em dashes, \
-bullet lists, headings or bold unless their own examples use them. Never \
-say or imply that this was written by an AI.
+Write as this person writes, guided by the style guide and the example \
+emails below: their greeting and sign-off, their casing and punctuation, \
+the words they reach for. Be specific rather than generic, with no stock \
+phrases or corporate filler. No em dashes, bullet lists, headings or bold \
+unless their own examples use them. Never say or imply that this was \
+written by an AI.
+
+When a thread is given, a message headed \"written by this person \
+themselves\" is one they sent; every other message is from whoever it \
+names. Never answer their own message as though somebody else had written \
+it, and never thank them for it.
 
 Never invent a fact, a date, a number, a name, a link or a commitment that \
 the thread or the instruction does not already support. When something \
@@ -58,6 +68,38 @@ to fill in themselves rather than making it up.
 The example emails below are for voice only -- never copy a fact, a name \
 or a detail out of one of them into what you write. Reply in the language \
 of the message being answered.";
+
+/// How a message newly written for them should sound: suggested replies, a
+/// draft from an instruction, an auto-draft -- never a rewrite of their own
+/// words. See [`VoiceContext::writing_prompt`].
+///
+/// Friendliness is asked for and not left to the examples: "plain and direct,
+/// no pleasantries", with every draft told to match their median length,
+/// wrote replies people found curt. Thanks and acknowledgement only for what
+/// the thread shows, or a new message to somebody invents a favour; and what
+/// the person said in Settings about how they sound outranks all of it.
+pub const WARM_WRITING_RULES: &str = "\
+Sound warm and friendly, the way they write to somebody they get on with. \
+When replying, acknowledge what the other person said or did, and thank them \
+for something in particular when the thread shows something to thank them \
+for; never thank them for, or acknowledge, anything the thread does not show. \
+End on a friendly note. Write in full, natural sentences and say enough to be \
+helpful: a reply that reads curt or clipped is worse than one a sentence \
+longer. If they have said below how they want to sound, that comes first.";
+
+/// What heads a message of a thread in a writing prompt, after `---`: as the
+/// person's own when [`Vault::authorship`](karmayoga_core::Vault::authorship)
+/// says they sent it, as from its quoted sender otherwise. Shown only
+/// addresses, a model cannot tell which of them is the person it writes for,
+/// and answered their own earlier message as somebody else's. The words are
+/// the ones [`HUMAN_WRITING_RULES`] explains; drafts are left out before this.
+pub(crate) fn thread_heading(from: &Address, who: Authorship) -> String {
+    match who {
+        Authorship::Own => "written by this person themselves".to_string(),
+        Authorship::Draft => "their own unsent draft".to_string(),
+        Authorship::Theirs => format!("from {}", heading_name(from)),
+    }
+}
 
 /// One of the person's own messages, shown to a model for their voice, with
 /// the message it answered when it answered one. How somebody answers a
@@ -145,13 +187,20 @@ impl VoiceContext {
         if !instructions.is_empty() {
             out.push_str(&format!(
                 "\n\nThis person has told you how they want to sound, in their own words. On \
-                 tone, length, wording and how they open and close, it wins over the style \
-                 guide, the examples and what was learned from their replies. It does not \
-                 change the rule against inventing facts.\n\
+                 tone, length, wording and how they open and close, it wins over everything \
+                 above: the writing rules, the style guide, the examples and what was learned \
+                 from their replies. It does not change the rule against inventing facts.\n\
                  ---\n{instructions}\n---"
             ));
         }
         out
+    }
+
+    /// [`Self::system_prompt`] for a message newly written for them, with
+    /// [`WARM_WRITING_RULES`] after `task`: what every prompt that writes them
+    /// a reply or a message uses, and a rewrite of their own words does not.
+    pub fn writing_prompt(&self, task: &str) -> String {
+        self.system_prompt(&format!("{task}\n\n{WARM_WRITING_RULES}"))
     }
 
     /// What a model wrote, with what gives a model away taken out. Only what
@@ -856,9 +905,28 @@ mod tests {
         assert!(system.starts_with("TASK"), "{system}");
         assert!(system.contains(HUMAN_WRITING_RULES), "{system}");
         assert!(system.contains("---\nNever apologise.\n---"), "{system}");
-        assert!(system.contains("wins over the style guide"), "{system}");
+        assert!(system.contains("wins over everything"), "{system}");
         // Measured below it, in the user's message, not repeated here.
         assert!(!voice.prompt_section().contains("Never apologise"));
+    }
+
+    /// "Short and direct, no pleasantries" in Settings must beat the rules
+    /// that ask a new reply to be warm, and a rewrite of their own words never
+    /// gets those rules at all.
+    #[test]
+    fn warmth_is_for_new_writing_and_their_own_words_outrank_it() {
+        let voice = VoiceContext {
+            instructions: "Short and direct, no pleasantries.".into(),
+            ..Default::default()
+        };
+        let writing = voice.writing_prompt("TASK");
+        let at = |needle: &str| writing.find(needle).unwrap_or_else(|| panic!("{writing}"));
+        assert!(at("TASK") < at(WARM_WRITING_RULES));
+        assert!(at(WARM_WRITING_RULES) < at(HUMAN_WRITING_RULES));
+        assert!(at(HUMAN_WRITING_RULES) < at("Short and direct, no pleasantries."));
+        assert!(!voice.system_prompt("TASK").contains(WARM_WRITING_RULES));
+        assert!(!HUMAN_WRITING_RULES.contains("friendly"), "tone is not every prompt's");
+        assert!(WARM_WRITING_RULES.contains("never thank them for, or acknowledge, anything"));
     }
 
     #[test]
@@ -884,7 +952,10 @@ mod tests {
         assert!(learned < at("---\n- Says yes in one line.\n---"));
         assert!(at("---\n- Says yes in one line.\n---") < at("---\nNever apologise.\n---"));
         assert!(
-            system.contains("wins over the style guide, the examples and what was learned"),
+            system.contains(
+                "wins over everything above: the writing rules, the style guide, the examples and \
+                 what was learned"
+            ),
             "{system}"
         );
         assert!(!voice.prompt_section().contains("Says yes"), "not repeated in the user's");
