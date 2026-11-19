@@ -155,6 +155,11 @@ pub struct Service {
     /// [`Service::close`] exactly as the summary cache is: it is somebody's
     /// correspondence.
     listen_briefings: std::sync::Mutex<std::collections::HashMap<ThreadId, (u32, String)>>,
+    /// Karma's book being settled off the caller's thread -- see
+    /// [`Service::start_refreshers`] -- each holding the vault until done.
+    /// [`Service::close`] waits for them: one still running kept the vault's
+    /// write lock, and opening it again came up read-only.
+    karma_settling: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// The chat links' runner and the last status each reported. See
     /// [`crate::chat`].
     pub(crate) chat: crate::chat::ChatHub,
@@ -206,6 +211,7 @@ impl Service {
             money: crate::money::MoneyRuntime::default(),
             weather_cache: WeatherCache::new(),
             listen_briefings: std::sync::Mutex::default(),
+            karma_settling: std::sync::Mutex::default(),
         }
     }
 
@@ -694,13 +700,16 @@ impl Service {
             // out of the report, which is a read. Off the caller's thread,
             // since a long absence is a few weeks of records to score.
             let now = self.now();
-            tokio::task::spawn_blocking(move || {
+            let settling = tokio::task::spawn_blocking(move || {
                 let today =
                     karmayoga_core::model::local_date_in(now, &karmayoga_core::model::system_tz());
                 if let Err(e) = vault.settle_karma(today) {
                     tracing::warn!(error = %e, "could not settle Karma");
                 }
             });
+            let mut pending = self.karma_settling.lock().unwrap();
+            pending.retain(|settle| !settle.is_finished());
+            pending.push(settling);
         }
     }
 
@@ -920,6 +929,10 @@ impl Service {
         self.close_mail();
         self.mail.on_lock();
         self.listen_briefings.lock().unwrap().clear();
+        let settling = std::mem::take(&mut *self.karma_settling.lock().unwrap());
+        for settle in settling {
+            let _ = settle.await;
+        }
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the
