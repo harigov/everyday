@@ -1224,7 +1224,7 @@ fn attendees_of(comp: &calcard::icalendar::ICalendarComponent) -> Vec<String> {
 /// This source's [`super::CalendarProvider`] -- a thin wrapper so
 /// [`super::provider_for`] can hand back CalDAV's [`discover`] and [`sync`]
 /// without a caller matching on [`AccountCalendarSource`] itself. See
-/// `crate::meeting::transcribe::openai::OpenAiTranscriber` for the same
+/// `crate::speech::transcribe::openai::OpenAiTranscriber` for the same
 /// shape elsewhere.
 pub(crate) struct CalDavProvider;
 

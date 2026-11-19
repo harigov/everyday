@@ -19,11 +19,12 @@
 // the moment the catalogue changed and nobody would notice.
 
 import { api, sendMessage } from './api'
-import { applyEvent, emptyTurn, liveTurn, replay, settle, type Turn } from './agent'
+import { applyEvent, cutReply, emptyTurn, liveTurn, replay, settle, type Turn } from './agent'
 import { models } from './models.svelte'
 import { pref } from './prefs'
 import { app, handle, isLocked, quietly } from './state.svelte'
 import type {
+  AgentEvent,
   AgentSettings,
   Attachment,
   ConversationId,
@@ -86,6 +87,7 @@ class AgentState {
     this.settings = null
     this.memories = []
     this.busy = false
+    this.#spoken = null
     this.error = null
     this.composing = false
   }
@@ -252,6 +254,10 @@ class AgentState {
    * has already put it there, so nothing large goes through this call. A
    * picture or a file with nothing typed is a message too.
    */
+  /** A conversation is being talked here: what is said is its next turn, and
+   *  a typed one beside it would run alongside and be stopped with it. */
+  talking = $state(false)
+
   async send(
     prompt: string,
     onScreen: OnScreen | null,
@@ -259,7 +265,9 @@ class AgentState {
     files: FileId[] = [],
   ): Promise<boolean> {
     const text = prompt.trim()
-    if ((!text && pictures.length === 0 && files.length === 0) || this.busy) return false
+    if ((!text && pictures.length === 0 && files.length === 0) || this.busy || this.talking) {
+      return false
+    }
     if (!this.conversationId) {
       // Nothing to send into: an unlock cleared the thread, or minting one
       // failed. Said out loud, because the composer clears on the strength
@@ -319,15 +327,89 @@ class AgentState {
    * that was still running as stopped rather than failed. The turn then
    * ends the ordinary way -- the service sends `finished` with whatever had
    * been said -- which is what clears `busy`.
+   *
+   * A spoken turn is stopped the same way. If the service says there was
+   * nothing of that kind to stop, the mark comes off again, so a reply that
+   * carries on is not drawn as stopped.
    */
   async stop() {
-    const reply = this.#reply
+    const typed = this.#reply
+    const reply = typed ?? this.#spoken
     if (!this.busy || !reply || !this.conversationId || reply.stopped) return
     reply.stopped = true
     try {
-      await api.cancelTurn(this.conversationId)
+      const reached = await api.cancelTurn(this.conversationId)
+      if (!reached && !typed) reply.stopped = false
     } catch (e) {
       await handle(e)
+    }
+  }
+
+  // ── A turn spoken aloud ─────────────────────────────────────────────
+  //
+  // The voice session runs its own turns and tells the window about them
+  // (`voice.svelte.ts`), so what `send` does for a typed turn -- push the
+  // question, push a live reply, fold the stream into it -- is done here in
+  // pieces, by whoever is hearing the events.
+
+  /** The reply a spoken turn is streaming into, while there is one. */
+  #spoken: Turn | null = null
+
+  /**
+   * Somebody has said something out loud: draw it as their message, and open
+   * the reply it is about to get.
+   *
+   * A reply still open from before is settled first -- a person who talks over
+   * the assistant starts a new turn, and the old one must not be left
+   * spinning above it.
+   */
+  beginSpoken(text: string) {
+    this.endSpoken()
+    this.error = null
+    this.busy = true
+    this.turns.push(emptyTurn('user', this.#nextLocalId(), text))
+    // Pushed first and read back, for the reason `send` gives: `turns` is
+    // `$state`, and only the proxy the array hands out is watched.
+    this.turns.push(liveTurn(this.#nextLocalId()))
+    this.#spoken = this.turns[this.turns.length - 1]!
+  }
+
+  /**
+   * One thing from the spoken turn, folded into its reply as a typed turn's
+   * stream is. `finished` and `failed` end it. Nothing is drawn for an event
+   * that arrives with no turn open.
+   */
+  applySpoken(event: AgentEvent) {
+    const reply = this.#spoken
+    if (!reply) return
+    applyEvent(reply, event)
+    if (event.type === 'finished' || event.type === 'failed') this.endSpoken()
+  }
+
+  /** The person talked over reply `messageId`: it now reads what they heard. */
+  cutSpoken(messageId: string, text: string) {
+    cutReply(this.turns, messageId, text)
+  }
+
+  /**
+   * The spoken turn is over, one way or another. A card still open is
+   * stranded and is settled, as `send` does after its request returns.
+   */
+  endSpoken() {
+    const reply = this.#spoken
+    if (!reply) return
+    this.#spoken = null
+    // Not while a typed turn is running beside it: that one clears it.
+    if (this.#reply === null) this.busy = false
+    settle(reply)
+  }
+
+  /** Read the thread list again: a spoken turn gives a new thread its title. */
+  async refreshThreads() {
+    try {
+      this.threads = await api.conversations(50)
+    } catch (e) {
+      await quietly(e)
     }
   }
 

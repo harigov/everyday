@@ -2,7 +2,7 @@
 //! quick benchmark -- the speech card's half of Settings → Models, now that
 //! how speech becomes text is the platform's choice rather than meeting
 //! notes' (see `karmayoga_core::speech`). See `local::files` and, for the
-//! model-dependent commands, `meeting::speech` (feature `speech`).
+//! model-dependent commands, `speech::local` (feature `speech`).
 //!
 //! Still under the `Meetings` scope they were born in, so a client allowed
 //! to set meeting notes up keeps the downloads it always had. Nothing here
@@ -147,7 +147,7 @@ async fn benchmark_speech_model(
     _ctx: Ctx,
     args: ModelRef,
 ) -> CommandResult<ModelBenchmark> {
-    use crate::meeting::speech;
+    use crate::speech::local as speech;
     use karmayoga_core::meeting::SAMPLE_RATE;
 
     let model = parse_local_model(&args.id)?;

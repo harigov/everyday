@@ -37,7 +37,7 @@
 //! this module would otherwise reach for a socket or a decrypted file it
 //! cannot get in a unit test. Both are traits with a production
 //! implementation and a fake one; see their own docs.
-//! [`transcribe::Transcriber`] is already exactly this shape (built
+//! [`crate::speech::transcribe::Transcriber`] is already exactly this shape (built
 //! elsewhere in this crate), so it needed no seam of its own -- tests hand
 //! `run_recording` a fake one directly.
 //!
@@ -87,7 +87,6 @@ mod propose;
 // only by the two pinning tests agreeing with each other's expectations.
 pub(crate) mod retry;
 mod stages;
-mod transcriber;
 mod turns;
 
 #[cfg(test)]
@@ -99,4 +98,3 @@ pub use adapters::{AssistantSummariser, AudioSource, SpoolSource, Summariser};
 pub use drivers::run_recording;
 pub use enqueue::{chunk_closed, enqueue};
 pub(crate) use stages::{invitees_of, owner_of, summarise_stage, words_for};
-pub use transcriber::{OPENAI_BASE_URL, build_transcriber};

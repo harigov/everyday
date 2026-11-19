@@ -568,6 +568,7 @@ impl Service {
             // Only a dream drafts.
             drafting: None,
             via: Some(via),
+            spoken: false,
             // The owner is right there in the chat; a scheduled run's ways of
             // reaching them are not needed.
             reach: Reach::default(),

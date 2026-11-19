@@ -1,6 +1,14 @@
-//! sherpa-onnx: voice activity detection, diarisation, speaker embeddings and
-//! local recognition. Feature `speech` only -- see `local::files` for the
-//! files this loads and `docs/plans/meeting-notes.md`'s "The libraries".
+//! The sherpa-onnx models on this computer: voice activity detection,
+//! diarisation, speaker embeddings and local recognition. Feature `speech`
+//! only -- see `local::files` for the files this loads and
+//! `docs/plans/meeting-notes.md`'s "The libraries".
+//!
+//! A platform service, not a part of meeting notes: the meeting pipeline,
+//! [`crate::speech::transcribe::local`], the assistant's voice mode
+//! ([`crate::speech::detect`], [`crate::speech::utterance`]) and whatever
+//! listens next all load their models from here, so that one process holds
+//! one copy of each. What is specific to a meeting -- who is who, which
+//! chunk is which -- is not here; see `crate::meeting`.
 //!
 //! # Blocking
 //!
@@ -28,6 +36,7 @@
 use crate::error::{CommandError, CommandResult, codes};
 use crate::local::files::{self as models, RecogniserPaths};
 use crate::local::resident::Resident;
+use crate::speech::pcm::{duration_ms, to_f32};
 use karmayoga_core::meeting::{LocalModel, SAMPLE_RATE};
 use std::sync::{Arc, Mutex};
 
@@ -53,17 +62,46 @@ pub const EMBEDDING_MODEL_ID: &str = "sherpa-onnx:eres2net-en-voxceleb-16k";
 
 /// Cap on worker threads handed to a native model. Read from
 /// [`std::thread::available_parallelism`] rather than fixed, and capped
-/// rather than left open: a meeting's pipeline is one recording, not a
+/// rather than left open: one recording, or one conversation, is not a
 /// server serving many at once, and a laptop with sixteen cores should not
 /// hand every one of them to a single VAD pass.
 const MAX_THREADS: usize = 4;
 
-fn worker_threads() -> i32 {
+/// How many threads a native model may use: the machine's cores, between one
+/// and [`MAX_THREADS`]. For anything that loads a sherpa-onnx model of its
+/// own and so cannot take the number the shared ones here were given.
+pub(crate) fn worker_threads() -> i32 {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, MAX_THREADS) as i32
 }
 
-fn to_f32(samples: &[i16]) -> Vec<f32> {
-    samples.iter().map(|&s| f32::from(s) / 32768.0).collect()
+/// Silero's configuration, with the numbers every use of it agrees on --
+/// the 0.5 threshold, the 512-sample window that is the only size it accepts,
+/// 16 kHz, the CPU -- and the ones that differ by use handed in:
+/// [`SpeechKit::vad`] cuts a finished recording and leaves merging to itself,
+/// a conversation's detector waits a natural pause before calling a turn
+/// over.
+pub(crate) fn vad_config(
+    model: &str,
+    threads: i32,
+    min_silence_seconds: f32,
+    min_speech_seconds: f32,
+    max_speech_seconds: f32,
+) -> sherpa_onnx::VadModelConfig {
+    sherpa_onnx::VadModelConfig {
+        silero_vad: sherpa_onnx::SileroVadModelConfig {
+            model: Some(model.to_string()),
+            threshold: 0.5,
+            min_silence_duration: min_silence_seconds,
+            min_speech_duration: min_speech_seconds,
+            window_size: 512,
+            max_speech_duration: max_speech_seconds,
+        },
+        ten_vad: sherpa_onnx::TenVadModelConfig::default(),
+        sample_rate: SAMPLE_RATE as i32,
+        num_threads: threads,
+        provider: Some("cpu".to_string()),
+        debug: false,
+    }
 }
 
 fn l2_normalise(mut v: Vec<f32>) -> Vec<f32> {
@@ -177,30 +215,16 @@ impl SpeechKit {
     /// [`MIN_SPEECH_MS`] dropped, and [`PAD_MS`] added to both ends of what
     /// survives (clamped to the clip). Blocking.
     pub fn vad(&self, samples: &[i16]) -> Vec<(u64, u64)> {
-        let total_ms = ms_of(samples.len());
+        let total_ms = duration_ms(samples.len());
         if samples.is_empty() {
             return Vec::new();
         }
         let f32_samples = to_f32(samples);
-        let config = sherpa_onnx::VadModelConfig {
-            silero_vad: sherpa_onnx::SileroVadModelConfig {
-                model: Some(self.vad_model_path.clone()),
-                threshold: 0.5,
-                // Left to our own `merge_and_pad` below, rather than done
-                // twice: sherpa's own thresholds would apply first, and
-                // disagreeing with the numbers this module documents would
-                // be a second, hidden copy of the same policy.
-                min_silence_duration: 0.1,
-                min_speech_duration: 0.02,
-                window_size: 512,
-                max_speech_duration: 20.0,
-            },
-            ten_vad: sherpa_onnx::TenVadModelConfig::default(),
-            sample_rate: SAMPLE_RATE as i32,
-            num_threads: self.threads,
-            provider: Some("cpu".to_string()),
-            debug: false,
-        };
+        // The silence and speech minimums are left to our own
+        // `merge_and_pad` below, rather than done twice: sherpa's own
+        // thresholds would apply first, and disagreeing with the numbers this
+        // module documents would be a second, hidden copy of the same policy.
+        let config = vad_config(&self.vad_model_path, self.threads, 0.1, 0.02, 20.0);
         let buffer_seconds = (total_ms as f32 / 1000.0) + 5.0;
         let Some(detector) = sherpa_onnx::VoiceActivityDetector::create(&config, buffer_seconds)
         else {
@@ -211,8 +235,8 @@ impl SpeechKit {
         const WINDOW: usize = 512;
         let drain = |detector: &sherpa_onnx::VoiceActivityDetector, raw: &mut Vec<(u64, u64)>| {
             while let Some(seg) = detector.front() {
-                let start_ms = ms_of(seg.start().max(0) as usize);
-                let end_ms = start_ms + ms_of(seg.n().max(0) as usize);
+                let start_ms = duration_ms(seg.start().max(0) as usize);
+                let end_ms = start_ms + duration_ms(seg.n().max(0) as usize);
                 raw.push((start_ms, end_ms));
                 detector.pop();
             }
@@ -271,10 +295,6 @@ impl SpeechKit {
             })
             .collect()
     }
-}
-
-fn ms_of(samples: usize) -> u64 {
-    samples as u64 * 1000 / u64::from(SAMPLE_RATE)
 }
 
 fn path_string(path: &std::path::Path) -> String {

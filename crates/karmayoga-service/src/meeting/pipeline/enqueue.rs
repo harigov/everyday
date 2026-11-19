@@ -7,7 +7,7 @@ use crate::service::Service;
 use crate::supervisor::Outcome;
 
 #[cfg(feature = "speech")]
-use crate::meeting::speech::{self, SpeechKit};
+use crate::speech::local::{self as speech, SpeechKit};
 
 use super::adapters::*;
 

@@ -28,12 +28,12 @@ use std::collections::HashSet;
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::meeting::transcribe::Transcriber;
-use crate::meeting::{pipeline, transcribe};
+use crate::meeting::pipeline;
 use crate::service::{Service, blocking};
+use crate::speech::transcribe::{self, Transcriber};
 
 #[cfg(feature = "speech")]
-use crate::meeting::speech;
+use crate::speech::local as speech;
 
 use super::Nothing;
 use super::meetings::VoiceprintInfo;
@@ -201,7 +201,7 @@ async fn test_transcriber(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> Comma
     match access.config.transcriber {
         karmayoga_core::meeting::TranscriberConfig::Local { model } => test_local(model).await,
         other => {
-            let transcriber = pipeline::build_transcriber(&other, access.key)?;
+            let transcriber = crate::speech::transcribe::build_transcriber(&other, access.key)?;
             probe(transcriber.as_ref()).await
         }
     }

@@ -1726,6 +1726,18 @@
       ]
     },
     {
+      "command": "cancel_voice_model_download",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "dismiss_meeting_offer",
       "events": []
     },
@@ -2715,6 +2727,10 @@
     {
       "name": "download_speech_model",
       "reason": "a real ~40MB network download"
+    },
+    {
+      "name": "download_voice_model",
+      "reason": "a real ~130MB network download"
     },
     {
       "name": "edit_thread_draft",

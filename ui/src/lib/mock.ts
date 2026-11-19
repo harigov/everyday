@@ -151,7 +151,7 @@ import type {
 } from './types'
 import { sameAccount, validateLink } from './chat'
 import { signatureFor } from './mailwrite'
-import { speechEndpointOf } from './accounts'
+import { speechEndpointOf, voiceEndpointOf } from './accounts'
 import {
   mockDraftWithAi,
   mockImproveWriting,
@@ -301,6 +301,16 @@ import {
   mockTriggerStillOn,
   mockTriggerSystemSilent,
 } from './mock-meetings'
+import {
+  mockCancelVoiceModelDownload,
+  mockDeleteVoiceModel,
+  mockDownloadVoiceModel,
+  mockVoiceModels,
+  mockVoiceSample,
+  mockVoiceSetMuted,
+  mockVoiceSetScreen,
+  mockVoiceStop,
+} from './mock-voice'
 import {
   mockDeleteTemplate,
   mockLintTemplate,
@@ -4006,6 +4016,7 @@ let modelSettings: ModelSettings = {
   },
   decision: null,
   speech: null,
+  voice: null,
 }
 const modelKeys = new Set<string>(['https://api.openai.com/v1'])
 
@@ -4039,10 +4050,13 @@ function mockEndpoint(baseUrl: string | null): string {
 }
 
 /** `ModelSettings::all_endpoints`: those mail may go to, and the speech
- *  model's -- every address a key may be kept for. */
+ *  model's and the voice's -- every address a key may be kept for. */
 function mockAllEndpoints(): string[] {
   const speech = modelSettings.speech ? speechEndpointOf(modelSettings.speech.transcriber) : null
-  return [...new Set([...mockModelEndpoints(), ...(speech ? [speech] : [])])].sort()
+  const voice = modelSettings.voice ? voiceEndpointOf(modelSettings.voice.synthesiser) : null
+  return [
+    ...new Set([...mockModelEndpoints(), ...(speech ? [speech] : []), ...(voice ? [voice] : [])]),
+  ].sort()
 }
 
 /** The speech model as meeting notes see it -- see `MockSpeech`. */
@@ -4061,6 +4075,7 @@ function modelSettingsView(): ModelSettingsView {
     acknowledgement: mockModelEndpoints().join(', '),
     localDecisions: true,
     localSpeech: true,
+    localVoice: true,
   }
 }
 
@@ -4082,6 +4097,15 @@ function modelSlotEndpoint(args: Record<string, unknown>): string {
     }
     const endpoint = speechEndpointOf(speech.transcriber)
     if (!endpoint) throw new VaultError('invalid', 'a speech model on this computer needs no key')
+    return endpoint
+  }
+  if (tier === 'voice') {
+    const voice = modelSettings.voice
+    if (!voice) {
+      throw new VaultError('invalid', 'no voice is configured; set one in Settings → Models')
+    }
+    const endpoint = voiceEndpointOf(voice.synthesiser)
+    if (!endpoint) throw new VaultError('invalid', 'a voice on this computer needs no key')
     return endpoint
   }
   const config = modelSettings[tier]
@@ -7232,6 +7256,7 @@ export const mockInvoke = async <T>(
       modelSettings = structuredClone(args.settings as ModelSettings)
       modelSettings.decision ??= null
       modelSettings.speech ??= null
+      modelSettings.voice ??= null
       // As the real one: a key no card points at any more is forgotten --
       // the speech card counts.
       const inUse = new Set(mockAllEndpoints())
@@ -8661,6 +8686,25 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       return (await mockBenchmarkSpeechModel(str(args.id))) as T
 
+    case 'voice_models':
+      requireUnlocked()
+      return mockVoiceModels() as T
+    case 'download_voice_model':
+      requireUnlocked()
+      mockDownloadVoiceModel(str(args.id))
+      return undefined as T
+    case 'cancel_voice_model_download':
+      requireUnlocked()
+      mockCancelVoiceModelDownload(str(args.id))
+      return undefined as T
+    case 'delete_voice_model':
+      requireUnlocked()
+      mockDeleteVoiceModel(str(args.id))
+      return undefined as T
+    case 'voice_sample':
+      requireUnlocked()
+      return mockVoiceSample() as T
+
     case 'dismiss_meeting_offer':
       requireUnlocked()
       mockDismissMeetingOffer(
@@ -8723,6 +8767,19 @@ export const mockInvoke = async <T>(
     case 'voice_enrol':
       requireUnlocked()
       return (await mockEnrolVoice()) as T
+
+    // ── Talking to the assistant, called by name -- see `api.ts`'s
+    //    `voiceStart`, which `mock-voice.ts` stands in for ───────────────
+
+    case 'voice_stop':
+      mockVoiceStop()
+      return undefined as T
+    case 'voice_set_muted':
+      mockVoiceSetMuted(Boolean(args.muted))
+      return undefined as T
+    case 'voice_set_screen':
+      mockVoiceSetScreen((args.onScreen as OnScreen | null | undefined) ?? null)
+      return undefined as T
 
     // ── Dev-only triggers, mock-only -- no real command of either name.
     //    See `mock-meetings.ts`'s own doc. ───────────────────────────────

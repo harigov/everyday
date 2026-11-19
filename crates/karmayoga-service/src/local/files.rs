@@ -64,6 +64,7 @@
 
 use karmayoga_core::llm::LocalDecisionModel;
 use karmayoga_core::meeting::LocalModel;
+use karmayoga_core::speech::LocalVoice;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -136,10 +137,13 @@ impl Source {
 /// What a model is for -- which settings pane lists it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelKind {
-    /// Meeting notes: the speech kit and the recognisers.
+    /// Listening: the speech kit and the recognisers, for meeting notes, the
+    /// assistant's voice and whatever listens next.
     Speech,
     /// Sorting mail: the [`LocalDecisionModel`]s.
     Decision,
+    /// The assistant's voice: the [`LocalVoice`]s.
+    Voice,
 }
 
 /// One downloadable model: the speech kit, a recogniser, or a decision
@@ -327,11 +331,77 @@ const D3_MINI_SOURCES: &[Source] = &[Source::File {
     },
 }];
 
+/// Supertonic 3, as sherpa-onnx exports it. Its code is MIT licensed and its
+/// weights OpenRAIL-M. Needs no espeak-ng data, unlike Kokoro and Piper.
+const SUPERTONIC3_SOURCES: &[Source] = &[Source::Archive {
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2",
+    sha256: "82fa96f91c4ef8abaae3a14a3f4153facf88bed821d1f7331cec2700f432c427",
+    bytes: 128_774_318,
+    members: &[
+        (
+            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/duration_predictor.int8.onnx",
+            ModelFile {
+                dest: "duration_predictor.int8.onnx",
+                sha256: "c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db",
+                bytes: 3_700_147,
+            },
+        ),
+        (
+            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/text_encoder.int8.onnx",
+            ModelFile {
+                dest: "text_encoder.int8.onnx",
+                sha256: "c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff",
+                bytes: 36_416_150,
+            },
+        ),
+        (
+            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/vector_estimator.int8.onnx",
+            ModelFile {
+                dest: "vector_estimator.int8.onnx",
+                sha256: "20cd86fa5c6effedfda0e7cffe5b0569ca401c440a0c3a1d72bf39286c0db3fd",
+                bytes: 78_400_833,
+            },
+        ),
+        (
+            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/vocoder.int8.onnx",
+            ModelFile {
+                dest: "vocoder.int8.onnx",
+                sha256: "e923d60f53f95eb1ce235f1dc33ec56d9c057823c96fa6f8acf98f32b0da6152",
+                bytes: 25_991_073,
+            },
+        ),
+        (
+            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/tts.json",
+            ModelFile {
+                dest: "tts.json",
+                sha256: "42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09",
+                bytes: 8_253,
+            },
+        ),
+        (
+            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/unicode_indexer.bin",
+            ModelFile {
+                dest: "unicode_indexer.bin",
+                sha256: "8402ca48e5189a8950138580b0fff64db6f072f24ac07cd54ba8b2fbb9883b30",
+                bytes: 262_144,
+            },
+        ),
+        (
+            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/voice.bin",
+            ModelFile {
+                dest: "voice.bin",
+                sha256: "67d5209b0ee8ce6c74105ffbe12fe6a7628aea3b4ba2fcb308a4a67938a93ce8",
+                bytes: 517_168,
+            },
+        ),
+    ],
+}];
+
 /// What a decision model's one file is called inside its directory.
 const DECISION_MODEL_FILE: &str = "model.gguf";
 
 /// Every downloadable model, in the order the settings panes list them.
-pub static CATALOGUE: [ModelSpec; 6] = [
+pub static CATALOGUE: [ModelSpec; 7] = [
     ModelSpec {
         id: SPEECH_KIT_ID,
         kind: ModelKind::Speech,
@@ -379,6 +449,14 @@ pub static CATALOGUE: [ModelSpec; 6] = [
         description: "The largest and most accurate, and the slowest: several seconds a message on most computers.",
         languages: "English, best",
         sources: D3_MINI_SOURCES,
+    },
+    ModelSpec {
+        id: "supertonic3",
+        kind: ModelKind::Voice,
+        name: "Supertonic 3",
+        description: "Ten voices that run on this computer, quicker than they speak.",
+        languages: "English and 30 other languages",
+        sources: SUPERTONIC3_SOURCES,
     },
 ];
 
@@ -909,7 +987,7 @@ impl<W: std::io::Write> std::io::Write for HashingWriter<'_, W> {
 }
 
 // ---------------------------------------------------------------------------
-// Paths, for `meeting::speech` (feature `speech`) to load models from.
+// Paths, for `speech::local` (feature `speech`) to load models from.
 // Kept here rather than duplicated there, so the filenames a `Source`
 // extracts to and the filenames a recogniser is pointed at cannot drift
 // apart.
@@ -935,9 +1013,42 @@ pub fn speech_kit_paths() -> Option<SpeechKitPaths> {
     })
 }
 
+/// This voice's files, all present and checked.
+pub fn voice_installed(voice: LocalVoice) -> bool {
+    spec(voice.id()).is_some_and(is_installed)
+}
+
+/// Where a voice's files are, once [`voice_installed`].
+pub struct VoicePaths {
+    pub duration_predictor: PathBuf,
+    pub text_encoder: PathBuf,
+    pub vector_estimator: PathBuf,
+    pub vocoder: PathBuf,
+    pub tts_json: PathBuf,
+    pub unicode_indexer: PathBuf,
+    pub voice_style: PathBuf,
+}
+
+pub fn voice_paths(voice: LocalVoice) -> Option<VoicePaths> {
+    let spec = spec(voice.id())?;
+    if !is_installed(spec) {
+        return None;
+    }
+    let dir = spec.dir();
+    Some(VoicePaths {
+        duration_predictor: dir.join("duration_predictor.int8.onnx"),
+        text_encoder: dir.join("text_encoder.int8.onnx"),
+        vector_estimator: dir.join("vector_estimator.int8.onnx"),
+        vocoder: dir.join("vocoder.int8.onnx"),
+        tts_json: dir.join("tts.json"),
+        unicode_indexer: dir.join("unicode_indexer.bin"),
+        voice_style: dir.join("voice.bin"),
+    })
+}
+
 /// Where a recogniser's files are, once [`installed`]. The two local
 /// recognisers are different model families -- a transducer and Whisper --
-/// so they are pointed at differently; see `meeting::speech::Recogniser`.
+/// so they are pointed at differently; see `speech::local::Recogniser`.
 pub enum RecogniserPaths {
     Transducer { encoder: PathBuf, decoder: PathBuf, joiner: PathBuf, tokens: PathBuf },
     Whisper { encoder: PathBuf, decoder: PathBuf, tokens: PathBuf },

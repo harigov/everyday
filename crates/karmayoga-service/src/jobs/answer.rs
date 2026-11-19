@@ -183,6 +183,7 @@ pub async fn answer_now(
         unattended: None,
         drafting: None,
         via: conversation.via.clone(),
+        spoken: false,
         job: None,
         follow_up: Some(job.id),
         max_steps: None,

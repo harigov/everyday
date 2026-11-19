@@ -8,6 +8,7 @@
 //! point is a library: Tauri builds iOS and Android targets from `run()` rather
 //! than from `main`.
 
+mod audio;
 mod badge;
 pub mod capture;
 mod commands;
@@ -39,6 +40,7 @@ mod sharing;
 mod state;
 mod transfer;
 mod tray;
+mod voice;
 mod web;
 mod windows;
 mod writing;
@@ -331,6 +333,11 @@ pub fn run() {
             meeting::meeting_stop,
             meeting::meeting_status,
             meeting::voice_enrol,
+            // Talking to the assistant. See `voice`.
+            voice::voice_start,
+            voice::voice_stop,
+            voice::voice_set_muted,
+            voice::voice_set_screen,
             offers::meeting_offer_answer,
             offers::meeting_offers,
             offers::recording_notice,
@@ -346,6 +353,9 @@ pub fn run() {
             health::health_import_apple,
         ])
         .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed) {
+                voice::window_closing(window.app_handle(), window.label());
+            }
             // Writing help's popup is not the application: closing it is
             // dismissing it, and it goes when the main window does, or a
             // hidden popup would keep the process alive with no way back.

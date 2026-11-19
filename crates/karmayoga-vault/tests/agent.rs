@@ -349,6 +349,7 @@ fn a_key_belongs_to_its_endpoint_and_not_to_its_tier() {
         small: Some(LLMConfig::small()),
         decision: None,
         speech: None,
+        voice: None,
     };
     vault.save_model_settings(&models).unwrap();
     vault.set_model_key(ModelTier::Medium, "sk-openai").unwrap();

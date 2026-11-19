@@ -40,24 +40,31 @@
 //! opens is created, played and dropped on the capture thread and never
 //! moves off it. The bounded channel and the shared status the rest of the
 //! app reads carry only plain data, which has no such restriction.
+//!
+//! The input stream itself, the downmix and the resampler are `crate::audio`'s,
+//! which the assistant's voice mode uses too. What stays here is what only a
+//! recording does: a second track, reopening a stream that died, level meters
+//! and framing into chunks.
 
 use std::collections::VecDeque;
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SupportedStreamConfig};
+use cpal::SupportedStreamConfig;
+use cpal::traits::{DeviceTrait, HostTrait};
 use jiff::Timestamp;
 use karmayoga_core::id::{RecordingId, TemplateId};
 use karmayoga_core::meeting::{CHUNK_SECONDS, SAMPLE_RATE, Track};
-use karmayoga_service::error::{CommandError, CommandResult};
+use karmayoga_service::error::CommandResult;
 use karmayoga_service::events::EventSink;
-use rubato::{Fft, FixedSync, Indexing, Resampler as _};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
+
+use crate::audio::input::{self, f32_to_i16};
+use crate::audio::resample::StreamResampler;
 
 /// Below this RMS (of a full-scale signal, 0..1) a track counts as silent:
 /// `CaptureStatus::system_silent_ms`, the mic-only fallback's own level
@@ -133,32 +140,10 @@ pub const STATUS_EVENT: &str = "meeting-status";
 /// [`AUTO_STOP_ASK_AFTER`].
 pub const STILL_ON_EVENT: &str = "meeting-still-on";
 
-/// A plain, displayable error from the capture engine. Not
-/// [`karmayoga_service::error::CommandError`]: this crosses a `std::thread`
-/// boundary and an audio backend's errors have no vault-command code to
-/// carry.
-#[derive(Debug, Clone)]
-pub struct CaptureError(pub String);
-
-impl std::fmt::Display for CaptureError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for CaptureError {}
-
-impl From<CommandError> for CaptureError {
-    fn from(e: CommandError) -> Self {
-        Self(e.to_string())
-    }
-}
-
-impl From<CaptureError> for CommandError {
-    fn from(e: CaptureError) -> Self {
-        CommandError::new("capture", e.0)
-    }
-}
+/// A plain, displayable error from the capture engine, which is the audio
+/// module's: the devices and the resampler it shares with the voice mode
+/// report it too.
+pub use crate::audio::AudioError as CaptureError;
 
 // ---- the sink --------------------------------------------------------
 
@@ -394,97 +379,17 @@ impl ChunkSink for FileSink {
 // ---- resampling --------------------------------------------------------
 
 /// One track's resampler: whatever rate the device runs at, down to
-/// [`SAMPLE_RATE`], mono. Stateful across the whole life of a stream --
-/// `push` accumulates until there is enough for one of rubato's internal
-/// chunks, which has nothing to do with the 30 s chunks this module frames
-/// on top; `flush` drains the last partial one, padded with silence, at
-/// stop or before a reopen.
-struct TrackResampler {
-    inner: Fft<f32>,
-    chunk_size: usize,
-    input_buf: Vec<f32>,
-    out_scratch: Vec<f32>,
-    out_len: usize,
-}
-
-impl TrackResampler {
-    fn new(source_rate: u32) -> Result<Self, CaptureError> {
-        let chunk_size = 1024;
-        let inner = Fft::<f32>::new(
-            source_rate as usize,
-            SAMPLE_RATE as usize,
-            chunk_size,
-            1,
-            FixedSync::Input,
-        )
-        .map_err(|e| CaptureError(format!("could not build resampler: {e}")))?;
-        let out_len = inner.output_frames_max();
-        Ok(Self {
-            inner,
-            chunk_size,
-            input_buf: Vec::new(),
-            out_scratch: vec![0.0; out_len],
-            out_len,
-        })
-    }
-
-    /// Run one call to the inner resampler over the first `self.chunk_size`
-    /// frames of `input_buf` (padded with silence first, for the final
-    /// partial call). Returns how many input frames it actually consumed
-    /// and how many output frames it produced -- `rubato`'s own examples
-    /// re-query this every call rather than assume it equals `chunk_size`,
-    /// since the synchronous `Fft` resampler adjusts it slightly to keep
-    /// the resampling ratio exact for a given input/output rate pair.
-    fn process(&mut self, partial_len: Option<usize>) -> Result<(usize, usize), CaptureError> {
-        let in_adapter = audioadapter_buffers::direct::InterleavedSlice::new(
-            &self.input_buf[..self.chunk_size],
-            1,
-            self.chunk_size,
-        )
-        .map_err(|e| CaptureError(e.to_string()))?;
-        let mut out_adapter = audioadapter_buffers::direct::InterleavedSlice::new_mut(
-            &mut self.out_scratch,
-            1,
-            self.out_len,
-        )
-        .map_err(|e| CaptureError(e.to_string()))?;
-        let indexing = partial_len.map(|n| Indexing::new().partial_len(n));
-        self.inner
-            .process_into_buffer(&in_adapter, &mut out_adapter, indexing.as_ref())
-            .map_err(|e| CaptureError(format!("resample: {e}")))
-    }
-
-    /// Feed more raw mono samples at the source rate. Returns whatever
-    /// 16 kHz audio is now available -- often nothing, if not enough has
-    /// accumulated yet for a full internal chunk.
-    fn push(&mut self, samples: &[f32]) -> Result<Vec<f32>, CaptureError> {
-        self.input_buf.extend_from_slice(samples);
-        let mut out = Vec::new();
-        while self.input_buf.len() >= self.chunk_size {
-            let (nbr_in, nbr_out) = self.process(None)?;
-            out.extend_from_slice(&self.out_scratch[..nbr_out]);
-            self.input_buf.drain(..nbr_in);
-        }
-        Ok(out)
-    }
-
-    /// Drain whatever is left, padded with silence. Called at a genuine
-    /// stop or before rebuilding the resampler for a reopened device --
-    /// after this, `input_buf` is empty and a fresh `push` starts clean.
-    fn flush(&mut self) -> Result<Vec<f32>, CaptureError> {
-        if self.input_buf.is_empty() {
-            return Ok(Vec::new());
-        }
-        let remaining = self.input_buf.len();
-        self.input_buf.resize(self.chunk_size, 0.0);
-        let (_nbr_in, nbr_out) = self.process(Some(remaining))?;
-        self.input_buf.clear();
-        Ok(self.out_scratch[..nbr_out].to_vec())
-    }
-}
-
-fn f32_to_i16(s: f32) -> i16 {
-    (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+/// [`SAMPLE_RATE`], mono, stateful across the whole life of a stream. See
+/// `audio::resample`; `push` accumulates until there is enough for one of
+/// rubato's internal chunks, which has nothing to do with the 30 s chunks this
+/// module frames on top, and `flush` drains the last partial one at stop or
+/// before a reopen.
+///
+/// It converts even when the device already runs at [`SAMPLE_RATE`], as it
+/// always has: a recording does not change with the shape of the code under
+/// it.
+fn track_resampler(source_rate: u32) -> Result<StreamResampler, CaptureError> {
+    StreamResampler::always_converting(source_rate, SAMPLE_RATE)
 }
 
 // ---- framing into 30 s chunks -----------------------------------------
@@ -702,99 +607,41 @@ enum ControlMsg {
     Stop { discard: bool },
 }
 
-/// Interleaved samples of any `cpal`-supported format, down to mono `f32`
-/// in `-1.0..=1.0`, written into `out` (cleared first, so its capacity is
-/// kept rather than freed) instead of being returned as a fresh `Vec` --
-/// see [`build_stream`]'s own doc on why the realtime callback must not
-/// allocate one every block.
-fn downmix_into<T>(data: &[T], channels: cpal::ChannelCount, out: &mut Vec<f32>)
-where
-    T: Sample,
-    f32: FromSample<T>,
-{
-    let channels = channels.max(1) as usize;
-    out.clear();
-    out.extend(data.chunks(channels).map(|frame| {
-        let sum: f32 = frame.iter().map(|s| f32::from_sample(*s)).sum();
-        sum / frame.len() as f32
-    }));
-}
-
-/// How many spare buffers [`build_stream`]'s pool starts with -- and the
-/// most it will ever hold, since [`RAW_CHANNEL_CAPACITY`] is also the most
-/// blocks that can be in flight (held by the audio channel, or briefly by
-/// the capture thread before it is returned) at once.
-const BUFFER_POOL_CAPACITY: usize = RAW_CHANNEL_CAPACITY;
-
 /// Build and start an input stream on `device`, downmixing every callback
 /// to mono and pushing it through `tx`. Shared by the microphone (an
 /// ordinary input device) and the system track (an output device opened as
 /// input -- the loopback trick this module's doc explains).
 ///
-/// The realtime callback must not allocate (this module's own doc, "the
-/// loopback trick" section notwithstanding -- see "Threads" instead), but
-/// downmixing a block still needs somewhere to write its samples, and that
-/// `Vec` has to move out of the callback whole -- ownership, not a
-/// copy -- to reach the capture thread through `tx` without a second
-/// allocation there. The two together mean a fresh buffer is needed every
-/// callback unless *something* hands old ones back. That something is the
-/// `SyncSender<Vec<f32>>` this returns alongside the stream: the capture
-/// thread (`run`, or `record_mic_only`'s own loop) sends a buffer back
-/// through it once done reading from it, the callback's own `Receiver`
-/// half draws from that pool first and only allocates -- `unwrap_or_default`
-/// -- on the rare block where the pool is empty (cold start, or a run of
-/// blocks the capture thread has not caught up on yet). Steady state, once
-/// the pool has warmed up, costs no allocation at all.
+/// `audio::input::open_input` does the work, and its doc has the realtime
+/// rules, including the pool of buffers the `SyncSender<Vec<f32>>` this
+/// returns alongside the stream refills: the capture thread (`run`, or
+/// `record_mic_only`'s own loop) sends a buffer back through it once done
+/// reading from it. [`RAW_CHANNEL_CAPACITY`] is also the most blocks that can
+/// be in flight at once, so it is the pool's size.
 fn build_stream(
     device: &cpal::Device,
     config: &SupportedStreamConfig,
     track: Track,
     tx: SyncSender<Event>,
 ) -> Result<(cpal::Stream, SyncSender<Vec<f32>>), CaptureError> {
-    let channels = config.channels();
     let source_rate = config.sample_rate();
     let tx_err = tx.clone();
-    let err_fn = move |e: cpal::Error| {
-        let _ = tx_err.try_send(Event::Error { track, kind: e.kind(), message: e.to_string() });
-    };
-
-    let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(BUFFER_POOL_CAPACITY);
-
-    macro_rules! build {
-        ($t:ty) => {{
-            let tx = tx.clone();
-            let free_rx = free_rx;
-            device.build_input_stream(
-                config.clone().into(),
-                move |data: &[$t], _: &cpal::InputCallbackInfo| {
-                    let mut samples = free_rx.try_recv().unwrap_or_default();
-                    downmix_into::<$t>(data, channels, &mut samples);
-                    // Never blocks the realtime callback: a full channel
-                    // means the capture thread is behind, and dropping this
-                    // block is a missed fraction of a second, not a stall.
-                    if let Err(TrySendError::Disconnected(_)) =
-                        tx.try_send(Event::Audio { track, samples, source_rate })
-                    {
-                        // The capture thread is gone; nothing more to do.
-                    }
-                },
-                err_fn,
-                None,
-            )
-        }};
-    }
-
-    let stream = match config.sample_format() {
-        SampleFormat::I8 => build!(i8),
-        SampleFormat::I16 => build!(i16),
-        SampleFormat::I32 => build!(i32),
-        SampleFormat::F32 => build!(f32),
-        other => return Err(CaptureError(format!("unsupported sample format {other}"))),
-    }
-    .map_err(|e| CaptureError(format!("could not open stream: {e}")))?;
-
-    stream.play().map_err(|e| CaptureError(format!("could not start stream: {e}")))?;
-    Ok((stream, free_tx))
+    input::open_input(
+        device,
+        config,
+        "stream",
+        RAW_CHANNEL_CAPACITY,
+        move |samples, _| {
+            // Never blocks the realtime callback: a full channel means the
+            // capture thread is behind, and dropping this block is a missed
+            // fraction of a second, not a stall. A disconnected one means the
+            // capture thread is gone, and there is nothing more to do.
+            let _ = tx.try_send(Event::Audio { track, samples, source_rate });
+        },
+        move |e: cpal::Error| {
+            let _ = tx_err.try_send(Event::Error { track, kind: e.kind(), message: e.to_string() });
+        },
+    )
 }
 
 fn open_mic(
@@ -829,7 +676,7 @@ pub fn record_mic_only(seconds: u32) -> Result<Vec<i16>, CaptureError> {
     // back to allocating, exactly as it did before the pool existed.
     let (stream, _returns) = open_mic(&host, tx)?;
 
-    let mut resampler: Option<TrackResampler> = None;
+    let mut resampler: Option<StreamResampler> = None;
     let mut out: Vec<i16> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(u64::from(seconds));
     let outcome: Result<(), CaptureError> = (|| {
@@ -837,9 +684,10 @@ pub fn record_mic_only(seconds: u32) -> Result<Vec<i16>, CaptureError> {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(Event::Audio { track: Track::Mic, samples, source_rate }) => {
                     if resampler.is_none() {
-                        resampler = Some(TrackResampler::new(source_rate)?);
+                        resampler = Some(track_resampler(source_rate)?);
                     }
-                    let resampled = resampler.as_mut().expect("just set").push(&samples)?;
+                    let mut resampled = Vec::new();
+                    resampler.as_mut().expect("just set").push(&samples, &mut resampled)?;
                     out.extend(resampled.into_iter().map(f32_to_i16));
                 }
                 Ok(Event::Audio { .. }) => {} // the system track, if somehow raised: ignored
@@ -855,7 +703,8 @@ pub fn record_mic_only(seconds: u32) -> Result<Vec<i16>, CaptureError> {
     drop(stream);
     outcome?;
     if let Some(mut resampler) = resampler {
-        let tail = resampler.flush()?;
+        let mut tail = Vec::new();
+        resampler.flush(&mut tail)?;
         out.extend(tail.into_iter().map(f32_to_i16));
     }
     Ok(out)
@@ -1109,7 +958,7 @@ pub fn start(
 }
 
 struct TrackState {
-    resampler: Option<TrackResampler>,
+    resampler: Option<StreamResampler>,
     framer: ChunkFramer,
     meter: LevelMeter,
     silence: SilenceTracker,
@@ -1136,9 +985,10 @@ impl TrackState {
     ) -> Result<(), CaptureError> {
         if self.resampler.is_none() || self.source_rate != source_rate {
             self.source_rate = source_rate;
-            self.resampler = Some(TrackResampler::new(source_rate)?);
+            self.resampler = Some(track_resampler(source_rate)?);
         }
-        let resampled = self.resampler.as_mut().expect("just set").push(samples)?;
+        let mut resampled = Vec::new();
+        self.resampler.as_mut().expect("just set").push(samples, &mut resampled)?;
         self.consume(&resampled, elapsed_ms, sink)
     }
 
@@ -1162,7 +1012,8 @@ impl TrackState {
 
     fn flush(&mut self, elapsed_ms: u64, sink: &mut dyn ChunkSink) -> Result<(), CaptureError> {
         if let Some(resampler) = &mut self.resampler {
-            let tail = resampler.flush()?;
+            let mut tail = Vec::new();
+            resampler.flush(&mut tail)?;
             self.consume(&tail, elapsed_ms, sink)?;
         }
         if let Some(chunk) = self.framer.flush() {
@@ -1540,6 +1391,8 @@ fn clear_stale_slot(app: &Option<AppHandle>, recording_id: RecordingId) {
 
 #[cfg(test)]
 mod tests {
+    use karmayoga_service::error::CommandError;
+
     use super::*;
 
     fn samples(n: usize, value: i16) -> Vec<i16> {
@@ -1617,9 +1470,10 @@ mod tests {
     #[test]
     fn resamples_48k_mono_to_16k() {
         let input = sine(48_000, 1.0, 440.0, 0.5);
-        let mut resampler = TrackResampler::new(48_000).unwrap();
-        let mut out = resampler.push(&input).unwrap();
-        out.extend(resampler.flush().unwrap());
+        let mut resampler = track_resampler(48_000).unwrap();
+        let mut out = Vec::new();
+        resampler.push(&input, &mut out).unwrap();
+        resampler.flush(&mut out).unwrap();
         // 48kHz -> 16kHz is exactly 3:1; within a chunk or two of a second
         // of input, one second of output at the new rate.
         let expected = SAMPLE_RATE as usize;
@@ -1635,37 +1489,12 @@ mod tests {
     #[test]
     fn resamples_44_1k_to_16k() {
         let input = sine(44_100, 0.5, 440.0, 0.5);
-        let mut resampler = TrackResampler::new(44_100).unwrap();
-        let mut out = resampler.push(&input).unwrap();
-        out.extend(resampler.flush().unwrap());
+        let mut resampler = track_resampler(44_100).unwrap();
+        let mut out = Vec::new();
+        resampler.push(&input, &mut out).unwrap();
+        resampler.flush(&mut out).unwrap();
         let expected = (SAMPLE_RATE as f32 * 0.5) as usize;
         assert!(out.len().abs_diff(expected) < 2000);
-    }
-
-    #[test]
-    fn downmixes_stereo_to_mono() {
-        // Left full-scale, right silent: mono should land at half.
-        let interleaved: Vec<f32> = (0..200).flat_map(|_| [1.0f32, 0.0f32]).collect();
-        let mut mono = Vec::new();
-        downmix_into::<f32>(&interleaved, 2, &mut mono);
-        assert_eq!(mono.len(), 200);
-        assert!((mono[0] - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn downmix_into_reuses_the_buffer_it_is_given_rather_than_growing_it_unboundedly() {
-        // The whole point of `downmix_into` over the old `downmix` is that
-        // a buffer handed back for reuse keeps its capacity -- `clear`, not
-        // a fresh `Vec` -- so a steady stream of same-sized blocks settles
-        // into zero further allocation. Prove that directly: capacity after
-        // a second, same-sized call must not have grown past the first.
-        let interleaved: Vec<f32> = (0..200).flat_map(|_| [1.0f32, 0.0f32]).collect();
-        let mut buf = Vec::new();
-        downmix_into::<f32>(&interleaved, 2, &mut buf);
-        let capacity_after_first = buf.capacity();
-        downmix_into::<f32>(&interleaved, 2, &mut buf);
-        assert_eq!(buf.capacity(), capacity_after_first, "same-sized block must not reallocate");
-        assert_eq!(buf.len(), 200);
     }
 
     // ---- level meter / silence -------------------------------------------
@@ -1978,15 +1807,15 @@ mod tests {
             .spawn()
             .expect("pw-play should be on PATH");
 
-        let mut resampler: Option<TrackResampler> = None;
+        let mut resampler: Option<StreamResampler> = None;
         let mut heard = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(Event::Audio { samples, source_rate, .. }) => {
                     let resampler =
-                        resampler.get_or_insert_with(|| TrackResampler::new(source_rate).unwrap());
-                    heard.extend(resampler.push(&samples).unwrap());
+                        resampler.get_or_insert_with(|| track_resampler(source_rate).unwrap());
+                    resampler.push(&samples, &mut heard).unwrap();
                 }
                 Ok(Event::Error { message, .. }) => panic!("stream error: {message}"),
                 _ => {}

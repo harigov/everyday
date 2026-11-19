@@ -67,7 +67,7 @@
 //! longer list, of every address a key may be kept for.
 
 use crate::error::{Error, Result};
-use crate::speech::SpeechConfig;
+use crate::speech::{SpeechConfig, VoiceConfig};
 use serde::{Deserialize, Serialize};
 
 /// Which family of API the model is spoken to over.
@@ -323,6 +323,16 @@ where
 /// the reason [`known_decision`] gives: it shares the one sealed record every
 /// tier is in, and must not cost the vault all of them.
 fn known_speech<'de, D>(d: D) -> std::result::Result<Option<SpeechConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
+    Ok(serde_json::from_value(raw).ok())
+}
+
+/// Read a stored voice, taking one this build cannot read as none, for the
+/// reason [`known_speech`] gives.
+fn known_voice<'de, D>(d: D) -> std::result::Result<Option<VoiceConfig>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -731,10 +741,11 @@ impl DecisionConfig {
     }
 }
 
-/// One of the five cards in Settings → Models, for the commands that act on
-/// a card's key: the three tiers, the decision model and the speech model.
+/// One of the six cards in Settings → Models, for the commands that act on
+/// a card's key: the three tiers, the decision model, the speech model and
+/// the voice.
 ///
-/// Separate from [`ModelTier`] because neither of the last two is a size of
+/// Separate from [`ModelTier`] because none of the last three is a size of
 /// the same work. Nothing resolves to them and they resolve to nothing;
 /// every `match` over the tiers would otherwise grow arms that had to say so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -745,6 +756,7 @@ pub enum ModelSlot {
     Small,
     Decision,
     Speech,
+    Voice,
 }
 
 impl ModelSlot {
@@ -755,6 +767,7 @@ impl ModelSlot {
             Self::Small => "Small",
             Self::Decision => "Decision",
             Self::Speech => "Speech",
+            Self::Voice => "Voice",
         }
     }
 }
@@ -805,11 +818,24 @@ pub struct ModelSettings {
     /// this build cannot read reads as `None`, see [`known_speech`].
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known_speech")]
     pub speech: Option<SpeechConfig>,
+    /// What turns the assistant's words into speech when it is talked to.
+    /// `None` means it cannot be. Left out of the record when unset, and one
+    /// this build cannot read reads as `None`, as for
+    /// [`speech`](Self::speech).
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known_voice")]
+    pub voice: Option<VoiceConfig>,
 }
 
 impl Default for ModelSettings {
     fn default() -> Self {
-        Self { large: None, medium: LLMConfig::medium(), small: None, decision: None, speech: None }
+        Self {
+            large: None,
+            medium: LLMConfig::medium(),
+            small: None,
+            decision: None,
+            speech: None,
+            voice: None,
+        }
     }
 }
 
@@ -841,7 +867,8 @@ impl ModelSettings {
                 other => other,
             })?;
         }
-        self.validate_speech()
+        self.validate_speech()?;
+        self.validate_voice()
     }
 
     /// [`ModelSettings::validate`], except that the speech card is checked
@@ -852,9 +879,13 @@ impl ModelSettings {
     pub fn validate_changed_from(&self, stored: &ModelSettings) -> Result<()> {
         let mut unchanged = self.clone();
         unchanged.speech = None;
+        unchanged.voice = None;
         unchanged.validate()?;
         if self.speech != stored.speech {
             self.validate_speech()?;
+        }
+        if self.voice != stored.voice {
+            self.validate_voice()?;
         }
         Ok(())
     }
@@ -863,6 +894,16 @@ impl ModelSettings {
         if let Some(speech) = &self.speech {
             speech.validate().map_err(|e| match e {
                 Error::Invalid(why) => Error::Invalid(format!("Speech: {why}")),
+                other => other,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn validate_voice(&self) -> Result<()> {
+        if let Some(voice) = &self.voice {
+            voice.validate().map_err(|e| match e {
+                Error::Invalid(why) => Error::Invalid(format!("Voice: {why}")),
                 other => other,
             })?;
         }
@@ -879,6 +920,7 @@ impl ModelSettings {
             ModelSlot::Small => self.small.as_ref().map(LLMConfig::endpoint),
             ModelSlot::Decision => self.decision.as_ref().and_then(DecisionConfig::endpoint),
             ModelSlot::Speech => self.speech.as_ref().and_then(SpeechConfig::endpoint),
+            ModelSlot::Voice => self.voice.as_ref().and_then(VoiceConfig::endpoint),
         }
     }
 
@@ -933,6 +975,7 @@ impl ModelSettings {
     pub fn all_endpoints(&self) -> Vec<&str> {
         let mut all = self.endpoints();
         all.extend(self.speech.as_ref().and_then(SpeechConfig::endpoint));
+        all.extend(self.voice.as_ref().and_then(VoiceConfig::endpoint));
         all.sort_unstable();
         all.dedup();
         all
@@ -1188,6 +1231,7 @@ mod tests {
             small: Some(LLMConfig::small()),
             decision: None,
             speech: None,
+            voice: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["medium"]["baseUrl"], "https://openrouter.ai/api/v1");
@@ -1305,6 +1349,7 @@ mod tests {
                 small: small.map(at),
                 decision: None,
                 speech: None,
+                voice: None,
             };
             assert_eq!(s.acknowledgement_name(), want);
         }

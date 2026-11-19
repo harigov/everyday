@@ -303,6 +303,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("delete_bank_link", "tells Plaid to forget the bank's sign-in before forgetting it here"),
     ("download_decision_model", "a real network download of 1-4 GB"),
     ("download_speech_model", "a real ~40MB network download"),
+    ("download_voice_model", "a real ~130MB network download"),
     ("edit_thread_draft", "needs a draft's copy synced from a server to carry on writing"),
     ("enrol_voice", "needs the speech/voice model kit to embed real audio"),
     ("extract_health_document", "asks the large model to read the document's pages"),
@@ -1206,6 +1207,7 @@ async fn every_offline_write_announces_what_was_written_down() {
     }
     run(&svc, &h, "cancel_speech_model_download", json!({ "id": "nonexistent-model" })).await;
     run(&svc, &h, "cancel_decision_model_download", json!({ "id": "d3Lite" })).await;
+    run(&svc, &h, "cancel_voice_model_download", json!({ "id": "supertonic3" })).await;
     run(
         &svc,
         &h,

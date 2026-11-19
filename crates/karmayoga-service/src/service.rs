@@ -1392,6 +1392,7 @@ impl Service {
             drafting: None,
             // Typed in the rail, not sent from a chat.
             via: None,
+            spoken: false,
             // Not a scheduled run.
             reach: crate::agent::Reach::default(),
             job: None,

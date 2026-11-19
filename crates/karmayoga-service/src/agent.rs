@@ -4223,6 +4223,9 @@ pub struct Turn {
     /// application's screen. See [`crate::chat`] and
     /// [`Service::chat_turn`](crate::service::Service::chat_turn).
     pub via: Option<karmayoga_core::chat::Via>,
+    /// Set when this turn is being talked rather than typed: what the model
+    /// writes is read aloud, and it is told so. See [`crate::voice`].
+    pub spoken: bool,
     /// For a scheduled run, how it reaches its person. Ignored unless
     /// [`Turn::unattended`] is set. See [`Reach`].
     pub reach: Reach,
@@ -4493,6 +4496,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         unattended,
         drafting,
         via,
+        spoken,
         reach,
         job,
         follow_up,
@@ -4714,10 +4718,12 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // next, so it goes with this turn's message -- see
     // `karmayoga_core::agent::turn_note` for why the difference matters.
     let context = unattended_context.or(from_chat);
-    let note = karmayoga_core::agent::turn_note(
-        &settings.now(),
-        described.as_ref().map(|d| d.text.as_str()),
-    );
+    let screen = described.as_ref().map(|d| d.text.as_str());
+    let note = if spoken {
+        karmayoga_core::agent::spoken_turn_note(&settings.now(), screen)
+    } else {
+        karmayoga_core::agent::turn_note(&settings.now(), screen)
+    };
 
     // A dream may write at most one note for real -- see `ConfirmGate`'s own
     // field and `Turn::drafting`'s doc. Started at one whatever `Drafting`

@@ -604,6 +604,14 @@ fn the_models_round_trip_and_start_unsaved(store: &dyn JournalStore) {
             },
             language: Some("en".into()),
         }),
+        voice: Some(crate::speech::VoiceConfig {
+            synthesiser: crate::speech::SynthesiserConfig::Compatible {
+                base_url: "http://localhost:8880/v1".into(),
+                model: "kokoro".into(),
+                voice: "af_heart".into(),
+            },
+            speed: 1.25,
+        }),
     };
     match store.put_model_settings(&mine) {
         Ok(()) => {}

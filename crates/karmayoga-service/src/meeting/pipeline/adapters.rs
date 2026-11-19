@@ -18,7 +18,7 @@ use crate::error::{CommandError, CommandResult, codes};
 /// exists. Sync rather than `async` -- both are, in the production
 /// implementation, a decrypt off disk, not a network call -- so a caller on
 /// the async runtime is the one responsible for running it inside
-/// [`blocking`], the same discipline [`crate::meeting::speech`] asks of its
+/// [`blocking`], the same discipline [`crate::speech::local`] asks of its
 /// own callers.
 ///
 /// Two implementations: [`SpoolSource`], production, a thin adapter over
@@ -61,14 +61,14 @@ impl AudioSource for SpoolSource {
 /// needs a network or an API key -- see [`tests::FakeSummariser`].
 ///
 /// Not `async_trait`: this crate has no dependency on it, and the same
-/// hand-written `BoxFuture` shape [`crate::meeting::transcribe::Transcriber`]
+/// hand-written `BoxFuture` shape [`crate::speech::transcribe::Transcriber`]
 /// already uses is one pattern fewer to learn.
 pub trait Summariser: Send + Sync {
     fn ask<'a>(
         &'a self,
         system: &'a str,
         user: &'a str,
-    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<String>>;
+    ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<String>>;
 }
 
 /// How long one summarising request may run before it is abandoned. Three
@@ -141,7 +141,7 @@ impl Summariser for AssistantSummariser {
         &'a self,
         system: &'a str,
         user: &'a str,
-    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<String>> {
+    ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<String>> {
         Box::pin(async move {
             match self.attempt(system, user).await {
                 Ok(text) => Ok(text),

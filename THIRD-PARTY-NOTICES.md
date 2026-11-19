@@ -59,6 +59,8 @@ Reproduced below in full:
   50. kamadak-exif — © KAMADA Ken'ichi, https://github.com/kamadak/exif-rs
   51. mp4 — © Alfred Gutierrez, https://github.com/alfg/mp4-rust
   52. notify — © Félix Saparelli and contributors, https://github.com/notify-rs/notify
+  53. sonora — © 2011 The WebRTC Project Authors, 2016 Arun Raghavan and contributors, 2026 dignifiedquire, https://github.com/dignifiedquire/sonora
+  54. Supertonic 3 (model) — © Supertone Inc., https://huggingface.co/Supertone/supertonic-3
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -3761,3 +3763,57 @@ SOFTWARE.
 `notify` (https://github.com/notify-rs/notify), © Félix Saparelli and
 contributors, dedicated to the public domain under CC0-1.0. No notice is
 required; this entry says where it came from.
+
+---
+
+## 53. sonora
+
+The assistant's voice mode cleans the microphone with `sonora`
+(https://github.com/dignifiedquire/sonora), a Rust port of WebRTC's audio
+processing: echo cancellation, noise suppression and gain control. BSD-3-Clause
+licensed.
+
+```
+Copyright (c) 2011, The WebRTC Project Authors. All rights reserved.
+Copyright (c) 2016, Arun Raghavan and contributors. All rights reserved.
+Copyright (c) 2026, dignifiedquire. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the
+    distribution.
+
+  * Neither the name of Google nor the names of its contributors may
+    be used to endorse or promote products derived from this software
+    without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+---
+
+## 54. Supertonic 3
+
+The voice that runs on this computer is Supertonic 3 by Supertone Inc., as
+sherpa-onnx exports it (`sherpa-onnx-supertonic-3-tts-int8-2026-05-11`). It is
+not part of this application: it is downloaded from sherpa-onnx's `tts-models`
+release when somebody chooses it in Settings → Models. Its sample code is MIT
+licensed and its model weights are under the OpenRAIL-M licence, which restricts
+harmful uses: https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE

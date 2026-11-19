@@ -47,7 +47,7 @@ use crate::llm::{LLMProviderConfig, Provider, is_loopback};
 use serde::{Deserialize, Serialize};
 
 /// Where a Google speech model's audio is sent: the Gemini API, which
-/// `karmayoga_service::meeting::transcribe::gemini` posts to -- and so what
+/// `karmayoga_service::speech::transcribe::gemini` posts to -- and so what
 /// its key is filed under.
 pub const GOOGLE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -102,7 +102,7 @@ impl TranscriberConfig {
     /// OpenAI's is [`Provider::default_base_url`] itself, not a copy of the
     /// string, so OpenAI speech and an OpenAI language model can never drift
     /// apart into two keys; and the request is sent to the same address --
-    /// `karmayoga_service::meeting::pipeline::build_transcriber` has a test
+    /// `karmayoga_service::speech::transcribe::build_transcriber` has a test
     /// holding the two to one spelling, as Google's -- so a key cannot be
     /// filed under one host and sent to another. A compatible server's is
     /// trimmed the way [`LLMProviderConfig::endpoint`] trims a base URL, so
@@ -243,6 +243,185 @@ pub struct SpeechAccess {
 impl std::fmt::Debug for SpeechAccess {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpeechAccess")
+            .field("config", &self.config)
+            .field("key", &self.key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// A voice that runs on this computer. See
+/// `karmayoga_service::local::files` for its download.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum LocalVoice {
+    /// Supertonic 3, int8: 31 languages, ten speakers, quick on a CPU.
+    Supertonic3,
+}
+
+impl LocalVoice {
+    /// What it is called in the model catalogue and on the wire.
+    pub fn id(self) -> &'static str {
+        match self {
+            LocalVoice::Supertonic3 => "supertonic3",
+        }
+    }
+
+    /// How many speakers it has; a [`SynthesiserConfig::Local`]'s `speaker`
+    /// is below this.
+    pub fn speakers(self) -> u32 {
+        match self {
+            LocalVoice::Supertonic3 => 10,
+        }
+    }
+}
+
+/// Who turns the assistant's words into speech: this computer, OpenAI, or
+/// anything that speaks OpenAI's `/v1/audio/speech` -- which is how an
+/// open-source voice run as a server of its own (Kokoro-FastAPI, Speaches,
+/// LocalAI and the like) is reached.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SynthesiserConfig {
+    Local {
+        voice: LocalVoice,
+        #[serde(default)]
+        speaker: u32,
+    },
+    OpenAi {
+        model: String,
+        voice: String,
+    },
+    Compatible {
+        base_url: String,
+        model: String,
+        voice: String,
+    },
+}
+
+impl SynthesiserConfig {
+    /// Where the assistant's words go, and what the key is filed under: the
+    /// same spelling rules as [`TranscriberConfig::endpoint`], so OpenAI's
+    /// voice, speech model and language models share one key.
+    pub fn endpoint(&self) -> Option<&str> {
+        match self {
+            SynthesiserConfig::Local { .. } => None,
+            SynthesiserConfig::OpenAi { .. } => Some(Provider::OpenAi.default_base_url()),
+            SynthesiserConfig::Compatible { base_url, .. } => {
+                Some(base_url.trim_end_matches('/')).filter(|u| !u.is_empty())
+            }
+        }
+    }
+
+    /// Whether this backend needs a key: not on this computer, and not from
+    /// a compatible server on this machine.
+    pub fn needs_key(&self) -> bool {
+        match self {
+            SynthesiserConfig::Local { .. } => false,
+            SynthesiserConfig::OpenAi { .. } => true,
+            SynthesiserConfig::Compatible { base_url, .. } => !is_loopback(base_url),
+        }
+    }
+
+    /// Whether the assistant's words leave the machine.
+    pub fn is_remote(&self) -> bool {
+        match self {
+            SynthesiserConfig::Local { .. } => false,
+            SynthesiserConfig::OpenAi { .. } => true,
+            SynthesiserConfig::Compatible { base_url, .. } => !is_loopback(base_url),
+        }
+    }
+
+    /// Which voice on this computer, when it is one.
+    pub fn local_voice(&self) -> Option<LocalVoice> {
+        match self {
+            SynthesiserConfig::Local { voice, .. } => Some(*voice),
+            _ => None,
+        }
+    }
+
+    /// Reject a choice no request could be built from. As for
+    /// [`TranscriberConfig::validate`], a local voice that has not been
+    /// downloaded yet is not a reason to refuse it.
+    pub fn validate(&self) -> Result<()> {
+        let (model, voice) = match self {
+            SynthesiserConfig::Local { voice, speaker } => {
+                if *speaker >= voice.speakers() {
+                    return Err(Error::Invalid(format!(
+                        "this voice has {} speakers",
+                        voice.speakers()
+                    )));
+                }
+                return Ok(());
+            }
+            SynthesiserConfig::OpenAi { model, voice } => (model, voice),
+            SynthesiserConfig::Compatible { base_url, model, voice } => {
+                if base_url.trim().is_empty() {
+                    return Err(Error::Invalid("a compatible server needs a base URL".into()));
+                }
+                LLMProviderConfig { provider: Provider::OpenAi, base_url: Some(base_url.clone()) }
+                    .validate()?;
+                (model, voice)
+            }
+        };
+        if model.trim().is_empty() {
+            return Err(Error::Invalid("a model name is required".into()));
+        }
+        if voice.trim().is_empty() {
+            return Err(Error::Invalid("a voice name is required".into()));
+        }
+        Ok(())
+    }
+}
+
+fn normal_speed() -> f32 {
+    1.0
+}
+
+/// The assistant's voice: the sixth card in Settings → Models.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceConfig {
+    pub synthesiser: SynthesiserConfig,
+    /// How fast it talks, where 1 is the voice's own pace.
+    #[serde(default = "normal_speed")]
+    pub speed: f32,
+}
+
+impl VoiceConfig {
+    pub fn new(synthesiser: SynthesiserConfig) -> Self {
+        Self { synthesiser, speed: normal_speed() }
+    }
+
+    /// See [`SynthesiserConfig::endpoint`].
+    pub fn endpoint(&self) -> Option<&str> {
+        self.synthesiser.endpoint()
+    }
+
+    pub fn needs_key(&self) -> bool {
+        self.synthesiser.needs_key()
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !(0.5..=2.0).contains(&self.speed) {
+            return Err(Error::Invalid("the speed must be between 0.5 and 2".into()));
+        }
+        self.synthesiser.validate()
+    }
+}
+
+/// The voice ready to be used, [`SpeechAccess`]'s counterpart.
+#[derive(Clone)]
+pub struct VoiceAccess {
+    pub config: VoiceConfig,
+    /// `None` only where none is needed.
+    pub key: Option<String>,
+}
+
+impl std::fmt::Debug for VoiceAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceAccess")
             .field("config", &self.config)
             .field("key", &self.key.as_ref().map(|_| "<redacted>"))
             .finish()

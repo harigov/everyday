@@ -12,7 +12,7 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Karma Yoga records your microphone when you start meeting notes, so the call can be transcribed. Audio never leaves this Mac unless you choose a remote transcription provider in Settings.</string>
+  <string>Karma Yoga uses your microphone when you start meeting notes or talk to the assistant, so what you say can be transcribed. Audio never leaves this Mac unless you choose a remote speech provider in Settings.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Karma Yoga captures what a call plays through your speakers when you start meeting notes, so the other side of the conversation can be transcribed alongside your microphone.</string>
 </dict>

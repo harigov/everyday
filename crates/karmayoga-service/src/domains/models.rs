@@ -53,6 +53,9 @@ pub struct ModelSettingsView {
     /// the `speech` feature. Without it the speech card offers only the
     /// providers.
     pub local_speech: bool,
+    /// Whether this copy can speak with a voice on this computer: the same
+    /// `speech` feature.
+    pub local_voice: bool,
 }
 
 fn view(vault: &Vault) -> karmayoga_core::Result<ModelSettingsView> {
@@ -60,7 +63,15 @@ fn view(vault: &Vault) -> karmayoga_core::Result<ModelSettingsView> {
     let acknowledgement = settings.acknowledgement_name();
     let local_decisions = cfg!(feature = "decisions");
     let local_speech = cfg!(feature = "speech");
-    Ok(ModelSettingsView { settings, keyed, acknowledgement, local_decisions, local_speech })
+    let local_voice = cfg!(feature = "speech");
+    Ok(ModelSettingsView {
+        settings,
+        keyed,
+        acknowledgement,
+        local_decisions,
+        local_speech,
+        local_voice,
+    })
 }
 
 #[derive(Deserialize)]
@@ -72,7 +83,7 @@ pub struct SaveModels {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetModelKey {
-    /// A tier, `decision` or `speech` -- the five cards. Named `tier` on the
+    /// A tier, `decision`, `speech` or `voice` -- the six cards. Named `tier` on the
     /// wire still, as it was when there were three.
     pub tier: ModelSlot,
     pub key: String,

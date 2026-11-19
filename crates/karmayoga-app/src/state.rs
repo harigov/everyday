@@ -49,6 +49,8 @@ pub struct AppState {
     /// refuses a second recording while this is `Some` at all, whichever
     /// variant.
     capture: Mutex<Option<crate::capture::CaptureSlot>>,
+    /// A conversation being talked, for as long as it lasts. See `voice`.
+    voice: Mutex<Option<crate::voice::VoiceHandle>>,
     /// The one open handle onto `devices.json`, for the life of this
     /// process.
     ///
@@ -84,6 +86,7 @@ impl AppState {
             mcp: Arc::default(),
             web: Arc::default(),
             capture: Mutex::new(None),
+            voice: Mutex::new(None),
             registry: Mutex::new(None),
         }
     }
@@ -93,6 +96,10 @@ impl AppState {
     /// of (`begin_headless`'s "already running" reservation, `meeting_status`).
     pub fn capture(&self) -> &Mutex<Option<crate::capture::CaptureSlot>> {
         &self.capture
+    }
+
+    pub fn voice(&self) -> &Mutex<Option<crate::voice::VoiceHandle>> {
+        &self.voice
     }
 
     pub fn sharing(&self) -> Arc<Sharing> {

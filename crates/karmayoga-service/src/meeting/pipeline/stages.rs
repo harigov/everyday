@@ -12,12 +12,12 @@ use karmayoga_core::meeting::{
 use karmayoga_core::{NoteId, RecordingId, Vault};
 
 use crate::error::CommandResult;
-use crate::meeting::transcribe::{Hints, RawSegment, SpeechChunk, Transcriber};
 use crate::service::blocking;
+use crate::speech::transcribe::{Hints, RawSegment, SpeechChunk, Transcriber, is_faint};
 use karmayoga_core::meeting::{echo, hallucination, vocab};
 
 #[cfg(feature = "speech")]
-use crate::meeting::speech::SpeechKit;
+use crate::speech::local::SpeechKit;
 
 use super::adapters::*;
 use super::turns::*;
@@ -153,16 +153,10 @@ pub(crate) async fn transcribe_stage(
                 offset_ms: 0,
                 scope: meta.seq * 1000 + gi as u32,
             };
-            let faint =
-                hallucination::clear_speech_ms(&group.samples, floor) < hallucination::MIN_CLEAR_MS;
+            let faint = is_faint(&group.samples, floor);
             let raw: Vec<RawSegment> = transcriber.transcribe(&speech_chunk, hints).await?;
             for seg in raw {
-                let heard = hallucination::Heard {
-                    text: &seg.text,
-                    no_speech_prob: seg.no_speech_prob,
-                    avg_logprob: seg.avg_logprob,
-                };
-                let Some(text) = hallucination::clean_line(heard, &hints.prompt, faint) else {
+                let Some(text) = seg.cleaned(&hints.prompt, faint) else {
                     continue;
                 };
                 let (start_ms, end_ms) = map_segment(&group.map, seg.start_ms, seg.end_ms);

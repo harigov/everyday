@@ -20,6 +20,9 @@
 // theirs to choose. It is the platform's now (`karmayoga_core::speech`), so
 // the list lives here, once, and meeting notes read the speech model from
 // their own view rather than keeping a second copy of the catalogue.
+//
+// And the voice's, the sixth card: the voices that run on this computer, and a
+// few seconds of the saved one to listen to before talking to it.
 
 import { endpointOf } from './accounts'
 import { isLoopback } from './agent'
@@ -39,6 +42,9 @@ import type {
 /** How often the decision model list is read again while one downloads. */
 const LOCAL_POLL_MS = 1000
 
+/** How often the voice list is read again while one downloads. */
+const VOICE_POLL_MS = 500
+
 /** How often the speech model list is read again while one downloads: the
  *  speech kit is small enough that a slower poll would miss most of it. */
 const SPEECH_POLL_MS = 500
@@ -51,6 +57,9 @@ class ModelsState {
   /** The speech recognisers and the speech kit: `speech_models`. */
   speech = $state<LocalModelInfo[]>([])
   #speechTimer: ReturnType<typeof setInterval> | null = null
+  /** The voices that run on this computer: `voice_models`. */
+  voiceModels = $state<LocalModelInfo[]>([])
+  #voiceTimer: ReturnType<typeof setInterval> | null = null
   /**
    * Why the last read failed, or `null`. Kept rather than swallowed: the pane
    * would otherwise sit on "Loading…" forever, and an account's "I
@@ -73,6 +82,9 @@ class ModelsState {
     this.speech = []
     if (this.#speechTimer) clearInterval(this.#speechTimer)
     this.#speechTimer = null
+    this.voiceModels = []
+    if (this.#voiceTimer) clearInterval(this.#voiceTimer)
+    this.#voiceTimer = null
   }
 
   /** Whether this copy of Karma Yoga can run a decision model itself. */
@@ -84,6 +96,12 @@ class ModelsState {
    *  first read says otherwise, so the choice does not flicker in. */
   get localSpeech(): boolean {
     return this.view?.localSpeech ?? true
+  }
+
+  /** Whether this copy can speak with a voice of its own. Assumed until the
+   *  first read says otherwise, as `localSpeech` is. */
+  get localVoice(): boolean {
+    return this.view?.localVoice ?? true
   }
 
   get settings(): ModelSettings | null {
@@ -228,6 +246,46 @@ class ModelsState {
   /** Ask the saved speech model to prove it works. Rejects with why not. */
   testSpeech(): Promise<void> {
     return api.testTranscriber()
+  }
+
+  // ── Voices on this computer ──────────────────────────────────────
+
+  async refreshVoice() {
+    this.voiceModels = await api.voiceModels()
+    const downloading = this.voiceModels.some((m) => m.progress != null)
+    if (downloading && !this.#voiceTimer) {
+      this.#voiceTimer = setInterval(() => void this.refreshVoice().catch(quietly), VOICE_POLL_MS)
+    } else if (!downloading && this.#voiceTimer) {
+      clearInterval(this.#voiceTimer)
+      this.#voiceTimer = null
+    }
+  }
+
+  async downloadVoice(id: string) {
+    await api.downloadVoiceModel(id)
+    await this.refreshVoice()
+  }
+
+  async cancelVoice(id: string) {
+    await api.cancelVoiceModelDownload(id)
+    await this.refreshVoice()
+  }
+
+  async deleteVoice(id: string) {
+    await api.deleteVoiceModel(id)
+    await this.refreshVoice()
+  }
+
+  /**
+   * A few seconds of the saved voice, as an object URL to play. The caller
+   * revokes it when it is done with it.
+   */
+  async sampleVoice(): Promise<string> {
+    const { wav } = await api.voiceSample()
+    const binary = atob(wav)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }))
   }
 }
 

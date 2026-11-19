@@ -331,6 +331,7 @@ import type {
   VerificationAnswer,
   VisitBrief,
   VoiceLearningView,
+  VoiceSample,
   VoiceprintId,
   VoiceprintInfo,
   WeatherReport,
@@ -446,6 +447,7 @@ export interface Commands {
   cancelSpeechModelDownload: { args: { id: string }; result: void }
   cancelTurn: { args: { conversationId: ConversationId }; result: boolean }
   cancelUpload: { args: { upload: string }; result: void }
+  cancelVoiceModelDownload: { args: { id: string }; result: void }
   categoryCounts: { args: { mailbox: MailboxId }; result: CategoryCount[] }
   changePassword: { args: { current: string; next: string }; result: void }
   chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
@@ -525,6 +527,7 @@ export interface Commands {
   deleteThreadDraft: { args: { draft?: DraftId; copies: MailMessageId[] }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
   deleteTransactions: { args: { ids: TxnId[] }; result: void }
+  deleteVoiceModel: { args: { id: string }; result: void }
   deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
   deleteWorkout: { args: { id: WorkoutId }; result: void }
   discardDraft: { args: { id: DraftId }; result: void }
@@ -538,6 +541,7 @@ export interface Commands {
   dosesDue: { args: { date: string; tz: string }; result: DueDose[] }
   downloadDecisionModel: { args: { id: string }; result: void }
   downloadSpeechModel: { args: { id: string }; result: void }
+  downloadVoiceModel: { args: { id: string }; result: void }
   draftWithAi: {
     args: {
       account: AccountId
@@ -1136,6 +1140,8 @@ export interface Commands {
   vaultStats: { args: Record<string, never>; result: StoreStats }
   verifyPassword: { args: { password: string }; result: void }
   voiceLearning: { args: Record<string, never>; result: VoiceLearningView }
+  voiceModels: { args: Record<string, never>; result: LocalModelInfo[] }
+  voiceSample: { args: Record<string, never>; result: VoiceSample }
   weather: { args: { place?: string | null }; result: WeatherReport }
   webSearch: { args: { request: SearchRequest }; result: SearchResult[] }
   writeImport: { args: { handle: string; offset: number; data: string }; result: ImportProgress }
@@ -1188,6 +1194,7 @@ export const COMMAND_NAMES = {
   cancelSpeechModelDownload: 'cancel_speech_model_download',
   cancelTurn: 'cancel_turn',
   cancelUpload: 'cancel_upload',
+  cancelVoiceModelDownload: 'cancel_voice_model_download',
   categoryCounts: 'category_counts',
   changePassword: 'change_password',
   chatLinks: 'chat_links',
@@ -1261,6 +1268,7 @@ export const COMMAND_NAMES = {
   deleteThreadDraft: 'delete_thread_draft',
   deleteTracker: 'delete_tracker',
   deleteTransactions: 'delete_transactions',
+  deleteVoiceModel: 'delete_voice_model',
   deleteVoiceprint: 'delete_voiceprint',
   deleteWorkout: 'delete_workout',
   discardDraft: 'discard_draft',
@@ -1271,6 +1279,7 @@ export const COMMAND_NAMES = {
   dosesDue: 'doses_due',
   downloadDecisionModel: 'download_decision_model',
   downloadSpeechModel: 'download_speech_model',
+  downloadVoiceModel: 'download_voice_model',
   draftWithAi: 'draft_with_ai',
   editThreadDraft: 'edit_thread_draft',
   emptyFilesTrash: 'empty_files_trash',
@@ -1661,6 +1670,8 @@ export const COMMAND_NAMES = {
   vaultStats: 'vault_stats',
   verifyPassword: 'verify_password',
   voiceLearning: 'voice_learning',
+  voiceModels: 'voice_models',
+  voiceSample: 'voice_sample',
   weather: 'weather',
   webSearch: 'web_search',
   writeImport: 'write_import',
@@ -1723,6 +1734,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_speech_model_download',
   'cancel_turn',
   'cancel_upload',
+  'cancel_voice_model_download',
   'category_counts',
   'change_password',
   'chat_links',
@@ -1796,6 +1808,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_thread_draft',
   'delete_tracker',
   'delete_transactions',
+  'delete_voice_model',
   'delete_voiceprint',
   'delete_workout',
   'discard_draft',
@@ -1806,6 +1819,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'doses_due',
   'download_decision_model',
   'download_speech_model',
+  'download_voice_model',
   'draft_with_ai',
   'edit_thread_draft',
   'empty_files_trash',
@@ -2195,6 +2209,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'vault_stats',
   'verify_password',
   'voice_learning',
+  'voice_models',
+  'voice_sample',
   'weather',
   'web_search',
   'write_import',
@@ -2243,6 +2259,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_speech_model_download',
   'cancel_turn',
   'cancel_upload',
+  'cancel_voice_model_download',
   'change_password',
   'check_bank_link',
   'check_connection',
@@ -2308,6 +2325,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_thread_draft',
   'delete_tracker',
   'delete_transactions',
+  'delete_voice_model',
   'delete_voiceprint',
   'delete_workout',
   'discard_draft',
@@ -2316,6 +2334,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'dismiss_meeting_offer',
   'download_decision_model',
   'download_speech_model',
+  'download_voice_model',
   'edit_thread_draft',
   'empty_files_trash',
   'empty_mailbox',
@@ -2524,6 +2543,7 @@ export const CHANGE_KINDS = {
   cancel_decision_model_download: 'settings',
   cancel_job: 'job',
   cancel_speech_model_download: 'settings',
+  cancel_voice_model_download: 'settings',
   change_password: 'settings',
   check_connection: 'settings',
   clear_backup_keys: 'settings',
@@ -2585,6 +2605,7 @@ export const CHANGE_KINDS = {
   delete_thread_draft: 'draft',
   delete_tracker: 'tracker',
   delete_transactions: 'txn',
+  delete_voice_model: 'settings',
   delete_voiceprint: 'voiceprint',
   delete_workout: 'workout',
   discard_draft: 'draft',
@@ -2592,6 +2613,7 @@ export const CHANGE_KINDS = {
   dismiss_follow_up: 'thread',
   download_decision_model: 'settings',
   download_speech_model: 'settings',
+  download_voice_model: 'settings',
   edit_thread_draft: 'draft',
   empty_files_trash: 'file',
   empty_mailbox: 'thread',

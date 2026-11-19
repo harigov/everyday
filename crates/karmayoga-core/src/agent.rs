@@ -491,6 +491,7 @@ impl AgentSettings {
             small: self.legacy_quick_model.clone().map(|model| LLMConfig { connection, model }),
             decision: None,
             speech: None,
+            voice: None,
         })
     }
 }
@@ -1295,6 +1296,23 @@ pub fn system_prompt(
 /// closing tag cannot be written from outside, because the tag's name is
 /// taken out of whatever the screen says.
 pub fn turn_note(now: &jiff::Zoned, screen: Option<&str>) -> String {
+    note_with(now, screen, false)
+}
+
+/// [`turn_note`] for a turn that is being talked: what is written is read
+/// aloud. With this turn's message rather than in the preamble, so a thread
+/// moving between typing and talking keeps its cached prefix.
+pub fn spoken_turn_note(now: &jiff::Zoned, screen: Option<&str>) -> String {
+    note_with(now, screen, true)
+}
+
+/// What a spoken turn is told about being spoken.
+const SPOKEN_NOTE: &str = "The person is talking to you and your reply is read aloud by a voice. \
+Answer the way you would out loud: a sentence or two unless they ask for more, plain words, no \
+markdown, lists, tables, links or code. Say numbers, dates and times as a person says them. If \
+the full answer is long, give the gist and offer the detail.";
+
+fn note_with(now: &jiff::Zoned, screen: Option<&str>, spoken: bool) -> String {
     let mut out = format!(
         "<{NOTE_TAG}>\nIt is {}, {} in {}.",
         now.strftime("%A %-d %B %Y"),
@@ -1304,6 +1322,10 @@ pub fn turn_note(now: &jiff::Zoned, screen: Option<&str>) -> String {
     if let Some(screen) = screen.map(str::trim).filter(|s| !s.is_empty()) {
         out.push_str("\n\n");
         out.push_str(&without_tag(screen));
+    }
+    if spoken {
+        out.push_str("\n\n");
+        out.push_str(SPOKEN_NOTE);
     }
     out.push_str(&format!("\n</{NOTE_TAG}>"));
     out

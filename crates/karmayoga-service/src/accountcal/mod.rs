@@ -127,12 +127,12 @@ fn yes() -> bool {
 }
 
 /// A boxed, `Send` future -- hand-rolled the same way
-/// `crate::meeting::transcribe::BoxFuture` is, so a trait object can return
+/// `crate::speech::transcribe::BoxFuture` is, so a trait object can return
 /// an `async fn`'s future without `#[async_trait]` or naming it.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// One calendar source behind a common interface, shaped like
-/// [`crate::meeting::transcribe::Transcriber`]: [`discover`] and [`sync`]
+/// [`crate::speech::transcribe::Transcriber`]: [`discover`] and [`sync`]
 /// used to `match` on [`Provider`] and [`AccountCalendarSource`] directly
 /// and call straight into `caldav`, `google` or `graph`; this trait is that
 /// match, given a name, so [`provider_for`] is the one place the three

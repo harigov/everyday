@@ -26,7 +26,7 @@
 
 use karmayoga_core::meeting::{LocalModel, SAMPLE_RATE};
 use karmayoga_service::local::files as models;
-use karmayoga_service::meeting::speech;
+use karmayoga_service::speech::local as speech;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

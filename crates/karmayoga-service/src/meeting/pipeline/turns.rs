@@ -1,6 +1,4 @@
-use karmayoga_core::meeting::SAMPLE_RATE;
-
-use crate::meeting::transcribe::Limits;
+use crate::speech::transcribe::Limits;
 
 // ============================================================================
 // VAD grouping and the offset map back to recording time
@@ -115,12 +113,10 @@ pub(crate) struct Grouped {
 }
 
 pub(crate) fn index_of(ms: u64) -> usize {
-    (ms * u64::from(SAMPLE_RATE) / 1000) as usize
+    crate::speech::pcm::sample_count(ms)
 }
 
-pub(crate) fn ms_of(samples: usize) -> u64 {
-    samples as u64 * 1000 / u64::from(SAMPLE_RATE)
-}
+pub(crate) use crate::speech::pcm::duration_ms as ms_of;
 
 /// Fold `turns` (chunk-relative `(start_ms, end_ms)` pairs, in order) out of
 /// `samples` into as few [`Grouped`] buffers as `limits` allow, concatenating

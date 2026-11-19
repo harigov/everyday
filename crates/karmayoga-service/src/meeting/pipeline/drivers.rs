@@ -7,16 +7,16 @@ use karmayoga_core::{Note, NoteOrigin, RecordingId, TranscriptId, Vault};
 
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Notification, Op};
-use crate::meeting::transcribe::Hints;
 use crate::service::blocking;
+use crate::speech::transcribe::Hints;
 
 #[cfg(feature = "speech")]
-use crate::meeting::speech;
+use crate::speech::local as speech;
 
 use super::adapters::*;
 #[cfg(feature = "speech")]
 use super::enqueue::*;
-use super::transcriber::*;
+use crate::speech::transcribe::build_transcriber;
 
 use super::failure::*;
 use super::retry::*;
