@@ -28,13 +28,16 @@ export default defineConfig({
     target: ['es2022', 'safari15'],
     sourcemap: false,
     chunkSizeWarningLimit: 900,
-    // Two pages: the application, and writing help's popup -- a window of
-    // its own that loads none of the application. See src/writing/.
+    // The application, and three small pages -- writing help's popup, the
+    // meeting card and voice typing's pill -- each a window of its own that loads
+    // none of the application. See src/writing/, src/recording/ and
+    // src/voicetyping/.
     rollupOptions: {
       input: {
         main: 'index.html',
         writing: 'writing.html',
         recording: 'recording.html',
+        'voice-typing': 'voice-typing.html',
       },
     },
   },

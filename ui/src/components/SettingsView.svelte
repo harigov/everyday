@@ -83,7 +83,13 @@
   import Icon from './Icon.svelte'
   import Symbol from './Symbol.svelte'
   import type { IconName } from '../lib/icons'
-  import type { BadgeSources, HotkeyStatus, WritingSettings } from '../lib/types'
+  import type {
+    BadgeSources,
+    VoiceTypingKeyMode,
+    VoiceTypingSettings,
+    HotkeyStatus,
+    WritingSettings,
+  } from '../lib/types'
 
   let changing = $state(false)
   let current = $state('')
@@ -175,6 +181,68 @@
           what +
           ' macOS asks once for Accessibility access, which is how the text is copied and pasted.'
         )
+      default:
+        return what
+    }
+  }
+
+  /**
+   * Voice typing: the OS-wide key that types what is said into any text field.
+   * Left out where there is no shell to ask, like writing help's.
+   */
+  let voiceTyping = $state<VoiceTypingSettings | null>(null)
+  let voiceTypingNotice = $state<string | null>(null)
+  let voiceTypingKey = $state('')
+  let voiceTypingBusy = $state(false)
+
+  const VOICE_TYPING_MODES: { value: VoiceTypingKeyMode; label: string }[] = [
+    { value: 'toggle', label: 'Press to start and stop' },
+    { value: 'hold', label: 'Hold to talk' },
+  ]
+
+  void api
+    .voiceTypingSettings()
+    .then((s) => {
+      voiceTyping = s
+      voiceTypingKey = s.shortcut
+    })
+    .catch(() => (voiceTyping = null))
+
+  async function saveVoiceTyping(
+    enabled: boolean,
+    shortcut: string | null = null,
+    mode: VoiceTypingKeyMode | null = null,
+    clean: boolean | null = null,
+  ) {
+    voiceTypingNotice = null
+    voiceTypingBusy = true
+    try {
+      voiceTyping = await api.setVoiceTypingSettings(enabled, shortcut, mode, clean)
+      voiceTypingKey = voiceTyping.shortcut
+      if (voiceTyping.enabled && !voiceTyping.key.registered && voiceTyping.key.problem) {
+        voiceTypingNotice = voiceTyping.key.problem
+      }
+    } catch (e) {
+      voiceTypingNotice = e instanceof Error ? e.message : String(e)
+    } finally {
+      voiceTypingBusy = false
+    }
+  }
+
+  /** What the switch's small print says, by desktop. */
+  function voiceTypingBlurb(d: VoiceTypingSettings): string {
+    const what =
+      'Speak, and what you said is heard by the speech model in Settings → Models, written up ' +
+      'by the medium model and typed where the cursor is. Every use is kept in this vault.'
+    switch (d.platform) {
+      case 'wayland':
+        return (
+          what +
+          ' The desktop asks once which key to use and once whether Karma Yoga may paste; change ' +
+          'the key in its own keyboard settings.'
+        )
+      case 'macos':
+        return what + ' macOS asks once for Accessibility access, which is how the text is pasted.'
       default:
         return what
     }
@@ -718,6 +786,86 @@
                 </div>
               </form>
             {/if}
+          </section>
+        {/if}
+
+        {#if voiceTyping}
+          <section>
+            <span class="eyebrow">Voice typing</span>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={voiceTyping.enabled}
+                disabled={voiceTypingBusy}
+                onchange={(e) => saveVoiceTyping(e.currentTarget.checked)}
+              />
+              <span>
+                <b
+                  >Type what you say into any text field with {voiceTyping.key.shortcut ||
+                    voiceTyping.shortcut}</b
+                >
+                <small>
+                  {#if voiceTypingNotice}
+                    {voiceTypingNotice}
+                  {:else}
+                    {voiceTypingBlurb(voiceTyping)}
+                  {/if}
+                </small>
+              </span>
+            </label>
+            {#if voiceTyping.enabled && !voiceTyping.key.desktopManaged}
+              <form
+                onsubmit={(e) => {
+                  e.preventDefault()
+                  void saveVoiceTyping(true, voiceTypingKey)
+                }}
+              >
+                <input
+                  class="field"
+                  aria-label="Voice typing shortcut"
+                  placeholder="Ctrl+Alt+M"
+                  bind:value={voiceTypingKey}
+                />
+                <div class="row">
+                  <button
+                    class="btn btn-primary"
+                    type="submit"
+                    disabled={voiceTypingBusy ||
+                      !voiceTypingKey.trim() ||
+                      voiceTypingKey.trim() === voiceTyping.shortcut}
+                  >
+                    Use this shortcut
+                  </button>
+                </div>
+              </form>
+            {/if}
+            <div class="segmented" class:disabled={!voiceTyping.enabled}>
+              {#each VOICE_TYPING_MODES as m (m.value)}
+                <button
+                  class="seg"
+                  class:on={voiceTyping.mode === m.value}
+                  disabled={voiceTypingBusy || !voiceTyping.enabled}
+                  onclick={() => saveVoiceTyping(true, null, m.value)}
+                >
+                  {m.label}
+                </button>
+              {/each}
+            </div>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={voiceTyping.clean}
+                disabled={voiceTypingBusy || !voiceTyping.enabled}
+                onchange={(e) => saveVoiceTyping(true, null, null, e.currentTarget.checked)}
+              />
+              <span>
+                <b>Write it up with the medium model</b>
+                <small>
+                  Takes out the ums and false starts, applies your own corrections and punctuates.
+                  Off, it types exactly what was heard.
+                </small>
+              </span>
+            </label>
           </section>
         {/if}
       {:else}

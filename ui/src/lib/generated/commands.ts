@@ -530,6 +530,7 @@ export interface Commands {
   deleteVoiceModel: { args: { id: string }; result: void }
   deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
   deleteWorkout: { args: { id: WorkoutId }; result: void }
+  dictate: { args: { text: string; app?: string | null; clean?: boolean }; result: WritingAssist }
   discardDraft: { args: { id: DraftId }; result: void }
   discardRecording: { args: { id: RecordingId }; result: void }
   discoverFeeds: { args: { url: string }; result: FoundFeed[] }
@@ -1272,6 +1273,7 @@ export const COMMAND_NAMES = {
   deleteVoiceModel: 'delete_voice_model',
   deleteVoiceprint: 'delete_voiceprint',
   deleteWorkout: 'delete_workout',
+  dictate: 'dictate',
   discardDraft: 'discard_draft',
   discardRecording: 'discard_recording',
   discoverFeeds: 'discover_feeds',
@@ -1812,6 +1814,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_voice_model',
   'delete_voiceprint',
   'delete_workout',
+  'dictate',
   'discard_draft',
   'discard_recording',
   'discover_feeds',
@@ -2329,6 +2332,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_voice_model',
   'delete_voiceprint',
   'delete_workout',
+  'dictate',
   'discard_draft',
   'discard_recording',
   'dismiss_follow_up',

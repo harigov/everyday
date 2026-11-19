@@ -902,8 +902,8 @@ export interface Job {
   finishedAt?: string | null
 }
 
-/** What writing help was asked to do to the selected text. */
-export type WritingAction = 'improve' | 'grammar' | 'concise'
+/** What writing help was asked to do to the selected text, or `dictate`: write up what was said. */
+export type WritingAction = 'improve' | 'grammar' | 'concise' | 'dictate'
 
 /** What became of writing help's answer. */
 export type WritingOutcome = 'pending' | 'replaced' | 'copied' | 'cancelled' | 'failed'
@@ -2813,6 +2813,23 @@ export interface WritingSettings {
   shortcut: string
   key: KeyStatus
   /** How the selection is read and the answer pasted on this desktop. */
+  platform: 'wayland' | 'x11' | 'windows' | 'macos'
+}
+
+/** How dictation's key starts and stops listening. */
+export type VoiceTypingKeyMode = 'toggle' | 'hold'
+
+/** Voice typing's per-machine setting: the shortcut that types what is said into any text field. */
+export interface VoiceTypingSettings {
+  enabled: boolean
+  /** The combination chosen here -- what is offered to the desktop. */
+  shortcut: string
+  /** Press to start and again to stop, or hold to talk. */
+  mode: VoiceTypingKeyMode
+  /** Write up what was heard on the medium model; off types it exactly as heard. */
+  clean: boolean
+  key: KeyStatus
+  /** How the answer is pasted on this desktop. */
   platform: 'wayland' | 'x11' | 'windows' | 'macos'
 }
 

@@ -196,6 +196,8 @@ import type {
   VoiceprintInfo,
   WebStatus,
   WritingSettings,
+  VoiceTypingSettings,
+  VoiceTypingKeyMode,
   McpConnection,
   ConnectionAuth,
   ConnectionId,
@@ -921,6 +923,20 @@ export const api = {
   writingSettings: () => invoke<WritingSettings>('writing_settings'),
   setWritingSettings: (enabled: boolean, shortcut: string | null = null) =>
     invoke<WritingSettings>('set_writing_settings', { enabled, shortcut }),
+
+  /**
+   * Voice typing: a third OS-wide key, over the microphone instead of a
+   * selection. Per machine, kept by the shell -- see
+   * `crates/karmayoga-app/src/voicetyping/mod.rs`. Unanswered in mock mode,
+   * where the pane leaves the section out. `null` leaves a field as it is.
+   */
+  voiceTypingSettings: () => invoke<VoiceTypingSettings>('voice_typing_settings'),
+  setVoiceTypingSettings: (
+    enabled: boolean,
+    shortcut: string | null = null,
+    mode: VoiceTypingKeyMode | null = null,
+    clean: boolean | null = null,
+  ) => invoke<VoiceTypingSettings>('set_voice_typing_settings', { enabled, shortcut, mode, clean }),
 
   // ── Meeting capture, in the Tauri shell ────────────────────────────
   //

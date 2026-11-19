@@ -393,3 +393,56 @@ async fn a_spoken_conversation_with_the_real_models() {
         }
     }
 }
+
+/// Voice typing's way of listening, as `karmayoga-app`'s `voicetyping` module
+/// does it: the dictation session, two sentences with a pause between them,
+/// the audio cut off the moment the last word ends -- a key let go -- then
+/// Stop, and everything heard handed back once the session ends.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "downloads a voice and runs real models; needs KARMAYOGA_TEST_SPEECH=1"]
+async fn voice_typing_hears_every_word_up_to_the_key_being_let_go() {
+    use karmayoga_service::speech::dictate::{DictationEnd, DictationEvent, DictationInput};
+    if !enabled() {
+        return;
+    }
+    assert!(models::speech_kit_installed(), "the speech kit is needed");
+    assert!(models::installed(LocalModel::ParakeetV3), "Parakeet is needed");
+    install_voice().await;
+    let (endpoint, _requests) = fake_model(String::new()).await;
+    let (svc, _dir) = service_with_voices(&endpoint);
+    let vault = svc.get().unwrap();
+    let synthesiser = build_synthesiser(vault.voice_access().unwrap()).await.unwrap();
+    let first = to_16k(&synthesiser.synthesise("Please send the report to Maria.").await.unwrap());
+    let second =
+        to_16k(&synthesiser.synthesise("I will review it on Friday afternoon.").await.unwrap());
+
+    let mut link = svc.dictation_open().await.expect("dictation opens");
+    // No silence after the last word: the key went up as it ended.
+    let audio: Vec<i16> =
+        [silence(0.3), first, silence(1.0), second].into_iter().flatten().collect();
+    for chunk in audio.chunks(480) {
+        link.input.send(DictationInput::Audio(chunk.to_vec())).unwrap();
+    }
+    link.input.send(DictationInput::Stop).unwrap();
+
+    let ended = tokio::time::timeout(Duration::from_secs(120), async {
+        while let Some(event) = link.events.recv().await {
+            if let DictationEvent::Ended { reason, text, error } = event {
+                return Some((reason, text, error));
+            }
+        }
+        None
+    })
+    .await
+    .expect("the session ended in time")
+    .expect("the session said how it ended");
+    let (reason, heard, error) = ended;
+    println!("voice typing: {heard:?}");
+    assert_eq!(reason, DictationEnd::Stopped, "{error:?}");
+    let heard = heard.to_lowercase();
+    assert!(heard.contains("maria"), "{heard}");
+    // The last word, cut off by the key, is what the trailing silence is for.
+    // ("Friday" itself comes back as "Frida" from this voice now and then.)
+    assert!(heard.contains("afternoon"), "the last words, cut off by the key: {heard}");
+    assert!(heard.find("maria") < heard.find("review"), "in the order said: {heard}");
+}

@@ -317,3 +317,86 @@ async fn a_windows_selection_gets_its_own_line_endings_back() {
     .unwrap();
     assert_eq!(assist.result, "One.\r\nTwo.\r\n");
 }
+
+// ---- dictation --------------------------------------------------------
+
+#[tokio::test]
+async fn a_dictation_is_written_up_on_the_medium_model_and_kept() {
+    let model = fake_model("Send it at five.").await;
+    let (svc, _dir) = env(&model.endpoint);
+
+    let assist: WritingAssist = serde_json::from_value(
+        call(&svc, "dictate", json!({ "text": "um send it at four no five", "app": "Slack" }))
+            .await,
+    )
+    .unwrap();
+    assert_eq!(assist.action, WritingAction::Dictate);
+    assert_eq!(assist.original, "um send it at four no five");
+    assert_eq!(assist.result, "Send it at five.");
+    assert_eq!(assist.model, "scripted-medium");
+    assert_eq!(assist.outcome, WritingOutcome::Pending);
+
+    let request = model.requests.lock().unwrap().join("\n");
+    assert!(request.contains("um send it at four no five"), "the transcript reached the model");
+    assert!(request.contains("Slack"), "and where it is going");
+
+    let kept = history(&svc).await;
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].result, "Send it at five.");
+
+    call(&svc, "settle_writing_assist", json!({ "id": assist.id, "outcome": "replaced" })).await;
+    assert_eq!(history(&svc).await[0].outcome, WritingOutcome::Replaced);
+}
+
+#[tokio::test]
+async fn a_dictation_without_write_up_is_typed_as_heard_and_asks_no_model() {
+    let model = fake_model("should not be asked").await;
+    let (svc, _dir) = env(&model.endpoint);
+
+    let assist: WritingAssist = serde_json::from_value(
+        call(&svc, "dictate", json!({ "text": "  exactly this  ", "clean": false })).await,
+    )
+    .unwrap();
+    assert_eq!(assist.result, "exactly this");
+    assert_eq!(assist.model, "");
+    assert!(model.requests.lock().unwrap().is_empty(), "no model was asked");
+    assert_eq!(history(&svc).await.len(), 1);
+}
+
+#[tokio::test]
+async fn nothing_heard_is_refused_before_anything_is_kept() {
+    let model = fake_model("x").await;
+    let (svc, _dir) = env(&model.endpoint);
+    let err = svc
+        .call(Ctx::local(), "dictate", json!({ "text": "   " }))
+        .await
+        .expect_err("a blank transcript is refused");
+    assert!(err.message.contains("nothing was heard"), "{}", err.message);
+    assert!(history(&svc).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_dictation_longer_than_a_selection_is_still_kept() {
+    let model = fake_model("x").await;
+    let (svc, _dir) = env(&model.endpoint);
+    let long = "and then I said ".repeat(700);
+    assert!(long.len() > karmayoga_core::writing::MAX_TEXT_CHARS);
+    let assist: WritingAssist = serde_json::from_value(
+        call(&svc, "dictate", json!({ "text": long, "clean": false })).await,
+    )
+    .unwrap();
+    assert_eq!(assist.result, long.trim());
+}
+
+#[tokio::test]
+async fn a_dictation_with_no_medium_model_says_where_to_set_one_up() {
+    let (svc, _dir) = support::vault::service(None);
+    let err = svc
+        .call(Ctx::local(), "dictate", json!({ "text": "send it at five" }))
+        .await
+        .expect_err("no medium model is set up");
+    assert_eq!(err.code, "invalid", "not `quick`: no model was asked");
+    assert!(err.message.contains("Settings → Models"), "{}", err.message);
+    let kept = history(&svc).await;
+    assert_eq!(kept[0].outcome, WritingOutcome::Failed, "the failure is kept too");
+}

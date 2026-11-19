@@ -205,7 +205,9 @@ pub fn describe(text: &str, action: WritingAction) -> String {
         parts.push(format!("{} indented", plural(shape.indented, "line", "lines")));
     }
     let keep = match action {
-        WritingAction::Improve | WritingAction::Grammar => {
+        // Dictation has no layout to keep -- see `domains::writing::dictate` --
+        // and is never described; it is held to the strictest rule if it is.
+        WritingAction::Improve | WritingAction::Grammar | WritingAction::Dictate => {
             "Your answer must have exactly the same lines in the same order: the same lines \
              with words, the same blank lines between them, and every marker and indent where \
              it is. Do not join two lines or split one, even where a sentence runs across a \
@@ -234,7 +236,7 @@ pub fn problem(original: &str, answer: &str, action: WritingAction) -> Option<St
         return None;
     }
     match action {
-        WritingAction::Improve | WritingAction::Grammar => (now.filled != was.filled).then(|| {
+        WritingAction::Improve | WritingAction::Grammar | WritingAction::Dictate => (now.filled != was.filled).then(|| {
             format!(
                 "the text has {} and your answer has {}. Every line must stay a line of its own",
                 plural(was.filled, "line with words on it", "lines with words on them"),

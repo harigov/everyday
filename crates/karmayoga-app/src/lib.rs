@@ -43,6 +43,7 @@ mod state;
 mod transfer;
 mod tray;
 mod voice;
+mod voicetyping;
 mod web;
 mod windows;
 mod writing;
@@ -120,6 +121,8 @@ pub fn run() {
         // `hotkey` -- and writing help's popup, which one of them opens.
         .manage(hotkey::Hotkeys::default())
         .manage(writing::Writing::default())
+        // Voice typing, which another of them starts -- see `voicetyping`.
+        .manage(voicetyping::VoiceTyping::default())
         // Apps opened in windows of their own, while they close -- see
         // `windows`.
         .manage(windows::AppWindows::default())
@@ -297,6 +300,15 @@ pub fn run() {
             writing::writing_open_main,
             writing::writing_settings,
             writing::set_writing_settings,
+            // Voice typing into whatever field has the keyboard: its pill and
+            // its setting. See `voicetyping`.
+            voicetyping::voice_typing_state,
+            voicetyping::voice_typing_stop,
+            voicetyping::voice_typing_cancel,
+            voicetyping::voice_typing_copy,
+            voicetyping::voice_typing_open_main,
+            voicetyping::voice_typing_settings,
+            voicetyping::set_voice_typing_settings,
             // The two that are not JSON in and JSON out: one takes a raw
             // body, the other answers with a stream. Reading bytes back is
             // neither -- that is the `karmayoga://` handler in `protocol.rs`.
@@ -374,7 +386,7 @@ pub fn run() {
             // Writing help's popup is not the application: closing it is
             // dismissing it, and it goes when the main window does, or a
             // hidden popup would keep the process alive with no way back.
-            if window.label() == writing::LABEL {
+            if window.label() == writing::LABEL || window.label() == voicetyping::pill::LABEL {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
@@ -388,8 +400,10 @@ pub fn run() {
                 return;
             }
             if let WindowEvent::Destroyed = event {
-                if let Some(popup) = window.app_handle().get_webview_window(writing::LABEL) {
-                    let _ = popup.destroy();
+                for label in [writing::LABEL, voicetyping::pill::LABEL] {
+                    if let Some(popup) = window.app_handle().get_webview_window(label) {
+                        let _ = popup.destroy();
+                    }
                 }
                 // Asked to save and close on the way here; whatever has not
                 // by now goes with the main window, or the process would

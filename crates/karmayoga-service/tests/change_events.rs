@@ -325,6 +325,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
         "rewrite_selection",
         "asks the medium model; and announces nothing, since no list shows writing help",
     ),
+    ("dictate", "asks the medium model; and announces nothing, since no list shows writing help"),
     ("retry_recording", "resumes the same background pipeline finish_recording does"),
     ("run_backup", "copies the vault in the background; see backup::tests for what it does"),
     ("check_connection", "connects to an MCP server; see tests/connections_commands.rs"),
