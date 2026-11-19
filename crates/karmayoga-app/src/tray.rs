@@ -383,6 +383,42 @@ pub struct Tray {
     refresh_queued: AtomicBool,
 }
 
+/// The tray image: the application mark, with a red dot while a meeting is
+/// being recorded. A coloured dot, not a template image -- the mark is a
+/// filled tile, and a template would draw as a black square.
+fn marked_icon(app: &AppHandle, recording: bool) -> Option<tauri::image::Image<'static>> {
+    let icon = app.default_window_icon()?;
+    let mut rgba = icon.rgba().to_vec();
+    let width = icon.width();
+    let height = icon.height();
+    if recording {
+        paint_recording_dot(&mut rgba, width, height);
+    }
+    Some(tauri::image::Image::new_owned(rgba, width, height))
+}
+
+fn paint_recording_dot(rgba: &mut [u8], width: u32, height: u32) {
+    let w = width as i32;
+    let h = height as i32;
+    let radius = (w.min(h) / 6).max(3);
+    let cx = w - radius - 1;
+    let cy = h - radius - 1;
+    for y in (cy - radius).max(0)..(cy + radius).min(h) {
+        for x in (cx - radius).max(0)..(cx + radius).min(w) {
+            let dx = x - cx;
+            let dy = y - cy;
+            if dx * dx + dy * dy > radius * radius {
+                continue;
+            }
+            let i = ((y as u32 * width + x as u32) * 4) as usize;
+            rgba[i] = 214;
+            rgba[i + 1] = 40;
+            rgba[i + 2] = 40;
+            rgba[i + 3] = 255;
+        }
+    }
+}
+
 impl Tray {
     /// Show the tray icon with `items` above the shell's own two entries,
     /// creating the icon if this is the first call.
@@ -595,6 +631,9 @@ impl Tray {
             tray.set_menu(Some(menu)).map_err(menu_error)?;
             tray.set_tooltip(Some(&tooltip)).map_err(menu_error)?;
             tray.set_title(title.as_deref()).map_err(menu_error)?;
+            if let Some(icon) = marked_icon(app, recording.is_some()) {
+                tray.set_icon(Some(icon)).map_err(menu_error)?;
+            }
             // Puts it back if the setting was switched off and on again.
             tray.set_visible(true).map_err(menu_error)?;
             *self.showing.lock().unwrap() = true;
@@ -616,8 +655,8 @@ impl Tray {
         // alpha -- which would put a solid black square up there. The mark is
         // already drawn to survive 16 pixels (see `icons/icon.svg`), and it
         // is the same thing the dock, the taskbar and the panel show.
-        if let Some(icon) = app.default_window_icon() {
-            builder = builder.icon(icon.clone());
+        if let Some(icon) = marked_icon(app, recording.is_some()) {
+            builder = builder.icon(icon);
         }
 
         match builder.build(app) {

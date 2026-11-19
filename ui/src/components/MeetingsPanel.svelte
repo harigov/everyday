@@ -224,6 +224,16 @@
           asking.
         {/if}
       </p>
+      {#if draft.offer === 'ask'}
+        <label class="toggle small">
+          <input type="checkbox" bind:checked={draft.autoRecord} />
+          <span>Start recording automatically after you join</span>
+        </label>
+        <p class="hint">
+          A card in the corner of the screen offers to join and record. After you join, recording
+          starts in 15 seconds unless you cancel.
+        </p>
+      {/if}
       <label class="toggle small">
         <input type="checkbox" bind:checked={draft.micOffer} disabled={draft.offer === 'off'} />
         <span>Also offer when another app starts using the microphone</span>

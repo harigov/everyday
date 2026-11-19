@@ -4630,6 +4630,9 @@ export interface MeetingSettings {
   templatesMoved?: boolean
   voiceprints: boolean
   autoStop: boolean
+  /** When `offer` is `ask`: a card in the corner of the screen, and a 15
+   *  second countdown once the meeting is joined, before recording starts. */
+  autoRecord: boolean
   summaryBudget?: number | null
   /** Names, products and acronyms to spell right in every meeting. Saved
    *  trimmed, each once, at most 100; the panel edits it one per line. */
@@ -4674,6 +4677,8 @@ export interface MeetingOffer {
   joinUrl?: string | null
   /** Meeting notes are set up and a recording could start now. */
   ready: boolean
+  /** The corner card, when offers ask first and the setting is on. */
+  autoRecord?: boolean
 }
 
 /**
@@ -4688,6 +4693,8 @@ export interface MeetingNow {
   micOffer: boolean
   /** A recording could start now. */
   ready: boolean
+  /** The corner card, when offers ask first and the setting is on. */
+  autoRecord?: boolean
   /** The calendar meeting on now, if there is one worth tying a recording to. */
   event: MeetingOffer | null
 }

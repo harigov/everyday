@@ -468,6 +468,16 @@ pub(crate) async fn do_summarise_and_write(
         );
     }
 
+    // After the commit, and not allowed to fail it: a proposal that cannot
+    // be saved leaves the note where it is. See `propose`.
+    let on = {
+        let zone = jiff::tz::TimeZone::get(&facts.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let at = recording.event.as_ref().map_or(recording.started_at, |e| e.start);
+        at.to_zoned(zone).date()
+    };
+    let others: Vec<String> = facts.invitees.iter().map(|i| i.name.clone()).collect();
+    super::propose::from_note(vault, note_id, &body, &meeting, &others, on, &tz, events).await;
+
     let mut change = Change::new(Kind::Note, Op::Created);
     change.id = Some(note_id.to_string());
     events.changed(change);

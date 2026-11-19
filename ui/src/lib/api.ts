@@ -396,6 +396,8 @@ export interface MeetingOfferPayload {
   ready: boolean
   /** The shell has already started recording; this is a toast, not an ask. */
   automatic: boolean
+  /** The corner card and the countdown, instead of a system notification. */
+  autoRecord: boolean
   recordingId?: string | null
 }
 
@@ -420,6 +422,10 @@ export let onMeetingOfferSetup: (handler: (key: string) => void) => void = () =>
 export let onMeetingStatus: (handler: (status: CaptureStatus | null) => void) => void = () => {}
 export let onMeetingStillOn: (handler: (recordingId: RecordingId) => void) => void = () => {}
 export let onMeetingOffer: (handler: (offer: MeetingOfferPayload) => void) => void = () => {}
+/** `{ key, seconds }`. `seconds` is null once the countdown has gone. */
+export let onMeetingCountdown: (
+  handler: (key: string, seconds: number | null) => void,
+) => void = () => {}
 
 /**
  * Say something to the assistant, streaming what it says back.
@@ -501,6 +507,11 @@ if (SHELL) {
   onMeetingOfferSetup = (handler) => {
     void listen<{ key: string }>('meeting-offer-setup', (e) => handler(e.payload.key))
   }
+  onMeetingCountdown = (handler) => {
+    void listen<{ key: string; seconds: number | null }>('meeting-countdown', (e) =>
+      handler(e.payload.key, e.payload.seconds),
+    )
+  }
 
   const mod = await import('@tauri-apps/api/core')
   sendMessage = async (conversationId, prompt, onScreen, attachments, files, onEvent) => {
@@ -557,6 +568,7 @@ if (SHELL) {
   const {
     mockInvoke,
     mockOnChange,
+    mockOnMeetingCountdown,
     mockOnMeetingOffer,
     mockOnMeetingOfferFailed,
     mockOnMeetingOfferSettled,
@@ -579,6 +591,7 @@ if (SHELL) {
   onMeetingOfferSettled = mockOnMeetingOfferSettled
   onMeetingOfferFailed = mockOnMeetingOfferFailed
   onMeetingOfferSetup = mockOnMeetingOfferSetup
+  onMeetingCountdown = mockOnMeetingCountdown
 }
 
 /**

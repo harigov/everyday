@@ -45,6 +45,11 @@
     if (offer && !offer.ready) void meetings.load()
   })
 
+  const counting = $derived.by(() => {
+    const left = meetings.countdown
+    if (!offer?.autoRecord || !left || left.key !== offer.key) return null
+    return left.seconds
+  })
   const microphone = $derived(offer?.source === 'microphone')
   const appName = $derived(offer?.app ?? 'Another app')
   /** An offer with a calendar meeting behind it, by either route. */
@@ -84,10 +89,12 @@
   {@const failure = takeError ?? meetings.offerErrors[offer.key] ?? null}
   <div class="notice offer" role="alert">
     <div class="text">
-      {#if headline}
-        <strong>Take notes for {headline}?</strong>
+      {#if counting != null}
+        <strong>Recording starts in {counting}s</strong>
+      {:else if headline}
+        <strong>{offer.autoRecord ? headline : `Take notes for ${headline}?`}</strong>
       {:else}
-        <strong>Taking a call? Take notes</strong>
+        <strong>{offer.autoRecord ? 'Start recording?' : 'Taking a call? Take notes'}</strong>
       {/if}
       <span>{detail}</span>
       {#if !ready}<span>Meeting notes aren’t set up yet.</span>{/if}
@@ -95,35 +102,47 @@
       {#if failure}<p class="error">{failure}</p>{/if}
     </div>
     <div class="actions">
-      <button class="btn quiet" disabled={meetings.starting} onclick={() => void answer('never')}>
-        {microphone ? 'Don’t ask when the mic turns on' : 'Never for this meeting'}
-      </button>
-      <button class="btn" disabled={meetings.starting} onclick={() => void answer('notNow')}>
-        Not now
-      </button>
-      {#if !ready}
-        <button class="btn btn-primary" onclick={() => panels.openSettings('meetings')}>
-          Set up meeting notes
-        </button>
-      {:else if offer.joinUrl}
-        <button class="btn" disabled={meetings.starting} onclick={() => void answer('take')}>
-          Take notes
-        </button>
-        <button
-          class="btn btn-primary"
-          disabled={meetings.starting}
-          onclick={() => void answer('join')}
-        >
-          {meetings.starting ? 'Starting…' : 'Join & take notes'}
-        </button>
+      {#if counting != null}
+        <button class="btn btn-primary" onclick={() => void answer('notNow')}>Cancel</button>
       {:else}
-        <button
-          class="btn btn-primary"
-          disabled={meetings.starting}
-          onclick={() => void answer('take')}
-        >
-          {meetings.starting ? 'Starting…' : 'Take notes'}
+        <button class="btn quiet" disabled={meetings.starting} onclick={() => void answer('never')}>
+          {microphone ? 'Don’t ask when the mic turns on' : 'Never for this meeting'}
         </button>
+        <button class="btn" disabled={meetings.starting} onclick={() => void answer('notNow')}>
+          Not now
+        </button>
+        {#if !ready}
+          <button class="btn btn-primary" onclick={() => panels.openSettings('meetings')}>
+            Set up meeting notes
+          </button>
+        {:else if offer.autoRecord}
+          <button
+            class="btn btn-primary"
+            disabled={meetings.starting}
+            onclick={() => void answer('join')}
+          >
+            {offer.joinUrl ? 'Join and start recording' : 'Start recording'}
+          </button>
+        {:else if offer.joinUrl}
+          <button class="btn" disabled={meetings.starting} onclick={() => void answer('take')}>
+            Take notes
+          </button>
+          <button
+            class="btn btn-primary"
+            disabled={meetings.starting}
+            onclick={() => void answer('join')}
+          >
+            {meetings.starting ? 'Starting…' : 'Join & take notes'}
+          </button>
+        {:else}
+          <button
+            class="btn btn-primary"
+            disabled={meetings.starting}
+            onclick={() => void answer('take')}
+          >
+            {meetings.starting ? 'Starting…' : 'Take notes'}
+          </button>
+        {/if}
       {/if}
     </div>
   </div>

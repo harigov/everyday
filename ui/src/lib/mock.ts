@@ -281,6 +281,7 @@ import {
   mockMeetingStatus,
   mockMeetingStop,
   mockNameSpeaker,
+  mockOnMeetingCountdown,
   mockOnMeetingOffer,
   mockOnMeetingOfferFailed,
   mockOnMeetingOfferSetup,
@@ -5033,6 +5034,7 @@ const mockRemoteImageSettings: RemoteImageSettings = { senders: [], domains: [] 
 // the way it wires everything else emitted by the (here, simulated) shell.
 export {
   mockOnChange,
+  mockOnMeetingCountdown,
   mockOnMeetingOffer,
   mockOnMeetingOfferFailed,
   mockOnMeetingOfferSettled,

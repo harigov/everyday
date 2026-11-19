@@ -31,6 +31,7 @@ mod offers;
 #[cfg(target_os = "linux")]
 mod portal;
 mod protocol;
+mod recnotice;
 mod remote;
 mod remotes;
 mod screentime;
@@ -332,6 +333,7 @@ pub fn run() {
             meeting::voice_enrol,
             offers::meeting_offer_answer,
             offers::meeting_offers,
+            offers::recording_notice,
             // Screen time on this machine. See `screentime.rs`.
             screentime::screentime_status,
             screentime::screentime_set_tracking,

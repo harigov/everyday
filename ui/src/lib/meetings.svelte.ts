@@ -21,6 +21,7 @@ import {
   api,
   callCommand,
   isMock,
+  onMeetingCountdown,
   onMeetingOffer,
   onMeetingOfferFailed,
   onMeetingOfferSettled,
@@ -83,6 +84,12 @@ class MeetingsState {
    * see for itself. `MeetingOfferBanner` shows it beside the offer.
    */
   offerErrors = $state<Record<string, string>>({})
+  /**
+   * Seconds left before an auto-record offer starts recording, for the
+   * offer the corner card is counting down. Null while it is still asking
+   * whether to join.
+   */
+  countdown = $state<{ key: string; seconds: number } | null>(null)
 
   /** Recordings still in the pipeline, or failed -- the notes list's cards. */
   recordings = $state<Recording[]>([])
@@ -112,6 +119,7 @@ class MeetingsState {
     this.stillOn = null
     this.offers = []
     this.offerErrors = {}
+    this.countdown = null
     this.recordings = []
     this.recordingsError = null
     this.voiceprints = []
@@ -185,6 +193,13 @@ class MeetingsState {
       })
     })
     onMeetingOfferSetup(() => panels.openSettings('meetings'))
+    onMeetingCountdown((key, seconds) => {
+      if (seconds == null) {
+        if (!key || this.countdown?.key === key) this.countdown = null
+        return
+      }
+      this.countdown = { key, seconds }
+    })
 
     // Offers raised before this window was listening -- it was opened from
     // the tray, say, or reloaded. Merged rather than assigned, so one that
@@ -380,11 +395,14 @@ class MeetingsState {
     offer: MeetingOfferPayload,
     answer: MeetingOfferAnswer,
   ): Promise<Recording | null> {
-    const begins = answer === 'take' || answer === 'join'
+    // Join under auto-record only opens the link and arms the countdown.
+    // The offer stays until that runs out, or until it is cancelled.
+    const arms = answer === 'join' && offer.autoRecord
+    const begins = (answer === 'take' || answer === 'join') && !arms
     if (begins) this.starting = true
     try {
       const recording = await api.meetingOfferAnswer(offer.key, answer)
-      this.#dropOffer(offer.key)
+      if (!arms) this.#dropOffer(offer.key)
       if (begins) {
         this.capture = await api.meetingStatus().catch(() => null)
         await this.refreshRecordings()

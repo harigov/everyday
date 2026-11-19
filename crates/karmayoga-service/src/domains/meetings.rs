@@ -103,6 +103,10 @@ pub struct MeetingNow {
     /// A recording could start now. `false` makes any offer a prompt to set
     /// meeting notes up.
     pub ready: bool,
+    /// The corner card and the countdown, when offers ask first and the
+    /// setting is on. Absent from an older service, which is off.
+    #[serde(default)]
+    pub auto_record: bool,
     /// The calendar meeting going on now, if there is one worth tying a
     /// recording to -- an offer for it, in exactly the shape the watcher
     /// raises, so the shell treats both alike.

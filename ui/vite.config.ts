@@ -34,6 +34,7 @@ export default defineConfig({
       input: {
         main: 'index.html',
         writing: 'writing.html',
+        recording: 'recording.html',
       },
     },
   },

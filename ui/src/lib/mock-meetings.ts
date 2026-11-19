@@ -90,6 +90,7 @@ let settings: MeetingSettings = {
   templatesMoved: true,
   voiceprints: false,
   autoStop: true,
+  autoRecord: false,
   summaryBudget: null,
   vocabulary: ['Kubernetes', 'OKRs'],
 }
@@ -727,6 +728,8 @@ const offerHandlers = new Set<(o: MeetingOfferPayload) => void>()
 const offerSettledHandlers = new Set<(key: string) => void>()
 const offerFailedHandlers = new Set<(key: string, message: string) => void>()
 const offerSetupHandlers = new Set<(key: string) => void>()
+const countdownHandlers = new Set<(key: string, seconds: number | null) => void>()
+const countdowns = new Map<string, ReturnType<typeof setInterval>>()
 /** The shell's list of unanswered offers, oldest first. */
 const pendingOffers: MeetingOfferPayload[] = []
 
@@ -748,6 +751,22 @@ export function mockOnMeetingOfferFailed(handler: (key: string, message: string)
 }
 export function mockOnMeetingOfferSetup(handler: (key: string) => void): void {
   offerSetupHandlers.add(handler)
+}
+export function mockOnMeetingCountdown(
+  handler: (key: string, seconds: number | null) => void,
+): void {
+  countdownHandlers.add(handler)
+}
+
+function emitCountdown(key: string, seconds: number | null): void {
+  for (const h of countdownHandlers) h(key, seconds)
+}
+
+function clearCountdown(key: string): void {
+  const timer = countdowns.get(key)
+  if (timer) clearInterval(timer)
+  countdowns.delete(key)
+  emitCountdown(key, null)
 }
 
 function emitStatus() {
@@ -931,6 +950,7 @@ export function mockTriggerMeetingOffer(automatic: boolean): void {
     joinUrl: counter % 2 === 0 ? 'https://meet.google.com/abc-defg-hij' : null,
     ready: automatic || offersReady(),
     automatic,
+    autoRecord: !automatic && settings.offer === 'ask' && settings.autoRecord && offersReady(),
   }
   if (automatic) {
     const r = mockMeetingStart({ eventId, title: payload.title, automatic: true })
@@ -946,6 +966,7 @@ export function mockTriggerMicOffer(withEvent: boolean): void {
     app: 'Zoom',
     ready: offersReady(),
     automatic: false,
+    autoRecord: settings.offer === 'ask' && settings.autoRecord && offersReady(),
   }
   if (!withEvent) {
     raiseOffer({
@@ -990,6 +1011,15 @@ export function mockMeetingOfferAnswer(key: string, answer: MeetingOfferAnswer):
   const offer = at === -1 ? null : pendingOffers[at]!
   if (!offer) throw new VaultError('not_found', 'That offer has already been answered.')
   let recording: Recording | null = null
+  if (answer === 'join' && offer.autoRecord) {
+    if (!offersReady()) {
+      throw new VaultError('unusable', 'Meeting notes are not set up yet.')
+    }
+    // The offer stays. Recording starts when the countdown runs out.
+    armMockCountdown(offer)
+    return null
+  }
+  clearCountdown(key)
   if (answer === 'take' || answer === 'join') {
     if (!offersReady()) {
       throw new VaultError('unusable', 'Meeting notes are not set up yet.')
@@ -1006,6 +1036,29 @@ export function mockMeetingOfferAnswer(key: string, answer: MeetingOfferAnswer):
   // The shell settles the notification and the tray item along with it.
   for (const h of offerSettledHandlers) h(key)
   return recording
+}
+
+/** Fifteen seconds, then the recording the join button armed. */
+function armMockCountdown(offer: MeetingOfferPayload): void {
+  clearCountdown(offer.key)
+  let left = 15
+  emitCountdown(offer.key, left)
+  const timer = setInterval(() => {
+    left -= 1
+    if (left > 0) {
+      emitCountdown(offer.key, left)
+      return
+    }
+    clearInterval(timer)
+    countdowns.delete(offer.key)
+    emitCountdown(offer.key, null)
+    const at = pendingOffers.findIndex((o) => o.key === offer.key)
+    if (at === -1) return
+    pendingOffers.splice(at, 1)
+    mockMeetingStart({ eventId: offer.eventId, title: offer.title })
+    for (const h of offerSettledHandlers) h(offer.key)
+  }, 1000)
+  countdowns.set(offer.key, timer)
 }
 
 export function mockTriggerStillOn(): void {

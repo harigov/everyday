@@ -84,6 +84,7 @@ fn blank_settings() -> MeetingSettings {
         default_template: None,
         voiceprints: false,
         auto_stop: true,
+        auto_record: false,
         summary_budget: None,
         vocabulary: vec!["Kubernetes".into()],
     }

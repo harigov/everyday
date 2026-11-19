@@ -80,6 +80,7 @@ mod adapters;
 mod drivers;
 mod enqueue;
 mod failure;
+mod propose;
 // `pub(crate)`, not private: `crate::retry`'s own tests compare
 // `retry::is_transient` against `outbox::is_transient_local_failure` to
 // check phase 9.3's "keep them separate" decision directly, rather than

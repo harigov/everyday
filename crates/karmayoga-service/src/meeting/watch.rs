@@ -142,6 +142,7 @@ fn offer_for(
         automatic: settings.offer == Offer::Always && ready,
         join_url: detect::join_link(event),
         ready,
+        auto_record: settings.offer == Offer::Ask && settings.auto_record && ready,
     }
 }
 
@@ -250,7 +251,13 @@ const NOW_LOOKAHEAD_SECS: i64 = 5 * 60;
 pub fn now(svc: &Arc<Service>, vault: &Vault) -> CoreResult<MeetingNow> {
     let settings = vault.meeting_settings()?;
     let Gate { offers, ready } = gate(vault, &settings)?;
-    let mut answer = MeetingNow { offers, mic_offer: settings.mic_offer, ready, event: None };
+    let mut answer = MeetingNow {
+        offers,
+        mic_offer: settings.mic_offer,
+        ready,
+        auto_record: settings.offer == Offer::Ask && settings.auto_record && ready,
+        event: None,
+    };
     if !offers {
         return Ok(answer);
     }

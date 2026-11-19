@@ -545,6 +545,11 @@ pub struct MeetingOffer {
     /// meeting notes up, and never [`MeetingOffer::automatic`].
     #[serde(default = "ready_by_default")]
     pub ready: bool,
+    /// [`karmayoga_core::meeting::MeetingSettings::auto_record`], and only
+    /// while the offer is asking rather than recording on its own. Absent
+    /// on an older service, which is the same as off.
+    #[serde(default)]
+    pub auto_record: bool,
 }
 
 fn ready_by_default() -> bool {

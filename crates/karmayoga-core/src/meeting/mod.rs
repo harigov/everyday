@@ -25,6 +25,7 @@ pub mod identify;
 pub mod merge;
 pub mod people;
 pub mod prompt;
+pub mod steps;
 pub mod template;
 pub mod vocab;
 pub mod words;
@@ -628,6 +629,10 @@ pub struct MeetingSettings {
     pub voiceprints: bool,
     /// Stop after the event's end once both tracks have been quiet a while.
     pub auto_stop: bool,
+    /// When [`Offer`] is [`Offer::Ask`]: a card in the corner of the screen
+    /// instead of a system notification, and a short countdown once the
+    /// meeting is joined before recording starts. Off and Always ignore it.
+    pub auto_record: bool,
     /// Summary budget override, in tokens. `None` picks by endpoint.
     pub summary_budget: Option<u32>,
     /// Names, products and acronyms to spell right in every meeting: told
@@ -663,6 +668,7 @@ impl Default for MeetingSettings {
             templates_moved: false,
             voiceprints: false,
             auto_stop: true,
+            auto_record: false,
             summary_budget: None,
             vocabulary: Vec::new(),
         }
