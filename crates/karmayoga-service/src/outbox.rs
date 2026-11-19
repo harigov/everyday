@@ -72,7 +72,7 @@ use karmayoga_mail::outbox::{
 use karmayoga_mail::session::{MailError, MailSession};
 
 use crate::error::{CommandError, CommandResult, codes};
-use crate::events::Notification;
+use crate::events::{Change, Kind, Notification};
 use crate::service::{Service, blocking};
 
 /// How many due ops one [`drain_outbox`] call fetches and runs. Bounded so
@@ -122,6 +122,10 @@ pub struct DrainReport {
     /// a hint, not a promise, that calling again immediately would find
     /// more due work rather than an empty page.
     pub pending: bool,
+    /// Of the ops done, the archives, trashes, moves and deletes: mail moved
+    /// between mailboxes, whose new places only a sync pass learns -- off
+    /// Gmail, a moved message has a new uid the vault does not know yet.
+    pub relocated: u32,
 }
 
 /// Fetch `account`'s due ops and run each one against `session` and
@@ -137,15 +141,71 @@ where
     S: MailSession,
     T: Sender,
 {
+    drain(svc, account, session, sender, Due::All).await
+}
+
+/// [`drain_outbox`], but only the sends that are due: what a sync pass stops
+/// for between one mailbox and the next, so a message somebody pressed Send
+/// on does not wait for the rest of the pass. Everything else waits for the
+/// drain after the pass, where it always ran -- an archive is already shown
+/// archived, and a pass is no place to start moving mail it is still
+/// listing.
+pub async fn drain_due_sends<S, T>(
+    svc: &Arc<Service>,
+    account: AccountId,
+    session: &mut S,
+    sender: &T,
+) -> CommandResult<DrainReport>
+where
+    S: MailSession,
+    T: Sender,
+{
+    drain(svc, account, session, sender, Due::Sends).await
+}
+
+/// Which of the due ops one [`drain`] takes on.
+#[derive(Clone, Copy)]
+enum Due {
+    All,
+    /// Read past every thread op ([`Vault::due_unthreaded_ops`]), so a
+    /// backlog of a bulk action's moves cannot hide a send behind
+    /// [`DRAIN_BATCH`].
+    ///
+    /// [`Vault::due_unthreaded_ops`]: karmayoga_core::Vault::due_unthreaded_ops
+    Sends,
+}
+
+async fn drain<S, T>(
+    svc: &Arc<Service>,
+    account: AccountId,
+    session: &mut S,
+    sender: &T,
+    which: Due,
+) -> CommandResult<DrainReport>
+where
+    S: MailSession,
+    T: Sender,
+{
     let vault = svc.require()?;
     let now = svc.now();
-    let ops = blocking({
+    let mut ops = blocking({
         let vault = vault.clone();
-        move || Ok(vault.due_ops(account, now, DRAIN_BATCH)?)
+        move || {
+            Ok(match which {
+                Due::All => vault.due_ops(account, now, DRAIN_BATCH)?,
+                Due::Sends => vault.due_unthreaded_ops(account, now, DRAIN_BATCH)?,
+            })
+        }
     })
     .await?;
 
     let mut report = DrainReport { pending: ops.len() as u32 == DRAIN_BATCH, ..Default::default() };
+    if matches!(which, Due::Sends) {
+        ops.retain(|op| matches!(op.kind, OpKind::Send));
+    }
+    if ops.is_empty() {
+        return Ok(report);
+    }
     let lookups = VaultLookups {
         svc: svc.clone(),
         account,
@@ -189,6 +249,9 @@ where
         };
         for (mut op, outcome) in run.into_iter().zip(outcomes) {
             settle(svc, &vault, account, &mut op, outcome, &mut report, &mut signed_out).await?;
+            if op.state == OpState::Done && relocates(&op.kind) {
+                report.relocated += 1;
+            }
             if let (OpState::Done, OpKind::DeleteForever { from, messages }) = (&op.state, op.kind)
             {
                 deleted.push((from, messages));
@@ -224,10 +287,7 @@ async fn forget_deleted(
             // A draft deleted from Drafts or All Mail is gone from both: on
             // Gmail one message is filed in each, and Trash, where it went,
             // comes back with the next sync of Trash.
-            let a_draft = matches!(
-                vault.mailbox(from).map(|m| m.role),
-                Ok(MailboxRole::Drafts | MailboxRole::All)
-            );
+            let a_draft = vault.mailbox(from).is_ok_and(|m| draft_place(m.role));
             for message in messages {
                 for (mailbox, uid) in vault.mail_message_locations(message)? {
                     if mailbox == from || a_draft {
@@ -611,6 +671,12 @@ async fn on_success(
                 tracing::warn!(op = %op.id, error = %note, "sent, but the Sent copy was not appended");
             }
             mark_draft_sent(svc, vault, id).await?;
+            forget_sent_copy(svc, vault, id).await;
+            // Its copy is out of Drafts: one batch change redraws the list,
+            // the counts and the open thread -- whose card for the reply
+            // `VaultLookups::sent` already had say "Sent" -- as a sync
+            // pass's does.
+            svc.events().changed(Change::new(Kind::Thread, crate::events::Op::Updated));
             // The thread shows the reply from its draft until the server's
             // copy is stored (`get_thread`'s `sending`); a pass now fetches
             // that copy rather than leaving it for the next poll.
@@ -812,6 +878,9 @@ async fn revert_queued_send(
     // A send that failed used to look like nothing more than the draft coming
     // back: the reason was only ever on the op. The draft keeps it now, for
     // the compose window, and this says so wherever the person is.
+    if reverted.is_some() {
+        draft_changed(svc, id);
+    }
     if let (Some(subject), Some(error)) = (reverted, error) {
         tracing::warn!(op = %op_id, draft = %id, error = %error, "a send failed for good");
         svc.events().notify(
@@ -879,6 +948,9 @@ async fn note_send_retry(svc: &Arc<Service>, vault: &Arc<karmayoga_core::Vault>,
             return;
         }
     };
+    // Even when the reason is the one already noted: the Outbox shows when
+    // it will be tried next, and that has moved.
+    draft_changed(svc, id);
     tracing::warn!(op = %op.id, draft = %id, attempts = op.attempts, error = %error, "a send failed and will be retried");
     // Once, at the threshold -- or the first time one already past it is
     // noted at all, as a send stuck since before drafts kept the reason is.
@@ -908,11 +980,7 @@ async fn mark_draft_sent(
         // `Vault::with_draft`, not a bare read-modify-save -- see its own
         // docs for the autosave race a `Send` op's own success (or, from
         // `recover_inflight_ops`, a crash-recovered one) must not lose to.
-        Ok(vault_for_draft.with_draft(id, |draft| {
-            draft.state = DraftState::Sent;
-            draft.send_error = None;
-            true
-        })?)
+        Ok(vault_for_draft.with_draft(id, mark_sent)?)
     })
     .await?;
     if let Some(contacts) = svc.mail_contacts() {
@@ -924,19 +992,90 @@ async fn mark_draft_sent(
     Ok(())
 }
 
+/// Draft `draft` reached the server: sent, with no reason left on it for not
+/// being. `false`, skipping the write, when it says so already --
+/// [`VaultLookups::sent`] gets there the moment SMTP accepts, and
+/// [`mark_draft_sent`] comes after the tidying.
+fn mark_sent(draft: &mut Draft) -> bool {
+    if matches!(draft.state, DraftState::Sent) && draft.send_error.is_none() {
+        return false;
+    }
+    draft.state = DraftState::Sent;
+    draft.send_error = None;
+    true
+}
+
+/// Take a sent draft's last copy in Drafts out of the vault -- see
+/// [`forget_copy`] -- now that the send has taken it off the server. Left
+/// until the next sync of Drafts noticed it gone, the conversation stayed in
+/// the Drafts list.
+///
+/// Best-effort, and harmless when the removal on the server failed: the next
+/// sync brings the copy back, and it is the sent draft's again.
+async fn forget_sent_copy(svc: &Arc<Service>, vault: &Arc<karmayoga_core::Vault>, id: DraftId) {
+    let vault = vault.clone();
+    let removed = blocking(move || {
+        let draft = vault.draft(id)?;
+        let Some(copy) = draft.server_copy else { return Ok(Vec::new()) };
+        Ok(forget_copy(&vault, draft.account_id, &copy)?)
+    })
+    .await;
+    match removed {
+        Ok(removed) => forget_removed(svc, &removed),
+        Err(e) => tracing::warn!(error = %e, draft = %id, "could not forget a sent draft's copy"),
+    }
+}
+
+/// Tell an open window that a draft changed under it: sent, back to be
+/// written, or failing and being tried again. Nothing the outbox writes goes
+/// through a command, so nothing else announces it -- a reply that had gone
+/// went on saying "Sending…" in its thread until a sync pass happened to
+/// bring in mail.
+fn draft_changed(svc: &Arc<Service>, id: DraftId) {
+    svc.events().changed(Change {
+        id: Some(id.to_string()),
+        ..Change::new(Kind::Draft, crate::events::Op::Updated)
+    });
+}
+
 /// Take one of a draft's own server copies out of the vault, by the mailbox
-/// name and uid the draft remembered it under.
+/// name and uid the draft remembered it under: every filing of it where a
+/// draft lives ([`draft_place`]), since on Gmail the one message is in Drafts
+/// and All Mail both. Left in All Mail alone, it no longer matched its
+/// draft's copy and came back as a draft card of its own until a sync pass
+/// reaped it.
+///
+/// A removal that fails is logged and the rest go on: what was removed before
+/// it still has pack frames and index entries for the caller to forget.
 fn forget_copy(
     vault: &karmayoga_core::Vault,
     account: AccountId,
     copy: &karmayoga_core::mail::DraftServerCopy,
 ) -> karmayoga_core::Result<Vec<(MailMessageId, karmayoga_core::packstore::PackRef)>> {
-    let Some(mailbox) =
-        vault.mailboxes(account)?.into_iter().find(|m| m.remote_name == copy.mailbox)
-    else {
+    let mailboxes = vault.mailboxes(account)?;
+    let Some(drafts) = mailboxes.iter().find(|m| m.remote_name == copy.mailbox) else {
         return Ok(Vec::new());
     };
-    vault.remove_mail_uids(mailbox.id, &[copy.uid])
+    let Some(message) = vault.message_by_uid(drafts.id, copy.uid)? else {
+        return Ok(Vec::new());
+    };
+    let mut removed = Vec::new();
+    for (mailbox, uid) in vault.mail_message_locations(message.id)? {
+        let role = mailboxes.iter().find(|m| m.id == mailbox).map(|m| m.role);
+        if mailbox == drafts.id || role.is_some_and(draft_place) {
+            match vault.remove_mail_uids(mailbox, &[uid]) {
+                Ok(dead) => removed.extend(dead),
+                Err(e) => tracing::warn!(error = %e, "could not forget a filing of a draft's copy"),
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// Where a draft lives on the server: Drafts, and on Gmail All Mail too, where
+/// the same message is filed beside it.
+fn draft_place(role: MailboxRole) -> bool {
+    matches!(role, MailboxRole::Drafts | MailboxRole::All)
 }
 
 async fn special_use(
@@ -1137,6 +1276,18 @@ impl Lookups for VaultLookups {
             })
             .map(|_| ())
             .map_err(vault_err)
+    }
+
+    fn sent(&self, id: DraftId) {
+        let Ok(vault) = self.vault() else { return };
+        match vault.with_draft(id, mark_sent) {
+            Ok(_) => draft_changed(&self.svc, id),
+            // `on_success` says it again once the tidying after the send is
+            // done; this was only ever the early word.
+            Err(e) => {
+                tracing::warn!(error = %e, draft = %id, "could not mark a sent draft sent yet")
+            }
+        }
     }
 
     fn draft_server_copy(&self, id: DraftId) -> karmayoga_mail::session::Result<Option<Located>> {

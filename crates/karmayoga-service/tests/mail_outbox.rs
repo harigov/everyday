@@ -668,6 +668,56 @@ async fn saving_a_draft_twice_quickly_enqueues_one_append() {
     );
 }
 
+/// A save that lands once the draft is sent -- a compose window flushing as
+/// it closes -- asks for no copy in Drafts: uploaded after the send, it would
+/// stay there for good. Nor does a save that uploads nothing, on a draft sent
+/// or thrown away, take the draft's turn to upload: brought back, its next
+/// save goes up.
+#[tokio::test]
+async fn a_save_on_a_sent_or_discarded_draft_uploads_nothing_and_keeps_its_turn() {
+    let (svc, _dir) = service();
+    let start = Timestamp::now();
+    let clock = Arc::new(support::clock::FakeClock::at(start));
+    svc.set_clock(clock.clone());
+    let account = seed_account(&svc);
+    let vault = svc.get().unwrap();
+    let appends = || {
+        vault
+            .due_ops(account, start + SignedDuration::from_secs(3_600), 50)
+            .unwrap()
+            .into_iter()
+            .filter(|op| op.kind == OpKind::AppendDraft)
+            .count()
+    };
+    let id = |draft: &Value| draft["id"].as_str().unwrap().parse::<DraftId>().unwrap();
+
+    let mut sent = call(&svc, "new_draft", json!({ "account": account })).await;
+    sent["to"] = json!([{ "name": "", "email": "someone@example.com" }]);
+    call(&svc, "save_draft", json!({ "draft": sent.clone() })).await;
+    assert_eq!(appends(), 1);
+    // Sent, past the thirty seconds that would hold back a second append.
+    vault
+        .with_draft(id(&sent), |d| {
+            d.state = DraftState::Sent;
+            true
+        })
+        .unwrap();
+    clock.set(start + SignedDuration::from_secs(60));
+    call(&svc, "save_draft", json!({ "draft": sent.clone() })).await;
+    assert_eq!(appends(), 1, "a sent draft uploads no copy");
+
+    let thrown = call(&svc, "new_draft", json!({ "account": account })).await;
+    call(&svc, "save_draft", json!({ "draft": thrown.clone() })).await;
+    assert_eq!(appends(), 2);
+    clock.set(start + SignedDuration::from_secs(120));
+    call(&svc, "discard_draft", json!({ "id": thrown["id"] })).await;
+    call(&svc, "save_draft", json!({ "draft": thrown.clone() })).await;
+    assert_eq!(appends(), 2, "a thrown-away draft uploads no copy");
+    call(&svc, "restore_draft", json!({ "id": thrown["id"] })).await;
+    call(&svc, "save_draft", json!({ "draft": thrown.clone() })).await;
+    assert_eq!(appends(), 3, "and the save that uploaded nothing did not take its turn");
+}
+
 // ---- throwing a draft away with its autosave still on the way --------------
 
 /// A draft with words in it and somebody to send it to, saved once: exactly

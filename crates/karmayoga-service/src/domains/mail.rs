@@ -567,7 +567,10 @@ pub struct SaveDraft {
 async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandResult<()> {
     let incoming = args.draft;
     let now = svc.now();
-    let append = svc.draft_append_due(incoming.id, now);
+    // Asked only once a copy would be uploaded: asking takes this draft's
+    // turn for the next thirty seconds.
+    let svc_for_append = svc.clone();
+    let append_due = move |id| svc_for_append.draft_append_due(id, now);
     let vault = svc.require()?;
     let draft_id = incoming.id;
     // `incoming` is cloned once, rather than moved into the merge closure
@@ -625,6 +628,7 @@ async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandRes
                 let mut fresh = incoming;
                 fresh.recipients_changed_by = None;
                 fresh.updated_at = now;
+                let append = append_due(fresh.id);
                 return Ok(vault.save_draft_and_append(&fresh, append, Origin::Person)?);
             }
             Err(e) => return Err(e.into()),
@@ -634,7 +638,12 @@ async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandRes
         // outbox's own table) that cannot clobber anything on the draft
         // record, so doing it as a separate step after the guard above has
         // released reopens no race the guard was protecting against.
-        if !append {
+        //
+        // Not for a draft sent or thrown away: an upload after the send would
+        // sit in Drafts for good. See `karmayoga_mail::outbox`'s
+        // `append_draft`, which skips one already waiting.
+        let open = matches!(draft.state, DraftState::Editing | DraftState::Queued { .. });
+        if !open || !append_due(draft.id) {
             return Ok(None);
         }
         let op = Op::new(

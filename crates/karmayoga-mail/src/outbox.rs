@@ -171,6 +171,15 @@ pub trait Lookups {
     fn message_id_header(&self, _id: MailMessageId) -> Result<Option<String>> {
         Ok(None)
     }
+
+    /// Draft `id`'s message has reached the server: [`send`] calls this the
+    /// moment SMTP accepts it, or a retry finds it already delivered, and
+    /// before the tidying after it -- taking the draft's copy out of Drafts,
+    /// appending the Sent copy -- which is several more round trips, and as
+    /// long again as the upload for a big attachment. Somebody watching the
+    /// message go need not wait on those. Best-effort and infallible: the
+    /// [`Executed::Sent`] that follows says the same thing again.
+    fn sent(&self, _id: DraftId) {}
 }
 
 /// A place to send built mail, behind a trait for exactly the reason
@@ -234,10 +243,10 @@ pub enum Executed {
     /// fresh copy, when `APPENDUID` said so (see [`MailSession::append`]'s
     /// own docs for when it does not) — what the caller remembers as this
     /// draft's `draft_server_copy` for the *next* `AppendDraft` to delete.
-    /// `message_id` is the fresh copy's own `Message-ID`, `None` when nothing
-    /// was uploaded. `replaced` says the copy it replaced is off the server,
-    /// or that there was none: when that failed, the old copy stays and is
-    /// left for sync to show, rather than forgotten while still there.
+    /// `message_id` is the fresh copy's own `Message-ID`. `replaced` says the
+    /// copy it replaced is off the server, or that there was none: when that
+    /// failed, the old copy stays and is left for sync to show, rather than
+    /// forgotten while still there.
     Appended { uid: Option<Uid>, message_id: Option<String>, replaced: bool },
 }
 
@@ -832,6 +841,7 @@ async fn send<S: MailSession, T: Sender, L: Lookups>(
     let message_id = draft.message_id.clone().expect("just ensured Some above");
 
     if is_retry && already_delivered(ctx, &message_id).await {
+        ctx.lookups.sent(id);
         remove_drafts_server_copy(ctx, id).await;
         return Ok(Executed::Sent { message_id, sent_append_error: None });
     }
@@ -840,6 +850,7 @@ async fn send<S: MailSession, T: Sender, L: Lookups>(
     out.message_id = Some(message_id);
     let built = compose::build(&out).map_err(|e| MailError::Protocol(e.to_string()))?;
     ctx.sender.send(&built).await?;
+    ctx.lookups.sent(id);
 
     // The send itself succeeded, so a draft's own stale copy in Drafts --
     // if this crate ever `AppendDraft`ed one -- is done, and telling the
@@ -1046,13 +1057,19 @@ async fn append_draft<S: MailSession, T: Sender, L: Lookups>(
         return Err(MailError::Protocol("an AppendDraft op must target a draft".into()));
     };
     let draft = ctx.lookups.draft(id)?;
-    // An autosave's append still waiting when the draft was thrown away.
-    // `Vault::discard_draft` asks for a server copy to be deleted only when it
-    // knows of one, and this one does not exist yet: uploading it now would
-    // leave the words on the server with nothing left to remove them. Only
-    // ever skipped, never a failure, since nothing is owed to anybody.
-    if matches!(draft.state, DraftState::Discarded) {
-        return Ok(Executed::Appended { uid: None, message_id: None, replaced: true });
+    // An autosave's append still waiting when the draft was thrown away or has
+    // been sent. Uploading it now would leave the words in Drafts with nothing
+    // left to remove them -- `Vault::discard_draft` and a successful `send`
+    // take out only the copy they know of, and this one does not exist yet.
+    // Only ever skipped, never a failure, since nothing is owed to anybody.
+    // One queued to send still goes up: it runs before its send does, which
+    // takes it down again, and an undo leaves the server with the latest words.
+    //
+    // `Executed::Ok`, not an `Appended` naming no copy: that reads as "the
+    // draft's copy is now none", and the caller forgot the copy still on the
+    // server, which the discard after this then found nothing of to remove.
+    if matches!(draft.state, DraftState::Discarded | DraftState::Sent) {
+        return Ok(Executed::Ok);
     }
     let Some(drafts_mailbox) = ctx.lookups.special_use(MailboxRole::Drafts)? else {
         return Err(MailError::Unsupported("a Drafts mailbox"));
@@ -1303,6 +1320,8 @@ mod tests {
         /// `Message-ID`s by draft (its last copy) and by message.
         copy_ids: HashMap<DraftId, String>,
         message_ids: HashMap<MailMessageId, String>,
+        /// Every draft [`Lookups::sent`] was told about, in order.
+        sent: std::cell::RefCell<Vec<DraftId>>,
     }
 
     impl FakeLookups {
@@ -1320,6 +1339,7 @@ mod tests {
                 message_locations: HashMap::new(),
                 copy_ids: HashMap::new(),
                 message_ids: HashMap::new(),
+                sent: std::cell::RefCell::new(Vec::new()),
             }
         }
 
@@ -1416,6 +1436,10 @@ mod tests {
 
         fn message_id_header(&self, id: MailMessageId) -> Result<Option<String>> {
             Ok(self.message_ids.get(&id).cloned())
+        }
+
+        fn sent(&self, id: DraftId) {
+            self.sent.borrow_mut().push(id);
         }
 
         fn parent_raw(&self, id: MailMessageId) -> Result<Vec<u8>> {
@@ -2116,6 +2140,35 @@ Original body.\r\n"
         assert!(!is_retryable(&err));
     }
 
+    /// The caller hears that the message went the moment SMTP took it, before
+    /// the copy in Drafts is tidied away -- and only then: a refused send is
+    /// not one.
+    #[tokio::test]
+    async fn the_caller_hears_a_send_went_once_smtp_accepts_it() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let lookups = FakeLookups::new(false)
+            .with_draft(draft.clone())
+            .with_special_use(MailboxRole::Sent, "Sent");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+        execute(&op(account, OpKind::Send, OpTarget::Draft(id)), &mut ctx).await.unwrap();
+        assert_eq!(*lookups.sent.borrow(), vec![id]);
+
+        let lookups =
+            FakeLookups::new(false).with_draft(draft).with_special_use(MailboxRole::Sent, "Sent");
+        let mut session = FakeSession::default();
+        let sender = FakeSender {
+            fail: Some(MailError::Server("550 no such user".into())),
+            ..FakeSender::default()
+        };
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+        execute(&op(account, OpKind::Send, OpTarget::Draft(id)), &mut ctx).await.unwrap_err();
+        assert!(lookups.sent.borrow().is_empty(), "refused, so not sent");
+    }
+
     /// The regression for "draft server copies leak": once a `Send` has
     /// actually reached the server, the draft's own last `AppendDraft` copy
     /// in Drafts must be removed, not left to sit there forever.
@@ -2480,9 +2533,48 @@ Original body.\r\n"
         let outcome = execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx)
             .await
             .unwrap();
-        assert!(matches!(outcome, Executed::Appended { uid: None, .. }));
+        // Not an `Appended` naming no copy: the caller would forget the copy
+        // still on the server, and the discard after this found none to
+        // remove.
+        assert_eq!(outcome, Executed::Ok);
         assert!(session.calls.is_empty(), "{:?}", session.calls);
         assert!(session.appended.is_empty());
+    }
+
+    /// The same for an append that reaches the front of the queue once the
+    /// draft is sent: the send removed the copy it knew of, and a fresh one
+    /// uploaded after it would sit in Drafts for good. One still in its undo
+    /// window goes up, so that an undo leaves the latest words on the server.
+    #[tokio::test]
+    async fn appending_a_sent_draft_uploads_nothing_and_a_queued_one_still_goes_up() {
+        let account = AccountId::new();
+        for (state, uploads) in [
+            (karmayoga_core::mail::DraftState::Sent, false),
+            (
+                karmayoga_core::mail::DraftState::Queued { op: karmayoga_core::id::OpId::new() },
+                true,
+            ),
+        ] {
+            let mut draft = simple_draft(account);
+            draft.state = state;
+            let id = draft.id;
+            let mut lookups = FakeLookups::new(false)
+                .with_draft(draft)
+                .with_special_use(MailboxRole::Drafts, "Drafts");
+            lookups.server_copies.insert(id, Located { mailbox: "Drafts".into(), uid: 9 });
+            let mut session = FakeSession::default();
+            let sender = FakeSender::default();
+            let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+            let outcome = execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx)
+                .await
+                .unwrap();
+            assert_eq!(session.appended.len(), usize::from(uploads), "{outcome:?}");
+            if !uploads {
+                assert_eq!(outcome, Executed::Ok);
+                assert!(session.calls.is_empty(), "{:?}", session.calls);
+            }
+        }
     }
 
     #[tokio::test]
