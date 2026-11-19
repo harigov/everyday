@@ -95,6 +95,7 @@ pub mod health;
 pub mod hidden;
 pub mod ics;
 pub mod id;
+pub mod imagegen;
 pub mod insights;
 pub mod job;
 pub mod karma;

@@ -46,6 +46,22 @@ use crate::pairing::Invite;
 /// behind one of these, and finite, because a request that will never answer
 /// should not hold a spinner for ever.
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Longest a picture may take. A model on the server's own processor is
+/// given ten minutes by the service (`images::local`), and OpenAI two; this
+/// covers either and the trip, so the answer is not cut off while the server
+/// is still painting -- or still paying for -- the picture.
+const PICTURE_TIMEOUT: Duration = Duration::from_secs(12 * 60);
+
+/// How long `name` may take, where [`CALL_TIMEOUT`] would give up on an
+/// answer the server is still working on.
+fn call_timeout(name: &str) -> Duration {
+    match name {
+        "generate_image" => PICTURE_TIMEOUT,
+        _ => CALL_TIMEOUT,
+    }
+}
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Longest one turn of the assistant may take, start to finish.
@@ -264,7 +280,9 @@ impl RemoteClient {
 
     /// Run a command on the machine holding the vault.
     pub async fn call(&self, ctx: &Ctx, name: &str, args: Value) -> CommandResult<Value> {
-        let mut request = self.request(reqwest::Method::POST, &format!("/v1/call/{name}"));
+        let mut request = self
+            .request(reqwest::Method::POST, &format!("/v1/call/{name}"))
+            .timeout(call_timeout(name));
         if let Some(id) = &ctx.request_id {
             request = request.header("x-karmayoga-request", id);
         }
@@ -984,6 +1002,12 @@ mod tests {
         );
         assert_eq!(split_host("[::1]:7397").unwrap(), ("::1".into(), 7397));
         assert!(split_host("10.0.0.1:not-a-port").is_err());
+    }
+
+    #[test]
+    fn a_picture_is_waited_for_longer_than_it_can_take_at_the_server() {
+        assert!(call_timeout("generate_image") > Duration::from_secs(10 * 60));
+        assert_eq!(call_timeout("list_notes"), CALL_TIMEOUT);
     }
 
     #[test]

@@ -3404,9 +3404,9 @@ export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | '
 /** Which of the three models. */
 export type ModelTier = 'large' | 'medium' | 'small'
 
-/** One of the six cards in Settings → Models: a tier, the decision model, the
- *  speech model, or the voice. */
-export type ModelSlot = ModelTier | 'decision' | 'speech' | 'voice'
+/** One of the seven cards in Settings → Models: a tier, the decision model,
+ *  the speech model, the voice, or the image model. */
+export type ModelSlot = ModelTier | 'decision' | 'speech' | 'voice' | 'image'
 
 /**
  * How a decision model is reached -- `karmayoga_core::llm::DecisionApi`.
@@ -3468,6 +3468,11 @@ export interface ModelSettings {
    * it cannot talk back. Left out of the record when unset.
    */
   voice?: VoiceConfig | null
+  /**
+   * Makes a picture. Absent or `null`: nothing can. Left out of the record
+   * when unset. See `karmayoga_core::imagegen`.
+   */
+  image?: ImageConfig | null
 }
 
 /** What every models command answers. */
@@ -4706,6 +4711,27 @@ export interface VoiceConfig {
   synthesiser: SynthesiserConfig
   /** How fast it talks; 1 is the voice's own pace, from 0.5 to 2. */
   speed: number
+}
+
+/** The picture models that run on this computer --
+ *  `karmayoga_core::imagegen::LocalImageModel`. */
+export type LocalImageModel = 'flux2KleinQ4' | 'zImageTurboQ4'
+
+/** The OpenAI image models the card offers, in list order. */
+export const OPENAI_IMAGE_MODELS = ['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'] as const
+
+/** Who makes a picture -- `karmayoga_core::imagegen::ImageGeneratorConfig`. */
+export type ImageGeneratorConfig =
+  { type: 'local'; model: LocalImageModel } | { type: 'openAi'; model: string }
+
+/** The picture model: the seventh card in Settings → Models. */
+export interface ImageConfig {
+  generator: ImageGeneratorConfig
+}
+
+/** One picture from `generate_image`, PNG, base64. */
+export interface GeneratedImage {
+  png: string
 }
 
 /** A few seconds of the saved voice, to hear it before using it:

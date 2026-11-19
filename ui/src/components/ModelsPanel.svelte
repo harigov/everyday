@@ -25,6 +25,7 @@
     decisionProviderLabel,
     endpointOf,
     providerLabel,
+    imageEndpointOf,
     speechEndpointOf,
     speechProviderLabel,
     voiceEndpointOf,
@@ -41,6 +42,8 @@
     DecisionConfig,
     LLMConfig,
     LocalModelInfo,
+    ImageGeneratorConfig,
+    LocalImageModel,
     ModelSettings,
     ModelSlot,
     ModelTier,
@@ -49,6 +52,7 @@
     SynthesiserConfig,
     TranscriberConfig,
   } from '../lib/types'
+  import { OPENAI_IMAGE_MODELS } from '../lib/types'
   import Icon from './Icon.svelte'
   import Meter from './Meter.svelte'
 
@@ -62,6 +66,7 @@
     decision: '',
     speech: '',
     voice: '',
+    image: '',
   }
   let keys = $state<Record<ModelSlot, string>>({ ...NO_KEYS })
   let notice = $state<string | null>(null)
@@ -95,6 +100,7 @@
   void models.refreshLocal().catch(quietly)
   void models.refreshSpeech().catch(quietly)
   void models.refreshVoice().catch(quietly)
+  void models.refreshImages().catch(quietly)
   void quick.load()
 
   type Card = {
@@ -274,6 +280,7 @@
     if (draft.decision && decisionEndpointOf(draft.decision) === endpoint) at.push('Decision')
     if (draft.speech && speechEndpointOf(draft.speech.transcriber) === endpoint) at.push('Speech')
     if (draft.voice && voiceEndpointOf(draft.voice.synthesiser) === endpoint) at.push('Voice')
+    if (draft.image && imageEndpointOf(draft.image.generator) === endpoint) at.push('Image')
     return at.filter((title) => title !== except)
   }
 
@@ -544,6 +551,71 @@
     JSON.stringify(draft?.voice ?? null) !== JSON.stringify(models.settings?.voice ?? null),
   )
 
+  // ── Image ────────────────────────────────────────────────────────
+
+  const IMAGE_CHOICES: { kind: 'openAi' | LocalImageModel; label: string }[] = [
+    { kind: 'openAi', label: 'OpenAI' },
+    { kind: 'flux2KleinQ4', label: 'FLUX.2 Klein' },
+    { kind: 'zImageTurboQ4', label: 'Z-Image Turbo' },
+  ]
+
+  function toggleImage(on: boolean) {
+    if (!draft) return
+    draft.image = !on ? null : { generator: { type: 'local', model: 'flux2KleinQ4' } }
+  }
+
+  function chooseImage(kind: 'openAi' | LocalImageModel) {
+    if (!draft?.image) return
+    if (imageChoiceOn(draft.image.generator, kind)) return
+    draft.image.generator =
+      kind === 'openAi'
+        ? { type: 'openAi', model: OPENAI_IMAGE_MODELS[0] }
+        : { type: 'local', model: kind }
+  }
+
+  function imageChoiceOn(g: ImageGeneratorConfig, kind: 'openAi' | LocalImageModel): boolean {
+    if (kind === 'openAi') return g.type === 'openAi'
+    return g.type === 'local' && g.model === kind
+  }
+
+  const savedImageEndpoint = $derived(
+    models.settings?.image ? imageEndpointOf(models.settings.image.generator) : null,
+  )
+
+  let makingImage = $state(false)
+  let imageTried = $state<string | null>(null)
+  let imageUrl = $state<string | null>(null)
+  let imagePrompt = $state('A red fox in an autumn forest')
+
+  const imageUnsaved = $derived(
+    JSON.stringify(draft?.image ?? null) !== JSON.stringify(models.settings?.image ?? null),
+  )
+
+  /** Set once the pane is gone, so a picture that arrives after is let go
+   *  rather than kept for the life of the window. */
+  let gone = false
+
+  async function tryImage() {
+    makingImage = true
+    imageTried = null
+    if (imageUrl) URL.revokeObjectURL(imageUrl)
+    imageUrl = null
+    try {
+      const url = await models.generateImage(imagePrompt)
+      if (gone) URL.revokeObjectURL(url)
+      else imageUrl = url
+    } catch (e) {
+      imageTried = e instanceof Error ? e.message : String(e)
+    } finally {
+      makingImage = false
+    }
+  }
+
+  onDestroy(() => {
+    gone = true
+    if (imageUrl) URL.revokeObjectURL(imageUrl)
+  })
+
   async function save() {
     if (!draft) return
     clearNotice()
@@ -565,6 +637,9 @@
       }
       if (keys.voice.trim() && draft.voice && voiceEndpointOf(draft.voice.synthesiser)) {
         await models.setKey('voice', keys.voice.trim())
+      }
+      if (keys.image.trim() && draft.image && imageEndpointOf(draft.image.generator)) {
+        await models.setKey('image', keys.image.trim())
       }
       keys = { ...NO_KEYS }
       draft = structuredClone($state.snapshot(models.settings!))
@@ -601,12 +676,12 @@
   <div class="panes">
     <p class="hint lead">
       Three models, one for each size of work, each with its own provider and model name; a decision
-      model for sorting mail; a speech model for turning speech into text; and a voice for the
-      assistant to talk back in. Anything that speaks the OpenAI chat API works — leave the address
-      empty for OpenAI itself. What you ask about is sent to the provider of whichever model does
-      the work; a model on this machine sends nothing anywhere. A reasoning effort left at the
-      provider's default is the provider's choice, and can be no thinking at all — OpenAI's gpt-5.1
-      defaults to None.
+      model for sorting mail; a speech model for turning speech into text; a voice for the assistant
+      to talk back in; and an image model for making a picture. Anything that speaks the OpenAI chat
+      API works — leave the address empty for OpenAI itself. What you ask about is sent to the
+      provider of whichever model does the work; a model on this machine sends nothing anywhere. A
+      reasoning effort left at the provider's default is the provider's choice, and can be no
+      thinking at all — OpenAI's gpt-5.1 defaults to None.
     </p>
 
     {#each CARDS as card (card.tier)}
@@ -1387,6 +1462,136 @@
       {/if}
     </section>
 
+    <section class="card" aria-labelledby="model-image">
+      <div class="head">
+        <span class="eyebrow" id="model-image">Image</span>
+        <label class="toggle compact">
+          <input
+            type="checkbox"
+            checked={draft.image != null}
+            onchange={(e) => toggleImage(e.currentTarget.checked)}
+          />
+          <span>{draft.image ? 'On' : 'Off'}</span>
+        </label>
+      </div>
+      <p class="hint">
+        What makes a picture when one is asked for. It is set here, once, the same way the voice is.
+        A model on this computer keeps the prompt here.
+      </p>
+      {#if !draft.image}
+        <p class="hint">Off: nothing can make a picture.</p>
+      {:else}
+        {@const image = draft.image}
+        {@const g = image.generator}
+        {@const endpoint = imageEndpointOf(g)}
+        {@const keyed = endpoint != null && models.hasKeyAt(endpoint)}
+        {@const shared = cardsAt(endpoint, 'Image')}
+        <div class="presets" role="group" aria-label="Which image model">
+          {#each IMAGE_CHOICES as choice (choice.kind)}
+            <button
+              class="chip"
+              class:on={imageChoiceOn(g, choice.kind)}
+              aria-pressed={imageChoiceOn(g, choice.kind)}
+              onclick={() => chooseImage(choice.kind)}
+            >
+              {choice.label}
+            </button>
+          {/each}
+        </div>
+
+        {#if g.type === 'local'}
+          {#each models.imageModels.filter((m) => m.id === 'sdCli' || m.id === g.model) as m (m.id)}
+            <div class="model-row">
+              <div class="model-text">
+                <b>{m.name}</b>
+                <small>{m.description} · {humanBytes(m.bytes)}</small>
+                {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
+              </div>
+              {#if m.progress}
+                <div class="model-progress">
+                  <Meter
+                    label="Downloading"
+                    value={m.progress.done / m.progress.total}
+                    note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
+                  />
+                  <button class="btn" onclick={() => void onLocal(() => models.cancelImage(m.id))}
+                    >Cancel</button
+                  >
+                </div>
+              {:else if m.installed}
+                <button class="btn" onclick={() => void onLocal(() => models.deleteImage(m.id))}
+                  >Delete</button
+                >
+              {:else}
+                <button class="btn" onclick={() => void onLocal(() => models.downloadImage(m.id))}
+                  >Download</button
+                >
+              {/if}
+            </div>
+          {/each}
+          <p class="hint">
+            Quantized weights, run on this computer. Download the engine and the model first. A
+            picture at 512 pixels can take a few minutes.
+          </p>
+        {:else}
+          <label class="setting">
+            <span>Model</span>
+            <select bind:value={g.model}>
+              {#each OPENAI_IMAGE_MODELS as name (name)}
+                <option value={name}>{name}</option>
+              {/each}
+            </select>
+          </label>
+          {#if keyed}
+            <p class="hint">
+              A key for OpenAI is stored{shared.length
+                ? `, shared with ${shared.join(' and ')}`
+                : ''}.
+              {#if savedImageEndpoint === endpoint}
+                <button class="link" onclick={() => void removeKey('image')}>Remove</button>
+              {/if}
+            </p>
+          {:else}
+            <label class="setting">
+              <span>API key</span>
+              <input
+                type="password"
+                bind:value={keys.image}
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </label>
+            {#if shared.length}
+              <p class="hint">One key serves Image and {shared.join(' and ')}.</p>
+            {/if}
+          {/if}
+          <p class="hint">The prompt is sent to OpenAI, and the picture comes back.</p>
+        {/if}
+
+        <label class="setting">
+          <span>Try a prompt</span>
+          <input bind:value={imagePrompt} spellcheck="true" />
+        </label>
+        <div class="row">
+          <button
+            class="btn"
+            disabled={makingImage || !models.settings?.image || imageUnsaved || !imagePrompt.trim()}
+            onclick={() => void tryImage()}
+          >
+            {makingImage ? 'Making…' : 'Try it'}
+          </button>
+          {#if imageTried}
+            <span class="notice">{imageTried}</span>
+          {:else if imageUnsaved}
+            <span class="notice">Try it uses what is saved, so save first.</span>
+          {/if}
+        </div>
+        {#if imageUrl}
+          <img class="picture" src={imageUrl} alt={imagePrompt} />
+        {/if}
+      {/if}
+    </section>
+
     <p class="hint">
       Keys are encrypted with everything else in the vault, so they are unreadable while it is
       locked — and nothing can spend them while it is locked either. Moving a model to another
@@ -1429,6 +1634,14 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--sp-3);
+  }
+  /* A picture at its own size up to the card's width: OpenAI's are 1024
+     pixels across, wider than the card. */
+  .picture {
+    align-self: flex-start;
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius);
   }
 
   .toggle {

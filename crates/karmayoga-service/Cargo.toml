@@ -207,6 +207,9 @@ gethostname = "1"
 # an archive needs no C toolchain and no system `libbz2` either.
 tar = "0.4"
 bzip2 = "0.6"
+# The picture engine is published as a zip. Only deflate is needed; the
+# archive is opened to pull out `sd-cli` and nothing else.
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 # VAD, local recognition, diarisation and speaker embeddings, all through one
 # native library -- see docs/plans/meeting-notes.md's "The libraries". Off by
 # default; the `speech` feature above turns it on. Pinned to the same minor

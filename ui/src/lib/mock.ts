@@ -151,7 +151,7 @@ import type {
 } from './types'
 import { sameAccount, validateLink } from './chat'
 import { signatureFor } from './mailwrite'
-import { speechEndpointOf, voiceEndpointOf } from './accounts'
+import { imageEndpointOf, speechEndpointOf, voiceEndpointOf } from './accounts'
 import {
   mockDraftWithAi,
   mockImproveWriting,
@@ -311,6 +311,13 @@ import {
   mockVoiceSetScreen,
   mockVoiceStop,
 } from './mock-voice'
+import {
+  mockCancelImageModelDownload,
+  mockDeleteImageModel,
+  mockDownloadImageModel,
+  mockGenerateImage,
+  mockImageModels,
+} from './mock-images'
 import {
   mockDeleteTemplate,
   mockLintTemplate,
@@ -4017,6 +4024,7 @@ let modelSettings: ModelSettings = {
   decision: null,
   speech: null,
   voice: null,
+  image: null,
 }
 const modelKeys = new Set<string>(['https://api.openai.com/v1'])
 
@@ -4050,12 +4058,19 @@ function mockEndpoint(baseUrl: string | null): string {
 }
 
 /** `ModelSettings::all_endpoints`: those mail may go to, and the speech
- *  model's and the voice's -- every address a key may be kept for. */
+ *  model's, the voice's and the image model's -- every address a key may be
+ *  kept for. */
 function mockAllEndpoints(): string[] {
   const speech = modelSettings.speech ? speechEndpointOf(modelSettings.speech.transcriber) : null
   const voice = modelSettings.voice ? voiceEndpointOf(modelSettings.voice.synthesiser) : null
+  const image = modelSettings.image ? imageEndpointOf(modelSettings.image.generator) : null
   return [
-    ...new Set([...mockModelEndpoints(), ...(speech ? [speech] : []), ...(voice ? [voice] : [])]),
+    ...new Set([
+      ...mockModelEndpoints(),
+      ...(speech ? [speech] : []),
+      ...(voice ? [voice] : []),
+      ...(image ? [image] : []),
+    ]),
   ].sort()
 }
 
@@ -4106,6 +4121,15 @@ function modelSlotEndpoint(args: Record<string, unknown>): string {
     }
     const endpoint = voiceEndpointOf(voice.synthesiser)
     if (!endpoint) throw new VaultError('invalid', 'a voice on this computer needs no key')
+    return endpoint
+  }
+  if (tier === 'image') {
+    const image = modelSettings.image
+    if (!image) {
+      throw new VaultError('invalid', 'no image model is configured; set one in Settings → Models')
+    }
+    const endpoint = imageEndpointOf(image.generator)
+    if (!endpoint) throw new VaultError('invalid', 'an image model on this computer needs no key')
     return endpoint
   }
   const config = modelSettings[tier]
@@ -8704,6 +8728,34 @@ export const mockInvoke = async <T>(
     case 'voice_sample':
       requireUnlocked()
       return mockVoiceSample() as T
+
+    case 'image_models':
+      requireUnlocked()
+      return mockImageModels() as T
+    case 'download_image_model':
+      requireUnlocked()
+      mockDownloadImageModel(str(args.id))
+      return undefined as T
+    case 'cancel_image_model_download':
+      requireUnlocked()
+      mockCancelImageModelDownload(str(args.id))
+      return undefined as T
+    case 'delete_image_model':
+      requireUnlocked()
+      mockDeleteImageModel(str(args.id))
+      return undefined as T
+    case 'generate_image':
+      requireUnlocked()
+      if (!str(args.prompt).trim()) {
+        throw new VaultError('invalid', 'say what the picture should be')
+      }
+      if (!modelSettings.image) {
+        throw new VaultError(
+          'invalid',
+          'no image model is configured; set one in Settings → Models',
+        )
+      }
+      return mockGenerateImage() as T
 
     case 'dismiss_meeting_offer':
       requireUnlocked()

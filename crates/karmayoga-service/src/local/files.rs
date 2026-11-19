@@ -62,6 +62,7 @@
 //! per model at a time -- calling [`start_download`] again for a model
 //! already downloading, or already installed, is a no-op.
 
+use karmayoga_core::imagegen::LocalImageModel;
 use karmayoga_core::llm::LocalDecisionModel;
 use karmayoga_core::meeting::LocalModel;
 use karmayoga_core::speech::LocalVoice;
@@ -144,6 +145,8 @@ pub enum ModelKind {
     Decision,
     /// The assistant's voice: the [`LocalVoice`]s.
     Voice,
+    /// A picture model, or the stable-diffusion.cpp binary that runs one.
+    Image,
 }
 
 /// One downloadable model: the speech kit, a recogniser, or a decision
@@ -566,11 +569,130 @@ const PHONON_SOURCES: &[Source] = &[
     },
 ];
 
+/// The stable-diffusion.cpp release the picture models are run with. Pinned
+/// and hashed, like every other download here: a newer build is a deliberate
+/// change, not something a card picks up on its own.
+///
+/// One release for every system, `master-1043-3be2378`: the newest whose
+/// Linux build was made on Ubuntu 24.04. The builds after it are made on
+/// 26.04 and need its glibc 2.43 -- they do not start on 24.04 -- and this
+/// one needs glibc 2.38, so 24.04 and later. Nothing published for these
+/// models starts on 22.04, which the app's own Linux bundle is built on; on
+/// a system that old the engine says so when it fails to start (see
+/// `images::local`), and `KARMAYOGA_SD_CLI` can name one built there. The
+/// macOS build is likewise for macOS 26 and later.
+///
+/// Chosen by processor as well as by system, since a build for another one
+/// does not start at all. The macOS archive is universal -- arm64 and x86_64
+/// in one binary, whatever its name says -- so it serves an Intel Mac
+/// running the universal app too.
+pub const SD_CLI_ID: &str = "sdCli";
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const SD_CLI_SOURCES: &[Source] = &[Source::File {
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-Linux-Ubuntu-24.04-x86_64.zip",
+    file: ModelFile {
+        dest: SD_CLI_ARCHIVE,
+        sha256: "01e1c773c1bc2a6276952f6dbd13294e58b7255c659b4a770086934c4e8fad3a",
+        bytes: 27_322_680,
+    },
+}];
+
+#[cfg(target_os = "macos")]
+const SD_CLI_SOURCES: &[Source] = &[Source::File {
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-Darwin-macOS-26.6.2-arm64.zip",
+    file: ModelFile {
+        dest: SD_CLI_ARCHIVE,
+        sha256: "ec40c7b84d86333ea89a9a52745fce25c3081122f6207a4370f35b504df99252",
+        bytes: 37_650_853,
+    },
+}];
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const SD_CLI_SOURCES: &[Source] = &[Source::File {
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-win-cpu-x64.zip",
+    file: ModelFile {
+        dest: SD_CLI_ARCHIVE,
+        sha256: "10ef877a334c97d014e3e23b4bf6c9077f6b78ff9da3bb157664d2103cb1ae0f",
+        bytes: 18_067_084,
+    },
+}];
+
+/// Nothing is published for any other system or processor -- Linux or
+/// Windows on ARM among them -- and [`start_download`] says so rather than
+/// fetch a build that would not start.
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64"),
+)))]
+const SD_CLI_SOURCES: &[Source] = &[];
+
+/// What the engine's archive is kept as, inside its directory.
+const SD_CLI_ARCHIVE: &str = "sd-cli.zip";
+
+/// FLUX.2 [klein] 4B at Q4_0, with the text encoder and VAE it was published
+/// beside. The checksums are that repository's SHA256SUMS.
+const FLUX2_KLEIN_Q4_SOURCES: &[Source] = &[
+    Source::File {
+        url: "https://huggingface.co/manishdashsharma/flux2-klein-4b-gguf/resolve/main/flux-2-klein-4b-q4_0.gguf",
+        file: ModelFile {
+            dest: "flux-2-klein-4b-q4_0.gguf",
+            sha256: "9c5939d55e3ac76e3a700029770fcc5e1b873d12c2a6d22c6c3fec217488e718",
+            bytes: 2_256_889_280,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/manishdashsharma/flux2-klein-4b-gguf/resolve/main/Qwen3-4B-Q4_K_S.gguf",
+        file: ModelFile {
+            dest: "Qwen3-4B-Q4_K_S.gguf",
+            sha256: "78cea0ccfd5fd7af5761f7dfdeebd2ec8f04328be0f1e6f70e2213a6f1309bc9",
+            bytes: 2_383_310_112,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/manishdashsharma/flux2-klein-4b-gguf/resolve/main/flux2-vae.safetensors",
+        file: ModelFile {
+            dest: "flux2-vae.safetensors",
+            sha256: "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3",
+            bytes: 336_211_292,
+        },
+    },
+];
+
+/// Z-Image Turbo at Q4_K, with its text encoder and the FLUX VAE.
+const Z_IMAGE_TURBO_Q4_SOURCES: &[Source] = &[
+    Source::File {
+        url: "https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf",
+        file: ModelFile {
+            dest: "z_image_turbo-Q4_K.gguf",
+            sha256: "14b375ab4f226bc5378f68f37e899ef3c2242b8541e61e2bc1aff40976086fbd",
+            bytes: 3_864_250_304,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        file: ModelFile {
+            dest: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+            sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+            bytes: 2_497_281_120,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/vae/ae.safetensors",
+        file: ModelFile {
+            dest: "ae.safetensors",
+            sha256: "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+            bytes: 335_304_388,
+        },
+    },
+];
+
 /// What a decision model's one file is called inside its directory.
 const DECISION_MODEL_FILE: &str = "model.gguf";
 
 /// Every downloadable model, in the order the settings panes list them.
-pub static CATALOGUE: [ModelSpec; 7] = [
+pub static CATALOGUE: [ModelSpec; 10] = [
     ModelSpec {
         id: SPEECH_KIT_ID,
         kind: ModelKind::Speech,
@@ -626,6 +748,30 @@ pub static CATALOGUE: [ModelSpec; 7] = [
         description: "Twenty-five natural voices that run on this computer, many times quicker than they speak.",
         languages: "English",
         sources: PHONON_SOURCES,
+    },
+    ModelSpec {
+        id: SD_CLI_ID,
+        kind: ModelKind::Image,
+        name: "Image engine",
+        description: "stable-diffusion.cpp, which runs the picture models on this computer.",
+        languages: "—",
+        sources: SD_CLI_SOURCES,
+    },
+    ModelSpec {
+        id: "flux2KleinQ4",
+        kind: ModelKind::Image,
+        name: "FLUX.2 Klein",
+        description: "Quantized FLUX.2 Klein 4B. Makes a picture in four steps.",
+        languages: "Prompts in English, and the languages its text encoder knows",
+        sources: FLUX2_KLEIN_Q4_SOURCES,
+    },
+    ModelSpec {
+        id: "zImageTurboQ4",
+        kind: ModelKind::Image,
+        name: "Z-Image Turbo",
+        description: "Quantized Z-Image Turbo. Makes a picture in eight steps.",
+        languages: "English and Chinese",
+        sources: Z_IMAGE_TURBO_Q4_SOURCES,
     },
 ];
 
@@ -776,6 +922,9 @@ fn register_download(id: &'static str, total: u64) -> Option<Arc<Download>> {
 /// installed, or already downloading.
 pub fn start_download(id: &str) -> Result<(), String> {
     let spec = spec(id).ok_or_else(|| format!("there is no such model: {id}"))?;
+    if spec.sources.is_empty() {
+        return Err(format!("{} is not published for this kind of computer", spec.name));
+    }
     if is_installed(spec) {
         return Ok(());
     }
@@ -1246,6 +1395,42 @@ fn phonon_speaker_file(name: &str) -> String {
     format!("voice-{}.safetensors", name.to_lowercase())
 }
 
+/// The quantized weights of a picture model, once it is installed.
+pub struct ImageWeightPaths {
+    pub diffusion: PathBuf,
+    pub text_encoder: PathBuf,
+    pub vae: PathBuf,
+}
+
+pub fn image_paths(model: LocalImageModel) -> Option<ImageWeightPaths> {
+    let spec = spec(model.id())?;
+    if !is_installed(spec) {
+        return None;
+    }
+    let dir = spec.dir();
+    Some(ImageWeightPaths {
+        diffusion: dir.join(model.diffusion_file()),
+        text_encoder: dir.join(model.text_encoder_file()),
+        vae: dir.join(model.vae_file()),
+    })
+}
+
+/// The downloaded stable-diffusion.cpp archive, once it is installed.
+pub struct EngineArchive {
+    pub path: PathBuf,
+    /// What it was checked against, and so which release it is.
+    pub sha256: &'static str,
+}
+
+pub fn sd_cli_archive() -> Option<EngineArchive> {
+    let spec = spec(SD_CLI_ID)?;
+    if !is_installed(spec) {
+        return None;
+    }
+    let file = spec.files().into_iter().find(|f| f.dest == SD_CLI_ARCHIVE)?;
+    Some(EngineArchive { path: spec.dir().join(SD_CLI_ARCHIVE), sha256: file.sha256 })
+}
+
 /// Where a recogniser's files are, once [`installed`]. The two local
 /// recognisers are different model families -- a transducer and Whisper --
 /// so they are pointed at differently; see `speech::local::Recogniser`.
@@ -1358,6 +1543,22 @@ mod tests {
     }
 
     #[test]
+    fn every_local_image_model_downloads_the_files_it_is_run_with() {
+        for model in LocalImageModel::ALL {
+            let spec = spec(model.id()).unwrap_or_else(|| panic!("{} is missing", model.id()));
+            assert_eq!(spec.kind, ModelKind::Image);
+            assert_eq!(spec.name, model.name());
+            let dests: Vec<&str> = spec.files().iter().map(|f| f.dest).collect();
+            for file in [model.diffusion_file(), model.text_encoder_file(), model.vae_file()] {
+                assert!(dests.contains(&file), "{} does not download {file}", model.id());
+            }
+        }
+        // The models, and the engine that runs them.
+        assert_eq!(catalogue_of(ModelKind::Image).count(), LocalImageModel::ALL.len() + 1);
+        assert_eq!(spec(SD_CLI_ID).map(|s| s.kind), Some(ModelKind::Image));
+    }
+
+    #[test]
     fn a_retired_model_is_not_offered_and_its_replacement_is() {
         for (retired, by) in RETIRED {
             assert!(spec(retired).is_none(), "{retired} is retired but still offered");
@@ -1368,6 +1569,11 @@ mod tests {
     #[test]
     fn every_source_names_at_least_one_file_and_a_lowercase_hash() {
         for spec in catalogue() {
+            if spec.sources.is_empty() {
+                // Only the engine, and only where none is published.
+                assert_eq!(spec.id, SD_CLI_ID, "{} has nothing to download", spec.id);
+                continue;
+            }
             assert!(!spec.files().is_empty(), "{} has no files", spec.id);
             assert!(spec.bytes() > 0, "{} has no size", spec.id);
             for file in spec.files() {

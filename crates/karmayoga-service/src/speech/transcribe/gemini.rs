@@ -75,10 +75,7 @@ impl GeminiTranscriber {
     }
 
     fn host(&self) -> String {
-        reqwest::Url::parse(&self.base_url)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_string))
-            .unwrap_or_else(|| self.base_url.clone())
+        http::host_of(&self.base_url)
     }
 
     fn build_body(&self, chunk: &SpeechChunk, hints: &Hints) -> serde_json::Value {
@@ -107,19 +104,7 @@ impl GeminiTranscriber {
             .json(&body)
             .send()
             .await
-            .map_err(|e| self.transport_error(&e))
-    }
-
-    fn transport_error(&self, e: &reqwest::Error) -> CommandError {
-        let host = self.host();
-        let message = if e.is_timeout() {
-            format!("{host} did not answer in time")
-        } else if e.is_connect() {
-            format!("could not reach {host}")
-        } else {
-            format!("the request to {host} failed: {}", http::strip_url(&e.to_string()))
-        };
-        CommandError::new(codes::NETWORK, message)
+            .map_err(|e| http::transport_to(&self.host(), &e))
     }
 
     /// Map a non-2xx status. Gemini's error body is read here (unlike
@@ -136,9 +121,6 @@ impl GeminiTranscriber {
             );
         }
         match status.as_u16() {
-            401 | 403 => {
-                CommandError::new(codes::FORBIDDEN, "the transcription key was refused".to_string())
-            }
             404 => CommandError::new(
                 codes::NOT_FOUND,
                 format!("{host} does not know the model \"{}\"", self.model),
@@ -147,16 +129,7 @@ impl GeminiTranscriber {
                 codes::TOO_LARGE,
                 "that chunk was too large for the transcription service".to_string(),
             ),
-            429 => CommandError::new(
-                codes::RATE_LIMITED,
-                "the transcription service is rate limiting this key, or its quota is used up"
-                    .to_string(),
-            ),
-            500..=599 => CommandError::new(
-                codes::NETWORK,
-                format!("{host} is having transcription trouble ({status})"),
-            ),
-            _ => CommandError::new(codes::NETWORK, format!("{host} answered {status}")),
+            _ => http::status_error(&host, status, "transcription"),
         }
     }
 

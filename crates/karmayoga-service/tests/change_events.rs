@@ -65,9 +65,12 @@
 //!   ICS-bearing invite written into the local pack store -- more raw-byte
 //!   plumbing than this net is trying to buy -- and its own reply queues an
 //!   outbound send.
-//! - **A model download**: `download_speech_model` (a real ~40MB fetch) and
-//!   `download_decision_model` (a real 1-4 GB one).
-//!   `cancel_speech_model_download` and `cancel_decision_model_download` are
+//! - **A model download**: `download_speech_model` (a real ~40MB fetch),
+//!   `download_decision_model` (a real 1-4 GB one), `download_voice_model`
+//!   (a real ~130MB fetch) and `download_image_model` (a real multi-GB fetch
+//!   of the picture weights, or the inference program).
+//!   `cancel_speech_model_download`, `cancel_decision_model_download`,
+//!   `cancel_voice_model_download` and `cancel_image_model_download` are
 //!   *not* skipped: cancelling a download that was never started is a
 //!   harmless, fully local no-op, and its `change:` still fires.
 //! - **The meeting-notes pipeline**: `begin_recording` refuses outright
@@ -302,6 +305,10 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("create_event", "writes to an account calendar's server over the network"),
     ("delete_bank_link", "tells Plaid to forget the bank's sign-in before forgetting it here"),
     ("download_decision_model", "a real network download of 1-4 GB"),
+    (
+        "download_image_model",
+        "a real network download of the picture weights or the inference program",
+    ),
     ("download_speech_model", "a real ~40MB network download"),
     ("download_voice_model", "a real ~130MB network download"),
     ("edit_thread_draft", "needs a draft's copy synced from a server to carry on writing"),
@@ -1209,6 +1216,7 @@ async fn every_offline_write_announces_what_was_written_down() {
     run(&svc, &h, "cancel_speech_model_download", json!({ "id": "nonexistent-model" })).await;
     run(&svc, &h, "cancel_decision_model_download", json!({ "id": "d3Lite" })).await;
     run(&svc, &h, "cancel_voice_model_download", json!({ "id": "phonon" })).await;
+    run(&svc, &h, "cancel_image_model_download", json!({ "id": "flux2KleinQ4" })).await;
     run(
         &svc,
         &h,

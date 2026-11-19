@@ -67,6 +67,7 @@
 //! longer list, of every address a key may be kept for.
 
 use crate::error::{Error, Result};
+use crate::imagegen::ImageConfig;
 use crate::speech::{SpeechConfig, VoiceConfig};
 use serde::{Deserialize, Serialize};
 
@@ -303,38 +304,19 @@ where
     Ok(parsed.ok())
 }
 
-/// Read a stored decision model, taking one this build cannot read as none.
+/// Read a stored card -- the decision model, the speech model, the voice or
+/// the picture model -- taking one this build cannot read as none.
 ///
-/// For the reason [`known_effort`] gives: the decision card lives in the one
-/// sealed record every tier is in, and a [`DecisionApi`] written by a newer
-/// build would otherwise fail the whole record -- no model for any tier.
-/// (A build from before [`DecisionApi::Local`] does fail on one saved by
+/// For the reason [`known_effort`] gives: every card lives in the one sealed
+/// record every tier is in, and one written by a newer build -- a backend, a
+/// recogniser, a voice or a model this one does not know -- would otherwise
+/// fail the whole record, and cost the vault a model for every tier. (A build
+/// from before [`DecisionApi::Local`] does fail on a decision card saved by
 /// this one; this is what spares the next variant.)
-fn known_decision<'de, D>(d: D) -> std::result::Result<Option<DecisionConfig>, D::Error>
+fn known<'de, D, T>(d: D) -> std::result::Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
-{
-    let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
-    Ok(serde_json::from_value(raw).ok())
-}
-
-/// Read a stored speech model, taking one this build cannot read as none --
-/// a backend added by a newer build, or a recogniser it does not know -- for
-/// the reason [`known_decision`] gives: it shares the one sealed record every
-/// tier is in, and must not cost the vault all of them.
-fn known_speech<'de, D>(d: D) -> std::result::Result<Option<SpeechConfig>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
-    Ok(serde_json::from_value(raw).ok())
-}
-
-/// Read a stored voice, taking one this build cannot read as none, for the
-/// reason [`known_speech`] gives.
-fn known_voice<'de, D>(d: D) -> std::result::Result<Option<VoiceConfig>, D::Error>
-where
-    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
 {
     let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
     Ok(serde_json::from_value(raw).ok())
@@ -741,9 +723,9 @@ impl DecisionConfig {
     }
 }
 
-/// One of the six cards in Settings → Models, for the commands that act on
-/// a card's key: the three tiers, the decision model, the speech model and
-/// the voice.
+/// One of the seven cards in Settings → Models, for the commands that act on
+/// a card's key: the three tiers, the decision model, the speech model, the
+/// voice and the picture model.
 ///
 /// Separate from [`ModelTier`] because none of the last three is a size of
 /// the same work. Nothing resolves to them and they resolve to nothing;
@@ -757,6 +739,7 @@ pub enum ModelSlot {
     Decision,
     Speech,
     Voice,
+    Image,
 }
 
 impl ModelSlot {
@@ -768,6 +751,7 @@ impl ModelSlot {
             Self::Decision => "Decision",
             Self::Speech => "Speech",
             Self::Voice => "Voice",
+            Self::Image => "Image",
         }
     }
 }
@@ -806,8 +790,8 @@ pub struct ModelSettings {
     /// What sorts mail into the categories under Settings → Mail sorting, in
     /// place of Small. `None` leaves sorting on Small, as before there was
     /// one. See [`DecisionConfig`]. One this build cannot read -- a way of
-    /// reaching a model added later -- reads as `None`: see [`known_decision`].
-    #[serde(default, deserialize_with = "known_decision")]
+    /// reaching a model added later -- reads as `None`: see [`known`].
+    #[serde(default, deserialize_with = "known")]
     pub decision: Option<DecisionConfig>,
     /// What turns speech into text -- meeting notes' calls today -- and in
     /// which language. `None` means nothing that listens can be switched on.
@@ -815,15 +799,20 @@ pub struct ModelSettings {
     ///
     /// Left out of the record when unset, so a vault that never chose one
     /// is written exactly as it was before there was a speech model; one
-    /// this build cannot read reads as `None`, see [`known_speech`].
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known_speech")]
+    /// this build cannot read reads as `None`, see [`known`].
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known")]
     pub speech: Option<SpeechConfig>,
     /// What turns the assistant's words into speech when it is talked to.
     /// `None` means it cannot be. Left out of the record when unset, and one
     /// this build cannot read reads as `None`, as for
     /// [`speech`](Self::speech).
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known_voice")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known")]
     pub voice: Option<VoiceConfig>,
+    /// What makes a picture. `None` means nothing can. Left out of the
+    /// record when unset, and one this build cannot read reads as `None`,
+    /// as for [`voice`](Self::voice).
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known")]
+    pub image: Option<ImageConfig>,
 }
 
 impl Default for ModelSettings {
@@ -835,6 +824,7 @@ impl Default for ModelSettings {
             decision: None,
             speech: None,
             voice: None,
+            image: None,
         }
     }
 }
@@ -868,7 +858,8 @@ impl ModelSettings {
             })?;
         }
         self.validate_speech()?;
-        self.validate_voice()
+        self.validate_voice()?;
+        self.validate_image()
     }
 
     /// [`ModelSettings::validate`], except that the speech card is checked
@@ -880,12 +871,16 @@ impl ModelSettings {
         let mut unchanged = self.clone();
         unchanged.speech = None;
         unchanged.voice = None;
+        unchanged.image = None;
         unchanged.validate()?;
         if self.speech != stored.speech {
             self.validate_speech()?;
         }
         if self.voice != stored.voice {
             self.validate_voice()?;
+        }
+        if self.image != stored.image {
+            self.validate_image()?;
         }
         Ok(())
     }
@@ -910,6 +905,16 @@ impl ModelSettings {
         Ok(())
     }
 
+    fn validate_image(&self) -> Result<()> {
+        if let Some(image) = &self.image {
+            image.validate().map_err(|e| match e {
+                Error::Invalid(why) => Error::Invalid(format!("Image: {why}")),
+                other => other,
+            })?;
+        }
+        Ok(())
+    }
+
     /// Where `slot`'s card points, if it is switched on -- what a key set on
     /// that card is filed under. A decision or speech model on this computer
     /// points nowhere.
@@ -921,6 +926,7 @@ impl ModelSettings {
             ModelSlot::Decision => self.decision.as_ref().and_then(DecisionConfig::endpoint),
             ModelSlot::Speech => self.speech.as_ref().and_then(SpeechConfig::endpoint),
             ModelSlot::Voice => self.voice.as_ref().and_then(VoiceConfig::endpoint),
+            ModelSlot::Image => self.image.as_ref().and_then(ImageConfig::endpoint),
         }
     }
 
@@ -952,10 +958,10 @@ impl ModelSettings {
     /// decision model's, sorted, each once. A decision model on this
     /// computer points at none.
     ///
-    /// Not the speech model's. It carries a call's audio and never mail, so
-    /// it has no place in [`ModelSettings::acknowledgement_name`], which is
-    /// this list joined; see [`ModelSettings::all_endpoints`] for the one
-    /// that counts it.
+    /// Not the speech, voice, or image model's. None of those carry mail, so
+    /// they have no place in [`ModelSettings::acknowledgement_name`], which
+    /// is this list joined; see [`ModelSettings::all_endpoints`] for the one
+    /// that counts them.
     pub fn endpoints(&self) -> Vec<&str> {
         let mut all: Vec<&str> = ModelTier::ALL
             .iter()
@@ -968,14 +974,15 @@ impl ModelSettings {
         all
     }
 
-    /// Every endpoint any card points at -- [`ModelSettings::endpoints`] and
-    /// the speech model's -- sorted, each once: the addresses a key may be
-    /// kept for. A key for any other is forgotten when the models are saved,
-    /// and the pane says which of these have one.
+    /// Every endpoint any card points at -- [`ModelSettings::endpoints`] plus
+    /// the speech, voice, and image models -- sorted, each once: the
+    /// addresses a key may be kept for. A key for any other is forgotten
+    /// when the models are saved, and the pane says which of these have one.
     pub fn all_endpoints(&self) -> Vec<&str> {
         let mut all = self.endpoints();
         all.extend(self.speech.as_ref().and_then(SpeechConfig::endpoint));
         all.extend(self.voice.as_ref().and_then(VoiceConfig::endpoint));
+        all.extend(self.image.as_ref().and_then(ImageConfig::endpoint));
         all.sort_unstable();
         all.dedup();
         all
@@ -995,8 +1002,9 @@ impl ModelSettings {
     /// OpenAI did not acknowledge the gateway Large was moved to afterwards.
     /// Unconfigured tiers are left out, so a vault whose tiers share one
     /// endpoint names that endpoint alone -- exactly what it named before
-    /// there were tiers. So is the speech model, which carries no mail:
-    /// choosing or moving one never clears anybody's acknowledgement.
+    /// there were tiers. So are the speech, voice, and image models, which
+    /// carry no mail: choosing or moving one never clears anybody's
+    /// acknowledgement.
     ///
     /// The interface stores this string in an account when a box is ticked
     /// -- taken from `model_settings`'s own answer rather than worked out
@@ -1232,6 +1240,7 @@ mod tests {
             decision: None,
             speech: None,
             voice: None,
+            image: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["medium"]["baseUrl"], "https://openrouter.ai/api/v1");
@@ -1350,6 +1359,7 @@ mod tests {
                 decision: None,
                 speech: None,
                 voice: None,
+                image: None,
             };
             assert_eq!(s.acknowledgement_name(), want);
         }
@@ -1392,6 +1402,38 @@ mod tests {
         s.speech =
             Some(SpeechConfig::new(TranscriberConfig::Local { model: LocalModel::WhisperTurbo }));
         assert_eq!(s.endpoint_of(ModelSlot::Speech), None);
+    }
+
+    /// A picture is not mail. Choosing an image model, even at OpenAI, must
+    /// not change what an acknowledgement names. The address is still one a
+    /// key may be kept for.
+    #[test]
+    fn an_image_model_is_not_in_the_acknowledgement() {
+        use crate::imagegen::{ImageConfig, ImageGeneratorConfig, LocalImageModel};
+        let mut s = ModelSettings::default();
+        let before = s.acknowledgement_name();
+        s.image = Some(ImageConfig::new(ImageGeneratorConfig::OpenAi {
+            model: "gpt-image-2.6-flare".into(),
+        }));
+        assert_eq!(s.acknowledgement_name(), before);
+        assert_eq!(s.endpoints(), vec!["https://api.openai.com/v1"]);
+        assert_eq!(s.endpoint_of(ModelSlot::Image), Some("https://api.openai.com/v1"));
+        assert_eq!(s.all_endpoints(), vec!["https://api.openai.com/v1"]);
+
+        s.image = Some(ImageConfig::new(ImageGeneratorConfig::Local {
+            model: LocalImageModel::Flux2KleinQ4,
+        }));
+        assert_eq!(s.acknowledgement_name(), before);
+        assert_eq!(s.endpoint_of(ModelSlot::Image), None);
+        assert_eq!(s.all_endpoints(), vec!["https://api.openai.com/v1"]);
+
+        let stored: ModelSettings = serde_json::from_value(serde_json::json!({
+            "medium": { "provider": "openAi", "model": "gpt-5.1-mini" },
+            "image": { "generator": { "type": "somethingNewer" } }
+        }))
+        .unwrap();
+        assert_eq!(stored.image, None);
+        assert!(serde_json::to_value(ModelSettings::default()).unwrap().get("image").is_none());
     }
 
     #[test]

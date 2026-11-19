@@ -60,6 +60,9 @@ class ModelsState {
   /** The voices that run on this computer: `voice_models`. */
   voiceModels = $state<LocalModelInfo[]>([])
   #voiceTimer: ReturnType<typeof setInterval> | null = null
+  /** The picture models and the image engine: `image_models`. */
+  imageModels = $state<LocalModelInfo[]>([])
+  #imageTimer: ReturnType<typeof setInterval> | null = null
   /**
    * Why the last read failed, or `null`. Kept rather than swallowed: the pane
    * would otherwise sit on "Loading…" forever, and an account's "I
@@ -85,6 +88,9 @@ class ModelsState {
     this.voiceModels = []
     if (this.#voiceTimer) clearInterval(this.#voiceTimer)
     this.#voiceTimer = null
+    this.imageModels = []
+    if (this.#imageTimer) clearInterval(this.#imageTimer)
+    this.#imageTimer = null
   }
 
   /** Whether this copy of Karma Yoga can run a decision model itself. */
@@ -274,6 +280,43 @@ class ModelsState {
   async deleteVoice(id: string) {
     await api.deleteVoiceModel(id)
     await this.refreshVoice()
+  }
+
+  // ── Pictures on this computer ────────────────────────────────────
+
+  async refreshImages() {
+    this.imageModels = await api.imageModels()
+    const downloading = this.imageModels.some((m) => m.progress != null)
+    if (downloading && !this.#imageTimer) {
+      this.#imageTimer = setInterval(() => void this.refreshImages().catch(quietly), VOICE_POLL_MS)
+    } else if (!downloading && this.#imageTimer) {
+      clearInterval(this.#imageTimer)
+      this.#imageTimer = null
+    }
+  }
+
+  async downloadImage(id: string) {
+    await api.downloadImageModel(id)
+    await this.refreshImages()
+  }
+
+  async cancelImage(id: string) {
+    await api.cancelImageModelDownload(id)
+    await this.refreshImages()
+  }
+
+  async deleteImage(id: string) {
+    await api.deleteImageModel(id)
+    await this.refreshImages()
+  }
+
+  /** The saved image model, as an object URL of the PNG. The caller revokes it. */
+  async generateImage(prompt: string): Promise<string> {
+    const { png } = await api.generateImage(prompt)
+    const binary = atob(png)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return URL.createObjectURL(new Blob([bytes], { type: 'image/png' }))
   }
 
   /**
