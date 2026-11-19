@@ -25,6 +25,8 @@
 
 pub mod access;
 pub mod detect;
+pub mod dictate;
+pub mod listen;
 pub mod live;
 #[cfg(feature = "speech")]
 pub mod local;

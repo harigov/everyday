@@ -97,6 +97,12 @@ impl Tuning {
     /// when they are done.
     pub const CONVERSATION: Tuning =
         Tuning { end_of_turn_seconds: 0.7, min_speech_seconds: 0.15, max_turn_seconds: 30.0 };
+
+    /// Dictating: people pause to think mid-sentence, and an utterance only
+    /// decides where the recogniser is handed audio, not where the text
+    /// breaks, so a longer pause is allowed before one is cut.
+    pub const DICTATION: Tuning =
+        Tuning { end_of_turn_seconds: 1.2, min_speech_seconds: 0.2, max_turn_seconds: 30.0 };
 }
 
 /// Finds where speech begins and ends in a stream of audio.

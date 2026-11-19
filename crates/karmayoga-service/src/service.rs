@@ -146,6 +146,15 @@ pub struct Service {
     /// This session's short memory of one place's forecast -- see
     /// [`crate::weather_cache`].
     weather_cache: WeatherCache,
+    /// Spoken briefings of mail threads, keyed as the summary cache is: by
+    /// thread and how many messages it had when the briefing was written. A
+    /// briefing is not a summary -- it is written for the ear, at a length
+    /// that scales with the thread -- so it has a cache of its own, which
+    /// lives here rather than in [`crate::runtime::mail::MailRuntime`]
+    /// because listening is not mail's session state. Cleared on
+    /// [`Service::close`] exactly as the summary cache is: it is somebody's
+    /// correspondence.
+    listen_briefings: std::sync::Mutex<std::collections::HashMap<ThreadId, (u32, String)>>,
     /// The chat links' runner and the last status each reported. See
     /// [`crate::chat`].
     pub(crate) chat: crate::chat::ChatHub,
@@ -196,6 +205,7 @@ impl Service {
             jobs: crate::jobs::JobRuntime::default(),
             money: crate::money::MoneyRuntime::default(),
             weather_cache: WeatherCache::new(),
+            listen_briefings: std::sync::Mutex::default(),
         }
     }
 
@@ -428,6 +438,18 @@ impl Service {
 
     pub fn mail_summary_cache_put(&self, thread: ThreadId, message_count: u32, summary: String) {
         self.mail.summary_cache_put(thread, message_count, summary);
+    }
+
+    /// `thread`'s cached spoken briefing, if one was written against
+    /// `message_count` messages -- the same rule as
+    /// [`Self::mail_summary_cached`].
+    pub fn listen_briefing_cached(&self, thread: ThreadId, message_count: u32) -> Option<String> {
+        let cache = self.listen_briefings.lock().unwrap();
+        cache.get(&thread).filter(|(n, _)| *n == message_count).map(|(_, s)| s.clone())
+    }
+
+    pub fn listen_briefing_cache_put(&self, thread: ThreadId, message_count: u32, text: String) {
+        self.listen_briefings.lock().unwrap().insert(thread, (message_count, text));
     }
 
     /// A still-fresh cached forecast for `place` -- see
@@ -897,6 +919,7 @@ impl Service {
         self.supervisor().stop_all().await;
         self.close_mail();
         self.mail.on_lock();
+        self.listen_briefings.lock().unwrap().clear();
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the

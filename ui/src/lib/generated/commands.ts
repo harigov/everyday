@@ -549,6 +549,7 @@ export interface Commands {
       instruction: string
       currentText?: string | null
       identity?: string | null
+      spoken?: boolean
     }
     result: WrittenText
   }

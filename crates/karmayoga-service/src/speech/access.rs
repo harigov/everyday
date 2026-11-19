@@ -76,12 +76,24 @@ impl Service {
 
     /// The chosen voice, ready to speak.
     pub async fn speech_synthesiser(self: &Arc<Self>) -> CommandResult<Arc<dyn Synthesiser>> {
+        self.speech_synthesiser_at(1.0).await
+    }
+
+    /// [`Self::speech_synthesiser`] at `multiple` times the speed chosen in
+    /// Settings, for a listener who wants it faster or slower.
+    pub async fn speech_synthesiser_at(
+        self: &Arc<Self>,
+        multiple: f32,
+    ) -> CommandResult<Arc<dyn Synthesiser>> {
         let vault = self.require_unlocked()?;
-        let voice = blocking(move || Ok(vault.voice_access()?)).await?;
+        let mut voice = blocking(move || Ok(vault.voice_access()?)).await?;
         let installed =
             voice.config.synthesiser.local_voice().is_none_or(crate::local::files::voice_installed);
         if let Some(refusal) = missing_voice(&voice.config, installed) {
             return Err(CommandError::new(codes::INVALID, refusal));
+        }
+        if multiple.is_finite() && multiple > 0.0 {
+            voice.config.speed *= multiple;
         }
         build_synthesiser(voice).await
     }

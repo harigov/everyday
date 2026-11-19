@@ -8,9 +8,11 @@
 //! three commands are the window's controls. See `docs/plans/voice.md`, "The desktop
 //! transport".
 //!
-//! Voice and meeting recording refuse each other -- there is one microphone --
-//! and a window looking at another computer's vault has no voice mode: its
-//! microphone is not the vault's.
+//! Voice, dictation and meeting recording refuse each other -- there is one
+//! microphone -- and a conversation has the speakers too, so it stops anything
+//! being listened to before it opens them (`crate::listen`). A window looking
+//! at another computer's vault has no voice mode: its microphone is not the
+//! vault's.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,6 +26,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::audio::engine::{AudioEngine, EngineEvent, EngineOptions, EngineSink};
 use crate::capture::CaptureSlot;
+use crate::dictation::DictationHandle;
 use crate::state::AppState;
 
 /// What `AppState` holds while a conversation is being talked, or being
@@ -90,6 +93,7 @@ impl Held {
 fn reserve(
     voice: &Mutex<Option<VoiceHandle>>,
     capture: &Mutex<Option<CaptureSlot>>,
+    dictation: &Mutex<Option<DictationHandle>>,
 ) -> CommandResult<()> {
     let mut recording = capture.lock().unwrap();
     // A recording that ended on its own may not have cleared its slot yet.
@@ -98,6 +102,12 @@ fn reserve(
         return Err(CommandError::new(
             codes::BUSY,
             "A meeting is being recorded, and it has the microphone. Stop recording to talk to the assistant.",
+        ));
+    }
+    if dictation.lock().unwrap().is_some() {
+        return Err(CommandError::new(
+            codes::BUSY,
+            "You are dictating, and it has the microphone. Finish dictating to talk to the assistant.",
         ));
     }
     let mut slot = voice.lock().unwrap();
@@ -149,7 +159,8 @@ fn abandon(voice: &Mutex<Option<VoiceHandle>>) {
 /// `channel` hears everything the session says until it ends.
 ///
 /// Refuses when the window is looking at a vault on another computer, when a
-/// meeting is being recorded, and when there is a conversation already.
+/// meeting is being recorded, when someone is dictating, and when there is a
+/// conversation already. Anything being listened to is stopped.
 #[tauri::command]
 pub async fn voice_start(
     app: AppHandle,
@@ -165,10 +176,13 @@ pub async fn voice_start(
             "Talking to the assistant uses this computer's microphone and speakers, so it is not available while this window is looking at a vault on another computer.",
         ));
     }
-    reserve(state.voice(), state.capture())?;
+    reserve(state.voice(), state.capture(), state.dictation())?;
     if let Some(VoiceHandle::Starting(held)) = state.voice().lock().unwrap().as_mut() {
         held.window = webview.label().to_string();
     }
+    // The speakers are this conversation's now, and its microphone would
+    // otherwise hear whatever was being read.
+    crate::listen::stop_listening(&state);
 
     match try_start(&app, &state, conversation_id, on_screen, channel).await {
         Ok(()) => Ok(()),
@@ -365,12 +379,17 @@ mod tests {
         Mutex::new(None)
     }
 
+    fn no_dictation() -> Mutex<Option<DictationHandle>> {
+        Mutex::new(None)
+    }
+
     #[test]
     fn two_starts_cannot_both_have_the_slot() {
         let voice = slot();
         let capture = no_capture();
-        reserve(&voice, &capture).expect("the first start gets it");
-        let second = reserve(&voice, &capture).expect_err("the second is turned away");
+        reserve(&voice, &capture, &no_dictation()).expect("the first start gets it");
+        let second =
+            reserve(&voice, &capture, &no_dictation()).expect_err("the second is turned away");
         assert_eq!(second.code, codes::BUSY);
     }
 
@@ -378,9 +397,22 @@ mod tests {
     fn a_meeting_being_recorded_keeps_voice_out() {
         let voice = slot();
         let capture = Mutex::new(Some(CaptureSlot::Starting));
-        let refused = reserve(&voice, &capture).expect_err("one microphone, one user");
+        let refused =
+            reserve(&voice, &capture, &no_dictation()).expect_err("one microphone, one user");
         assert_eq!(refused.code, codes::BUSY);
         assert!(refused.message.contains("meeting"));
+        assert!(voice.lock().unwrap().is_none(), "nothing was reserved");
+    }
+
+    #[test]
+    fn dictating_keeps_voice_out() {
+        let voice = slot();
+        let dictation =
+            Mutex::new(Some(DictationHandle::Starting(crate::dictation::Held::default())));
+        let refused =
+            reserve(&voice, &no_capture(), &dictation).expect_err("one microphone, one user");
+        assert_eq!(refused.code, codes::BUSY);
+        assert!(refused.message.contains("dictating"));
         assert!(voice.lock().unwrap().is_none(), "nothing was reserved");
     }
 
@@ -388,15 +420,15 @@ mod tests {
     fn a_failed_start_frees_the_slot_for_the_next() {
         let voice = slot();
         let capture = no_capture();
-        reserve(&voice, &capture).unwrap();
+        reserve(&voice, &capture, &no_dictation()).unwrap();
         abandon(&voice);
-        reserve(&voice, &capture).expect("free again");
+        reserve(&voice, &capture, &no_dictation()).expect("free again");
     }
 
     #[test]
     fn what_the_window_says_during_a_start_is_kept_and_delivered_in_order() {
         let voice = slot();
-        reserve(&voice, &no_capture()).unwrap();
+        reserve(&voice, &no_capture(), &no_dictation()).unwrap();
         send_or_hold(&voice, VoiceInput::Muted(true));
         send_or_hold(&voice, VoiceInput::Muted(false));
         send_or_hold(&voice, VoiceInput::Screen(None));

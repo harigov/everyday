@@ -32,6 +32,7 @@
     type ListRow,
     type MailOnly,
   } from '../lib/mail'
+  import { listening } from '../lib/listen.svelte'
   import { mail } from '../lib/mail.svelte'
   import { notify } from '../lib/notify.svelte'
   import { sorting } from '../lib/sorting.svelte'
@@ -267,6 +268,27 @@
   /** (p) TODO: `summarize_thread` stays out of reach until the account's
    *  own `mailAi.summaries` switch is on -- see `mail-api.ts`'s TODO(p). */
   const canSummarize = $derived(openAccount?.mailAi?.summaries === true)
+  /** Listening is gated as summaries are -- the same mail goes to the same
+   *  model -- and needs a speaker on this computer. */
+  const canListen = $derived(canSummarize && listening.available)
+  /** Whether the open thread is the one being read aloud now. */
+  const listeningToOpen = $derived(
+    mail.openThread
+      ? listening.isReading({ type: 'mailThread', threadId: mail.openThread.thread.id })
+      : false,
+  )
+
+  /** Start reading the open thread, or stop doing so when it already is. */
+  function toggleListen() {
+    const thread = mail.openThread?.thread
+    if (!thread) return
+    if (listeningToOpen) listening.stop()
+    else
+      void listening.start(
+        { type: 'mailThread', threadId: thread.id },
+        thread.subject || '(no subject)',
+      )
+  }
   /** The open thread's drafts, but the one being written below, which is the
    *  composer itself rather than a card. */
   const draftCards = $derived(
@@ -1063,6 +1085,24 @@
               </button>
             </div>
             <span class="spacer"></span>
+            {#if canListen}
+              <button
+                class="summarize"
+                title={listeningToOpen
+                  ? 'Stop reading it aloud'
+                  : 'Listen to a briefing of this thread'}
+                onclick={toggleListen}
+              >
+                <Icon name={listeningToOpen ? 'stop' : 'play'} size={14} />
+                {#if !listeningToOpen}
+                  Listen
+                {:else if listening.state === 'preparing'}
+                  Preparing…
+                {:else}
+                  Stop
+                {/if}
+              </button>
+            {/if}
             {#if canSummarize}
               <button
                 class="summarize"
@@ -1129,6 +1169,17 @@
               class="close"
               aria-label="Dismiss the summary"
               onclick={() => mail.dismissSummary()}><Icon name="close" size={13} /></button
+            >
+          </div>
+        {/if}
+        {#if listeningToOpen && listening.sentences.length > 0}
+          <!-- What the voice has said so far, in the summary's place and style.
+               The sentence being said is not marked yet. -->
+          <div class="summary-panel">
+            <Icon name="play" size={14} />
+            <p>{listening.sentences.join(' ')}</p>
+            <button class="close" aria-label="Stop reading aloud" onclick={() => listening.stop()}
+              ><Icon name="close" size={13} /></button
             >
           </div>
         {/if}

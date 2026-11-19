@@ -44,6 +44,7 @@ import type {
   AllergyId,
   Condition,
   ConditionId,
+  DictationEvent,
   DocKind,
   Dose,
   DoseId,
@@ -119,6 +120,8 @@ import type {
   Kind,
   KeepInTouchSettings,
   KindId,
+  ListenEvent,
+  ListenSource,
   LogEntry,
   LogEvent,
   LogId,
@@ -204,6 +207,8 @@ import { VaultError } from './types'
 import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
 import type { Commands } from './generated/commands'
 import type { Section } from './apps'
+import type { MockDictationControls } from './mock-dictation'
+import type { MockListenControls } from './mock-listen'
 import {
   mediaBase as webMediaBase,
   onWebChange,
@@ -477,6 +482,35 @@ export let voiceStart: (
   throw new VaultError('unavailable', 'Talking to the assistant is only in the desktop app.')
 }
 
+/**
+ * Read `source` aloud at `speed`, streaming what the session does back.
+ *
+ * As `voiceStart`: a long run of events on a channel, the last always `ended`,
+ * and it resolves once the session is under way. Starting while something is
+ * being read replaces it. Pausing, skipping, the speed and stopping are
+ * separate calls in `api` (`listenPause` and the rest), because they reach the
+ * shell's speakers, not the vault.
+ *
+ * Rejects on the web and for a window looking at another computer's vault.
+ */
+export let listenStart: (
+  source: ListenSource,
+  speed: number,
+  onEvent: (event: ListenEvent) => void,
+) => Promise<void> = async () => {
+  throw new VaultError('unavailable', 'Listening is only in the desktop app.')
+}
+
+/**
+ * Listen for what is said, streaming the words heard so far. As `voiceStart`;
+ * ending it is `api.dictationStop` (keep the words) or `api.dictationCancel`.
+ */
+export let dictationStart: (
+  onEvent: (event: DictationEvent) => void,
+) => Promise<void> = async () => {
+  throw new VaultError('unavailable', 'Dictating is only in the desktop app.')
+}
+
 if (SHELL) {
   const { listen } = await import('@tauri-apps/api/event')
   const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow')
@@ -551,19 +585,33 @@ if (SHELL) {
       channel,
     })
   }
-  voiceStart = async (conversationId, onScreen, onEvent) => {
-    const channel = new mod.Channel<VoiceEvent>()
+  /**
+   * Start one of the shell's sessions that answer on a channel rather than
+   * with a value -- talking, listening, dictating -- with `onEvent` hearing
+   * all it says. Errors as `invoke` below gives them, which this does not go
+   * through.
+   */
+  const startSession = async <E>(
+    cmd: string,
+    args: Record<string, unknown>,
+    onEvent: (event: E) => void,
+  ): Promise<void> => {
+    const channel = new mod.Channel<E>()
     channel.onmessage = onEvent
     try {
-      await mod.invoke<void>('voice_start', { conversationId, onScreen, channel })
+      await mod.invoke<void>(cmd, { ...args, channel })
     } catch (raw) {
-      // As `invoke` below, which this does not go through.
       if (raw && typeof raw === 'object' && 'code' in raw && 'message' in raw) {
         throw new VaultError(String(raw.code), String(raw.message))
       }
       throw new VaultError('unknown', String(raw))
     }
   }
+  voiceStart = (conversationId, onScreen, onEvent) =>
+    startSession<VoiceEvent>('voice_start', { conversationId, onScreen }, onEvent)
+  listenStart = (source, speed, onEvent) =>
+    startSession<ListenEvent>('listen_start', { source, speed }, onEvent)
+  dictationStart = (onEvent) => startSession<DictationEvent>('dictation_start', {}, onEvent)
   invoke = async <T>(cmd: string, args?: InvokeArgs, requestId?: string): Promise<T> => {
     try {
       // Two kinds of call, and the split is not arbitrary. Almost everything
@@ -730,6 +778,11 @@ export function callCommand<T = unknown>(
 ): Promise<T> {
   return MOCK ? invoke<T>(name, args) : invoke<T>('call', { name, args, requestId: null })
 }
+
+/** The scripted listening and dictating sessions, set in the mock build below
+ *  and `null` everywhere else. */
+let mockListen: MockListenControls | null = null
+let mockDictation: MockDictationControls | null = null
 
 export const api = {
   bootstrap: () => invoke<Bootstrap>('bootstrap'),
@@ -914,6 +967,24 @@ export const api = {
   voiceSetMuted: (muted: boolean) => invoke<void>('voice_set_muted', { muted }),
   /** What is on screen now, for the next thing the person says. */
   voiceSetScreen: (onScreen: OnScreen | null) => invoke<void>('voice_set_screen', { onScreen }),
+
+  // Listening and dictating, in the shell: `listenStart` and `dictationStart`
+  // above begin a session, and these reach it. By name, like the voice ones.
+  // In the mock they go to the scripted sessions instead (`mockListen`), as
+  // the mock `invoke` knows no such commands.
+  listenPause: () => (mockListen ? mockListen.pause() : invoke<void>('listen_pause')),
+  listenResume: () => (mockListen ? mockListen.resume() : invoke<void>('listen_resume')),
+  /** Skip `by` sentences: -1 back one, 1 forward one. */
+  listenSkip: (by: number) =>
+    mockListen ? mockListen.skip(by) : invoke<void>('listen_skip', { by }),
+  listenSpeed: (speed: number) =>
+    mockListen ? mockListen.speed(speed) : invoke<void>('listen_speed', { speed }),
+  listenStop: () => (mockListen ? mockListen.stop() : invoke<void>('listen_stop')),
+  /** Stop listening and finish with the words heard. */
+  dictationStop: () => (mockDictation ? mockDictation.stop() : invoke<void>('dictation_stop')),
+  /** Stop listening and throw the words away. */
+  dictationCancel: () =>
+    mockDictation ? mockDictation.cancel() : invoke<void>('dictation_cancel'),
 
   // ── Meeting notes -- the service commands ──────────────────────────
   //
@@ -2660,4 +2731,10 @@ if (MOCK) {
   mockMediaUrl = f
   sendMessage = mockSendMessage
   voiceStart = (await import('./mock-voice')).mockVoiceStart
+  const listen = await import('./mock-listen')
+  listenStart = listen.mockListenStart
+  mockListen = listen.mockListenControls
+  const dictation = await import('./mock-dictation')
+  dictationStart = dictation.mockDictationStart
+  mockDictation = dictation.mockDictationControls
 }

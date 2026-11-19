@@ -122,9 +122,15 @@ export async function mockDraftWithAi(opts: {
   inReplyTo?: string | null
   instruction: string
   currentText?: string | null
+  spoken?: boolean
 }): Promise<WrittenText> {
   await delay(500)
-  const lines = ['Hi,', ...sentencesFromInstruction(opts.instruction), 'Best,']
+  // Words dictated arrive with the fillers a person speaks with; the real
+  // model is told to ignore them, so the stand-in drops the plainest ones.
+  const instruction = opts.spoken
+    ? opts.instruction.replace(/\b(um+|uh+|er+|you know)\b,?\s*/gi, '')
+    : opts.instruction
+  const lines = ['Hi,', ...sentencesFromInstruction(instruction), 'Best,']
   return { bodyText: lines.join('\n'), bodyHtml: paragraphs(lines) }
 }
 

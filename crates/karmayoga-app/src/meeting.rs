@@ -94,13 +94,8 @@ pub(crate) async fn begin(
     template_id: Option<TemplateId>,
     automatic: bool,
 ) -> CommandResult<Recording> {
-    // One microphone, one listener: see `crate::voice`.
-    if app.state::<AppState>().voice().lock().unwrap().is_some() {
-        return Err(CommandError::new(
-            "conflict",
-            "Stop talking to the assistant before recording a meeting.",
-        ));
-    }
+    // One microphone, one listener: `begin_headless_as` refuses while the
+    // assistant is being talked to or something is being dictated.
     let state = app.state::<AppState>();
     let recording = begin_headless_as(
         ctx,
@@ -114,6 +109,9 @@ pub(crate) async fn begin(
         Some(app.clone()),
     )
     .await?;
+    // Anything being read aloud would be recorded with the meeting, from the
+    // speakers and from the system's audio both.
+    crate::listen::stop_listening(&state);
     if let Some(tray) = app.try_state::<Tray>() {
         let _ = tray.set_recording(&app, Some(&recording.title));
     }
@@ -219,6 +217,25 @@ pub(crate) async fn begin_headless_as(
         reclaim_if_ended(&mut slot);
         if slot.is_some() {
             return Err(CommandError::new("already_running", "a recording is already in progress"));
+        }
+        // One microphone, one listener: see `crate::voice`. Checked under the
+        // capture lock, in the order `voice` and `dictation` take theirs
+        // (capture, voice, dictation), so a conversation or a dictation that
+        // starts at the same moment either sees this recording or is seen.
+        if let Some(app) = app.as_ref() {
+            let state = app.state::<AppState>();
+            if state.voice().lock().unwrap().is_some() {
+                return Err(CommandError::new(
+                    "conflict",
+                    "Stop talking to the assistant before recording a meeting.",
+                ));
+            }
+            if state.dictation().lock().unwrap().is_some() {
+                return Err(CommandError::new(
+                    "conflict",
+                    "Finish dictating before recording a meeting.",
+                ));
+            }
         }
         *slot = Some(CaptureSlot::Starting);
     }
