@@ -8,8 +8,9 @@ goes into the same thread as what is typed.
 
 - **One session, any transport.** `karmayoga_service::voice` takes 16 kHz mono
   audio and gives back audio and events. The desktop app's microphone and
-  speakers are the first transport. WebRTC, Matrix and XMPP are later callers of
-  `Service::voice_open`.
+  speakers are the first transport; a Matrix call is the second (see
+  `calls.md`, through `Service::voice_open_via`). WebRTC in a browser and XMPP
+  are later callers.
 - **Echo cancellation belongs to the transport**, which alone knows what was
   really played. The desktop uses `sonora`, a pure Rust port of WebRTC's audio
   processing. A browser brings its own.
@@ -24,7 +25,8 @@ goes into the same thread as what is typed.
   everything else.
 - **Audio is not kept.** The thread holds words only.
 - **This computer only, for now.** A window connected to a remote vault, and the
-  web interface, have no voice mode.
+  web interface, have no voice mode. A call through a chat link is answered by
+  whatever runs the link, a server included.
 
 ## The layers underneath
 

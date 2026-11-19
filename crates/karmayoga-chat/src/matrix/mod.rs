@@ -19,6 +19,7 @@
 //! - `rules` and `errors`: the decisions that need no network, so they
 //!   can be tested without a server.
 
+mod call;
 mod errors;
 mod hearing;
 mod identity;
@@ -30,7 +31,7 @@ mod speaking;
 mod verification;
 
 use crate::connector::{
-    ChatError, ChatId, Connector, Incoming, MessageRef, Question, Report, Setup,
+    CallId, ChatError, ChatId, Connector, HangUp, Incoming, MessageRef, Question, Report, Setup,
 };
 use async_trait::async_trait;
 use karmayoga_core::chat::ChatService;
@@ -66,6 +67,8 @@ pub struct MatrixConnector {
     typing: Mutex<HashMap<ChatId, TypingTask>>,
     /// The owner verifying the bot, and the bot them.
     verifying: Arc<Verifying>,
+    /// The owner's calls.
+    calls: Arc<call::Calls>,
 }
 
 impl MatrixConnector {
@@ -122,6 +125,7 @@ impl MatrixConnector {
             owner.clone(),
             Arc::clone(&setup.trust),
         ));
+        let calls = Arc::new(call::Calls::new(client.clone(), bot.clone(), owner.clone()));
         Ok(Self {
             client,
             bot,
@@ -133,6 +137,7 @@ impl MatrixConnector {
             questions: Arc::new(Questions::default()),
             typing: Mutex::new(HashMap::new()),
             verifying,
+            calls,
         })
     }
 }
@@ -178,5 +183,18 @@ impl Connector for MatrixConnector {
 
     fn verifier(&self) -> Option<Arc<dyn ChatVerifier>> {
         Some(Arc::new(Verifier(Arc::clone(&self.verifying))))
+    }
+
+    async fn answer_call(
+        &self,
+        chat: &ChatId,
+        call: &CallId,
+        answer: &str,
+    ) -> Result<(), ChatError> {
+        self.calls.answer(chat, call, answer).await
+    }
+
+    async fn end_call(&self, chat: &ChatId, call: &CallId, why: HangUp) -> Result<(), ChatError> {
+        self.calls.end(chat, call, why).await
     }
 }

@@ -6,7 +6,7 @@
 //! 1. **Invitations first.** The handler that accepts the owner's invitations
 //!    is up before anything is synced, so one waiting on the server is joined
 //!    in the very first sync.
-//! 2. **Messages are heard from the right moment.** A bot that has run
+//! 2. **Messages and calls are heard from the right moment.** A bot that has run
 //!    before resumes from the sync position its store kept, and starts
 //!    listening for messages *before* its first sync, so what the owner wrote
 //!    while it was off arrives (with the time it was sent; the relay decides
@@ -110,6 +110,7 @@ impl MatrixConnector {
         // so one left over in a backlog is not taken up either.
         if !self.skip_history {
             guards.extend(hearing.listen(client));
+            guards.extend(self.calls.listen(client, inbox.clone()));
             guards.extend(self.verifying.listen(client));
         }
 
@@ -126,6 +127,7 @@ impl MatrixConnector {
         }
         if self.skip_history {
             guards.extend(hearing.listen(client));
+            guards.extend(self.calls.listen(client, inbox.clone()));
             guards.extend(self.verifying.listen(client));
         }
         invitations.settled(INVITATIONS_PATIENCE).await;

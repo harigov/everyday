@@ -239,6 +239,13 @@ llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = fal
 # converted with. Pure Rust, and not behind `decisions`: the prompt is
 # checked by plain `cargo test`.
 minijinja = { version = "2", default-features = false, features = ["builtins", "json", "serde"] }
+# Sample-rate conversion (`speech::resample`): a device's rate to the 16 kHz
+# speech models want, and a voice's rate to a call's 48 kHz. Pure Rust. Moved
+# here from the desktop app so a call answered by a server without devices
+# converts the same way. rubato 4 reads and writes through the buffer
+# adapters its author publishes alongside it.
+rubato = "4"
+audioadapter-buffers = "4"
 
 # `browser::launch` hands Chrome its end of the DevTools pipe on file
 # descriptors 3 and 4 between fork and exec (`dup2`), and tells it to die with

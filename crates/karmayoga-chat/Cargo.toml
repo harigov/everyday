@@ -22,7 +22,18 @@ futures = "0.3.34"
 # so that an image in the model's text arrives as a link and never as an
 # `<img>` the owner's client fetches by itself. See `matrix/speaking.rs`.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
-tokio = { version = "1.53.1", features = ["rt", "sync", "time", "macros"] }
+tokio = { version = "1.53.1", features = ["rt", "sync", "time", "macros", "net"] }
+# Calls (`call::media`): WebRTC -- ICE, DTLS-SRTP, RTP -- in Rust, sans-IO, so
+# the one task that owns a call's UDP socket drives it on tokio. Its own
+# default features pull an example web server; only the crypto is wanted, on
+# aws-lc-rs as matrix-sdk's TLS already is.
+str0m = { version = "0.25", default-features = false, features = ["aws-lc-rs"] }
+# Opus, the codec every Matrix client calls with (`call::codec`). libopus
+# (BSD), built from the source the crate bundles, with CMake.
+opus = "0.4"
+# This machine's addresses, offered to the caller as ICE host candidates: the
+# tailnet address is how a phone reaches a home server. No STUN, no TURN.
+if-addrs = "0.15"
 # 0.19 is the first line on rusqlite 0.40, the version the rest of the
 # workspace links; 0.18 and older pull rusqlite 0.37, and the two cannot share
 # a binary (`links = "sqlite3"`). It is also why the workspace needs Rust 1.96.
@@ -41,3 +52,13 @@ karmayoga-vault.workspace = true
 mime = "0.3"
 tempfile = "3"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "test-util"] }
+
+[features]
+# Local speech models in the service, for `tests/call_live.rs` only: a call
+# answered with the real recogniser and voice. The shipped binaries get the
+# service's `speech` from the app or the server, not from here.
+speech = ["karmayoga-service/speech"]
+
+[[test]]
+name = "call_live"
+required-features = ["speech"]

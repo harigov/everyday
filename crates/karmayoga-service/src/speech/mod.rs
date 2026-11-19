@@ -16,6 +16,7 @@
 //!   local       the models on this computer
 //!
 //!   pcm, wav    sample and file conversions everything shares
+//!   resample    one rate to another, for devices and calls
 //! ```
 //!
 //! [`access`] is how the rest of the application gets them: built from what is
@@ -29,6 +30,7 @@ pub mod live;
 pub mod local;
 pub mod narrate;
 pub mod pcm;
+pub mod resample;
 pub mod synth;
 pub mod text;
 pub mod transcribe;

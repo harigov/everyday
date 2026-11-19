@@ -37,6 +37,13 @@
 //! started and their answer is routed exactly as an answer to the
 //! assistant's own question is.
 //!
+//! **Calls go through the same workers.** A call the owner makes to the
+//! assistant is delivered as [`Incoming::Called`] and queued on its chat's
+//! worker as one more piece of work, so a chat never has a call and a typed turn
+//! at once. What cannot wait for the worker -- the caller's candidates, the
+//! owner hanging up, `!stop` -- is found by the dispatcher in the chat's
+//! [`Shared`]. See [`crate::calling`], and `docs/plans/calls.md`.
+//!
 //! **A [`Shared`] per chat** is the only thing the dispatcher and a worker both
 //! touch: which turn is running (so `!stop` knows what to cancel) and which
 //! question is waiting (so an answer knows where to go). It is a plain
@@ -53,8 +60,11 @@
 //! rest is plumbing, and is tested end to end in `tests/relay.rs` against a
 //! fake connector and a fake model.
 
+use crate::call::{CallEnd, ToCall};
+use crate::calling::{self, CallOffer, CallSlot, Confirmation, Confirming, Line, Offered};
 use crate::connector::{
-    ChatId, Choice, Connector, Document, Incoming, MessageRef, Picture, Question, Sent,
+    CallId, ChatId, Choice, Connector, Document, HangUp, IceCandidate, Incoming, MessageRef,
+    Picture, Question, Sent,
 };
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -65,12 +75,17 @@ use karmayoga_service::agent::{AgentEvent, ConfirmAnswer, Pending, Sink, Turned}
 use karmayoga_service::chat::{ChatOutlet, FromRun, escape_markdown};
 use karmayoga_service::error::CommandResult;
 use karmayoga_service::service::Service;
+use karmayoga_service::voice::{VoiceEvent, VoiceInput, VoiceLink};
 use std::collections::HashMap;
+use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
+
+pub use crate::calling::{Accepted, CallBackend, Media, RealCalls};
 
 /// How long a question may go unanswered before the relay answers it itself.
 ///
@@ -174,16 +189,49 @@ pub async fn run_with(
     vault: Arc<Vault>,
     link: ChatLink,
     connector: Arc<dyn Connector>,
+    inbox: mpsc::Receiver<Incoming>,
+    stop: watch::Receiver<bool>,
+    timing: Timing,
+) {
+    run_with_calls(service, vault, link, connector, inbox, stop, timing, Arc::new(RealCalls)).await;
+}
+
+/// [`run_with`], with what answers a call given: [`RealCalls`] in the app, and
+/// a stand-in in a test that has no speech models or sockets to answer with.
+///
+/// A call ends as the relay does, whichever of the two ways that is: a call
+/// is a conversation with somebody who can be reached only through this
+/// relay, so once it cannot be answered or hung up there is nothing for it
+/// to wait for. The call is told to end and hung up with
+/// [`HangUp::Finished`], within [`Timing::shutdown_grace`] when the relay is
+/// stopped.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_with_calls(
+    service: Arc<Service>,
+    vault: Arc<Vault>,
+    link: ChatLink,
+    connector: Arc<dyn Connector>,
     mut inbox: mpsc::Receiver<Incoming>,
     mut stop: watch::Receiver<bool>,
     timing: Timing,
+    calls: Arc<dyn CallBackend>,
 ) {
     tracing::info!(service = link.service.label(), "a chat relay is up");
     let (outbound_tx, mut outbound) = mpsc::unbounded_channel();
     let outlet: Arc<dyn ChatOutlet> =
         Arc::new(RelayOutlet { connector: connector.clone(), outbound: outbound_tx });
     let _open = OpenOutlet::new(service.clone(), link.id, outlet);
-    let context = Arc::new(Context { service, vault, link, connector, timing, stop: stop.clone() });
+    let context = Arc::new(Context {
+        service,
+        vault,
+        link,
+        connector,
+        timing,
+        stop: stop.clone(),
+        calls,
+        line: Mutex::new(Line::default()),
+    });
     let mut chats = Chats::new(context);
 
     let ended = loop {
@@ -343,6 +391,11 @@ struct Context {
     /// The relay's own stop. Read by workers so they do not start new work, or
     /// send replies, once the relay is being stopped.
     stop: watch::Receiver<bool>,
+    /// What opens a call's voice session and answers its media.
+    calls: Arc<dyn CallBackend>,
+    /// Which call has the relay's one line. Locked for a line at a time, and
+    /// only ever after a chat's `Shared`, never before.
+    line: Mutex<Line>,
 }
 
 impl Context {
@@ -451,6 +504,33 @@ struct ChatHandle {
 enum Job {
     Owner(Work),
     Routine(RoutineJob),
+    /// A call the owner is making. See [`CallWork`].
+    Call(CallWork),
+}
+
+/// A call, queued: what the worker needs to answer it, and the relay's line,
+/// held for as long as this exists.
+struct CallWork {
+    offer: CallOffer,
+    _line: LineHeld,
+}
+
+/// The relay's one line, held by one call. Given back when this is dropped,
+/// however the call ends -- finished, refused, its worker panicking, or the
+/// queue it sat in being thrown away -- so a call that goes wrong cannot
+/// leave the line engaged for the rest of the relay's life.
+struct LineHeld {
+    context: Arc<Context>,
+    call: CallId,
+}
+
+impl Drop for LineHeld {
+    fn drop(&mut self) {
+        // Not `unwrap`: a panic while unwinding aborts the process.
+        if let Ok(mut line) = self.context.line.lock() {
+            line.release(&self.call);
+        }
+    }
 }
 
 impl ChatHandle {
@@ -458,6 +538,12 @@ impl ChatHandle {
     /// that fails is the relay winding down, and dropping the item is right.
     fn enqueue(&self, work: Work) {
         let _ = self.queue.send(Job::Owner(work));
+    }
+
+    /// Queue a call. As [`Self::enqueue`]: a send that fails is the relay
+    /// winding down.
+    fn enqueue_call(&self, call: CallWork) {
+        let _ = self.queue.send(Job::Call(call));
     }
 }
 
@@ -511,6 +597,33 @@ impl Chats {
                 drop(shared);
                 tokio::spawn(async move { context.tell(&chat, reply).await });
             }
+            Route::Call(offer) => {
+                // Under the chat's lock, like every route, and the line
+                // taken inside it: a hang-up for this call cannot arrive
+                // between the line being taken and the call being findable.
+                let offered = context.line.lock().unwrap().offer(&offer.call, offer.expires, now);
+                match offered {
+                    Offered::Taken => {
+                        shared.call = Some(CallSlot::queued(offer.call.clone()));
+                        let line = LineHeld { context: context.clone(), call: offer.call.clone() };
+                        handle.enqueue_call(CallWork { offer, _line: line });
+                    }
+                    Offered::Again => {}
+                    Offered::Busy => {
+                        drop(shared);
+                        tokio::spawn(
+                            async move { refuse_busy(&context, &chat, &offer.call).await },
+                        );
+                    }
+                }
+            }
+            Route::CallCandidates { call, candidates } => shared.call_candidates(&call, candidates),
+            Route::CallEnded(call) => {
+                shared.call_ended(&call);
+                // A call that was still ringing -- waiting behind a turn --
+                // is not holding the line any more: a redial must be taken.
+                context.line.lock().unwrap().give_up(&call);
+            }
         }
     }
 
@@ -532,6 +645,9 @@ impl Chats {
                 End::Stopped => shared.halt(&pending),
                 End::InboxClosed => shared.close(),
             }
+            // A call that is running is told to end, and one that is queued
+            // is not answered, whichever way the relay is ending.
+            shared.end_call();
         }
         // Closing each queue is what lets its worker, once it has finished
         // what it is doing, see that there is no more and end.
@@ -569,6 +685,8 @@ struct Shared {
     /// Set once nothing more can be answered. A question asked after that is
     /// declined on the spot rather than left to wait out its timeout.
     closed: bool,
+    /// The call this chat has, queued or running.
+    call: Option<CallSlot>,
 }
 
 /// The turn a worker has in hand.
@@ -727,6 +845,48 @@ impl Shared {
         }
     }
 
+    /// More of the caller's candidates, for `call` if it is the one this chat
+    /// has. For any other they are nobody's.
+    fn call_candidates(&mut self, call: &CallId, candidates: Vec<IceCandidate>) {
+        if let Some(slot) = self.call.as_mut().filter(|slot| slot.id == *call) {
+            slot.heard(candidates);
+        }
+    }
+
+    /// The worker takes `call` up: see [`CallSlot::start`]. `None` if this chat
+    /// no longer has it, or the owner ended it while it waited.
+    fn call_start(
+        &mut self,
+        call: &CallId,
+    ) -> Option<(Vec<IceCandidate>, mpsc::UnboundedReceiver<ToCall>)> {
+        self.call.as_mut().filter(|slot| slot.id == *call).and_then(CallSlot::start)
+    }
+
+    /// Whether `call` is over as far as the owner is concerned.
+    fn call_is_over(&self, call: &CallId) -> bool {
+        self.call.as_ref().filter(|slot| slot.id == *call).is_none_or(CallSlot::is_ended)
+    }
+
+    /// The owner hung up `call`.
+    fn call_ended(&mut self, call: &CallId) {
+        if let Some(slot) = self.call.as_mut().filter(|slot| slot.id == *call) {
+            slot.end();
+        }
+    }
+
+    /// End the call this chat has, whichever stage it is at. Whether there was
+    /// one to end.
+    fn end_call(&mut self) -> bool {
+        self.call.as_mut().is_some_and(CallSlot::end)
+    }
+
+    /// `!stop`'s half for a call: end it if the worker has taken it up. A call
+    /// still queued is left to ring -- what the owner stopped is the turn it
+    /// is waiting behind. Whether a call was ended.
+    fn stop_call(&mut self) -> bool {
+        self.call.as_mut().is_some_and(|slot| slot.is_started() && slot.end())
+    }
+
     /// Cancel the running turn and withdraw the waiting question, and nothing
     /// more is going to be answered. What the relay stopping does.
     fn halt(&mut self, pending: &Pending) {
@@ -751,7 +911,12 @@ impl Shared {
     /// The owner's `!stop`: cancel the turn that is running, and decline the
     /// question it may be waiting on. What to say back.
     fn stop(&mut self, pending: &Pending) -> &'static str {
-        let Some(running) = &mut self.running else { return NOTHING_RUNNING };
+        // A call is stopped by ending it, and is something running as far as
+        // what to say back goes.
+        let calling = self.stop_call();
+        let Some(running) = &mut self.running else {
+            return if calling { STOPPED } else { NOTHING_RUNNING };
+        };
         running.stop_requested = true;
         // False when the turn has not registered yet -- the worker is still
         // choosing its conversation, or `chat_turn` is a few lines from
@@ -825,6 +990,14 @@ pub(crate) enum Route {
     DeclineThen(Work),
     /// Do this in turn.
     Queue(Work),
+    /// A call: answer it in turn, if the line is free -- which only the
+    /// dispatcher, with the relay's line in hand, can say.
+    Call(CallOffer),
+    /// More of the caller's candidates. For the call this chat has, they are
+    /// at once buffered or forwarded; for any other, nothing.
+    CallCandidates { call: CallId, candidates: Vec<IceCandidate> },
+    /// The owner hung up, now, not in turn.
+    CallEnded(CallId),
     /// It means nothing.
     Ignore,
 }
@@ -844,6 +1017,8 @@ pub(crate) enum Route {
 /// * `!stop` is never queued.
 /// * A picture or a file never answers a question. It is the owner moving
 ///   on, as typed text that is not an answer is.
+/// * A call, its candidates and its hang-up never answer a question either,
+///   and never decline one: the owner phoning is not the owner replying.
 ///
 /// Takes the item rather than borrowing it, so that a file of two hundred
 /// megabytes is moved into the work it becomes and not copied.
@@ -855,6 +1030,18 @@ pub(crate) fn route(
 ) -> Route {
     match item {
         Incoming::Unreadable { .. } => Route::Queue(Work::Reply(UNREADABLE_REPLY.to_string())),
+        // How old a call is does not matter here: it stops ringing at its
+        // own `expires`, which the worker checks when it comes to answer, and
+        // a call is never "sent last night". The candidates and the hang-up
+        // are acted on at once, as `!stop` is, for the same reason: they must
+        // not wait behind the turn that is running.
+        Incoming::Called { call, offer, expires, .. } => {
+            Route::Call(CallOffer { call, sdp: offer, expires })
+        }
+        Incoming::CallCandidates { call, candidates, .. } => {
+            Route::CallCandidates { call, candidates }
+        }
+        Incoming::CallEnded { call, .. } => Route::CallEnded(call),
         Incoming::Chose { question, choice, .. } => match asked {
             Asked::Sent(waiting_on) if *waiting_on == question => Route::Answer(choice),
             Asked::Unsent => Route::Hold { question, choice },
@@ -1078,6 +1265,14 @@ async fn worker(
         // told. The owner's next message, after the vault unlocks, is a new
         // one.
         if context.stopping() {
+            // A call that is still ringing is not left to ring: the owner's
+            // phone would go on until the invite ran out. Everything queued
+            // is in the queue already -- the dispatcher has stopped -- so
+            // hang those up and go.
+            hang_up_queued(&context, &chat, item).await;
+            while let Ok(item) = work.try_recv() {
+                hang_up_queued(&context, &chat, item).await;
+            }
             break;
         }
         let (item, sent) = match gather(&mut held, item) {
@@ -1093,6 +1288,14 @@ async fn worker(
             }
         };
         run_caught(&context, &chat, &shared, &mut memory, item, sent).await;
+    }
+}
+
+/// Hang up `job` if it is a call: the relay is stopping, so it will not be
+/// answered. Anything else is dropped without a word, as it always was.
+async fn hang_up_queued(context: &Context, chat: &ChatId, job: Job) {
+    if let Job::Call(call) = job {
+        hang_up(context, chat, &call.offer.call, HangUp::Refused).await;
     }
 }
 
@@ -1152,6 +1355,12 @@ async fn run_caught(
     item: Job,
     sent: Vec<Sent>,
 ) {
+    // Whose call this is, if it is one: what is cleared and hung up after a
+    // panic is that call, and not one queued behind it.
+    let own_call = match &item {
+        Job::Call(work) => Some(work.offer.call.clone()),
+        _ => None,
+    };
     let done =
         AssertUnwindSafe(do_work(context, chat, shared, memory, item, sent)).catch_unwind().await;
     if done.is_err() {
@@ -1160,6 +1369,17 @@ async fn run_caught(
             let mut shared = shared.lock().unwrap();
             shared.running = None;
             shared.waiting = None;
+            if let Some(call) = &own_call
+                && shared.call.as_ref().is_some_and(|slot| slot.id == *call)
+            {
+                shared.call = None;
+            }
+        }
+        // The panic dropped the call's voice session and media with it -- a
+        // session whose input has closed stops -- but nothing told the owner's
+        // phone.
+        if let Some(call) = &own_call {
+            hang_up(context, chat, call, HangUp::Failed).await;
         }
         context.typing(chat, false).await;
         if !context.stopping() {
@@ -1182,6 +1402,7 @@ async fn do_work(
     let work = match job {
         Job::Owner(work) => work,
         Job::Routine(job) => return for_routine(context, chat, shared, memory, job).await,
+        Job::Call(call) => return take_call(context, chat, shared, memory, call).await,
     };
     match work {
         Work::Reply(text) => context.tell(chat, &text).await,
@@ -1234,8 +1455,16 @@ async fn for_routine(
         }
         RoutineJob::Confirm { from, kind, subject, can_park, answer } => {
             running(&from);
-            let given =
-                ask(context, chat, shared, &kind, &subject, can_park, Some(&from.routine)).await;
+            let given = ask(
+                context,
+                chat,
+                shared,
+                &kind,
+                &subject,
+                can_park,
+                Asking::Routine(&from.routine),
+            )
+            .await;
             shared.lock().unwrap().running = None;
             let _ = answer.send(given);
         }
@@ -1376,13 +1605,24 @@ async fn on_event(
             }
         }
         AgentEvent::ConfirmationRequired { call_id, subject, kind, can_park, .. } => {
-            let answer = ask(context, chat, shared, &kind, &subject, can_park, None).await;
+            let answer = ask(context, chat, shared, &kind, &subject, can_park, Asking::Turn).await;
             // False when the turn was cancelled in the meantime and nothing
             // is waiting for this any more -- not worth mentioning.
             context.pending().answer(&call_id, answer);
         }
         _ => {}
     }
+}
+
+/// Who is putting a question to the owner.
+#[derive(Clone, Copy)]
+enum Asking<'a> {
+    /// A turn the owner started by typing.
+    Turn,
+    /// A routine's run, by name.
+    Routine(&'a str),
+    /// A call's voice session, which the owner is talking to.
+    Call,
 }
 
 /// Put a confirmation to the owner and wait for what they say.
@@ -1392,9 +1632,9 @@ async fn on_event(
 /// their behalf (`!stop`, a message that was not an answer, the relay
 /// stopping), or the timeout.
 ///
-/// `routine` names the routine asking, when it is one rather than a turn the
-/// owner started here: the question then says whose it is, and no typing
-/// notice is shown around it, because nothing in this chat is typing.
+/// `who` says who is asking. A routine's question says whose it is, and no
+/// typing notice is shown around it, because nothing in this chat is typing;
+/// nor around a call's, because the owner is on the phone.
 async fn ask(
     context: &Context,
     chat: &ChatId,
@@ -1402,13 +1642,13 @@ async fn ask(
     kind: &str,
     subject: &str,
     can_park: bool,
-    routine: Option<&str>,
+    who: Asking<'_>,
 ) -> ConfirmAnswer {
     let mut question = confirmation_question(kind, subject, can_park);
-    if let Some(routine) = routine {
+    if let Asking::Routine(routine) = who {
         question.markdown = format!("{}{}", from_routine(routine), question.markdown);
     }
-    let in_turn = routine.is_none();
+    let in_turn = matches!(who, Asking::Turn);
 
     // Registered before the question is sent, not after: sending it takes as
     // long as the server takes, and a typed "yes" in that time must already
@@ -1528,6 +1768,261 @@ async fn ask_free(
         }
     };
     said.map(|said| pick_choice(&said, choices))
+}
+
+// ---- a call -------------------------------------------------------------------
+
+/// Hang up `call`, saying why. A failure is logged and goes no further: the
+/// call is over from this side whatever the server thinks of it.
+async fn hang_up(context: &Context, chat: &ChatId, call: &CallId, why: HangUp) {
+    if let Err(e) = context.connector.end_call(chat, call, why).await {
+        tracing::warn!(chat = %chat.0, error = %e, ?why, "could not hang up a call");
+    }
+}
+
+/// Refuse a call because another has the line, and say so.
+async fn refuse_busy(context: &Context, chat: &ChatId, call: &CallId) {
+    hang_up(context, chat, call, HangUp::Refused).await;
+    context.tell(chat, calling::BUSY).await;
+}
+
+/// The owner is calling: answer, carry the call, hang up. The chat's worker
+/// does this in turn, so no typed turn runs in this chat until it is over.
+async fn take_call(
+    context: &Context,
+    chat: &ChatId,
+    shared: &Mutex<Shared>,
+    memory: &mut Memory,
+    work: CallWork,
+) {
+    let CallWork { offer, _line } = work;
+    let call = offer.call.clone();
+    carry_call(context, chat, shared, memory, offer).await;
+    // The call is not findable any more, and then -- as `_line` drops -- the
+    // line is free for the next. In that order, so a call that comes the
+    // instant the line is free finds the slot it is about to replace empty
+    // rather than clearing the new one.
+    let mut shared = shared.lock().unwrap();
+    if shared.call.as_ref().is_some_and(|slot| slot.id == call) {
+        shared.call = None;
+    }
+}
+
+/// [`take_call`], without the tidying-up after it, so that every way out of
+/// it can simply return.
+///
+/// The steps, each of which can end the call and says how:
+///
+/// 1. Taken up. A call the owner ended while it waited is not answered; it is
+///    hung up as refused all the same, which is harmless if they hung up
+///    themselves and is what makes `!stop` stop the phone ringing. A call
+///    that stopped ringing while it waited is refused, and the owner told.
+/// 2. The conversation, chosen as a message would, so typing after the call
+///    carries on the same thread.
+/// 3. The voice session. If it will not open the owner is told why, in the
+///    service's own words, and the call is refused.
+/// 4. The offer answered, and the answer sent. A failure on either tells the
+///    owner, hangs up as failed, and stops the voice session.
+/// 5. The call, run; and while it runs, any confirmation only a tap can
+///    answer is put to the owner in the chat.
+/// 6. Hung up, with the reason that fits how it ended.
+async fn carry_call(
+    context: &Context,
+    chat: &ChatId,
+    shared: &Mutex<Shared>,
+    memory: &mut Memory,
+    offer: CallOffer,
+) {
+    let CallOffer { call, sdp, expires } = offer;
+
+    let started = {
+        // The line is told under the chat's lock, as the dispatcher frees it
+        // under that lock, so a hang-up cannot free the line of a call that
+        // is just now being taken up.
+        let mut shared = shared.lock().unwrap();
+        let started = shared.call_start(&call);
+        if started.is_some() {
+            context.line.lock().unwrap().started(&call);
+        }
+        started
+    };
+    let Some((heard, to_call)) = started else {
+        hang_up(context, chat, &call, HangUp::Refused).await;
+        return;
+    };
+    if calling::has_expired(expires, Timestamp::now()) {
+        hang_up(context, chat, &call, HangUp::Refused).await;
+        context.tell(chat, calling::MISSED).await;
+        return;
+    }
+
+    let conversation = memory.conversation(context, chat).await;
+    let via = Via {
+        link: context.link.id,
+        service: context.link.service.label().to_string(),
+        chat: chat.0.clone(),
+    };
+
+    let voice = match context.calls.open_voice(context.service.clone(), conversation, via).await {
+        Ok(voice) => voice,
+        Err(e) => {
+            context.tell(chat, &calling::cannot_take_calls(&e.message)).await;
+            hang_up(context, chat, &call, HangUp::Refused).await;
+            return;
+        }
+    };
+    let accepted = match context.calls.answer(sdp, heard).await {
+        Ok(accepted) => accepted,
+        Err(e) => {
+            context.tell(chat, &calling::could_not_answer(&e.to_string())).await;
+            hang_up(context, chat, &call, HangUp::Failed).await;
+            let _ = voice.input.send(VoiceInput::Stop);
+            return;
+        }
+    };
+
+    // Setting up takes seconds, and the owner may have given up in them, or
+    // the call have stopped ringing: answering now would be answering a phone
+    // nobody is holding.
+    let over = shared.lock().unwrap().call_is_over(&call);
+    if over || calling::has_expired(expires, Timestamp::now()) {
+        let _ = voice.input.send(VoiceInput::Stop);
+        hang_up(context, chat, &call, HangUp::Refused).await;
+        if !over {
+            context.tell(chat, calling::MISSED).await;
+        }
+        return;
+    }
+    if let Err(e) = context.connector.answer_call(chat, &call, &accepted.sdp).await {
+        let _ = voice.input.send(VoiceInput::Stop);
+        // The owner hung up in the instant since the check above, and the
+        // chat service has forgotten the call: that is why this failed, and
+        // it is not a failure to tell them about.
+        if shared.lock().unwrap().call_is_over(&call) {
+            hang_up(context, chat, &call, HangUp::Refused).await;
+            return;
+        }
+        context.tell(chat, &calling::could_not_send_answer(&e.to_string())).await;
+        hang_up(context, chat, &call, HangUp::Failed).await;
+        return;
+    }
+
+    let (end, session_error) = run_call(context, chat, shared, accepted, voice, to_call).await;
+    memory.used(conversation);
+
+    // A session that ended in an error was a failed call, not a goodbye.
+    let end = calling::settle_end(end, session_error.as_deref());
+    hang_up(context, chat, &call, calling::hang_up_for(end)).await;
+    if !context.stopping() {
+        let note = match (&session_error, end) {
+            (Some(error), CallEnd::Failed) => Some(calling::session_failed(error)),
+            _ => calling::after_call(end).map(str::to_string),
+        };
+        if let Some(note) = note {
+            context.tell(chat, &note).await;
+        }
+    }
+}
+
+/// Run an answered call to its end, reading what the voice session reports as
+/// it goes so that a confirmation only a tap can answer is asked in the chat.
+///
+/// The question is the one a typed turn would put -- [`ask`], the same words,
+/// reactions and timeout -- and what is waiting is registered in `shared` as
+/// it is for a turn, so the dispatcher routes the owner's tap or typed yes or
+/// no to it. The answer goes to the same place a turn's does. If the voice
+/// answers it first, or the turn moves on, the question is withdrawn the way
+/// the relay withdraws one when the owner does something else.
+/// A question asked in the chat on a call, until the owner answers it.
+type CallQuestion<'a> = Pin<Box<dyn Future<Output = ConfirmAnswer> + Send + 'a>>;
+
+async fn run_call(
+    context: &Context,
+    chat: &ChatId,
+    shared: &Mutex<Shared>,
+    accepted: calling::Accepted,
+    voice: VoiceLink,
+    to_call: mpsc::UnboundedReceiver<ToCall>,
+) -> (CallEnd, Option<String>) {
+    let (events_tx, mut events) = mpsc::unbounded_channel::<VoiceEvent>();
+    let mut run = accepted.media.run(voice, to_call, events_tx);
+    let mut confirming = Confirming::default();
+    // The question in the chat, and the confirmation it is about.
+    let mut asking: Option<(String, CallQuestion<'_>)> = None;
+    // Why the voice session ended, if it ended in an error.
+    let mut session_error: Option<String> = None;
+
+    let end = loop {
+        tokio::select! {
+            biased;
+            Some(event) = events.recv() => {
+                note_session_error(&event, &mut session_error);
+                let step = confirming.on_event(&event);
+                if let Some(withdrawn) = step.withdraw {
+                    withdraw(context, shared, asking.take(), withdrawn.settled);
+                }
+                if let Some(Confirmation { call_id, subject, kind, can_park }) = step.ask {
+                    let id = call_id.clone();
+                    asking = Some((id, Box::pin(async move {
+                        ask(context, chat, shared, &kind, &subject, can_park, Asking::Call).await
+                    })));
+                }
+            }
+            (call_id, answer) = async {
+                match asking.as_mut() {
+                    Some((call_id, asking)) => (call_id.clone(), asking.await),
+                    None => std::future::pending().await,
+                }
+            }, if asking.is_some() => {
+                asking = None;
+                // False when the turn moved on in the meantime and nothing is
+                // waiting for this any more -- not worth mentioning.
+                context.pending().answer(&call_id, answer);
+            }
+            end = &mut run => break end,
+        }
+    };
+
+    // The media may have said its last word as it returned: the session's
+    // ending is in the channel still.
+    while let Ok(event) = events.try_recv() {
+        note_session_error(&event, &mut session_error);
+    }
+    // The call is over, and so is any question about it.
+    withdraw(context, shared, asking.take(), false);
+    (end, session_error)
+}
+
+/// Remember why the voice session ended, if it ended in an error.
+fn note_session_error(event: &VoiceEvent, error: &mut Option<String>) {
+    if let VoiceEvent::Ended { error: Some(why) } = event {
+        *error = Some(why.clone());
+    }
+}
+
+/// Stop asking `asked` -- the question in the chat, and the confirmation it
+/// was about, if there was one still being asked.
+///
+/// The question is withdrawn as the relay withdraws any: what is waiting is
+/// declined. And unless the voice session has settled the confirmation itself
+/// (`settled`: its tool started or finished), the turn may be waiting on
+/// it still, and nothing else will answer it now -- the question that would
+/// have carried the answer is gone -- so it is declined, here, by name. No
+/// path out of a question leaves a confirmation in [`Pending`] unanswered.
+fn withdraw<F>(
+    context: &Context,
+    shared: &Mutex<Shared>,
+    asked: Option<(String, F)>,
+    settled: bool,
+) {
+    let Some((call_id, question)) = asked else { return };
+    // The question first, so that nothing is left waiting on an answer that
+    // is no longer being read.
+    drop(question);
+    shared.lock().unwrap().decline();
+    if !settled {
+        context.pending().answer(&call_id, ConfirmAnswer::Decline);
+    }
 }
 
 // ---- what is said -----------------------------------------------------------
@@ -2552,5 +3047,142 @@ mod tests {
         shared.close();
         assert_eq!(answered.try_recv().unwrap(), ConfirmAnswer::Decline);
         assert!(shared.closed);
+    }
+
+    // ---- calls ----
+
+    fn call_id(id: &str) -> CallId {
+        CallId(id.into())
+    }
+
+    fn candidate(line: &str) -> IceCandidate {
+        IceCandidate {
+            candidate: line.into(),
+            sdp_mid: Some("0".into()),
+            sdp_m_line_index: Some(0),
+        }
+    }
+
+    fn called(id: &str) -> Incoming {
+        Incoming::Called {
+            chat: chat(),
+            call: call_id(id),
+            offer: "v=0 offer".into(),
+            at: now(),
+            expires: now() + SignedDuration::from_secs(60),
+        }
+    }
+
+    #[test]
+    fn a_call_is_routed_to_be_answered_in_turn_whatever_is_waiting() {
+        let question = MessageRef("$q".into());
+        for asked in [Asked::Nothing, Asked::Unsent, Asked::Sent(&question), Asked::Open] {
+            assert_eq!(
+                routed(&called("c1"), asked),
+                Route::Call(CallOffer {
+                    call: call_id("c1"),
+                    sdp: "v=0 offer".into(),
+                    expires: now() + SignedDuration::from_secs(60),
+                }),
+                "{asked:?}: ringing is not an answer, and does not decline one"
+            );
+        }
+    }
+
+    #[test]
+    fn a_call_is_not_stale_however_long_ago_it_began() {
+        let old = Incoming::Called {
+            chat: chat(),
+            call: call_id("c1"),
+            offer: "v=0".into(),
+            at: ago(13),
+            expires: now() + SignedDuration::from_secs(1),
+        };
+        assert!(matches!(routed(&old, Asked::Nothing), Route::Call(_)));
+    }
+
+    #[test]
+    fn candidates_and_a_hang_up_are_acted_on_at_once() {
+        let heard = Incoming::CallCandidates {
+            chat: chat(),
+            call: call_id("c1"),
+            candidates: vec![candidate("candidate:1")],
+            at: now(),
+        };
+        assert_eq!(
+            routed(&heard, Asked::Nothing),
+            Route::CallCandidates {
+                call: call_id("c1"),
+                candidates: vec![candidate("candidate:1")]
+            }
+        );
+        let ended = Incoming::CallEnded { chat: chat(), call: call_id("c1"), at: now() };
+        let question = MessageRef("$q".into());
+        for asked in [Asked::Nothing, Asked::Sent(&question), Asked::Open] {
+            assert_eq!(routed(&ended, asked), Route::CallEnded(call_id("c1")), "{asked:?}");
+        }
+    }
+
+    #[test]
+    fn candidates_are_buffered_while_a_call_waits_and_forwarded_once_it_runs() {
+        let mut shared =
+            Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+        shared.call_candidates(&call_id("c1"), vec![candidate("early")]);
+        shared.call_candidates(&call_id("other"), vec![candidate("somebody else's")]);
+
+        let (heard, mut to_call) = shared.call_start(&call_id("c1")).expect("not ended");
+        assert_eq!(heard, vec![candidate("early")], "only this call's, and in order");
+
+        shared.call_candidates(&call_id("c1"), vec![candidate("late")]);
+        assert_eq!(to_call.try_recv().unwrap(), ToCall::Candidates(vec![candidate("late")]));
+    }
+
+    #[test]
+    fn a_hang_up_for_another_call_changes_nothing() {
+        let mut shared =
+            Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+        shared.call_ended(&call_id("other"));
+        assert!(!shared.call_is_over(&call_id("c1")));
+        shared.call_ended(&call_id("c1"));
+        assert!(shared.call_is_over(&call_id("c1")));
+        assert!(shared.call_start(&call_id("c1")).is_none(), "so the worker will not answer it");
+    }
+
+    #[test]
+    fn a_call_the_chat_no_longer_has_is_over() {
+        assert!(Shared::default().call_is_over(&call_id("c1")));
+    }
+
+    #[test]
+    fn stop_ends_a_running_call_and_says_stopped_though_no_turn_is_running() {
+        let mut shared =
+            Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+        let (_, mut to_call) = shared.call_start(&call_id("c1")).unwrap();
+
+        assert_eq!(shared.stop(&Pending::default()), STOPPED);
+        assert_eq!(to_call.try_recv().unwrap(), ToCall::End);
+        assert_eq!(
+            shared.stop(&Pending::default()),
+            NOTHING_RUNNING,
+            "a call that has been ended is not something to stop again"
+        );
+    }
+
+    #[test]
+    fn stop_leaves_a_call_that_is_still_waiting_its_turn_to_ring() {
+        let mut shared =
+            Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+        assert_eq!(shared.stop(&Pending::default()), NOTHING_RUNNING);
+        assert!(!shared.call_is_over(&call_id("c1")));
+    }
+
+    #[test]
+    fn the_relay_stopping_ends_a_call_that_is_running() {
+        let mut shared =
+            Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+        let (_, mut to_call) = shared.call_start(&call_id("c1")).unwrap();
+        assert!(shared.end_call());
+        assert_eq!(to_call.try_recv().unwrap(), ToCall::End);
+        assert!(!Shared::default().end_call(), "and with no call there is nothing to end");
     }
 }

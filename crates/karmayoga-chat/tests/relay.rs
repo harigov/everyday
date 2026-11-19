@@ -842,3 +842,1077 @@ async fn a_picture_that_cannot_be_read_is_said_to_be_so() {
     let sent = h.connector.sent();
     assert!(sent[0].contains("could not be read"), "{sent:?}");
 }
+
+// ---- calls -------------------------------------------------------------------
+
+/// A call to the assistant: the relay half. The media and the voice session
+/// need speech models and real sockets, so they are stood in for by
+/// [`FakeCalls`], which keeps what it was given for the test to look at and
+/// ends a call when it is told to. One test uses the real backend, to see a
+/// vault with no speech set up refuse.
+mod calls {
+    use super::room;
+    use super::support::{FakeConnector, FakeModel, Script, fake_model, matrix_link, says, world};
+    use async_trait::async_trait;
+    use futures::future::BoxFuture;
+    use jiff::{SignedDuration, Timestamp};
+    use karmayoga_chat::call::{CallEnd, CallError, ToCall};
+    use karmayoga_chat::connector::{
+        CallId, ChatError, ChatId, Choice, Connector, HangUp, IceCandidate, Incoming, MessageRef,
+        Question,
+    };
+    use karmayoga_chat::relay::{self, Accepted, CallBackend, Media, Timing};
+    use karmayoga_core::chat::{ChatLink, Via};
+    use karmayoga_core::{Conversation, ConversationId, ConversationQuery, Task, Vault};
+    use karmayoga_service::Service;
+    use karmayoga_service::agent::{AgentEvent, Sink};
+    use karmayoga_service::error::CommandResult;
+    use karmayoga_service::voice::{VoiceEvent, VoiceInput, VoiceLink, VoiceOutput, VoiceState};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tokio::sync::{mpsc, oneshot, watch};
+    use tokio::task::JoinHandle;
+
+    const SDP: &str = "v=0 the assistant's answer";
+
+    /// What the connector was asked of a call.
+    #[derive(Debug, Clone, PartialEq)]
+    enum CallEvent {
+        Answered { call: CallId, sdp: String },
+        Ended { call: CallId, why: HangUp },
+    }
+
+    /// The ordinary fake connector, which also writes down what it is asked
+    /// of calls.
+    struct CallConnector {
+        chat: Arc<FakeConnector>,
+        calls: Mutex<Vec<CallEvent>>,
+        refuse_answers: Mutex<bool>,
+        /// When set, the owner hangs up as the answer is being sent: this
+        /// delivers their hang-up, gives the relay time to hear it, and then
+        /// fails as a chat service that has forgotten the call would.
+        hangs_up_during_answer: Mutex<Option<mpsc::Sender<Incoming>>>,
+    }
+
+    #[async_trait]
+    impl Connector for CallConnector {
+        async fn listen(
+            &self,
+            inbox: mpsc::Sender<Incoming>,
+            stop: watch::Receiver<bool>,
+        ) -> Result<(), ChatError> {
+            self.chat.listen(inbox, stop).await
+        }
+        async fn send(&self, chat: &ChatId, markdown: &str) -> Result<MessageRef, ChatError> {
+            self.chat.send(chat, markdown).await
+        }
+        async fn ask(&self, chat: &ChatId, question: &Question) -> Result<MessageRef, ChatError> {
+            self.chat.ask(chat, question).await
+        }
+        async fn home(&self) -> Option<ChatId> {
+            self.chat.home().await
+        }
+        async fn typing(&self, chat: &ChatId, on: bool) -> Result<(), ChatError> {
+            Connector::typing(&*self.chat, chat, on).await
+        }
+        async fn answer_call(
+            &self,
+            _chat: &ChatId,
+            call: &CallId,
+            answer: &str,
+        ) -> Result<(), ChatError> {
+            if *self.refuse_answers.lock().unwrap() {
+                return Err(ChatError::Transient("the server said no".into()));
+            }
+            let hang_up = self.hangs_up_during_answer.lock().unwrap().take();
+            if let Some(inbox) = hang_up {
+                let ended =
+                    Incoming::CallEnded { chat: room(), call: call.clone(), at: Timestamp::now() };
+                let _ = inbox.send(ended).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                return Err(ChatError::Transient("no such call".into()));
+            }
+            self.calls
+                .lock()
+                .unwrap()
+                .push(CallEvent::Answered { call: call.clone(), sdp: answer.into() });
+            Ok(())
+        }
+        async fn end_call(
+            &self,
+            _chat: &ChatId,
+            call: &CallId,
+            why: HangUp,
+        ) -> Result<(), ChatError> {
+            self.calls.lock().unwrap().push(CallEvent::Ended { call: call.clone(), why });
+            Ok(())
+        }
+    }
+
+    /// What [`FakeCalls`] opened a voice session with.
+    #[derive(Clone)]
+    struct Opened {
+        service: Arc<Service>,
+        conversation: ConversationId,
+        via: Via,
+        output: mpsc::UnboundedSender<VoiceOutput>,
+    }
+
+    /// A [`CallBackend`] with no models and no sockets.
+    #[derive(Default)]
+    struct FakeCalls {
+        /// Set to make answering the offer fail, with this.
+        answer_fails: Mutex<Option<String>>,
+        /// Set to make opening the voice session panic, once.
+        panic_on_open: AtomicBool,
+        opened: Mutex<Vec<Opened>>,
+        /// Every offer answered, with the candidates it was given.
+        offers: Mutex<Vec<(String, Vec<IceCandidate>)>>,
+        /// What the running call was told after it started.
+        received: Mutex<Vec<ToCall>>,
+        /// How many times a voice session was told to stop.
+        stops: AtomicUsize,
+        /// Ends the running call, with how.
+        finish: Mutex<Option<oneshot::Sender<CallEnd>>>,
+    }
+
+    impl FakeCalls {
+        fn opened(&self) -> Vec<Opened> {
+            self.opened.lock().unwrap().clone()
+        }
+
+        fn received(&self) -> Vec<ToCall> {
+            self.received.lock().unwrap().clone()
+        }
+
+        /// End the call the way `end` says.
+        fn finish(&self, end: CallEnd) {
+            let tx = self.finish.lock().unwrap().take().expect("a call is running");
+            let _ = tx.send(end);
+        }
+
+        /// What the voice session would tell the interface.
+        fn report(&self, event: VoiceEvent) {
+            let opened = self.opened();
+            let _ =
+                opened.last().expect("a session is open").output.send(VoiceOutput::Event(event));
+        }
+
+        /// Run a real turn on the session's conversation, as the session
+        /// would for something the owner said, reporting it as the session
+        /// does: its events, and `WaitingForClick` where a confirmation
+        /// needs a click.
+        fn start_turn(&self, text: &str) {
+            let Opened { service, conversation, via, output } =
+                self.opened().last().expect("a session is open").clone();
+            let sink: Sink = Arc::new(move |event| {
+                let confirms = matches!(event, AgentEvent::ConfirmationRequired { .. });
+                let _ = output.send(VoiceOutput::Event(VoiceEvent::Agent { event }));
+                if confirms {
+                    let state = VoiceEvent::State { state: VoiceState::WaitingForClick };
+                    let _ = output.send(VoiceOutput::Event(state));
+                }
+            });
+            let text = text.to_string();
+            tokio::spawn(async move {
+                let _ = service
+                    .chat_turn_with_files(via, conversation, text, Vec::new(), Vec::new(), sink)
+                    .await;
+            });
+        }
+    }
+
+    /// [`FakeCalls`], as the relay is given it.
+    struct Backend(Arc<FakeCalls>);
+
+    impl CallBackend for Backend {
+        fn open_voice(
+            &self,
+            service: Arc<Service>,
+            conversation: ConversationId,
+            via: Via,
+        ) -> BoxFuture<'static, CommandResult<VoiceLink>> {
+            let (input, mut heard) = mpsc::unbounded_channel();
+            let (output_tx, output) = mpsc::unbounded_channel();
+            let fake = self.0.clone();
+            tokio::spawn(async move {
+                while let Some(input) = heard.recv().await {
+                    if matches!(input, VoiceInput::Stop) {
+                        fake.stops.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            });
+            let panics = self.0.panic_on_open.swap(false, Ordering::SeqCst);
+            self.0.opened.lock().unwrap().push(Opened {
+                service,
+                conversation,
+                via,
+                output: output_tx,
+            });
+            Box::pin(async move {
+                if panics {
+                    panic!("the voice session fell over");
+                }
+                Ok(VoiceLink { input, output })
+            })
+        }
+
+        fn answer(
+            &self,
+            offer: String,
+            candidates: Vec<IceCandidate>,
+        ) -> BoxFuture<'static, Result<Accepted, CallError>> {
+            let fake = self.0.clone();
+            Box::pin(async move {
+                if let Some(why) = fake.answer_fails.lock().unwrap().clone() {
+                    return Err(CallError(why));
+                }
+                fake.offers.lock().unwrap().push((offer, candidates));
+                let (tx, finished) = oneshot::channel();
+                *fake.finish.lock().unwrap() = Some(tx);
+                Ok(Accepted { sdp: SDP.into(), media: Box::new(FakeMedia { fake, finished }) })
+            })
+        }
+    }
+
+    struct FakeMedia {
+        fake: Arc<FakeCalls>,
+        finished: oneshot::Receiver<CallEnd>,
+    }
+
+    impl Media for FakeMedia {
+        fn run(
+            self: Box<Self>,
+            voice: VoiceLink,
+            mut to_call: mpsc::UnboundedReceiver<ToCall>,
+            events: mpsc::UnboundedSender<VoiceEvent>,
+        ) -> BoxFuture<'static, CallEnd> {
+            Box::pin(async move {
+                let FakeMedia { fake, mut finished } = *self;
+                let VoiceLink { input, mut output } = voice;
+                loop {
+                    tokio::select! {
+                        // What the session reported goes out before the call
+                        // is told it has ended, as the real media does it.
+                        biased;
+                        told = to_call.recv() => {
+                            let told = told.unwrap_or(ToCall::End);
+                            fake.received.lock().unwrap().push(told.clone());
+                            if told == ToCall::End {
+                                let _ = input.send(VoiceInput::Stop);
+                                return CallEnd::Ended;
+                            }
+                        }
+                        out = output.recv() => match out {
+                            Some(VoiceOutput::Event(event)) => {
+                                let _ = events.send(event);
+                            }
+                            Some(_) => {}
+                            None => return CallEnd::SessionEnded,
+                        },
+                        end = &mut finished => return end.unwrap_or(CallEnd::Ended),
+                    }
+                }
+            })
+        }
+    }
+
+    /// A relay running against a fake connector that takes calls, a fake
+    /// model, and either the fake backend or the real one.
+    struct Calling {
+        service: Arc<Service>,
+        vault: Arc<Vault>,
+        link: ChatLink,
+        connector: Arc<CallConnector>,
+        fake: Arc<FakeCalls>,
+        task: Task,
+        inbox: Option<mpsc::Sender<Incoming>>,
+        stop: watch::Sender<bool>,
+        relay: Option<JoinHandle<()>>,
+        _dir: tempfile::TempDir,
+        _model: FakeModel,
+    }
+
+    impl Calling {
+        async fn start(script: impl FnOnce(&Task) -> Script) -> Self {
+            Self::start_with(script, true, Timing::default()).await
+        }
+
+        async fn start_with(
+            script: impl FnOnce(&Task) -> Script,
+            fake_backend: bool,
+            timing: Timing,
+        ) -> Self {
+            let super::support::World { service, vault, dir } = world("http://127.0.0.1:1/v1");
+            let task = Task::new("Book the dentist");
+            vault.save_task(&task).unwrap();
+            let model = fake_model(script(&task)).await;
+            let mut models = vault.model_settings().unwrap();
+            models.medium.connection.base_url = Some(model.endpoint.clone());
+            vault.save_model_settings(&models).unwrap();
+
+            let link = matrix_link();
+            let connector = Arc::new(CallConnector {
+                chat: FakeConnector::new(),
+                calls: Mutex::new(Vec::new()),
+                refuse_answers: Mutex::new(false),
+                hangs_up_during_answer: Mutex::new(None),
+            });
+            let fake = Arc::new(FakeCalls::default());
+            let (inbox, inbox_rx) = mpsc::channel(32);
+            let (stop, stop_rx) = watch::channel(false);
+            let relay = if fake_backend {
+                tokio::spawn(relay::run_with_calls(
+                    service.clone(),
+                    vault.clone(),
+                    link.clone(),
+                    connector.clone(),
+                    inbox_rx,
+                    stop_rx,
+                    timing,
+                    Arc::new(Backend(fake.clone())),
+                ))
+            } else {
+                tokio::spawn(relay::run_with(
+                    service.clone(),
+                    vault.clone(),
+                    link.clone(),
+                    connector.clone(),
+                    inbox_rx,
+                    stop_rx,
+                    timing,
+                ))
+            };
+            Self {
+                service,
+                vault,
+                link,
+                connector,
+                fake,
+                task,
+                inbox: Some(inbox),
+                stop,
+                relay: Some(relay),
+                _dir: dir,
+                _model: model,
+            }
+        }
+
+        async fn deliver(&self, incoming: Incoming) {
+            self.inbox
+                .as_ref()
+                .expect("the inbox is still open")
+                .send(incoming)
+                .await
+                .expect("the relay is still reading its inbox");
+        }
+
+        async fn say(&self, text: &str) {
+            self.deliver(Incoming::Said { chat: room(), text: text.into(), at: Timestamp::now() })
+                .await;
+        }
+
+        async fn ring(&self, id: &str) {
+            self.ring_until(id, Timestamp::now() + SignedDuration::from_secs(60)).await;
+        }
+
+        async fn ring_until(&self, id: &str, expires: Timestamp) {
+            self.deliver(Incoming::Called {
+                chat: room(),
+                call: CallId(id.into()),
+                offer: "v=0 the owner's offer".into(),
+                at: Timestamp::now(),
+                expires,
+            })
+            .await;
+        }
+
+        async fn candidates(&self, id: &str, lines: &[&str]) {
+            self.deliver(Incoming::CallCandidates {
+                chat: room(),
+                call: CallId(id.into()),
+                candidates: lines.iter().map(|line| candidate(line)).collect(),
+                at: Timestamp::now(),
+            })
+            .await;
+        }
+
+        async fn hang_up(&self, id: &str) {
+            self.deliver(Incoming::CallEnded {
+                chat: room(),
+                call: CallId(id.into()),
+                at: Timestamp::now(),
+            })
+            .await;
+        }
+
+        fn calls(&self) -> Vec<CallEvent> {
+            self.connector.calls.lock().unwrap().clone()
+        }
+
+        /// Wait until `done` holds, failing the test rather than hanging it.
+        async fn until(&self, what: &str, done: impl Fn() -> bool) {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            while !done() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for {what}; calls {:?}, chat {:#?}",
+                    self.calls(),
+                    self.connector.chat.events()
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        async fn until_answered(&self, id: &str) {
+            let call = CallId(id.into());
+            self.until("the call to be answered", || {
+                self.calls()
+                    .iter()
+                    .any(|e| matches!(e, CallEvent::Answered { call: c, .. } if *c == call))
+            })
+            .await;
+        }
+
+        async fn until_ended(&self, id: &str, why: HangUp) {
+            let ended = CallEvent::Ended { call: CallId(id.into()), why };
+            self.until(&format!("the call to be hung up as {why:?}"), || {
+                self.calls().contains(&ended)
+            })
+            .await;
+        }
+
+        async fn finish(&mut self) {
+            drop(self.inbox.take());
+            self.join().await;
+        }
+
+        async fn halt(&mut self) {
+            self.stop.send_replace(true);
+            self.join().await;
+        }
+
+        async fn join(&mut self) {
+            if let Some(relay) = self.relay.take() {
+                tokio::time::timeout(Duration::from_secs(30), relay)
+                    .await
+                    .expect("the relay ends")
+                    .expect("the relay does not panic");
+            }
+        }
+
+        fn conversations(&self) -> Vec<Conversation> {
+            self.vault.conversations(&ConversationQuery::default()).unwrap()
+        }
+    }
+
+    fn candidate(line: &str) -> IceCandidate {
+        IceCandidate {
+            candidate: line.into(),
+            sdp_mid: Some("0".into()),
+            sdp_m_line_index: Some(0),
+        }
+    }
+
+    fn only_ended(calls: &[CallEvent], why: HangUp) -> bool {
+        matches!(calls, [CallEvent::Ended { why: w, .. }] if *w == why)
+    }
+
+    #[tokio::test]
+    async fn a_call_to_a_vault_with_no_speech_set_up_is_refused_and_the_owner_is_told_why() {
+        let mut h = Calling::start_with(|_| says("unused"), false, Timing::default()).await;
+
+        h.ring("c1").await;
+        h.connector.chat.wait_for_sent(1).await;
+        h.until_ended("c1", HangUp::Refused).await;
+        h.finish().await;
+
+        let sent = h.connector.chat.sent();
+        assert!(sent[0].starts_with("I can't take calls yet: "), "{}", sent[0]);
+        assert!(sent[0].len() > "I can't take calls yet: ".len(), "it says why: {}", sent[0]);
+        assert!(only_ended(&h.calls(), HangUp::Refused), "never answered: {:?}", h.calls());
+    }
+
+    #[tokio::test]
+    async fn a_call_is_answered_with_the_media_answer_on_the_chats_conversation() {
+        let mut h = Calling::start(|_| says("unused")).await;
+
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        assert_eq!(
+            h.calls(),
+            vec![CallEvent::Answered { call: CallId("c1".into()), sdp: SDP.into() }]
+        );
+        let opened = h.fake.opened();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].via, via_of_link(&h.link));
+        assert_eq!(h.fake.offers.lock().unwrap()[0].0, "v=0 the owner's offer");
+
+        h.fake.finish(CallEnd::SessionEnded);
+        h.until_ended("c1", HangUp::Finished).await;
+        h.finish().await;
+        assert!(h.connector.chat.sent().is_empty(), "a call that ended well says nothing");
+    }
+
+    fn via_of_link(link: &ChatLink) -> Via {
+        Via { link: link.id, service: "Matrix".into(), chat: room().0 }
+    }
+
+    #[tokio::test]
+    async fn candidates_before_and_after_the_answer_both_reach_the_call() {
+        // A turn that never ends keeps the chat's worker busy, so the call
+        // waits its turn and what the caller sends meanwhile is buffered.
+        let mut h = Calling::start(|_| Script::Hangs).await;
+        h.say("write me a very long essay").await;
+        h.connector
+            .chat
+            .until("the turn to begin", |e| {
+                e.iter().any(|e| matches!(e, super::Event::Typing { on: true, .. }))
+            })
+            .await;
+
+        h.ring("c1").await;
+        h.candidates("c1", &["candidate:early1", "candidate:early2"]).await;
+        h.candidates("other", &["candidate:somebody-elses"]).await;
+        assert!(h.calls().is_empty(), "the call waits behind the turn");
+
+        h.say("!stop").await;
+        h.until_answered("c1").await;
+        h.candidates("c1", &["candidate:late"]).await;
+        h.until("the late candidate to reach the call", || !h.fake.received().is_empty()).await;
+
+        let offers = h.fake.offers.lock().unwrap().clone();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].1, vec![candidate("candidate:early1"), candidate("candidate:early2")]);
+        assert_eq!(h.fake.received(), vec![ToCall::Candidates(vec![candidate("candidate:late")])]);
+
+        h.fake.finish(CallEnd::SessionEnded);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn the_owner_hanging_up_ends_the_call() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.hang_up("c1").await;
+        h.until_ended("c1", HangUp::Finished).await;
+        h.finish().await;
+
+        assert_eq!(h.fake.received(), vec![ToCall::End]);
+        assert_eq!(h.fake.stops.load(Ordering::SeqCst), 1, "and the session was stopped");
+    }
+
+    #[tokio::test]
+    async fn a_hang_up_for_some_other_call_leaves_this_one_running() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.hang_up("not-c1").await;
+        // Something that arrives after it, to know it has been dealt with.
+        h.candidates("c1", &["candidate:after"]).await;
+        h.until("the candidate", || !h.fake.received().is_empty()).await;
+        assert_eq!(h.fake.received(), vec![ToCall::Candidates(vec![candidate("candidate:after")])]);
+
+        h.fake.finish(CallEnd::SessionEnded);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn stop_ends_a_running_call() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.say("!stop").await;
+        h.until_ended("c1", HangUp::Finished).await;
+        h.finish().await;
+
+        assert_eq!(h.fake.received(), vec![ToCall::End]);
+        assert_eq!(h.connector.chat.sent(), vec!["Stopped."]);
+    }
+
+    #[tokio::test]
+    async fn a_second_call_while_one_runs_is_refused_and_the_first_carries_on() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.ring("c2").await;
+        h.until_ended("c2", HangUp::Refused).await;
+        h.connector.chat.wait_for_sent(1).await;
+        assert_eq!(h.connector.chat.sent(), vec!["I'm already on a call."]);
+        assert!(h.fake.received().is_empty(), "the first call was not disturbed");
+        assert_eq!(h.fake.opened().len(), 1, "and no second session was opened");
+
+        // The same call announced twice is not a second call.
+        h.ring("c1").await;
+        h.candidates("c1", &["candidate:marker"]).await;
+        h.until("the marker", || !h.fake.received().is_empty()).await;
+        assert!(
+            !h.calls()
+                .contains(&CallEvent::Ended { call: CallId("c1".into()), why: HangUp::Refused })
+        );
+
+        h.fake.finish(CallEnd::SessionEnded);
+        h.until_ended("c1", HangUp::Finished).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn the_line_is_free_again_after_a_call() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+        h.fake.finish(CallEnd::SessionEnded);
+        h.until_ended("c1", HangUp::Finished).await;
+
+        h.ring("c2").await;
+        h.until_answered("c2").await;
+        h.fake.finish(CallEnd::SessionEnded);
+        h.until_ended("c2", HangUp::Finished).await;
+        h.finish().await;
+        assert!(h.connector.chat.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn typing_after_a_call_carries_on_the_same_conversation() {
+        let mut h = Calling::start(|_| says("Noted.")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+        let called_on = h.fake.opened()[0].conversation;
+        h.fake.finish(CallEnd::SessionEnded);
+        h.until_ended("c1", HangUp::Finished).await;
+
+        h.say("hello again").await;
+        h.connector.chat.wait_for_sent(1).await;
+        h.finish().await;
+
+        let conversations = h.conversations();
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].id, called_on, "the typed message went where the call was");
+        assert_eq!(conversations[0].via, Some(via_of_link(&h.link)));
+    }
+
+    #[tokio::test]
+    async fn a_call_made_after_typing_is_on_the_conversation_typing_started() {
+        let mut h = Calling::start(|_| says("Noted.")).await;
+        h.say("hello").await;
+        h.connector.chat.wait_for_sent(1).await;
+        let typed_in = h.conversations()[0].id;
+
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+        assert_eq!(h.fake.opened()[0].conversation, typed_in);
+
+        h.fake.finish(CallEnd::SessionEnded);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_confirmation_that_needs_a_tap_is_asked_in_the_chat_and_the_tap_answers_it() {
+        let mut h = Calling::start(|task| super::deleting(task, "Deleted it.")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.fake.start_turn("delete the dentist task");
+        let (question, reference) = h.connector.chat.wait_for_question().await;
+        assert!(question.markdown.contains("Book the dentist"), "{}", question.markdown);
+        assert!(question.choices.starts_with(&[Choice::Yes, Choice::No]), "{:?}", question.choices);
+        assert!(h.vault.task(h.task.id).is_ok(), "nothing is deleted before the answer");
+        assert_eq!(
+            h.connector.chat.typing(),
+            Vec::<bool>::new(),
+            "nobody is shown typing on a call"
+        );
+
+        h.deliver(Incoming::Chose {
+            chat: room(),
+            question: reference,
+            choice: Choice::Yes,
+            at: Timestamp::now(),
+        })
+        .await;
+        h.until("the task to be deleted", || h.vault.task(h.task.id).is_err()).await;
+        assert_eq!(h.connector.chat.questions().len(), 1);
+
+        h.fake.finish(CallEnd::SessionEnded);
+        h.finish().await;
+    }
+
+    fn requires(call_id: &str, subject: &str) -> VoiceEvent {
+        VoiceEvent::Agent {
+            event: AgentEvent::ConfirmationRequired {
+                call_id: call_id.into(),
+                name: "delete_task".into(),
+                subject: subject.into(),
+                arguments: serde_json::Value::Null,
+                kind: "destructive".into(),
+                can_park: false,
+            },
+        }
+    }
+
+    fn started(call_id: &str) -> VoiceEvent {
+        VoiceEvent::Agent {
+            event: AgentEvent::ToolStarted {
+                call_id: call_id.into(),
+                name: "delete_task".into(),
+                arguments: serde_json::Value::Null,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_confirmation_that_waits_for_a_click_is_asked_in_the_chat() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        // The voice takes this one itself, and the turn goes on.
+        h.fake.report(requires("spoken", "the one answered aloud"));
+        h.fake.report(VoiceEvent::State { state: VoiceState::Asking });
+        h.fake.report(started("spoken"));
+        h.fake.report(VoiceEvent::State { state: VoiceState::Thinking });
+        // This one needs a tap.
+        h.fake.report(requires("tap", "the one that needs a tap"));
+        h.fake.report(VoiceEvent::State { state: VoiceState::WaitingForClick });
+
+        let (question, _) = h.connector.chat.wait_for_question().await;
+        assert!(question.markdown.contains("the one that needs a tap"), "{}", question.markdown);
+        assert_eq!(h.connector.chat.questions().len(), 1, "the spoken one never reached the chat");
+
+        // The turn moves on without it, and the next is asked in its own right.
+        h.fake.report(started("tap"));
+        h.fake.report(requires("tap2", "the next one"));
+        h.fake.report(VoiceEvent::State { state: VoiceState::WaitingForClick });
+        h.connector
+            .chat
+            .until("the next question", |e| {
+                e.iter().filter(|e| matches!(e, super::Event::Asked { .. })).count() == 2
+            })
+            .await;
+
+        h.fake.finish(CallEnd::SessionEnded);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_typed_no_declines_a_confirmation_asked_for_a_call() {
+        let mut h = Calling::start(|task| super::deleting(task, "Left it.")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.fake.start_turn("delete the dentist task");
+        h.connector.chat.wait_for_question().await;
+        h.say("no").await;
+        // The turn goes on to say it left it; wait for the turn's end.
+        h.until("the turn to finish", || {
+            !h.service.pending().is_running(h.fake.opened()[0].conversation)
+        })
+        .await;
+        h.fake.finish(CallEnd::SessionEnded);
+        h.finish().await;
+
+        assert!(h.vault.task(h.task.id).is_ok(), "no is not a yes");
+    }
+
+    #[tokio::test]
+    async fn a_call_that_cannot_reach_the_phone_says_how_to_fix_it() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.fake.finish(CallEnd::Unreachable);
+        h.until_ended("c1", HangUp::Unreachable).await;
+        h.connector.chat.wait_for_sent(1).await;
+        h.finish().await;
+
+        let sent = h.connector.chat.sent();
+        assert!(sent[0].contains("couldn't connect"), "{}", sent[0]);
+        assert!(sent[0].contains("tailnet"), "{}", sent[0]);
+    }
+
+    #[tokio::test]
+    async fn a_call_that_breaks_is_hung_up_as_failed() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.fake.finish(CallEnd::Failed);
+        h.until_ended("c1", HangUp::Failed).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn media_that_cannot_answer_tells_the_owner_hangs_up_failed_and_stops_the_session() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        *h.fake.answer_fails.lock().unwrap() = Some("that offer has no audio I can use".into());
+
+        h.ring("c1").await;
+        h.until_ended("c1", HangUp::Failed).await;
+        h.connector.chat.wait_for_sent(1).await;
+        h.until("the session to be stopped", || h.fake.stops.load(Ordering::SeqCst) == 1).await;
+        h.finish().await;
+
+        assert!(h.connector.chat.sent()[0].contains("that offer has no audio I can use"));
+        assert!(only_ended(&h.calls(), HangUp::Failed));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_will_not_take_the_answer_fails_the_call() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        *h.connector.refuse_answers.lock().unwrap() = true;
+
+        h.ring("c1").await;
+        h.until_ended("c1", HangUp::Failed).await;
+        h.connector.chat.wait_for_sent(1).await;
+        h.until("the session to be stopped", || h.fake.stops.load(Ordering::SeqCst) == 1).await;
+        h.finish().await;
+        assert!(h.connector.chat.sent()[0].contains("couldn't answer that call"));
+    }
+
+    #[tokio::test]
+    async fn a_call_that_stopped_ringing_while_it_waited_is_not_answered() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring_until("c1", Timestamp::now() - SignedDuration::from_secs(5)).await;
+        h.until_ended("c1", HangUp::Refused).await;
+        h.connector.chat.wait_for_sent(1).await;
+        h.finish().await;
+
+        assert!(h.connector.chat.sent()[0].contains("couldn't pick up"));
+        assert!(h.fake.opened().is_empty(), "no session was opened for it");
+    }
+
+    #[tokio::test]
+    async fn a_call_the_owner_gave_up_on_while_it_waited_is_not_answered() {
+        let mut h = Calling::start(|_| Script::Hangs).await;
+        h.say("write me a very long essay").await;
+        h.connector
+            .chat
+            .until("the turn to begin", |e| {
+                e.iter().any(|e| matches!(e, super::Event::Typing { on: true, .. }))
+            })
+            .await;
+
+        h.ring("c1").await;
+        h.hang_up("c1").await;
+        h.say("!stop").await;
+        h.until_ended("c1", HangUp::Refused).await;
+        h.finish().await;
+
+        assert!(h.fake.opened().is_empty(), "no session was opened for it");
+        assert!(
+            !h.calls().iter().any(|e| matches!(e, CallEvent::Answered { .. })),
+            "{:?}",
+            h.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_relay_stopping_hangs_up_a_running_call() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.halt().await;
+
+        assert_eq!(h.fake.received(), vec![ToCall::End]);
+        assert!(
+            h.calls()
+                .contains(&CallEvent::Ended { call: CallId("c1".into()), why: HangUp::Finished })
+        );
+        assert!(h.connector.chat.sent().is_empty(), "nothing is said as the relay stops");
+    }
+
+    #[tokio::test]
+    async fn the_inbox_closing_ends_a_running_call_too() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.finish().await;
+
+        assert_eq!(h.fake.received(), vec![ToCall::End]);
+        assert!(
+            h.calls()
+                .contains(&CallEvent::Ended { call: CallId("c1".into()), why: HangUp::Finished })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_redial_is_taken_after_a_queued_call_was_hung_up() {
+        let mut h = Calling::start(|_| Script::Hangs).await;
+        h.say("write me a very long essay").await;
+        h.connector
+            .chat
+            .until("the turn to begin", |e| {
+                e.iter().any(|e| matches!(e, super::Event::Typing { on: true, .. }))
+            })
+            .await;
+
+        h.ring("c1").await;
+        h.hang_up("c1").await;
+        h.ring("c2").await;
+        h.say("!stop").await;
+        h.until_answered("c2").await;
+
+        assert!(
+            !h.calls()
+                .contains(&CallEvent::Ended { call: CallId("c2".into()), why: HangUp::Refused }),
+            "{:?}",
+            h.calls()
+        );
+        assert_eq!(h.connector.chat.sent(), vec!["Stopped."], "never told it was busy");
+        h.fake.finish(CallEnd::SessionEnded);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_queued_call_that_rang_out_does_not_keep_the_line() {
+        let mut h = Calling::start(|_| Script::Hangs).await;
+        h.say("write me a very long essay").await;
+        h.connector
+            .chat
+            .until("the turn to begin", |e| {
+                e.iter().any(|e| matches!(e, super::Event::Typing { on: true, .. }))
+            })
+            .await;
+
+        h.ring_until("c1", Timestamp::now() + SignedDuration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        h.ring("c2").await;
+        h.say("!stop").await;
+        h.until_answered("c2").await;
+
+        assert!(
+            !h.connector.chat.sent().iter().any(|m| m.contains("already on a call")),
+            "{:?}",
+            h.connector.chat.sent()
+        );
+        assert!(
+            !h.calls()
+                .contains(&CallEvent::Ended { call: CallId("c2".into()), why: HangUp::Refused })
+        );
+        h.fake.finish(CallEnd::SessionEnded);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn the_relay_stopping_hangs_up_a_call_that_is_still_queued() {
+        let mut h = Calling::start(|_| Script::Hangs).await;
+        h.say("write me a very long essay").await;
+        h.connector
+            .chat
+            .until("the turn to begin", |e| {
+                e.iter().any(|e| matches!(e, super::Event::Typing { on: true, .. }))
+            })
+            .await;
+        h.ring("c1").await;
+        // The relay reads `stop` before its inbox, so let it read the call
+        // first; there is nothing to see of a call that is merely queued.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        h.halt().await;
+
+        assert_eq!(
+            h.calls(),
+            vec![CallEvent::Ended { call: CallId("c1".into()), why: HangUp::Refused }]
+        );
+        assert!(h.fake.opened().is_empty(), "and it was never answered");
+    }
+
+    #[tokio::test]
+    async fn a_confirmation_replaced_by_another_is_declined_not_left_waiting() {
+        let mut h = Calling::start(|task| super::deleting(task, "Left it.")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+        let conversation = h.fake.opened()[0].conversation;
+
+        h.fake.start_turn("delete the dentist task");
+        h.connector.chat.wait_for_question().await;
+        assert!(h.service.pending().is_running(conversation));
+
+        // The session moves on to another confirmation while the first is
+        // still a card. Nobody will answer the first now, so the relay does.
+        h.fake.report(requires("next", "the next one"));
+        h.connector
+            .chat
+            .until("the next question", |e| {
+                e.iter().filter(|e| matches!(e, super::Event::Asked { .. })).count() == 2
+            })
+            .await;
+        h.until("the first turn to be let go of", || !h.service.pending().is_running(conversation))
+            .await;
+
+        assert!(h.vault.task(h.task.id).is_ok(), "declined, so nothing was deleted");
+        h.fake.finish(CallEnd::SessionEnded);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_call_whose_worker_panics_is_hung_up_failed_and_the_line_comes_free() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.fake.panic_on_open.store(true, Ordering::SeqCst);
+
+        h.ring("c1").await;
+        h.until_ended("c1", HangUp::Failed).await;
+        h.connector.chat.wait_for_sent(1).await;
+
+        h.ring("c2").await;
+        h.until_answered("c2").await;
+        h.fake.finish(CallEnd::SessionEnded);
+        h.until_ended("c2", HangUp::Finished).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_session_that_ended_in_error_fails_the_call_and_the_owner_is_told() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.fake.report(VoiceEvent::Ended { error: Some("the speech model fell over".into()) });
+        h.fake.finish(CallEnd::SessionEnded);
+        h.until_ended("c1", HangUp::Failed).await;
+        h.connector.chat.wait_for_sent(1).await;
+        h.finish().await;
+
+        assert!(
+            h.connector.chat.sent()[0].contains("the speech model fell over"),
+            "{:?}",
+            h.connector.chat.sent()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_that_ended_as_asked_is_still_a_goodbye() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.fake.report(VoiceEvent::Ended { error: None });
+        h.fake.finish(CallEnd::SessionEnded);
+        h.until_ended("c1", HangUp::Finished).await;
+        h.finish().await;
+        assert!(h.connector.chat.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_owner_hanging_up_as_the_answer_goes_out_is_not_reported_as_a_failure() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        *h.connector.hangs_up_during_answer.lock().unwrap() = h.inbox.clone();
+
+        h.ring("c1").await;
+        h.until_ended("c1", HangUp::Refused).await;
+        h.until("the session to be stopped", || h.fake.stops.load(Ordering::SeqCst) == 1).await;
+        h.finish().await;
+
+        assert!(h.connector.chat.sent().is_empty(), "{:?}", h.connector.chat.sent());
+        assert!(only_ended(&h.calls(), HangUp::Refused), "{:?}", h.calls());
+    }
+}
