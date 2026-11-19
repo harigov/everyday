@@ -1024,6 +1024,7 @@ mod tests {
         let rate = samples as f64 / seconds;
         println!("{rate:.0} samples a second, rms {:.0}", (energy / samples as f64).sqrt());
         assert_eq!(played, [1], "the first played, and the cleared one never reports");
-        assert!((13_000.0..19_000.0).contains(&rate), "{rate}");
+        // At least real time: a null device has no clock and runs ahead of it.
+        assert!(rate > 13_000.0, "{rate}");
     }
 }

@@ -26,7 +26,7 @@ use super::{BoxFuture, Hints, Limits, RawSegment, SpeechChunk, Transcriber};
 use crate::error::CommandResult;
 use crate::service::blocking;
 use crate::speech::local as speech;
-use karmayoga_core::meeting::{LocalModel, SAMPLE_RATE};
+use karmayoga_core::meeting::LocalModel;
 
 /// Generous, per the plan: local recognition pays no per-request bill and
 /// crosses no wire, so the only real limit is memory for one chunk's
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn index_of_converts_ms_to_sample_index() {
         assert_eq!(index_of(0), 0);
-        assert_eq!(index_of(1000), SAMPLE_RATE as usize);
-        assert_eq!(index_of(500), SAMPLE_RATE as usize / 2);
+        assert_eq!(index_of(1000), karmayoga_core::meeting::SAMPLE_RATE as usize);
+        assert_eq!(index_of(500), karmayoga_core::meeting::SAMPLE_RATE as usize / 2);
     }
 }
