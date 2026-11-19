@@ -24,10 +24,10 @@ version=$(awk '/^name = "sherpa-onnx"$/{getline; print; exit}' "$here/Cargo.lock
 
 pinned() {
   case "$1" in
-    sherpa-onnx-v1.13.8-linux-x64-static-lib.tar.bz2) echo e1fdc5b67530e15741ef897fa5ffff297056f3bf0c6d829a27af9225a4c4b5a6 ;;
-    sherpa-onnx-v1.13.8-osx-arm64-static-lib.tar.bz2) echo 9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da ;;
-    sherpa-onnx-v1.13.8-osx-x64-static-lib.tar.bz2) echo a3f88da3e54c850a12d61431e73f8affcd1f13738b75b768847dd79541835b4b ;;
-    sherpa-onnx-v1.13.8-win-x64-static-MT-Release-lib.tar.bz2) echo 56ffcf3c454c1f14f7bc9887286cc8143e7e542dc632804e1c447d5f8d534eaf ;;
+    sherpa-onnx-v2.0.1-linux-x64-static-lib.tar.bz2) echo 55cfadf65ba50d0afc1a802b7a337942819e51c94a5b5a384def1978f7c70871 ;;
+    sherpa-onnx-v2.0.1-osx-arm64-static-lib.tar.bz2) echo d7a9b14f337958e7373c8c650f046df33d210bbaff2f33cb8322dda663ee5e1c ;;
+    sherpa-onnx-v2.0.1-osx-x64-static-lib.tar.bz2) echo 6a3cb3c14104d3a02e7b2a6cd5621f590b14892cce7d0bc0935f7655ef518938 ;;
+    sherpa-onnx-v2.0.1-win-x64-static-MT-Release-lib.tar.bz2) echo 23e7b986b197eda0bbc47ff3d7d5c87afd6ef2b9077214ba26b0f1ec52ef0e66 ;;
     *) return 1 ;;
   esac
 }

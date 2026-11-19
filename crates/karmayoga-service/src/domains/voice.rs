@@ -71,8 +71,7 @@ async fn delete_voice_model(_svc: Arc<Service>, _ctx: Ctx, args: ModelRef) -> Co
     models::delete(voice_id(&args.id)?).map_err(|e| CommandError::new(codes::INVALID, e))
 }
 
-/// The saved voice saying [`SAMPLE_TEXT`], in the speech model's language where
-/// the voice can speak it.
+/// The saved voice saying [`SAMPLE_TEXT`].
 ///
 /// Locked vault refused, as every command that puts a request on the network
 /// is: a hosted voice is sent the words. So is a voice that is not downloaded
@@ -125,7 +124,7 @@ mod tests {
 
     #[test]
     fn only_voices_are_this_cards_to_download_or_delete() {
-        assert_eq!(voice_id("supertonic3").unwrap(), "supertonic3");
+        assert_eq!(voice_id("phonon").unwrap(), "phonon");
         for id in ["parakeetV3", "whisperTurbo", "no-such-model", ""] {
             let err = voice_id(id).unwrap_err();
             assert_eq!(err.code, codes::INVALID, "{id}");
@@ -136,7 +135,7 @@ mod tests {
     fn the_catalogue_holds_the_voices_and_nothing_else() {
         let listed: Vec<String> =
             models::catalogue_of(ModelKind::Voice).map(|s| s.id.to_string()).collect();
-        assert!(listed.contains(&"supertonic3".to_string()), "{listed:?}");
+        assert!(listed.contains(&"phonon".to_string()), "{listed:?}");
         assert!(listed.iter().all(|id| voice_id(id).is_ok()));
     }
 

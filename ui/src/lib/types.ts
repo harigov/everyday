@@ -4625,7 +4625,7 @@ export type VoiceEvent =
   | { type: 'ended'; error: string | null }
 
 /** The voices that run on this computer -- `karmayoga_core::speech::LocalVoice`. */
-export type LocalVoice = 'supertonic3'
+export type LocalVoice = 'phonon'
 
 /** Who turns the assistant's words into speech --
  *  `karmayoga_core::speech::SynthesiserConfig`. */

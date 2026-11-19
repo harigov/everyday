@@ -1,13 +1,14 @@
 //! A spoken conversation against the real models: Silero, Parakeet and
-//! Supertonic, with only the language model and the sound devices replaced. The
+//! Phonon, with only the language model and the sound devices replaced. The
 //! same models are first used without a session at all, through
 //! `Service::live_transcription`, which is the seam dictation and live meeting
 //! transcripts are built on.
 //!
 //! `#[ignore]`, and gated a second time by `KARMAYOGA_TEST_SPEECH=1`, as
 //! `speech_real.rs` is: it downloads a voice and runs real inference. The audio
-//! that goes in is Supertonic's, so nothing outside this test is needed but the
-//! speech kit and Parakeet in the models folder.
+//! that goes in is Phonon's, so nothing outside this test is needed but the
+//! speech kit and Parakeet in the models folder. The voice itself is
+//! `models/phonon`, downloaded here if it is not already there.
 
 #![cfg(feature = "speech")]
 
@@ -125,21 +126,19 @@ fn service_with_voices(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
     settings.medium.model.model = "scripted".into();
     settings.speech =
         Some(SpeechConfig::new(TranscriberConfig::Local { model: LocalModel::ParakeetV3 }));
-    settings.voice = Some(VoiceConfig::new(SynthesiserConfig::Local {
-        voice: LocalVoice::Supertonic3,
-        speaker: 0,
-    }));
+    settings.voice =
+        Some(VoiceConfig::new(SynthesiserConfig::Local { voice: LocalVoice::Phonon, speaker: 0 }));
     vault.save_model_settings(&settings).unwrap();
     (svc, dir)
 }
 
 async fn install_voice() {
-    if !models::voice_installed(LocalVoice::Supertonic3) {
-        models::start_download(LocalVoice::Supertonic3.id()).expect("the download starts");
+    if !models::voice_installed(LocalVoice::Phonon) {
+        models::start_download(LocalVoice::Phonon.id()).expect("the download starts");
     }
     let began = Instant::now();
-    while !models::voice_installed(LocalVoice::Supertonic3) {
-        if let Some(error) = models::last_error(LocalVoice::Supertonic3.id()) {
+    while !models::voice_installed(LocalVoice::Phonon) {
+        if let Some(error) = models::last_error(LocalVoice::Phonon.id()) {
             panic!("the voice did not download: {error}");
         }
         assert!(began.elapsed() < Duration::from_secs(300), "the voice took too long");
@@ -228,8 +227,7 @@ async fn a_spoken_conversation_with_the_real_models() {
     let vault = svc.get().unwrap();
 
     // The voice, measured, and the question the "person" will ask.
-    let synthesiser =
-        build_synthesiser(vault.voice_access().unwrap(), Some("en".into())).await.unwrap();
+    let synthesiser = build_synthesiser(vault.voice_access().unwrap()).await.unwrap();
     let began = Instant::now();
     let asked = synthesiser.synthesise(ASKED).await.unwrap();
     let took = began.elapsed().as_secs_f32();
@@ -238,11 +236,10 @@ async fn a_spoken_conversation_with_the_real_models() {
     let question = to_16k(&asked);
 
     // Each speaker's pitch, which is how the settings can tell them apart.
-    for speaker in 0..LocalVoice::Supertonic3.speakers() {
+    for speaker in 0..LocalVoice::Phonon.speakers() {
         let mut access = vault.voice_access().unwrap();
-        access.config.synthesiser =
-            SynthesiserConfig::Local { voice: LocalVoice::Supertonic3, speaker };
-        let voice = build_synthesiser(access, Some("en".into())).await.unwrap();
+        access.config.synthesiser = SynthesiserConfig::Local { voice: LocalVoice::Phonon, speaker };
+        let voice = build_synthesiser(access).await.unwrap();
         let said = voice.synthesise("Hello there, this is how I sound today.").await.unwrap();
         println!("speaker {speaker}: {:.0} Hz", pitch(&to_16k(&said)));
     }

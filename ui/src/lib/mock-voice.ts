@@ -121,11 +121,12 @@ export function mockVoiceSetScreen(onScreen: OnScreen | null): void {
 
 const voiceModels: LocalModelInfo[] = [
   {
-    id: 'supertonic3',
-    name: 'Supertonic 3',
-    description: 'Ten voices in 31 languages, quick on an ordinary processor.',
-    languages: '31 languages',
-    bytes: 128_774_318,
+    id: 'phonon',
+    name: 'Phonon 31M',
+    description:
+      'Twenty-five natural voices that run on this computer, many times quicker than they speak.',
+    languages: 'English',
+    bytes: 71_198_353,
     installed: false,
     progress: null,
     error: null,

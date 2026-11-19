@@ -255,15 +255,19 @@ impl std::fmt::Debug for SpeechAccess {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum LocalVoice {
-    /// Supertonic 3, int8: 31 languages, ten speakers, quick on a CPU.
-    Supertonic3,
+    /// Gradium's Phonon 31M: English, the [`PHONON_SPEAKERS`], many times
+    /// quicker than it speaks on a CPU. Settings saved while the voice here
+    /// was Supertonic 3 (`supertonic3`, retired once Supertone stopped
+    /// maintaining it) read as this, keeping their speaker number.
+    #[serde(alias = "supertonic3")]
+    Phonon,
 }
 
 impl LocalVoice {
     /// What it is called in the model catalogue and on the wire.
     pub fn id(self) -> &'static str {
         match self {
-            LocalVoice::Supertonic3 => "supertonic3",
+            LocalVoice::Phonon => "phonon",
         }
     }
 
@@ -271,10 +275,47 @@ impl LocalVoice {
     /// is below this.
     pub fn speakers(self) -> u32 {
         match self {
-            LocalVoice::Supertonic3 => 10,
+            LocalVoice::Phonon => PHONON_SPEAKERS.len() as u32,
         }
     }
 }
+
+/// Phonon's English speakers, by the names Gradium gives them, in the order
+/// a [`SynthesiserConfig::Local`]'s `speaker` counts them, the first the
+/// default: twelve American voices, then thirteen British. The first ten are
+/// five women and then five men because Supertonic's ten were five higher
+/// voices and then five lower, so a speaker number saved for it lands on a
+/// voice of the same kind. Each is one file in the voice's download, named
+/// for it in lower case. The settings pane's list
+/// (`ui/src/components/ModelsPanel.svelte`) is in the same order, which a
+/// test in `karmayoga-service` holds it to.
+pub const PHONON_SPEAKERS: [&str; 25] = [
+    "Harper",
+    "Everly",
+    "Hadley",
+    "Delia",
+    "Juniper",
+    "Miles",
+    "Preston",
+    "Trevor",
+    "Easton",
+    "Micah",
+    "Zoey",
+    "Russell",
+    "Maeve",
+    "Bryony",
+    "Imogen",
+    "Pippa",
+    "Lottie",
+    "Freya",
+    "Elodie-Rose",
+    "Edwin",
+    "Hugh",
+    "Spencer",
+    "Toby",
+    "Teddy",
+    "Alfie",
+];
 
 /// Who turns the assistant's words into speech: this computer, OpenAI, or
 /// anything that speaks OpenAI's `/v1/audio/speech` -- which is how an
@@ -473,6 +514,34 @@ mod tests {
         assert!(TranscriberConfig::OpenAi { model: "gpt-4o-transcribe".into() }.validate().is_ok());
         // Not downloaded yet is not a reason to refuse: it is chosen first.
         assert!(TranscriberConfig::Local { model: LocalModel::WhisperTurbo }.validate().is_ok());
+    }
+
+    #[test]
+    fn a_voice_saved_as_supertonic_reads_as_phonon_with_its_speaker() {
+        let saved = serde_json::json!({ "type": "local", "voice": "supertonic3", "speaker": 7 });
+        let read: SynthesiserConfig = serde_json::from_value(saved).unwrap();
+        assert_eq!(read, SynthesiserConfig::Local { voice: LocalVoice::Phonon, speaker: 7 });
+        assert_eq!(serde_json::to_value(&read).unwrap()["voice"], "phonon");
+    }
+
+    /// Supertonic's speakers 0-4 were its higher voices and 5-9 its lower
+    /// ones; the speakers they become are women and men the same way round.
+    #[test]
+    fn a_supertonic_speaker_becomes_a_voice_of_the_same_kind() {
+        let women = ["Harper", "Everly", "Hadley", "Delia", "Juniper"];
+        let men = ["Miles", "Preston", "Trevor", "Easton", "Micah"];
+        assert_eq!(PHONON_SPEAKERS[..5], women);
+        assert_eq!(PHONON_SPEAKERS[5..10], men);
+    }
+
+    #[test]
+    fn a_local_voice_speaker_is_one_it_has() {
+        let speakers = LocalVoice::Phonon.speakers();
+        assert_eq!(speakers, 25);
+        let last = SynthesiserConfig::Local { voice: LocalVoice::Phonon, speaker: speakers - 1 };
+        assert!(last.validate().is_ok());
+        let past = SynthesiserConfig::Local { voice: LocalVoice::Phonon, speaker: speakers };
+        assert!(past.validate().is_err());
     }
 
     #[test]

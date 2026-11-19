@@ -10,10 +10,10 @@
 //!   transcription. `wav` is asked for rather than `mp3` or `opus` because it
 //!   is the one format that can be read here without a codec; reading it is
 //!   [`crate::speech::wav`]'s.
-//! - **Supertonic 3 on this computer** ([`local`], feature `speech`), through
-//!   sherpa-onnx. Held in a [`Resident`](crate::local::resident::Resident), so
-//!   it is loaded for the first sentence and let go of once nobody has needed
-//!   a voice for a while.
+//! - **Phonon 31M on this computer** ([`local`], feature `speech`), Gradium's
+//!   English voice, run by `ptts`. Held in a
+//!   [`Resident`](crate::local::resident::Resident), so it is loaded for the
+//!   first sentence and let go of once nobody has needed a voice for a while.
 //!
 //! What is said, and who hears it, is the caller's: this turns one piece of
 //! text into one stretch of audio.
@@ -40,22 +40,16 @@ pub trait Synthesiser: Send + Sync {
     fn synthesise<'a>(&'a self, text: &'a str) -> BoxFuture<'a, CommandResult<Speech>>;
 }
 
-/// The configured voice, as a [`Synthesiser`]. `language` is the speech
-/// model's, which a local voice is told to speak in when it can.
+/// The configured voice, as a [`Synthesiser`].
 ///
 /// A local voice is loaded here, so that the person is told it is missing
 /// when they first ask for speech rather than after, and so that the seconds
 /// it takes belong to whatever is starting up.
-pub async fn build_synthesiser(
-    access: VoiceAccess,
-    language: Option<String>,
-) -> CommandResult<Arc<dyn Synthesiser>> {
+pub async fn build_synthesiser(access: VoiceAccess) -> CommandResult<Arc<dyn Synthesiser>> {
     let VoiceAccess { config, key } = access;
     let speed = config.speed;
     match config.synthesiser {
-        SynthesiserConfig::Local { voice, speaker } => {
-            local::build(voice, speaker, speed, language.as_deref()).await
-        }
+        SynthesiserConfig::Local { voice, speaker } => local::build(voice, speaker, speed).await,
         SynthesiserConfig::OpenAi { model, voice } => Ok(Arc::new(OpenAiSynthesiser::new(
             crate::speech::transcribe::OPENAI_BASE_URL,
             key,

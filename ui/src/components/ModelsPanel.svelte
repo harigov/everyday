@@ -417,7 +417,7 @@
   // ── Voice ────────────────────────────────────────────────────────
 
   /**
-   * Turning the voice on and off. On starts at Supertonic on this computer
+   * Turning the voice on and off. On starts at Phonon on this computer
    * where this copy can run it -- nothing is downloaded until somebody presses
    * Download -- and at OpenAI where it cannot.
    */
@@ -427,7 +427,7 @@
       ? null
       : {
           synthesiser: models.localVoice
-            ? { type: 'local', voice: 'supertonic3', speaker: 0 }
+            ? { type: 'local', voice: 'phonon', speaker: 0 }
             : { type: 'openAi', model: 'gpt-4o-mini-tts', voice: 'alloy' },
           speed: 1,
         }
@@ -440,7 +440,7 @@
     if (!draft?.voice || draft.voice.synthesiser.type === kind) return
     draft.voice.synthesiser =
       kind === 'local'
-        ? { type: 'local', voice: 'supertonic3', speaker: 0 }
+        ? { type: 'local', voice: 'phonon', speaker: 0 }
         : kind === 'compatible'
           ? { type: 'compatible', baseUrl: '', model: '', voice: '' }
           : { type: 'openAi', model: 'gpt-4o-mini-tts', voice: 'alloy' }
@@ -451,12 +451,53 @@
     { kind: 'compatible', label: 'Compatible server' },
   ]
 
-  /** The built-in voice's speakers, as people see them. The model names them
-   *  only by number; measured, the first five are higher and the rest lower. */
-  const SPEAKERS = Array.from({ length: 10 }, (_, value) => ({
+  /** The built-in voice's speakers, as people see them: a name and how it
+   *  sounds, listed under their accent. The order is
+   *  `karmayoga_core::speech::PHONON_SPEAKERS`'s -- a test in
+   *  `karmayoga-service` (`speech::synth::local`) holds this list to it --
+   *  and `value` is the index the voice is asked for by. */
+  const SPEAKERS = (
+    [
+      ['Harper', 'American', 'woman'],
+      ['Everly', 'American', 'woman'],
+      ['Hadley', 'American', 'woman'],
+      ['Delia', 'American', 'woman'],
+      ['Juniper', 'American', 'young woman'],
+      ['Miles', 'American', 'young man'],
+      ['Preston', 'American', 'man'],
+      ['Trevor', 'American', 'man'],
+      ['Easton', 'American', 'young man'],
+      ['Micah', 'American', 'young man'],
+      ['Zoey', 'American', 'upbeat woman'],
+      ['Russell', 'American', 'energetic man'],
+      ['Maeve', 'British', 'woman'],
+      ['Bryony', 'British', 'woman'],
+      ['Imogen', 'British', 'woman'],
+      ['Pippa', 'British', 'woman'],
+      ['Lottie', 'British', 'young woman'],
+      ['Freya', 'British', 'young woman'],
+      ['Elodie-Rose', 'British', 'young woman'],
+      ['Edwin', 'British', 'man'],
+      ['Hugh', 'British', 'man'],
+      ['Spencer', 'British', 'man'],
+      ['Toby', 'British', 'man'],
+      ['Teddy', 'British', 'young man'],
+      ['Alfie', 'British', 'young man'],
+    ] as [string, 'American' | 'British', string][]
+  ).map(([name, accent, sounds], value) => ({
     value,
-    label: `${value < 5 ? 'Higher' : 'Lower'} voice ${(value % 5) + 1}`,
+    accent,
+    label: `${name} · ${sounds}`,
   }))
+  const AMERICAN_SPEAKERS = SPEAKERS.filter((s) => s.accent === 'American')
+  const BRITISH_SPEAKERS = SPEAKERS.filter((s) => s.accent === 'British')
+
+  /** Whether the speech model is told a language other than English -- one
+   *  the built-in voice, which speaks only English, would read wrongly. */
+  function speaksOtherThanEnglish(language: string | null | undefined): boolean {
+    const code = (language ?? '').trim().toLowerCase()
+    return code !== '' && !code.startsWith('en')
+  }
 
   /** What to call where the voice is made, in a sentence. */
   function voiceProviderLabel(t: SynthesiserConfig): string {
@@ -1223,15 +1264,29 @@
           <label class="setting">
             <span>Speaker</span>
             <select value={t.speaker} onchange={(e) => (t.speaker = Number(e.currentTarget.value))}>
-              {#each SPEAKERS as speaker (speaker.value)}
-                <option value={speaker.value}>{speaker.label}</option>
-              {/each}
+              <optgroup label="American">
+                {#each AMERICAN_SPEAKERS as speaker (speaker.value)}
+                  <option value={speaker.value}>{speaker.label}</option>
+                {/each}
+              </optgroup>
+              <optgroup label="British">
+                {#each BRITISH_SPEAKERS as speaker (speaker.value)}
+                  <option value={speaker.value}>{speaker.label}</option>
+                {/each}
+              </optgroup>
             </select>
           </label>
           <p class="hint">
-            Runs here, so what the assistant says is never sent anywhere. Nothing is spoken until
-            the voice is downloaded.
+            Runs here, so what the assistant says is never sent anywhere. English only. Nothing is
+            spoken until the voice is downloaded.
           </p>
+          {#if speaksOtherThanEnglish(draft.speech?.language)}
+            <p class="hint lead">
+              The speech model is set to “{draft.speech?.language}”, but this voice speaks only
+              English, so replies in another language will sound wrong. OpenAI or a compatible
+              server above can speak it.
+            </p>
+          {/if}
         {:else}
           {#if t.type === 'compatible'}
             <label class="setting">

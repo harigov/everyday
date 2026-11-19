@@ -16,9 +16,14 @@ goes into the same thread as what is typed.
   processing. A browser brings its own.
 - **Voices are a setting**, the sixth card in Settings → Models: OpenAI, any
   server that speaks OpenAI's `/v1/audio/speech` (how open-source voices such as
-  Kokoro run), or Supertonic 3 on this computer through sherpa-onnx.
-- **Supertonic rather than Kokoro or Piper for the built-in voice:** it needs no
-  espeak-ng data. Its code is MIT licensed; its weights are OpenRAIL-M.
+  Kokoro run), or Phonon 31M on this computer.
+- **Phonon 31M for the built-in voice:** the best small open voice in blind tests
+  (Artificial Analysis Elo 1110, tied with OpenAI's tts-1 HD), Apache-2.0 weights,
+  and a pure Rust runtime, `ptts`, with no native library and no phonemiser. About
+  ten times faster than real time on four x86 threads, with first audio in about
+  70 ms. English only. It replaces Supertonic 3, which Supertone stopped
+  maintaining; saved `supertonic3` settings read as Phonon. A speed set for it is
+  applied afterwards by `speech::tempo`, which keeps the pitch.
 - **Spoken approval is narrow.** Web searches and page fetches can be answered
   by voice, when the question can say all of what would be sent: a long search,
   or an address with a query, login, port or escapes, waits for the card. So does
@@ -45,7 +50,8 @@ meant to be built on them without new plumbing.
 | `live` | A stream of audio into ordered, timed words as they are said |
 | `transcribe` | Chunks of a recording into timed segments, the meeting pipeline's backends |
 | `local` | The sherpa-onnx models on this computer |
-| `synth` | Words into audio, through any configured voice |
+| `synth` | Words into audio, through any configured voice, Phonon included |
+| `tempo` | Speech sped up or slowed down without changing its pitch, for the local voice |
 | `text` | Writing made fit to hear, cut into sentences |
 | `narrate` | Sentences into audio in order, a limited way ahead of playback |
 | `pcm`, `wav` | Sample and file conversions everything shares |

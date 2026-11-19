@@ -9,10 +9,11 @@ authors.workspace = true
 
 [features]
 # Local speech: VAD, recognition, diarisation and speaker embeddings through
-# sherpa-onnx, which links a native library. On in the desktop app and the
-# server; off for the CLI and a plain `cargo test`. See
-# docs/plans/meeting-notes.md.
-speech = ["dep:sherpa-onnx"]
+# sherpa-onnx, which links a native library, and the voice that runs on this
+# computer through Phonon's own pure-Rust runtime. On in the desktop app and
+# the server; off for the CLI and a plain `cargo test`. See
+# docs/plans/meeting-notes.md and docs/plans/voice.md.
+speech = ["dep:sherpa-onnx", "dep:ptts", "dep:xn"]
 # Local decision models: a downloaded GGUF run through llama.cpp, for sorting
 # mail on this computer instead of at a provider. Links a native library
 # built from source with CMake. On in the desktop app only -- not in the
@@ -214,8 +215,20 @@ bzip2 = "0.6"
 # looking for a shared one on the machine, and downloads a prebuilt archive
 # at build time unless `SHERPA_ONNX_LIB_DIR` or `SHERPA_ONNX_ARCHIVE_DIR` is
 # set. See `.github/workflows/check.yml` for how CI caches that archive
-# rather than re-downloading it every run.
-sherpa-onnx = { version = "1.13", optional = true }
+# rather than re-downloading it every run. 2.0 is the first release with no
+# espeak-ng or piper-phonemize (both GPL-3) inside its static libraries.
+sherpa-onnx = { version = "2.0.1", optional = true }
+# The voice on this computer: Gradium's Phonon 31M, run by its own runtime
+# (`ptts`, on the `xn` tensor library), pure Rust with no native library and
+# no phonemiser. `hf` is only the Hugging Face tokenizer, built without its
+# C parts (`ptts` turns `tokenizers`' default features off); `hub` stays off,
+# so it never downloads anything -- `local::files` does that. Pinned exactly:
+# the checkpoint in `local::files` is the revision this release was tested
+# against. `xn` directly, and pinned with it, for `threadpool::start_pool_with`
+# -- the one way to size its worker pool without setting an environment
+# variable, and one whose behaviour `speech::synth::local` relies on.
+ptts = { version = "=0.7.1", optional = true, default-features = false, features = ["hf"] }
+xn = { version = "=0.2.14", optional = true }
 # A local decision model is a GGUF file run through llama.cpp -- see
 # `local::decide` and docs/plans/mail-sorting.md. Off by default; the
 # `decisions` feature above turns it on. llama.cpp is compiled from the
