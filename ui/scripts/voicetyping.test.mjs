@@ -1,10 +1,10 @@
-// `dictation/dictation.ts`: what the pill says, what a failure offers, and
+// `voicetyping/voicetyping.ts`: what the pill says, what a failure offers, and
 // how the level meter moves.
 
 import assert from 'node:assert/strict'
 import { load } from './harness.mjs'
 
-const { module: d, close } = await load('/src/dictation/dictation.ts')
+const { module: d, close } = await load('/src/voicetyping/voicetyping.ts')
 const { accepts, title, hint, remedy, silence, pushLevel, barHeight, isQuiet, BARS } = d
 
 const state = (over = {}) => ({
@@ -73,4 +73,4 @@ assert.ok(pushLevel(silence(), 7).at(-1) <= 1, 'clamped')
 assert.ok(barHeight(0) > 0 && barHeight(0) < barHeight(0.1) && barHeight(1) > 0.999)
 
 await close()
-console.log('dictation: all checks passed')
+console.log('voice typing: all checks passed')

@@ -26,7 +26,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /// The pill's window label.
-pub const LABEL: &str = "dictation";
+pub const LABEL: &str = "voice-typing";
 
 /// Set while the window is being created or shown, so a second call before the
 /// first has finished does not open another.
@@ -39,7 +39,7 @@ static WATCHING: AtomicBool = AtomicBool::new(false);
 
 /// The pill's hit box, in logical pixels. The page draws exactly this much:
 /// as the whole window in [`PillMode::Window`], and inside the overlay in
-/// [`PillMode::Overlay`]. `ui/src/dictation/` holds the other half of this
+/// [`PillMode::Overlay`]. `ui/src/voicetyping/` holds the other half of this
 /// contract; change neither alone.
 const WIDTH: f64 = 360.0;
 const HEIGHT: f64 = 72.0;
@@ -82,7 +82,7 @@ pub fn present(app: &AppHandle) {
         let result = open(&app).await;
         OPENING.store(false, Ordering::SeqCst);
         if let Err(e) = result {
-            tracing::warn!(error = %e, "the dictation pill could not be shown");
+            tracing::warn!(error = %e, "the voice typing pill could not be shown");
         }
     });
 }
@@ -124,8 +124,8 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(window) = existing(app) {
         return Ok(window);
     }
-    let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("dictation.html".into()))
-        .title("Dictation")
+    let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("voice-typing.html".into()))
+        .title("Voice typing")
         .inner_size(WIDTH, HEIGHT)
         .decorations(false)
         .transparent(true)

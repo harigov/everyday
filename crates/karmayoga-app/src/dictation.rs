@@ -68,7 +68,7 @@ impl Held {
         match message {
             DictationInput::Stop => self.stop = true,
             DictationInput::Cancel => self.cancel = true,
-            DictationInput::Audio(_) | DictationInput::Failed(_) => {}
+            DictationInput::Audio(_) | DictationInput::Backlog(_) | DictationInput::Failed(_) => {}
         }
     }
 
@@ -140,6 +140,22 @@ fn release(dictation: &Mutex<Option<DictationHandle>>, id: u64) {
     };
     // Dropped outside the lock: the last reference to the engine goes with it.
     drop(old);
+}
+
+/// Claim the one dictation slot for voice typing ([`crate::voicetyping`]),
+/// which dictates into other applications rather than into a window here but
+/// has the same one microphone: while it holds the slot, voice mode, meeting
+/// recording, listening and a dictation here are refused as they are for any
+/// dictation, and it is refused while any of them is running. Held as a start
+/// under `window`, the pill's label, until [`give_back`] -- no session of this
+/// module's is ever made from it.
+pub(crate) fn claim_for(state: &AppState, window: &str) -> CommandResult<()> {
+    reserve(state.dictation(), state.capture(), state.voice(), window)
+}
+
+/// Give back what [`claim_for`] took.
+pub(crate) fn give_back(state: &AppState) {
+    abandon(state.dictation());
 }
 
 /// Empty the slot of a start that failed.

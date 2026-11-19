@@ -29,15 +29,15 @@ export default defineConfig({
     sourcemap: false,
     chunkSizeWarningLimit: 900,
     // The application, and three small pages -- writing help's popup, the
-    // meeting card and dictation's pill -- each a window of its own that loads
+    // meeting card and voice typing's pill -- each a window of its own that loads
     // none of the application. See src/writing/, src/recording/ and
-    // src/dictation/.
+    // src/voicetyping/.
     rollupOptions: {
       input: {
         main: 'index.html',
         writing: 'writing.html',
         recording: 'recording.html',
-        dictation: 'dictation.html',
+        'voice-typing': 'voice-typing.html',
       },
     },
   },

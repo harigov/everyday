@@ -15,13 +15,13 @@
     remedy,
     silence,
     title,
-    type DictationState,
-  } from './dictation'
+    type TypingState,
+  } from './voicetyping'
 
-  let shown = $state<DictationState | null>(null)
+  let shown = $state<TypingState | null>(null)
   let levels = $state<number[]>(silence())
 
-  function take(next: DictationState) {
+  function take(next: TypingState) {
     if (!accepts(shown, next)) return
     if (!shown || next.seq !== shown.seq) levels = silence()
     shown = next
@@ -30,14 +30,14 @@
   onMount(() => {
     let live = true
     const stops: Array<() => void> = []
-    void listen<DictationState>('karmayoga://dictation/state', (e) => take(e.payload)).then(
+    void listen<TypingState>('karmayoga://voice-typing/state', (e) => take(e.payload)).then(
       (stop) => (live ? stops.push(stop) : stop()),
     )
-    void listen<number>('karmayoga://dictation/level', (e) => {
+    void listen<number>('karmayoga://voice-typing/level', (e) => {
       if (shown?.phase === 'listening') levels = pushLevel(levels, e.payload)
     }).then((stop) => (live ? stops.push(stop) : stop()))
     // A page that loaded after the dictation began asks where it has got to.
-    void invoke<DictationState | null>('dictation_state')
+    void invoke<TypingState | null>('voice_typing_state')
       .then((current) => {
         if (current && live) take(current)
       })
@@ -59,13 +59,13 @@
 
 <svelte:window
   onkeydown={(e: KeyboardEvent) => {
-    if (e.key === 'Escape' && shown) send('dictation_cancel')
+    if (e.key === 'Escape' && shown) send('voice_typing_cancel')
   }}
 />
 
 {#if shown}
   <div class="stage" class:overlay={shown.pill === 'overlay'}>
-    <section class="pill" aria-label="Dictation">
+    <section class="pill" aria-label="Voice typing">
       <div class="lead" aria-hidden="true">
         {#if shown.phase === 'starting'}
           <span class="pulse"></span>
@@ -100,16 +100,18 @@
 
       <div class="actions">
         {#if fix === 'copy'}
-          <button class="text" onclick={() => send('dictation_copy')}>Copy</button>
+          <button class="text" onclick={() => send('voice_typing_copy')}>Copy</button>
         {:else if fix === 'open'}
-          <button class="text" onclick={() => send('dictation_open_main')}>Open Karma Yoga</button>
+          <button class="text" onclick={() => send('voice_typing_open_main')}
+            >Open Karma Yoga</button
+          >
         {/if}
         {#if shown.phase === 'listening'}
           <button
             class="icon"
             aria-label="Finish and type"
             title="Finish and type"
-            onclick={() => send('dictation_stop')}
+            onclick={() => send('voice_typing_stop')}
           >
             <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" /></svg>
           </button>
@@ -119,7 +121,7 @@
             class="icon"
             aria-label="Cancel"
             title="Cancel"
-            onclick={() => send('dictation_cancel')}
+            onclick={() => send('voice_typing_cancel')}
           >
             <svg viewBox="0 0 24 24" class="stroke"><path d="M7 7l10 10M17 7L7 17" /></svg>
           </button>

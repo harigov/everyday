@@ -86,6 +86,13 @@ pub enum DictationEvent {
 pub enum DictationInput {
     /// Microphone audio at [`SAMPLE_RATE`](crate::speech::SAMPLE_RATE).
     Audio(Vec<i16>),
+    /// Audio heard before the session opened -- kept by a transport that
+    /// opened the microphone first, while the speech model loaded. Listened to
+    /// like the rest, but not counted towards [`SILENCE_LIMIT`]: it arrives all
+    /// at once, far ahead of the detector, which has not yet had the chance to
+    /// say anybody was talking in it, and a long load would otherwise end the
+    /// session for quiet in the middle of somebody's sentence.
+    Backlog(Vec<i16>),
     /// Stop listening, and finish with what was heard.
     Stop,
     /// Stop listening, and throw away what was heard.
@@ -197,6 +204,10 @@ async fn run(
                 Some(DictationInput::Failed(message)) => {
                     break (DictationEnd::Failed, Some(message));
                 }
+                Some(DictationInput::Backlog(samples)) => {
+                    session.fed += samples.len() as u64;
+                    control.feed(samples);
+                }
                 Some(DictationInput::Audio(samples)) => {
                     let len = samples.len() as u64;
                     control.feed(samples);
@@ -247,10 +258,12 @@ async fn run(
     }
     // Somebody mid-sentence is given the quiet that ends it, ahead of the
     // stream closing: a stream that closes does not finish what it is holding.
-    if session.hearing {
-        for _ in 0..TRAILING_QUIET_SECONDS {
-            control.feed(vec![0; SAMPLE_RATE as usize]);
-        }
+    // Always, not only while `hearing`: the detector runs behind the audio, so
+    // a phrase begun just before Stop has often not been reported as begun yet,
+    // and was lost (voice typing let go right after a last short phrase, in
+    // `voice_real.rs`). Quiet fed after quiet costs a moment of the detector.
+    for _ in 0..TRAILING_QUIET_SECONDS {
+        control.feed(vec![0; SAMPLE_RATE as usize]);
     }
     drop(control);
 
@@ -484,6 +497,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn audio_from_before_the_session_opened_is_not_counted_as_quiet() {
+        // Twenty seconds kept while the model loaded, then a little more: no
+        // fifteen seconds of quiet as far as the session is concerned.
+        let (mut link, _) = open(scripted(vec![]));
+        let kept = vec![0; samples_in(Duration::from_secs(20)) as usize];
+        link.input.send(DictationInput::Backlog(kept)).unwrap();
+        audio(&link, Duration::from_secs(1));
+        link.input.send(DictationInput::Stop).unwrap();
+        let (reason, _, _) = finish(&mut link).await;
+        assert_eq!(reason, DictationEnd::Stopped);
+    }
+
+    #[tokio::test]
     async fn quiet_from_the_very_start_ends_it_with_nothing() {
         let (mut link, _) = open(scripted(vec![]));
         audio(&link, SILENCE_LIMIT);
@@ -545,6 +571,17 @@ mod tests {
         let (mut link, _) = open(Box::new(NeedsQuiet { started: false, quiet_seconds: 0 }));
         blip(&link);
         until_state(&mut link, DictationState::Hearing).await;
+        link.input.send(DictationInput::Stop).unwrap();
+        let (reason, text, _) = finish(&mut link).await;
+        assert_eq!((reason, text.as_str()), (DictationEnd::Stopped, "said 7"));
+    }
+
+    #[tokio::test]
+    async fn stopping_before_the_detector_has_said_anything_began_still_gets_the_words() {
+        // Stop straight after the audio, without waiting for `Hearing`: the
+        // detector may not have reported the start yet when Stop is read.
+        let (mut link, _) = open(Box::new(NeedsQuiet { started: false, quiet_seconds: 0 }));
+        blip(&link);
         link.input.send(DictationInput::Stop).unwrap();
         let (reason, text, _) = finish(&mut link).await;
         assert_eq!((reason, text.as_str()), (DictationEnd::Stopped, "said 7"));

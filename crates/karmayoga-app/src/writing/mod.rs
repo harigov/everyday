@@ -540,8 +540,8 @@ pub async fn set_writing_settings(
     };
     // Two keys on one combination would leave one of them dead -- while both
     // are switched on.
-    if claim.is_some() && crate::dictation::claimed_shortcut() == claim {
-        return Err(CommandError::new("invalid", "that is already dictation's shortcut"));
+    if claim.is_some() && crate::voicetyping::claimed_shortcut() == claim {
+        return Err(CommandError::new("invalid", "that is already voice typing's shortcut"));
     }
     save_config(&config).map_err(|e| CommandError::new("writing", e))?;
     let hotkeys = app.state::<Hotkeys>();

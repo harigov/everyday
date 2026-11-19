@@ -2817,15 +2817,15 @@ export interface WritingSettings {
 }
 
 /** How dictation's key starts and stops listening. */
-export type DictationKeyMode = 'toggle' | 'hold'
+export type VoiceTypingKeyMode = 'toggle' | 'hold'
 
-/** Dictation's per-machine setting: the shortcut that types what is said into any text field. */
-export interface DictationSettings {
+/** Voice typing's per-machine setting: the shortcut that types what is said into any text field. */
+export interface VoiceTypingSettings {
   enabled: boolean
   /** The combination chosen here -- what is offered to the desktop. */
   shortcut: string
   /** Press to start and again to stop, or hold to talk. */
-  mode: DictationKeyMode
+  mode: VoiceTypingKeyMode
   /** Write up what was heard on the medium model; off types it exactly as heard. */
   clean: boolean
   key: KeyStatus

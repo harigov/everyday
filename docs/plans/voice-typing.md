@@ -1,4 +1,4 @@
-# Dictation: speak into any text field
+# Voice typing: speak into any text field
 
 Press **Ctrl+Alt+M** anywhere on the desktop, say what you want to type, and
 press it again. What you said is heard by the speech model chosen in
@@ -10,8 +10,12 @@ next press. A pill at the bottom of the screen says what is happening:
 listening, with a level meter, then working out the words, writing, done.
 
 It is writing help ([writing-tools.md](writing-tools.md)) with a microphone
-where the selection was, on voice mode's speech layers
-([voice.md](voice.md)), and it reuses all of it.
+where the selection was, listening through the same dictation session as
+mail's write-by-voice ([listen.md](listen.md)), and it reuses all of it.
+Called *voice typing* in the code (`voicetyping`, `voice_typing_*`, the
+`voice-typing` window) so that it is never mistaken for that in-window
+dictation (`karmayoga-app/src/dictation.rs`); a single use is still "a
+dictation", and its record is `WritingAction::Dictate`.
 
 ## Where it lives
 
@@ -19,41 +23,51 @@ where the selection was, on voice mode's speech layers
 |---|---|---|
 | Record | `WritingAction::Dictate` in `karmayoga-core/src/writing.rs` | One `WritingAssist` per dictation: `original` is what the speech model heard, `result` what was typed. Same table, same history, same feedback pass later. No schema change: the action is sealed JSON. |
 | Service | `dictate` in `karmayoga-service/src/domains/writing.rs` | The medium model writes the transcript up (`clean: true`), or the transcript is kept as heard (`clean: false`, no model). Scope `Quick`, unlocked vault, failures kept, as for a rewrite. |
-| Speech | `speech::detect::Tuning::DICTATION`, `Service::live_transcription` | Voice mode's detector + recogniser. The detector cuts the speech into pieces at pauses so most of it is worked out while the person is still talking; the pieces are joined afterwards. |
-| Shell | `karmayoga-app/src/dictation/{mod,pill,paste}.rs`, `hotkey.rs`, `portal.rs` | The key (press and release), the session (mic → live transcription → `dictate` → paste), the pill window, the paste. |
-| Pill | `ui/dictation.html`, `ui/src/dictation/` | A third small page and window, like the writing popup and the meeting card. |
-| Setting | `~/.config/karmayoga/dictation.json` | On/off, the shortcut, toggle or hold, write-up on or off. Per machine. The RemoteDesktop restore token stays in `writing.json` and is shared. |
+| Speech | `speech::dictate` (`Service::dictation_open`) | Mail's write-by-voice session: voice mode's detector and recogniser, cut at pauses so most of it is worked out while the person is still talking; it ends on Stop, after 15 s of quiet or after 3 minutes, and feeds silence after somebody cut off mid-sentence so their last words are kept. |
+| Shell | `karmayoga-app/src/voicetyping/{mod,pill,paste}.rs`, `hotkey.rs`, `portal.rs` | The key (press and release), the work (mic → dictation session → `dictate` → paste), the pill window, the paste. |
+| Pill | `ui/voice-typing.html`, `ui/src/voicetyping/` | A third small page and window, like the writing popup and the meeting card. |
+| Setting | `~/.config/karmayoga/voice-typing.json` | On/off, the shortcut, toggle or hold, write-up on or off. Per machine. The RemoteDesktop restore token stays in `writing.json` and is shared. |
 
 ## A dictation, start to finish
 
 1. **Key down.** The microphone opens at once (`AudioEngine`, microphone
    only), before anything else is checked, and what it hears is kept. The
-   live transcription is built alongside; building a local recogniser can
-   take seconds the first time, and what was said meanwhile is fed to it
-   once it is ready. Nothing of ours takes the keyboard.
-2. **Listening.** About 30 ms blocks go to the detector; the pill gets a
+   dictation session opens alongside; loading a local recogniser can take
+   seconds the first time, and what was said meanwhile is fed to it once it
+   is ready.
+2. **Listening.** About 30 ms blocks go to the session; the pill gets a
    level about twenty times a second.
-3. **Key again** (toggle), **key up** (hold), or the pill's stop button.
-   The microphone closes, a second of silence is fed so the detector ends
-   the last piece (it does not flush on end of input), and the remaining
-   words are collected in order.
+3. **Key again** (toggle), **key up** (hold), the pill's stop button, or the
+   session stopping by itself (15 s of quiet, 3 minutes). The microphone
+   closes and the session hands back everything it heard, last words
+   included.
 4. **Writing.** `dictate` on the medium model, or the transcript as heard.
    Nothing heard, or a write-up that comes back empty, types nothing and
    says so.
 5. **Typed.** Clipboard, Ctrl+V, clipboard put back — writing help's paste.
    The record is settled `replaced`, `copied` or `cancelled`.
 
-A dictation stops by itself after six minutes; the record takes up to
-8,000 characters. Voice mode running refuses dictation (one owner for the
-microphone and its echo canceller); a meeting recording does not. A window
-looking at a vault on another computer refuses it, as voice mode does: the
-speech model is this computer's.
+It takes the same slot mail's write-by-voice does (`dictation::claim_for`),
+so it and a meeting recording, voice mode, listening or a dictation in Karma
+Yoga's own window refuse each other both ways (one microphone); it is also
+refused in a window looking at a vault on another computer (the speech model
+is this computer's). Audio kept while the speech model loads goes to the
+session as `DictationInput::Backlog`, which does not count towards its 15 s
+of quiet. Anything being read aloud
+stops first. The record takes up to 20,000 characters, far more than three
+minutes of speech.
 
 ## The key
 
 Ctrl+Alt+M, not the obvious Ctrl+Alt+D: GNOME as Ubuntu ships it binds
 Ctrl+Alt+D to "show desktop", and pressing it hid every window in the
 headless test.
+
+Repeats: GNOME sends a held key's activation again and again, the first
+time after its 500 ms repeat delay, so a press while the key is down (as its
+presses and releases say) is ignored, and no timing is guessed at. Where the
+desktop does not report releases (a portal without `Deactivated`), the key
+cannot be tracked or held, and hold mode works as toggle.
 
 ## Wayland
 
@@ -89,9 +103,13 @@ nothing is typed and the pill offers **Copy** instead.
   shows the pill; speech fed in place of the microphone is heard by Parakeet,
   written up by the (fake) medium model and typed at the cursor; hold mode
   works (GNOME sends `Deactivated`); the second paste needs no dialog.
-- `voice_real.rs` `dictation_hears_every_word_up_to_the_key_being_let_go`:
-  real Silero + Parakeet, audio cut off right after the last word, every word
-  heard (`KARMAYOGA_TEST_SPEECH=1`, ignored by default).
+- `voice_real.rs` `voice_typing_hears_every_word_up_to_the_key_being_let_go`:
+  real Silero + Parakeet through the dictation session, audio cut off right
+  after the last word, every word heard. It found the session dropping a
+  phrase begun just before Stop (the trailing silence was fed only once the
+  detector had reported the phrase starting, which it does a moment behind
+  the audio); the silence is now always fed, which mail's write-by-voice
+  gets too (`KARMAYOGA_TEST_SPEECH=1`, ignored by default).
 
 ## Not done
 

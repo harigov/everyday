@@ -394,14 +394,14 @@ async fn a_spoken_conversation_with_the_real_models() {
     }
 }
 
-/// Dictation's way of listening, as `karmayoga-app`'s `dictation` module does
-/// it: the dictation tuning, two sentences with a pause between them, the
-/// audio cut off the moment the last word ends -- a key let go -- then the
-/// second of silence that makes the detector end the last piece, and every
-/// piece collected, in order, until the stream closes.
+/// Voice typing's way of listening, as `karmayoga-app`'s `voicetyping` module
+/// does it: the dictation session, two sentences with a pause between them,
+/// the audio cut off the moment the last word ends -- a key let go -- then
+/// Stop, and everything heard handed back once the session ends.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "downloads a voice and runs real models; needs KARMAYOGA_TEST_SPEECH=1"]
-async fn dictation_hears_every_word_up_to_the_key_being_let_go() {
+async fn voice_typing_hears_every_word_up_to_the_key_being_let_go() {
+    use karmayoga_service::speech::dictate::{DictationEnd, DictationEvent, DictationInput};
     if !enabled() {
         return;
     }
@@ -411,36 +411,35 @@ async fn dictation_hears_every_word_up_to_the_key_being_let_go() {
     let (endpoint, _requests) = fake_model(String::new()).await;
     let (svc, _dir) = service_with_voices(&endpoint);
     let vault = svc.get().unwrap();
-    let synthesiser =
-        build_synthesiser(vault.voice_access().unwrap(), Some("en".into())).await.unwrap();
+    let synthesiser = build_synthesiser(vault.voice_access().unwrap()).await.unwrap();
     let first = to_16k(&synthesiser.synthesise("Please send the report to Maria.").await.unwrap());
     let second =
         to_16k(&synthesiser.synthesise("I will review it on Friday afternoon.").await.unwrap());
 
-    let LiveTranscription { control, mut events } =
-        svc.live_transcription(Tuning::DICTATION).await.expect("listening opens");
+    let mut link = svc.dictation_open().await.expect("dictation opens");
     // No silence after the last word: the key went up as it ended.
     let audio: Vec<i16> =
         [silence(0.3), first, silence(1.0), second].into_iter().flatten().collect();
     for chunk in audio.chunks(480) {
-        control.feed(chunk.to_vec());
+        link.input.send(DictationInput::Audio(chunk.to_vec())).unwrap();
     }
-    control.feed(silence(1.2));
-    drop(control);
+    link.input.send(DictationInput::Stop).unwrap();
 
-    let mut pieces = Vec::new();
-    let collecting = async {
-        while let Some(event) = events.recv().await {
-            if let LiveEvent::Transcribed { result, .. } = event {
-                pieces.push(result.expect("the words were understood"));
+    let ended = tokio::time::timeout(Duration::from_secs(120), async {
+        while let Some(event) = link.events.recv().await {
+            if let DictationEvent::Ended { reason, text, error } = event {
+                return Some((reason, text, error));
             }
         }
-    };
-    tokio::time::timeout(Duration::from_secs(120), collecting)
-        .await
-        .expect("the stream closed once everything was transcribed");
-    let heard = pieces.join(" ").to_lowercase();
-    println!("dictation: {pieces:?}");
+        None
+    })
+    .await
+    .expect("the session ended in time")
+    .expect("the session said how it ended");
+    let (reason, heard, error) = ended;
+    println!("voice typing: {heard:?}");
+    assert_eq!(reason, DictationEnd::Stopped, "{error:?}");
+    let heard = heard.to_lowercase();
     assert!(heard.contains("maria"), "{heard}");
     // The last word, cut off by the key, is what the trailing silence is for.
     // ("Friday" itself comes back as "Frida" from this voice now and then.)

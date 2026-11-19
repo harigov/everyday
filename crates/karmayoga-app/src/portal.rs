@@ -8,7 +8,7 @@
 //! type and then lets it. Everything here is those two doors.
 //!
 //! The first door reports a key being let go as well as pressed, which is
-//! what hold-to-talk dictation needs; the palette and writing help ignore
+//! what hold-to-talk voice typing needs; the palette and writing help ignore
 //! the release.
 //!
 //! # Which application is asking
@@ -91,6 +91,8 @@ pub type Bound = Vec<(String, String)>;
 pub struct Shortcuts {
     wanted: mpsc::UnboundedSender<Vec<Wanted>>,
     bound: watch::Receiver<Option<Result<Bound, String>>>,
+    /// Whether the desktop says when a key is let go, as well as pressed.
+    releases: bool,
 }
 
 impl Shortcuts {
@@ -132,6 +134,7 @@ impl Shortcuts {
                 None
             }
         };
+        let releases = deactivated.is_some();
         let changed = portal.receive_shortcuts_changed().await.ok();
         let (wanted_tx, wanted_rx) = mpsc::unbounded_channel();
         let (bound_tx, bound_rx) = watch::channel(None);
@@ -147,7 +150,13 @@ impl Shortcuts {
             },
             Arc::new(on_activate),
         ));
-        Some(Self { wanted: wanted_tx, bound: bound_rx })
+        Some(Self { wanted: wanted_tx, bound: bound_rx, releases })
+    }
+
+    /// Whether a key being let go is reported -- what holding a key to talk
+    /// needs.
+    pub fn reports_releases(&self) -> bool {
+        self.releases
     }
 
     /// Claim exactly these keys, giving back any others.

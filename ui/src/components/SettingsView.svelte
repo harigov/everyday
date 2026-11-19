@@ -85,8 +85,8 @@
   import type { IconName } from '../lib/icons'
   import type {
     BadgeSources,
-    DictationKeyMode,
-    DictationSettings,
+    VoiceTypingKeyMode,
+    VoiceTypingSettings,
     HotkeyStatus,
     WritingSettings,
   } from '../lib/types'
@@ -187,50 +187,50 @@
   }
 
   /**
-   * Dictation: the OS-wide key that types what is said into any text field.
+   * Voice typing: the OS-wide key that types what is said into any text field.
    * Left out where there is no shell to ask, like writing help's.
    */
-  let dictation = $state<DictationSettings | null>(null)
-  let dictationNotice = $state<string | null>(null)
-  let dictationKey = $state('')
-  let dictationBusy = $state(false)
+  let voiceTyping = $state<VoiceTypingSettings | null>(null)
+  let voiceTypingNotice = $state<string | null>(null)
+  let voiceTypingKey = $state('')
+  let voiceTypingBusy = $state(false)
 
-  const DICTATION_MODES: { value: DictationKeyMode; label: string }[] = [
+  const VOICE_TYPING_MODES: { value: VoiceTypingKeyMode; label: string }[] = [
     { value: 'toggle', label: 'Press to start and stop' },
     { value: 'hold', label: 'Hold to talk' },
   ]
 
   void api
-    .dictationSettings()
+    .voiceTypingSettings()
     .then((s) => {
-      dictation = s
-      dictationKey = s.shortcut
+      voiceTyping = s
+      voiceTypingKey = s.shortcut
     })
-    .catch(() => (dictation = null))
+    .catch(() => (voiceTyping = null))
 
-  async function saveDictation(
+  async function saveVoiceTyping(
     enabled: boolean,
     shortcut: string | null = null,
-    mode: DictationKeyMode | null = null,
+    mode: VoiceTypingKeyMode | null = null,
     clean: boolean | null = null,
   ) {
-    dictationNotice = null
-    dictationBusy = true
+    voiceTypingNotice = null
+    voiceTypingBusy = true
     try {
-      dictation = await api.setDictationSettings(enabled, shortcut, mode, clean)
-      dictationKey = dictation.shortcut
-      if (dictation.enabled && !dictation.key.registered && dictation.key.problem) {
-        dictationNotice = dictation.key.problem
+      voiceTyping = await api.setVoiceTypingSettings(enabled, shortcut, mode, clean)
+      voiceTypingKey = voiceTyping.shortcut
+      if (voiceTyping.enabled && !voiceTyping.key.registered && voiceTyping.key.problem) {
+        voiceTypingNotice = voiceTyping.key.problem
       }
     } catch (e) {
-      dictationNotice = e instanceof Error ? e.message : String(e)
+      voiceTypingNotice = e instanceof Error ? e.message : String(e)
     } finally {
-      dictationBusy = false
+      voiceTypingBusy = false
     }
   }
 
   /** What the switch's small print says, by desktop. */
-  function dictationBlurb(d: DictationSettings): string {
+  function voiceTypingBlurb(d: VoiceTypingSettings): string {
     const what =
       'Speak, and what you said is heard by the speech model in Settings → Models, written up ' +
       'by the medium model and typed where the cursor is. Every use is kept in this vault.'
@@ -789,63 +789,63 @@
           </section>
         {/if}
 
-        {#if dictation}
+        {#if voiceTyping}
           <section>
-            <span class="eyebrow">Dictation</span>
+            <span class="eyebrow">Voice typing</span>
             <label class="toggle">
               <input
                 type="checkbox"
-                checked={dictation.enabled}
-                disabled={dictationBusy}
-                onchange={(e) => saveDictation(e.currentTarget.checked)}
+                checked={voiceTyping.enabled}
+                disabled={voiceTypingBusy}
+                onchange={(e) => saveVoiceTyping(e.currentTarget.checked)}
               />
               <span>
                 <b
-                  >Dictate into any text field with {dictation.key.shortcut ||
-                    dictation.shortcut}</b
+                  >Type what you say into any text field with {voiceTyping.key.shortcut ||
+                    voiceTyping.shortcut}</b
                 >
                 <small>
-                  {#if dictationNotice}
-                    {dictationNotice}
+                  {#if voiceTypingNotice}
+                    {voiceTypingNotice}
                   {:else}
-                    {dictationBlurb(dictation)}
+                    {voiceTypingBlurb(voiceTyping)}
                   {/if}
                 </small>
               </span>
             </label>
-            {#if dictation.enabled && !dictation.key.desktopManaged}
+            {#if voiceTyping.enabled && !voiceTyping.key.desktopManaged}
               <form
                 onsubmit={(e) => {
                   e.preventDefault()
-                  void saveDictation(true, dictationKey)
+                  void saveVoiceTyping(true, voiceTypingKey)
                 }}
               >
                 <input
                   class="field"
-                  aria-label="Dictation shortcut"
+                  aria-label="Voice typing shortcut"
                   placeholder="Ctrl+Alt+M"
-                  bind:value={dictationKey}
+                  bind:value={voiceTypingKey}
                 />
                 <div class="row">
                   <button
                     class="btn btn-primary"
                     type="submit"
-                    disabled={dictationBusy ||
-                      !dictationKey.trim() ||
-                      dictationKey.trim() === dictation.shortcut}
+                    disabled={voiceTypingBusy ||
+                      !voiceTypingKey.trim() ||
+                      voiceTypingKey.trim() === voiceTyping.shortcut}
                   >
                     Use this shortcut
                   </button>
                 </div>
               </form>
             {/if}
-            <div class="segmented" class:disabled={!dictation.enabled}>
-              {#each DICTATION_MODES as m (m.value)}
+            <div class="segmented" class:disabled={!voiceTyping.enabled}>
+              {#each VOICE_TYPING_MODES as m (m.value)}
                 <button
                   class="seg"
-                  class:on={dictation.mode === m.value}
-                  disabled={dictationBusy || !dictation.enabled}
-                  onclick={() => saveDictation(true, null, m.value)}
+                  class:on={voiceTyping.mode === m.value}
+                  disabled={voiceTypingBusy || !voiceTyping.enabled}
+                  onclick={() => saveVoiceTyping(true, null, m.value)}
                 >
                   {m.label}
                 </button>
@@ -854,9 +854,9 @@
             <label class="toggle">
               <input
                 type="checkbox"
-                checked={dictation.clean}
-                disabled={dictationBusy || !dictation.enabled}
-                onchange={(e) => saveDictation(true, null, null, e.currentTarget.checked)}
+                checked={voiceTyping.clean}
+                disabled={voiceTypingBusy || !voiceTyping.enabled}
+                onchange={(e) => saveVoiceTyping(true, null, null, e.currentTarget.checked)}
               />
               <span>
                 <b>Write it up with the medium model</b>

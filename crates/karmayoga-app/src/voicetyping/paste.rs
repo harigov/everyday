@@ -70,7 +70,7 @@ mod wayland {
 
     /// The pill's window, or an error in words for the pill.
     fn pill_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-        pill::existing(app).ok_or_else(|| "the dictation pill is not on screen".to_string())
+        pill::existing(app).ok_or_else(|| "the voice typing pill is not on screen".to_string())
     }
 
     /// Ask the desktop to give the pill the keyboard, and wait until it has,
@@ -126,7 +126,7 @@ mod wayland {
     pub async fn paste(app: &AppHandle, text: &str, token: Option<String>) -> Result<(), String> {
         let window = pill_window(app)?;
         if !take_keyboard(app, &window, token, FOCUS_TIMEOUT).await? {
-            tracing::info!("the dictation pill was not given the keyboard; nothing typed");
+            tracing::info!("the voice typing pill was not given the keyboard; nothing typed");
             refuse_keyboard(app, &window).await;
             return Err(REFUSED.into());
         }

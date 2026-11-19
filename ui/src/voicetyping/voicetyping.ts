@@ -1,12 +1,12 @@
-// Dictation's pill: the parts that are not drawing.
+// Voice typing's pill: the parts that are not drawing.
 //
 // The pill is its own page in its own window -- see `crates/karmayoga-app/
-// src/dictation/` -- so it carries none of the main interface. What it needs
-// to decide is here, where `scripts/dictation.test.mjs` can check it without
+// src/voicetyping/` -- so it carries none of the main interface. What it needs
+// to decide is here, where `scripts/voicetyping.test.mjs` can check it without
 // a window.
 
-/** What the shell sends on `karmayoga://dictation/state`: the whole picture, on every change. */
-export interface DictationState {
+/** What the shell sends on `karmayoga://voice-typing/state`: the whole picture, on every change. */
+export interface TypingState {
   /** Which dictation this is, counted from 1 for the life of the process. */
   seq: number
   phase: 'starting' | 'listening' | 'transcribing' | 'writing' | 'done' | 'failed'
@@ -25,12 +25,12 @@ export interface DictationState {
 }
 
 /** Whether `next` should replace `current`: anything but an older dictation's late word. */
-export function accepts(current: DictationState | null, next: DictationState): boolean {
+export function accepts(current: TypingState | null, next: TypingState): boolean {
   return !current || next.seq >= current.seq
 }
 
 /** The status line. */
-export function title(s: DictationState): string {
+export function title(s: TypingState): string {
   switch (s.phase) {
     case 'starting':
       return 'Getting ready…'
@@ -48,7 +48,7 @@ export function title(s: DictationState): string {
 }
 
 /** The small line under it, where there is one. */
-export function hint(s: DictationState): string | null {
+export function hint(s: TypingState): string | null {
   switch (s.phase) {
     case 'listening':
       return s.mode === 'hold' && !s.handsFree ? 'Let go to finish' : `Press ${s.key} to finish`
@@ -62,7 +62,7 @@ export function hint(s: DictationState): string | null {
 /** What a failed dictation offers beside the cross. */
 export type Remedy = 'copy' | 'open' | null
 
-export function remedy(s: DictationState): Remedy {
+export function remedy(s: TypingState): Remedy {
   if (s.phase !== 'failed') return null
   if (s.text?.trim()) return 'copy'
   if (/settings|locked|unlock/i.test(s.message ?? '')) return 'open'

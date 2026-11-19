@@ -1,18 +1,21 @@
-//! Dictation anywhere on the desktop.
+//! Voice typing: dictation into any text field on the desktop.
 //!
-//! Press the dictation key (or hold it), say what you want to type, and it is
+//! Press the voice typing key (or hold it), say what you want to type, and it is
 //! typed into whatever text field had the keyboard: heard by the speech model
 //! chosen in Settings → Models, written up on the medium model -- filler out,
 //! the speaker's own corrections applied, punctuated -- and pasted there. A
 //! small pill at the bottom of the screen says what is happening: listening,
-//! with a level meter; writing; done. See `docs/plans/dictation.md`.
+//! with a level meter; writing; done. See `docs/plans/voice-typing.md`.
+//!
+//! Not to be confused with [`crate::dictation`], mail's write-by-voice inside
+//! Karma Yoga's own window, whose listening session this shares.
 //!
 //! It is writing help with a microphone where the selection was, and shares
 //! what it can with it: the key is claimed beside writing help's
 //! ([`crate::hotkey`]), the paste is writing help's ([`paste`]), the record
 //! is a `WritingAssist` (`dictate`, in `karmayoga_service::domains::writing`),
 //! and the audio and the words are voice mode's layers
-//! ([`crate::audio::engine`], `karmayoga_service::speech`).
+//! ([`crate::audio::engine`], `karmayoga_service::speech::dictate`).
 //!
 //! The one thing it must not do that writing help does is ask for the
 //! keyboard while it listens: the text goes to the field that has it. (GNOME
@@ -29,9 +32,9 @@ use std::time::{Duration, Instant};
 
 use karmayoga_service::ctx::Ctx;
 use karmayoga_service::error::{CommandError, CommandResult, codes};
-use karmayoga_service::speech::SAMPLE_RATE;
-use karmayoga_service::speech::detect::Tuning;
-use karmayoga_service::speech::live::{LiveEvent, LiveTranscription};
+use karmayoga_service::speech::dictate::{
+    DictationEnd, DictationEvent, DictationInput, DictationLink,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
@@ -42,12 +45,12 @@ use crate::audio::engine::{AudioEngine, EngineEvent, EngineOptions, EngineSink};
 use crate::hotkey::{self, Binding, Hotkeys, KeyStatus};
 use crate::state::AppState;
 
-/// Tells the pill what to show. Its other half is `ui/src/dictation/main.ts`.
-pub const STATE_EVENT: &str = "karmayoga://dictation/state";
+/// Tells the pill what to show. Its other half is `ui/src/voicetyping/main.ts`.
+pub const STATE_EVENT: &str = "karmayoga://voice-typing/state";
 
 /// How loud the microphone is, about twenty times a second while listening:
 /// a number from 0 to 1, for the pill's meter.
-pub const LEVEL_EVENT: &str = "karmayoga://dictation/level";
+pub const LEVEL_EVENT: &str = "karmayoga://voice-typing/level";
 
 /// The key unless somebody chooses another. M for the microphone; two
 /// modifiers for the reason writing help's has them. Not `Ctrl+Alt+D`, the
@@ -68,7 +71,7 @@ pub enum KeyMode {
     Hold,
 }
 
-/// Dictation's setting on this machine, beside writing help's and for the
+/// Voice typing's setting on this machine, beside writing help's and for the
 /// same reason: the key is a claim on this desktop's keyboard.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -92,7 +95,7 @@ impl Default for Config {
     }
 }
 
-const FILE: &str = "dictation.json";
+const FILE: &str = "voice-typing.json";
 
 fn config_path() -> PathBuf {
     karmayoga_vault::config_dir().join(FILE)
@@ -122,7 +125,7 @@ pub fn load_config() -> Config {
         .unwrap_or_default()
 }
 
-/// Dictation's shortcut while it is switched on, or `None` when it is off or
+/// Voice typing's shortcut while it is switched on, or `None` when it is off or
 /// its setting no longer parses.
 pub fn claimed_shortcut() -> Option<Shortcut> {
     let config = load_config();
@@ -130,7 +133,7 @@ pub fn claimed_shortcut() -> Option<Shortcut> {
         return None;
     }
     hotkey::parse(&config.shortcut)
-        .map_err(|e| tracing::warn!(error = %e, "dictation's shortcut does not parse"))
+        .map_err(|e| tracing::warn!(error = %e, "voice typing's shortcut does not parse"))
         .ok()
 }
 
@@ -142,9 +145,7 @@ pub fn claimed_shortcut() -> Option<Shortcut> {
 pub fn configured_shortcut() -> Option<Shortcut> {
     let ours = claimed_shortcut()?;
     if crate::writing::configured_shortcut() == Some(ours) {
-        tracing::warn!(
-            "dictation's shortcut is writing help's too; dictation's key is left unclaimed"
-        );
+        tracing::warn!("voice typing's shortcut is writing help's too; its key is left unclaimed");
         return None;
     }
     Some(ours)
@@ -176,7 +177,7 @@ pub enum Phase {
 /// What the pill shows. Sent whole on every change.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DictationState {
+pub struct TypingState {
     /// Which dictation this is, counted from 1 for the life of the process,
     /// so the pill can tell a new one from the last.
     pub seq: u64,
@@ -203,22 +204,16 @@ pub struct DictationState {
 /// hands-free instead of ending a dictation the moment it is let go.
 const TAP: Duration = Duration::from_millis(400);
 
-/// A press this soon after the last is the keyboard repeating a key still
-/// held down, not a new press. Some desktops send a held key's press again
-/// and again; X11 through the plugin does not.
-const REPEAT: Duration = Duration::from_millis(500);
+/// How long the last words are waited for once the session has been told to
+/// stop. The session gives up on a recogniser sooner than this (its own
+/// `FINISH_WAIT`); this is only so a session that never answers cannot hold
+/// the pill up. Waiting for the speech model to load is not limited by it.
+const FINISH_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// A dictation stops by itself after this long, so a key forgotten down, or
-/// a microphone nobody is talking to, does not listen for ever.
-const MAX_LENGTH: Duration = Duration::from_secs(6 * 60);
-
-/// Silence fed after the last of the audio. The detector ends an utterance
-/// only when it hears the pause after it and does not flush at the end of its
-/// input, so without this the last words would be lost.
-const TRAILING_SILENCE_MS: usize = 1200;
-
-/// How long the last words are waited for once the audio has ended.
-const COLLECT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the microphone stays open after the key says stop: a device hands
+/// audio over a little after it hears it, and the end of the last word is in
+/// that little.
+const TAIL: Duration = Duration::from_millis(150);
 
 /// How long the pill stays after what it shows has no button to press.
 const DONE_LINGER: Duration = Duration::from_millis(700);
@@ -244,9 +239,12 @@ enum Msg {
     Audio(Vec<i16>),
     /// The microphone failed; the engine has stopped.
     Trouble(String),
-    /// The speech model is loaded, or could not be.
-    Built(CommandResult<LiveTranscription>),
-    /// The key, the pill's stop button or the clock says that is enough.
+    /// The dictation session is open -- the speech model loaded -- or could
+    /// not be.
+    Opened(CommandResult<UnboundedSender<DictationInput>>),
+    /// What the session says, from the moment it is open.
+    Session(DictationEvent),
+    /// The key or the pill's stop button says that is enough.
     Finish,
 }
 
@@ -260,8 +258,6 @@ struct Session {
     hands_free: bool,
     /// Hold mode: when the key went down and has not come up since.
     down_since: Option<Instant>,
-    /// When the key was last pressed, repeats included -- see [`REPEAT`].
-    last_press: Instant,
     /// The configured key, for the pill when the desktop says nothing.
     shortcut: String,
     inbox: UnboundedSender<Msg>,
@@ -283,28 +279,49 @@ struct Pending {
 struct Inner {
     session: Option<Session>,
     /// What the pill shows, `None` once it has gone.
-    last: Option<DictationState>,
+    last: Option<TypingState>,
     /// The latest activation token the key brought. Wayland only.
     token: Option<String>,
     pending: Option<Pending>,
+    /// The key is down, as far as its presses and releases say. Kept only
+    /// where releases are reported -- see [`first_press`].
+    key_down: bool,
 }
 
-/// Dictation's state, for the life of the process.
+/// Whether this edge of the key means anything, keeping `key_down` up to date:
+/// a press while the key is already down is the keyboard repeating it -- GNOME
+/// sends a held key's activation again and again, the first time after its
+/// repeat delay -- and not a new press.
+///
+/// Only where releases are reported: without them the key would be "down"
+/// for ever after the first press. A desktop that does not report releases
+/// does not repeat presses either, as far as is known (X11 through the plugin
+/// reports both and repeats neither).
+fn first_press(key_down: &mut bool, pressed: bool) -> bool {
+    if pressed {
+        !std::mem::replace(key_down, true)
+    } else {
+        *key_down = false;
+        true
+    }
+}
+
+/// Voice typing's state, for the life of the process.
 #[derive(Default)]
-pub struct Dictation {
+pub struct VoiceTyping {
     inner: Mutex<Inner>,
     seq: AtomicU64,
 }
 
-impl Dictation {
+impl VoiceTyping {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("dictation lock")
+        self.inner.lock().expect("voice typing lock")
     }
 }
 
-/// Dictation's state, locked. Never held across an await.
+/// Voice typing's state, locked. Never held across an await.
 fn locked(app: &AppHandle) -> std::sync::MutexGuard<'_, Inner> {
-    app.state::<Dictation>().inner().lock()
+    app.state::<VoiceTyping>().inner().lock()
 }
 
 // ---- the key ------------------------------------------------------------------------
@@ -315,7 +332,7 @@ enum Stage {
     /// Nothing is under way; a press starts one.
     Idle,
     /// Opening the microphone or listening.
-    Listening { hands_free: bool, down_since: Option<Instant>, last_press: Instant },
+    Listening { hands_free: bool, down_since: Option<Instant> },
     /// Stopped listening; the key has nothing to say until it is over.
     Busy,
 }
@@ -334,22 +351,17 @@ enum Act {
 /// What the key does, as a function of nothing but its inputs so that every
 /// case can be tested.
 fn decide(mode: KeyMode, stage: Stage, pressed: bool, now: Instant) -> Act {
-    let (hands_free, down_since, last_press) = match stage {
+    let (hands_free, down_since) = match stage {
         Stage::Idle => return if pressed { Act::Start } else { Act::Nothing },
         Stage::Busy => return Act::Nothing,
-        Stage::Listening { hands_free, down_since, last_press } => {
-            (hands_free, down_since, last_press)
-        }
+        Stage::Listening { hands_free, down_since } => (hands_free, down_since),
     };
-    let repeating = pressed && now.saturating_duration_since(last_press) < REPEAT;
     match (mode, pressed) {
-        _ if repeating => Act::Nothing,
         (KeyMode::Toggle, true) => Act::Finish,
         (KeyMode::Toggle, false) => Act::Nothing,
-        // Hands-free, the next press ends it. Held, a press that is not the
-        // keyboard repeating means the key came up without the desktop
-        // saying so -- a desktop that does not report releases -- and is
-        // the end, as a press would be in toggle mode.
+        // Hands-free, the next press ends it. Held, a press can only come
+        // after a release that went missing -- repeats never get here, see
+        // [`first_press`] -- and is the end, as it would be in toggle mode.
         (KeyMode::Hold, true) => Act::Finish,
         (KeyMode::Hold, false) if hands_free => Act::Nothing,
         (KeyMode::Hold, false) => match down_since {
@@ -363,11 +375,7 @@ fn decide(mode: KeyMode, stage: Stage, pressed: bool, now: Instant) -> Act {
 impl Session {
     fn stage(&self) -> Stage {
         if self.phase <= Phase::Listening {
-            Stage::Listening {
-                hands_free: self.hands_free,
-                down_since: self.down_since,
-                last_press: self.last_press,
-            }
+            Stage::Listening { hands_free: self.hands_free, down_since: self.down_since }
         } else {
             Stage::Busy
         }
@@ -385,11 +393,16 @@ impl Session {
 /// activation token the desktop sent with it, on Wayland: what lets the pill
 /// take the keyboard for the moment a paste needs it.
 pub fn key(app: &AppHandle, pressed: bool, token: Option<String>) {
-    // Read before the lock: only a press can start anything.
+    // Read before the lock: only a press can start anything, and the hotkeys
+    // take a lock of their own.
     let config = pressed.then(load_config);
+    let releases = app.state::<Hotkeys>().reports_releases();
     let now = Instant::now();
-    let dictation = app.state::<Dictation>();
+    let dictation = app.state::<VoiceTyping>();
     let mut inner = dictation.lock();
+    if releases && !first_press(&mut inner.key_down, pressed) {
+        return;
+    }
     let stage = inner.session.as_ref().map_or(Stage::Idle, Session::stage);
     let mode = inner.session.as_ref().map_or(KeyMode::Toggle, |s| s.mode);
     let act = decide(mode, stage, pressed, now);
@@ -397,9 +410,6 @@ pub fn key(app: &AppHandle, pressed: bool, token: Option<String>) {
     // dictation never is, so a dictation starts with its own or none.
     if token.is_some() || act == Act::Start {
         inner.token = token;
-    }
-    if pressed && let Some(session) = inner.session.as_mut() {
-        session.last_press = now;
     }
     match act {
         Act::Nothing => {}
@@ -417,7 +427,12 @@ pub fn key(app: &AppHandle, pressed: bool, token: Option<String>) {
             emit(app, seq, phase, None, None);
         }
         Act::Start => {
-            let Some(config) = config.filter(|c| c.enabled) else { return };
+            let Some(mut config) = config.filter(|c| c.enabled) else { return };
+            // Holding a key to talk needs to hear it let go. Where the
+            // desktop does not say, the key starts and stops as in toggle.
+            if !releases {
+                config.mode = KeyMode::Toggle;
+            }
             let held = config.mode == KeyMode::Hold;
             let seq = dictation.seq.fetch_add(1, Ordering::SeqCst) + 1;
             let (inbox, messages) = unbounded_channel();
@@ -427,7 +442,6 @@ pub fn key(app: &AppHandle, pressed: bool, token: Option<String>) {
                 phase: Phase::Starting,
                 hands_free: !held,
                 down_since: held.then_some(now),
-                last_press: now,
                 shortcut: config.shortcut.clone(),
                 inbox: inbox.clone(),
                 task: None,
@@ -470,16 +484,16 @@ fn emit(
 ) -> bool {
     // Asked of the other states before the lock is taken, so none of them is
     // ever waited for with it held.
-    let key = app.state::<Hotkeys>().status(app, Binding::Dictation).shortcut;
+    let key = app.state::<Hotkeys>().status(app, Binding::VoiceTyping).shortcut;
     let pill = pill::mode(app);
-    let dictation = app.state::<Dictation>();
+    let dictation = app.state::<VoiceTyping>();
     let mut inner = dictation.lock();
     let Some(session) = inner.session.as_mut().filter(|s| s.seq == seq) else { return false };
     if phase < session.phase {
         return true;
     }
     session.phase = phase;
-    let state = DictationState {
+    let state = TypingState {
         seq,
         phase,
         mode: session.mode,
@@ -595,12 +609,6 @@ impl Meter {
     }
 }
 
-/// What was said, in the order it was said, as one piece of text.
-fn join(pieces: &[String]) -> String {
-    let pieces: Vec<&str> = pieces.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
-    pieces.join(" ")
-}
-
 // ---- the work -------------------------------------------------------------------------
 
 /// One dictation from the microphone to the field, on a task of its own so
@@ -614,7 +622,7 @@ async fn run(
     messages: UnboundedReceiver<Msg>,
 ) {
     let Some(heard) = hear(&app, seq, inbox, messages).await else { return };
-    let text = join(&heard);
+    let text = heard.trim().to_string();
     if text.is_empty() {
         fail(&app, seq, "Nothing was heard.", None, NOTHING_LINGER).await;
         return;
@@ -681,50 +689,67 @@ async fn run(
 }
 
 /// Everything from the key to the words: open the microphone, listen, stop,
-/// and collect what was said, in order. `None` when it ended some other way
-/// -- cancelled, or failed, in which case the pill already says so.
+/// and take what was heard. `None` when it ended some other way -- cancelled,
+/// or failed, in which case the pill already says so.
+///
+/// The listening is the same dictation session mail's write-by-voice uses
+/// (`karmayoga_service::speech::dictate`): it ends on Stop, after 15 seconds
+/// of quiet or after three minutes, and keeps the last words of somebody cut
+/// off mid-sentence. This adds the microphone opening before the session, so
+/// that what is said while the speech model loads is kept, and the meter.
 async fn hear(
     app: &AppHandle,
     seq: u64,
     inbox: UnboundedSender<Msg>,
     mut messages: UnboundedReceiver<Msg>,
-) -> Option<Vec<String>> {
+) -> Option<String> {
     if !emit(app, seq, Phase::Starting, None, None) {
         return None;
     }
     pill::present(app);
     let state = app.state::<AppState>();
     if state.is_remote() {
-        fail(
-            app,
-            seq,
-            "Dictation uses this computer's microphone and speech model, so it is not available while this window is looking at a vault on another computer.",
-            None,
-            FAILURE_LINGER,
-        )
-        .await;
+        let refusal = "Voice typing uses this computer's microphone and speech model, so it is not available while this window is looking at a vault on another computer.";
+        fail(app, seq, refusal, None, FAILURE_LINGER).await;
         return None;
     }
-    if state.voice().lock().unwrap().is_some() {
-        fail(
-            app,
-            seq,
-            "You are talking to the assistant, which has the microphone. End that to dictate.",
-            None,
-            FAILURE_LINGER,
-        )
-        .await;
+    // One microphone: the slot mail's write-by-voice takes, so that voice
+    // mode, a recording, listening or a dictation here and this refuse each
+    // other both ways. Given back when this is over, however it ends -- a
+    // cancel drops this future, and the claim with it.
+    if let Err(e) = crate::dictation::claim_for(&state, pill::LABEL) {
+        fail(app, seq, &e.message, None, FAILURE_LINGER).await;
         return None;
     }
+    let _claim = Claim(app.clone());
+    // The microphone would hear the speakers.
+    crate::listen::stop_listening(&state);
 
     // The microphone first: what is said while the speech model loads is
-    // kept, and the model's loading goes on beside it.
+    // kept, and the session's opening goes on beside it -- stopped with the
+    // rest of this if it is cancelled.
     let service = state.service();
-    let building = inbox.clone();
-    tauri::async_runtime::spawn(async move {
-        let built = service.live_transcription(Tuning::DICTATION).await;
-        let _ = building.send(Msg::Built(built));
-    });
+    let opening = inbox.clone();
+    let _opening = AbortOnDrop(tauri::async_runtime::spawn(async move {
+        let opened = match service.dictation_open().await {
+            Ok(DictationLink { input, mut events }) => {
+                // What the session says goes through the one inbox, so the
+                // loop below waits on one thing. The forwarder ends with the
+                // session, or when nobody is listening any more.
+                let forward = opening.clone();
+                tauri::async_runtime::spawn(async move {
+                    while let Some(event) = events.recv().await {
+                        if forward.send(Msg::Session(event)).is_err() {
+                            break;
+                        }
+                    }
+                });
+                Ok(input)
+            }
+            Err(e) => Err(e),
+        };
+        let _ = opening.send(Msg::Opened(opened));
+    }));
     let sink: EngineSink = Arc::new(move |event| match event {
         EngineEvent::Microphone(block) => {
             let _ = inbox.send(Msg::Audio(block));
@@ -735,8 +760,8 @@ async fn hear(
         EngineEvent::Played(_) => {}
     });
     let options = EngineOptions { microphone: true, speaker: false, echo_cancellation: false };
-    let engine = match AudioEngine::start(options, sink).await {
-        Ok(engine) => engine,
+    let mut engine = match AudioEngine::start(options, sink).await {
+        Ok(engine) => Some(engine),
         Err(e) => {
             fail(app, seq, &e.to_string(), None, FAILURE_LINGER).await;
             return None;
@@ -746,106 +771,158 @@ async fn hear(
         return None;
     }
 
-    let mut live: Option<LiveTranscription> = None;
+    let mut session: Option<UnboundedSender<DictationInput>> = None;
     let mut backlog: Vec<i16> = Vec::new();
     let mut meter = Meter::new(Instant::now());
-    let deadline = tokio::time::Instant::now() + MAX_LENGTH;
-    loop {
-        // Six minutes is the end of it, as the key would have been.
-        let Ok(message) = tokio::time::timeout_at(deadline, messages.recv()).await else { break };
+    // When the key said stop, the microphone runs on for `TAIL` -- what the
+    // device had heard of the last word and not yet handed over -- and then
+    // closes; once it has, and the session is open, the session is told.
+    let mut close_at: Option<tokio::time::Instant> = None;
+    let mut stop_sent = false;
+    let ended = loop {
+        let wait = match close_at {
+            // Waiting out the tail.
+            Some(at) if engine.is_some() => at,
+            // Told to stop and waiting for the words: not for ever.
+            _ if stop_sent => tokio::time::Instant::now() + FINISH_TIMEOUT,
+            // Listening, or waiting for the model to load however long it
+            // takes: the key or the session ends that.
+            _ => tokio::time::Instant::now() + Duration::from_secs(24 * 60 * 60),
+        };
+        let message = match tokio::time::timeout_at(wait, messages.recv()).await {
+            Ok(message) => message?,
+            Err(_) if engine.is_some() => {
+                // The tail is in: close the microphone and hand on whatever
+                // it delivered before it closed.
+                drop(engine.take());
+                while let Ok(Msg::Audio(block)) = messages.try_recv() {
+                    send_audio(&session, &mut backlog, block);
+                }
+                if let Some(input) = &session {
+                    let _ = input.send(DictationInput::Stop);
+                    stop_sent = true;
+                }
+                continue;
+            }
+            Err(_) => {
+                tracing::warn!("the last of a voice typing was not worked out in time");
+                fail(app, seq, "The speech model did not finish in time.", None, FAILURE_LINGER)
+                    .await;
+                return None;
+            }
+        };
         match message {
-            Some(Msg::Finish) => break,
-            Some(Msg::Audio(block)) => {
-                if let Some(loudness) = meter.hear(&block, Instant::now()) {
-                    let _ = app.emit_to(pill::LABEL, LEVEL_EVENT, loudness);
-                }
-                match &live {
-                    Some(live) => live.control.feed(block),
-                    None => backlog.extend(block),
-                }
-            }
-            Some(Msg::Built(Ok(built))) => {
-                built.control.feed(std::mem::take(&mut backlog));
-                live = Some(built);
-            }
-            // The microphone is closed before the pill lingers on the
-            // failure: nothing is listening to it any more.
-            Some(Msg::Built(Err(e))) => {
-                drop(engine);
-                fail(app, seq, &e.message, None, FAILURE_LINGER).await;
-                return None;
-            }
-            Some(Msg::Trouble(message)) => {
-                drop(engine);
-                fail(app, seq, &message, None, FAILURE_LINGER).await;
-                return None;
-            }
-            None => return None,
-        }
-    }
-
-    if !emit(app, seq, Phase::Transcribing, None, None) {
-        return None;
-    }
-    engine.stop();
-    drop(engine);
-    // The model may still be loading: what was said waits for it.
-    while live.is_none() {
-        match messages.recv().await {
-            Some(Msg::Built(Ok(built))) => {
-                built.control.feed(std::mem::take(&mut backlog));
-                live = Some(built);
-            }
-            Some(Msg::Built(Err(e))) => {
-                fail(app, seq, &e.message, None, FAILURE_LINGER).await;
-                return None;
-            }
-            Some(Msg::Audio(block)) => backlog.extend(block),
-            Some(Msg::Trouble(_) | Msg::Finish) => {}
-            None => return None,
-        }
-    }
-    let LiveTranscription { control, mut events } = live?;
-    while let Ok(message) = messages.try_recv() {
-        if let Msg::Audio(block) = message {
-            control.feed(block);
-        }
-    }
-    control.feed(vec![0; SAMPLE_RATE as usize * TRAILING_SILENCE_MS / 1000]);
-    // Dropping the last control ends the stream once what was heard has been
-    // transcribed.
-    drop(control);
-
-    let mut pieces = Vec::new();
-    let collecting = async {
-        while let Some(event) = events.recv().await {
-            if let LiveEvent::Transcribed { result, .. } = event {
-                match result {
-                    Ok(words) => pieces.push(words),
-                    Err(e) => {
-                        tracing::warn!(error = %e.message, "a piece of a dictation was not transcribed")
+            Msg::Finish => {
+                if close_at.is_none() {
+                    close_at = Some(tokio::time::Instant::now() + TAIL);
+                    if !emit(app, seq, Phase::Transcribing, None, None) {
+                        return None;
                     }
                 }
             }
+            Msg::Audio(block) => {
+                if engine.is_some()
+                    && close_at.is_none()
+                    && let Some(loudness) = meter.hear(&block, Instant::now())
+                {
+                    let _ = app.emit_to(pill::LABEL, LEVEL_EVENT, loudness);
+                }
+                send_audio(&session, &mut backlog, block);
+            }
+            Msg::Opened(Ok(input)) => {
+                if !backlog.is_empty() {
+                    let _ = input.send(DictationInput::Backlog(std::mem::take(&mut backlog)));
+                }
+                // The key said stop while the model loaded, and the
+                // microphone has closed since: what was said is all there.
+                if close_at.is_some() && engine.is_none() {
+                    let _ = input.send(DictationInput::Stop);
+                    stop_sent = true;
+                }
+                session = Some(input);
+            }
+            // The microphone is closed before the pill lingers on the
+            // failure: nothing is listening to it any more.
+            Msg::Opened(Err(e)) => {
+                drop(engine.take());
+                fail(app, seq, &e.message, None, FAILURE_LINGER).await;
+                return None;
+            }
+            Msg::Trouble(message) => {
+                drop(engine.take());
+                fail(app, seq, &message, None, FAILURE_LINGER).await;
+                return None;
+            }
+            Msg::Session(DictationEvent::Trouble { message }) => {
+                tracing::warn!(error = %message, "a piece of a voice typing was not transcribed");
+            }
+            // Ended because it was told to, or by itself -- quiet for long
+            // enough, or long enough altogether -- in which case what it
+            // heard is typed as if the key had been pressed.
+            Msg::Session(DictationEvent::Ended { reason, text, error }) => {
+                break (reason, text, error);
+            }
+            Msg::Session(_) => {}
         }
     };
-    if tokio::time::timeout(COLLECT_TIMEOUT, collecting).await.is_err() {
-        tracing::warn!("the last of a dictation was not transcribed in time");
+    drop(engine);
+    let (reason, text, error) = ended;
+    match reason {
+        DictationEnd::Stopped | DictationEnd::Silence | DictationEnd::TimeLimit => Some(text),
+        DictationEnd::Cancelled => None,
+        DictationEnd::Failed => {
+            let message = error.unwrap_or_else(|| "The speech model failed.".to_string());
+            fail(app, seq, &message, None, FAILURE_LINGER).await;
+            None
+        }
     }
-    Some(pieces)
+}
+
+/// Microphone audio to the session, or kept for it until it is open.
+fn send_audio(
+    session: &Option<UnboundedSender<DictationInput>>,
+    backlog: &mut Vec<i16>,
+    block: Vec<i16>,
+) {
+    match session {
+        Some(input) => {
+            let _ = input.send(DictationInput::Audio(block));
+        }
+        None => backlog.extend(block),
+    }
+}
+
+/// Holds the dictation slot -- the one microphone -- while voice typing
+/// listens, and gives it back when dropped. See `crate::dictation::claim_for`.
+struct Claim(AppHandle);
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        crate::dictation::give_back(&self.0.state::<AppState>());
+    }
+}
+
+/// A task that stops when this is dropped: the speech model's loading, when a
+/// voice typing is cancelled before it is ready.
+struct AbortOnDrop(tauri::async_runtime::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 // ---- commands -------------------------------------------------------------------
 
 /// What the pill shows right now, for a pill that has only just loaded.
 #[tauri::command]
-pub async fn dictation_state(app: AppHandle) -> CommandResult<Option<DictationState>> {
+pub async fn voice_typing_state(app: AppHandle) -> CommandResult<Option<TypingState>> {
     Ok(locked(&app).last.clone())
 }
 
 /// Stop listening and type what was said -- the pill's stop button.
 #[tauri::command]
-pub async fn dictation_stop(app: AppHandle) -> CommandResult<()> {
+pub async fn voice_typing_stop(app: AppHandle) -> CommandResult<()> {
     if let Some(session) = locked(&app).session.as_mut()
         && session.phase <= Phase::Listening
     {
@@ -872,20 +949,20 @@ async fn cancel(app: &AppHandle) {
 
 /// Throw the dictation away, typing nothing -- the pill's cancel button.
 #[tauri::command]
-pub async fn dictation_cancel(app: AppHandle) -> CommandResult<()> {
+pub async fn voice_typing_cancel(app: AppHandle) -> CommandResult<()> {
     cancel(&app).await;
     Ok(())
 }
 
 /// Put a failed dictation's text on the clipboard -- the pill's Copy button.
 #[tauri::command]
-pub async fn dictation_copy(app: AppHandle) -> CommandResult<()> {
+pub async fn voice_typing_copy(app: AppHandle) -> CommandResult<()> {
     let wanted = {
         let inner = locked(&app);
         inner.pending.as_ref().map(|p| (p.seq, p.text.clone()))
     };
     let Some((seq, text)) = wanted else { return Ok(()) };
-    paste::copy(&app, &text).await.map_err(|e| CommandError::new("dictation", e))?;
+    paste::copy(&app, &text).await.map_err(|e| CommandError::new("voice-typing", e))?;
     let copied = locked(&app).pending.take_if(|p| p.seq == seq);
     if let Some(Pending { assist, .. }) = copied {
         settle(&app, assist.as_deref(), "copied").await;
@@ -897,7 +974,7 @@ pub async fn dictation_copy(app: AppHandle) -> CommandResult<()> {
 /// Close the pill and bring the main window forward -- for a dictation that
 /// failed because the vault is locked or no model is set up.
 #[tauri::command]
-pub async fn dictation_open_main(app: AppHandle) -> CommandResult<()> {
+pub async fn voice_typing_open_main(app: AppHandle) -> CommandResult<()> {
     cancel(&app).await;
     crate::tray::raise_window(&app);
     Ok(())
@@ -906,7 +983,7 @@ pub async fn dictation_open_main(app: AppHandle) -> CommandResult<()> {
 /// What the settings pane draws for dictation.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DictationSettings {
+pub struct VoiceTypingSettings {
     pub enabled: bool,
     /// The combination as chosen here -- what is offered to the desktop.
     pub shortcut: String,
@@ -929,33 +1006,33 @@ fn platform(app: &AppHandle) -> &'static str {
     }
 }
 
-fn settings(app: &AppHandle) -> DictationSettings {
+fn settings(app: &AppHandle) -> VoiceTypingSettings {
     let config = load_config();
-    DictationSettings {
+    VoiceTypingSettings {
         enabled: config.enabled,
         shortcut: config.shortcut,
         mode: config.mode,
         clean: config.clean,
-        key: app.state::<Hotkeys>().status(app, Binding::Dictation),
+        key: app.state::<Hotkeys>().status(app, Binding::VoiceTyping),
         platform: platform(app),
     }
 }
 
 #[tauri::command]
-pub async fn dictation_settings(app: AppHandle) -> CommandResult<DictationSettings> {
+pub async fn voice_typing_settings(app: AppHandle) -> CommandResult<VoiceTypingSettings> {
     Ok(settings(&app))
 }
 
 /// Switch dictation on or off, or change its key, how the key works, or
 /// whether what is heard is written up.
 #[tauri::command]
-pub async fn set_dictation_settings(
+pub async fn set_voice_typing_settings(
     app: AppHandle,
     enabled: bool,
     shortcut: Option<String>,
     mode: Option<KeyMode>,
     clean: Option<bool>,
-) -> CommandResult<DictationSettings> {
+) -> CommandResult<VoiceTypingSettings> {
     let mut config = load_config();
     if let Some(shortcut) = shortcut {
         hotkey::parse(&shortcut).map_err(|e| CommandError::new("invalid", e))?;
@@ -973,10 +1050,10 @@ pub async fn set_dictation_settings(
     if claim.is_some() && crate::writing::configured_shortcut() == claim {
         return Err(CommandError::new("invalid", "that is already writing help's shortcut"));
     }
-    save_config(&config).map_err(|e| CommandError::new("dictation", e))?;
+    save_config(&config).map_err(|e| CommandError::new("voice-typing", e))?;
     let hotkeys = app.state::<Hotkeys>();
     let answer = hotkeys.answer();
-    hotkeys.set_dictation(&app, claim)?;
+    hotkeys.set_voice_typing(&app, claim)?;
     answer.await;
     if !enabled {
         cancel(&app).await;
@@ -988,10 +1065,8 @@ pub async fn set_dictation_settings(
 mod tests {
     use super::*;
 
-    /// Listening, with the last press long enough ago not to be a repeat.
     fn held(hands_free: bool, down_since: Option<Instant>) -> Stage {
-        let last_press = down_since.unwrap_or_else(Instant::now) - Duration::from_secs(10);
-        Stage::Listening { hands_free, down_since, last_press }
+        Stage::Listening { hands_free, down_since }
     }
 
     #[test]
@@ -1057,24 +1132,19 @@ mod tests {
     }
 
     #[test]
-    fn a_press_soon_after_the_last_is_the_keyboard_repeating() {
-        let down = Instant::now();
-        for (mode, hands_free) in [(KeyMode::Hold, false), (KeyMode::Toggle, true)] {
-            let stage = Stage::Listening {
-                hands_free,
-                down_since: (mode == KeyMode::Hold).then_some(down),
-                last_press: down,
-            };
-            let soon = down + Duration::from_millis(40);
-            assert_eq!(decide(mode, stage, true, soon), Act::Nothing, "{mode:?}");
-        }
+    fn a_press_while_the_key_is_down_is_the_keyboard_repeating() {
+        let mut down = false;
+        assert!(first_press(&mut down, true), "the first press counts");
+        assert!(!first_press(&mut down, true), "the repeats do not");
+        assert!(!first_press(&mut down, true));
+        assert!(first_press(&mut down, false), "the release counts");
+        assert!(first_press(&mut down, true), "and so does the next press");
     }
 
     #[test]
-    fn held_with_no_release_reported_a_new_press_ends_it() {
+    fn held_after_a_release_that_went_missing_a_press_ends_it() {
         let down = Instant::now();
-        let stage =
-            Stage::Listening { hands_free: false, down_since: Some(down), last_press: down };
+        let stage = held(false, Some(down));
         assert_eq!(decide(KeyMode::Hold, stage, true, down + Duration::from_secs(3)), Act::Finish);
     }
 
@@ -1082,14 +1152,5 @@ mod tests {
     fn a_release_nobody_saw_the_press_of_does_nothing() {
         let now = Instant::now();
         assert_eq!(decide(KeyMode::Hold, held(false, None), false, now), Act::Nothing);
-    }
-
-    #[test]
-    fn pieces_are_joined_with_single_spaces_and_empty_ones_dropped() {
-        let pieces =
-            ["  Hello there.".to_string(), String::new(), " ".into(), "Send it at four. ".into()];
-        assert_eq!(join(&pieces), "Hello there. Send it at four.");
-        assert_eq!(join(&[]), "");
-        assert_eq!(join(&[String::new()]), "");
     }
 }
