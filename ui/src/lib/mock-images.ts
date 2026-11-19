@@ -9,7 +9,7 @@ const imageModels: LocalModelInfo[] = [
     name: 'Image engine',
     description: 'stable-diffusion.cpp, which runs the picture models on this computer.',
     languages: '—',
-    bytes: 29_124_086,
+    bytes: 27_322_680,
     installed: false,
     progress: null,
     error: null,

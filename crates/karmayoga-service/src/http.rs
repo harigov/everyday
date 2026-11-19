@@ -222,6 +222,61 @@ pub fn transport(e: &reqwest::Error) -> CommandError {
     CommandError::new(codes::NETWORK, format!("the request failed: {}", strip_url(&e.to_string())))
 }
 
+/// The host to name in an error about a request to `base_url` -- never the
+/// whole address, which for a compatible server can carry a credential in
+/// its path the way a calendar subscription link does. The address as given
+/// when it does not parse, which is still more use to somebody checking their
+/// own Settings entry than nothing.
+pub fn host_of(base_url: &str) -> String {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_else(|| base_url.to_string())
+}
+
+/// A request to a model's `host` that failed on the way, in words that name
+/// it.
+///
+/// [`codes::NETWORK`] whatever went wrong, not [`transport_code`]'s split:
+/// meeting notes retry a chunk on `NETWORK` (`meeting::pipeline::retry`), and
+/// a transcriber that could not be reached is worth asking again.
+pub fn transport_to(host: &str, e: &reqwest::Error) -> CommandError {
+    let message = if e.is_timeout() {
+        format!("{host} did not answer in time")
+    } else if e.is_connect() {
+        format!("could not reach {host}")
+    } else {
+        // Still stripped: a compatible server's base URL can carry a path the
+        // person typed, and `reqwest` puts the request URL into most of its
+        // own `Display` output.
+        format!("the request to {host} failed: {}", strip_url(&e.to_string()))
+    };
+    CommandError::new(codes::NETWORK, message)
+}
+
+/// An answer outside 2xx from a model's `host`, for the statuses that mean
+/// the same at every one: a refused key, a rate limit, trouble at their end.
+/// `service` is what it does for this app -- "image", "voice",
+/// "transcription". Each caller says first what a 404, a 400 or a 413 means
+/// for its own request.
+///
+/// The body is not read: a compatible server is under no obligation to send
+/// anything harmless, and what was sent has no business being echoed back.
+pub fn status_error(host: &str, status: reqwest::StatusCode, service: &str) -> CommandError {
+    match status.as_u16() {
+        401 | 403 => CommandError::new(codes::FORBIDDEN, format!("the {service} key was refused")),
+        429 => CommandError::new(
+            codes::RATE_LIMITED,
+            format!("the {service} service is rate limiting this key, or its quota is used up"),
+        ),
+        500..=599 => CommandError::new(
+            codes::NETWORK,
+            format!("{host} is having {service} trouble ({status})"),
+        ),
+        _ => CommandError::new(codes::NETWORK, format!("{host} answered {status}")),
+    }
+}
+
 /// Remove anything that looks like a URL from an error message.
 ///
 /// `reqwest` interpolates the request URL into most of its `Display` output,

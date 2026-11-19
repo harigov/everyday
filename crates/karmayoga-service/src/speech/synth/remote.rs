@@ -44,34 +44,15 @@ impl OpenAiSynthesiser {
         format!("{}/audio/speech", self.base_url.trim_end_matches('/'))
     }
 
-    /// The host named in errors -- never the full URL, which for a compatible
-    /// server could carry a credential in its path.
     fn host(&self) -> String {
-        reqwest::Url::parse(&self.base_url)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_string))
-            .unwrap_or_else(|| self.base_url.clone())
+        http::host_of(&self.base_url)
     }
 
-    fn transport_error(&self, e: &reqwest::Error) -> CommandError {
-        let host = self.host();
-        let message = if e.is_timeout() {
-            format!("{host} did not answer in time")
-        } else if e.is_connect() {
-            format!("could not reach {host}")
-        } else {
-            format!("the request to {host} failed: {}", http::strip_url(&e.to_string()))
-        };
-        CommandError::new(codes::NETWORK, message)
-    }
-
-    /// A non-2xx status as a sentence a person can act on. The body is not
-    /// read: a compatible server is under no obligation to send anything
-    /// harmless, and the words said have no business being echoed back.
+    /// A non-2xx status as a sentence a person can act on: a 404 or 400 as
+    /// something about this voice, the rest as any model service's.
     fn status_error(&self, status: reqwest::StatusCode) -> CommandError {
         let host = self.host();
         match status.as_u16() {
-            401 | 403 => CommandError::new(codes::FORBIDDEN, "the voice key was refused"),
             404 => CommandError::new(
                 codes::NOT_FOUND,
                 format!(
@@ -86,15 +67,7 @@ impl OpenAiSynthesiser {
                     self.model, self.voice
                 ),
             ),
-            429 => CommandError::new(
-                codes::RATE_LIMITED,
-                "the voice service is rate limiting this key, or its quota is used up",
-            ),
-            500..=599 => CommandError::new(
-                codes::NETWORK,
-                format!("{host} is having voice trouble ({status})"),
-            ),
-            _ => CommandError::new(codes::NETWORK, format!("{host} answered {status}")),
+            _ => http::status_error(&host, status, "voice"),
         }
     }
 
@@ -113,7 +86,7 @@ impl OpenAiSynthesiser {
         if let Some(key) = &self.key {
             request = request.bearer_auth(key);
         }
-        let response = request.send().await.map_err(|e| self.transport_error(&e))?;
+        let response = request.send().await.map_err(|e| http::transport_to(&self.host(), &e))?;
         let status = response.status();
         if !status.is_success() {
             return Err(self.status_error(status));

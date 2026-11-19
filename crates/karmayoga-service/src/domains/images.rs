@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(image_id("flux2KleinQ4").unwrap(), "flux2KleinQ4");
         assert_eq!(image_id("zImageTurboQ4").unwrap(), "zImageTurboQ4");
         assert_eq!(image_id("sdCli").unwrap(), "sdCli");
-        let err = image_id("supertonic3").unwrap_err();
+        let err = image_id("phonon").unwrap_err();
         assert_eq!(err.code, codes::INVALID);
     }
 

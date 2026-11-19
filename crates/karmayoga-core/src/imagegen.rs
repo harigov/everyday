@@ -48,6 +48,9 @@ pub enum LocalImageModel {
 }
 
 impl LocalImageModel {
+    /// Every one, in the order the card lists them.
+    pub const ALL: [Self; 2] = [Self::Flux2KleinQ4, Self::ZImageTurboQ4];
+
     /// What it is called in the model catalogue and on the wire.
     pub fn id(self) -> &'static str {
         match self {

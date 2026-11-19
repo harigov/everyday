@@ -304,48 +304,19 @@ where
     Ok(parsed.ok())
 }
 
-/// Read a stored decision model, taking one this build cannot read as none.
+/// Read a stored card -- the decision model, the speech model, the voice or
+/// the picture model -- taking one this build cannot read as none.
 ///
-/// For the reason [`known_effort`] gives: the decision card lives in the one
-/// sealed record every tier is in, and a [`DecisionApi`] written by a newer
-/// build would otherwise fail the whole record -- no model for any tier.
-/// (A build from before [`DecisionApi::Local`] does fail on one saved by
+/// For the reason [`known_effort`] gives: every card lives in the one sealed
+/// record every tier is in, and one written by a newer build -- a backend, a
+/// recogniser, a voice or a model this one does not know -- would otherwise
+/// fail the whole record, and cost the vault a model for every tier. (A build
+/// from before [`DecisionApi::Local`] does fail on a decision card saved by
 /// this one; this is what spares the next variant.)
-fn known_decision<'de, D>(d: D) -> std::result::Result<Option<DecisionConfig>, D::Error>
+fn known<'de, D, T>(d: D) -> std::result::Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
-{
-    let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
-    Ok(serde_json::from_value(raw).ok())
-}
-
-/// Read a stored speech model, taking one this build cannot read as none --
-/// a backend added by a newer build, or a recogniser it does not know -- for
-/// the reason [`known_decision`] gives: it shares the one sealed record every
-/// tier is in, and must not cost the vault all of them.
-fn known_speech<'de, D>(d: D) -> std::result::Result<Option<SpeechConfig>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
-    Ok(serde_json::from_value(raw).ok())
-}
-
-/// Read a stored voice, taking one this build cannot read as none, for the
-/// reason [`known_speech`] gives.
-fn known_voice<'de, D>(d: D) -> std::result::Result<Option<VoiceConfig>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
-    Ok(serde_json::from_value(raw).ok())
-}
-
-/// Read a stored picture model, taking one this build cannot read as none,
-/// for the reason [`known_voice`] gives.
-fn known_image<'de, D>(d: D) -> std::result::Result<Option<ImageConfig>, D::Error>
-where
-    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
 {
     let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
     Ok(serde_json::from_value(raw).ok())
@@ -819,8 +790,8 @@ pub struct ModelSettings {
     /// What sorts mail into the categories under Settings → Mail sorting, in
     /// place of Small. `None` leaves sorting on Small, as before there was
     /// one. See [`DecisionConfig`]. One this build cannot read -- a way of
-    /// reaching a model added later -- reads as `None`: see [`known_decision`].
-    #[serde(default, deserialize_with = "known_decision")]
+    /// reaching a model added later -- reads as `None`: see [`known`].
+    #[serde(default, deserialize_with = "known")]
     pub decision: Option<DecisionConfig>,
     /// What turns speech into text -- meeting notes' calls today -- and in
     /// which language. `None` means nothing that listens can be switched on.
@@ -828,19 +799,19 @@ pub struct ModelSettings {
     ///
     /// Left out of the record when unset, so a vault that never chose one
     /// is written exactly as it was before there was a speech model; one
-    /// this build cannot read reads as `None`, see [`known_speech`].
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known_speech")]
+    /// this build cannot read reads as `None`, see [`known`].
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known")]
     pub speech: Option<SpeechConfig>,
     /// What turns the assistant's words into speech when it is talked to.
     /// `None` means it cannot be. Left out of the record when unset, and one
     /// this build cannot read reads as `None`, as for
     /// [`speech`](Self::speech).
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known_voice")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known")]
     pub voice: Option<VoiceConfig>,
     /// What makes a picture. `None` means nothing can. Left out of the
     /// record when unset, and one this build cannot read reads as `None`,
     /// as for [`voice`](Self::voice).
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known_image")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known")]
     pub image: Option<ImageConfig>,
 }
 

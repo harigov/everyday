@@ -591,13 +591,19 @@
     JSON.stringify(draft?.image ?? null) !== JSON.stringify(models.settings?.image ?? null),
   )
 
+  /** Set once the pane is gone, so a picture that arrives after is let go
+   *  rather than kept for the life of the window. */
+  let gone = false
+
   async function tryImage() {
     makingImage = true
     imageTried = null
     if (imageUrl) URL.revokeObjectURL(imageUrl)
     imageUrl = null
     try {
-      imageUrl = await models.generateImage(imagePrompt)
+      const url = await models.generateImage(imagePrompt)
+      if (gone) URL.revokeObjectURL(url)
+      else imageUrl = url
     } catch (e) {
       imageTried = e instanceof Error ? e.message : String(e)
     } finally {
@@ -606,6 +612,7 @@
   }
 
   onDestroy(() => {
+    gone = true
     if (imageUrl) URL.revokeObjectURL(imageUrl)
   })
 
@@ -1507,12 +1514,17 @@
                     value={m.progress.done / m.progress.total}
                     note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
                   />
-                  <button class="btn" onclick={() => void models.cancelImage(m.id)}>Cancel</button>
+                  <button class="btn" onclick={() => void onLocal(() => models.cancelImage(m.id))}
+                    >Cancel</button
+                  >
                 </div>
               {:else if m.installed}
-                <button class="btn" onclick={() => void models.deleteImage(m.id)}>Delete</button>
+                <button class="btn" onclick={() => void onLocal(() => models.deleteImage(m.id))}
+                  >Delete</button
+                >
               {:else}
-                <button class="btn" onclick={() => void models.downloadImage(m.id)}>Download</button
+                <button class="btn" onclick={() => void onLocal(() => models.downloadImage(m.id))}
+                  >Download</button
                 >
               {/if}
             </div>
@@ -1575,7 +1587,7 @@
           {/if}
         </div>
         {#if imageUrl}
-          <img src={imageUrl} alt={imagePrompt} />
+          <img class="picture" src={imageUrl} alt={imagePrompt} />
         {/if}
       {/if}
     </section>
@@ -1622,6 +1634,14 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--sp-3);
+  }
+  /* A picture at its own size up to the card's width: OpenAI's are 1024
+     pixels across, wider than the card. */
+  .picture {
+    align-self: flex-start;
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius);
   }
 
   .toggle {

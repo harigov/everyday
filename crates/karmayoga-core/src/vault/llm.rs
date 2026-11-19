@@ -27,12 +27,12 @@ use std::collections::BTreeMap;
 
 use super::Vault;
 use crate::error::{Error, Result};
-use crate::imagegen::ImageAccess;
+use crate::imagegen::{ImageAccess, ImageConfig};
 use crate::llm::{
     DecisionAccess, MODEL_KEYS_OWNER_ID, MODEL_KEYS_OWNER_KIND, ModelAccess, ModelKeys,
     ModelSettings, ModelSlot, ModelTier,
 };
-use crate::speech::{SpeechAccess, SpeechConfig, VoiceAccess};
+use crate::speech::{SpeechAccess, SpeechConfig, VoiceAccess, VoiceConfig};
 use crate::store::JournalStore;
 
 impl Vault {
@@ -289,25 +289,10 @@ impl Vault {
     pub fn speech_access(&self) -> Result<SpeechAccess> {
         self.read(|u| {
             let models = Models::read(u.store.as_ref())?;
-            let config =
-                models.settings.speech.as_ref().ok_or_else(|| switched_off(ModelSlot::Speech))?;
-            config.validate().map_err(|e| match e {
-                Error::Invalid(why) => Error::Invalid(format!(
-                    "the speech model cannot be used: {why}; fix it in Settings → Models"
-                )),
-                other => other,
-            })?;
             // A recogniser on this computer has no endpoint, so no key.
-            let endpoint = config.endpoint();
-            let key = endpoint.and_then(|e| models.key_for(e)).map(str::to_string);
-            if key.is_none() && config.needs_key() {
-                return Err(Error::Invalid(format!(
-                    "no API key is set for the speech model's endpoint ({}); add one in \
-                     Settings → Models",
-                    endpoint.unwrap_or_default()
-                )));
-            }
-            Ok(SpeechAccess { config: config.clone(), key })
+            let (config, key) =
+                card_access(&models, models.settings.speech.as_ref(), ModelSlot::Speech)?;
+            Ok(SpeechAccess { config, key })
         })
     }
 
@@ -316,50 +301,20 @@ impl Vault {
     pub fn voice_access(&self) -> Result<VoiceAccess> {
         self.read(|u| {
             let models = Models::read(u.store.as_ref())?;
-            let config =
-                models.settings.voice.as_ref().ok_or_else(|| switched_off(ModelSlot::Voice))?;
-            config.validate().map_err(|e| match e {
-                Error::Invalid(why) => Error::Invalid(format!(
-                    "the voice cannot be used: {why}; fix it in Settings → Models"
-                )),
-                other => other,
-            })?;
-            let endpoint = config.endpoint();
-            let key = endpoint.and_then(|e| models.key_for(e)).map(str::to_string);
-            if key.is_none() && config.needs_key() {
-                return Err(Error::Invalid(format!(
-                    "no API key is set for the voice's endpoint ({}); add one in Settings → \
-                     Models",
-                    endpoint.unwrap_or_default()
-                )));
-            }
-            Ok(VoiceAccess { config: config.clone(), key })
+            let (config, key) =
+                card_access(&models, models.settings.voice.as_ref(), ModelSlot::Voice)?;
+            Ok(VoiceAccess { config, key })
         })
     }
 
-    /// The picture model, with the key it needs -- [`Vault::voice_access`]
+    /// The picture model, with the key it needs -- [`Vault::speech_access`]
     /// for the card that makes a picture, on the same terms.
     pub fn image_access(&self) -> Result<ImageAccess> {
         self.read(|u| {
             let models = Models::read(u.store.as_ref())?;
-            let config =
-                models.settings.image.as_ref().ok_or_else(|| switched_off(ModelSlot::Image))?;
-            config.validate().map_err(|e| match e {
-                Error::Invalid(why) => Error::Invalid(format!(
-                    "the image model cannot be used: {why}; fix it in Settings → Models"
-                )),
-                other => other,
-            })?;
-            let endpoint = config.endpoint();
-            let key = endpoint.and_then(|e| models.key_for(e)).map(str::to_string);
-            if key.is_none() && config.needs_key() {
-                return Err(Error::Invalid(format!(
-                    "no API key is set for the image model's endpoint ({}); add one in Settings \
-                     → Models",
-                    endpoint.unwrap_or_default()
-                )));
-            }
-            Ok(ImageAccess { config: config.clone(), key })
+            let (config, key) =
+                card_access(&models, models.settings.image.as_ref(), ModelSlot::Image)?;
+            Ok(ImageAccess { config, key })
         })
     }
 
@@ -612,6 +567,84 @@ fn key_endpoint(settings: &ModelSettings, slot: ModelSlot) -> Result<&str> {
         return Err(Error::Invalid("an image model on this computer needs no key".into()));
     }
     settings.endpoint_of(slot).ok_or_else(|| switched_off(slot))
+}
+
+/// A card that is not one of the tiers and carries no mail: the speech
+/// model, the voice and the picture model. What [`card_access`] needs of each.
+trait Card: Clone {
+    /// How errors name it: "the voice cannot be used".
+    const WHAT: &'static str;
+    fn validate(&self) -> Result<()>;
+    fn endpoint(&self) -> Option<&str>;
+    fn needs_key(&self) -> bool;
+}
+
+impl Card for SpeechConfig {
+    const WHAT: &'static str = "the speech model";
+    fn validate(&self) -> Result<()> {
+        SpeechConfig::validate(self)
+    }
+    fn endpoint(&self) -> Option<&str> {
+        SpeechConfig::endpoint(self)
+    }
+    fn needs_key(&self) -> bool {
+        SpeechConfig::needs_key(self)
+    }
+}
+
+impl Card for VoiceConfig {
+    const WHAT: &'static str = "the voice";
+    fn validate(&self) -> Result<()> {
+        VoiceConfig::validate(self)
+    }
+    fn endpoint(&self) -> Option<&str> {
+        VoiceConfig::endpoint(self)
+    }
+    fn needs_key(&self) -> bool {
+        VoiceConfig::needs_key(self)
+    }
+}
+
+impl Card for ImageConfig {
+    const WHAT: &'static str = "the image model";
+    fn validate(&self) -> Result<()> {
+        ImageConfig::validate(self)
+    }
+    fn endpoint(&self) -> Option<&str> {
+        ImageConfig::endpoint(self)
+    }
+    fn needs_key(&self) -> bool {
+        ImageConfig::needs_key(self)
+    }
+}
+
+/// `card` as saved, and the key filed for where it points: switched off is
+/// an error, a card that does not validate is one, and so is one that needs
+/// a key and has none -- so a missing key is never first noticed as nothing
+/// happening.
+fn card_access<C: Card>(
+    models: &Models,
+    card: Option<&C>,
+    slot: ModelSlot,
+) -> Result<(C, Option<String>)> {
+    let config = card.ok_or_else(|| switched_off(slot))?;
+    config.validate().map_err(|e| match e {
+        Error::Invalid(why) => Error::Invalid(format!(
+            "{} cannot be used: {why}; fix it in Settings → Models",
+            C::WHAT
+        )),
+        other => other,
+    })?;
+    let endpoint = config.endpoint();
+    let key = endpoint.and_then(|e| models.key_for(e)).map(str::to_string);
+    if key.is_none() && config.needs_key() {
+        return Err(Error::Invalid(format!(
+            "no API key is set for {}'s endpoint ({}); add one in Settings → Models",
+            C::WHAT,
+            endpoint.unwrap_or_default()
+        )));
+    }
+    Ok((config.clone(), key))
 }
 
 fn switched_off(slot: ModelSlot) -> Error {
