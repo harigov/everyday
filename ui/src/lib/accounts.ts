@@ -16,6 +16,7 @@ import type {
   DecisionApi,
   DecisionConfig,
   Endpoint,
+  ImageGeneratorConfig,
   LocalDecisionModel,
   MailAi,
   MailCategory,
@@ -400,6 +401,20 @@ export function speechEndpointOf(t: TranscriberConfig): string | null {
       return GOOGLE_SPEECH_ENDPOINT
     case 'compatible':
       return t.baseUrl.trim().replace(/\/+$/, '') || null
+  }
+}
+
+/**
+ * Where a prompt goes to be turned into a picture, spelt as
+ * `ImageGeneratorConfig::endpoint` spells it. OpenAI's is the same address
+ * as its language models', so they share one key. `null` on this computer.
+ */
+export function imageEndpointOf(g: ImageGeneratorConfig): string | null {
+  switch (g.type) {
+    case 'local':
+      return null
+    case 'openAi':
+      return OPENAI_BASE_URL
   }
 }
 

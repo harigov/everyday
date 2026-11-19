@@ -886,6 +886,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "cancel_image_model_download",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "JobId"
         }
       ],
@@ -1882,6 +1902,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_image_model",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "ItemId"
         }
       ],
@@ -2718,6 +2758,26 @@
         "op": "updated"
       },
       "effect": "write",
+      "name": "download_image_model",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
       "name": "download_speech_model",
       "orScope": null,
       "returns": "void",
@@ -3117,6 +3177,23 @@
       "orScope": null,
       "returns": "number",
       "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "prompt",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "generate_image",
+      "orScope": null,
+      "returns": "GeneratedImage",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -3718,6 +3795,17 @@
       "orScope": null,
       "returns": "VisitBrief",
       "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "image_models",
+      "orScope": null,
+      "returns": "LocalModelInfo[]",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

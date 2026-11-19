@@ -612,6 +612,7 @@ fn the_models_round_trip_and_start_unsaved(store: &dyn JournalStore) {
             },
             speed: 1.25,
         }),
+        image: None,
     };
     match store.put_model_settings(&mine) {
         Ok(()) => {}

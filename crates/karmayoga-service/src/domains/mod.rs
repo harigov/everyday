@@ -16,6 +16,7 @@ pub mod chat;
 pub mod connections;
 pub mod files;
 pub mod health;
+pub mod images;
 pub mod insights;
 pub mod jobs;
 pub mod journals;
@@ -113,6 +114,7 @@ pub fn catalog() -> &'static [&'static Command] {
             signin::COMMANDS,
             speech::COMMANDS,
             voice::COMMANDS,
+            images::COMMANDS,
             transcripts::COMMANDS,
             transfer::COMMANDS,
             web::COMMANDS,

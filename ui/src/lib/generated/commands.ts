@@ -101,6 +101,7 @@ import type {
   FoodHit,
   FoodId,
   FoundFeed,
+  GeneratedImage,
   GlucoseReport,
   Goal,
   GoalActivity,
@@ -442,6 +443,7 @@ export interface Commands {
   cancelBankLink: { args: { session: string }; result: void }
   cancelConnectionSignIn: { args: { signInId: string }; result: void }
   cancelDecisionModelDownload: { args: { id: string }; result: void }
+  cancelImageModelDownload: { args: { id: string }; result: void }
   cancelJob: { args: { id: JobId }; result: Job }
   cancelOauthSignIn: { args: { signInId: string }; result: void }
   cancelSpeechModelDownload: { args: { id: string }; result: void }
@@ -498,6 +500,7 @@ export interface Commands {
     result: number
   }
   deleteHealthSource: { args: { id: HealthSourceId }; result: void }
+  deleteImageModel: { args: { id: string }; result: void }
   deleteItem: { args: { id: ItemId }; result: void }
   deleteJob: { args: { id: JobId }; result: void }
   deleteJournal: { args: { id: JournalId }; result: void }
@@ -541,6 +544,7 @@ export interface Commands {
   }
   dosesDue: { args: { date: string; tz: string }; result: DueDose[] }
   downloadDecisionModel: { args: { id: string }; result: void }
+  downloadImageModel: { args: { id: string }; result: void }
   downloadSpeechModel: { args: { id: string }; result: void }
   downloadVoiceModel: { args: { id: string }; result: void }
   draftWithAi: {
@@ -576,6 +580,7 @@ export interface Commands {
   flush: { args: Record<string, never>; result: void }
   forgetMissingFiles: { args: { ids: string[] }; result: number }
   forgetScreenItem: { args: { key: string }; result: number }
+  generateImage: { args: { prompt: string }; result: GeneratedImage }
   getAccount: { args: { id: AccountId }; result: AccountView }
   getEntry: { args: { id: EntryId }; result: Entry }
   getEvent: { args: { id: EventId }; result: CalendarEvent }
@@ -611,6 +616,7 @@ export interface Commands {
     args: { conditionId?: ConditionId | null; since: string; tz: string }
     result: VisitBrief
   }
+  imageModels: { args: Record<string, never>; result: LocalModelInfo[] }
   imagePreview: { args: { url: string }; result: string }
   imageSearch: { args: { query: string; limit?: number | null }; result: ImageResult[] }
   importAppleHealth: {
@@ -1191,6 +1197,7 @@ export const COMMAND_NAMES = {
   cancelBankLink: 'cancel_bank_link',
   cancelConnectionSignIn: 'cancel_connection_sign_in',
   cancelDecisionModelDownload: 'cancel_decision_model_download',
+  cancelImageModelDownload: 'cancel_image_model_download',
   cancelJob: 'cancel_job',
   cancelOauthSignIn: 'cancel_oauth_sign_in',
   cancelSpeechModelDownload: 'cancel_speech_model_download',
@@ -1241,6 +1248,7 @@ export const COMMAND_NAMES = {
   deleteHealthDocument: 'delete_health_document',
   deleteHealthSamples: 'delete_health_samples',
   deleteHealthSource: 'delete_health_source',
+  deleteImageModel: 'delete_image_model',
   deleteItem: 'delete_item',
   deleteJob: 'delete_job',
   deleteJournal: 'delete_journal',
@@ -1281,6 +1289,7 @@ export const COMMAND_NAMES = {
   dismissMeetingOffer: 'dismiss_meeting_offer',
   dosesDue: 'doses_due',
   downloadDecisionModel: 'download_decision_model',
+  downloadImageModel: 'download_image_model',
   downloadSpeechModel: 'download_speech_model',
   downloadVoiceModel: 'download_voice_model',
   draftWithAi: 'draft_with_ai',
@@ -1303,6 +1312,7 @@ export const COMMAND_NAMES = {
   flush: 'flush',
   forgetMissingFiles: 'forget_missing_files',
   forgetScreenItem: 'forget_screen_item',
+  generateImage: 'generate_image',
   getAccount: 'get_account',
   getEntry: 'get_entry',
   getEvent: 'get_event',
@@ -1335,6 +1345,7 @@ export const COMMAND_NAMES = {
   healthSleep: 'health_sleep',
   healthToday: 'health_today',
   healthVisitBrief: 'health_visit_brief',
+  imageModels: 'image_models',
   imagePreview: 'image_preview',
   imageSearch: 'image_search',
   importAppleHealth: 'import_apple_health',
@@ -1732,6 +1743,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_bank_link',
   'cancel_connection_sign_in',
   'cancel_decision_model_download',
+  'cancel_image_model_download',
   'cancel_job',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
@@ -1782,6 +1794,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_health_document',
   'delete_health_samples',
   'delete_health_source',
+  'delete_image_model',
   'delete_item',
   'delete_job',
   'delete_journal',
@@ -1822,6 +1835,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'dismiss_meeting_offer',
   'doses_due',
   'download_decision_model',
+  'download_image_model',
   'download_speech_model',
   'download_voice_model',
   'draft_with_ai',
@@ -1844,6 +1858,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'flush',
   'forget_missing_files',
   'forget_screen_item',
+  'generate_image',
   'get_account',
   'get_entry',
   'get_event',
@@ -1876,6 +1891,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'health_sleep',
   'health_today',
   'health_visit_brief',
+  'image_models',
   'image_preview',
   'image_search',
   'import_apple_health',
@@ -2258,6 +2274,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_bank_link',
   'cancel_connection_sign_in',
   'cancel_decision_model_download',
+  'cancel_image_model_download',
   'cancel_job',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
@@ -2300,6 +2317,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_health_document',
   'delete_health_samples',
   'delete_health_source',
+  'delete_image_model',
   'delete_item',
   'delete_job',
   'delete_journal',
@@ -2338,6 +2356,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'dismiss_follow_up',
   'dismiss_meeting_offer',
   'download_decision_model',
+  'download_image_model',
   'download_speech_model',
   'download_voice_model',
   'edit_thread_draft',
@@ -2546,6 +2565,7 @@ export const CHANGE_KINDS = {
   bring_in_attachments: 'file',
   cancel_apple_import: 'healthSample',
   cancel_decision_model_download: 'settings',
+  cancel_image_model_download: 'settings',
   cancel_job: 'job',
   cancel_speech_model_download: 'settings',
   cancel_voice_model_download: 'settings',
@@ -2581,6 +2601,7 @@ export const CHANGE_KINDS = {
   delete_health_document: 'healthDocument',
   delete_health_samples: 'healthSample',
   delete_health_source: 'healthSource',
+  delete_image_model: 'settings',
   delete_item: 'item',
   delete_job: 'job',
   delete_journal: 'journal',
@@ -2617,6 +2638,7 @@ export const CHANGE_KINDS = {
   discard_recording: 'recording',
   dismiss_follow_up: 'thread',
   download_decision_model: 'settings',
+  download_image_model: 'settings',
   download_speech_model: 'settings',
   download_voice_model: 'settings',
   edit_thread_draft: 'draft',

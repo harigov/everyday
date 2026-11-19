@@ -1060,6 +1060,13 @@ export const api = {
   /** A few seconds of the saved voice, as a base64 WAV. */
   voiceSample: () => call('voiceSample', {}),
 
+  // The image card: downloads, and one picture from the saved model.
+  imageModels: () => call('imageModels', {}),
+  downloadImageModel: (id: string) => call('downloadImageModel', { id }),
+  cancelImageModelDownload: (id: string) => call('cancelImageModelDownload', { id }),
+  deleteImageModel: (id: string) => call('deleteImageModel', { id }),
+  generateImage: (prompt: string) => call('generateImage', { prompt }),
+
   dismissMeetingOffer: (calendarId: string, uid: string, series: string | null, never: boolean) =>
     call('dismissMeetingOffer', { calendarId, uid, series, never }),
 

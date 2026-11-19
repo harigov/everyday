@@ -1738,6 +1738,18 @@
       ]
     },
     {
+      "command": "cancel_image_model_download",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "dismiss_meeting_offer",
       "events": []
     },
@@ -2727,6 +2739,10 @@
     {
       "name": "download_decision_model",
       "reason": "a real network download of 1-4 GB"
+    },
+    {
+      "name": "download_image_model",
+      "reason": "a real network download of the picture weights or the inference program"
     },
     {
       "name": "download_speech_model",

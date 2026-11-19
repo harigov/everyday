@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 
 use super::Vault;
 use crate::error::{Error, Result};
+use crate::imagegen::ImageAccess;
 use crate::llm::{
     DecisionAccess, MODEL_KEYS_OWNER_ID, MODEL_KEYS_OWNER_KIND, ModelAccess, ModelKeys,
     ModelSettings, ModelSlot, ModelTier,
@@ -336,6 +337,32 @@ impl Vault {
         })
     }
 
+    /// The picture model, with the key it needs -- [`Vault::voice_access`]
+    /// for the card that makes a picture, on the same terms.
+    pub fn image_access(&self) -> Result<ImageAccess> {
+        self.read(|u| {
+            let models = Models::read(u.store.as_ref())?;
+            let config =
+                models.settings.image.as_ref().ok_or_else(|| switched_off(ModelSlot::Image))?;
+            config.validate().map_err(|e| match e {
+                Error::Invalid(why) => Error::Invalid(format!(
+                    "the image model cannot be used: {why}; fix it in Settings → Models"
+                )),
+                other => other,
+            })?;
+            let endpoint = config.endpoint();
+            let key = endpoint.and_then(|e| models.key_for(e)).map(str::to_string);
+            if key.is_none() && config.needs_key() {
+                return Err(Error::Invalid(format!(
+                    "no API key is set for the image model's endpoint ({}); add one in Settings \
+                     → Models",
+                    endpoint.unwrap_or_default()
+                )));
+            }
+            Ok(ImageAccess { config: config.clone(), key })
+        })
+    }
+
     /// The speech model as chosen, and whether a key is stored for where it
     /// points -- what meeting notes need to say whether they could run,
     /// without the key itself ever leaving this function. `None` when no
@@ -578,6 +605,11 @@ fn key_endpoint(settings: &ModelSettings, slot: ModelSlot) -> Result<&str> {
         && settings.voice.as_ref().is_some_and(|v| v.synthesiser.local_voice().is_some())
     {
         return Err(Error::Invalid("a voice on this computer needs no key".into()));
+    }
+    if slot == ModelSlot::Image
+        && settings.image.as_ref().is_some_and(|image| image.generator.local_model().is_some())
+    {
+        return Err(Error::Invalid("an image model on this computer needs no key".into()));
     }
     settings.endpoint_of(slot).ok_or_else(|| switched_off(slot))
 }

@@ -492,6 +492,7 @@ impl AgentSettings {
             decision: None,
             speech: None,
             voice: None,
+            image: None,
         })
     }
 }

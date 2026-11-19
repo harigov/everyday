@@ -62,6 +62,7 @@
 //! per model at a time -- calling [`start_download`] again for a model
 //! already downloading, or already installed, is a no-op.
 
+use karmayoga_core::imagegen::LocalImageModel;
 use karmayoga_core::llm::LocalDecisionModel;
 use karmayoga_core::meeting::LocalModel;
 use karmayoga_core::speech::LocalVoice;
@@ -144,6 +145,8 @@ pub enum ModelKind {
     Decision,
     /// The assistant's voice: the [`LocalVoice`]s.
     Voice,
+    /// A picture model, or the stable-diffusion.cpp binary that runs one.
+    Image,
 }
 
 /// One downloadable model: the speech kit, a recogniser, or a decision
@@ -566,11 +569,113 @@ const PHONON_SOURCES: &[Source] = &[
     },
 ];
 
+/// The stable-diffusion.cpp release the picture models are run with. Pinned
+/// and hashed, like every other download here: a newer build is a deliberate
+/// change, not something a card picks up on its own.
+pub const SD_CLI_ID: &str = "sdCli";
+
+#[cfg(target_os = "linux")]
+const SD_CLI_SOURCES: &[Source] = &[Source::File {
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1106-532d2c1/sd-master-532d2c1-bin-Linux-Ubuntu-26.04-x86_64.zip",
+    file: ModelFile {
+        dest: "sd-cli.zip",
+        sha256: "0a02f7f51feb0691128f60cf6ff1c686ec23089561cfe7c3b72645f446646e13",
+        bytes: 29_124_086,
+    },
+}];
+
+#[cfg(target_os = "macos")]
+const SD_CLI_SOURCES: &[Source] = &[Source::File {
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1106-532d2c1/sd-master-532d2c1-bin-Darwin-macOS-26.7.2-arm64.zip",
+    file: ModelFile {
+        dest: "sd-cli.zip",
+        sha256: "8146d6ffc75f8ff8f64b62a80fffee8fb714ab65e368e202084135fa07cc6f36",
+        bytes: 38_331_254,
+    },
+}];
+
+#[cfg(target_os = "windows")]
+const SD_CLI_SOURCES: &[Source] = &[Source::File {
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1106-532d2c1/sd-master-532d2c1-bin-win-cpu-x64.zip",
+    file: ModelFile {
+        dest: "sd-cli.zip",
+        sha256: "abef332cfca7861cc567910e79bedb70bfb2920bb4eedac97fcbb6db477f1596",
+        bytes: 18_358_541,
+    },
+}];
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const SD_CLI_SOURCES: &[Source] = &[Source::File {
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1106-532d2c1/sd-master-532d2c1-bin-Linux-Ubuntu-26.04-x86_64.zip",
+    file: ModelFile {
+        dest: "sd-cli.zip",
+        sha256: "0a02f7f51feb0691128f60cf6ff1c686ec23089561cfe7c3b72645f446646e13",
+        bytes: 29_124_086,
+    },
+}];
+
+/// FLUX.2 [klein] 4B at Q4_0, with the text encoder and VAE it was published
+/// beside. The checksums are that repository's SHA256SUMS.
+const FLUX2_KLEIN_Q4_SOURCES: &[Source] = &[
+    Source::File {
+        url: "https://huggingface.co/manishdashsharma/flux2-klein-4b-gguf/resolve/main/flux-2-klein-4b-q4_0.gguf",
+        file: ModelFile {
+            dest: "flux-2-klein-4b-q4_0.gguf",
+            sha256: "9c5939d55e3ac76e3a700029770fcc5e1b873d12c2a6d22c6c3fec217488e718",
+            bytes: 2_256_889_280,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/manishdashsharma/flux2-klein-4b-gguf/resolve/main/Qwen3-4B-Q4_K_S.gguf",
+        file: ModelFile {
+            dest: "Qwen3-4B-Q4_K_S.gguf",
+            sha256: "78cea0ccfd5fd7af5761f7dfdeebd2ec8f04328be0f1e6f70e2213a6f1309bc9",
+            bytes: 2_383_310_112,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/manishdashsharma/flux2-klein-4b-gguf/resolve/main/flux2-vae.safetensors",
+        file: ModelFile {
+            dest: "flux2-vae.safetensors",
+            sha256: "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3",
+            bytes: 336_211_292,
+        },
+    },
+];
+
+/// Z-Image Turbo at Q4_K, with its text encoder and the FLUX VAE.
+const Z_IMAGE_TURBO_Q4_SOURCES: &[Source] = &[
+    Source::File {
+        url: "https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf",
+        file: ModelFile {
+            dest: "z_image_turbo-Q4_K.gguf",
+            sha256: "14b375ab4f226bc5378f68f37e899ef3c2242b8541e61e2bc1aff40976086fbd",
+            bytes: 3_864_250_304,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        file: ModelFile {
+            dest: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+            sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+            bytes: 2_497_281_120,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/vae/ae.safetensors",
+        file: ModelFile {
+            dest: "ae.safetensors",
+            sha256: "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+            bytes: 335_304_388,
+        },
+    },
+];
+
 /// What a decision model's one file is called inside its directory.
 const DECISION_MODEL_FILE: &str = "model.gguf";
 
 /// Every downloadable model, in the order the settings panes list them.
-pub static CATALOGUE: [ModelSpec; 7] = [
+pub static CATALOGUE: [ModelSpec; 10] = [
     ModelSpec {
         id: SPEECH_KIT_ID,
         kind: ModelKind::Speech,
@@ -626,6 +731,30 @@ pub static CATALOGUE: [ModelSpec; 7] = [
         description: "Twenty-five natural voices that run on this computer, many times quicker than they speak.",
         languages: "English",
         sources: PHONON_SOURCES,
+    },
+    ModelSpec {
+        id: SD_CLI_ID,
+        kind: ModelKind::Image,
+        name: "Image engine",
+        description: "stable-diffusion.cpp, which runs the picture models on this computer.",
+        languages: "—",
+        sources: SD_CLI_SOURCES,
+    },
+    ModelSpec {
+        id: "flux2KleinQ4",
+        kind: ModelKind::Image,
+        name: "FLUX.2 Klein",
+        description: "Quantized FLUX.2 Klein 4B. Makes a picture in four steps.",
+        languages: "Prompts in English, and the languages its text encoder knows",
+        sources: FLUX2_KLEIN_Q4_SOURCES,
+    },
+    ModelSpec {
+        id: "zImageTurboQ4",
+        kind: ModelKind::Image,
+        name: "Z-Image Turbo",
+        description: "Quantized Z-Image Turbo. Makes a picture in eight steps.",
+        languages: "English and Chinese",
+        sources: Z_IMAGE_TURBO_Q4_SOURCES,
     },
 ];
 
@@ -1244,6 +1373,36 @@ pub fn voice_paths(voice: LocalVoice) -> Option<VoicePaths> {
 /// The file a Phonon speaker's embedding is kept under.
 fn phonon_speaker_file(name: &str) -> String {
     format!("voice-{}.safetensors", name.to_lowercase())
+}
+
+/// The quantized weights of a picture model, once [`image_installed`].
+pub struct ImageWeightPaths {
+    pub diffusion: PathBuf,
+    pub text_encoder: PathBuf,
+    pub vae: PathBuf,
+}
+
+pub fn image_installed(model: LocalImageModel) -> bool {
+    spec(model.id()).is_some_and(is_installed)
+}
+
+pub fn image_paths(model: LocalImageModel) -> Option<ImageWeightPaths> {
+    let spec = spec(model.id())?;
+    if !is_installed(spec) {
+        return None;
+    }
+    let dir = spec.dir();
+    Some(ImageWeightPaths {
+        diffusion: dir.join(model.diffusion_file()),
+        text_encoder: dir.join(model.text_encoder_file()),
+        vae: dir.join(model.vae_file()),
+    })
+}
+
+/// The downloaded stable-diffusion.cpp archive, once it is installed.
+pub fn sd_cli_archive() -> Option<PathBuf> {
+    let spec = spec(SD_CLI_ID)?;
+    is_installed(spec).then(|| spec.dir().join("sd-cli.zip"))
 }
 
 /// Where a recogniser's files are, once [`installed`]. The two local

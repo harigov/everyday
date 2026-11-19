@@ -61,6 +61,7 @@ pub mod files;
 pub mod health;
 pub mod http;
 pub mod idempotency;
+pub mod images;
 pub mod jobs;
 pub mod keepintouch;
 pub mod listen;
