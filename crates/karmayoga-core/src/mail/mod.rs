@@ -31,6 +31,7 @@
 //! the shapes that get sealed.
 
 pub mod ai_gate;
+pub mod authorship;
 pub mod availability;
 pub mod categorize;
 pub mod cleanup;
@@ -46,6 +47,7 @@ pub mod voice;
 pub mod writing;
 
 pub use ai_gate::{MailAiFeature, MailAiRefusal, mail_ai_allowed};
+pub use authorship::Authorship;
 pub use categorize::{CategorizeInput, CategoryMatch, CategoryRule, CategoryRules, categorize};
 pub use contacts::{ContactBook, MailContact};
 pub use follow_up::{FollowUp, FollowUpKind, FollowUpMark, FollowUpSettings};

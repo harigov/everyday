@@ -22,8 +22,10 @@ Three features on the speech layers in `docs/plans/voice.md`:
 - **Every sentence is kept** for the session, so going back, going forward and
   changing speed never ask the model again. A change of speed builds the voice
   again (`Service::speech_synthesiser_at`) and starts from the sentence playing.
-- **A mail briefing scales with the thread**, from about 20 seconds for one short
-  message to about 90 seconds at most. It is gated as summaries are
+- **A mail briefing scales with the thread**, from about 12 seconds for one short
+  message to under a minute at most (it was 20 to 90 seconds, which ran longer
+  than people needed). Your own messages are headed "you wrote", so the briefing
+  never tells you somebody else asked what you asked. It is gated as summaries are
   (`MailAiFeature::Summaries`): the same mail goes to the same model. A newsletter
   in the Feed is mail too, and is gated the same way.
 - **An article is made fit to hear, not summarised.** The author's sentences stay
