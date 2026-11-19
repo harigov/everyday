@@ -51,6 +51,10 @@ pub struct AppState {
     capture: Mutex<Option<crate::capture::CaptureSlot>>,
     /// A conversation being talked, for as long as it lasts. See `voice`.
     voice: Mutex<Option<crate::voice::VoiceHandle>>,
+    /// Something being read aloud, for as long as it lasts. See `listen`.
+    listen: Mutex<Option<crate::listen::ListenHandle>>,
+    /// Someone dictating, for as long as it lasts. See `dictation`.
+    dictation: Mutex<Option<crate::dictation::DictationHandle>>,
     /// The one open handle onto `devices.json`, for the life of this
     /// process.
     ///
@@ -87,6 +91,8 @@ impl AppState {
             web: Arc::default(),
             capture: Mutex::new(None),
             voice: Mutex::new(None),
+            listen: Mutex::new(None),
+            dictation: Mutex::new(None),
             registry: Mutex::new(None),
         }
     }
@@ -100,6 +106,14 @@ impl AppState {
 
     pub fn voice(&self) -> &Mutex<Option<crate::voice::VoiceHandle>> {
         &self.voice
+    }
+
+    pub fn listen(&self) -> &Mutex<Option<crate::listen::ListenHandle>> {
+        &self.listen
+    }
+
+    pub fn dictation(&self) -> &Mutex<Option<crate::dictation::DictationHandle>> {
+        &self.dictation
     }
 
     pub fn sharing(&self) -> Arc<Sharing> {

@@ -32,6 +32,7 @@ pub mod discover;
 pub mod extract;
 pub mod fetch;
 pub mod hn;
+pub mod listen;
 pub mod newsletters;
 pub mod opml;
 pub mod parse;

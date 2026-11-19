@@ -91,6 +91,10 @@ pub struct DraftWithAiArgs {
     /// The address it is being written from, when that is not the account's own.
     #[serde(default)]
     pub identity: Option<String>,
+    /// The instruction was dictated, not typed: it may be longer, and the model
+    /// is told to read it as machine-transcribed speech.
+    #[serde(default)]
+    pub spoken: bool,
 }
 
 async fn draft_with_ai(
@@ -105,6 +109,7 @@ async fn draft_with_ai(
         args.instruction,
         args.current_text,
         args.identity,
+        args.spoken,
     )
     .await
 }
@@ -271,6 +276,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("instruction", "string", true),
             ("currentText", "string | null", false),
             ("identity", "string | null", false),
+            ("spoken", "boolean", false),
         ],
         run: draft_with_ai,
     },

@@ -4624,6 +4624,52 @@ export type VoiceEvent =
   /** The session is over; `error` says why when it did not end on request. */
   | { type: 'ended'; error: string | null }
 
+/** What is read aloud -- `karmayoga_service::listen::ListenSource`. */
+export type ListenSource =
+  | { type: 'mailThread'; threadId: ThreadId }
+  /** `asWritten` reads the article as it is, without the model. */
+  | { type: 'story'; storyId: StoryId; asWritten?: boolean }
+
+/** What a listening session is doing --
+ *  `karmayoga_service::speech::listen::ListenState`. */
+export type ListenState = 'preparing' | 'playing' | 'paused'
+
+/**
+ * What a listening session tells the window --
+ * `karmayoga_service::speech::listen::ListenEvent`. Arrives over the channel
+ * `listenStart` opens. `ended` is always the last.
+ */
+export type ListenEvent =
+  | { type: 'state'; state: ListenState }
+  /** Sentence `index` (over the whole text) has begun playing. */
+  | { type: 'saying'; index: number; part: number; text: string }
+  /** Something went wrong, and the session carries on. */
+  | { type: 'trouble'; message: string }
+  /** The session is over; `error` says why when it did not end on request
+   *  or at the end. */
+  | { type: 'ended'; error: string | null }
+
+/** What a dictation session is doing --
+ *  `karmayoga_service::speech::dictate::DictationState`. */
+export type DictationState = 'listening' | 'hearing' | 'finishing'
+
+/** Why a dictation session ended --
+ *  `karmayoga_service::speech::dictate::DictationEnd`. */
+export type DictationEnd = 'stopped' | 'silence' | 'timeLimit' | 'cancelled' | 'failed'
+
+/**
+ * What a dictation session tells the window --
+ * `karmayoga_service::speech::dictate::DictationEvent`. Arrives over the
+ * channel `dictationStart` opens. `ended` is always the last.
+ */
+export type DictationEvent =
+  | { type: 'state'; state: DictationState }
+  /** Everything heard so far. */
+  | { type: 'heard'; text: string }
+  | { type: 'trouble'; message: string }
+  /** `text` is everything heard (empty when cancelled). */
+  | { type: 'ended'; reason: DictationEnd; text: string; error: string | null }
+
 /** The voices that run on this computer -- `karmayoga_core::speech::LocalVoice`. */
 export type LocalVoice = 'phonon'
 

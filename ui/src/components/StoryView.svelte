@@ -17,6 +17,7 @@
 
   import { untrack } from 'svelte'
   import { feed } from '../lib/feed.svelte'
+  import { listening } from '../lib/listen.svelte'
   import {
     alsoOn,
     distinctAuthor,
@@ -145,6 +146,31 @@
     if (item) shelved = new Set([...shelved, story.id])
   }
 
+  // ── Reading it aloud ──────────────────────────────────────────────────
+
+  /** Whether this story is what is being read now, in either way. */
+  const reading = $derived(listening.isReading({ type: 'story', storyId: story.id }))
+  const preparing = $derived(reading && listening.state === 'preparing')
+
+  /**
+   * Start reading the story, or stop when it already is. `asWritten` skips
+   * the model: the article's own sentences, with only what cannot be said
+   * aloud taken out. It is a button of its own beside Listen rather than a
+   * hidden modifier, since the choice is one somebody should see they have.
+   */
+  function listen(asWritten: boolean) {
+    if (reading) {
+      listening.stop()
+      return
+    }
+    void listening.start(
+      asWritten
+        ? { type: 'story', storyId: story.id, asWritten: true }
+        : { type: 'story', storyId: story.id },
+      story.title.trim() || host || 'Untitled',
+    )
+  }
+
   let settings = $state(false)
 </script>
 
@@ -204,6 +230,28 @@
       <Icon name="book" size={15} />
       {shelved.has(story.id) ? 'In the Library' : 'Add to Library'}
     </button>
+    {#if listening.available && !story.expired}
+      <button
+        class="btn btn-outline"
+        class:on={reading}
+        title={reading
+          ? 'Stop reading it aloud'
+          : 'Listen to the article, made fit to hear: tables, lists and links are put into words'}
+        onclick={() => listen(false)}
+      >
+        <Icon name={reading ? 'stop' : 'play'} size={15} />
+        {reading ? (preparing ? 'Preparing…' : 'Stop') : 'Listen'}
+      </button>
+      {#if !reading}
+        <button
+          class="btn btn-outline"
+          title="Listen to it read as written, without the model changing anything"
+          onclick={() => listen(true)}
+        >
+          Read as written
+        </button>
+      {/if}
+    {/if}
     {#if canFetch}
       <span class="spacer"></span>
       <button

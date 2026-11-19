@@ -24,6 +24,7 @@
   import { sidebar } from '../lib/sidebar.svelte'
   import CommandBar from './CommandBar.svelte'
   import Icon from './Icon.svelte'
+  import ListenPlayer from './ListenPlayer.svelte'
   import Logo from './Logo.svelte'
   import RecordingPill from './RecordingPill.svelte'
   import WindowControls from './WindowControls.svelte'
@@ -76,6 +77,11 @@
   </div>
 
   <div class="end" data-tauri-drag-region>
+    <!-- Whatever is being read aloud: here and not in an app, so it plays on
+         and stays in reach while somebody moves between apps. Its buttons are
+         not drag regions -- only an element carrying the attribute itself is
+         one, and the pill and its children do not. -->
+    <ListenPlayer />
     <WindowControls />
   </div>
 </header>

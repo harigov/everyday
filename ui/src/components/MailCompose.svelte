@@ -26,6 +26,7 @@
   import { api } from '../lib/api'
   import { accounts } from '../lib/accounts.svelte'
   import { Autosave } from '../lib/autosave'
+  import { dictation } from '../lib/dictation.svelte'
   import { dismissable } from '../lib/dismiss'
   import { handle } from '../lib/errors'
   import { focusOnMount } from '../lib/focus'
@@ -370,7 +371,64 @@
    *  never again for a prop update there is none of. */
   let aiPromptOpen = $state(untrack(() => mailwrite.takeOpenPromptOnNextCompose()))
   let aiInstruction = $state('')
+  /** `aiInstruction` came from dictation and has not been typed over since. */
+  let instructionSpoken = $state(false)
   let aiBusy = $state(false)
+
+  // ── Writing by voice ─────────────────────────────────────────────
+
+  /** Which of the app's dictation fields this is, so only this one draws as
+   *  listening when somebody talks into another. */
+  const dictationOwner = `mail-compose-${Math.random().toString(36).slice(2)}`
+  const dictating = $derived(dictation.active && dictation.owner === dictationOwner)
+  /** Whether this start's failure has been shown yet: it can reach us both
+   *  from `start` and from the session ending, and is said once. */
+  let dictationReported = false
+
+  const dictationLabel = $derived(
+    dictation.state === 'hearing'
+      ? 'Hearing…'
+      : dictation.state === 'finishing'
+        ? 'Finishing…'
+        : 'Listening…',
+  )
+
+  function reportDictationError(fallback: string | null = null) {
+    const message = dictation.error ?? fallback
+    if (!message || dictationReported) return
+    dictationReported = true
+    void handle(new Error(message))
+  }
+
+  /** Press once to start talking, again to stop and have it written. */
+  async function toggleDictation() {
+    if (dictating) {
+      dictation.stop()
+      return
+    }
+    if (aiBusy || !writingEnabled) return
+    dictationReported = false
+    // The row is where the words appear as they are heard.
+    aiPromptOpen = true
+    await dictation.start(dictationOwner, (text, reason) => {
+      if (reason === 'cancelled') return
+      if (reason === 'failed') {
+        // Keep what was heard where it can be written out or sent on by hand.
+        if (text.trim()) {
+          aiInstruction = text.trim()
+          instructionSpoken = true
+        }
+        reportDictationError('Dictation stopped unexpectedly')
+        return
+      }
+      const said = text.trim()
+      if (!said) return
+      aiInstruction = said
+      instructionSpoken = true
+      void writeWithAi(said, true)
+    })
+    if (!dictation.active) reportDictationError()
+  }
   let improving = $state(false)
   /** The last AI change's own previous HTML, for the "Rewritten · Undo"
    *  note -- cleared the moment Undo is clicked, not on the next keystroke:
@@ -740,10 +798,22 @@
   function closeAiPrompt() {
     aiPromptOpen = false
     aiInstruction = ''
+    instructionSpoken = false
   }
 
+  /** Writes from what is in the row. Still a spoken instruction if it came
+   *  from dictation and was not typed over -- a retry after a failed draft
+   *  must not lose the speech rules or the longer limit. */
   async function submitAiPrompt() {
-    const instruction = aiInstruction.trim()
+    await writeWithAi(aiInstruction.trim(), instructionSpoken)
+  }
+
+  /**
+   * Writes the draft from `instruction` and puts it in the body, the same way
+   * whether it was typed or said. `spoken` tells the model the words came out
+   * of a speech recogniser, so it can look past filler and false starts.
+   */
+  async function writeWithAi(instruction: string, spoken: boolean) {
     if (!instruction || aiBusy || !writingEnabled) return
     aiBusy = true
     try {
@@ -753,6 +823,7 @@
         instruction,
         currentText: ownText() || null,
         identity: working.identity,
+        spoken,
       })
       const ed = editor
       if (ed) aiNote = { previousHtml: replaceOwnPart(ed, result.bodyHtml) }
@@ -1138,6 +1209,15 @@
     // `j`/`k` over the list, another app's own shortcut -- must pass
     // straight through rather than being read as this draft's.
     if (!focusWithinSheet()) return
+    // Escape while talking throws the words away. It is not the sheet's own
+    // Escape -- that stays unbound, below -- and is only taken while this
+    // sheet is the one listening.
+    if (e.key === 'Escape' && dictating) {
+      e.preventDefault()
+      e.stopPropagation()
+      dictation.cancel()
+      return
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
       void (proposal ? acceptProposal() : send())
@@ -1162,6 +1242,9 @@
   }
 
   onDestroy(() => {
+    // Nothing is left to hear the words once the sheet is gone.
+    if (dictation.active && dictation.owner === dictationOwner) dictation.cancel()
+
     // `discard()` and `send()` above already flush -- or, on `discard()`'s
     // blank-draft branch, `forget()` -- before `onclose()` ever runs, so by
     // the time Svelte tears this down through the ordinary close paths there
@@ -1396,12 +1479,22 @@
       <Icon name="sparkle" size={13} />
       <input
         use:focusOnMount
-        value={aiInstruction}
-        oninput={(e) => (aiInstruction = e.currentTarget.value)}
+        value={dictating ? dictation.text : aiInstruction}
+        readonly={dictating}
+        oninput={(e) => {
+          aiInstruction = e.currentTarget.value
+          instructionSpoken = false
+        }}
         onkeydown={(e) => {
           if (e.key === 'Enter') {
             e.preventDefault()
-            void submitAiPrompt()
+            if (dictating) dictation.stop()
+            else void submitAiPrompt()
+          }
+          if (e.key === 'Escape' && dictating) {
+            // Window-level `onKeydown` cancels it; this row closing is not
+            // what Escape means while talking.
+            return
           }
           if (e.key === 'Escape') {
             // Not `onKeydown`'s own Escape -- that discards the whole
@@ -1411,13 +1504,19 @@
             closeAiPrompt()
           }
         }}
-        placeholder="What should it say? e.g. yes to Thursday, ask for the agenda"
+        placeholder={dictating
+          ? dictationLabel
+          : 'What should it say? e.g. yes to Thursday, ask for the agenda'}
         disabled={aiBusy}
       />
+      {#if dictating}
+        <!-- A live state, said in words as well as by the pulse. -->
+        <span class="ai-state" role="status" aria-live="polite">{dictationLabel}</span>
+      {/if}
       <button
         class="ai-icon-btn"
         aria-label="Write"
-        disabled={aiBusy || !aiInstruction.trim()}
+        disabled={aiBusy || dictating || !aiInstruction.trim()}
         onclick={() => void submitAiPrompt()}
       >
         <Icon name="check" size={13} />
@@ -1425,7 +1524,7 @@
       <button
         class="ai-icon-btn"
         aria-label="Close the prompt"
-        disabled={aiBusy}
+        disabled={aiBusy || dictating}
         onclick={closeAiPrompt}
       >
         <Icon name="close" size={12} />
@@ -1561,6 +1660,22 @@
     >
       <Icon name="sparkle" size={16} />
     </button>
+    {#if dictation.available && writingEnabled}
+      <button
+        class="tool"
+        class:active={dictating}
+        class:listening={dictating}
+        aria-label={dictating ? 'Stop and write it' : 'Write with your voice'}
+        aria-pressed={dictating}
+        title={dictating
+          ? 'Stop and write it (Escape throws it away)'
+          : 'Write with your voice. It stops by itself after 15 seconds of quiet, or after 3 minutes.'}
+        disabled={aiBusy || (dictation.active && !dictating)}
+        onclick={() => void toggleDictation()}
+      >
+        <Icon name="mic" size={16} />
+      </button>
+    {/if}
     <button
       class="tool"
       aria-label="Improve what you wrote"
@@ -2110,6 +2225,27 @@
   }
   .ai-icon-btn:disabled {
     opacity: 0.5;
+  }
+  .ai-state {
+    flex: none;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  /* Taking in sound: a slow pulse in the accent, not a flash. Still for
+     whoever asked for less motion. */
+  .tool.listening {
+    animation: listening-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes listening-pulse {
+    50% {
+      background: color-mix(in oklab, var(--accent) 28%, transparent);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tool.listening {
+      animation: none;
+    }
   }
   .ai-note {
     display: flex;

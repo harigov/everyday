@@ -322,6 +322,9 @@ export const draftWithAi = (opts: {
   instruction: string
   currentText?: string | null
   identity?: string | null
+  /** `instruction` was dictated and transcribed by machine, so the model
+   *  allows for filler, false starts and misheard names. */
+  spoken?: boolean
 }): Promise<WrittenText> =>
   callCommand<WrittenText>('draft_with_ai', {
     account: opts.account,
@@ -329,6 +332,7 @@ export const draftWithAi = (opts: {
     instruction: opts.instruction,
     currentText: opts.currentText ?? null,
     identity: opts.identity ?? null,
+    spoken: opts.spoken ?? false,
   })
 
 /** `text` rewritten per `mode`, or per `instruction` when given. */
