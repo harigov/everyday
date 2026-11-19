@@ -120,6 +120,8 @@ pub fn run() {
         // `hotkey` -- and writing help's popup, which one of them opens.
         .manage(hotkey::Hotkeys::default())
         .manage(writing::Writing::default())
+        // Dictation, which another of them starts -- see `dictation`.
+        .manage(dictation::Dictation::default())
         // Apps opened in windows of their own, while they close -- see
         // `windows`.
         .manage(windows::AppWindows::default())
@@ -297,6 +299,15 @@ pub fn run() {
             writing::writing_open_main,
             writing::writing_settings,
             writing::set_writing_settings,
+            // Dictation into whatever field has the keyboard: its pill and
+            // its setting. See `dictation`.
+            dictation::dictation_state,
+            dictation::dictation_stop,
+            dictation::dictation_cancel,
+            dictation::dictation_copy,
+            dictation::dictation_open_main,
+            dictation::dictation_settings,
+            dictation::set_dictation_settings,
             // The two that are not JSON in and JSON out: one takes a raw
             // body, the other answers with a stream. Reading bytes back is
             // neither -- that is the `karmayoga://` handler in `protocol.rs`.
@@ -374,7 +385,7 @@ pub fn run() {
             // Writing help's popup is not the application: closing it is
             // dismissing it, and it goes when the main window does, or a
             // hidden popup would keep the process alive with no way back.
-            if window.label() == writing::LABEL {
+            if window.label() == writing::LABEL || window.label() == dictation::pill::LABEL {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
@@ -388,8 +399,10 @@ pub fn run() {
                 return;
             }
             if let WindowEvent::Destroyed = event {
-                if let Some(popup) = window.app_handle().get_webview_window(writing::LABEL) {
-                    let _ = popup.destroy();
+                for label in [writing::LABEL, dictation::pill::LABEL] {
+                    if let Some(popup) = window.app_handle().get_webview_window(label) {
+                        let _ = popup.destroy();
+                    }
                 }
                 // Asked to save and close on the way here; whatever has not
                 // by now goes with the main window, or the process would

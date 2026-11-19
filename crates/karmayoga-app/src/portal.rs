@@ -7,6 +7,10 @@
 //! and the `RemoteDesktop` portal, which asks once whether this process may
 //! type and then lets it. Everything here is those two doors.
 //!
+//! The first door reports a key being let go as well as pressed, which is
+//! what hold-to-talk dictation needs; the palette and writing help ignore
+//! the release.
+//!
 //! # Which application is asking
 //!
 //! A portal files what it was told under the asking application's id, and a
@@ -91,15 +95,18 @@ pub struct Shortcuts {
 
 impl Shortcuts {
     /// Connect to the portal, or `None` where there is no GlobalShortcuts
-    /// portal to connect to. `on_activate` is called with the id of the key
-    /// pressed and the activation token the desktop sent with it, which is
-    /// what lets the window that answers take focus.
+    /// portal to connect to. `on_activate` is called with the id of the key,
+    /// whether it was pressed (`true`) or let go (`false`), and the activation
+    /// token the desktop sent with it, which is what lets the window that
+    /// answers take focus. A release is only heard where the desktop sends
+    /// one, and its token -- GNOME may or may not send one then -- is often
+    /// `None`.
     ///
     /// `parent` is the window the desktop's dialog -- the first time, when
     /// it asks which keys -- should open over; see [`parent_of`].
     pub async fn connect(
         parent: Option<ashpd::WindowIdentifier>,
-        on_activate: impl Fn(&str, Option<String>) + Send + Sync + 'static,
+        on_activate: impl Fn(&str, bool, Option<String>) + Send + Sync + 'static,
     ) -> Option<Self> {
         register().await;
         let portal = match GlobalShortcuts::new().await {
@@ -116,6 +123,15 @@ impl Shortcuts {
                 return None;
             }
         };
+        // Without releases hold-to-talk degrades to press-to-toggle; that is
+        // not worth giving up the presses for.
+        let deactivated = match portal.receive_deactivated().await {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::info!(error = %e, "this desktop does not report keys being let go");
+                None
+            }
+        };
         let changed = portal.receive_shortcuts_changed().await.ok();
         let (wanted_tx, wanted_rx) = mpsc::unbounded_channel();
         let (bound_tx, bound_rx) = watch::channel(None);
@@ -124,8 +140,11 @@ impl Shortcuts {
             parent,
             wanted_rx,
             bound_tx,
-            Box::pin(activated),
-            changed.map(|c| Box::pin(c) as _),
+            Signals {
+                activated: Box::pin(activated),
+                deactivated: deactivated.map(|d| Box::pin(d) as _),
+                changed: changed.map(|c| Box::pin(c) as _),
+            },
             Arc::new(on_activate),
         ));
         Some(Self { wanted: wanted_tx, bound: bound_rx })
@@ -155,19 +174,29 @@ impl Shortcuts {
 
 type Stream<T> = std::pin::Pin<Box<dyn futures_util::Stream<Item = T> + Send>>;
 type Activated = Stream<ashpd::desktop::global_shortcuts::Activated>;
+type Deactivated = Stream<ashpd::desktop::global_shortcuts::Deactivated>;
 type Changed = Stream<ashpd::desktop::global_shortcuts::ShortcutsChanged>;
-/// Called with the id of a key pressed and the activation token sent with it.
-type OnActivate = Arc<dyn Fn(&str, Option<String>) + Send + Sync>;
+/// Called with the id of a key, whether it was pressed or let go, and the
+/// activation token sent with it.
+type OnActivate = Arc<dyn Fn(&str, bool, Option<String>) + Send + Sync>;
+
+/// What the portal says on its own: a key pressed, a key let go -- where the
+/// desktop reports it -- and a key changed in its settings.
+struct Signals {
+    activated: Activated,
+    deactivated: Option<Deactivated>,
+    changed: Option<Changed>,
+}
 
 async fn run(
     portal: GlobalShortcuts,
     parent: Option<ashpd::WindowIdentifier>,
     mut wanted: mpsc::UnboundedReceiver<Vec<Wanted>>,
     bound: watch::Sender<Option<Result<Bound, String>>>,
-    mut activated: Activated,
-    mut changed: Option<Changed>,
+    signals: Signals,
     on_activate: OnActivate,
 ) {
+    let Signals { mut activated, mut deactivated, mut changed } = signals;
     let mut session: Option<ashpd::desktop::Session<GlobalShortcuts>> = None;
     loop {
         tokio::select! {
@@ -203,7 +232,19 @@ async fn run(
                     .options()
                     .get("activation_token")
                     .and_then(|v| v.downcast_ref::<String>().ok());
-                on_activate(a.shortcut_id(), token);
+                on_activate(a.shortcut_id(), true, token);
+            }
+            Some(d) = async {
+                match deactivated.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let token = d
+                    .options()
+                    .get("activation_token")
+                    .and_then(|v| v.downcast_ref::<String>().ok());
+                on_activate(d.shortcut_id(), false, token);
             }
             Some(c) = async {
                 match changed.as_mut() {

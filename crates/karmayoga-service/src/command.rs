@@ -790,6 +790,7 @@ mod tests {
             // popup that asked already has the answer in hand. See
             // `domains::writing`.
             "rewrite_selection",
+            "dictate",
             "settle_writing_assist",
             // Starting or stopping a sort of older mail writes session state
             // (`Service::set_mail_older_sort`), not a record; the pane that

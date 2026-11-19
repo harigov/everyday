@@ -1,10 +1,13 @@
 //! The keys that reach Karma Yoga from anywhere on the desktop.
 //!
-//! Two of them. One raises the window with the palette open: the difference
+//! Three of them. One raises the window with the palette open: the difference
 //! between "the app has a palette" and "there is somewhere to put a
 //! thought", because the second one has to work while somebody is looking at
-//! a different application entirely. The other is writing help over text
-//! selected in whatever application that is -- see [`crate::writing`].
+//! a different application entirely. The second is writing help over text
+//! selected in whatever application that is -- see [`crate::writing`]. The
+//! third is dictation into whatever text field has the keyboard -- see
+//! [`crate::dictation`] -- and is the only one that cares when the key is
+//! let go as well as when it is pressed, because it can be held to talk.
 //!
 //! # Why the palette raises the window rather than drawing its own
 //!
@@ -56,6 +59,7 @@ pub const PALETTE_EVENT: &str = "karmayoga://palette";
 pub enum Binding {
     Palette,
     Writing,
+    Dictation,
 }
 
 impl Binding {
@@ -64,6 +68,7 @@ impl Binding {
         match self {
             Binding::Palette => "palette",
             Binding::Writing => "writing",
+            Binding::Dictation => "dictation",
         }
     }
 
@@ -73,6 +78,7 @@ impl Binding {
         match self {
             Binding::Palette => "Open Karma Yoga's command palette",
             Binding::Writing => "Improve, correct or shorten the selected text",
+            Binding::Dictation => "Dictate into the focused text field",
         }
     }
 }
@@ -161,6 +167,7 @@ pub struct Hotkeys {
 struct Inner {
     palette: bool,
     writing: Option<Shortcut>,
+    dictation: Option<Shortcut>,
     /// Set once `install` has found a GlobalShortcuts portal; every claim
     /// goes through it from then on.
     #[cfg(target_os = "linux")]
@@ -195,6 +202,7 @@ impl Inner {
         match binding {
             Binding::Palette => self.palette,
             Binding::Writing => self.writing.is_some(),
+            Binding::Dictation => self.dictation.is_some(),
         }
     }
 
@@ -203,6 +211,7 @@ impl Inner {
         match binding {
             Binding::Palette => Some(palette_shortcut()),
             Binding::Writing => self.writing,
+            Binding::Dictation => self.dictation,
         }
     }
 
@@ -212,6 +221,7 @@ impl Inner {
         match binding {
             Binding::Palette => describe_palette(),
             Binding::Writing => self.writing.as_ref().map(describe).unwrap_or_default(),
+            Binding::Dictation => self.dictation.as_ref().map(describe).unwrap_or_default(),
         }
     }
 
@@ -328,10 +338,31 @@ impl Hotkeys {
 
     /// Claim writing help's key -- `None` gives it back.
     pub fn set_writing(&self, app: &AppHandle, shortcut: Option<Shortcut>) -> CommandResult<()> {
+        self.set_chosen(app, Binding::Writing, shortcut)
+    }
+
+    /// Claim dictation's key -- `None` gives it back. Unlike the other two it
+    /// hears the key let go as well, so that it can be held to talk.
+    pub fn set_dictation(&self, app: &AppHandle, shortcut: Option<Shortcut>) -> CommandResult<()> {
+        self.set_chosen(app, Binding::Dictation, shortcut)
+    }
+
+    /// Claim one of the keys somebody chooses the combination of -- writing
+    /// help's or dictation's -- or give it back with `None`.
+    fn set_chosen(
+        &self,
+        app: &AppHandle,
+        binding: Binding,
+        shortcut: Option<Shortcut>,
+    ) -> CommandResult<()> {
         let (old, step) = {
             let mut inner = self.inner.lock().expect("hotkeys lock");
-            let old = inner.writing;
-            inner.writing = shortcut;
+            let slot = match binding {
+                Binding::Writing => &mut inner.writing,
+                Binding::Dictation => &mut inner.dictation,
+                Binding::Palette => unreachable!("the palette's combination is fixed"),
+            };
+            let old = std::mem::replace(slot, shortcut);
             #[cfg(target_os = "linux")]
             let through_plugin = inner.portal.is_none();
             #[cfg(not(target_os = "linux"))]
@@ -339,7 +370,7 @@ impl Hotkeys {
             // The plugin claims by combination, so a changed one is the old
             // given back before the new is claimed.
             let old = old.filter(|old| through_plugin && Some(*old) != shortcut);
-            (old, Self::plan(&mut inner, Binding::Writing))
+            (old, Self::plan(&mut inner, binding))
         };
         if let Some(old) = old {
             Self::run(app, PluginStep::Release(old))?;
@@ -352,13 +383,13 @@ impl Hotkeys {
     /// waiting on it; through the plugin it is handed back to be done once
     /// the lock is released.
     fn plan(inner: &mut Inner, binding: Binding) -> PluginStep {
-        // Through the portal, both keys are asked for once, whatever is
+        // Through the portal, all three keys are asked for once, whatever is
         // switched on, and switching one off only stops it doing anything.
         //
         // Because the desktop remembers the last set of keys it was asked
         // for and nothing else: binding the palette's alone forgets writing
-        // help's -- and whatever key somebody chose for it in the desktop's
-        // settings -- and asking for it again brings the desktop's dialog
+        // help's and dictation's -- and whatever key somebody chose for them
+        // in the desktop's settings -- and asking for it again brings the desktop's dialog
         // back. A switch in this application should not do either. (Checked
         // against GNOME 50.) Asked again only if the last asking was
         // refused.
@@ -367,7 +398,8 @@ impl Hotkeys {
             if inner.portal_needs_asking()
                 && let Some(portal) = inner.portal.as_ref()
             {
-                let preferred = crate::writing::load_config().shortcut;
+                let writing = crate::writing::load_config().shortcut;
+                let dictation = crate::dictation::load_config().shortcut;
                 portal.want(vec![
                     crate::portal::Wanted {
                         id: Binding::Palette.id(),
@@ -377,7 +409,12 @@ impl Hotkeys {
                     crate::portal::Wanted {
                         id: Binding::Writing.id(),
                         description: Binding::Writing.description(),
-                        preferred: crate::portal::xdg_trigger(&preferred),
+                        preferred: crate::portal::xdg_trigger(&writing),
+                    },
+                    crate::portal::Wanted {
+                        id: Binding::Dictation.id(),
+                        description: Binding::Dictation.description(),
+                        preferred: crate::portal::xdg_trigger(&dictation),
                     },
                 ]);
                 inner.portal_asked = true;
@@ -410,12 +447,18 @@ impl Hotkeys {
                 let handle = app.clone();
                 let outcome =
                     plugin.on_shortcut(shortcut, move |_app, _shortcut, event: ShortcutEvent| {
-                        // Press, not release. Both arrive, and acting on each would
-                        // open the palette and immediately close it again.
-                        if event.state() != ShortcutState::Pressed {
+                        let pressed = event.state() == ShortcutState::Pressed;
+                        // Press, not release, for the palette and writing help.
+                        // Both arrive, and acting on each would open the palette
+                        // and immediately close it again.
+                        //
+                        // Dictation hears both: it is held to talk. Some platforms
+                        // repeat a held key's Pressed event; `dictation::key` is
+                        // told about that, so nothing is filtered here.
+                        if !pressed && binding != Binding::Dictation {
                             return;
                         }
-                        activate(&handle, binding, None);
+                        activate(&handle, binding, pressed, None);
                     });
                 if let Err(e) = outcome {
                     tracing::info!(
@@ -430,13 +473,17 @@ impl Hotkeys {
     }
 }
 
-/// A key was pressed. `token` is the activation token a portal sent with
-/// it: proof the person asked, which is what lets a window take focus on
-/// Wayland.
-fn activate(app: &AppHandle, binding: Binding, token: Option<String>) {
+/// A key was pressed, or let go. `token` is the activation token a portal
+/// sent with it: proof the person asked, which is what lets a window take
+/// focus on Wayland.
+fn activate(app: &AppHandle, binding: Binding, pressed: bool, token: Option<String>) {
     // Through the portal a key switched off is still bound -- see `apply` --
-    // and its presses are dropped here.
+    // and its presses and releases are dropped here.
     if !app.state::<Hotkeys>().inner.lock().expect("hotkeys lock").wanted(binding) {
+        return;
+    }
+    // Only dictation has anything to do when a key is let go.
+    if !pressed && binding != Binding::Dictation {
         return;
     }
     match binding {
@@ -447,6 +494,7 @@ fn activate(app: &AppHandle, binding: Binding, token: Option<String>) {
             }
         }
         Binding::Writing => crate::writing::trigger(app, token),
+        Binding::Dictation => crate::dictation::key(app, pressed, token),
     }
 }
 
@@ -474,7 +522,8 @@ fn raise_main(app: &AppHandle, token: Option<String>) {
 }
 
 /// Decide how keys are claimed on this desktop, and claim the ones wanted at
-/// startup: the palette's, and writing help's if it is switched on.
+/// startup: the palette's, and writing help's and dictation's if they are
+/// switched on.
 ///
 /// The portal is looked for only on Wayland. It answers asynchronously -- the
 /// first time, only once the person has answered its dialog -- so this
@@ -482,6 +531,7 @@ fn raise_main(app: &AppHandle, token: Option<String>) {
 /// when it is drawn.
 pub fn install(app: &AppHandle) {
     let writing = crate::writing::configured_shortcut();
+    let dictation = crate::dictation::configured_shortcut();
     #[cfg(target_os = "linux")]
     if crate::writing::wayland_session(app) {
         let handle = app.clone();
@@ -501,30 +551,34 @@ pub fn install(app: &AppHandle) {
             };
             let on_activate = {
                 let handle = handle.clone();
-                move |id: &str, token: Option<String>| {
+                move |id: &str, pressed: bool, token: Option<String>| {
                     let binding = match id {
                         "palette" => Binding::Palette,
                         "writing" => Binding::Writing,
+                        "dictation" => Binding::Dictation,
                         _ => return,
                     };
-                    activate(&handle, binding, token);
+                    activate(&handle, binding, pressed, token);
                 }
             };
             let portal = crate::portal::Shortcuts::connect(parent, on_activate).await;
             let hotkeys = handle.state::<Hotkeys>();
             hotkeys.inner.lock().expect("hotkeys lock").portal = portal;
             let _ = hotkeys.set_palette(&handle, true);
-            // Through the portal the line above asked for both, and this one
-            // only records whether writing help is on. Without a portal -- a
-            // compositor with no GlobalShortcuts -- each key is the plugin's
-            // to try, as on X11, however little that grab is worth here.
+            // Through the portal the line above asked for all three, and
+            // these only record whether writing help and dictation are on.
+            // Without a portal -- a compositor with no GlobalShortcuts -- each
+            // key is the plugin's to try, as on X11, however little that grab
+            // is worth here.
             let _ = hotkeys.set_writing(&handle, writing);
+            let _ = hotkeys.set_dictation(&handle, dictation);
         });
         return;
     }
     let hotkeys = app.state::<Hotkeys>();
     let _ = hotkeys.set_palette(app, true);
     let _ = hotkeys.set_writing(app, writing);
+    let _ = hotkeys.set_dictation(app, dictation);
 }
 
 /// Whether the palette's key is claimed right now -- whether a hidden window
@@ -561,5 +615,11 @@ mod tests {
     #[test]
     fn the_default_writing_shortcut_parses() {
         assert!(parse(DEFAULT_WRITING).is_ok());
+    }
+
+    #[test]
+    fn the_default_dictation_shortcut_parses_and_is_not_writing_helps() {
+        let dictation = parse(crate::dictation::DEFAULT_SHORTCUT).expect("it parses");
+        assert_ne!(dictation, parse(DEFAULT_WRITING).unwrap());
     }
 }

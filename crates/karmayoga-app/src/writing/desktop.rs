@@ -300,9 +300,16 @@ fn place(
     PhysicalPosition::new(x, y)
 }
 
-pub(super) async fn paste(
+/// Paste `text` into whatever has the keyboard, and put the clipboard back
+/// once the key has gone through.
+///
+/// `window` is the popup holding the keyboard, hidden first to hand the
+/// keyboard back to the application the text came from. `None` for a caller
+/// with no window holding it (dictation): there is nothing to give back, and
+/// only a short wait for the clipboard to settle.
+pub(crate) async fn paste(
     app: &AppHandle,
-    window: &WebviewWindow,
+    window: Option<&WebviewWindow>,
     text: &str,
 ) -> Result<(), String> {
     let before = clipboard::save(app).await;
@@ -311,10 +318,16 @@ pub(super) async fn paste(
     // Give the keyboard back to the application the text is in. On macOS
     // hiding one window would hand it to the main window instead, so the
     // whole application steps back.
-    let _ = window.hide();
-    #[cfg(target_os = "macos")]
-    let _ = app.hide();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    let settle = match window {
+        Some(window) => {
+            let _ = window.hide();
+            #[cfg(target_os = "macos")]
+            let _ = app.hide();
+            150
+        }
+        None => 60,
+    };
+    tokio::time::sleep(Duration::from_millis(settle)).await;
 
     let pressed = on_main(app, || press_with_command('v')).await?;
     // The application reads the clipboard when it handles the key, which is
@@ -324,4 +337,9 @@ pub(super) async fn paste(
         clipboard::restore(app, before).await;
     }
     pressed
+}
+
+/// Put `text` on the clipboard and leave it there.
+pub(crate) async fn set_clipboard_text(app: &AppHandle, text: &str) -> Result<(), String> {
+    clipboard::set_text(app, text.to_string()).await
 }

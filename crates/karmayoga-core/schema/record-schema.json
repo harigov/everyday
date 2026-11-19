@@ -14616,6 +14616,11 @@
             "const": "concise",
             "description": "Shorter, keeping every fact and every ask.",
             "type": "string"
+          },
+          {
+            "const": "dictate",
+            "description": "Spoken, not selected: the `original` is what the speech model heard\nand the `result` is that written up -- filler gone, the speaker's own\ncorrections applied, punctuated -- to be typed where they were.",
+            "type": "string"
           }
         ]
       },

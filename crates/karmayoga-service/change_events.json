@@ -2721,6 +2721,10 @@
       "reason": "tells Plaid to forget the bank's sign-in before forgetting it here"
     },
     {
+      "name": "dictate",
+      "reason": "asks the medium model; and announces nothing, since no list shows writing help"
+    },
+    {
       "name": "download_decision_model",
       "reason": "a real network download of 1-4 GB"
     },

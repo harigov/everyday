@@ -32,7 +32,7 @@
 //! same `call` command the main window uses.
 
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-mod desktop;
+pub(crate) mod desktop;
 #[cfg(target_os = "linux")]
 mod wayland;
 
@@ -430,10 +430,10 @@ pub async fn writing_apply(
     let pasted = if wayland_session(&app) {
         wayland::paste(&app, &window, &text).await
     } else {
-        desktop::paste(&app, &window, &text).await
+        desktop::paste(&app, Some(&window), &text).await
     };
     #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let pasted = desktop::paste(&app, &window, &text).await;
+    let pasted = desktop::paste(&app, Some(&window), &text).await;
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     let pasted: Result<(), String> = {
         let _ = (&window, &text);
@@ -538,6 +538,11 @@ pub async fn set_writing_settings(
     } else {
         None
     };
+    // Two keys on one combination would leave one of them dead -- while both
+    // are switched on.
+    if claim.is_some() && crate::dictation::claimed_shortcut() == claim {
+        return Err(CommandError::new("invalid", "that is already dictation's shortcut"));
+    }
     save_config(&config).map_err(|e| CommandError::new("writing", e))?;
     let hotkeys = app.state::<Hotkeys>();
     let answer = hotkeys.answer();

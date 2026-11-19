@@ -83,7 +83,13 @@
   import Icon from './Icon.svelte'
   import Symbol from './Symbol.svelte'
   import type { IconName } from '../lib/icons'
-  import type { BadgeSources, HotkeyStatus, WritingSettings } from '../lib/types'
+  import type {
+    BadgeSources,
+    DictationKeyMode,
+    DictationSettings,
+    HotkeyStatus,
+    WritingSettings,
+  } from '../lib/types'
 
   let changing = $state(false)
   let current = $state('')
@@ -175,6 +181,68 @@
           what +
           ' macOS asks once for Accessibility access, which is how the text is copied and pasted.'
         )
+      default:
+        return what
+    }
+  }
+
+  /**
+   * Dictation: the OS-wide key that types what is said into any text field.
+   * Left out where there is no shell to ask, like writing help's.
+   */
+  let dictation = $state<DictationSettings | null>(null)
+  let dictationNotice = $state<string | null>(null)
+  let dictationKey = $state('')
+  let dictationBusy = $state(false)
+
+  const DICTATION_MODES: { value: DictationKeyMode; label: string }[] = [
+    { value: 'toggle', label: 'Press to start and stop' },
+    { value: 'hold', label: 'Hold to talk' },
+  ]
+
+  void api
+    .dictationSettings()
+    .then((s) => {
+      dictation = s
+      dictationKey = s.shortcut
+    })
+    .catch(() => (dictation = null))
+
+  async function saveDictation(
+    enabled: boolean,
+    shortcut: string | null = null,
+    mode: DictationKeyMode | null = null,
+    clean: boolean | null = null,
+  ) {
+    dictationNotice = null
+    dictationBusy = true
+    try {
+      dictation = await api.setDictationSettings(enabled, shortcut, mode, clean)
+      dictationKey = dictation.shortcut
+      if (dictation.enabled && !dictation.key.registered && dictation.key.problem) {
+        dictationNotice = dictation.key.problem
+      }
+    } catch (e) {
+      dictationNotice = e instanceof Error ? e.message : String(e)
+    } finally {
+      dictationBusy = false
+    }
+  }
+
+  /** What the switch's small print says, by desktop. */
+  function dictationBlurb(d: DictationSettings): string {
+    const what =
+      'Speak, and what you said is heard by the speech model in Settings → Models, written up ' +
+      'by the medium model and typed where the cursor is. Every use is kept in this vault.'
+    switch (d.platform) {
+      case 'wayland':
+        return (
+          what +
+          ' The desktop asks once which key to use and once whether Karma Yoga may paste; change ' +
+          'the key in its own keyboard settings.'
+        )
+      case 'macos':
+        return what + ' macOS asks once for Accessibility access, which is how the text is pasted.'
       default:
         return what
     }
@@ -718,6 +786,86 @@
                 </div>
               </form>
             {/if}
+          </section>
+        {/if}
+
+        {#if dictation}
+          <section>
+            <span class="eyebrow">Dictation</span>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={dictation.enabled}
+                disabled={dictationBusy}
+                onchange={(e) => saveDictation(e.currentTarget.checked)}
+              />
+              <span>
+                <b
+                  >Dictate into any text field with {dictation.key.shortcut ||
+                    dictation.shortcut}</b
+                >
+                <small>
+                  {#if dictationNotice}
+                    {dictationNotice}
+                  {:else}
+                    {dictationBlurb(dictation)}
+                  {/if}
+                </small>
+              </span>
+            </label>
+            {#if dictation.enabled && !dictation.key.desktopManaged}
+              <form
+                onsubmit={(e) => {
+                  e.preventDefault()
+                  void saveDictation(true, dictationKey)
+                }}
+              >
+                <input
+                  class="field"
+                  aria-label="Dictation shortcut"
+                  placeholder="Ctrl+Alt+M"
+                  bind:value={dictationKey}
+                />
+                <div class="row">
+                  <button
+                    class="btn btn-primary"
+                    type="submit"
+                    disabled={dictationBusy ||
+                      !dictationKey.trim() ||
+                      dictationKey.trim() === dictation.shortcut}
+                  >
+                    Use this shortcut
+                  </button>
+                </div>
+              </form>
+            {/if}
+            <div class="segmented" class:disabled={!dictation.enabled}>
+              {#each DICTATION_MODES as m (m.value)}
+                <button
+                  class="seg"
+                  class:on={dictation.mode === m.value}
+                  disabled={dictationBusy || !dictation.enabled}
+                  onclick={() => saveDictation(true, null, m.value)}
+                >
+                  {m.label}
+                </button>
+              {/each}
+            </div>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={dictation.clean}
+                disabled={dictationBusy || !dictation.enabled}
+                onchange={(e) => saveDictation(true, null, null, e.currentTarget.checked)}
+              />
+              <span>
+                <b>Write it up with the medium model</b>
+                <small>
+                  Takes out the ums and false starts, applies your own corrections and punctuates.
+                  Off, it types exactly what was heard.
+                </small>
+              </span>
+            </label>
           </section>
         {/if}
       {:else}

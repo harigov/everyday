@@ -7,6 +7,10 @@
 //! selection and puts the answer back; the service asks the model and writes
 //! this. See `docs/plans/writing-tools.md`.
 //!
+//! Dictation is kept the same way: [`WritingAction::Dictate`], with what the
+//! speech model heard as the `original` and the written-up text as the
+//! `result`. See `docs/plans/dictation.md`.
+//!
 //! # Why every one is kept
 //!
 //! Because the pairs are the point. "Correct grammar" over a few hundred
@@ -28,6 +32,11 @@ use serde::{Deserialize, Serialize};
 /// some of them.
 pub const MAX_TEXT_CHARS: usize = 8_000;
 
+/// Longest a dictation may be, in characters: more than six minutes of fast
+/// speech, the longest the shell listens for. Longer than a selection because
+/// it is typed rather than rewritten in place, and is cut off by the clock.
+pub const MAX_DICTATION_CHARS: usize = 20_000;
+
 /// Longest an error kept on a failed assist may be. It is a line for whoever
 /// reads the history, not a transcript.
 const MAX_ERROR_CHARS: usize = 500;
@@ -44,9 +53,15 @@ pub enum WritingAction {
     Grammar,
     /// Shorter, keeping every fact and every ask.
     Concise,
+    /// Spoken, not selected: the `original` is what the speech model heard
+    /// and the `result` is that written up -- filler gone, the speaker's own
+    /// corrections applied, punctuated -- to be typed where they were.
+    Dictate,
 }
 
 impl WritingAction {
+    /// What the popup offers over a selection. Not [`WritingAction::Dictate`],
+    /// which has a key of its own and nothing selected.
     pub const ALL: [WritingAction; 3] =
         [WritingAction::Improve, WritingAction::Grammar, WritingAction::Concise];
 
@@ -56,6 +71,7 @@ impl WritingAction {
             WritingAction::Improve => "improve",
             WritingAction::Grammar => "grammar",
             WritingAction::Concise => "concise",
+            WritingAction::Dictate => "dictate",
         }
     }
 
@@ -65,6 +81,7 @@ impl WritingAction {
             WritingAction::Improve => "Improve this",
             WritingAction::Grammar => "Correct grammar",
             WritingAction::Concise => "Make it concise",
+            WritingAction::Dictate => "Dictation",
         }
     }
 }
@@ -181,8 +198,17 @@ impl WritingAssist {
     }
 
     pub fn validate(&self) -> Result<()> {
-        validate_text(&self.original)?;
-        if self.result.chars().count() > MAX_TEXT_CHARS * 2 {
+        let limit = match self.action {
+            WritingAction::Dictate => {
+                validate_dictation(&self.original)?;
+                MAX_DICTATION_CHARS
+            }
+            _ => {
+                validate_text(&self.original)?;
+                MAX_TEXT_CHARS
+            }
+        };
+        if self.result.chars().count() > limit * 2 {
             return Err(Error::Invalid("the rewritten text is too long to keep".into()));
         }
         Ok(())
@@ -200,6 +226,21 @@ pub fn validate_text(text: &str) -> Result<()> {
     if n > MAX_TEXT_CHARS {
         return Err(Error::Invalid(format!(
             "that selection is {n} characters; writing help takes up to {MAX_TEXT_CHARS} at once"
+        )));
+    }
+    Ok(())
+}
+
+/// Is `text` -- what the speech model heard -- something dictation can keep?
+/// The dictation counterpart of [`validate_text`].
+pub fn validate_dictation(text: &str) -> Result<()> {
+    if text.trim().is_empty() {
+        return Err(Error::Invalid("nothing was heard".into()));
+    }
+    let n = text.chars().count();
+    if n > MAX_DICTATION_CHARS {
+        return Err(Error::Invalid(format!(
+            "that dictation is {n} characters; up to {MAX_DICTATION_CHARS} are typed at once"
         )));
     }
     Ok(())
@@ -260,8 +301,20 @@ mod tests {
     }
 
     #[test]
+    fn a_dictation_may_be_longer_than_a_selection() {
+        let long = "word ".repeat(MAX_TEXT_CHARS / 4);
+        assert!(validate_text(&long).is_err());
+        assert!(validate_dictation(&long).is_ok());
+        let mut a = WritingAssist::new(WritingAction::Dictate, long, None);
+        a.answer("scripted", "Words.");
+        a.validate().unwrap();
+        assert!(validate_dictation("  ").is_err());
+        assert!(validate_dictation(&"a".repeat(MAX_DICTATION_CHARS + 1)).is_err());
+    }
+
+    #[test]
     fn actions_are_named_on_the_wire_as_they_are_in_code() {
-        for action in WritingAction::ALL {
+        for action in WritingAction::ALL.into_iter().chain([WritingAction::Dictate]) {
             assert_eq!(serde_json::to_value(action).unwrap(), action.name());
         }
     }

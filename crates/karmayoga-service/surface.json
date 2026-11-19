@@ -2530,6 +2530,33 @@
     {
       "args": [
         {
+          "name": "text",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "app",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "clean",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "dictate",
+      "orScope": null,
+      "returns": "WritingAssist",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "DraftId"
