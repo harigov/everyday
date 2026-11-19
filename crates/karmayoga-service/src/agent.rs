@@ -1044,6 +1044,9 @@ const SEARCH_IMAGES: &str = "search_images";
 const UPDATE_PLAN: &str = "update_plan";
 const OFFER_CHOICES: &str = "offer_choices";
 const ASK_OWNER: &str = "ask_owner";
+/// Offered to a spoken turn alone -- see [`end_voice_tool`]. Named in the
+/// core, whose note to a spoken turn tells the model to call it.
+const END_VOICE_MODE: &str = crate::voice::END_TOOL;
 /// In the core catalogue, unlike the ones above, but singled out by the gate:
 /// following a web feed puts a request on the network. See `on_tool_call`.
 const FOLLOW_SOURCE: &str = "follow_source";
@@ -2523,6 +2526,9 @@ struct TurnMeta {
     /// Who a scheduled run may ask -- see [`Reach::asker`]. Read by [`build`],
     /// which offers `ask_owner` only when there is somebody.
     asker: Option<Arc<dyn Asker>>,
+    /// Set when this turn is being talked -- see [`Turn::spoken`]. Read by
+    /// [`build`], which offers [`END_VOICE_MODE`] only then.
+    spoken: bool,
 }
 
 /// Whether `tool` is offered given whether the person has let the assistant
@@ -2791,6 +2797,11 @@ fn build(
         && !is_dream
     {
         offered.push(ask_owner_tool(asker.clone()));
+    }
+    // Only where somebody is talking: the conversation out loud is the one
+    // thing it ends.
+    if meta.spoken && !is_dream {
+        offered.push(end_voice_tool());
     }
 
     preamble.push_str(
@@ -3895,6 +3906,38 @@ fn update_plan_tool() -> PortableDynamicTool {
     )
 }
 
+/// The person has said they are done talking: end the spoken conversation
+/// once this turn's reply has been heard. Only the talking ends -- the thread
+/// stays, and they can type or talk in it again.
+///
+/// Declared here for `update_plan`'s reason: it touches nothing in the vault.
+/// The session reads that it ran from [`Turned::ended_voice`], and ends when
+/// what the model says after it has played.
+fn end_voice_tool() -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        END_VOICE_MODE,
+        "End the spoken conversation. Call it when the person makes clear they have nothing \
+         more to say for now -- \"that's it\", \"that's all I have\", \"I'm done\", \"thanks, \
+         bye\" -- not when they only pause, thank you mid-conversation, or tell you to stop \
+         talking. Then say a short goodbye: it is read out, and the voice stops after it. \
+         The conversation itself stays, so they can carry on by typing or talking later.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+        move |_arguments: serde_json::Value| {
+            Box::pin(async move {
+                Ok(ToolOutput::json(serde_json::json!({
+                    "ok": true,
+                    "note": "The voice stops once your reply has been read out. Say a short \
+                             goodbye now, in a few words, and nothing else.",
+                })))
+            })
+        },
+    )
+}
+
 /// A handful of options for the person to pick from, drawn as buttons under
 /// the reply; pressing one sends it as their next message.
 ///
@@ -4328,6 +4371,10 @@ pub struct Turned {
     /// Whether somebody stopped this turn with `cancel_turn` before the
     /// model had finished. `text` is then whatever it had said by then.
     pub stopped: bool,
+    /// Whether the model ended the spoken conversation this turn -- see
+    /// [`crate::voice::END_TOOL`]. Only ever true for a [`Turn::spoken`]
+    /// turn, the only kind it is offered.
+    pub ended_voice: bool,
 }
 
 /// One [`Kind`] per domain the tools in `ran` wrote to, paired with every id
@@ -4741,6 +4788,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         turn_id: reply.id.to_string(),
         drafting,
         asker: reach.asker.clone(),
+        spoken,
     };
     let agent =
         build(&meta, vault.clone(), &settings, &access, context.as_deref(), history_trimmed)?;
@@ -4839,7 +4887,14 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         Ok(Streamed { text, stopped: true, .. }) if text.trim().is_empty() && ran.is_empty() => {
             let _ = vault.delete_message(reply.id);
             (channel)(AgentEvent::Finished { message_id: reply.id.to_string() });
-            Ok(Turned { text: String::new(), prose: String::new(), steps: 0, wrote, stopped: true })
+            Ok(Turned {
+                text: String::new(),
+                prose: String::new(),
+                steps: 0,
+                wrote,
+                stopped: true,
+                ended_voice: false,
+            })
         }
         Ok(Streamed { text, last, stopped }) => {
             // The thread keeps everything it said; the caller gets its reply.
@@ -4855,7 +4910,13 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
             write_results(&vault, conversation, &ran);
             (channel)(AgentEvent::Finished { message_id: reply.id.to_string() });
             let prose = finished.content.trim().to_string();
-            Ok(Turned { text: said, prose, steps: ran.len() as u32, wrote, stopped })
+            // Not for a stopped turn: whatever it meant to say on the way
+            // out was cut off, and the person is plainly still there.
+            let ended_voice = !stopped
+                && ran
+                    .iter()
+                    .any(|r| r.call.name == END_VOICE_MODE && matches!(r.outcome, Some(Ok(_))));
+            Ok(Turned { text: said, prose, steps: ran.len() as u32, wrote, stopped, ended_voice })
         }
         Err(e) => {
             if ran.is_empty() {
@@ -5827,6 +5888,8 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
             let options = result.get("options").and_then(Value::as_u64).unwrap_or_default();
             return format!("{options} options");
         }
+        // The card's own words say it; the note is for the model.
+        END_VOICE_MODE => return String::new(),
         READ_WEB_PAGE => {
             let title = str_of("title").trim();
             if !title.is_empty() {

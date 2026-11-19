@@ -385,6 +385,7 @@ fn overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> u64 {
 /// (if the mic ever spoke), the other speakers, and every segment attributed
 /// to one of them, in time order -- with the invite they were matched
 /// against, which [`resolve_speakers`] and the note both read again.
+#[derive(Clone)]
 pub(crate) struct Identified {
     pub(crate) speakers: Vec<Speaker>,
     pub(crate) segments: Vec<Segment>,

@@ -483,6 +483,13 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
         text: running ? 'Updating the plan' : done ? 'Updated the plan' : 'Update the plan',
         detail: null,
       }
+    // The spoken conversation ends once the goodbye has been heard; the
+    // thread stays.
+    case 'end_voice_mode':
+      return {
+        text: running ? 'Ending voice mode' : done ? 'Ended voice mode' : 'End voice mode',
+        detail: null,
+      }
     case 'browser_open': {
       const url = arg(args, 'url')
       return {

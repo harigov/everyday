@@ -75,7 +75,7 @@ impl VoiceAssistant for ServiceAssistant {
             })
             .await?;
             service.announce_turn(&turned, conversation, Some(origin.to_string()));
-            Ok(TurnOutcome { stopped: turned.stopped })
+            Ok(TurnOutcome { stopped: turned.stopped, ended_voice: turned.ended_voice })
         })
     }
 

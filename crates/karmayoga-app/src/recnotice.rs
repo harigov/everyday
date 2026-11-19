@@ -2,10 +2,15 @@
 //!
 //! A system notification cannot show a countdown the shell owns, and on
 //! Linux its buttons are the only ones the shell hears. This window is the
-//! card: small and always on top everywhere a window can be placed, and, on
-//! Wayland, a transparent window over the desktop with the card drawn in its
-//! top-right corner -- the same constraint writing help works under, because
-//! Wayland will not put a window where an application asks.
+//! card: small and always on top everywhere a window can be placed.
+//!
+//! Wayland lets an application do neither -- keep a window on top, or put it
+//! where it asks -- so there the card is drawn by this program run again under
+//! X11, through XWayland, which allows both ([`crate::topcard`]). Only without
+//! XWayland, or if that fails, is it the window below: a transparent window
+//! over the desktop with the card drawn in its top-right corner, the same
+//! constraint writing help works under -- and on GNOME that goes behind
+//! whatever window is in front.
 //!
 //! The shell owns what the card says (`offers`). This module only makes the
 //! window be there. The page asks the shell for the current card when it
@@ -32,6 +37,11 @@ const MARGIN: f64 = 16.0;
 /// hears the new contents on its own, and moving it on every countdown tick
 /// would drag it out from under the pointer.
 pub fn present(app: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    if crate::writing::wayland_session(app) && crate::topcard::available() {
+        crate::topcard::refresh(app);
+        return;
+    }
     if app.get_webview_window(LABEL).is_some_and(|w| w.is_visible().unwrap_or(false)) {
         return;
     }
@@ -50,6 +60,8 @@ pub fn present(app: &AppHandle) {
 
 /// Take the card down. The window stays, hidden, for the next meeting.
 pub fn dismiss(app: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    crate::topcard::dismiss();
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.hide();
     }

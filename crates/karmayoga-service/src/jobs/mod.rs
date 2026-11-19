@@ -779,7 +779,7 @@ fn conclude(
 
     match ended {
         Ended::Turned(turned) => {
-            let Turned { text, prose, steps, wrote, stopped } = turned;
+            let Turned { text, prose, steps, wrote, stopped, .. } = turned;
             changes.extend(wrote.into_iter().map(written_change));
             job.steps = steps;
             if cancelled {

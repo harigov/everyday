@@ -775,6 +775,7 @@ pub(crate) async fn announce_filed(
             message_id: msg.id.to_string(),
             from: crate::arrivals::sender_label(&msg.from.name, &msg.from.email),
             subject: msg.subject,
+            snippet: msg.snippet,
         });
     }
     if let Some(notice) =

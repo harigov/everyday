@@ -64,7 +64,7 @@
 //!
 //! # `Stage::Done` is never overwritten
 //!
-//! [`drivers::do_summarise_and_write`] commits the note, the transcript and
+//! [`drivers::summarise_and_write_from`] commits the note, the transcript and
 //! the recording's own `Stage::Done` row together, then clears the spool as
 //! a last, separate step. If that last step fails, the note already exists
 //! -- so the failure is logged and swallowed rather than returned, which
@@ -72,7 +72,7 @@
 //! `Failed { at: Summarising }`, orphaning the note a retry would then
 //! duplicate. [`failure::fail`] itself refuses to touch a `Done` row
 //! regardless, as a second line of defence. See
-//! [`drivers::do_summarise_and_write`]'s own doc for the leftover spool
+//! [`drivers::summarise_and_write_from`]'s own doc for the leftover spool
 //! directory this leaves, and `spool::expire_failed_tick`'s
 //! `sweep_orphaned_spool` for what clears it.
 

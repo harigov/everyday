@@ -42,6 +42,9 @@ pub async fn run_recording(
     summariser: Option<Arc<dyn Summariser>>,
     events: Arc<dyn crate::events::EventSink>,
 ) -> CommandResult<()> {
+    // What identifying found, for the summarising that follows it in this
+    // same pass -- see `Found`.
+    let found = Found::default();
     loop {
         let recording = {
             let vault = vault.clone();
@@ -78,7 +81,8 @@ pub async fn run_recording(
                 }
             }
             Stage::Identifying => {
-                if let Err(e) = retry_transient(|| do_identify(&vault, &source, id)).await {
+                if let Err(e) = retry_transient(|| identify_into(&vault, &source, id, &found)).await
+                {
                     fail(&vault, id, Stage::Identifying, &e, events.as_ref()).await?;
                     return Err(e);
                 }
@@ -90,12 +94,13 @@ pub async fn run_recording(
                     return Err(e);
                 };
                 if let Err(e) = retry_transient(|| {
-                    do_summarise_and_write(
+                    summarise_and_write_from(
                         &vault,
                         &source,
                         id,
                         summariser.as_ref(),
                         events.as_ref(),
+                        &found,
                     )
                 })
                 .await
@@ -170,37 +175,61 @@ pub(crate) async fn transcribe_pending(
 /// Transcribe whatever chunks have closed so far, without advancing the
 /// recording out of `Stage::Recording` -- the call may still be going, so
 /// there is nothing here to checkpoint beyond [`transcribe_stage`]'s own
-/// per-chunk save. Only for a remote backend, and only best-effort: see
-/// `chunk_closed`'s own doc for why local transcription never runs early,
-/// and `run_recording`'s `Stage::Recording` arm for why an error here is
-/// logged rather than ever failing the recording.
+/// per-chunk save. Only when [`transcribes_live`] says so, and only
+/// best-effort: see `run_recording`'s `Stage::Recording` arm for why an error
+/// here is logged rather than ever failing the recording.
 ///
 /// Re-reads the setting rather than trusting whoever enqueued this pass:
-/// `chunk_closed` already checks `is_remote` before enqueuing, but the
-/// person could switch the speech model to a local one between one chunk
-/// closing and this attempt actually running, and a local model has no
-/// business being built here regardless of what triggered the call.
+/// `chunk_closed` already asks before enqueuing, but the person could switch
+/// the speech model between one chunk closing and this attempt actually
+/// running.
 pub(crate) async fn transcribe_live(
     vault: &Arc<Vault>,
     source: &Arc<dyn AudioSource>,
     id: RecordingId,
 ) -> CommandResult<()> {
-    let remote = {
+    let live = {
         let vault = vault.clone();
-        blocking(move || Ok(speech_is_remote(&vault))).await?
+        blocking(move || Ok(transcribes_live(&vault))).await?
     };
-    if !remote {
+    if !live {
         return Ok(());
     }
     transcribe_pending(vault, source, id).await
 }
 
-/// Whether the platform's speech model sends audio off this machine -- what
-/// decides whether a chunk is transcribed while the call is still going. No
-/// speech model, or one that cannot be read, is not remote: nothing is sent
-/// early, and the pass at the end of the call says what is wrong.
-pub(crate) fn speech_is_remote(vault: &Vault) -> bool {
-    vault.speech_and_keyed().ok().and_then(|(speech, _)| speech).is_some_and(|s| s.is_remote())
+/// The fewest physical cores a computer must have for our own speech model
+/// to transcribe a call while the call is going. The recogniser takes up to
+/// four threads (`speech::local::worker_threads`) for a second or two each
+/// time a thirty-second chunk closes; with eight cores at least half are left
+/// for the call itself, the browser it runs in and the capture. Physical, not
+/// logical: on a four-core laptop with two threads a core, four busy threads
+/// are every core it has.
+const LIVE_LOCAL_CORES: usize = 8;
+
+/// Whether a chunk is transcribed as soon as it closes, while the call is
+/// still going, so that little is left to do once it ends: for a speech model
+/// elsewhere, always; for our own model on this computer, when it has
+/// [`LIVE_LOCAL_CORES`] to spare. Otherwise the whole call is transcribed
+/// once it ends: slower, for a long call by many minutes, but never in
+/// competition with the call for a small machine's processor. A server on
+/// loopback waits too: how many cores it takes, and whether it keeps up with
+/// the call at all, are not this application's to know.
+/// No speech model, or one that cannot be read, is neither: nothing is
+/// transcribed early, and the pass at the end of the call says what is wrong.
+pub(crate) fn transcribes_live(vault: &Vault) -> bool {
+    let speech = vault.speech_and_keyed().ok().and_then(|(speech, _)| speech);
+    live_for(speech.as_ref(), num_cpus::get_physical(), cfg!(feature = "speech"))
+}
+
+/// [`transcribes_live`], given the speech model, how many physical cores
+/// there are and whether this build can run a speech model itself at all.
+pub(crate) fn live_for(speech: Option<&SpeechConfig>, cores: usize, runs_models: bool) -> bool {
+    let Some(speech) = speech else { return false };
+    if speech.is_remote() {
+        return true;
+    }
+    speech.transcriber.local_model().is_some() && runs_models && cores >= LIVE_LOCAL_CORES
 }
 
 pub(crate) async fn do_transcribe(
@@ -232,23 +261,56 @@ pub(crate) async fn do_transcribe(
     .map(|_| ())
 }
 
-/// Compute the identifying stage's result and checkpoint the transition to
-/// [`Stage::Summarising`]. Deliberately does *not* persist a [`Transcript`]:
-/// one needs a [`karmayoga_core::NoteId`] to be indexed against, and that id
-/// does not exist until [`do_summarise_and_write`] mints it. Instead
-/// `recording.partial` is left exactly as the transcribing stage left it
-/// (not cleared here), so [`do_summarise_and_write`] -- whether it runs
-/// straight after this in the same pass, or on a later retry following a
-/// crash between this checkpoint and the note being written -- can call
-/// [`identify_stage`] again itself and get the same, deterministic answer.
-/// The cost is one redundant pass over the same audio on every recording,
-/// even the ones that never fail; the alternative is a second storage shape
-/// for "a transcript with no note yet", which is more moving parts than a
-/// re-embed of a single call's audio is worth guarding against.
+/// [`identify_into`], keeping nothing: what a test drives a stage with.
+#[cfg(test)]
 pub(crate) async fn do_identify(
     vault: &Arc<Vault>,
     source: &Arc<dyn AudioSource>,
     id: RecordingId,
+) -> CommandResult<()> {
+    identify_into(vault, source, id, &Found::default()).await
+}
+
+/// What [`identify_into`] found, held for [`summarise_and_write_from`] when
+/// the two run one after the other in one pass of [`run_recording`] -- which
+/// is every recording that does not crash or lock between them. Spares the
+/// summarising stage computing it all again: echo, respelling and, above
+/// all, a speaker embedding for every turn of the call, which on an hour's
+/// meeting is the better part of a minute. Never stored: a pass that resumes
+/// at `Summarising` finds this empty and computes it afresh, which gives the
+/// same answer (see [`identify_into`]'s doc).
+#[derive(Default)]
+pub(crate) struct Found(std::sync::Mutex<Option<Identified>>);
+
+impl Found {
+    fn keep(&self, identified: Identified) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(identified);
+    }
+
+    /// A copy, so a retry of the stage that reads it finds it still there.
+    fn copy(&self) -> Option<Identified> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Compute the identifying stage's result, keep it in `found`, and checkpoint
+/// the transition to [`Stage::Summarising`]. Deliberately does *not* persist a
+/// [`Transcript`]: one needs a [`karmayoga_core::NoteId`] to be indexed
+/// against, and that id does not exist until [`summarise_and_write_from`]
+/// mints it. Instead `recording.partial` is left exactly as the transcribing
+/// stage left it (not cleared here), so [`summarise_and_write_from`] starts
+/// from `found` when it runs straight after this in the same pass, and on a
+/// later pass -- a retry following a crash or a lock between this checkpoint
+/// and the note being written -- can call [`identify_stage`] again itself and
+/// get the same, deterministic answer. The alternative is a second storage
+/// shape for "a transcript with no note yet", which is more moving parts than
+/// a re-embed of a single call's audio, now and then, is worth guarding
+/// against.
+pub(crate) async fn identify_into(
+    vault: &Arc<Vault>,
+    source: &Arc<dyn AudioSource>,
+    id: RecordingId,
+    found: &Found,
 ) -> CommandResult<()> {
     let recording = {
         let vault = vault.clone();
@@ -266,10 +328,11 @@ pub(crate) async fn do_identify(
     #[cfg(not(feature = "speech"))]
     let embedding_model = String::new();
 
-    // Only run for the readiness check it gives: a transcriber or speech-kit
-    // problem is better caught here than after the assistant has already
-    // been asked to summarise nothing.
-    let _ = identify_stage(
+    // A transcriber or speech-kit problem is better caught here than after
+    // the assistant has already been asked to summarise nothing -- and what
+    // it finds is what the summarising stage starts from, when it follows in
+    // this same pass.
+    let identified = identify_stage(
         vault,
         source,
         &recording,
@@ -279,6 +342,7 @@ pub(crate) async fn do_identify(
         kit,
     )
     .await?;
+    found.keep(identified);
 
     let vault = vault.clone();
     blocking(move || {
@@ -316,12 +380,29 @@ fn build_transcript(
     }
 }
 
+/// [`summarise_and_write_from`], with nothing found before it: what a test
+/// drives a stage with.
+#[cfg(test)]
 pub(crate) async fn do_summarise_and_write(
     vault: &Arc<Vault>,
     source: &Arc<dyn AudioSource>,
     id: RecordingId,
     summariser: &dyn Summariser,
     events: &dyn crate::events::EventSink,
+) -> CommandResult<()> {
+    summarise_and_write_from(vault, source, id, summariser, events, &Found::default()).await
+}
+
+/// Name the voices, summarise, title and write the note, starting from what
+/// the identifying stage found in this pass when `found` holds it -- see
+/// [`identify_into`].
+pub(crate) async fn summarise_and_write_from(
+    vault: &Arc<Vault>,
+    source: &Arc<dyn AudioSource>,
+    id: RecordingId,
+    summariser: &dyn Summariser,
+    events: &dyn crate::events::EventSink,
+    found: &Found,
 ) -> CommandResult<()> {
     let recording = {
         let vault = vault.clone();
@@ -332,25 +413,31 @@ pub(crate) async fn do_summarise_and_write(
         blocking(move || Ok(vault.meeting_settings()?)).await?
     };
 
-    #[cfg(feature = "speech")]
-    let kit = speech::speech_kit_async().await.ok();
-    #[cfg(feature = "speech")]
-    let embedding_model = kit.as_ref().map(|k| k.embedding_model().to_string()).unwrap_or_default();
-    #[cfg(not(feature = "speech"))]
-    let embedding_model = String::new();
-
-    // Recomputed rather than loaded -- see `do_identify`'s doc for why
-    // nothing is persisted between the two stages.
-    let mut identified = identify_stage(
-        vault,
-        source,
-        &recording,
-        &settings,
-        &embedding_model,
-        #[cfg(feature = "speech")]
-        kit,
-    )
-    .await?;
+    // Kept from the identifying stage when it ran in this pass, else
+    // recomputed -- see `identify_into`'s doc for why nothing is persisted
+    // between the two stages.
+    let mut identified = match found.copy() {
+        Some(identified) => identified,
+        None => {
+            #[cfg(feature = "speech")]
+            let kit = speech::speech_kit_async().await.ok();
+            #[cfg(feature = "speech")]
+            let embedding_model =
+                kit.as_ref().map(|k| k.embedding_model().to_string()).unwrap_or_default();
+            #[cfg(not(feature = "speech"))]
+            let embedding_model = String::new();
+            identify_stage(
+                vault,
+                source,
+                &recording,
+                &settings,
+                &embedding_model,
+                #[cfg(feature = "speech")]
+                kit,
+            )
+            .await?
+        }
+    };
 
     let tz = {
         let vault = vault.clone();
@@ -468,16 +555,6 @@ pub(crate) async fn do_summarise_and_write(
         );
     }
 
-    // After the commit, and not allowed to fail it: a proposal that cannot
-    // be saved leaves the note where it is. See `propose`.
-    let on = {
-        let zone = jiff::tz::TimeZone::get(&facts.tz).unwrap_or(jiff::tz::TimeZone::UTC);
-        let at = recording.event.as_ref().map_or(recording.started_at, |e| e.start);
-        at.to_zoned(zone).date()
-    };
-    let others: Vec<String> = facts.invitees.iter().map(|i| i.name.clone()).collect();
-    super::propose::from_note(vault, note_id, &body, &meeting, &others, on, &tz, events).await;
-
     let mut change = Change::new(Kind::Note, Op::Created);
     change.id = Some(note_id.to_string());
     events.changed(change);
@@ -498,6 +575,18 @@ pub(crate) async fn do_summarise_and_write(
             .for_user()
             .key(format!("meeting:{id}")),
     );
+
+    // After the note is announced, and not allowed to fail it: a proposal is
+    // a question to the model for each next step, and the note is worth
+    // reading before those are answered. One that cannot be saved leaves the
+    // note where it is. See `propose`.
+    let on = {
+        let zone = jiff::tz::TimeZone::get(&facts.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let at = recording.event.as_ref().map_or(recording.started_at, |e| e.start);
+        at.to_zoned(zone).date()
+    };
+    let others: Vec<String> = facts.invitees.iter().map(|i| i.name.clone()).collect();
+    super::propose::from_note(vault, note_id, &body, &meeting, &others, on, &tz, events).await;
 
     Ok(())
 }

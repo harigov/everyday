@@ -131,8 +131,9 @@ pub struct OfferPayload {
     pub recording_id: Option<RecordingId>,
 }
 
-/// What the corner card is showing. The card's window asks for it on load.
-#[derive(Debug, Clone, serde::Serialize)]
+/// What the corner card is showing. The card's window asks for it on load,
+/// and on Wayland it is what [`crate::topcard`] hands its own process.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingCard {
     pub key: String,

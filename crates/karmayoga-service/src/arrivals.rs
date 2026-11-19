@@ -116,6 +116,11 @@ pub struct NewMail {
     /// address otherwise. See [`sender_label`].
     pub from: String,
     pub subject: String,
+    /// The first words of the message: what a notification shows under the
+    /// subject. A headers pass stores no body, so it fetches the body of what
+    /// it is about to announce first (`passes::fetch_announced`); empty when
+    /// that could not be done, or the message is too big to wait for.
+    pub snippet: String,
 }
 
 /// What a headers pass knows about one message at the moment it is stored.
@@ -324,7 +329,8 @@ fn is_recent(sent_at: Timestamp, now: Timestamp) -> bool {
 ///
 /// `total` is how many messages the batch held, which can be more than
 /// `mail` -- a pass keeps only the first few for their names. One message
-/// names its sender. Several are one line, keyed on the account and the
+/// names its sender, with its subject and, when its body is in, its first
+/// words underneath. Several are one line, keyed on the account and the
 /// batch's first message: a later batch, from the next pass or from a
 /// model's own, posts its own line rather than replacing this one and losing
 /// who wrote.
@@ -334,7 +340,7 @@ pub fn new_mail_notice(account_id: &str, mail: &[NewMail], total: usize) -> Opti
         [] => None,
         [one] if total == 1 => Some(
             Notification::new(Level::Info, sender_or(one))
-                .body(subject_or(one))
+                .body(subject_and_snippet(one))
                 .for_user()
                 .key(format!("mail:{}", one.message_id)),
         ),
@@ -363,6 +369,27 @@ fn sender_or(mail: &NewMail) -> String {
 fn subject_or(mail: &NewMail) -> String {
     let subject = mail.subject.trim();
     if subject.is_empty() { "(no subject)".to_string() } else { excerpt(subject, 140) }
+}
+
+/// How much of a message's first words a notification shows: two or three
+/// lines on a desktop's banner, which cuts the rest itself anyway.
+const SNIPPET_CHARS: usize = 160;
+
+/// The subject, and the message's first words on the line below it when
+/// there are any that the subject does not already say.
+fn subject_and_snippet(mail: &NewMail) -> String {
+    let subject = subject_or(mail);
+    let snippet = mail.snippet.trim();
+    // A one-line message is often its own subject again: saying it twice
+    // tells nobody anything.
+    let repeats = snippet.to_lowercase() == mail.subject.trim().to_lowercase();
+    if snippet.is_empty() || repeats {
+        subject
+    } else if snippet.chars().count() > SNIPPET_CHARS {
+        format!("{subject}\n{}\u{2026}", excerpt(snippet, SNIPPET_CHARS).trim_end())
+    } else {
+        format!("{subject}\n{snippet}")
+    }
 }
 
 /// An event, as much of it as "is this new, and is it soon?" needs.
@@ -907,7 +934,12 @@ mod tests {
     }
 
     fn mail(id: &str, from: &str, subject: &str) -> NewMail {
-        NewMail { message_id: id.into(), from: from.into(), subject: subject.into() }
+        NewMail {
+            message_id: id.into(),
+            from: from.into(),
+            subject: subject.into(),
+            snippet: String::new(),
+        }
     }
 
     #[test]
@@ -989,6 +1021,33 @@ mod tests {
         assert_eq!(many.key.as_deref(), Some("mail-new:acct:m1"), "one line per batch");
         assert!(many.body.unwrap().contains("Ada: One"));
         assert!(new_mail_notice("acct", &[], 0).is_none());
+    }
+
+    #[test]
+    fn one_email_shows_its_first_words_under_the_subject() {
+        let mut with_body = mail("m1", "Ada Lovelace", "The proof");
+        with_body.snippet = "  Here is the second half, with the lemma you asked about.  ".into();
+        let notice = new_mail_notice("acct", &[with_body.clone()], 1).unwrap();
+        assert_eq!(
+            notice.body.as_deref(),
+            Some("The proof\nHere is the second half, with the lemma you asked about.")
+        );
+
+        let mut long = with_body.clone();
+        long.snippet = "word ".repeat(100);
+        let body = new_mail_notice("acct", &[long], 1).unwrap().body.unwrap();
+        let (_, shown) = body.split_once('\n').unwrap();
+        assert!(shown.chars().count() <= SNIPPET_CHARS + 1, "cut short: {shown}");
+
+        let mut same = with_body;
+        same.snippet = "the proof".into();
+        let notice = new_mail_notice("acct", &[same], 1).unwrap();
+        assert_eq!(notice.body.as_deref(), Some("The proof"), "not said twice");
+
+        let mut untitled = mail("m2", "Grace", "");
+        untitled.snippet = "Are you free at four?".into();
+        let notice = new_mail_notice("acct", &[untitled], 1).unwrap();
+        assert_eq!(notice.body.as_deref(), Some("(no subject)\nAre you free at four?"));
     }
 
     #[test]

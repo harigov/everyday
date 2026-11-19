@@ -122,7 +122,9 @@ async fn mail_that_arrives_while_idle_is_stored_and_announced_before_the_full_pa
         Flags::NONE,
         Some(GmailMeta { thrid: 2, msgid: 2, labels: vec!["\\Inbox".into()] }),
     );
-    settle(|| told.bodies().iter().any(|b| b == "Lunch?")).await;
+    // The quick pass has the body by the time it announces: the first words
+    // are under the subject.
+    settle(|| told.bodies().iter().any(|b| b == "Lunch?\nFriday?")).await;
     assert!(subjects(&vault, account_id, MailboxRole::Inbox).contains(&"Lunch?".to_string()));
     let commands = since(&session, before);
     assert_eq!(
@@ -163,7 +165,9 @@ async fn a_server_that_refuses_the_quick_search_still_gets_its_mail() {
         Flags::NONE,
         None,
     );
-    settle(|| told.bodies().iter().any(|b| b == "Refused")).await;
+    // The full pass fetches the body of what it announces first, so its
+    // notification says what the mail is about too.
+    settle(|| told.bodies().iter().any(|b| b == "Refused\nx")).await;
     settle(|| idles.lock().unwrap().len() == 2).await;
     let statuses = svc.mail_statuses().unwrap();
     let progress = statuses.all().into_iter().find(|p| p.account_id == account_id).unwrap();
