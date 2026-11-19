@@ -9,17 +9,20 @@
 //!   spool        sealed chunk files; begin / append / finish / discard; recovery
 //!   pipeline     one supervised task per recording:
 //!                  vad → transcribe → identify → merge → summarise → note
-//!   transcribe   one trait, three remote backends and a local one
-//!   speech       sherpa-onnx: vad, recognise, diarise, embed (feature `speech`)
 //! ```
+//!
+//! What turns audio into words is not here. Transcription backends
+//! ([`crate::speech::transcribe`]) and the sherpa-onnx models for voice
+//! detection, recognition, diarisation and speaker embeddings
+//! ([`crate::speech::local`], feature `speech`) are the platform's speech
+//! layer, which meeting notes use along with the assistant's voice mode. What
+//! stays here is what is particular to a meeting: chunks and their spool,
+//! telling the speakers apart, and the note.
 //!
 //! The model files themselves -- what can be downloaded, and downloading it
 //! -- are [`crate::local::files`], shared with every other model that runs
 //! on this computer.
 
 pub mod pipeline;
-#[cfg(feature = "speech")]
-pub mod speech;
 pub mod spool;
-pub mod transcribe;
 pub mod watch;

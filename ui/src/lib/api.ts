@@ -188,6 +188,7 @@ import type {
   TrayMenuItem,
   VaultStatus,
   VerificationAnswer,
+  VoiceEvent,
   VoiceprintId,
   VoiceprintInfo,
   WebStatus,
@@ -455,6 +456,27 @@ export let sendMessage: (
   throw new VaultError('unavailable', 'The assistant could not reach its backend.')
 }
 
+/**
+ * Talk to the assistant out loud in `conversationId`, streaming what the
+ * session does back.
+ *
+ * Like `sendMessage` it is not request/response: the session is a long run of
+ * events on a channel, and the last is always `ended`. Resolves once the
+ * session is under way, not when it is over. Stopping, muting and telling it
+ * what is on screen are separate calls in `api` (`voiceStop`, `voiceSetMuted`,
+ * `voiceSetScreen`), because they reach the shell's microphone, not the vault.
+ *
+ * Rejects on the web and for a window looking at another computer's vault:
+ * the microphone and speakers are this computer's.
+ */
+export let voiceStart: (
+  conversationId: ConversationId,
+  onScreen: OnScreen | null,
+  onEvent: (event: VoiceEvent) => void,
+) => Promise<void> = async () => {
+  throw new VaultError('unavailable', 'Talking to the assistant is only in the desktop app.')
+}
+
 if (SHELL) {
   const { listen } = await import('@tauri-apps/api/event')
   const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow')
@@ -528,6 +550,19 @@ if (SHELL) {
       files,
       channel,
     })
+  }
+  voiceStart = async (conversationId, onScreen, onEvent) => {
+    const channel = new mod.Channel<VoiceEvent>()
+    channel.onmessage = onEvent
+    try {
+      await mod.invoke<void>('voice_start', { conversationId, onScreen, channel })
+    } catch (raw) {
+      // As `invoke` below, which this does not go through.
+      if (raw && typeof raw === 'object' && 'code' in raw && 'message' in raw) {
+        throw new VaultError(String(raw.code), String(raw.message))
+      }
+      throw new VaultError('unknown', String(raw))
+    }
   }
   invoke = async <T>(cmd: string, args?: InvokeArgs, requestId?: string): Promise<T> => {
     try {
@@ -872,6 +907,14 @@ export const api = {
    */
   voiceEnrol: (seconds = 20) => invoke<VoiceprintInfo>('voice_enrol', { seconds }),
 
+  // Talking to the assistant, in the shell: `voiceStart` above begins a
+  // session, and these three reach it. By name, like the capture commands --
+  // they are the microphone's, not the vault's.
+  voiceStop: () => invoke<void>('voice_stop'),
+  voiceSetMuted: (muted: boolean) => invoke<void>('voice_set_muted', { muted }),
+  /** What is on screen now, for the next thing the person says. */
+  voiceSetScreen: (onScreen: OnScreen | null) => invoke<void>('voice_set_screen', { onScreen }),
+
   // ── Meeting notes -- the service commands ──────────────────────────
   //
   // Everything about meeting notes that is an ordinary vault write, unlike
@@ -921,6 +964,14 @@ export const api = {
   cancelSpeechModelDownload: (id: string) => call('cancelSpeechModelDownload', { id }),
   deleteSpeechModel: (id: string) => call('deleteSpeechModel', { id }),
   benchmarkSpeechModel: (id: string) => call('benchmarkSpeechModel', { id }),
+
+  // The voice card's downloads, and a sample of the saved voice.
+  voiceModels: () => call('voiceModels', {}),
+  downloadVoiceModel: (id: string) => call('downloadVoiceModel', { id }),
+  cancelVoiceModelDownload: (id: string) => call('cancelVoiceModelDownload', { id }),
+  deleteVoiceModel: (id: string) => call('deleteVoiceModel', { id }),
+  /** A few seconds of the saved voice, as a base64 WAV. */
+  voiceSample: () => call('voiceSample', {}),
 
   dismissMeetingOffer: (calendarId: string, uid: string, series: string | null, never: boolean) =>
     call('dismissMeetingOffer', { calendarId, uid, series, never }),
@@ -2608,4 +2659,5 @@ if (MOCK) {
   const { mockMediaUrl: f, mockSendMessage } = await import('./mock')
   mockMediaUrl = f
   sendMessage = mockSendMessage
+  voiceStart = (await import('./mock-voice')).mockVoiceStart
 }

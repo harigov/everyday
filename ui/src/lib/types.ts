@@ -3387,9 +3387,9 @@ export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | '
 /** Which of the three models. */
 export type ModelTier = 'large' | 'medium' | 'small'
 
-/** One of the five cards in Settings → Models: a tier, the decision model, or
- *  the speech model. */
-export type ModelSlot = ModelTier | 'decision' | 'speech'
+/** One of the six cards in Settings → Models: a tier, the decision model, the
+ *  speech model, or the voice. */
+export type ModelSlot = ModelTier | 'decision' | 'speech' | 'voice'
 
 /**
  * How a decision model is reached -- `karmayoga_core::llm::DecisionApi`.
@@ -3446,6 +3446,11 @@ export interface ModelSettings {
    * Left out of the record when unset; see `karmayoga_core::speech`.
    */
   speech?: SpeechConfig | null
+  /**
+   * The assistant's voice, for talking to it out loud. Absent or `null`:
+   * it cannot talk back. Left out of the record when unset.
+   */
+  voice?: VoiceConfig | null
 }
 
 /** What every models command answers. */
@@ -3465,6 +3470,8 @@ export interface ModelSettingsView {
   localDecisions: boolean
   /** Whether this copy can run a speech recogniser itself. */
   localSpeech: boolean
+  /** Whether this copy can speak with a voice of its own. */
+  localVoice: boolean
 }
 
 // ── Backups ──────────────────────────────────────────────────────────────
@@ -4586,6 +4593,63 @@ export type Offer = 'off' | 'ask' | 'always'
 export interface CalendarFilter {
   calendarIds: CalendarId[]
   roleIds: RoleId[]
+}
+
+/** What a talking session is doing -- `karmayoga_service::voice::VoiceState`. */
+export type VoiceState =
+  | 'starting'
+  | 'listening'
+  | 'hearing'
+  | 'understanding'
+  | 'thinking'
+  | 'speaking'
+  | 'asking'
+  | 'waitingForClick'
+
+/**
+ * What a talking session tells the window -- `karmayoga_service::voice::VoiceEvent`.
+ * Arrives over the channel `voiceStart` opens. `ended` is always the last.
+ */
+export type VoiceEvent =
+  | { type: 'state'; state: VoiceState }
+  /** What the person said; the assistant's turn on it follows. */
+  | { type: 'heard'; text: string }
+  /** Something from the running turn, exactly as `sendMessage` streams it. */
+  | { type: 'agent'; event: AgentEvent }
+  /** The person talked over the reply: `messageId` now reads `text`, which is
+   *  what they actually heard of it. */
+  | { type: 'replyCut'; messageId: MessageId; text: string }
+  /** Something went wrong, and the session carries on. */
+  | { type: 'trouble'; message: string }
+  /** The session is over; `error` says why when it did not end on request. */
+  | { type: 'ended'; error: string | null }
+
+/** The voices that run on this computer -- `karmayoga_core::speech::LocalVoice`. */
+export type LocalVoice = 'supertonic3'
+
+/** Who turns the assistant's words into speech --
+ *  `karmayoga_core::speech::SynthesiserConfig`. */
+export type SynthesiserConfig =
+  | { type: 'local'; voice: LocalVoice; speaker: number }
+  | { type: 'openAi'; model: string; voice: string }
+  | { type: 'compatible'; baseUrl: string; model: string; voice: string }
+
+/**
+ * The assistant's voice: the sixth card in Settings → Models --
+ * `karmayoga_core::speech::VoiceConfig`. Its key is filed under where it
+ * points, as every model's is.
+ */
+export interface VoiceConfig {
+  synthesiser: SynthesiserConfig
+  /** How fast it talks; 1 is the voice's own pace, from 0.5 to 2. */
+  speed: number
+}
+
+/** A few seconds of the saved voice, to hear it before using it:
+ *  `voice_sample`. */
+export interface VoiceSample {
+  /** A WAV file, base64. */
+  wav: string
 }
 
 /** The recognisers that run on this computer -- `karmayoga_core::speech::LocalModel`. */

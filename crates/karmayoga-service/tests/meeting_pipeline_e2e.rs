@@ -362,7 +362,7 @@ impl pipeline::Summariser for FixedSummariser {
         &'a self,
         _system: &'a str,
         _user: &'a str,
-    ) -> karmayoga_service::meeting::transcribe::BoxFuture<'a, CommandResult<String>> {
+    ) -> karmayoga_service::speech::transcribe::BoxFuture<'a, CommandResult<String>> {
         Box::pin(async move {
             Ok("# Design sync\n\n\
                 ## Summary\nThe team discussed the pricing page launch.\n\n\

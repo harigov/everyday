@@ -94,6 +94,13 @@ pub(crate) async fn begin(
     template_id: Option<TemplateId>,
     automatic: bool,
 ) -> CommandResult<Recording> {
+    // One microphone, one listener: see `crate::voice`.
+    if app.state::<AppState>().voice().lock().unwrap().is_some() {
+        return Err(CommandError::new(
+            "conflict",
+            "Stop talking to the assistant before recording a meeting.",
+        ));
+    }
     let state = app.state::<AppState>();
     let recording = begin_headless_as(
         ctx,
@@ -293,7 +300,7 @@ async fn try_begin(
 /// is `Starting`, empty already, or genuinely still recording is left
 /// untouched. See [`begin_headless`]'s own doc, "A slot can also go stale
 /// on its own", for why this check exists at all.
-fn reclaim_if_ended(slot: &mut Option<CaptureSlot>) {
+pub(crate) fn reclaim_if_ended(slot: &mut Option<CaptureSlot>) {
     if matches!(slot, Some(CaptureSlot::Recording(h)) if h.ended_on_its_own())
         && let Some(CaptureSlot::Recording(handle)) = slot.take()
     {

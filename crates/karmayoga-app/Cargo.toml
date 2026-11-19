@@ -91,6 +91,10 @@ audioadapter-buffers = "4"
 # instead of the service. Not on the path anything shipped takes: the real
 # sink sends PCM straight to `append_recording_chunk`, never a file.
 hound = "3.5"
+# Echo cancellation and noise suppression for talking to the assistant: a pure
+# Rust port of WebRTC's audio processing, so the assistant does not hear itself
+# through the speakers. See `src/voice`.
+sonora = "0.3"
 
 # PipeWire is what makes the loopback trick work on Linux: cpal exposes a sink
 # node as a duplex device, and opening an *input* stream on it sets

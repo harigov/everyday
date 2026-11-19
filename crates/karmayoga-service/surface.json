@@ -975,6 +975,26 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "cancel_voice_model_download",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "mailbox",
           "required": true,
           "type": "MailboxId"
@@ -2452,6 +2472,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_voice_model",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "VoiceprintId"
         }
       ],
@@ -2652,6 +2692,26 @@
       },
       "effect": "write",
       "name": "download_speech_model",
+      "orScope": null,
+      "returns": "void",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "download_voice_model",
       "orScope": null,
       "returns": "void",
       "scope": "meetings",
@@ -10275,6 +10335,28 @@
       "orScope": null,
       "returns": "VoiceLearningView",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "voice_models",
+      "orScope": null,
+      "returns": "LocalModelInfo[]",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "voice_sample",
+      "orScope": null,
+      "returns": "VoiceSample",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },

@@ -9,8 +9,8 @@
 //! ([`crate::websearch`]); fetching a remote image a message asked to load
 //! ([`crate::mailview::remote_image`]); and, once a call ends, sending a
 //! chunk of speech to whichever remote transcriber the person configured
-//! ([`crate::meeting::transcribe::openai`],
-//! [`crate::meeting::transcribe::gemini`]). Sharing the client is not about
+//! ([`crate::speech::transcribe::openai`],
+//! [`crate::speech::transcribe::gemini`]). Sharing the client is not about
 //! connection pooling; it is about the settings below being decided once. A
 //! second `Client::builder()` elsewhere in the tree would be a second
 //! timeout, a second redirect policy and a second chance to forget the size
@@ -51,7 +51,7 @@
 //! transcriber over a local one, that transcriber's endpoint: OpenAI's,
 //! Google's, or a base URL the person typed in for a compatible server of
 //! their own. What travels there is speech only -- VAD cuts silence out
-//! locally before anything is sent, per [`crate::meeting::transcribe`]'s own
+//! locally before anything is sent, per [`crate::speech::transcribe`]'s own
 //! doc -- and never a voiceprint, which this application does not transmit
 //! to anybody. There is no telemetry, no update check, no crash reporter and
 //! no analytics anywhere in this application. The webview's own network

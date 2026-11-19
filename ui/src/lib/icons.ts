@@ -466,6 +466,14 @@ export const ICONS = {
     '<path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>' +
     '<path d="M12 17.5v4"/><path d="M8.5 21.5h7"/>',
 
+  // The same microphone struck through, for one that is switched off: the
+  // voice bar's mute. The slash is the whole difference.
+  'mic-off':
+    '<rect width="6" height="12" x="9" y="2.5" rx="3"/>' +
+    '<path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>' +
+    '<path d="M12 17.5v4"/><path d="M8.5 21.5h7"/>' +
+    '<path d="M3.5 3.5l17 17"/>',
+
   // ── Weather ────────────────────────────────────────────────────────────
   //
   // `sun`, above, already draws "clear" -- the Overview's Weather widget and

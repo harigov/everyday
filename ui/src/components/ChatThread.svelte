@@ -19,7 +19,7 @@
   // as it goes; and once it is over, a long list of steps folds away under
   // one line so the answer is what is left to read.
 
-  import { onDestroy, untrack } from 'svelte'
+  import { onDestroy, tick, untrack } from 'svelte'
   import {
     activity,
     choicesOf,
@@ -46,12 +46,14 @@
   import { onScreenNow } from '../lib/screen.svelte'
   import { app, handle } from '../lib/state.svelte'
   import type { Attachment, FileEntry, FileId, Job } from '../lib/types'
+  import { voice } from '../lib/voice.svelte'
   import EmptyState from './EmptyState.svelte'
   import FileCard from './FileCard.svelte'
   import FileViewer from './FileViewer.svelte'
   import Icon from './Icon.svelte'
   import JobCard from './JobCard.svelte'
   import ToolCardView from './ToolCard.svelte'
+  import VoiceBar from './VoiceBar.svelte'
 
   let {
     variant,
@@ -692,6 +694,41 @@
     }
   }
 
+  // ── Talking ─────────────────────────────────────────────────────────
+  //
+  // While a conversation out loud is running the bar takes the box's place,
+  // inside the same frame, held at the height the box had so the thread above
+  // does not jump when it starts or ends. Typing is not available meanwhile,
+  // and what is said lands in the thread as what is typed does.
+
+  let compose = $state<HTMLDivElement | null>(null)
+  /** What the composer's frame measured as a session began. */
+  let composeHeight = $state<number | null>(null)
+  // Before the bar is drawn, while the box still is.
+  $effect.pre(() => {
+    if (voice.active) composeHeight = untrack(() => compose?.offsetHeight ?? null)
+  })
+  // And the caret back in the box once it has been.
+  let wasTalking = false
+  $effect(() => {
+    const now = voice.active
+    if (wasTalking && !now) void tick().then(() => box?.focus())
+    wasTalking = now
+  })
+
+  /** An error whose sentence names where setup happens gets a way there. */
+  const setupError = $derived(/settings|models/i.test(voice.error ?? ''))
+
+  /** Escape ends a conversation, from wherever focus is -- the box it would
+   *  have been pressed in is gone. Left alone when something nearer, a dialog
+   *  or a menu, has already used it. */
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !voice.active || e.defaultPrevented) return
+    e.preventDefault()
+    e.stopPropagation()
+    void voice.stop()
+  }
+
   // ── When there is nothing yet ──────────────────────────────────────
 
   const web = $derived(agent.settings?.web === true)
@@ -721,6 +758,8 @@
   )
 </script>
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 {#snippet sparkle()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
 
 <div class="thread {variant}">
@@ -740,7 +779,7 @@
             </p>
             <div class="starts">
               {#each suggestions as s (s)}
-                <button class="start" onclick={() => void send(s)}>{s}</button>
+                <button class="start" disabled={voice.active} onclick={() => void send(s)}>{s}</button>
               {/each}
             </div>
             {#if !web}
@@ -943,7 +982,7 @@
               <div class="choices" role="group" aria-label={choices.question || 'Options'}>
                 {#if choices.question}<p class="question">{choices.question}</p>{/if}
                 {#each choices.options as option, i (i)}
-                  <button class="choice" disabled={!open} onclick={() => void send(option.title)}>
+                  <button class="choice" disabled={!open || voice.active} onclick={() => void send(option.title)}>
                     <b>{option.title}</b>
                     {#if option.detail}<span>{option.detail}</span>{/if}
                   </button>
@@ -995,6 +1034,14 @@
 
   {#if agent.error}
     <p class="failed banner">{agent.error}</p>
+  {/if}
+  {#if voice.error && !voice.active}
+    <p class="failed banner">
+      {voice.error}
+      {#if setupError}
+        <button class="link" onclick={() => panels.openSettings('models')}>Open Models</button>
+      {/if}
+    </p>
   {/if}
 
   <!-- The whole composer is where a picture -- or, with Files, any file --
@@ -1053,7 +1100,11 @@
         {#if pictureError}<p class="picture-error">{pictureError}</p>{/if}
       </div>
     {/if}
-    <div class="compose">
+    <div
+      class="compose"
+      bind:this={compose}
+      style:min-height={voice.active && composeHeight ? `${composeHeight}px` : null}
+    >
       <input
         bind:this={chooser}
         class="chooser"
@@ -1064,48 +1115,63 @@
         tabindex="-1"
         aria-hidden="true"
       />
-      <button
-        class="attach"
-        onclick={() => void choose()}
-        disabled={!keepsFiles && picking.length >= MAX_PICTURES}
-        title={keepsFiles
-          ? 'Add a file — or paste or drop one here'
-          : 'Add a picture — or paste or drop one here'}
-        aria-label={keepsFiles ? 'Add a file' : 'Add a picture'}
-      >
-        <Icon name="paperclip" size={16} />
-      </button>
-      <textarea
-        bind:this={box}
-        bind:value={draft}
-        onkeydown={onKeydown}
-        onpaste={onPaste}
-        placeholder={variant === 'page'
-          ? 'Ask anything, or tell it what to do…'
-          : 'Ask, or tell it what to do…'}
-        rows={variant === 'page' ? 1 : 2}
-        aria-label="Message the assistant"
-      ></textarea>
-      {#if agent.busy}
-        <!-- Stop where Send was, so the thing to press is where the hand
-             already is. The box stays writable: the next question can be
-             typed while this one is answered. -->
-        <button class="send stop" onclick={() => void agent.stop()} title="Stop (Esc)">
-          <Icon name="stop" size={14} weight={2} />
-        </button>
+      {#if voice.active}
+        <VoiceBar />
       {:else}
         <button
-          class="send"
-          onclick={() => void send()}
-          disabled={!canSend}
-          title={preparing
-            ? keepsFiles
-              ? 'Adding the files…'
-              : 'Getting the picture ready…'
-            : 'Send (Enter)'}
+          class="attach"
+          onclick={() => void choose()}
+          disabled={!keepsFiles && picking.length >= MAX_PICTURES}
+          title={keepsFiles
+            ? 'Add a file — or paste or drop one here'
+            : 'Add a picture — or paste or drop one here'}
+          aria-label={keepsFiles ? 'Add a file' : 'Add a picture'}
         >
-          <Icon name="arrow-up" size={16} />
+          <Icon name="paperclip" size={16} />
         </button>
+        <textarea
+          bind:this={box}
+          bind:value={draft}
+          onkeydown={onKeydown}
+          onpaste={onPaste}
+          placeholder={variant === 'page'
+            ? 'Ask anything, or tell it what to do…'
+            : 'Ask, or tell it what to do…'}
+          rows={variant === 'page' ? 1 : 2}
+          aria-label="Message the assistant"
+        ></textarea>
+        {#if voice.available}
+          <button
+            class="mic"
+            onclick={() => void voice.start()}
+            disabled={agent.busy}
+            title="Talk to the assistant"
+            aria-label="Talk to the assistant"
+          >
+            <Icon name="mic" size={16} />
+          </button>
+        {/if}
+        {#if agent.busy}
+          <!-- Stop where Send was, so the thing to press is where the hand
+               already is. The box stays writable: the next question can be
+               typed while this one is answered. -->
+          <button class="send stop" onclick={() => void agent.stop()} title="Stop (Esc)">
+            <Icon name="stop" size={14} weight={2} />
+          </button>
+        {:else}
+          <button
+            class="send"
+            onclick={() => void send()}
+            disabled={!canSend}
+            title={preparing
+              ? keepsFiles
+                ? 'Adding the files…'
+                : 'Getting the picture ready…'
+              : 'Send (Enter)'}
+          >
+            <Icon name="arrow-up" size={16} />
+          </button>
+        {/if}
       {/if}
     </div>
   </div>
@@ -1755,6 +1821,14 @@
     padding: var(--sp-2) var(--sp-3);
     border-top: 1px solid var(--border);
   }
+  .banner .link {
+    color: var(--accent);
+    font-size: inherit;
+    font-weight: 550;
+  }
+  .banner .link:hover {
+    text-decoration: underline;
+  }
 
   /* ── The composer ─────────────────────────────────────────────────── */
 
@@ -1860,6 +1934,27 @@
     color: var(--fg);
   }
   .attach:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  /* Talk: the paperclip's weight, beside Send. */
+  .mic {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: var(--radius);
+    background: none;
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+  .mic:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .mic:disabled {
     opacity: 0.4;
     cursor: default;
   }

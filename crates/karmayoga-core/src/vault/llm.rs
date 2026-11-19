@@ -31,7 +31,7 @@ use crate::llm::{
     DecisionAccess, MODEL_KEYS_OWNER_ID, MODEL_KEYS_OWNER_KIND, ModelAccess, ModelKeys,
     ModelSettings, ModelSlot, ModelTier,
 };
-use crate::speech::{SpeechAccess, SpeechConfig};
+use crate::speech::{SpeechAccess, SpeechConfig, VoiceAccess};
 use crate::store::JournalStore;
 
 impl Vault {
@@ -310,6 +310,32 @@ impl Vault {
         })
     }
 
+    /// The voice, with the key it needs -- [`Vault::speech_access`] for the
+    /// card that turns the assistant's words into speech, on the same terms.
+    pub fn voice_access(&self) -> Result<VoiceAccess> {
+        self.read(|u| {
+            let models = Models::read(u.store.as_ref())?;
+            let config =
+                models.settings.voice.as_ref().ok_or_else(|| switched_off(ModelSlot::Voice))?;
+            config.validate().map_err(|e| match e {
+                Error::Invalid(why) => Error::Invalid(format!(
+                    "the voice cannot be used: {why}; fix it in Settings → Models"
+                )),
+                other => other,
+            })?;
+            let endpoint = config.endpoint();
+            let key = endpoint.and_then(|e| models.key_for(e)).map(str::to_string);
+            if key.is_none() && config.needs_key() {
+                return Err(Error::Invalid(format!(
+                    "no API key is set for the voice's endpoint ({}); add one in Settings → \
+                     Models",
+                    endpoint.unwrap_or_default()
+                )));
+            }
+            Ok(VoiceAccess { config: config.clone(), key })
+        })
+    }
+
     /// The speech model as chosen, and whether a key is stored for where it
     /// points -- what meeting notes need to say whether they could run,
     /// without the key itself ever leaving this function. `None` when no
@@ -547,6 +573,11 @@ fn key_endpoint(settings: &ModelSettings, slot: ModelSlot) -> Result<&str> {
         && settings.speech.as_ref().is_some_and(|s| s.transcriber.local_model().is_some())
     {
         return Err(Error::Invalid("a speech model on this computer needs no key".into()));
+    }
+    if slot == ModelSlot::Voice
+        && settings.voice.as_ref().is_some_and(|v| v.synthesiser.local_voice().is_some())
+    {
+        return Err(Error::Invalid("a voice on this computer needs no key".into()));
     }
     settings.endpoint_of(slot).ok_or_else(|| switched_off(slot))
 }

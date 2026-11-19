@@ -8,7 +8,8 @@
 //! ```
 //!
 //! Each kind of model brings its own runtime -- sherpa-onnx for speech
-//! (`crate::meeting::speech`, feature `speech`), llama.cpp for decisions
+//! (`crate::speech::local`, feature `speech`, which meeting notes and the
+//! assistant's voice mode both load from), llama.cpp for decisions
 //! ([`decide`], feature `decisions`) -- and shares the rest: one catalogue of
 //! pinned downloads beside the vaults, and one rule for memory. A model is
 //! loaded the first time it is asked for and let go once nobody has used it

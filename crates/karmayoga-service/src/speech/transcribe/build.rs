@@ -1,7 +1,7 @@
 use karmayoga_core::meeting::TranscriberConfig;
 
 use crate::error::{CommandError, CommandResult, codes};
-use crate::meeting::transcribe::Transcriber;
+use crate::speech::transcribe::Transcriber;
 
 // ============================================================================
 // Building a transcriber from settings
@@ -14,8 +14,9 @@ use crate::meeting::transcribe::Transcriber;
 pub const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// Build the configured transcriber. The one place `TranscriberConfig` turns
-/// into a live [`Transcriber`] -- used by the pipeline and by
-/// `domains::transcripts::test_transcriber` alike, so the two can never
+/// into a live [`Transcriber`] -- used by the meeting pipeline, by the
+/// assistant's voice mode (`speech::utterance`) and by
+/// `domains::transcripts::test_transcriber` alike, so none of them can
 /// disagree about what "the configured transcriber" means.
 ///
 /// `config` and `key` come from `Vault::speech_access` together, the
@@ -27,14 +28,14 @@ pub fn build_transcriber(
 ) -> CommandResult<Box<dyn Transcriber>> {
     match config {
         TranscriberConfig::OpenAi { model } => {
-            Ok(Box::new(crate::meeting::transcribe::openai::OpenAiTranscriber::new(
+            Ok(Box::new(crate::speech::transcribe::openai::OpenAiTranscriber::new(
                 OPENAI_BASE_URL,
                 key,
                 model.clone(),
             )))
         }
         TranscriberConfig::Compatible { base_url, model } => {
-            Ok(Box::new(crate::meeting::transcribe::openai::OpenAiTranscriber::new(
+            Ok(Box::new(crate::speech::transcribe::openai::OpenAiTranscriber::new(
                 base_url.clone(),
                 key,
                 model.clone(),
@@ -44,7 +45,7 @@ pub fn build_transcriber(
             let key = key.ok_or_else(|| {
                 CommandError::new(codes::UNSUPPORTED, "a Google transcriber needs a key")
             })?;
-            Ok(Box::new(crate::meeting::transcribe::gemini::GeminiTranscriber::new(
+            Ok(Box::new(crate::speech::transcribe::gemini::GeminiTranscriber::new(
                 key,
                 model.clone(),
             )))
@@ -57,7 +58,7 @@ pub fn build_transcriber(
 fn build_local_transcriber(
     model: karmayoga_core::meeting::LocalModel,
 ) -> CommandResult<Box<dyn Transcriber>> {
-    Ok(Box::new(crate::meeting::transcribe::local::LocalTranscriber::new(model)))
+    Ok(Box::new(crate::speech::transcribe::local::LocalTranscriber::new(model)))
 }
 
 #[cfg(not(feature = "speech"))]
@@ -80,6 +81,6 @@ mod tests {
         let openai = TranscriberConfig::OpenAi { model: "gpt-4o-transcribe".into() };
         assert_eq!(openai.endpoint(), Some(OPENAI_BASE_URL));
         let google = TranscriberConfig::Google { model: "gemini-2.5-flash".into() };
-        assert_eq!(google.endpoint(), Some(crate::meeting::transcribe::gemini::DEFAULT_BASE_URL));
+        assert_eq!(google.endpoint(), Some(crate::speech::transcribe::gemini::DEFAULT_BASE_URL));
     }
 }

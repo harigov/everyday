@@ -24,6 +24,7 @@ import type {
   ModelSettings,
   OAuthPreset,
   Services,
+  SynthesiserConfig,
   TranscriberConfig,
 } from './types'
 
@@ -399,6 +400,25 @@ export function speechEndpointOf(t: TranscriberConfig): string | null {
       return GOOGLE_SPEECH_ENDPOINT
     case 'compatible':
       return t.baseUrl.trim().replace(/\/+$/, '') || null
+  }
+}
+
+/**
+ * Where the assistant's words go to be turned into speech, spelt as
+ * `SynthesiserConfig::endpoint` spells it, which is what the voice's key is
+ * stored under. OpenAI's is the same address as its language models' and its
+ * speech model's, so all three share one key; a compatible server is its base
+ * URL, trimmed as `endpointOf` trims one. `null` on this computer, which is
+ * sent nothing, and for a server with no address yet.
+ */
+export function voiceEndpointOf(s: SynthesiserConfig): string | null {
+  switch (s.type) {
+    case 'local':
+      return null
+    case 'openAi':
+      return OPENAI_BASE_URL
+    case 'compatible':
+      return s.baseUrl.trim().replace(/\/+$/, '') || null
   }
 }
 

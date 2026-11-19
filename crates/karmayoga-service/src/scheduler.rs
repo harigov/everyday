@@ -1143,6 +1143,7 @@ async fn resume(
         unattended: Some(run.id),
         drafting,
         via: None,
+        spoken: false,
         reach,
         job: None,
         follow_up: None,

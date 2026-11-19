@@ -49,6 +49,7 @@ pub mod trackers;
 pub mod transcripts;
 pub mod transfer;
 pub mod vault;
+pub mod voice;
 pub mod weather;
 pub mod web;
 pub mod writing;
@@ -111,6 +112,7 @@ pub fn catalog() -> &'static [&'static Command] {
             proposals::COMMANDS,
             signin::COMMANDS,
             speech::COMMANDS,
+            voice::COMMANDS,
             transcripts::COMMANDS,
             transfer::COMMANDS,
             web::COMMANDS,

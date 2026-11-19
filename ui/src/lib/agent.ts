@@ -250,6 +250,21 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
 }
 
 /**
+ * Make the reply stored under `messageId` read `text`: what somebody who
+ * talked over it actually heard of it. False when no reply has that id.
+ *
+ * Found by the id `applyEvent` takes from `started`, so it works for a reply
+ * still on screen as it was streamed. Only the words change: the cards that
+ * ran while it was spoken did run, and stay.
+ */
+export function cutReply(turns: Turn[], messageId: string, text: string): boolean {
+  const turn = turns.find((t) => t.role === 'assistant' && t.id === messageId)
+  if (!turn) return false
+  turn.text = text
+  return true
+}
+
+/**
  * Nothing may be left running when a turn ends.
  *
  * A card still open after the stream closes is one whose run has gone: no

@@ -27,6 +27,7 @@
     providerLabel,
     speechEndpointOf,
     speechProviderLabel,
+    voiceEndpointOf,
   } from '../lib/accounts'
   import { isLoopback } from '../lib/agent'
   import { humanBytes } from '../lib/format'
@@ -45,6 +46,7 @@
     ModelTier,
     QuickAskRow,
     ReasoningEffort,
+    SynthesiserConfig,
     TranscriberConfig,
   } from '../lib/types'
   import Icon from './Icon.svelte'
@@ -59,6 +61,7 @@
     small: '',
     decision: '',
     speech: '',
+    voice: '',
   }
   let keys = $state<Record<ModelSlot, string>>({ ...NO_KEYS })
   let notice = $state<string | null>(null)
@@ -91,6 +94,7 @@
   })
   void models.refreshLocal().catch(quietly)
   void models.refreshSpeech().catch(quietly)
+  void models.refreshVoice().catch(quietly)
   void quick.load()
 
   type Card = {
@@ -269,6 +273,7 @@
     }
     if (draft.decision && decisionEndpointOf(draft.decision) === endpoint) at.push('Decision')
     if (draft.speech && speechEndpointOf(draft.speech.transcriber) === endpoint) at.push('Speech')
+    if (draft.voice && voiceEndpointOf(draft.voice.synthesiser) === endpoint) at.push('Voice')
     return at.filter((title) => title !== except)
   }
 
@@ -409,6 +414,95 @@
     JSON.stringify(draft?.speech ?? null) !== JSON.stringify(models.settings?.speech ?? null),
   )
 
+  // ── Voice ────────────────────────────────────────────────────────
+
+  /**
+   * Turning the voice on and off. On starts at Supertonic on this computer
+   * where this copy can run it -- nothing is downloaded until somebody presses
+   * Download -- and at OpenAI where it cannot.
+   */
+  function toggleVoice(on: boolean) {
+    if (!draft) return
+    draft.voice = !on
+      ? null
+      : {
+          synthesiser: models.localVoice
+            ? { type: 'local', voice: 'supertonic3', speaker: 0 }
+            : { type: 'openAi', model: 'gpt-4o-mini-tts', voice: 'alloy' },
+          speed: 1,
+        }
+  }
+
+  /** Choosing where the voice is made. The speed stays: it is about how it
+   *  is heard, not who makes it. Clicking the chip already on keeps what was
+   *  typed under it. */
+  function chooseSynthesiser(kind: SynthesiserConfig['type']) {
+    if (!draft?.voice || draft.voice.synthesiser.type === kind) return
+    draft.voice.synthesiser =
+      kind === 'local'
+        ? { type: 'local', voice: 'supertonic3', speaker: 0 }
+        : kind === 'compatible'
+          ? { type: 'compatible', baseUrl: '', model: '', voice: '' }
+          : { type: 'openAi', model: 'gpt-4o-mini-tts', voice: 'alloy' }
+  }
+
+  const VOICE_CHOICES: { kind: SynthesiserConfig['type']; label: string }[] = [
+    { kind: 'openAi', label: 'OpenAI' },
+    { kind: 'compatible', label: 'Compatible server' },
+  ]
+
+  /** The built-in voice's speakers, as people see them. The model names them
+   *  only by number; measured, the first five are higher and the rest lower. */
+  const SPEAKERS = Array.from({ length: 10 }, (_, value) => ({
+    value,
+    label: `${value < 5 ? 'Higher' : 'Lower'} voice ${(value % 5) + 1}`,
+  }))
+
+  /** What to call where the voice is made, in a sentence. */
+  function voiceProviderLabel(t: SynthesiserConfig): string {
+    if (t.type === 'local') return 'this computer'
+    if (t.type === 'openAi') return 'OpenAI'
+    const endpoint = voiceEndpointOf(t)
+    return endpoint ? providerLabel(endpoint) : 'a compatible server'
+  }
+
+  /** Where the voice card points as saved -- what its key commands act on. */
+  const savedVoiceEndpoint = $derived(
+    models.settings?.voice ? voiceEndpointOf(models.settings.voice.synthesiser) : null,
+  )
+
+  let tryingVoice = $state(false)
+  let voiceTried = $state<string | null>(null)
+
+  /** Say a sentence in the saved voice, and wait until it has been said. */
+  async function tryVoice() {
+    tryingVoice = true
+    voiceTried = null
+    try {
+      const url = await models.sampleVoice()
+      try {
+        const audio = new Audio(url)
+        await new Promise<void>((resolve, reject) => {
+          audio.onended = () => resolve()
+          audio.onerror = () => reject(new Error('The sample could not be played.'))
+          audio.play().catch(reject)
+        })
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+    } catch (e) {
+      voiceTried = e instanceof Error ? e.message : String(e)
+    } finally {
+      tryingVoice = false
+    }
+  }
+
+  /** The voice card as drafted differs from what is saved -- and Try it
+   *  uses what is saved. */
+  const voiceUnsaved = $derived(
+    JSON.stringify(draft?.voice ?? null) !== JSON.stringify(models.settings?.voice ?? null),
+  )
+
   async function save() {
     if (!draft) return
     clearNotice()
@@ -427,6 +521,9 @@
       }
       if (keys.speech.trim() && draft.speech && speechEndpointOf(draft.speech.transcriber)) {
         await models.setKey('speech', keys.speech.trim())
+      }
+      if (keys.voice.trim() && draft.voice && voiceEndpointOf(draft.voice.synthesiser)) {
+        await models.setKey('voice', keys.voice.trim())
       }
       keys = { ...NO_KEYS }
       draft = structuredClone($state.snapshot(models.settings!))
@@ -463,11 +560,12 @@
   <div class="panes">
     <p class="hint lead">
       Three models, one for each size of work, each with its own provider and model name; a decision
-      model for sorting mail; and a speech model for turning speech into text. Anything that speaks
-      the OpenAI chat API works — leave the address empty for OpenAI itself. What you ask about is
-      sent to the provider of whichever model does the work; a model on this machine sends nothing
-      anywhere. A reasoning effort left at the provider's default is the provider's choice, and can
-      be no thinking at all — OpenAI's gpt-5.1 defaults to None.
+      model for sorting mail; a speech model for turning speech into text; and a voice for the
+      assistant to talk back in. Anything that speaks the OpenAI chat API works — leave the address
+      empty for OpenAI itself. What you ask about is sent to the provider of whichever model does
+      the work; a model on this machine sends nothing anywhere. A reasoning effort left at the
+      provider's default is the provider's choice, and can be no thinking at all — OpenAI's gpt-5.1
+      defaults to None.
     </p>
 
     {#each CARDS as card (card.tier)}
@@ -1032,6 +1130,208 @@
       {/if}
     </section>
 
+    <section class="card" aria-labelledby="model-voice">
+      <div class="head">
+        <span class="eyebrow" id="model-voice">Voice</span>
+        <label class="toggle compact">
+          <input
+            type="checkbox"
+            checked={draft.voice != null}
+            onchange={(e) => toggleVoice(e.currentTarget.checked)}
+          />
+          <span>{draft.voice ? 'On' : 'Off'}</span>
+        </label>
+      </div>
+      <p class="hint">
+        What the assistant sounds like when you talk to it, with the microphone beside the message
+        box. It is set here, once, with its own key.
+      </p>
+      {#if !draft.voice}
+        <p class="hint">Off: the assistant has no voice, so the microphone is not offered.</p>
+      {:else}
+        {@const voice = draft.voice}
+        {@const t = voice.synthesiser}
+        {@const endpoint = voiceEndpointOf(t)}
+        {@const keyed = endpoint != null && models.hasKeyAt(endpoint)}
+        {@const shared = cardsAt(endpoint, 'Voice')}
+        {@const needsKey =
+          t.type === 'openAi' || (t.type === 'compatible' && !!endpoint && !isLoopback(endpoint))}
+
+        <p class="hint">
+          Talking also needs a speech model, in the card above, and its speech kit: they are how you
+          are heard.
+        </p>
+
+        <div class="presets" role="group" aria-label="Where the voice is made">
+          {#if models.localVoice || t.type === 'local'}
+            <button
+              class="chip"
+              class:on={t.type === 'local'}
+              aria-pressed={t.type === 'local'}
+              onclick={() => chooseSynthesiser('local')}
+            >
+              On this computer
+            </button>
+          {/if}
+          {#each VOICE_CHOICES as choice (choice.kind)}
+            <button
+              class="chip"
+              class:on={t.type === choice.kind}
+              aria-pressed={t.type === choice.kind}
+              onclick={() => chooseSynthesiser(choice.kind)}
+            >
+              {choice.label}
+            </button>
+          {/each}
+        </div>
+
+        {#if t.type === 'local'}
+          {#if !models.localVoice}
+            <p class="hint">
+              This copy of Karma Yoga cannot make a voice itself. Choose a provider above.
+            </p>
+          {/if}
+          {#each models.voiceModels as m (m.id)}
+            <div class="model-row">
+              <div class="model-text">
+                <b>{m.name}</b>
+                <small>{m.description} · {humanBytes(m.bytes)}</small>
+                {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
+              </div>
+              {#if m.progress}
+                <div class="model-progress">
+                  <Meter
+                    label="Downloading"
+                    value={m.progress.done / m.progress.total}
+                    note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
+                  />
+                  <button class="btn" onclick={() => void onLocal(() => models.cancelVoice(m.id))}
+                    >Cancel</button
+                  >
+                </div>
+              {:else if m.installed}
+                <button class="btn" onclick={() => void onLocal(() => models.deleteVoice(m.id))}
+                  >Delete</button
+                >
+              {:else}
+                <button class="btn" onclick={() => void onLocal(() => models.downloadVoice(m.id))}
+                  >Download</button
+                >
+              {/if}
+            </div>
+          {/each}
+          <label class="setting">
+            <span>Speaker</span>
+            <select value={t.speaker} onchange={(e) => (t.speaker = Number(e.currentTarget.value))}>
+              {#each SPEAKERS as speaker (speaker.value)}
+                <option value={speaker.value}>{speaker.label}</option>
+              {/each}
+            </select>
+          </label>
+          <p class="hint">
+            Runs here, so what the assistant says is never sent anywhere. Nothing is spoken until
+            the voice is downloaded.
+          </p>
+        {:else}
+          {#if t.type === 'compatible'}
+            <label class="setting">
+              <span>Base URL</span>
+              <input
+                value={t.baseUrl}
+                oninput={(e) => (t.baseUrl = e.currentTarget.value.trim())}
+                placeholder="http://localhost:8880/v1"
+                spellcheck="false"
+              />
+            </label>
+            <p class="hint">
+              Any server that speaks OpenAI's speech API works, such as Kokoro-FastAPI. Its base URL
+              ends in /v1.
+            </p>
+          {/if}
+          <label class="setting">
+            <span>Model name</span>
+            <input
+              bind:value={t.model}
+              placeholder={t.type === 'openAi' ? 'gpt-4o-mini-tts' : 'kokoro'}
+              spellcheck="false"
+            />
+          </label>
+          <label class="setting">
+            <span>Voice</span>
+            <input
+              bind:value={t.voice}
+              placeholder={t.type === 'openAi' ? 'alloy' : 'af_heart'}
+              spellcheck="false"
+            />
+          </label>
+
+          {#if keyed}
+            <div class="stored">
+              <span>
+                <Icon name="lock" size={14} />
+                A key for {voiceProviderLabel(t)} is stored{shared.length
+                  ? `, shared with ${shared.join(' and ')}`
+                  : ''}.
+              </span>
+              {#if savedVoiceEndpoint === endpoint}
+                <button class="link" onclick={() => void removeKey('voice')}>Remove</button>
+              {/if}
+            </div>
+          {/if}
+          <label class="setting">
+            <span>{keyed ? 'Replace the key' : 'API key'}</span>
+            <input
+              type="password"
+              bind:value={keys.voice}
+              placeholder={needsKey ? 'Its API key' : 'Not needed for a server on this machine'}
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          {#if !keyed && needsKey && shared.length}
+            <p class="hint">One key serves Voice and {shared.join(' and ')}.</p>
+          {/if}
+          {#if needsKey}
+            <p class="hint">
+              What the assistant says is sent to {voiceProviderLabel(t)} to be spoken, a sentence at a
+              time.
+            </p>
+          {:else if endpoint}
+            <p class="hint">
+              What the assistant says never leaves this computer: the server runs here.
+            </p>
+          {/if}
+        {/if}
+
+        <label class="setting">
+          <span>Speed · {Number(voice.speed.toFixed(2))}×</span>
+          <input
+            type="range"
+            min="0.5"
+            max="2"
+            step="0.05"
+            value={voice.speed}
+            oninput={(e) => (voice.speed = Number(e.currentTarget.value))}
+          />
+        </label>
+
+        <div class="row">
+          <button
+            class="btn"
+            disabled={tryingVoice || !models.settings?.voice || voiceUnsaved}
+            onclick={() => void tryVoice()}
+          >
+            {tryingVoice ? 'Playing…' : 'Try it'}
+          </button>
+          {#if voiceTried}
+            <span class="notice">{voiceTried}</span>
+          {:else if voiceUnsaved}
+            <span class="notice">Try it plays what is saved, so save first.</span>
+          {/if}
+        </div>
+      {/if}
+    </section>
+
     <p class="hint">
       Keys are encrypted with everything else in the vault, so they are unreadable while it is
       locked — and nothing can spend them while it is locked either. Moving a model to another
@@ -1161,6 +1461,13 @@
   }
   input[type='radio'] {
     flex: none;
+    accent-color: var(--accent);
+  }
+  /* A slider is not a box with a border round it. */
+  input[type='range'] {
+    padding: 0;
+    border: 0;
+    background: none;
     accent-color: var(--accent);
   }
 

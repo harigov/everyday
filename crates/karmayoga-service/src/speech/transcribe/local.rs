@@ -3,13 +3,13 @@
 //!
 //! Unlike the remote backends, nothing here is a network request: VAD cuts
 //! the chunk into turns first (silence never even reaches a recogniser, the
-//! same rule the module doc on `meeting::transcribe` states for every
+//! same rule the module doc on `speech::transcribe` states for every
 //! backend, just enforced locally rather than by not sending bytes), and
 //! each turn is recognised on its own, off the async runtime.
 //!
 //! # Why [`Self::diarises`] is `false`
 //!
-//! `meeting::speech::SpeechKit::diarise` exists and works over a chunk's
+//! `speech::local::SpeechKit::diarise` exists and works over a chunk's
 //! worth of audio, but this backend never calls it. Per
 //! `docs/plans/meeting-notes.md`'s "Who said what", turns are clustered
 //! across the *whole* meeting, not per chunk, so that "speaker A" in one
@@ -24,8 +24,8 @@
 
 use super::{BoxFuture, Hints, Limits, RawSegment, SpeechChunk, Transcriber};
 use crate::error::CommandResult;
-use crate::meeting::speech;
 use crate::service::blocking;
+use crate::speech::local as speech;
 use karmayoga_core::meeting::{LocalModel, SAMPLE_RATE};
 
 /// Generous, per the plan: local recognition pays no per-request bill and
@@ -90,7 +90,7 @@ impl LocalTranscriber {
 }
 
 fn index_of(ms: u64) -> usize {
-    (ms * u64::from(SAMPLE_RATE) / 1000) as usize
+    crate::speech::pcm::sample_count(ms)
 }
 
 impl Transcriber for LocalTranscriber {

@@ -9,8 +9,8 @@ use karmayoga_core::meeting::{
 use karmayoga_core::{RecordingId, Vault};
 
 use crate::error::{CommandError, CommandResult, codes};
-use crate::meeting::transcribe::{Hints, Limits, RawSegment, SpeechChunk, Transcriber};
 use crate::service::{Service, blocking};
+use crate::speech::transcribe::{Hints, Limits, RawSegment, SpeechChunk, Transcriber};
 use crate::supervisor::Outcome;
 
 use super::adapters::*;
@@ -313,7 +313,7 @@ impl Transcriber for FakeTranscriber {
         &'a self,
         chunk: &'a SpeechChunk,
         _hints: &'a Hints,
-    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
+    ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
         let reply = self.reply.clone();
         let duration = chunk.duration_ms();
         Box::pin(async move {
@@ -335,7 +335,7 @@ impl Summariser for FakeSummariser {
         &'a self,
         _system: &'a str,
         _user: &'a str,
-    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<String>> {
+    ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<String>> {
         Box::pin(async move {
             Ok("# Design sync\n\n## Summary\nWent well.\n\n## Decisions\nNone.\n\n## Action items\nNone.\n\n## Open questions\nNone.\n".to_string())
         })
@@ -348,7 +348,7 @@ impl Summariser for FailingSummariser {
         &'a self,
         _system: &'a str,
         _user: &'a str,
-    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<String>> {
+    ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<String>> {
         Box::pin(async move { Err(CommandError::new(codes::AGENT, "the assistant is not usable")) })
     }
 }
@@ -480,7 +480,7 @@ async fn retrying_transcription_skips_chunks_already_marked_done() {
             &'a self,
             chunk: &'a SpeechChunk,
             _hints: &'a Hints,
-        ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
+        ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let duration = chunk.duration_ms();
             Box::pin(async move {
@@ -732,7 +732,7 @@ impl Summariser for Recorder {
         &'a self,
         system: &'a str,
         user: &'a str,
-    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<String>> {
+    ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<String>> {
         self.asked.lock().unwrap().push((system.to_string(), user.to_string()));
         let answer = self.answer.clone();
         Box::pin(async move { Ok(answer) })
@@ -821,7 +821,7 @@ impl Summariser for ScriptedSummariser {
         &'a self,
         system: &'a str,
         user: &'a str,
-    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<String>> {
+    ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<String>> {
         self.asked.lock().unwrap().push((system.to_string(), user.to_string()));
         let answer = if system.contains("who is speaking") {
             // Odd labels are Priya, even ones Bob, and one guess at a
@@ -1105,7 +1105,7 @@ impl Transcriber for FlakyTranscriber {
         &'a self,
         chunk: &'a SpeechChunk,
         _hints: &'a Hints,
-    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
+    ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let duration = chunk.duration_ms();
         Box::pin(async move {
@@ -1152,7 +1152,7 @@ impl Transcriber for AlwaysFails {
         &'a self,
         _chunk: &'a SpeechChunk,
         _hints: &'a Hints,
-    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
+    ) -> crate::speech::transcribe::BoxFuture<'a, CommandResult<Vec<RawSegment>>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move { Err(CommandError::new(self.code, "still no")) })
     }
