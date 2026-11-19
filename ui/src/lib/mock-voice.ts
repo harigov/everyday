@@ -125,7 +125,7 @@ const voiceModels: LocalModelInfo[] = [
     name: 'Supertonic 3',
     description: 'Ten voices in 31 languages, quick on an ordinary processor.',
     languages: '31 languages',
-    bytes: 266_000_000,
+    bytes: 128_774_318,
     installed: false,
     progress: null,
     error: null,

@@ -420,7 +420,7 @@ impl Session {
         }
     }
 
-    /// 1. Listening, and what was heard.
+    /// (1) Listening, and what was heard.
     async fn on_live(&mut self, event: LiveEvent) {
         match event {
             LiveEvent::Started { utterance } => {
@@ -554,7 +554,7 @@ impl Session {
         self.said.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>().join(" ")
     }
 
-    /// 4. Talking over it, or stopping it: throw away what is queued, stop the
+    /// (4) Talking over it, or stopping it: throw away what is queued, stop the
     /// turn, and -- once the turn has ended, so that nothing it writes lands
     /// after -- put the stored reply right and begin on `prompt`, if there
     /// is one.
@@ -589,7 +589,7 @@ impl Session {
 
     // ---- turns -------------------------------------------------------------
 
-    /// 2. Run a turn on `prompt`. The words are announced only now, as the
+    /// (2) Run a turn on `prompt`. The words are announced only now, as the
     /// turn really begins, so the thread never shows a yes or no, or a stop
     /// word, as a message.
     fn start_turn(&mut self, prompt: String) {
@@ -646,7 +646,7 @@ impl Session {
         }
     }
 
-    /// 8. Say so, and carry on.
+    /// (8) Say so, and carry on.
     fn turn_failed(&mut self, message: String) {
         if let Some(t) = self.turn.as_mut() {
             t.failed = true;
@@ -655,7 +655,7 @@ impl Session {
         self.say(SORRY.to_string());
     }
 
-    /// 5. If some of the reply was not heard, make the stored one read what
+    /// (5) If some of the reply was not heard, make the stored one read what
     /// was. The model's memory of the conversation then matches the person's.
     /// Not before the turn has ended, which is why it is only ever called
     /// once the turn is done.
@@ -678,7 +678,7 @@ impl Session {
         }
     }
 
-    /// 9. Cancel any turn, clear what is queued, cut the reply, and say so.
+    /// (9) Cancel any turn, clear what is queued, cut the reply, and say so.
     async fn stop(&mut self, error: Option<String>) {
         self.stopping = true;
         self.pending_prompt = None;
@@ -778,7 +778,7 @@ impl Session {
 
     // ---- confirmations -------------------------------------------------------
 
-    /// 7. A call is waiting on a person.
+    /// (7) A call is waiting on a person.
     fn begin_confirmation(&mut self, call_id: String, kind: String, subject: String) {
         let voice = confirm::may_answer_aloud(&kind, &subject);
         let question = voice.then(|| confirm::question(&kind, &subject));
@@ -887,7 +887,7 @@ impl Session {
         self.enqueue(text, Kind::Own);
     }
 
-    /// 3. The narrator starts on it as soon as it may, and holds it back while
+    /// (3) The narrator starts on it as soon as it may, and holds it back while
     /// the transport already has enough.
     fn enqueue(&mut self, text: String, kind: Kind) -> u64 {
         self.narrator.say(text, kind)

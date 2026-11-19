@@ -779,7 +779,9 @@
             </p>
             <div class="starts">
               {#each suggestions as s (s)}
-                <button class="start" disabled={voice.active} onclick={() => void send(s)}>{s}</button>
+                <button class="start" disabled={voice.active} onclick={() => void send(s)}
+                  >{s}</button
+                >
               {/each}
             </div>
             {#if !web}
@@ -982,7 +984,11 @@
               <div class="choices" role="group" aria-label={choices.question || 'Options'}>
                 {#if choices.question}<p class="question">{choices.question}</p>{/if}
                 {#each choices.options as option, i (i)}
-                  <button class="choice" disabled={!open || voice.active} onclick={() => void send(option.title)}>
+                  <button
+                    class="choice"
+                    disabled={!open || voice.active}
+                    onclick={() => void send(option.title)}
+                  >
                     <b>{option.title}</b>
                     {#if option.detail}<span>{option.detail}</span>{/if}
                   </button>

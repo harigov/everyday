@@ -419,7 +419,7 @@ impl<V: RawVad> SpeechDetector for Turns<V> {
         }
         let rest = self.pending.split_off(whole);
         let windows = std::mem::replace(&mut self.pending, rest);
-        for window in windows.chunks_exact(WINDOW) {
+        for window in windows.as_chunks::<WINDOW>().0 {
             self.window(window, &mut out);
         }
         out

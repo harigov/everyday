@@ -240,7 +240,7 @@ mod tests {
         let mut canceller = Canceller::new();
         canceller.set_delay_ms(40);
         let (mut alone, mut together) = (Vec::new(), Vec::new());
-        for (n, frame) in played.chunks_exact(FRAME).enumerate() {
+        for (n, frame) in played.as_chunks::<FRAME>().0.iter().enumerate() {
             canceller.push_reference(frame);
             let start = n * FRAME;
             // Eight seconds of echo alone, then somebody talks too.

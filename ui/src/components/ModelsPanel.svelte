@@ -1147,7 +1147,7 @@
         box. It is set here, once, with its own key.
       </p>
       {#if !draft.voice}
-        <p class="hint">Off: the assistant has no voice, so the microphone is not offered.</p>
+        <p class="hint">Off: the assistant has no voice, so it cannot be talked to.</p>
       {:else}
         {@const voice = draft.voice}
         {@const t = voice.synthesiser}

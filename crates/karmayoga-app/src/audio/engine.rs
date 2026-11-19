@@ -488,7 +488,7 @@ where
     // grows it, once.
     let mut mono: Vec<f32> = Vec::with_capacity(8192);
     device.build_output_stream(
-        config.clone().into(),
+        (*config).into(),
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
             let stamp = info.timestamp();
             latencies
@@ -828,7 +828,7 @@ mod tests {
 
     #[test]
     fn what_was_heard_is_never_handled_before_what_was_played() {
-        let mut events = vec![
+        let mut events = [
             Event::Mic(vec![0.0]),
             Event::Fault {
                 device: Device::Speaker,

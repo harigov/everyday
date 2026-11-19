@@ -113,7 +113,7 @@ where
 {
     let channels = config.channels();
     device.build_input_stream(
-        config.clone().into(),
+        (*config).into(),
         move |data: &[T], info: &cpal::InputCallbackInfo| {
             let mut samples = free_rx.try_recv().unwrap_or_default();
             downmix_into::<T>(data, channels, &mut samples);

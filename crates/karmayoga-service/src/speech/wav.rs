@@ -128,11 +128,10 @@ pub fn decode(bytes: &[u8]) -> Result<Speech, String> {
         .map(|f| {
             if tag == WAVE_PCM {
                 let sum: i32 =
-                    f.chunks_exact(2).map(|s| i32::from(i16::from_le_bytes([s[0], s[1]]))).sum();
+                    f.as_chunks::<2>().0.iter().map(|s| i32::from(i16::from_le_bytes(*s))).sum();
                 (sum / channels as i32) as i16
             } else {
-                let sum: f32 =
-                    f.chunks_exact(4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]])).sum();
+                let sum: f32 = f.as_chunks::<4>().0.iter().map(|s| f32::from_le_bytes(*s)).sum();
                 sample_to_i16(sum / channels as f32)
             }
         })
