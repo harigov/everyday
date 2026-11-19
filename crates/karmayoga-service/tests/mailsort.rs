@@ -317,6 +317,17 @@ impl EventSink for Told {
     }
 }
 
+/// The subject each notification names: its body's first line, the message's
+/// first words being the line after.
+fn subjects(told: &Told) -> Vec<String> {
+    told.0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|n| n.body.as_deref()?.lines().next().map(str::to_string))
+        .collect()
+}
+
 /// A pass having stored `message` just now, as a sync would have.
 fn arrived(svc: &Arc<Service>, message: &Message) {
     svc.mail_statuses().unwrap().note_arrival(&message.id.to_string(), svc.instant());
@@ -342,7 +353,8 @@ async fn sorting_tells_you_about_what_it_files_where_you_asked_to_hear() {
     let changes = told.1.lock().unwrap().clone();
     let told = told.0.lock().unwrap();
     assert_eq!(told.len(), 1, "the receipt is not what was asked for");
-    assert_eq!(told[0].body.as_deref(), Some("Lunch on Friday?"));
+    // The subject, and the first words of the message under it.
+    assert_eq!(told[0].body.as_deref(), Some("Lunch on Friday?\nAbout: Lunch on Friday?"));
     assert!(matches!(told[0].reach, karmayoga_service::Reach::User));
     // An open Important tab is told to draw it before the banner names it,
     // not once every account has been sorted.
@@ -386,7 +398,10 @@ async fn a_category_of_your_own_can_be_what_you_asked_to_hear_about() {
 
     let told = told.0.lock().unwrap();
     assert_eq!(told.len(), 1);
-    assert_eq!(told[0].body.as_deref(), Some("Your order has shipped"));
+    assert_eq!(
+        told[0].body.as_deref(),
+        Some("Your order has shipped\nAbout: Your order has shipped")
+    );
 }
 
 /// A model that never answers: the tick still ends, the reminder it owes still
@@ -729,7 +744,7 @@ async fn a_stranger_is_announced_only_when_the_model_says_they_are_waiting_on_yo
 
     karmayoga_service::mailai::categorize_tick(&svc).await;
 
-    let bodies: Vec<_> = told.0.lock().unwrap().iter().filter_map(|n| n.body.clone()).collect();
+    let bodies = subjects(&told);
     assert_eq!(bodies, ["Could you review the draft?"]);
     let vault = svc.get().unwrap();
     let (thread, _) = vault.thread(pitch.thread_id).unwrap();
@@ -753,7 +768,7 @@ async fn a_reply_in_your_own_thread_needs_no_second_question() {
 
     karmayoga_service::mailai::categorize_tick(&svc).await;
 
-    let bodies: Vec<_> = told.0.lock().unwrap().iter().filter_map(|n| n.body.clone()).collect();
+    let bodies = subjects(&told);
     assert_eq!(bodies, ["A quick pitch, as you asked"]);
     assert!(fake.seen().iter().all(|s| !offers(&s.body, "Cold outreach")));
 }
@@ -782,7 +797,7 @@ async fn new_mail_is_sorted_on_its_own_ahead_of_the_backlog() {
 
     assert_eq!(fake.seen().len(), 1, "only the new thread was asked about");
     assert_eq!(subject_of(DecisionApi::TypeSafe, &fake.seen()[0].body), "Your order has shipped");
-    let bodies: Vec<_> = told.0.lock().unwrap().iter().filter_map(|n| n.body.clone()).collect();
+    let bodies = subjects(&told);
     assert_eq!(bodies, ["Your order has shipped"]);
 
     // Asked once: the minute's sorting finds it done and takes the backlog.
@@ -840,7 +855,7 @@ async fn a_category_you_ticked_is_announced_for_strangers_too() {
 
     karmayoga_service::mailai::categorize_tick(&svc).await;
 
-    let bodies: Vec<_> = told.0.lock().unwrap().iter().filter_map(|n| n.body.clone()).collect();
+    let bodies = subjects(&told);
     assert_eq!(bodies, ["A quick pitch for your team"]);
     assert!(fake.seen().iter().all(|s| !offers(&s.body, "Cold outreach")));
 }

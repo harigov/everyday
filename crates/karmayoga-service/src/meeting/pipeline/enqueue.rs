@@ -58,20 +58,21 @@ pub fn enqueue(svc: &Arc<Service>, id: RecordingId) {
     });
 }
 
-/// One chunk has been spooled while the call is still going. For a remote
-/// speech model, [`enqueue`] -- and, through it, [`run_recording`]'s
-/// `Stage::Recording` arm and [`transcribe_live`] -- transcribes it right
-/// away, so a long call is mostly done by its end rather than starting from
-/// nothing once it ends.
+/// One chunk has been spooled while the call is still going. When
+/// [`transcribes_live`] says so, [`enqueue`] -- and, through it,
+/// [`run_recording`]'s `Stage::Recording` arm and [`transcribe_live`] --
+/// transcribes it right away, so a long call is mostly done by its end
+/// rather than starting from nothing once it ends: an hour's call
+/// transcribed on this computer afterwards was ten minutes' wait for its
+/// note.
 ///
-/// Deliberately conservative: local transcription is CPU the same process
-/// needs for capture and VAD, so a struggling machine is never asked to do
-/// both at once by this path. A local chunk is still transcribed -- just
-/// not until the call ends and [`enqueue`] runs from `finish`, which is
-/// always safe.
+/// Our own model on a small computer, and a speech server on loopback, still
+/// wait: local transcription is CPU the call, the capture and voice detection
+/// need too. Their chunks are transcribed once the call ends and [`enqueue`]
+/// runs from `finish`, which is always safe.
 pub fn chunk_closed(svc: &Arc<Service>, id: RecordingId, _track: Track, _seq: u32) {
     let Ok(vault) = svc.require() else { return };
-    if speech_is_remote(&vault) {
+    if transcribes_live(&vault) {
         enqueue(svc, id);
     }
 }
@@ -88,12 +89,11 @@ pub fn chunk_closed(svc: &Arc<Service>, id: RecordingId, _track: Track, _seq: u3
 ///
 /// A slow or gated real transcriber could stand in for this instead, and is
 /// what `tests::spawn_flaky_server` gives the *other* retry tests their
-/// timing from -- but `chunk_closed`'s own early transcription only runs for
-/// a speech model `TranscriberConfig::is_remote` calls remote, and every
-/// address a test can actually reach from inside this process is, by that
-/// same function's own reading, loopback. This gate holds the early attempt
-/// "still running" a different way, exactly where a slow network call would
-/// sit if one were reachable.
+/// timing from -- but `chunk_closed`'s own early transcription never runs for
+/// a server on loopback (see `drivers::transcribes_live`), and every address
+/// a test can reach from inside this process is one. This gate holds the
+/// early attempt "still running" a different way, exactly where a slow
+/// network call would sit if one were reachable.
 /// The speech kit transcription cuts audio with, when it is installed.
 ///
 /// A seam only so the tests that fake a transcriber over HTTP can send their

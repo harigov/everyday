@@ -59,6 +59,11 @@ uuid = { workspace = true, features = ["v5"] }
 # This crate fetches bytes; the core does everything that happens to them.
 # Chunks of an archive cross the wire inside JSON, where bytes cannot go.
 base64 = "0.22"
+# Physical cores, which the standard library cannot count: whether a call
+# can spare a speech model on this computer some of them while it is going
+# -- see `meeting::pipeline::drivers::transcribes_live`. Already in the build
+# through tokio's dependencies.
+num_cpus = "1.17"
 # `multipart`: `meeting::transcribe::openai` uploads a WAV chunk to
 # `/audio/transcriptions` the same way a browser would a file input --
 # `rig-core`'s transcription support has nowhere for `diarized_json`

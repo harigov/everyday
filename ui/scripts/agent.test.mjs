@@ -674,6 +674,9 @@ check('delete_log', 'waiting', 'Delete log')
 // not a stressed syllable, so the short verb underneath is still `star`.
 check('unstar_thread', 'running', 'Unstarring thread')
 check('unstar_thread', 'done', 'Unstarred thread')
+// Ending a spoken conversation: the voice, not the thread.
+check('end_voice_mode', 'running', 'Ending voice mode')
+check('end_voice_mode', 'done', 'Ended voice mode')
 
 function check(name, state, want) {
   assert.equal(toolLabel(name, {}, state).text, want, `${name} while ${state}`)

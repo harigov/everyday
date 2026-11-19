@@ -44,6 +44,13 @@ fn arrive(server: &std::sync::Arc<std::sync::Mutex<FakeServer>>, id: &str, from:
     );
 }
 
+/// Each message noted since last asked, with the first words its
+/// notification will show.
+fn noted_with_words(env: &TestEnv) -> Vec<(String, String)> {
+    let (kept, _) = env.statuses.take_new_mail(env.account_id);
+    kept.into_iter().map(|m| (m.subject, m.snippet)).collect()
+}
+
 /// The subjects noted since last asked.
 fn noted(env: &TestEnv) -> Vec<String> {
     let (kept, total) = env.statuses.take_new_mail(env.account_id);
@@ -62,7 +69,9 @@ async fn the_default_tells_you_about_important_mail_and_nothing_else() {
     let mut session = FakeMailSession::new(server);
     env.sync(&mut session).await;
 
-    assert_eq!(noted(&env), ["wanted"]);
+    // Its body is fetched before it is noted, so the notification can say
+    // what it is about.
+    assert_eq!(noted_with_words(&env), [("wanted".to_string(), "hello".to_string())]);
 }
 
 #[tokio::test]
@@ -170,7 +179,12 @@ async fn replies_tell_you_only_about_threads_you_have_written_in() {
     }
     env.sync(&mut session).await;
 
-    assert_eq!(noted(&env), ["in a thread I answered"]);
+    // Held until the pass had stored Sent, and fetched before that like what
+    // is announced at once.
+    assert_eq!(
+        noted_with_words(&env),
+        [("in a thread I answered".to_string(), "thanks".to_string())]
+    );
 }
 
 #[tokio::test]

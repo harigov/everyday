@@ -11,12 +11,12 @@ use crate::service::blocking;
 /// Marks `id` [`Stage::Failed`] and tells anyone watching the recordings
 /// list -- without this, a call that fails partway through the pipeline
 /// (unlike one that reaches [`Stage::Done`], which raises its own
-/// `Kind::Recording` change in [`do_summarise_and_write`]) would sit at its
+/// `Kind::Recording` change in [`summarise_and_write_from`]) would sit at its
 /// last-seen stage in every other window until something else happened to
 /// reload it.
 ///
 /// Refuses to touch a row already at [`Stage::Done`] -- defence in depth
-/// alongside [`do_summarise_and_write`]'s own care not to call this at all
+/// alongside [`summarise_and_write_from`]'s own care not to call this at all
 /// once its note is committed: a stage that starts only after `Done` is
 /// reached has nothing left to fail *of*, and overwriting that row would
 /// orphan the note it already wrote (a retry recomputes from `partial`,

@@ -79,6 +79,12 @@ const ECHO_TAIL: Duration = Duration::from_millis(1500);
 /// Said when a turn fails.
 const SORRY: &str = "Sorry, that didn't work.";
 
+/// How long after a goodbye has played before the session ends on it.
+/// "Played" means handed to the device, or on a call sent, so the last word
+/// can still be in the speaker's buffer or the phone's, and ending at once --
+/// closing the device, hanging up -- cut it off.
+const GOODBYE_TAIL: Duration = Duration::from_millis(1500);
+
 /// Start a session on the current Tokio runtime.
 ///
 /// Everything it needs is already built: loading models is
@@ -123,6 +129,8 @@ pub fn spawn(parts: VoiceParts) -> VoiceLink {
         turn: None,
         pending_prompt: None,
         confirm: None,
+        ending: false,
+        goodbye_at: None,
     };
     tokio::spawn(run(session, input_rx, events));
     VoiceLink { input, output }
@@ -252,6 +260,8 @@ enum Wake {
     Internal(Option<Internal>),
     Live(Option<LiveEvent>),
     OutputGone,
+    /// [`Session::goodbye_at`] came.
+    Goodbye,
 }
 
 struct Session {
@@ -301,6 +311,13 @@ struct Session {
     /// prompt held for when it has. Later words replace it.
     pending_prompt: Option<String>,
     confirm: Option<Confirm>,
+    /// The last turn ended the conversation ([`super::END_TOOL`]): the session
+    /// ends once its goodbye has been heard, unless the person says something
+    /// first, which begins a turn and takes it back.
+    ending: bool,
+    /// When the goodbye will have been heard and the session ends: set once
+    /// it has played, and taken back if anything happens in the meantime.
+    goodbye_at: Option<Instant>,
 }
 
 async fn run(
@@ -313,6 +330,7 @@ async fn run(
     let gone = s.out.clone();
     s.sync();
     let error = loop {
+        let goodbye_at = s.goodbye_at;
         let wake = tokio::select! {
             // Stop is read before anything else, and what was heard last: it
             // is of no use until what is already known is settled.
@@ -321,6 +339,7 @@ async fn run(
             message = s.internal.recv() => Wake::Internal(message),
             event = live.recv() => Wake::Live(event),
             () = gone.closed() => Wake::OutputGone,
+            () = wait_until(goodbye_at) => Wake::Goodbye,
         };
         match wake {
             // 9. A closed input is a Stop, and so is a transport that has
@@ -336,10 +355,27 @@ async fn run(
             Wake::Live(None) => {
                 break Some("Listening for speech stopped working.".to_string());
             }
+            // 10. The assistant said goodbye, and it has been heard.
+            Wake::Goodbye => break None,
         }
         s.sync();
+        // 10. Once the goodbye has played, the end -- after a moment for its
+        // last word to leave the speaker, and not if anything happens first.
+        if s.said_goodbye() {
+            s.goodbye_at.get_or_insert_with(|| Instant::now() + GOODBYE_TAIL);
+        } else {
+            s.goodbye_at = None;
+        }
     };
     s.stop(error).await;
+}
+
+/// Wait until `at`, or for ever when there is nothing to wait for.
+async fn wait_until(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 impl Session {
@@ -604,6 +640,8 @@ impl Session {
         self.next_turn += 1;
         self.turn = Some(TurnState::new(id));
         self.confirm = None;
+        // 10. They had more to say after all.
+        self.ending = false;
 
         let events = self.tx.clone();
         let sink: Sink = Arc::new(move |event| {
@@ -628,6 +666,10 @@ impl Session {
         let cancelling = t.cancelling;
         let failed_already = t.failed;
         self.confirm = None;
+        // 10. A turn talked over is not a goodbye that was heard.
+        if !cancelling && matches!(&result, Ok(outcome) if outcome.ended_voice) {
+            self.ending = true;
+        }
         // A turn that returns an error is a turn that failed, whether or not
         // it said so first.
         if let Err(e) = result
@@ -679,6 +721,19 @@ impl Session {
             Ok(Err(e)) => self.trouble(e.message),
             Err(_) => self.trouble("The reply could not be updated to what was heard."),
         }
+    }
+
+    /// (10) The assistant ended the conversation and everything it had to say
+    /// has been heard: its turn is over, nothing is playing or waiting to, and
+    /// nobody is talking over the goodbye or waiting to be understood -- their
+    /// words decide, and any that are not an echo or a stop begin a turn.
+    fn said_goodbye(&self) -> bool {
+        self.ending
+            && self.turn.as_ref().is_none_or(|t| t.done)
+            && !self.audio_outstanding()
+            && !self.speaking
+            && self.understanding == 0
+            && self.pending_prompt.is_none()
     }
 
     /// (9) Cancel any turn, clear what is queued, cut the reply, and say so.
@@ -769,6 +824,11 @@ impl Session {
     }
 
     fn tool_phrase(&mut self, tool: &str) {
+        // Ending the conversation takes no time, and "One moment" before a
+        // goodbye says the opposite of what is happening.
+        if tool == super::END_TOOL {
+            return;
+        }
         let said = self.turn.as_ref().is_none_or(|t| t.phrase_said);
         if said || self.audio_outstanding() {
             return;
@@ -1091,6 +1151,10 @@ mod tests {
             });
             record.running.store(true, Ordering::SeqCst);
             record.cancelled.store(false, Ordering::SeqCst);
+            // As the real turn reads it from the calls that ran.
+            let ends = script.events.iter().any(|e| {
+                matches!(e, AgentEvent::ToolStarted { name, .. } if name == crate::voice::END_TOOL)
+            });
             Box::pin(async move {
                 for event in script.events {
                     (sink)(event);
@@ -1105,7 +1169,7 @@ mod tests {
                 }
                 match script.error {
                     Some(message) => Err(CommandError::new(codes::AGENT, message)),
-                    None => Ok(TurnOutcome { stopped }),
+                    None => Ok(TurnOutcome { stopped, ended_voice: ends && !stopped }),
                 }
             })
         }
@@ -1163,6 +1227,29 @@ mod tests {
     fn short_reply(id: &'static str, text: &str) -> Script {
         Script {
             events: vec![started(id), delta(text)],
+            hang: false,
+            finish: Some(id),
+            error: None,
+        }
+    }
+
+    /// A reply that ends the conversation, as a model calling
+    /// [`crate::voice::END_TOOL`] and then saying goodbye does.
+    fn goodbye(id: &'static str, text: &str) -> Script {
+        Script {
+            events: vec![
+                started(id),
+                AgentEvent::ToolPreparing {
+                    call_id: "end".into(),
+                    name: crate::voice::END_TOOL.into(),
+                },
+                AgentEvent::ToolStarted {
+                    call_id: "end".into(),
+                    name: crate::voice::END_TOOL.into(),
+                    arguments: serde_json::json!({}),
+                },
+                delta(text),
+            ],
             hang: false,
             finish: Some(id),
             error: None,
@@ -1685,6 +1772,73 @@ mod tests {
         assert_eq!(rig.said(), [text::tool_phrase("web_search")]);
         // A phrase of the session's own is not the reply, so it is not kept.
         assert!(rig.record.cuts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_assistant_ends_the_conversation_once_its_goodbye_is_heard() {
+        let mut rig = Rig::start(vec![goodbye("m1", "Talk soon.")], &["that's all I have"]).await;
+        rig.talk();
+        let utterance = rig.next_play().await;
+        assert_eq!(rig.said(), ["Talk soon."], "no tool phrase before a goodbye");
+        // Still there while it is being said.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        while let Ok(output) = rig.link.output.try_recv() {
+            let ended = matches!(output, VoiceOutput::Event(VoiceEvent::Ended { .. }));
+            assert!(!ended, "it does not end before the goodbye has played");
+            rig.seen.push(output);
+        }
+        rig.send(VoiceInput::Played { utterance });
+        let at = rig
+            .until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. })))
+            .await;
+        assert!(matches!(&rig.seen[at], VoiceOutput::Event(VoiceEvent::Ended { error: None })));
+        assert!(rig.next().await.is_none(), "the output closes after Ended");
+        assert!(rig.record.cuts.lock().unwrap().is_empty(), "all of the goodbye was heard");
+    }
+
+    #[tokio::test]
+    async fn talking_just_after_the_goodbye_is_still_heard() {
+        let mut rig = Rig::start(
+            vec![goodbye("m1", "Talk soon."), short_reply("m2", "Sure.")],
+            &["that's all", "oh, one more thing"],
+        )
+        .await;
+        rig.talk();
+        let utterance = rig.next_play().await;
+        rig.send(VoiceInput::Played { utterance });
+        // Within the moment the goodbye is given to leave the speaker.
+        rig.talk();
+        rig.until("the new words", |o| {
+            matches!(o, VoiceOutput::Event(VoiceEvent::Heard { text }) if text == "oh, one more thing")
+        })
+        .await;
+        rig.play_out().await;
+        let ended = rig.count(|o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. })));
+        assert_eq!(ended, 0, "the session goes on");
+    }
+
+    #[tokio::test]
+    async fn speaking_over_the_goodbye_carries_the_conversation_on() {
+        let mut rig = Rig::start(
+            vec![goodbye("m1", &format!("{FIRST} {SECOND}")), short_reply("m2", "Sure.")],
+            &["that's it", "actually one more thing"],
+        )
+        .await;
+        rig.talk();
+        rig.next_play().await;
+        // Talked over: the goodbye is cut, and a new turn takes it back.
+        rig.talk();
+        rig.until("the new words", |o| {
+            matches!(o, VoiceOutput::Event(VoiceEvent::Heard { text }) if text == "actually one more thing")
+        })
+        .await;
+        rig.play_out().await;
+        assert_eq!(rig.heard_texts(), ["that's it", "actually one more thing"]);
+        assert_eq!(
+            rig.count(|o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))),
+            0,
+            "the session goes on"
+        );
     }
 
     #[tokio::test]

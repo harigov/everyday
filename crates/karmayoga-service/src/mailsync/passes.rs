@@ -759,18 +759,21 @@ async fn ingest_new<S: MailSession>(
                             &standing_on_arrival(ctx, &resolved, &own),
                             category_rules.for_sender(&resolved.message.from.email).is_some(),
                         ));
-                arrivals.push((
-                    resolved.message.id,
+                arrivals.push(Arrival {
+                    message: resolved.message.id,
+                    uid: header.uid,
                     wanted,
-                    crate::arrivals::NewMail {
+                    mail: crate::arrivals::NewMail {
                         message_id: resolved.message.id.to_string(),
                         from: crate::arrivals::sender_label(
                             &resolved.message.from.name,
                             &resolved.message.from.email,
                         ),
                         subject: resolved.message.subject.clone(),
+                        // No body yet: `fetch_announced` fills it in, below.
+                        snippet: String::new(),
                     },
-                ));
+                });
             }
             ingest_batch.push(IngestMessage {
                 message: resolved.message.clone(),
@@ -856,10 +859,16 @@ async fn ingest_new<S: MailSession>(
                     ctx.statuses.mark_changed(ctx.account_id);
                     marked_new = true;
                 }
-                ctx.statuses.mark_arrived(ctx.account_id, arrivals.iter().map(|(m, _, _)| *m));
+                ctx.statuses.mark_arrived(ctx.account_id, arrivals.iter().map(|a| a.message));
                 stored.extend(headers.iter().map(|h| h.uid));
                 news += arrivals.len();
-                for (message, wanted, arrival) in arrivals {
+                // Before anything is noted: a note is announced at once, and
+                // its notification shows the first words. What could be said
+                // either way -- announced now, or held to ask whether it
+                // answers the account's own words -- is fetched.
+                let told = |a: &Arrival| a.wanted || notify.wants_replies();
+                fetch_announced(ctx, session, mailbox, &mut arrivals, told).await;
+                for Arrival { message, wanted, mail: arrival, .. } in arrivals {
                     ctx.statuses.note_arrival(&arrival.message_id, Instant::now());
                     if wanted {
                         ctx.statuses.note_new_mail(ctx.account_id, arrival);
@@ -896,6 +905,69 @@ async fn ingest_new<S: MailSession>(
     }
 
     Ok(Ingested { stored_all, marked_new, stored, news })
+}
+
+/// One message a headers batch stored that is news in an inbox: noted for
+/// the account task once the batch is in, announced or held as a reply
+/// candidate. See [`ingest_new`].
+struct Arrival {
+    message: MailMessageId,
+    uid: Uid,
+    /// Announced as it is noted, rather than held to ask about.
+    wanted: bool,
+    mail: crate::arrivals::NewMail,
+}
+
+/// The most a message may weigh for [`fetch_announced`] to fetch it before
+/// announcing it. Anything heavier carries an attachment, and the
+/// announcement does not wait for that to download: it goes out without the
+/// first words, and the bodies pass fetches the message with the rest.
+const ANNOUNCED_BODY_MOST: u64 = 512 * 1024;
+
+/// Fetch, seal and index the bodies of the `arrivals` that are about to be
+/// `told` about, and put each one's first words on its [`NewMail`], so the
+/// notification says what the mail is about and not only who sent it. The
+/// session must have `mailbox` selected, as it does throughout
+/// [`ingest_new`]. What it fetches, the bodies pass at the end of the sync,
+/// or a quick pass's own fetch after its headers, no longer finds pending.
+///
+/// Never fails the headers it is part of: a fetch the server refuses leaves
+/// the mail to be announced without its first words, and a connection that
+/// has gone is found by the next command, as it would have been without
+/// this.
+///
+/// [`NewMail`]: crate::arrivals::NewMail
+async fn fetch_announced<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &SyncedMailbox,
+    arrivals: &mut [Arrival],
+    told: impl Fn(&Arrival) -> bool,
+) {
+    // Read one by one -- a few messages -- rather than every row still
+    // waiting for its body in the mailbox, which after an interrupted first
+    // sync is thousands.
+    let pending: Vec<(Message, Uid)> = arrivals
+        .iter()
+        .filter(|a| told(a))
+        .filter_map(|a| Some((ctx.vault.mail_message(a.message).ok()?, a.uid)))
+        .filter(|(m, _)| ingest::is_pending(&m.pack) && m.size <= ANNOUNCED_BODY_MOST)
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    match store_bodies(ctx, session, mailbox, pending, false).await {
+        Ok(snippets) => {
+            for arrival in arrivals.iter_mut() {
+                if let Some(snippet) = snippets.get(&arrival.message) {
+                    arrival.mail.snippet = snippet.clone();
+                }
+            }
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "could not fetch new mail's body ahead of announcing it");
+        }
+    }
 }
 
 /// Actually remove every uid [`sync_headers`] reported vanished from
@@ -1309,9 +1381,26 @@ async fn fetch_bodies<S: MailSession>(
     mailbox: &SyncedMailbox,
     pending: Vec<(Message, Uid)>,
 ) -> SessionResult<()> {
+    store_bodies(ctx, session, mailbox, pending, true).await.map(|_| ())
+}
+
+/// [`fetch_bodies`], saying so in the account's progress only when `report`
+/// -- not for the few [`fetch_announced`] takes in the middle of the
+/// headers, which would make it jump to a finished bodies phase and back --
+/// and handing back the first words of each message it stored, by id.
+async fn store_bodies<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &SyncedMailbox,
+    pending: Vec<(Message, Uid)>,
+    report: bool,
+) -> SessionResult<HashMap<MailMessageId, String>> {
     let total = pending.len() as u64;
     let mut done = 0u64;
-    ctx.statuses.set_phase(ctx.account_id, Phase::Bodies, done, total);
+    let mut snippets = HashMap::new();
+    if report {
+        ctx.statuses.set_phase(ctx.account_id, Phase::Bodies, done, total);
+    }
 
     for batch in pending.chunks(BODY_BATCH_SIZE) {
         let uid_set: UidSet = batch.iter().map(|(_, uid)| *uid).collect();
@@ -1331,7 +1420,7 @@ async fn fetch_bodies<S: MailSession>(
         let attachment_cap = ctx.attachment_cap_bytes;
         let identities = ctx.identities.clone();
         let batch_owned: Vec<(Message, Uid)> = batch.to_vec();
-        let docs = tokio::task::spawn_blocking(move || {
+        let (docs, stored) = tokio::task::spawn_blocking(move || {
             // Every message this batch actually got raw bytes for, in
             // order -- sealed in *one* `append_batch` call below rather
             // than one per message, which is the whole reason this batch
@@ -1346,7 +1435,7 @@ async fn fetch_bodies<S: MailSession>(
                 .collect();
             let raws: Vec<&[u8]> = present.iter().map(|(_, _, raw)| raw.as_slice()).collect();
             let Ok(sealed) = packs.append_batch(&account_id.to_string(), &raws) else {
-                return Vec::new();
+                return (Vec::new(), Vec::new());
             };
 
             let mut processed = Vec::with_capacity(present.len());
@@ -1396,10 +1485,15 @@ async fn fetch_bodies<S: MailSession>(
             let _ = vault.ingest_mail(account_id, ingests);
             let bodies: Vec<Body> = processed.iter().map(|(_, _, body)| body.clone()).collect();
             let _ = vault.save_bodies(&bodies);
-            docs
+            let stored: Vec<(MailMessageId, String)> = processed
+                .into_iter()
+                .map(|(message, _, _)| (message.id, message.snippet))
+                .collect();
+            (docs, stored)
         })
         .await
         .unwrap_or_default();
+        snippets.extend(stored);
 
         let indexed = docs.len() as u64;
         if !docs.is_empty() {
@@ -1416,11 +1510,13 @@ async fn fetch_bodies<S: MailSession>(
         }
 
         done += batch.len() as u64;
-        ctx.statuses.set_phase(ctx.account_id, Phase::Bodies, done, total);
+        if report {
+            ctx.statuses.set_phase(ctx.account_id, Phase::Bodies, done, total);
+        }
         tokio::task::yield_now().await;
     }
 
-    Ok(())
+    Ok(snippets)
 }
 
 /// Every message in `mailbox` whose pack is still

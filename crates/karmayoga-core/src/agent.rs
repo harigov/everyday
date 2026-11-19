@@ -1307,11 +1307,29 @@ pub fn spoken_turn_note(now: &jiff::Zoned, screen: Option<&str>) -> String {
     note_with(now, screen, true)
 }
 
+/// The name of the tool a spoken turn ends the conversation out loud with,
+/// as a literal for [`SPOKEN_NOTE`] to be built from.
+macro_rules! end_voice_tool {
+    () => {
+        "end_voice_mode"
+    };
+}
+
+/// The tool a spoken turn ends the conversation out loud with. The service
+/// declares it and offers it to spoken turns alone; it is named here so that
+/// [`SPOKEN_NOTE`], which tells the model about it, cannot name another.
+pub const END_VOICE_TOOL: &str = end_voice_tool!();
+
 /// What a spoken turn is told about being spoken.
-const SPOKEN_NOTE: &str = "The person is talking to you and your reply is read aloud by a voice. \
-Answer the way you would out loud: a sentence or two unless they ask for more, plain words, no \
-markdown, lists, tables, links or code. Say numbers, dates and times as a person says them. If \
-the full answer is long, give the gist and offer the detail.";
+const SPOKEN_NOTE: &str = concat!(
+    "The person is talking to you and your reply is read aloud by a voice. Answer the way you \
+     would out loud: a sentence or two unless they ask for more, plain words, no markdown, \
+     lists, tables, links or code. Say numbers, dates and times as a person says them. If the \
+     full answer is long, give the gist and offer the detail. When they make clear they are \
+     done talking for now, call ",
+    end_voice_tool!(),
+    " and say a short goodbye."
+);
 
 fn note_with(now: &jiff::Zoned, screen: Option<&str>, spoken: bool) -> String {
     let mut out = format!(

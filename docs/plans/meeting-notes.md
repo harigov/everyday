@@ -1,7 +1,7 @@
 # Meeting notes that take themselves
 
 > **Delivered**, through Phase 7. Read this for the reasoning; read the
-> commits for what was done. Nine things went differently from the plan
+> commits for what was done. Ten things went differently from the plan
 > below, or were settled where the plan was silent rather than said outright,
 > each for a reason worth keeping:
 >
@@ -12,22 +12,29 @@
 >   decision with three answers, and a remote client needs to be able to ask
 >   it the same way the desktop shell does, not just be told a recording
 >   already started.
-> - **The pipeline recomputes who said what for both the summarising and the
->   writing stage, rather than persisting it between them.** A `Transcript`
->   needs a `NoteId` to be indexed against, and that id does not exist until
->   the note is written — so nothing is stored in between, `recording.partial`
->   is left exactly as transcribing left it until `Done`, and `identify_stage`
->   runs twice. The cost, stated at its point of use in `pipeline.rs`, is one
->   redundant pass over a call's audio on every recording, even the ones that
->   never fail — the alternative being a second storage shape for "a
->   transcript with no note yet" that nothing else needs.
-> - **A chunk is only transcribed early, while the call is still going, for a
->   remote backend.** `chunk_closed` checks whether the configured
->   transcriber is remote before enqueuing it; local transcription is CPU the
->   same process needs for capture and VAD, so it always waits for the call
->   to end, and a struggling machine is never asked to do both at once. The
->   chunk is transcribed either way — just not until `enqueue` runs at the
->   end, which is always safe.
+> - **Who said what is not persisted between the identifying and the
+>   writing stage.** A `Transcript` needs a `NoteId` to be indexed against,
+>   and that id does not exist until the note is written — so nothing is
+>   stored in between, and `recording.partial` is left exactly as
+>   transcribing left it until `Done`. The identifying stage's answer is kept
+>   in memory (`drivers::Found`) for the writing stage that follows it in the
+>   same pass; only a pass that resumes at `Summarising`, after a crash or a
+>   lock, runs `identify_stage` again. (Until Nov 2026 it always ran twice:
+>   a second speaker embedding for every turn of every call.)
+> - **A chunk is transcribed early, while the call is still going, when that
+>   costs the call nothing it needs.** Always for a remote backend; for our
+>   own local model only with eight physical cores or more
+>   (`drivers::transcribes_live`), since local transcription is CPU the call,
+>   the capture and VAD need too. A speech server on loopback waits for the
+>   end of the call: its threads and its speed are not ours to know. Until
+>   Nov 2026 a local model always waited for the end of the call, and an
+>   hour's meeting then took ten minutes to become a note. The chunk is
+>   transcribed either way — on a small machine just not until `enqueue` runs
+>   at the end, which is always safe.
+> - **The note is announced before its next steps become task proposals.**
+>   A proposal is a question to the model per next step, asked one after
+>   another; the note's change event and "Notes from … are ready" go out
+>   first.
 > - **Voice enrolment is a shell command, not a service one.** `voice_enrol`
 >   records the microphone alone, natively, and hands the sample to
 >   `enrol_voice` — which means, like recording a call itself, it needs the

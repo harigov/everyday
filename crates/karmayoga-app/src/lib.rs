@@ -40,6 +40,8 @@ mod remotes;
 mod screentime;
 mod sharing;
 mod state;
+#[cfg(target_os = "linux")]
+mod topcard;
 mod transfer;
 mod tray;
 mod voice;
@@ -70,6 +72,14 @@ pub(crate) const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_se
 /// Entry point shared by the desktop binary and the mobile harnesses.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // This program run again to draw the meeting card under X11: before
+    // anything else, logging included, since its stdout is how it talks to
+    // the app. See `topcard`.
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == topcard::CHILD_FLAG) {
+        topcard::run_child();
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("KARMAYOGA_LOG")

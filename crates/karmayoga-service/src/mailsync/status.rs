@@ -421,6 +421,7 @@ mod tests {
             message_id: id.into(),
             from: "Ada".into(),
             subject: "Hi".into(),
+            snippet: String::new(),
         };
         registry.note_new_mail(a, arrival("1"));
         registry.note_new_mail(a, arrival("1"));
@@ -463,6 +464,7 @@ mod tests {
             message_id: "1".into(),
             from: "Ada".into(),
             subject: "Hi".into(),
+            snippet: String::new(),
         };
         registry.note_reply_candidate(a, MailMessageId::new(), arrival.clone());
         assert_eq!(registry.take_reply_candidates(a).len(), 1);
@@ -484,6 +486,7 @@ mod tests {
                     message_id: i.to_string(),
                     from: "Ada".into(),
                     subject: "Hi".into(),
+                    snippet: String::new(),
                 },
             );
         }

@@ -55,17 +55,17 @@ fn pipeline_transient(base: Duration) -> crate::retry::RetryPolicy {
     )
 }
 
-/// Run one stage's own operation -- `do_transcribe`, `do_identify`,
-/// `do_summarise_and_write` -- retrying it in place while its error is
+/// Run one stage's own operation -- `do_transcribe`, `identify_into`,
+/// `summarise_and_write_from` -- retrying it in place while its error is
 /// [`is_transient`], up to [`TRANSIENT_RETRIES`] times with growing backoff.
 /// A permanent error is returned on the very first attempt: see
 /// [`is_transient`] for why retrying one is never worth doing.
 ///
 /// Safe to retry a whole stage rather than only the one request that
 /// failed: every stage checkpoints as it goes (`transcribe_stage` saves
-/// after each chunk; `do_identify` and `do_summarise_and_write` are cheap,
+/// after each chunk; `identify_into` and `summarise_and_write_from` are cheap,
 /// local recomputation until their own final network call -- see
-/// `do_identify`'s own doc on why nothing is persisted between identifying
+/// `identify_into`'s own doc on why nothing is persisted between identifying
 /// and summarising), so re-running one from the top never re-pays for
 /// audio already transcribed, only for whatever a network hiccup actually
 /// interrupted.

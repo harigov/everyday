@@ -422,6 +422,11 @@ where
             mailboxes = match passed {
                 Ok(mailboxes) => mailboxes,
                 Err(e) => {
+                    // What the pass stored and noted before it failed is in
+                    // the vault, and is news only once: the failure can be
+                    // ready in the same poll as the note's wake-up, and the
+                    // loop above may have broken out without announcing it.
+                    announce_new_mail(&svc, &statuses, account_id);
                     return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
                         .await;
                 }

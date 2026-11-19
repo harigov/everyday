@@ -132,7 +132,18 @@ pub struct VoiceLink {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnOutcome {
     pub stopped: bool,
+    /// The assistant ended the conversation out loud -- see [`END_TOOL`]. The
+    /// session ends once what it said has been heard.
+    pub ended_voice: bool,
 }
+
+/// The tool a spoken turn is offered for ending the conversation out loud,
+/// when the person has said they are done: "that's it", "that's all I have".
+/// The model decides, so that "that's it!" said of an answer that is right is
+/// not taken for goodbye. Only the talking ends; the thread stays. Declared
+/// by `agent`'s `build`, which offers it to spoken turns alone; named in the
+/// core, whose note to a spoken turn tells the model about it.
+pub const END_TOOL: &str = karmayoga_core::agent::END_VOICE_TOOL;
 
 /// The assistant, as a session needs it: what [`assistant::ServiceAssistant`]
 /// implements over the real thing, and a test over a script.

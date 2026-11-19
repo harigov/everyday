@@ -2690,7 +2690,14 @@ mod tests {
     // ---- the reply a turn ends with ----
 
     fn turned(text: &str, stopped: bool) -> CommandResult<Turned> {
-        Ok(Turned { text: text.into(), prose: text.into(), steps: 0, wrote: Vec::new(), stopped })
+        Ok(Turned {
+            text: text.into(),
+            prose: text.into(),
+            steps: 0,
+            wrote: Vec::new(),
+            stopped,
+            ended_voice: false,
+        })
     }
 
     #[test]

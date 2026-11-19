@@ -119,11 +119,18 @@ fn a_whole_chunk_with_no_vad_is_one_turn_that_maps_identically() {
 struct FakeAudio {
     chunks: Mutex<HashMap<(RecordingId, Track, u32), Vec<i16>>>,
     removed: Mutex<Vec<RecordingId>>,
+    /// How many chunks have been read, for a test about how often the audio
+    /// is gone over.
+    reads: AtomicU32,
 }
 
 impl FakeAudio {
     fn new() -> Self {
-        Self { chunks: Mutex::new(HashMap::new()), removed: Mutex::new(Vec::new()) }
+        Self {
+            chunks: Mutex::new(HashMap::new()),
+            removed: Mutex::new(Vec::new()),
+            reads: AtomicU32::new(0),
+        }
     }
 
     fn put(&self, id: RecordingId, track: Track, seq: u32, samples: Vec<i16>) {
@@ -133,6 +140,7 @@ impl FakeAudio {
 
 impl AudioSource for FakeAudio {
     fn read_chunk(&self, id: RecordingId, track: Track, seq: u32) -> CommandResult<Vec<i16>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         self.chunks
             .lock()
             .unwrap()
@@ -416,6 +424,52 @@ fn seed_recording(
     }
     vault.save_recording(&recording).unwrap();
     recording.id
+}
+
+/// A recording whose audio has been transcribed, both tracks speaking, ready
+/// for the voices to be told apart.
+fn seed_identifying(vault: &Vault, audio: &FakeAudio) -> RecordingId {
+    let id = seed_recording(vault, audio, 1, 1);
+    let mut recording = vault.recording(id).unwrap();
+    recording.stage = Stage::Identifying;
+    for chunk in &mut recording.chunks {
+        chunk.transcribed = true;
+    }
+    for (track, text) in [(Track::Mic, "hello there"), (Track::System, "the launch is in May")] {
+        recording.partial.push(TrackSegment {
+            track,
+            start_ms: 100,
+            end_ms: 1_900,
+            text: text.into(),
+            speaker_hint: None,
+            hint_scope: 0,
+        });
+    }
+    vault.save_recording(&recording).unwrap();
+    id
+}
+
+/// A pass that tells the voices apart and then writes the note goes over the
+/// call's audio once, not twice: what identifying found is what summarising
+/// starts from. On an hour's call that second pass was a speaker embedding
+/// for every turn all over again.
+#[tokio::test]
+async fn one_pass_tells_the_voices_apart_once() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let source: Arc<dyn AudioSource> = audio.clone();
+
+    let alone = seed_identifying(&vault, &audio);
+    do_identify(&vault, &source, alone).await.unwrap();
+    let once = audio.reads.swap(0, Ordering::SeqCst);
+    assert!(once > 0, "telling voices apart reads the audio");
+
+    let id = seed_identifying(&vault, &audio);
+    let events: Arc<dyn crate::events::EventSink> = Arc::new(crate::events::Silent);
+    run_recording(vault.clone(), source, id, Some(Arc::new(FakeSummariser)), events).await.unwrap();
+
+    assert_eq!(vault.recording(id).unwrap().stage, Stage::Done);
+    assert_eq!(audio.reads.load(Ordering::SeqCst), once, "the audio was gone over once");
 }
 
 #[tokio::test]
@@ -1326,12 +1380,12 @@ async fn spawn_ok_server() -> String {
 /// `Stage::Recording` arm ran early transcription, a chunk closed
 /// mid-call was never transcribed until the call ended -- see
 /// `chunk_closed`'s own doc. Proven against [`transcribe_pending`], the
-/// shared engine [`transcribe_live`] calls once its own remote check has
-/// passed: every base URL reachable from inside a test is loopback (see
-/// `test_hooks`'s own doc), so `transcribe_live` itself is exercised
-/// separately, by `early_transcription_does_nothing_for_a_local_transcriber`
-/// below and by the supervisor-race test, rather than by asserting on a
-/// remote check this process cannot genuinely satisfy.
+/// shared engine [`transcribe_live`] calls once its own check has passed:
+/// every base URL reachable from inside a test is loopback, which that check
+/// leaves for the end of the call, so `transcribe_live` itself is exercised
+/// separately, by `a_model_on_this_computer_transcribes_live_only_with_cores_to_spare`
+/// and `early_transcription_does_nothing_without_a_speech_model` below and by
+/// the supervisor-race test.
 #[tokio::test]
 async fn early_transcription_marks_chunks_transcribed_without_advancing_the_stage() {
     let (_dir, vault) = test_vault();
@@ -1360,32 +1414,52 @@ async fn early_transcription_marks_chunks_transcribed_without_advancing_the_stag
     assert!(!recording.partial.is_empty(), "the early transcript text was saved");
 }
 
-/// The other half of `chunk_closed`'s own gate: a local transcriber is
-/// never asked to do this early -- see that function's doc on why, and
-/// `transcribe_live`'s own doc on re-checking rather than trusting the
-/// caller.
+/// The other half of `chunk_closed`'s own gate: our own speech model
+/// transcribes while the call is going only where there are physical cores to
+/// spare for it, and only in a build that can run it. A server on loopback
+/// waits for the end of the call, whatever the machine.
+#[test]
+fn a_model_on_this_computer_transcribes_live_only_with_cores_to_spare() {
+    use karmayoga_core::speech::SpeechConfig;
+    let ours = SpeechConfig::new(TranscriberConfig::Local {
+        model: karmayoga_core::meeting::LocalModel::ParakeetV3,
+    });
+    let loopback = SpeechConfig::new(TranscriberConfig::Compatible {
+        base_url: "http://127.0.0.1:8080/v1".into(),
+        model: "whisper".into(),
+    });
+    let elsewhere = SpeechConfig::new(TranscriberConfig::Compatible {
+        base_url: "https://speech.example.com/v1".into(),
+        model: "whisper-1".into(),
+    });
+
+    assert!(live_for(Some(&ours), 12, true), "a desktop with cores to spare");
+    assert!(!live_for(Some(&ours), 4, true), "a four-core laptop waits for the end of the call");
+    assert!(!live_for(Some(&ours), 12, false), "a build that cannot run it");
+    assert!(!live_for(Some(&loopback), 64, true), "a server here sets its own pace");
+    assert!(live_for(Some(&elsewhere), 1, false), "elsewhere costs this computer nothing");
+    assert!(!live_for(None, 12, true), "no speech model, nothing early");
+}
+
+/// `transcribe_live` asks again rather than trusting whoever enqueued it: with
+/// no speech model chosen any more, it does nothing.
 #[tokio::test]
-async fn early_transcription_does_nothing_for_a_local_transcriber() {
+async fn early_transcription_does_nothing_without_a_speech_model() {
     let (_dir, vault) = test_vault();
     let audio = Arc::new(FakeAudio::new());
     let id = seed_recording(&vault, &audio, 1, 0);
     let mut recording = vault.recording(id).unwrap();
     recording.stage = Stage::Recording;
     vault.save_recording(&recording).unwrap();
-
-    use_speech(
-        &vault,
-        TranscriberConfig::Local { model: karmayoga_core::meeting::LocalModel::ParakeetV3 },
-    );
+    let mut models = vault.model_settings().unwrap();
+    models.speech = None;
+    vault.save_model_settings(&models).unwrap();
     let source: Arc<dyn AudioSource> = audio.clone();
 
     transcribe_live(&vault, &source, id).await.unwrap();
 
     let recording = vault.recording(id).unwrap();
-    assert!(
-        recording.chunks.iter().all(|c| !c.transcribed),
-        "a local transcriber must never be asked to transcribe early"
-    );
+    assert!(recording.chunks.iter().all(|c| !c.transcribed), "nothing was asked to transcribe");
 }
 
 // ---- the supervisor race: `finish` landing while an early attempt is --
@@ -1469,10 +1543,10 @@ async fn finish_landing_while_the_early_attempt_is_still_running_still_reaches_d
     recording.stage = Stage::Recording;
     vault.save_recording(&recording).unwrap();
 
-    // A real, immediate fake server: `transcribe_live` will not reach
-    // it (loopback reads as local, not remote -- see `test_hooks`'s own
-    // doc), but `do_transcribe` will, for real, once the recording is
-    // woken back up at `Stage::Transcribing` below.
+    // A real, immediate fake server: `transcribe_live` will not reach it (a
+    // server on loopback waits for the end of the call -- see
+    // `drivers::transcribes_live`), but `do_transcribe` will, for real, once
+    // the recording is woken back up at `Stage::Transcribing` below.
     let base = spawn_ok_server().await;
     use_speech(&vault, TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
 

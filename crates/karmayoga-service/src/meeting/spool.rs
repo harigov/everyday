@@ -483,7 +483,7 @@ pub fn discard(svc: &Arc<Service>, id: RecordingId) -> CommandResult<()> {
 ///
 /// Refuses a retry that would resume at `Summarising` with nothing left to
 /// summarise: `chunks` and `partial` are only ever both empty there because
-/// `Stage::Done` already cleared them (see `pipeline::do_summarise_and_write`),
+/// `Stage::Done` already cleared them (see `pipeline::summarise_and_write_from`),
 /// which means the note this recording owes already exists. Resuming
 /// anyway would recompute an empty transcript and write a second,
 /// near-empty note beside the real one -- exactly the failure
@@ -621,13 +621,13 @@ pub fn expire_failed_tick(svc: &Arc<Service>, vault: &Vault) {
 /// Delete every spool directory whose recording is `Stage::Done` or missing
 /// from the vault entirely.
 ///
-/// Ordinarily nothing is left to sweep: `pipeline::do_summarise_and_write`
+/// Ordinarily nothing is left to sweep: `pipeline::summarise_and_write_from`
 /// removes a recording's audio itself the moment its note is written, and
 /// `discard` removes it the moment a recording is thrown away. Two things
 /// can still leave a directory behind for this to find: `remove_audio`
 /// itself failing right after that `Done` save commits -- logged, not
 /// retried in place, precisely so this sweep is the thing that eventually
-/// clears it, per `do_summarise_and_write`'s own doc -- and a *failed*
+/// clears it, per `summarise_and_write_from`'s own doc -- and a *failed*
 /// recording being deleted from the history (`delete_recording`, unlike
 /// `discard`, never touches the spool, since a `Done` recording reaching
 /// the same command has none left to remove).

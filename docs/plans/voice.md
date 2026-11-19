@@ -111,6 +111,17 @@ tasks. Nothing the loop awaits may block it from hearing `Stop`.
    didn't work."
 9. **Stop.** Cancel any turn, `Clear`, cut the reply, `Ended { error: None }`. A
    closed input channel is a `Stop`.
+10. **Ending by voice.** A spoken turn, and only a spoken one, is offered
+    `end_voice_mode` (`voice::END_TOOL`). The model calls it when the person makes
+    clear they are done ("that's it", "that's all I have") and then says a short
+    goodbye; the model decides, not a phrase list, so "that's it!" said of a right
+    answer is not taken for goodbye. The turn reports `TurnOutcome::ended_voice`
+    (read from the calls that ran, never for a stopped turn), and once its reply has
+    played -- nothing outstanding, nobody talking or being transcribed -- and 1.5 s
+    more have passed for the last word to leave the speaker or the phone, the
+    session stops as for `Stop`. Words said over the goodbye that are not an echo or a stop
+    word start a turn, which takes the ending back. Only the talking ends: the
+    thread stays. On a call through a chat, ending the session hangs up.
 
 ## The desktop transport (`karmayoga-app/src/voice`)
 
