@@ -234,6 +234,10 @@ pub fn question(kind: &str, subject: &str) -> String {
 /// What is said when only a click can answer.
 pub const NEEDS_A_CLICK: &str = "That needs your go-ahead on screen.";
 
+/// [`NEEDS_A_CLICK`], on a call through a chat: the question is asked in the
+/// chat, where a tap answers it.
+pub const NEEDS_A_TAP: &str = "That needs your go-ahead in our chat.";
+
 #[cfg(test)]
 mod tests {
     use super::*;

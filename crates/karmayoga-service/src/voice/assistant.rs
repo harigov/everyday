@@ -12,6 +12,7 @@ use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::speech::detect::Tuning;
 use karmayoga_core::agent::onscreen::OnScreen;
+use karmayoga_core::chat::Via;
 use karmayoga_core::{ConversationId, MessageId, Vault};
 use std::sync::Arc;
 
@@ -19,10 +20,18 @@ use std::sync::Arc;
 /// talking can tell them from somebody else's.
 const ORIGIN: &str = "voice";
 
+/// The same, for a session on a call through a chat: no window is talking, so
+/// every window refreshes, as for a typed turn from a chat.
+const CALL_ORIGIN: &str = "chat";
+
 /// [`VoiceAssistant`] over a [`Service`] and one conversation.
 pub struct ServiceAssistant {
     pub service: Arc<Service>,
     pub conversation: ConversationId,
+    /// The chat a call came through, when it did: the turn is then told where
+    /// the person is, as a typed turn from that chat is. `None` at this
+    /// computer.
+    pub via: Option<Via>,
 }
 
 impl VoiceAssistant for ServiceAssistant {
@@ -34,6 +43,8 @@ impl VoiceAssistant for ServiceAssistant {
     ) -> BoxFuture<'static, CommandResult<TurnOutcome>> {
         let service = self.service.clone();
         let conversation = self.conversation;
+        let via = self.via.clone();
+        let origin = if via.is_some() { CALL_ORIGIN } else { ORIGIN };
         Box::pin(async move {
             let vault = service.require()?;
             let turned = crate::agent::run_turn(Turn {
@@ -52,8 +63,8 @@ impl VoiceAssistant for ServiceAssistant {
                 // see `confirm` for which of those a voice may answer.
                 unattended: None,
                 drafting: None,
-                // At this computer, not in a chat.
-                via: None,
+                // At this computer, or on a call through a chat.
+                via,
                 // What the model writes is read aloud, and it is told so.
                 spoken: true,
                 reach: Reach::default(),
@@ -63,7 +74,7 @@ impl VoiceAssistant for ServiceAssistant {
                 tier: None,
             })
             .await?;
-            service.announce_turn(&turned, conversation, Some(ORIGIN.to_string()));
+            service.announce_turn(&turned, conversation, Some(origin.to_string()));
             Ok(TurnOutcome { stopped: turned.stopped })
         })
     }
@@ -83,6 +94,7 @@ impl VoiceAssistant for ServiceAssistant {
     ) -> BoxFuture<'static, CommandResult<()>> {
         let service = self.service.clone();
         let conversation = self.conversation;
+        let origin = if self.via.is_some() { CALL_ORIGIN } else { ORIGIN };
         Box::pin(async move {
             let vault = service.require()?;
             let changed =
@@ -93,7 +105,7 @@ impl VoiceAssistant for ServiceAssistant {
                     op: crate::events::Op::Updated,
                     id: Some(conversation.to_string()),
                     ids: Vec::new(),
-                    origin: Some(ORIGIN.to_string()),
+                    origin: Some(origin.to_string()),
                 });
             }
             Ok(())
@@ -144,13 +156,30 @@ impl Service {
         self: &Arc<Self>,
         conversation: ConversationId,
     ) -> CommandResult<VoiceLink> {
+        self.voice_open_via(conversation, None).await
+    }
+
+    /// [`Service::voice_open`], for a call that came through the chat `via`:
+    /// each turn is run as a turn from that chat is (the model is told where
+    /// the person is), only spoken. The conversation is the chat's, and is not
+    /// created here -- the relay picks or makes it, as it does for a message.
+    pub async fn voice_open_via(
+        self: &Arc<Self>,
+        conversation: ConversationId,
+        via: Option<Via>,
+    ) -> CommandResult<VoiceLink> {
         self.require_unlocked()?;
         let live = self.live_transcription(Tuning::CONVERSATION).await?;
         let synthesiser = self.speech_synthesiser().await?;
         Ok(session::spawn(VoiceParts {
             live,
             synthesiser,
-            assistant: Arc::new(ServiceAssistant { service: self.clone(), conversation }),
+            needs_a_click: if via.is_some() {
+                super::confirm::NEEDS_A_TAP
+            } else {
+                super::confirm::NEEDS_A_CLICK
+            },
+            assistant: Arc::new(ServiceAssistant { service: self.clone(), conversation, via }),
         }))
     }
 }

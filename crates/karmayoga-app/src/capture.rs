@@ -389,7 +389,7 @@ impl ChunkSink for FileSink {
 /// always has: a recording does not change with the shape of the code under
 /// it.
 fn track_resampler(source_rate: u32) -> Result<StreamResampler, CaptureError> {
-    StreamResampler::always_converting(source_rate, SAMPLE_RATE)
+    Ok(StreamResampler::always_converting(source_rate, SAMPLE_RATE)?)
 }
 
 // ---- framing into 30 s chunks -----------------------------------------

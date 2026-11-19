@@ -424,7 +424,8 @@ turned off.
 
 Files and voice notes (the speech pipeline could transcribe them later).
 Messages typed on the desktop do not echo into the chat. Bridged rooms.
-Other services. (Pictures came later: see `docs/plans/pictures.md`.)
+Other services. (Pictures came later: see `docs/plans/pictures.md`. So did
+voice calls: see `docs/plans/calls.md`.)
 
 ## Routines in the chat (phase 2)
 

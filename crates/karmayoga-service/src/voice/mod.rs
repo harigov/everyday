@@ -163,4 +163,8 @@ pub struct VoiceParts {
     /// The voice, for everything the session says.
     pub synthesiser: std::sync::Arc<dyn Synthesiser>,
     pub assistant: std::sync::Arc<dyn VoiceAssistant>,
+    /// What is said when only a click can answer a question: where the person
+    /// will find it. [`confirm::NEEDS_A_CLICK`] at this computer,
+    /// [`confirm::NEEDS_A_TAP`] on a call.
+    pub needs_a_click: &'static str,
 }

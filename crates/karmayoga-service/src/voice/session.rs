@@ -101,6 +101,7 @@ pub fn spawn(parts: VoiceParts) -> VoiceLink {
     );
     let session = Session {
         assistant: parts.assistant,
+        needs_a_click: parts.needs_a_click,
         narrator,
         out,
         tx,
@@ -255,6 +256,8 @@ enum Wake {
 
 struct Session {
     assistant: Arc<dyn VoiceAssistant>,
+    /// What is said when only a click can answer: see [`VoiceParts`].
+    needs_a_click: &'static str,
     /// Turns sentences into audio in order, a limited way ahead of playback,
     /// and remembers which of them the transport has yet to play. A sentence's
     /// [`Kind`] is the tag it carries.
@@ -800,7 +803,7 @@ impl Session {
                 }
             }
             // Only a click can answer it, and the card is on screen.
-            None => self.say(confirm::NEEDS_A_CLICK.to_string()),
+            None => self.say(self.needs_a_click.to_string()),
         }
     }
 
@@ -851,7 +854,7 @@ impl Session {
         if let Some(c) = self.confirm.as_mut() {
             c.voice = false;
         }
-        self.say(confirm::NEEDS_A_CLICK.to_string());
+        self.say(self.needs_a_click.to_string());
     }
 
     /// The card was answered where it is drawn, or the call ran or failed
@@ -1214,6 +1217,7 @@ mod tests {
                     fails: voice_fails.clone(),
                 }),
                 assistant: Arc::new(FakeAssistant(record.clone())),
+                needs_a_click: confirm::NEEDS_A_CLICK,
             });
             let mut rig = Rig { link, record, asked, modes, voice_fails, seen: Vec::new() };
             rig.until("the first state", |o| is_state(o, VoiceState::Listening)).await;
