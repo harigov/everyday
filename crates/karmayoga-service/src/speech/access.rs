@@ -74,22 +74,16 @@ impl Service {
         blocking(move || utterance::build(speech)).await
     }
 
-    /// The chosen voice, ready to speak, in the speech model's language where
-    /// the voice can speak it.
+    /// The chosen voice, ready to speak.
     pub async fn speech_synthesiser(self: &Arc<Self>) -> CommandResult<Arc<dyn Synthesiser>> {
         let vault = self.require_unlocked()?;
-        let (voice, language) = blocking(move || {
-            let voice = vault.voice_access()?;
-            let language = vault.speech_and_keyed()?.0.and_then(|speech| speech.language);
-            Ok((voice, language))
-        })
-        .await?;
+        let voice = blocking(move || Ok(vault.voice_access()?)).await?;
         let installed =
             voice.config.synthesiser.local_voice().is_none_or(crate::local::files::voice_installed);
         if let Some(refusal) = missing_voice(&voice.config, installed) {
             return Err(CommandError::new(codes::INVALID, refusal));
         }
-        build_synthesiser(voice, language).await
+        build_synthesiser(voice).await
     }
 
     /// Words from a stream of audio, as they are said: the chosen speech model
@@ -125,7 +119,7 @@ mod tests {
     }
 
     fn local_voice() -> VoiceConfig {
-        VoiceConfig::new(SynthesiserConfig::Local { voice: LocalVoice::Supertonic3, speaker: 0 })
+        VoiceConfig::new(SynthesiserConfig::Local { voice: LocalVoice::Phonon, speaker: 0 })
     }
 
     fn remote_voice() -> VoiceConfig {
@@ -163,7 +157,7 @@ mod tests {
     fn a_local_voice_must_be_downloaded() {
         let said = missing_voice(&local_voice(), false).unwrap();
         assert!(said.contains("voice"), "{said}");
-        assert!(said.contains("supertonic3"), "{said}");
+        assert!(said.contains("phonon"), "{said}");
         assert!(said.contains("Settings → Models"), "{said}");
     }
 }

@@ -1,29 +1,30 @@
-//! Supertonic 3 on this computer, through sherpa-onnx.
+//! Phonon 31M on this computer, through `ptts`.
 //!
-//! Everything that needs the models is behind the `speech` feature; a build
+//! Everything that needs the model is behind the `speech` feature; a build
 //! without it can still be configured with a local voice and is told, when it
 //! tries to load one, that it cannot.
 
 use super::Synthesiser;
-use crate::error::CommandResult;
-#[cfg(not(feature = "speech"))]
-use crate::error::{CommandError, codes};
+use crate::error::{CommandError, CommandResult, codes};
+use karmayoga_core::speech::PHONON_SPEAKERS;
 use std::sync::Arc;
 
-/// The languages Supertonic 3 speaks, by their two-letter codes.
-const SUPERTONIC_LANGUAGES: [&str; 31] = [
-    "en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi", "fr", "hi", "hr", "hu",
-    "id", "it", "lt", "lv", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "tr", "uk", "vi",
-];
-
-/// The code to tell Supertonic, from the speech model's language, which is
-/// "BCP-47-ish" (`en`, `de-DE`, `pt_BR`): its first two letters, when
-/// Supertonic speaks that, and English when it does not or there is none.
+/// The name Phonon knows speaker number `speaker` by. Settings refuse a
+/// number past the last speaker, so one here is a config that skipped them,
+/// and is said rather than quietly spoken in somebody else's voice.
 #[cfg_attr(not(feature = "speech"), allow(dead_code))]
-fn supertonic_language(language: Option<&str>) -> &'static str {
-    let code: String =
-        language.unwrap_or_default().trim().chars().take(2).flat_map(char::to_lowercase).collect();
-    SUPERTONIC_LANGUAGES.iter().copied().find(|l| *l == code).unwrap_or("en")
+fn speaker_name(speaker: u32) -> CommandResult<&'static str> {
+    usize::try_from(speaker).ok().and_then(|index| PHONON_SPEAKERS.get(index).copied()).ok_or_else(
+        || {
+            CommandError::new(
+                codes::INVALID,
+                format!(
+                    "the voice on this computer has {} speakers, and no speaker {speaker}",
+                    PHONON_SPEAKERS.len()
+                ),
+            )
+        },
+    )
 }
 
 /// The voice, loaded, as a [`Synthesiser`]. It is loaded here so that a voice
@@ -34,9 +35,8 @@ pub(super) async fn build(
     voice: karmayoga_core::speech::LocalVoice,
     speaker: u32,
     speed: f32,
-    language: Option<&str>,
 ) -> CommandResult<Arc<dyn Synthesiser>> {
-    let synthesiser = engine::LocalSynthesiser::new(voice, speaker, speed, language);
+    let synthesiser = engine::LocalSynthesiser::new(voice, speaker_name(speaker)?, speed);
     synthesiser.warm().await?;
     Ok(Arc::new(synthesiser))
 }
@@ -46,7 +46,6 @@ pub(super) async fn build(
     _voice: karmayoga_core::speech::LocalVoice,
     _speaker: u32,
     _speed: f32,
-    _language: Option<&str>,
 ) -> CommandResult<Arc<dyn Synthesiser>> {
     Err(CommandError::new(
         codes::UNSUPPORTED,
@@ -56,16 +55,15 @@ pub(super) async fn build(
 
 #[cfg(feature = "speech")]
 mod engine {
-    use super::supertonic_language;
     use crate::error::{CommandError, CommandResult, codes};
     use crate::local::files as models;
     use crate::local::resident::Resident;
     use crate::speech::pcm::sample_to_i16;
     use crate::speech::synth::{Speech, Synthesiser, nothing_to_say};
+    use crate::speech::tempo::stretch;
     use crate::speech::transcribe::BoxFuture;
     use karmayoga_core::speech::LocalVoice;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, Once};
 
     /// Cap on worker threads handed to the model, for the reasons
     /// `speech::local` caps its own: one voice is one person's
@@ -74,18 +72,56 @@ mod engine {
 
     /// A voice that is loaded.
     ///
-    /// The `Mutex` is for what `speech::local::Recogniser`'s is: sherpa-onnx
-    /// promises an object may be used from one thread at a time, and a
-    /// conversation can have a sentence being made while the next is asked
-    /// for.
+    /// `ptts` can be used from several threads, but the `Mutex` has one
+    /// sentence made at a time all the same, as `speech::local::Recogniser`'s
+    /// does for sherpa-onnx: a conversation can have a sentence being made
+    /// while the next is asked for, and the model's worker threads have one
+    /// job at a time to give, so two sentences would only fight over them.
     struct Engine {
-        tts: Mutex<sherpa_onnx::OfflineTts>,
+        tts: Mutex<ptts::synth::Synth>,
     }
 
     static VOICES: Resident<LocalVoice, Engine> = Resident::new("voice");
 
-    fn path_string(path: &std::path::Path) -> String {
-        path.to_string_lossy().into_owned()
+    /// Give the model its worker threads, the first time one is wanted and
+    /// never again.
+    ///
+    /// `xn`, which runs the model, would otherwise build its pool by itself,
+    /// a thread to a core as `RAYON_NUM_THREADS` or the machine says, and the
+    /// way to size it, `xn::set_num_threads`, sets an environment variable,
+    /// which is not safe in a process that has other threads running. So the
+    /// pool is started here, at the width wanted, on threads of this app's own
+    /// making. Its workers are permanent: they spin for a moment after work
+    /// and then park, costing nothing while no voice is speaking. The thread
+    /// that asks for a sentence is one of the pool's, so there is one worker
+    /// fewer than `threads`.
+    ///
+    /// A worker that cannot be started is a panic, not an error: the pool waits
+    /// on every worker it was promised, so one short would leave the first
+    /// sentence waiting for ever. A machine that cannot start four threads has
+    /// bigger troubles than a voice.
+    fn start_workers() {
+        static STARTED: Once = Once::new();
+        STARTED.call_once(|| {
+            let threads = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .clamp(1, MAX_THREADS);
+            xn::threadpool::start_pool_with(
+                xn::threadpool::PoolConfig { workers: threads - 1, spin_budget: None },
+                |job| {
+                    std::thread::Builder::new()
+                        .name("voice-worker".into())
+                        .spawn(job)
+                        .expect("starting a thread for the voice on this computer");
+                },
+            );
+        });
+    }
+
+    /// `what` went wrong, in `error`'s words.
+    fn failed(what: &str, error: ptts::Error) -> CommandError {
+        CommandError::new(codes::INTERNAL, format!("{what}: {error}"))
     }
 
     fn load(voice: LocalVoice) -> CommandResult<Engine> {
@@ -95,43 +131,34 @@ mod engine {
                 "the voice on this computer is not downloaded yet; download it in Settings → Models",
             )
         })?;
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .clamp(1, MAX_THREADS);
+        start_workers();
 
-        let mut config = sherpa_onnx::OfflineTtsConfig::default();
-        config.model.supertonic = sherpa_onnx::OfflineTtsSupertonicModelConfig {
-            duration_predictor: Some(path_string(&paths.duration_predictor)),
-            text_encoder: Some(path_string(&paths.text_encoder)),
-            vector_estimator: Some(path_string(&paths.vector_estimator)),
-            vocoder: Some(path_string(&paths.vocoder)),
-            tts_json: Some(path_string(&paths.tts_json)),
-            unicode_indexer: Some(path_string(&paths.unicode_indexer)),
-            voice_style: Some(path_string(&paths.voice_style)),
-        };
-        config.model.num_threads = threads as i32;
-        config.model.provider = Some("cpu".to_string());
-        config.max_num_sentences = 1;
-        config.silence_scale = 0.2;
-
-        let tts = sherpa_onnx::OfflineTts::create(&config).ok_or_else(|| {
-            CommandError::new(codes::INTERNAL, "could not load the voice on this computer")
-        })?;
+        let config = ptts::checkpoint::read_config(&paths.config)
+            .map_err(|e| failed("could not read the voice on this computer", e))?;
+        let mut builder =
+            ptts::synth::Synth::builder(config, &paths.weights, ptts::preprocess::Lang::En)
+                .tokenizer_file(&paths.tokenizer)
+                .quant(ptts::synth::Quant::Q80)
+                .device(ptts::synth::DeviceKind::Cpu);
+        for (name, file) in &paths.speakers {
+            builder = builder.add_voice(*name, file);
+        }
+        let tts =
+            builder.build().map_err(|e| failed("could not load the voice on this computer", e))?;
         Ok(Engine { tts: Mutex::new(tts) })
     }
 
     #[derive(Clone, Copy)]
     pub struct LocalSynthesiser {
         voice: LocalVoice,
-        speaker: u32,
+        /// One of [`PHONON_SPEAKERS`](karmayoga_core::speech::PHONON_SPEAKERS).
+        speaker: &'static str,
         speed: f32,
-        language: &'static str,
     }
 
     impl LocalSynthesiser {
-        pub fn new(voice: LocalVoice, speaker: u32, speed: f32, language: Option<&str>) -> Self {
-            Self { voice, speaker, speed, language: supertonic_language(language) }
+        pub fn new(voice: LocalVoice, speaker: &'static str, speed: f32) -> Self {
+            Self { voice, speaker, speed }
         }
 
         /// Load the voice now, if it is not loaded already. It is not held
@@ -143,30 +170,23 @@ mod engine {
 
         /// Blocking, as is everything that runs the model.
         fn speak(&self, text: &str) -> CommandResult<Speech> {
-            // sherpa-onnx hands the words to C as a string, and panics on one
-            // with a NUL inside it.
-            let text = text.replace('\0', " ");
             if text.trim().is_empty() {
                 return Err(nothing_to_say());
             }
             let engine = VOICES.get(self.voice, || load(self.voice))?;
-            let config = sherpa_onnx::GenerationConfig {
-                sid: self.speaker as i32,
-                speed: self.speed,
-                extra: Some(HashMap::from([(
-                    "lang".to_string(),
-                    serde_json::Value::String(self.language.to_string()),
-                )])),
-                ..Default::default()
+            let options = ptts::synth::SpeechOptions::default().voice(self.speaker);
+            let (pcm, sample_rate) = {
+                let tts = engine.tts.lock().unwrap_or_else(|e| e.into_inner());
+                let pcm = tts
+                    .say_with(text, &options)
+                    .map_err(|e| failed("the voice on this computer could not say that", e))?;
+                (pcm, tts.sample_rate())
             };
-            let tts = engine.tts.lock().unwrap_or_else(|e| e.into_inner());
-            let audio = tts
-                .generate_with_config(&text, &config, None::<fn(&[f32], f32) -> bool>)
-                .ok_or_else(|| {
-                CommandError::new(codes::INTERNAL, "the voice on this computer could not say that")
-            })?;
-            let sample_rate = u32::try_from(audio.sample_rate()).unwrap_or(0);
-            let samples: Vec<i16> = audio.samples().iter().map(|&s| sample_to_i16(s)).collect();
+            // The model has no pace of its own to set, so the speed is the
+            // audio's: sped up or slowed down without the voice changing pitch.
+            // At the voice's own pace this hands the audio back as it was.
+            let pcm = stretch(&pcm, sample_rate, self.speed);
+            let samples: Vec<i16> = pcm.iter().map(|&s| sample_to_i16(s)).collect();
             if samples.is_empty() || sample_rate == 0 {
                 return Err(CommandError::new(
                     codes::INTERNAL,
@@ -191,20 +211,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_local_voice_is_told_the_first_two_letters_when_it_speaks_them() {
-        assert_eq!(supertonic_language(Some("de")), "de");
-        assert_eq!(supertonic_language(Some("de-DE")), "de");
-        assert_eq!(supertonic_language(Some("PT_br")), "pt");
-        assert_eq!(supertonic_language(Some(" ja ")), "ja");
-        assert_eq!(supertonic_language(Some("vi")), "vi");
+    fn a_speaker_number_is_the_name_at_that_place() {
+        assert_eq!(speaker_name(0).unwrap(), "Harper");
+        assert_eq!(speaker_name(1).unwrap(), PHONON_SPEAKERS[1]);
+        assert_eq!(speaker_name(24).unwrap(), PHONON_SPEAKERS[24]);
     }
 
     #[test]
-    fn anything_else_is_english() {
-        assert_eq!(supertonic_language(None), "en");
-        assert_eq!(supertonic_language(Some("")), "en");
-        assert_eq!(supertonic_language(Some("zh")), "en");
-        assert_eq!(supertonic_language(Some("x")), "en");
-        assert_eq!(supertonic_language(Some("é")), "en");
+    fn a_speaker_number_that_is_not_there_is_refused() {
+        for speaker in [25, u32::MAX] {
+            let err = speaker_name(speaker).unwrap_err();
+            assert_eq!(err.code, codes::INVALID);
+            assert!(err.message.contains("25 speakers"), "{}", err.message);
+        }
+    }
+
+    /// The settings pane lists the speakers by hand, under their accent; its
+    /// list must name them in this order, or choosing one would speak as
+    /// another.
+    #[test]
+    fn the_settings_pane_lists_the_speakers_in_this_order() {
+        let pane = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/src/components/ModelsPanel.svelte");
+        let text = std::fs::read_to_string(&pane).expect("the settings pane is in the tree");
+        let listed: Vec<(&str, &str)> = text
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("['")?;
+                let (name, rest) = rest.split_once("', '")?;
+                let (accent, _) = rest.split_once("',")?;
+                matches!(accent, "American" | "British").then_some((name, accent))
+            })
+            .collect();
+        let names: Vec<&str> = listed.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, PHONON_SPEAKERS, "ModelsPanel.svelte's SPEAKERS");
+        let american = listed.iter().take_while(|(_, accent)| *accent == "American").count();
+        assert_eq!(american, 12, "the American voices come first, then the British");
+        assert!(listed[american..].iter().all(|(_, accent)| *accent == "British"));
     }
 }

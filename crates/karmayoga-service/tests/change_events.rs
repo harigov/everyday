@@ -1207,7 +1207,7 @@ async fn every_offline_write_announces_what_was_written_down() {
     }
     run(&svc, &h, "cancel_speech_model_download", json!({ "id": "nonexistent-model" })).await;
     run(&svc, &h, "cancel_decision_model_download", json!({ "id": "d3Lite" })).await;
-    run(&svc, &h, "cancel_voice_model_download", json!({ "id": "supertonic3" })).await;
+    run(&svc, &h, "cancel_voice_model_download", json!({ "id": "phonon" })).await;
     run(
         &svc,
         &h,

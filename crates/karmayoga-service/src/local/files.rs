@@ -331,71 +331,240 @@ const D3_MINI_SOURCES: &[Source] = &[Source::File {
     },
 }];
 
-/// Supertonic 3, as sherpa-onnx exports it. Its code is MIT licensed and its
-/// weights OpenRAIL-M. Needs no espeak-ng data, unlike Kokoro and Piper.
-const SUPERTONIC3_SOURCES: &[Source] = &[Source::Archive {
-    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2",
-    sha256: "82fa96f91c4ef8abaae3a14a3f4153facf88bed821d1f7331cec2700f432c427",
-    bytes: 128_774_318,
-    members: &[
-        (
-            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/duration_predictor.int8.onnx",
-            ModelFile {
-                dest: "duration_predictor.int8.onnx",
-                sha256: "c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db",
-                bytes: 3_700_147,
-            },
-        ),
-        (
-            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/text_encoder.int8.onnx",
-            ModelFile {
-                dest: "text_encoder.int8.onnx",
-                sha256: "c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff",
-                bytes: 36_416_150,
-            },
-        ),
-        (
-            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/vector_estimator.int8.onnx",
-            ModelFile {
-                dest: "vector_estimator.int8.onnx",
-                sha256: "20cd86fa5c6effedfda0e7cffe5b0569ca401c440a0c3a1d72bf39286c0db3fd",
-                bytes: 78_400_833,
-            },
-        ),
-        (
-            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/vocoder.int8.onnx",
-            ModelFile {
-                dest: "vocoder.int8.onnx",
-                sha256: "e923d60f53f95eb1ce235f1dc33ec56d9c057823c96fa6f8acf98f32b0da6152",
-                bytes: 25_991_073,
-            },
-        ),
-        (
-            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/tts.json",
-            ModelFile {
-                dest: "tts.json",
-                sha256: "42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09",
-                bytes: 8_253,
-            },
-        ),
-        (
-            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/unicode_indexer.bin",
-            ModelFile {
-                dest: "unicode_indexer.bin",
-                sha256: "8402ca48e5189a8950138580b0fff64db6f072f24ac07cd54ba8b2fbb9883b30",
-                bytes: 262_144,
-            },
-        ),
-        (
-            "sherpa-onnx-supertonic-3-tts-int8-2026-05-11/voice.bin",
-            ModelFile {
-                dest: "voice.bin",
-                sha256: "67d5209b0ee8ce6c74105ffbe12fe6a7628aea3b4ba2fcb308a4a67938a93ce8",
-                bytes: 517_168,
-            },
-        ),
-    ],
-}];
+/// Gradium's Phonon 31M, English, at the revision `ptts` 0.7.1 names as its
+/// default model, and its English speakers from Gradium's voice catalogue at
+/// the revision `ptts` names for that -- see [`LocalVoice`] and
+/// `karmayoga_core::speech::PHONON_SPEAKERS`. The model's weights and the
+/// voices are Apache-2.0. Only what the runtime reads is fetched: the
+/// config, the tokenizer, the q8 weights (`ptts` keeps them quantized on a
+/// CPU) and one embedding per speaker; the f32 and q4 weights, and the
+/// voices that are characters rather than people, are left behind.
+const PHONON_SOURCES: &[Source] = &[
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-31m-en/resolve/92741c5b07d085ff840e26fea8ce43110b87852f/config.json",
+        file: ModelFile {
+            dest: "config.json",
+            sha256: "b5d0f88353638370d94035b7d73d7d6577c0554d78f8d7ecfd40490aae39ae85",
+            bytes: 4_634,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-31m-en/resolve/92741c5b07d085ff840e26fea8ce43110b87852f/tokenizer.json",
+        file: ModelFile {
+            dest: "tokenizer.json",
+            sha256: "691a00068fa7b989f2f3e5ae5daa2d1a5bb319f2d5360deafcfb19a8bb6e7936",
+            bytes: 277_967,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-31m-en/resolve/92741c5b07d085ff840e26fea8ce43110b87852f/model.q8.gguf",
+        file: ModelFile {
+            dest: "model.q8.gguf",
+            sha256: "a7d9aad2cd6dc66473f24a08bc6d2939030ef4d751ef82349361fbef3272dbae",
+            bytes: 64_512_352,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/4SZHfMpw-p46Ywgs.safetensors",
+        file: ModelFile {
+            dest: "voice-harper.safetensors",
+            sha256: "6b3da6e2d796a20c51af892c482bd6509fb88267a221aff83c870843dee2a123",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/vjFyp2BcCyTlUmYb.safetensors",
+        file: ModelFile {
+            dest: "voice-everly.safetensors",
+            sha256: "958ea94da14f46dd48c7f64adac11ed2ad2aa45f7ccd165dfebab5272664402e",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/bXwrkHhURL1VFJdG.safetensors",
+        file: ModelFile {
+            dest: "voice-hadley.safetensors",
+            sha256: "a879938aa9a2df0a8220bdadef88137929f71e887bd91e7db205bd5fa11661d2",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/nGzMHMPAWGaJFHOo.safetensors",
+        file: ModelFile {
+            dest: "voice-delia.safetensors",
+            sha256: "a0c3dcb91b2247eca56536be9ae8e8becc1c807b1136c5fe101552d6a155b24a",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/NIWIOv5vTi5eRMj8.safetensors",
+        file: ModelFile {
+            dest: "voice-juniper.safetensors",
+            sha256: "444378eb06b7c492b86e8fc7d13e4db1a3c0cf3e68891a960bf6f0a41a13ef35",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/NbpkqMVS3CJeq2j8.safetensors",
+        file: ModelFile {
+            dest: "voice-zoey.safetensors",
+            sha256: "97c7f8c253413574406ab80dd23f49c3ebb2517163b00a9bf86b9c4cf43e7e23",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/d9XCyhjo4JhkHF1d.safetensors",
+        file: ModelFile {
+            dest: "voice-miles.safetensors",
+            sha256: "eab20e4f159b48cfbc01b1885804e24f681f80e7a64f909182763a4e3361bee8",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/qIxlZ7Ei8KvWlyQH.safetensors",
+        file: ModelFile {
+            dest: "voice-preston.safetensors",
+            sha256: "6e04b84d3ae8751b22bca0a4f63936f9cb648f4f2182b2d0788071ea1c0b68a1",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/0zLApsZfVLLNaEGl.safetensors",
+        file: ModelFile {
+            dest: "voice-trevor.safetensors",
+            sha256: "dc1341c8937af5534e6bbcc5c0fc5e7c10312229b59061228074f93683fe2261",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/LMDIYE0Oa377Qh6Z.safetensors",
+        file: ModelFile {
+            dest: "voice-easton.safetensors",
+            sha256: "45c582673cb20edb04ddcca2b5a8865ddfb0a82599efadb269021e87d20fbdd4",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/40QrMVgAxFiUnP9f.safetensors",
+        file: ModelFile {
+            dest: "voice-micah.safetensors",
+            sha256: "0de1098d1051686a138d068e83ff09deb5053328bc74ec9541a1fdb90bfc24da",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/_6Aslh2DxfmnRLmP.safetensors",
+        file: ModelFile {
+            dest: "voice-russell.safetensors",
+            sha256: "beae9e4030efce0a935fcb0f807dc0784d598bcaa87ad4aacb047436b1eaa411",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/6PWnV0Nq4wu7RVBT.safetensors",
+        file: ModelFile {
+            dest: "voice-maeve.safetensors",
+            sha256: "56494ee67d533ad227ff0dfd0b1c13ff5aa91f1ad6e596e66c2986ba3005e844",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/gfP44RlHwr2kEwk7.safetensors",
+        file: ModelFile {
+            dest: "voice-bryony.safetensors",
+            sha256: "bcc207a73b7885e45b49ab633d3377a10158292e3a7cef9cd6764ad107f1cb9b",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/gDT1nz7Ie36ZhL-C.safetensors",
+        file: ModelFile {
+            dest: "voice-imogen.safetensors",
+            sha256: "1980ab3c35fa98a25b5f3b5e643fd852e14ca8a12a4a26b06aaf1abf2a8c68b1",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/uem82D50GRv2Dwma.safetensors",
+        file: ModelFile {
+            dest: "voice-pippa.safetensors",
+            sha256: "d41a8f01d6e33450f1ce062d332914da10beee99e585dab531750706f187c48a",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/m9MxpY6IUGXtWp76.safetensors",
+        file: ModelFile {
+            dest: "voice-lottie.safetensors",
+            sha256: "a906ebf17e43fded12b3d6bd077abb2df33bc86eff51c1beeb82e5d416527db3",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/GgfEkEJtxZR7gnpy.safetensors",
+        file: ModelFile {
+            dest: "voice-freya.safetensors",
+            sha256: "eb3cd47418349e618408c16bea7153988b3ad04b41a6033039dd474a9a4dcd23",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/y9bQqIDnyxwqK01t.safetensors",
+        file: ModelFile {
+            dest: "voice-elodie-rose.safetensors",
+            sha256: "21eade9d83b2e66b9364e1b6cd999a3a6704c000a71f27f34e05ace5cdfd58bb",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/zUCxzrOrugTSis03.safetensors",
+        file: ModelFile {
+            dest: "voice-edwin.safetensors",
+            sha256: "ff1d0735b8b45710462b1d1f846da040f970c6eb62c7c2f36dbfb8e5bde74f1e",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/YyKcxPG7iIgS3jsK.safetensors",
+        file: ModelFile {
+            dest: "voice-hugh.safetensors",
+            sha256: "3169d74b47a54d1eb15e4c243f56393abe9fe90c7e1c308ecf96ee67618b152a",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/JOW0vchyswkQUMDS.safetensors",
+        file: ModelFile {
+            dest: "voice-spencer.safetensors",
+            sha256: "cc9ac1107b0ffce282374a19beb7bfa95847724e6b7afbac991b4ae4277d5e6d",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/dME3IWyZBvmh1n1q.safetensors",
+        file: ModelFile {
+            dest: "voice-toby.safetensors",
+            sha256: "09ab315c7f4b72b4d71e66cb756184cedfb1f14d222d096e115bf95bfe7b29dc",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/Zn7g6NxLqXlJb7Qi.safetensors",
+        file: ModelFile {
+            dest: "voice-teddy.safetensors",
+            sha256: "baea0ea9506f3237a5ebfc61afb7c72dbd189c5603b199ef42fbb00dbda379e0",
+            bytes: 256_136,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/gradium/phonon-voices/resolve/da6c9ec0d47be8df5c87c730a3aa97187f3229c3/voices/X6NceqF285Gr04gb.safetensors",
+        file: ModelFile {
+            dest: "voice-alfie.safetensors",
+            sha256: "4de75497fff3030168e8aa6dca23ffeb332b1bc8c25d0bf3507ceadac953ae9c",
+            bytes: 256_136,
+        },
+    },
+];
 
 /// What a decision model's one file is called inside its directory.
 const DECISION_MODEL_FILE: &str = "model.gguf";
@@ -451,12 +620,12 @@ pub static CATALOGUE: [ModelSpec; 7] = [
         sources: D3_MINI_SOURCES,
     },
     ModelSpec {
-        id: "supertonic3",
+        id: "phonon",
         kind: ModelKind::Voice,
-        name: "Supertonic 3",
-        description: "Ten voices that run on this computer, quicker than they speak.",
-        languages: "English and 30 other languages",
-        sources: SUPERTONIC3_SOURCES,
+        name: "Phonon 31M",
+        description: "Twenty-five natural voices that run on this computer, many times quicker than they speak.",
+        languages: "English",
+        sources: PHONON_SOURCES,
     },
 ];
 
@@ -620,6 +789,7 @@ pub fn start_download(id: &str) -> Result<(), String> {
         match outcome {
             Ok(()) => {
                 registry().lock().unwrap().remove(spec.id);
+                forget_retired(spec.id).await;
             }
             Err(Outcome::Cancelled) => {
                 registry().lock().unwrap().remove(spec.id);
@@ -630,6 +800,29 @@ pub fn start_download(id: &str) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+/// Models this application no longer offers, by their old catalogue id, and
+/// the one that replaced each. Nothing lists a retired model any more, so
+/// nothing in settings could delete its folder; it goes once its replacement
+/// has downloaded, and not before, so that a failed download leaves nobody
+/// with neither.
+const RETIRED: &[(&str, &str)] = &[("supertonic3", "phonon")];
+
+async fn forget_retired(installed: &str) {
+    for (retired, by) in RETIRED {
+        if *by != installed {
+            continue;
+        }
+        let dir = models_dir().join(retired);
+        match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => tracing::info!(model = retired, "removed a model no longer offered"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(model = retired, error = %e, "could not remove a retired model")
+            }
+        }
+    }
 }
 
 /// Ask `id`'s download to stop, if one is running. Takes effect at the next
@@ -1018,15 +1211,15 @@ pub fn voice_installed(voice: LocalVoice) -> bool {
     spec(voice.id()).is_some_and(is_installed)
 }
 
-/// Where a voice's files are, once [`voice_installed`].
+/// Where a voice's files are, once [`voice_installed`]: what `ptts` is
+/// handed to load Phonon, and each speaker's embedding by its
+/// [`PHONON_SPEAKERS`](karmayoga_core::speech::PHONON_SPEAKERS) name.
 pub struct VoicePaths {
-    pub duration_predictor: PathBuf,
-    pub text_encoder: PathBuf,
-    pub vector_estimator: PathBuf,
-    pub vocoder: PathBuf,
-    pub tts_json: PathBuf,
-    pub unicode_indexer: PathBuf,
-    pub voice_style: PathBuf,
+    pub config: PathBuf,
+    pub tokenizer: PathBuf,
+    pub weights: PathBuf,
+    /// In speaker order: `(name, file)`.
+    pub speakers: Vec<(&'static str, PathBuf)>,
 }
 
 pub fn voice_paths(voice: LocalVoice) -> Option<VoicePaths> {
@@ -1035,15 +1228,22 @@ pub fn voice_paths(voice: LocalVoice) -> Option<VoicePaths> {
         return None;
     }
     let dir = spec.dir();
-    Some(VoicePaths {
-        duration_predictor: dir.join("duration_predictor.int8.onnx"),
-        text_encoder: dir.join("text_encoder.int8.onnx"),
-        vector_estimator: dir.join("vector_estimator.int8.onnx"),
-        vocoder: dir.join("vocoder.int8.onnx"),
-        tts_json: dir.join("tts.json"),
-        unicode_indexer: dir.join("unicode_indexer.bin"),
-        voice_style: dir.join("voice.bin"),
-    })
+    match voice {
+        LocalVoice::Phonon => Some(VoicePaths {
+            config: dir.join("config.json"),
+            tokenizer: dir.join("tokenizer.json"),
+            weights: dir.join("model.q8.gguf"),
+            speakers: karmayoga_core::speech::PHONON_SPEAKERS
+                .iter()
+                .map(|name| (*name, dir.join(phonon_speaker_file(name))))
+                .collect(),
+        }),
+    }
+}
+
+/// The file a Phonon speaker's embedding is kept under.
+fn phonon_speaker_file(name: &str) -> String {
+    format!("voice-{}.safetensors", name.to_lowercase())
 }
 
 /// Where a recogniser's files are, once [`installed`]. The two local
@@ -1140,6 +1340,29 @@ mod tests {
         }
         assert_eq!(catalogue_of(ModelKind::Decision).count(), LocalDecisionModel::ALL.len());
         assert!(catalogue_of(ModelKind::Speech).all(|s| spec(s.id).is_some()));
+    }
+
+    #[test]
+    fn the_local_voice_downloads_a_file_for_every_speaker_it_offers() {
+        let spec = spec(LocalVoice::Phonon.id()).expect("the local voice is in the catalogue");
+        assert_eq!(spec.kind, ModelKind::Voice);
+        let dests: Vec<&str> = spec.files().iter().map(|f| f.dest).collect();
+        for name in karmayoga_core::speech::PHONON_SPEAKERS {
+            let file = phonon_speaker_file(name);
+            assert!(dests.contains(&file.as_str()), "{name} has no {file} to download");
+        }
+        for wanted in ["config.json", "tokenizer.json", "model.q8.gguf"] {
+            assert!(dests.contains(&wanted), "the voice is missing {wanted}");
+        }
+        assert_eq!(dests.len(), 3 + karmayoga_core::speech::PHONON_SPEAKERS.len());
+    }
+
+    #[test]
+    fn a_retired_model_is_not_offered_and_its_replacement_is() {
+        for (retired, by) in RETIRED {
+            assert!(spec(retired).is_none(), "{retired} is retired but still offered");
+            assert!(spec(by).is_some(), "{retired}'s replacement {by} is not offered");
+        }
     }
 
     #[test]

@@ -60,11 +60,15 @@ Reproduced below in full:
   51. mp4 — © Alfred Gutierrez, https://github.com/alfg/mp4-rust
   52. notify — © Félix Saparelli and contributors, https://github.com/notify-rs/notify
   53. sonora — © 2011 The WebRTC Project Authors, 2016 Arun Raghavan and contributors, 2026 dignifiedquire, https://github.com/dignifiedquire/sonora
-  54. Supertonic 3 (model) — © Supertone Inc., https://huggingface.co/Supertone/supertonic-3
+  54. Phonon 31M (model) — © Gradium, https://huggingface.co/gradium/phonon-31m-en
   55. str0m — © 2022 Martin Algesten, https://github.com/algesten/str0m
   56. Opus (libopus) — © 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon, https://opus-codec.org
   57. opus (Rust bindings) — © 2016 Tad Hardesty, https://github.com/SpaceManiac/opus-rs
   58. if-addrs — © 2018 MaidSafe.net limited, 2020 messense, https://github.com/messense/if-addrs
+  59. Phonon voices — © Gradium, https://huggingface.co/gradium/phonon-voices
+  60. ptts and xn — Gradium's text-to-speech runtime and the tensor library it runs on, https://github.com/gradium-ai/xn-ptts and https://github.com/LaurentMazare/xn
+  61. xn-gemm — © 2021 sarah, https://github.com/gradium-ai/gemm
+  62. tokenizers — © Hugging Face, https://github.com/huggingface/tokenizers
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -1725,7 +1729,9 @@ recognisers through `sherpa-onnx` (https://github.com/k2-fsa/sherpa-onnx),
 Apache-2.0 licensed. It links its own native library statically; see
 `crates/karmayoga-service/Cargo.toml`'s own comment on that dependency and
 `.github/workflows/check.yml` for how CI caches the prebuilt archive it
-downloads at build time.
+downloads at build time. From version 2.0 its static libraries contain neither
+espeak-ng nor piper-phonemize, both GPL-3 licensed, so nothing under that licence
+comes in this way.
 
 
                                  Apache License
@@ -3814,14 +3820,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## 54. Supertonic 3
+## 54. Phonon 31M
 
-The voice that runs on this computer is Supertonic 3 by Supertone Inc., as
-sherpa-onnx exports it (`sherpa-onnx-supertonic-3-tts-int8-2026-05-11`). It is
-not part of this application: it is downloaded from sherpa-onnx's `tts-models`
-release when somebody chooses it in Settings → Models. Its sample code is MIT
-licensed and its model weights are under the OpenRAIL-M licence, which restricts
-harmful uses: https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE
+The voice that runs on this computer is Phonon 31M, English, by Gradium
+(`gradium/phonon-31m-en`, revision `92741c5b07d085ff840e26fea8ce43110b87852f`),
+as a quantised GGUF file. It is not part of this application: it is downloaded
+from Hugging Face, at that pinned revision, when somebody chooses it in
+Settings → Models. Apache-2.0 licensed; see entry 32 above for the licence text,
+reproduced there rather than again. Used as published.
 
 ---
 
@@ -3943,3 +3949,89 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
+
+---
+
+## 59. Phonon voices
+
+The speakers Phonon 31M can take are Gradium's English voices
+(`gradium/phonon-voices`, revision `da6c9ec0d47be8df5c87c730a3aa97187f3229c3`,
+25 of them), one small file each. Like the model, they are not part of this
+application: they are downloaded from Hugging Face, at that pinned revision,
+alongside it. Apache-2.0 licensed; see entry 32 above for the licence text,
+reproduced there rather than again. Used as published.
+
+
+---
+
+## 60. ptts and xn
+
+`speech::synth::local` runs Phonon with `ptts`
+(https://github.com/gradium-ai/xn-ptts), Gradium's pure Rust runtime for it,
+on `xn` (https://github.com/LaurentMazare/xn), the tensor library `ptts` is
+built on. There is no native library and no phonemiser behind either. Both are
+dual-licensed MIT or Apache-2.0; used here under MIT. Their licence files carry
+no copyright line.
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+---
+
+## 61. xn-gemm
+
+`xn` multiplies matrices with `xn-gemm`, Gradium's fork of `gemm`
+(https://github.com/gradium-ai/gemm). MIT licensed.
+
+MIT License
+
+Copyright (c) 2021 sarah
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 62. tokenizers
+
+`ptts` reads Phonon's `tokenizer.json` with Hugging Face's `tokenizers`
+(https://github.com/huggingface/tokenizers), built without its C parts. Apache-2.0
+licensed; see entry 32 above for the licence text, reproduced there rather than
+again.

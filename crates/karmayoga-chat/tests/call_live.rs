@@ -5,7 +5,7 @@
 //! The owner's side is what FluffyChat does on a call: an `m.call.invite`
 //! carrying a WebRTC offer (Opus, one audio section, the host candidate of
 //! this machine's own address, as a phone on the tailnet offers its tailnet
-//! address), then audio. What it says is Supertonic's voice asking a question;
+//! address), then audio. What it says is Phonon's voice asking a question;
 //! what comes back is decoded, and Parakeet has to hear the scripted model's
 //! answer in it. The thread has to hold both, marked as from the chat.
 //!
@@ -14,7 +14,7 @@
 //! `#[ignore]`, and needs three things on top of `matrix_live.rs`'s throwaway
 //! Conduit (see that file): `KARMAYOGA_TEST_MATRIX_URL`,
 //! `KARMAYOGA_TEST_SPEECH=1`, and the speech kit and Parakeet in the models
-//! folder (Supertonic is downloaded if missing). Built only with the `speech`
+//! folder (Phonon is downloaded if missing). Built only with the `speech`
 //! feature:
 //!
 //! ```text
@@ -181,10 +181,8 @@ fn assistant(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
     settings.medium.model.model = "scripted".into();
     settings.speech =
         Some(SpeechConfig::new(TranscriberConfig::Local { model: LocalModel::ParakeetV3 }));
-    settings.voice = Some(VoiceConfig::new(SynthesiserConfig::Local {
-        voice: LocalVoice::Supertonic3,
-        speaker: 0,
-    }));
+    settings.voice =
+        Some(VoiceConfig::new(SynthesiserConfig::Local { voice: LocalVoice::Phonon, speaker: 0 }));
     vault.save_model_settings(&settings).unwrap();
 
     let svc = Arc::new(Service::new());
@@ -195,12 +193,12 @@ fn assistant(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
 }
 
 async fn install_voice() {
-    if !models::voice_installed(LocalVoice::Supertonic3) {
-        models::start_download(LocalVoice::Supertonic3.id()).expect("the download starts");
+    if !models::voice_installed(LocalVoice::Phonon) {
+        models::start_download(LocalVoice::Phonon.id()).expect("the download starts");
     }
     let began = Instant::now();
-    while !models::voice_installed(LocalVoice::Supertonic3) {
-        if let Some(error) = models::last_error(LocalVoice::Supertonic3.id()) {
+    while !models::voice_installed(LocalVoice::Phonon) {
+        if let Some(error) = models::last_error(LocalVoice::Phonon.id()) {
             panic!("the voice did not download: {error}");
         }
         assert!(began.elapsed() < Duration::from_secs(300), "the voice took too long");
@@ -515,9 +513,9 @@ async fn the_owner_calls_the_assistant_and_hears_its_answer() {
     )
     .unwrap();
 
-    step("the question, in Supertonic's voice, at the call's rate");
+    step("the question, in Phonon's voice, at the call's rate");
     let vault = svc.get().unwrap();
-    let voice = build_synthesiser(vault.voice_access().unwrap(), Some("en".into())).await.unwrap();
+    let voice = build_synthesiser(vault.voice_access().unwrap()).await.unwrap();
     let asked = voice.synthesise(ASKED).await.unwrap();
     let floats = karmayoga_service::speech::pcm::to_f32(&asked.samples);
     let say = karmayoga_service::speech::pcm::to_i16(

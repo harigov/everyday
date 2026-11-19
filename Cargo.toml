@@ -85,6 +85,26 @@ tracing = "0.1"
 # and cargo's default sixteen codegen units, so each crate's code is
 # generated in parallel and the last link does not re-optimise the whole
 # program. Shipping it is `dist`'s job, below.
+# The voice on this computer is a neural network run in pure Rust (`ptts` on
+# `xn` and its matrix kernels), so an unoptimised build of it speaks about
+# fifteen times slower than real time: a debug app, and the real-model voice
+# test, would wait seconds per sentence. Only these crates are optimised in
+# dev and test builds; everything else keeps its quick, debuggable build.
+[profile.dev.package.ptts]
+opt-level = 3
+[profile.dev.package.xn]
+opt-level = 3
+[profile.dev.package.xn-gemm]
+opt-level = 3
+[profile.dev.package.xn-gemm-common]
+opt-level = 3
+[profile.dev.package.xn-gemm-f16]
+opt-level = 3
+[profile.dev.package.xn-gemm-f32]
+opt-level = 3
+[profile.dev.package.pulp]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 # Unwind, not abort. The supervisor restarts a background task that panics,

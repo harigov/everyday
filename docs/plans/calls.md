@@ -91,8 +91,8 @@ serve` on a machine with no screen and no sound card.
   connector and a fake call backend in `tests/relay.rs`.
 - The media over loopback against a second str0m peer playing the phone.
 - End to end, `tests/call_live.rs`: a throwaway Conduit, the real runner,
-  Parakeet and Supertonic, and a str0m peer playing the phone over this
-  machine's own address. The phone asks a question in Supertonic's voice;
+  Parakeet and Phonon, and a str0m peer playing the phone over this
+  machine's own address. The phone asks a question in Phonon's voice;
   Parakeet must hear the scripted answer in what comes back, and the thread
   must hold both. `#[ignore]` and built only with `--features speech`:
 

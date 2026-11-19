@@ -13,7 +13,7 @@
 //!   utterance   one stretch of speech -> words synth     words -> audio
 //!   live        a stream -> words as they come narrate   sentences -> audio, in order
 //!   transcribe  chunks of a recording -> words
-//!   local       the models on this computer
+//!   local       the models on this computer    tempo     audio faster or slower, same pitch
 //!
 //!   pcm, wav    sample and file conversions everything shares
 //!   resample    one rate to another, for devices and calls
@@ -32,6 +32,7 @@ pub mod narrate;
 pub mod pcm;
 pub mod resample;
 pub mod synth;
+pub mod tempo;
 pub mod text;
 pub mod transcribe;
 pub mod utterance;
