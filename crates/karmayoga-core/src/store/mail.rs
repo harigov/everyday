@@ -368,6 +368,14 @@ pub trait MailStore: Send + Sync {
     /// What the account task's drain loop reads on every pass.
     fn due_ops(&self, account: AccountId, now: Timestamp, limit: u32) -> Result<Vec<Op>>;
 
+    /// [`MailStore::due_ops`], but only the ops aimed at no thread: every op
+    /// on a draft -- `Send`, `AppendDraft`, `DiscardDraft` -- and any on a
+    /// single message. What a drain that wants only the sends reads, so a
+    /// backlog of thread moves ahead of a send in creation order cannot hide
+    /// it past `limit`. None of these is ever held back behind another op.
+    fn due_unthreaded_ops(&self, account: AccountId, now: Timestamp, limit: u32)
+    -> Result<Vec<Op>>;
+
     /// The earliest `not_before` among `account`'s
     /// [`crate::mail::OpState::Pending`] ops, due or not -- `None` when
     /// there are none. What the account task's `select!` sleeps until, so an
@@ -375,6 +383,10 @@ pub trait MailStore: Send + Sync {
     /// rather than on [`crate::mailsync`]'s own poll cadence; the same path
     /// paces retry backoff, since a backed-off op is `Pending` with a later
     /// `not_before` like any other.
+    ///
+    /// An op [`MailStore::due_ops`] holds back behind an older pending op of
+    /// the same thread does not count: it cannot drain before that elder
+    /// does, so its own `not_before`, already past, is no moment to wake for.
     fn next_pending_op_at(&self, account: AccountId) -> Result<Option<Timestamp>>;
 
     /// Every op of `account`'s left [`crate::mail::OpState::InFlight`] --

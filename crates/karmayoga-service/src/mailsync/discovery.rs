@@ -56,6 +56,11 @@ pub struct SyncedMailbox {
     /// `IDLE` to hear about it. Never stored -- `row.uidnext` is the vault's,
     /// and means something else (see `passes::sync_headers`).
     pub seen_uidnext: Uid,
+    /// `EXISTS` as the last full pass's `SELECT` of the mailbox counted it.
+    /// With `HIGHESTMODSEQ`, what tells the account task that something
+    /// changed while it was not in `IDLE` to hear about it -- see
+    /// `crate::mailsync::task`'s "a full pass only when one is owed".
+    pub seen_exists: u32,
 }
 
 fn to_mailbox_role(role: Role) -> MailboxRole {
@@ -137,6 +142,7 @@ pub async fn discover<S: MailSession>(
             row,
             remote_name: remote_mailbox.name.clone(),
             seen_uidnext: 0,
+            seen_exists: 0,
         });
     }
 

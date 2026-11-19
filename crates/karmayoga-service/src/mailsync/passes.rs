@@ -185,6 +185,36 @@ pub async fn sync_once<S: MailSession>(
     labels: &mut LabelMailboxes,
     threads: &mut ThreadIndex,
 ) -> SessionResult<Vec<SyncedMailbox>> {
+    sync_once_with(ctx, session, labels, threads, &mut ()).await
+}
+
+/// What [`sync_once_with`] lends its session to between mailboxes.
+///
+/// A trait rather than an async closure: the closure, capturing references,
+/// left the account task's future not provably `Send`.
+#[allow(async_fn_in_trait)]
+pub trait BetweenMailboxes<S: MailSession> {
+    async fn between(&mut self, session: &mut S);
+}
+
+/// Nothing between mailboxes: [`sync_once`].
+impl<S: MailSession> BetweenMailboxes<S> for () {
+    async fn between(&mut self, _session: &mut S) {}
+}
+
+/// [`sync_once`], lending the session to `between` once each mailbox's
+/// headers are in and once each mailbox's bodies are -- the points where
+/// that is safe, since every step after one selects its own mailbox first.
+/// What the account task sends due mail from, so that a message somebody
+/// pressed Send on goes at the next mailbox rather than once the whole pass
+/// is over, which on a big account, or behind a large attachment, is minutes.
+pub async fn sync_once_with<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    labels: &mut LabelMailboxes,
+    threads: &mut ThreadIndex,
+    between: &mut impl BetweenMailboxes<S>,
+) -> SessionResult<Vec<SyncedMailbox>> {
     let mut mailboxes = discovery::discover(ctx.vault, ctx.account_id, session).await?;
     let mut vanished_by_mailbox = Vec::with_capacity(mailboxes.len());
     let mut all_mail_read_whole = None;
@@ -194,6 +224,7 @@ pub async fn sync_once<S: MailSession>(
             all_mail_read_whole = Some(mailbox.row.id);
         }
         vanished_by_mailbox.push(pass.vanished);
+        between.between(session).await;
     }
     settle_reply_candidates(ctx);
     for (mailbox, vanished) in mailboxes.iter().zip(&vanished_by_mailbox) {
@@ -206,6 +237,7 @@ pub async fn sync_once<S: MailSession>(
     }
     for mailbox in &mailboxes {
         bodies_pass(ctx, session, mailbox).await?;
+        between.between(session).await;
     }
     let _ = ctx.index.commit();
     if let Some(contacts) = &ctx.contacts {
@@ -440,6 +472,7 @@ pub async fn sync_headers<S: MailSession>(
     let known: UidSet =
         ctx.vault.mail_uid_set(mailbox.row.id).unwrap_or_default().into_iter().collect();
     mailbox.seen_uidnext = state.uidnext;
+    mailbox.seen_exists = state.exists;
     // Nothing has happened to a mailbox whose `UIDNEXT`, `HIGHESTMODSEQ` and
     // message count all stand where the last finished pass left them: no uid
     // is new, no flag or label moved, and nothing went that something else

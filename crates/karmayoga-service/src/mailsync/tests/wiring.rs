@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 use jiff::Timestamp;
 use karmayoga_core::mail::{Address, Draft, MailboxRole, OpKind, OpState, Origin};
 use karmayoga_core::store::mail::ThreadFilter;
+use karmayoga_mail::compose::Built;
 use karmayoga_mail::session::{GmailMeta, Role};
+use karmayoga_mail::smtp::SendReceipt;
 
 use crate::events::{Change, EventSink, Kind};
 use crate::mailsync::discovery::LabelMailboxes;
@@ -705,6 +707,417 @@ async fn a_send_at_op_drains_at_its_own_time_not_the_poll_interval() {
 
     stop_tx.send(true).unwrap();
     handle.await.unwrap().unwrap();
+}
+
+/// A fake sender that notes, each time it is asked to send, how many full
+/// passes the session had begun by then -- each starts by listing the
+/// mailboxes, `discover` in the fake's command log -- and how long that log
+/// was.
+#[derive(Clone)]
+struct PassCountingSender {
+    log: Arc<Mutex<Vec<String>>>,
+    passes_at_send: Arc<Mutex<Vec<usize>>>,
+    log_at_send: Arc<Mutex<Vec<usize>>>,
+}
+
+impl PassCountingSender {
+    fn new(session: &FakeMailSession) -> Self {
+        Self {
+            log: session.command_log(),
+            passes_at_send: Arc::default(),
+            log_at_send: Arc::default(),
+        }
+    }
+
+    fn passes(&self) -> usize {
+        self.log.lock().unwrap().iter().filter(|c| *c == "discover").count()
+    }
+}
+
+impl karmayoga_mail::outbox::Sender for PassCountingSender {
+    async fn send(&self, built: &Built) -> karmayoga_mail::session::Result<SendReceipt> {
+        let passes = self.passes();
+        self.passes_at_send.lock().unwrap().push(passes);
+        let logged = self.log.lock().unwrap().len();
+        self.log_at_send.lock().unwrap().push(logged);
+        Ok(SendReceipt { accepted: built.envelope_to.clone(), server_response: "250 Ok".into() })
+    }
+}
+
+/// The account's task over `session`, sending with `sender`, handed back
+/// once it has finished its first pass and is waiting.
+async fn spawn_idling(
+    svc: &Arc<crate::service::Service>,
+    vault: &Arc<karmayoga_core::Vault>,
+    account_id: karmayoga_core::id::AccountId,
+    session: FakeMailSession,
+    sender: PassCountingSender,
+) -> (tokio::sync::watch::Sender<bool>, tokio::task::JoinHandle<crate::supervisor::TaskResult>) {
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let (svc_task, vault_task) = (svc.clone(), vault.clone());
+    let handle = tokio::spawn(async move {
+        crate::mailsync::task::run_account_with(
+            svc_task,
+            vault_task,
+            account_id,
+            stop_rx,
+            move |_account, _credential| {
+                let session = session.clone();
+                async move { Ok(session) }
+            },
+            move |_account, _svc, _vault| sender,
+        )
+        .await
+    });
+    settle(|| {
+        matches!(
+            svc.mail_statuses()
+                .unwrap()
+                .all()
+                .iter()
+                .find(|p| p.account_id == account_id)
+                .map(|p| p.phase),
+            Some(crate::mailsync::status::Phase::Idling)
+        )
+    })
+    .await;
+    (stop_tx, handle)
+}
+
+/// A reply to bob, queued to send `in_secs` from now.
+fn queue_send(
+    vault: &karmayoga_core::Vault,
+    account_id: karmayoga_core::id::AccountId,
+    in_secs: i64,
+) -> karmayoga_core::mail::Op {
+    let mut draft = Draft::new(account_id, "me@example.com", Origin::Person);
+    draft.to = vec![Address::bare("bob@example.com")];
+    draft.subject = "Soon".into();
+    draft.body_html = "<p>Soon</p>".into();
+    vault.save_draft(&draft).unwrap();
+    let not_before = Timestamp::now() + jiff::SignedDuration::from_secs(in_secs);
+    vault.queue_draft_send(draft.id, not_before, Origin::Person).unwrap().1
+}
+
+/// The regression for the reply that sat at "Sending…" for three minutes on
+/// Nov 19 2026: pressing Send woke the task inside the undo window, it found
+/// nothing due yet, and ran a full pass before it came back for the send --
+/// every send waited for one, and that one took 2 m 40 s. A turn the outbox
+/// wakes now only drains, and the send goes as its window ends with no pass
+/// begun in between.
+///
+/// Wall-clock seconds, as in `a_send_at_op_drains_at_its_own_time_not_the_poll_interval`:
+/// due-ness is read from `jiff::Timestamp::now`.
+#[tokio::test]
+async fn a_send_goes_as_its_undo_window_ends_without_waiting_for_a_pass() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let session = FakeMailSession::new(plain_server()).blocking_idle();
+    let sender = PassCountingSender::new(&session);
+    let (stop_tx, handle) = spawn_idling(&svc, &vault, account_id, session, sender.clone()).await;
+    let passes = sender.passes();
+
+    let op = queue_send(&vault, account_id, 2);
+    // What `send_draft` does as it queues the send, inside the undo window.
+    svc.notify_outbox(account_id);
+    settle_up_to(std::time::Duration::from_secs(30), || {
+        vault.op(op.id).map(|o| o.state == OpState::Done).unwrap_or(false)
+    })
+    .await;
+
+    assert_eq!(
+        *sender.passes_at_send.lock().unwrap(),
+        vec![passes],
+        "no full pass may begin between pressing Send and the send"
+    );
+    stop_tx.send(true).unwrap();
+    handle.await.unwrap().unwrap();
+}
+
+/// A pass about to start -- for a nudge here; for new mail or the sync
+/// interval as often -- waits for a send due within seconds and sends it
+/// first, rather than holding it for as long as the pass takes.
+#[tokio::test]
+async fn a_pass_about_to_start_lets_a_send_due_in_seconds_go_first() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let session = FakeMailSession::new(plain_server()).blocking_idle();
+    let sender = PassCountingSender::new(&session);
+    let (stop_tx, handle) = spawn_idling(&svc, &vault, account_id, session, sender.clone()).await;
+    let passes = sender.passes();
+
+    let op = queue_send(&vault, account_id, 2);
+    svc.mail_statuses().unwrap().nudge(account_id);
+    settle_up_to(std::time::Duration::from_secs(30), || {
+        vault.op(op.id).map(|o| o.state == OpState::Done).unwrap_or(false)
+    })
+    .await;
+
+    assert_eq!(
+        *sender.passes_at_send.lock().unwrap(),
+        vec![passes],
+        "the nudged pass waits for the send"
+    );
+    // And the pass the nudge asked for still runs.
+    settle_up_to(std::time::Duration::from_secs(10), || sender.passes() > passes).await;
+    stop_tx.send(true).unwrap();
+    handle.await.unwrap().unwrap();
+}
+
+/// A drain that moved mail is followed by a pass: off Gmail a moved message
+/// has a new uid in the mailbox it went to, which only a pass learns, and the
+/// next op on it needs. Here between two mailboxes neither of which is the
+/// inbox, so nothing `IDLE` watches changed.
+#[tokio::test(start_paused = true)]
+async fn a_drain_that_moved_mail_is_followed_by_a_pass() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        s.mailbox("Trash", Some(Role::Trash));
+        s.append(
+            "Archive",
+            raw_message(
+                "filed@example.com",
+                None,
+                "ada@example.com",
+                "Filed",
+                "01 Jan 2024 10:00:00 +0000",
+                "x",
+            ),
+            flags_seen(),
+            None,
+        );
+    }
+    let session = FakeMailSession::new(server.clone()).blocking_idle();
+    let sender = PassCountingSender::new(&session);
+    let (stop_tx, handle) = spawn_idling(&svc, &vault, account_id, session, sender.clone()).await;
+    let passes = sender.passes();
+
+    let archive = vault
+        .mailboxes(account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Archive)
+        .unwrap();
+    let thread =
+        vault.list_threads(archive.id, &ThreadFilter::default(), None, 10).unwrap().threads[0].id;
+    let op = vault.apply_thread_ops(&[thread], OpKind::Trash, Origin::Person).unwrap().remove(0);
+    svc.notify_outbox(account_id);
+
+    settle(|| vault.op(op.id).map(|o| o.state == OpState::Done).unwrap_or(false)).await;
+    settle(|| sender.passes() > passes).await;
+    let trash = vault
+        .mailboxes(account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Trash)
+        .unwrap();
+    settle(|| !vault.mail_uid_set(trash.id).unwrap().is_empty()).await;
+    stop_tx.send(true).unwrap();
+    handle.await.unwrap().unwrap();
+}
+
+/// Read on a phone while the task was draining rather than in `IDLE`, which
+/// hears only what changes after it starts: the inbox's `HIGHESTMODSEQ` has
+/// moved since the last pass, so a pass runs now rather than at the sync
+/// interval.
+#[tokio::test(start_paused = true)]
+async fn an_inbox_changed_outside_idle_gets_a_pass_after_an_outbox_wake() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = plain_server();
+    let uid = server.lock().unwrap().append(
+        "INBOX",
+        raw_message(
+            "unread@example.com",
+            None,
+            "ada@example.com",
+            "Unread",
+            "01 Jan 2024 10:00:00 +0000",
+            "x",
+        ),
+        karmayoga_mail::session::Flags::NONE,
+        None,
+    );
+    let session = FakeMailSession::new(server.clone()).blocking_idle();
+    let sender = PassCountingSender::new(&session);
+    let (stop_tx, handle) = spawn_idling(&svc, &vault, account_id, session, sender.clone()).await;
+    let passes = sender.passes();
+
+    // The fake's `IDLE` hears nothing of a flag change: as if it happened
+    // between one `IDLE` and the next.
+    server.lock().unwrap().set_flags("INBOX", uid, karmayoga_mail::session::Flags::SEEN);
+    svc.notify_outbox(account_id);
+
+    settle(|| sender.passes() > passes).await;
+    let inbox = vault
+        .mailboxes(account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .unwrap();
+    settle(|| vault.message_by_uid(inbox.id, uid).unwrap().is_some_and(|m| !m.flags.unread()))
+        .await;
+    stop_tx.send(true).unwrap();
+    handle.await.unwrap().unwrap();
+}
+
+/// A send that comes due while a pass is running goes between two of its
+/// mailboxes, not once the whole pass is over -- and only sends: an archive
+/// due as well waits for the drain after the pass, where it always ran.
+#[tokio::test]
+async fn a_send_due_during_a_pass_goes_between_two_mailboxes() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = plain_server();
+    server.lock().unwrap().append(
+        "INBOX",
+        raw_message(
+            "hi@example.com",
+            None,
+            "ada@example.com",
+            "Hi",
+            "01 Jan 2024 10:00:00 +0000",
+            "x",
+        ),
+        flags_seen(),
+        None,
+    );
+    let mut session = FakeMailSession::new(server);
+    let statuses = svc.mail_statuses().unwrap();
+    let ctx = SyncContext {
+        vault: &vault,
+        account_id,
+        packs: svc.packs().unwrap(),
+        index: svc.mail_index().unwrap(),
+        statuses: &statuses,
+        attachment_cap_bytes: None,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
+        identities: Vec::new(),
+    };
+    let mut labels = LabelMailboxes::new(&vault, account_id);
+    let mut threads = ThreadIndex::new();
+    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+
+    let inbox = vault
+        .mailboxes(account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .unwrap();
+    let thread =
+        vault.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap().threads[0].id;
+    let archive =
+        vault.apply_thread_ops(&[thread], OpKind::Archive, Origin::Person).unwrap().remove(0);
+    let send = queue_send(&vault, account_id, 0);
+
+    let sender = PassCountingSender::new(&session);
+    let start = session.commands().len();
+    let mut send_due = crate::mailsync::task::SendDueMail::new(&svc, account_id, &sender);
+    passes::sync_once_with(&ctx, &mut session, &mut labels, &mut threads, &mut send_due)
+        .await
+        .unwrap();
+
+    assert_eq!(vault.op(send.id).unwrap().state, OpState::Done);
+    let log = session.commands();
+    let at_send = sender.log_at_send.lock().unwrap()[0];
+    let selected_before: Vec<_> =
+        log[start..at_send].iter().filter(|c| c.starts_with("select ")).collect();
+    assert_eq!(
+        selected_before,
+        ["select INBOX"],
+        "sent once the first mailbox was in, not after the last: {log:?}"
+    );
+    assert_eq!(
+        vault.op(archive.id).unwrap().state,
+        OpState::Pending,
+        "an archive waits for the drain after the pass"
+    );
+}
+
+/// Once a send has gone, its copy in Drafts is out of the vault at once --
+/// not left in the Drafts list until the next sync of Drafts noticed it gone
+/// -- and an open window is told the draft changed, which it otherwise heard
+/// only when a pass happened to bring in mail.
+#[tokio::test]
+async fn a_sent_drafts_copy_leaves_drafts_at_once_and_the_window_is_told() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let changes = Arc::new(Changes::default());
+    svc.set_events(changes.clone());
+    let server = plain_server();
+    let uid = {
+        let mut s = server.lock().unwrap();
+        s.mailbox("Drafts", Some(Role::Drafts));
+        s.append(
+            "Drafts",
+            raw_message(
+                "copy-1@example.com",
+                None,
+                "me@example.com",
+                "Soon",
+                "01 Jan 2024 10:00:00 +0000",
+                "Soon",
+            ),
+            karmayoga_mail::session::Flags::DRAFT,
+            None,
+        )
+    };
+    let mut session = FakeMailSession::new(server.clone());
+    let statuses = svc.mail_statuses().unwrap();
+    let ctx = SyncContext {
+        vault: &vault,
+        account_id,
+        packs: svc.packs().unwrap(),
+        index: svc.mail_index().unwrap(),
+        statuses: &statuses,
+        attachment_cap_bytes: None,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
+        identities: Vec::new(),
+    };
+    let mut labels = LabelMailboxes::new(&vault, account_id);
+    let mut threads = ThreadIndex::new();
+    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+    let drafts = vault
+        .mailboxes(account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Drafts)
+        .unwrap();
+    assert!(vault.message_by_uid(drafts.id, uid).unwrap().is_some(), "the copy synced");
+
+    let mut draft = Draft::new(account_id, "me@example.com", Origin::Person);
+    draft.to = vec![Address::bare("bob@example.com")];
+    draft.subject = "Soon".into();
+    draft.body_html = "<p>Soon</p>".into();
+    draft.server_copy = Some(karmayoga_core::mail::DraftServerCopy {
+        mailbox: "Drafts".into(),
+        uid,
+        message_id: Some("copy-1@example.com".into()),
+    });
+    vault.save_draft(&draft).unwrap();
+    vault.queue_draft_send(draft.id, Timestamp::now(), Origin::Person).unwrap();
+    changes.0.lock().unwrap().clear();
+
+    let report =
+        crate::outbox::drain_outbox(&svc, account_id, &mut session, &FakeSender::default())
+            .await
+            .unwrap();
+    assert_eq!(report.done, 1, "{report:?}");
+
+    assert_eq!(vault.draft(draft.id).unwrap().state, karmayoga_core::mail::DraftState::Sent);
+    assert!(s_message_count(&server, "Drafts") == 0, "off the server");
+    assert!(vault.message_by_uid(drafts.id, uid).unwrap().is_none(), "and out of the vault");
+    let told = changes.0.lock().unwrap().clone();
+    assert!(
+        told.iter()
+            .any(|c| c.kind == Kind::Draft && c.id.as_deref() == Some(&draft.id.to_string())),
+        "the window hears the draft changed: {told:?}"
+    );
+    assert!(
+        told.iter().any(|c| c.kind == Kind::Thread && c.id.is_none()),
+        "and reloads its lists: {told:?}"
+    );
 }
 
 /// Every [`Change`] raised while this is the service's sink, kept for a test

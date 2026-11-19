@@ -6,7 +6,7 @@
 //! not own.
 
 use super::*;
-use crate::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
+use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, PackId, ThreadId};
 use crate::mail::{
     Address, AttendeeResponse, Body, CategorySource, Draft, Invite, InviteMethod, Mailbox,
     MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget, Origin, PartRef,
@@ -31,6 +31,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     category_counts_leave_out_snoozed_threads(store);
     removal_shrinks_a_thread_and_deletes_an_empty_one(store);
     op_queue_ordering_and_not_before(store);
+    an_op_held_back_by_its_elder_waits_for_the_elders_time(store);
+    due_unthreaded_ops_leave_out_every_thread_op(store);
     optimistic_writes_and_snooze_round_trip(store);
     draft_round_trips(store);
     a_uidvalidity_reset_forgets_uids_but_keeps_messages(store);
@@ -538,6 +540,80 @@ fn op_queue_ordering_and_not_before(store: &dyn JournalStore) {
     let stranded = m.in_flight_ops(account).unwrap();
     assert_eq!(stranded.len(), 1);
     assert_eq!(stranded[0].id, due_first.id);
+
+    cleanup_account(store, account);
+}
+
+/// An op held back behind an older one of the same thread that is backing
+/// off is not a moment to wake for: `due_ops` will not hand it out until the
+/// elder is due, so `next_pending_op_at` answers the elder's time.
+fn an_op_held_back_by_its_elder_waits_for_the_elders_time(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let now = Timestamp::now();
+    let thread = ThreadId::new();
+
+    let elder = Op::new(
+        account,
+        OpKind::Label { label: "x".into() },
+        OpTarget::Thread(thread),
+        Origin::Person,
+    )
+    .not_before(now + SignedDuration::from_secs(60));
+    let younger = Op::new(
+        account,
+        OpKind::Unlabel { label: "x".into() },
+        OpTarget::Thread(thread),
+        Origin::Person,
+    )
+    .not_before(now - SignedDuration::from_secs(5));
+    m.enqueue_op(&elder).unwrap();
+    m.enqueue_op(&younger).unwrap();
+
+    assert!(m.due_ops(account, now, 10).unwrap().is_empty(), "the younger waits for its elder");
+    let wake = m.next_pending_op_at(account).unwrap().unwrap();
+    assert_eq!(
+        wake.as_microsecond(),
+        elder.not_before.as_microsecond(),
+        "nothing can drain before the elder is due"
+    );
+    // The two rules agree: at the moment named, something drains. Were they
+    // to drift apart, the account task would wake over and over to drain
+    // nothing.
+    assert_eq!(m.due_ops(account, wake, 10).unwrap().len(), 2, "both, in creation order");
+
+    // Another thread's op is nobody's younger sibling.
+    let other = Op::new(account, OpKind::Star, OpTarget::Thread(ThreadId::new()), Origin::Person)
+        .not_before(now + SignedDuration::from_secs(30));
+    m.enqueue_op(&other).unwrap();
+    assert_eq!(
+        m.next_pending_op_at(account).unwrap().map(|t| t.as_microsecond()),
+        Some(other.not_before.as_microsecond())
+    );
+
+    cleanup_account(store, account);
+}
+
+/// Due ops aimed at no thread -- a draft's -- found without reading past a
+/// backlog of thread ops ahead of them.
+fn due_unthreaded_ops_leave_out_every_thread_op(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let now = Timestamp::now();
+
+    let archive =
+        Op::new(account, OpKind::Archive, OpTarget::Thread(ThreadId::new()), Origin::Person)
+            .not_before(now - SignedDuration::from_secs(10));
+    let send = Op::new(account, OpKind::Send, OpTarget::Draft(DraftId::new()), Origin::Person)
+        .not_before(now - SignedDuration::from_secs(1));
+    let later = Op::new(account, OpKind::Send, OpTarget::Draft(DraftId::new()), Origin::Person)
+        .not_before(now + SignedDuration::from_secs(60));
+    for op in [&archive, &send, &later] {
+        m.enqueue_op(op).unwrap();
+    }
+
+    let due: Vec<_> = m.due_unthreaded_ops(account, now, 1).unwrap().iter().map(|o| o.id).collect();
+    assert_eq!(due, [send.id], "the archive ahead of it takes no place in the page");
 
     cleanup_account(store, account);
 }

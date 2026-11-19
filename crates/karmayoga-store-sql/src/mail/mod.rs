@@ -384,9 +384,45 @@ impl MailStore for SqlStore {
         self.collect(rows, op_aad)
     }
 
+    fn due_unthreaded_ops(
+        &self,
+        account: AccountId,
+        now: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<Op>> {
+        // `thread_id` is set for `OpTarget::Thread` alone (see this file's
+        // `Record for Op`), so this is every op on a draft or a message --
+        // none of which `due_ops`' `NOT EXISTS` ever holds back.
+        let mut sql = "SELECT id, data FROM ops \
+             WHERE account_id = ?1 AND state = 'pending' AND not_before_us <= ?2 \
+             AND thread_id IS NULL"
+            .to_string();
+        self.page(&mut sql, "id ASC", Some(limit), 0);
+        let rows = self.read().records(&sql, &vals![account.to_string(), to_us(now)])?;
+        self.collect(rows, op_aad)
+    }
+
+    // Must agree with `due_ops`' hold-back rule above: an op this counts as
+    // the next moment to wake for has to be one `due_ops` hands out at that
+    // moment, or the account task wakes to drain nothing. The conformance
+    // suite's `an_op_held_back_by_its_elder_waits_for_the_elders_time` pins
+    // the two together.
     fn next_pending_op_at(&self, account: AccountId) -> Result<Option<Timestamp>> {
+        // Only the oldest pending op of each thread: a younger one is held
+        // back by `due_ops`' `NOT EXISTS` for as long as its elder is pending
+        // and not yet due, and becomes drainable no sooner than that elder
+        // does. Counting its own `not_before` -- often already past, behind
+        // an elder backing off -- woke the account task to drain an op
+        // `due_ops` would not hand it, over and over.
         let row = self.read().query_opt(
-            "SELECT MIN(not_before_us) FROM ops WHERE account_id = ?1 AND state = 'pending'",
+            "SELECT MIN(o.not_before_us) FROM ops o \
+             WHERE o.account_id = ?1 AND o.state = 'pending' \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM ops earlier \
+                 WHERE earlier.thread_id = o.thread_id \
+                   AND earlier.state = 'pending' \
+                   AND earlier.id < o.id \
+             )",
             &vals![account.to_string()],
         )?;
         Ok(row.and_then(|r| r.opt_i64(0).transpose()).transpose()?.map(from_us))

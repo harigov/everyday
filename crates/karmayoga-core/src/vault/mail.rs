@@ -497,6 +497,16 @@ impl Vault {
         self.with_mail(|m| m.due_ops(account, now, limit))
     }
 
+    /// See [`MailStore::due_unthreaded_ops`].
+    pub fn due_unthreaded_ops(
+        &self,
+        account: AccountId,
+        now: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<Op>> {
+        self.with_mail(|m| m.due_unthreaded_ops(account, now, limit))
+    }
+
     /// The earliest `not_before` among `account`'s still-pending ops --
     /// what the account task sleeps until, on top of its poll and `IDLE`
     /// waits, so a send-at or undo-send op is drained the moment its window

@@ -244,7 +244,8 @@ pub(super) struct FakeMailSession {
     idle_selections: Arc<Mutex<Vec<Option<String>>>>,
     /// Every `SELECT` and `MOVE` this session (and its clones) sent, in
     /// order -- what a test counts to see how many round trips the outbox
-    /// took.
+    /// took -- and a `discover` for each listing of the mailboxes, which is
+    /// how a full pass starts.
     commands: Arc<Mutex<Vec<String>>>,
 }
 
@@ -264,6 +265,12 @@ impl FakeMailSession {
     /// See [`Self::commands`]'s field docs.
     pub(super) fn commands(&self) -> Vec<String> {
         self.commands.lock().unwrap().clone()
+    }
+
+    /// The same record, shared: for a fake sender to read as it is asked to
+    /// send, from inside the task the session was handed to.
+    pub(super) fn command_log(&self) -> Arc<Mutex<Vec<String>>> {
+        self.commands.clone()
     }
 
     pub(super) fn blocking_idle(mut self) -> Self {
@@ -327,6 +334,8 @@ pub(super) fn message_id_header(raw: &[u8]) -> Option<String> {
 
 impl MailSession for FakeMailSession {
     async fn mailboxes(&mut self) -> SessionResult<Vec<RemoteMailbox>> {
+        // The first thing a full pass does: what a test counts passes by.
+        self.commands.lock().unwrap().push("discover".into());
         let server = self.server.lock().unwrap();
         Ok(server
             .mailboxes

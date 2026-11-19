@@ -65,6 +65,27 @@
 //! exactly that instant alongside their other arms -- `None`, when nothing
 //! is pending, is a branch that simply never wins.
 //!
+//! # A full pass only when one is owed
+//!
+//! A turn woken by the outbox -- a notification, or an op come due -- drains
+//! and goes straight back to waiting. It used to run a full pass after the
+//! drain as every turn did, and a send pressed in its undo window was woken
+//! for too early, found nothing due, and then waited behind that pass: on
+//! Nov 19 2026 one waited 2 m 40 s. A pass is owed on the first turn, after
+//! a nudge, after inbox activity, and once the sync interval has passed
+//! since the last one -- which a turn that only drained does not start
+//! again. It is owed, too, after a drain that moved mail -- off Gmail a moved
+//! message's new uid is known only to a pass -- and whenever the `SELECT`
+//! before `IDLE` finds the inbox changed since the last pass (its
+//! `HIGHESTMODSEQ` or `EXISTS`), since `IDLE` hears only what changes after
+//! it starts.
+//!
+//! The pass can still be the slow thing between a send and the server, two
+//! ways, and both are closed: a pass about to start waits for an op due
+//! within [`HOLD_PASS_FOR`] first ([`hold_for_imminent_op`]), and a pass
+//! already running sends what comes due between two of its mailboxes
+//! ([`passes::sync_once_with`], [`SendDueMail`]).
+//!
 //! # Cancelling `IDLE` without losing the connection
 //!
 //! [`MailSession::idle`] takes the session's own connection out for as long
@@ -306,82 +327,162 @@ where
     // `maybe_compact`'s own docs for the whole of the rate limit.
     let mut last_compaction_attempt: Option<Instant> = None;
 
+    // What the last full pass found -- the inbox `IDLE` waits on is one of
+    // them -- kept across the turns that run none. See the module docs'
+    // "a full pass only when one is owed".
+    let mut mailboxes: Vec<SyncedMailbox> = Vec::new();
+    // Whether this turn owes a full pass: the first does, and so does every
+    // turn after a wake but the outbox's own.
+    let mut pass_due = true;
+    // When the account's sync interval asks for a pass again, however often
+    // the outbox wakes the task meanwhile. Moved on as each pass ends.
+    let mut next_pass_at = tokio::time::Instant::now();
+
     loop {
         if *stop.borrow() {
             return Ok(Outcome::Done);
         }
 
-        if let Err(e) =
-            drain_until_caught_up(&svc, account_id, &mut session, &sender, &mut stop).await
-        {
-            statuses.set_error(account_id, e.to_string());
-            return Err(e.to_string().into());
-        }
+        let drained =
+            match drain_until_caught_up(&svc, account_id, &mut session, &sender, &mut stop).await {
+                Ok(drained) => drained,
+                Err(e) => {
+                    statuses.set_error(account_id, e.to_string());
+                    return Err(e.to_string().into());
+                }
+            };
         if *stop.borrow() {
             return Ok(Outcome::Done);
         }
-
-        // Mail somebody wants to hear about is announced the moment its batch
-        // is stored -- see `announce_new_mail` -- rather than once every other
-        // mailbox and every body has been fetched too, which on a large
-        // account, or behind a message with a big attachment, is a while.
-        // Waited on beside the pass, never instead of it: the pass is only
-        // ever finished, not dropped.
-        let passed = {
-            let news = statuses.news(account_id);
-            let pass = passes::sync_once(&ctx, &mut session, &mut labels, &mut threads);
-            tokio::pin!(pass);
-            loop {
-                tokio::select! {
-                    passed = &mut pass => break passed,
-                    () = news.notified() => announce_new_mail(&svc, &statuses, account_id),
-                }
-            }
-        };
-        let mut mailboxes = match passed {
-            Ok(mailboxes) => mailboxes,
-            Err(e) => {
-                return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
-                    .await;
-            }
-        };
-        let synced_at = svc.now();
-        credential::mark_ok(&vault, &account, synced_at);
-        statuses.set_synced(account_id, synced_at);
-        crate::trouble::mail_synced(&svc, &vault, account_id);
-        // See the module docs' "telling an open window": a background pass
-        // writes under no command, so this is the only announcement its new
-        // mail ever gets. One batch change for the whole pass -- not one per
-        // thread, since a first sync lands thousands and the window needs
-        // telling once -- and none at all for a pass that found nothing new,
-        // which with a one-minute interval is nearly every pass.
-        if statuses.take_changed(account_id) {
-            svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+        // Mail moved between mailboxes has places only a pass learns: off
+        // Gmail, a new uid in the mailbox it went to, which the next op on it
+        // needs.
+        if drained.relocated > 0 {
+            pass_due = true;
         }
-        // Whatever was noted after the last announcement during the pass --
-        // the replies settled once every mailbox is stored, most often. Taken
-        // even when nothing was noted, so a pass that found none does not
-        // leave an earlier pass's note behind. See `arrivals`.
-        announce_new_mail(&svc, &statuses, account_id);
-        // New inbox mail is sorted now, not at the scheduler's next tick: under
-        // most notification rules it is the sorting that decides whether it is
-        // announced at all. Bodies are in by now, and the model reads them.
-        sort_arrivals(&svc, &statuses, account_id);
-        statuses.set_phase(account_id, Phase::Idling, 0, 0);
+        // A nudge raised while draining -- a send that just went asks for the
+        // pass that fetches its Sent copy -- is a pass owed now, not after an
+        // `IDLE` begun only to be ended again.
+        if nudged.has_changed().unwrap_or(false) {
+            nudged.borrow_and_update();
+            pass_due = true;
+        }
 
-        // Between passes, with the bodies pass idle and the outbox already
-        // drained above: see `packstore`'s own module docs for why nowhere
-        // else is safe. Rate-limited internally; see `maybe_compact`'s own
-        // docs.
-        maybe_compact(
-            &vault,
-            &ctx.packs,
-            account_id,
-            &stop,
-            &mut last_compaction_attempt,
-            svc.instant(),
-        )
-        .await;
+        let passing =
+            pass_due || mailboxes.is_empty() || tokio::time::Instant::now() >= next_pass_at;
+        if passing {
+            // An op about to come due -- a send whose undo window is running
+            // out, nearly always -- goes before the pass, not after it.
+            match hold_for_imminent_op(&vault, account_id, &mut stop).await {
+                Hold::Stop => return Ok(Outcome::Done),
+                Hold::Waited => {
+                    if let Err(e) =
+                        drain_until_caught_up(&svc, account_id, &mut session, &sender, &mut stop)
+                            .await
+                    {
+                        statuses.set_error(account_id, e.to_string());
+                        return Err(e.to_string().into());
+                    }
+                    if *stop.borrow() {
+                        return Ok(Outcome::Done);
+                    }
+                }
+                Hold::Nothing => {}
+            }
+            // This pass is what any nudge so far asked for -- a send just
+            // drained above asking for its Sent copy, most often. Left
+            // standing, it would start a second pass the moment this one ends.
+            nudged.borrow_and_update();
+
+            // Mail somebody wants to hear about is announced the moment its
+            // batch is stored -- see `announce_new_mail` -- rather than once
+            // every other mailbox and every body has been fetched too, which
+            // on a large account, or behind a message with a big attachment,
+            // is a while. Waited on beside the pass, never instead of it: the
+            // pass is only ever finished, not dropped. Mail that comes due to
+            // send during the pass goes between two of its mailboxes.
+            let mut send_due = SendDueMail::new(&svc, account_id, &sender);
+            let passed = {
+                let news = statuses.news(account_id);
+                let pass = passes::sync_once_with(
+                    &ctx,
+                    &mut session,
+                    &mut labels,
+                    &mut threads,
+                    &mut send_due,
+                );
+                tokio::pin!(pass);
+                loop {
+                    tokio::select! {
+                        passed = &mut pass => break passed,
+                        () = news.notified() => announce_new_mail(&svc, &statuses, account_id),
+                    }
+                }
+            };
+            mailboxes = match passed {
+                Ok(mailboxes) => mailboxes,
+                Err(e) => {
+                    return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                        .await;
+                }
+            };
+            // A drain during the pass that could not write down how a send
+            // went ends this attempt, as one at the top of the loop does: its
+            // op may be left `InFlight`, and only a restart's
+            // `recover_inflight_ops` takes that back.
+            if let Some(e) = send_due.failed {
+                statuses.set_error(account_id, e.to_string());
+                return Err(e.to_string().into());
+            }
+            let synced_at = svc.now();
+            credential::mark_ok(&vault, &account, synced_at);
+            statuses.set_synced(account_id, synced_at);
+            crate::trouble::mail_synced(&svc, &vault, account_id);
+            // See the module docs' "telling an open window": a background
+            // pass writes under no command, so this is the only announcement
+            // its new mail ever gets. One batch change for the whole pass --
+            // not one per thread, since a first sync lands thousands and the
+            // window needs telling once -- and none at all for a pass that
+            // found nothing new, which with a one-minute interval is nearly
+            // every pass.
+            if statuses.take_changed(account_id) {
+                svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+            }
+            // Whatever was noted after the last announcement during the pass
+            // -- the replies settled once every mailbox is stored, most
+            // often. Taken even when nothing was noted, so a pass that found
+            // none does not leave an earlier pass's note behind. See
+            // `arrivals`.
+            announce_new_mail(&svc, &statuses, account_id);
+            // New inbox mail is sorted now, not at the scheduler's next tick:
+            // under most notification rules it is the sorting that decides
+            // whether it is announced at all. Bodies are in by now, and the
+            // model reads them.
+            sort_arrivals(&svc, &statuses, account_id);
+            statuses.set_phase(account_id, Phase::Idling, 0, 0);
+
+            // Between passes, with the bodies pass idle and the outbox
+            // already drained above: see `packstore`'s own module docs for
+            // why nowhere else is safe. Rate-limited internally; see
+            // `maybe_compact`'s own docs.
+            maybe_compact(
+                &vault,
+                &ctx.packs,
+                account_id,
+                &stop,
+                &mut last_compaction_attempt,
+                svc.instant(),
+            )
+            .await;
+
+            // Read as every pass ends rather than once when the task started,
+            // so an interval changed in Settings applies from the very next
+            // wait without restarting the task -- and `save_account` nudges
+            // this task as it saves, ending whatever wait the old interval
+            // had it in.
+            next_pass_at = tokio::time::Instant::now() + poll_interval(&vault, account_id).await;
+        }
+        pass_due = true;
 
         // Undo-send and send-at are both a `Pending` op whose `not_before`
         // is the only thing standing between it and a drain; so is a
@@ -393,13 +494,17 @@ where
         // case its branch below never fires -- exactly the outcome racing it
         // against `stop`, a nudge and a notify already gives the other
         // branches.
-        let next_wake = next_pending_wake(&vault, account_id).await;
-
-        // Read every turn rather than once when the task started, so an
-        // interval changed in Settings applies from the very next wait
-        // without restarting the task -- and `save_account` nudges this task
-        // as it saves, ending whatever wait the old interval had it in.
-        let poll = poll_interval(&vault, account_id).await;
+        let mut next_wake = next_pending_wake(&vault, account_id).await;
+        // Something "due now" straight after a drain that found nothing to
+        // run is `next_pending_op_at` disagreeing with `due_ops` in the store
+        // -- see `MailStore::next_pending_op_at` -- and waking at once for it
+        // would be a loop of drains with nothing to do.
+        if !passing && drained.attempted == 0 && next_wake == Some(Duration::ZERO) {
+            next_wake = Some(DUE_BUT_NOT_DRAINED_RETRY);
+        }
+        // What is left of the sync interval since the last pass: a turn
+        // that only drained the outbox does not start it again.
+        let poll = next_pass_at.saturating_duration_since(tokio::time::Instant::now());
 
         // `IDLE` on the inbox -- All Mail, on Gmail, since that is where its
         // messages physically live -- re-issued (inside `ImapSession::idle`
@@ -411,18 +516,21 @@ where
         if !can_idle {
             match wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll).await {
                 Wake::Stop => return Ok(Outcome::Done),
-                Wake::Nudge | Wake::OutboxNotify | Wake::Due | Wake::Poll => continue,
+                Wake::OutboxNotify | Wake::Due => pass_due = false,
+                Wake::Nudge | Wake::Poll => {}
             }
+            continue;
         }
         let Some(target) = idle_mailbox(&mut mailboxes) else { continue };
 
         // `sync_once` above leaves the session `SELECT`ed on whichever
         // mailbox its own last pass looked at -- almost never the inbox,
         // since `discovery::discover` sorts it first and every mailbox
-        // after it is visited later. `IDLE` reports activity only for the
-        // mailbox currently selected, so without this, new inbox mail
-        // raises no `EXISTS` here at all and this task would sit `IDLE` on
-        // some other mailbox until the sync interval came back around.
+        // after it is visited later -- and a drain leaves it on Drafts or
+        // Sent. `IDLE` reports activity only for the mailbox currently
+        // selected, so without this, new inbox mail raises no `EXISTS` here
+        // at all and this task would sit `IDLE` on some other mailbox until
+        // the sync interval came back around.
         let remote_name = target.remote_name.clone();
         let selected = match session.select(&remote_name).await {
             Ok(state) => state,
@@ -447,6 +555,16 @@ where
                 return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
                     .await;
             }
+            continue;
+        }
+        // Anything else that changed in the inbox since the last pass -- read
+        // or deleted on a phone while this task was draining rather than in
+        // `IDLE`, or moved out of it by that drain -- is a pass owed now,
+        // not at the sync interval: a turn the outbox woke runs none of its
+        // own, and `IDLE` reports only what changes after it starts.
+        let changed = selected.highestmodseq.is_some_and(|m| m != target.row.highest_modseq)
+            || selected.exists != target.seen_exists;
+        if changed {
             continue;
         }
 
@@ -475,8 +593,10 @@ where
                 }
             }
         };
-        if matches!(wake, Some(Wake::Stop)) {
-            return Ok(Outcome::Done);
+        match wake {
+            Some(Wake::Stop) => return Ok(Outcome::Done),
+            Some(Wake::OutboxNotify | Wake::Due) => pass_due = false,
+            _ => {}
         }
         match outcome {
             // Something changed in the inbox. New mail is stored and handed on
@@ -485,6 +605,7 @@ where
             // longer behind a backlog -- and the full pass then sees to the
             // flags, the other mailboxes and whatever vanished.
             Ok(IdleEvent::Activity) => {
+                pass_due = true;
                 if let Err(e) =
                     arrived(&svc, &ctx, &mut session, target, &mut labels, &mut threads).await
                 {
@@ -499,6 +620,80 @@ where
                 return Err(Box::new(e));
             }
         }
+    }
+}
+
+/// Send whatever mail has come due, in the middle of a pass -- see
+/// [`passes::sync_once_with`]. Only sends: see
+/// [`crate::outbox::drain_due_sends`].
+pub(crate) struct SendDueMail<'a, T> {
+    svc: &'a Arc<Service>,
+    account_id: AccountId,
+    sender: &'a T,
+    /// A drain that failed, for the task to end its attempt over once the
+    /// pass is done -- see where `run_attempt` reads it. Nothing more is sent
+    /// during the pass after one.
+    pub(crate) failed: Option<crate::error::CommandError>,
+}
+
+impl<'a, T> SendDueMail<'a, T> {
+    pub(crate) fn new(svc: &'a Arc<Service>, account_id: AccountId, sender: &'a T) -> Self {
+        Self { svc, account_id, sender, failed: None }
+    }
+}
+
+impl<S: MailSession, T: karmayoga_mail::outbox::Sender> passes::BetweenMailboxes<S>
+    for SendDueMail<'_, T>
+{
+    async fn between(&mut self, session: &mut S) {
+        if self.failed.is_some() {
+            return;
+        }
+        let drained =
+            crate::outbox::drain_due_sends(self.svc, self.account_id, session, self.sender).await;
+        if let Err(e) = drained {
+            self.failed = Some(e);
+        }
+    }
+}
+
+/// How near a pending op must be to due for the full pass about to start to
+/// wait for it first: an undo window running out -- five seconds from the
+/// compose window, ten from an accepted proposal. Past this, the pass starts
+/// and a send that comes due during it goes between two of its mailboxes.
+const HOLD_PASS_FOR: Duration = Duration::from_secs(10);
+
+/// How long a turn that drained nothing waits before answering an op the
+/// store says is due already -- see where it is used.
+const DUE_BUT_NOT_DRAINED_RETRY: Duration = Duration::from_secs(1);
+
+/// What [`hold_for_imminent_op`] did.
+enum Hold {
+    /// Nothing was about to come due.
+    Nothing,
+    /// Something was, and now is: drain before the pass.
+    Waited,
+    Stop,
+}
+
+/// Before a full pass, wait out an op due within [`HOLD_PASS_FOR`]. Nearly
+/// always a send just pressed, still in its undo window: retries back off
+/// thirty seconds and more, so one lands here only in its last few seconds,
+/// and nothing else is queued for later. Without this, the pass a new message
+/// or a nudge starts in those seconds held the send for as long as it took.
+/// Nothing else is listened to meanwhile, and the drain after it takes
+/// whatever came due.
+async fn hold_for_imminent_op(
+    vault: &Arc<Vault>,
+    account_id: AccountId,
+    stop: &mut watch::Receiver<bool>,
+) -> Hold {
+    match next_pending_wake(vault, account_id).await {
+        Some(wait) if wait <= HOLD_PASS_FOR => tokio::select! {
+            _ = stop.changed() => Hold::Stop,
+            () = tokio::time::sleep(wait) => Hold::Waited,
+        },
+        _ => Hold::Nothing,
     }
 }
 
@@ -643,8 +838,9 @@ async fn wait_for_wake(
     }
 }
 
-/// How long this loop turn may wait before a full pass is due regardless:
-/// `account_id`'s own [`Account::sync_interval`], read fresh from the vault
+/// How long after one full pass the next is due regardless of what else
+/// wakes the task: `account_id`'s own [`Account::sync_interval`], read fresh
+/// from the vault
 /// -- see its call site in [`run_account_with`] for why fresh rather than
 /// from the copy the task started with. Falls back to
 /// [`DEFAULT_POLL_INTERVAL`] when the read fails (an account deleted out
@@ -693,26 +889,40 @@ async fn sleep_until_due(remaining: Option<Duration>) {
     }
 }
 
+/// What [`drain_until_caught_up`] ran, over all its drains.
+#[derive(Default)]
+struct Drained {
+    attempted: u32,
+    relocated: u32,
+}
+
 /// Drain `account_id`'s outbox, and keep draining -- on
 /// [`OUTBOX_RETRY_INTERVAL`], interruptibly -- for as long as
 /// [`crate::outbox::DrainReport::pending`] says there is more due work.
 /// Returns once a pass comes back short, or the moment `stop` fires. See the
 /// module docs' "where the outbox is drained" for the three moments this is
 /// reached from.
+///
+/// Due sends go first ([`crate::outbox::drain_due_sends`]), ahead of a bulk
+/// action's backlog of moves: they wait on nothing those do.
 async fn drain_until_caught_up<S: MailSession, T: karmayoga_mail::outbox::Sender>(
     svc: &Arc<Service>,
     account_id: AccountId,
     session: &mut S,
     sender: &T,
     stop: &mut watch::Receiver<bool>,
-) -> CommandResult<()> {
+) -> CommandResult<Drained> {
+    let sends = crate::outbox::drain_due_sends(svc, account_id, session, sender).await?;
+    let mut drained = Drained { attempted: sends.attempted, relocated: 0 };
     loop {
         let report = crate::outbox::drain_outbox(svc, account_id, session, sender).await?;
+        drained.attempted += report.attempted;
+        drained.relocated += report.relocated;
         if !report.pending || *stop.borrow() {
-            return Ok(());
+            return Ok(drained);
         }
         tokio::select! {
-            _ = stop.changed() => return Ok(()),
+            _ = stop.changed() => return Ok(drained),
             () = tokio::time::sleep(OUTBOX_RETRY_INTERVAL) => {}
         }
     }
