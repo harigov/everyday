@@ -695,9 +695,32 @@ fn leave_out_of_config(path: &str) -> bool {
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, BackupError> + Send + 'static,
 ) -> Result<T, BackupError> {
-    tokio::task::spawn_blocking(f)
+    // Same erasure as `service::blocking`: the closure and its value are
+    // boxed, so every caller shares one `spawn_blocking` instantiation.
+    let f: Box<dyn FnOnce() -> Result<Box<dyn std::any::Any + Send>, BackupError> + Send> =
+        Box::new(move || match f() {
+            Ok(value) => Ok(Box::new(value)),
+            Err(error) => Err(error),
+        });
+    match spawn_erased(f)
         .await
         .map_err(|e| BackupError::Refused(format!("a background task failed: {e}")))?
+    {
+        Ok(value) => match value.downcast::<T>() {
+            Ok(value) => Ok(*value),
+            Err(_) => {
+                Err(BackupError::Refused("a background task returned an unexpected type".into()))
+            }
+        },
+        Err(error) => Err(error),
+    }
+}
+
+#[inline(never)]
+fn spawn_erased(
+    f: Box<dyn FnOnce() -> Result<Box<dyn std::any::Any + Send>, BackupError> + Send>,
+) -> tokio::task::JoinHandle<Result<Box<dyn std::any::Any + Send>, BackupError>> {
+    tokio::task::spawn_blocking(f)
 }
 
 #[cfg(test)]

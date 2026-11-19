@@ -1544,17 +1544,67 @@ impl Service {
 /// is collected and handed to [`crate::touched::merge`] -- see that module's
 /// doc for why the collecting has to happen here, on the blocking-pool
 /// thread, rather than around the `.await` below.
+///
+/// The closure and its return value are both boxed before they reach
+/// [`spawn_erased`]. `spawn_blocking` is generic over the closure it runs,
+/// and Tokio's task type brings a drop glue -- and a mangled name the length
+/// of that type -- for every distinct closure. This function is the one path
+/// a command takes to the vault, so that was one copy per call site,
+/// hundreds of them, and erasing only the closure still left one copy per
+/// return type, which is most of them. The string tables and the incremental
+/// query cache, not the machine code, were most of a debug build of this
+/// crate, and a few days of those builds is what fills `target/` by the
+/// hundred gigabytes. One shared instantiation, and two allocations, against
+/// a call that was already crossing onto another thread.
 pub async fn blocking<T, F>(f: F) -> CommandResult<T>
 where
     F: FnOnce() -> CommandResult<T> + Send + 'static,
     T: Send + 'static,
 {
-    let (result, touched) =
-        tokio::task::spawn_blocking(move || karmayoga_core::vault::touched::collect(f))
-            .await
-            .map_err(|e| CommandError::new(codes::PANIC, format!("background task failed: {e}")))?;
+    let work: Box<dyn FnOnce() -> BlockingProduct + Send> = Box::new(move || {
+        let (result, touched) = karmayoga_core::vault::touched::collect(f);
+        (
+            match result {
+                Ok(value) => Ok(Box::new(value)),
+                Err(error) => Err(error),
+            },
+            touched,
+        )
+    });
+    let (result, touched) = spawn_erased(work)
+        .await
+        .map_err(|e| CommandError::new(codes::PANIC, format!("background task failed: {e}")))?;
     crate::touched::merge(touched);
-    result
+    match result {
+        Ok(value) => match value.downcast::<T>() {
+            Ok(value) => Ok(*value),
+            // Boxed as `T` just above. A miss means this function boxed one
+            // type and asked for another, which is a bug here.
+            Err(_) => {
+                Err(CommandError::new(codes::PANIC, "background task returned an unexpected type"))
+            }
+        },
+        Err(error) => Err(error),
+    }
+}
+
+/// What [`spawn_erased`] carries back: the closure's result with its `Ok`
+/// type erased, and whatever the vault reported it had written.
+type BlockingProduct = (
+    CommandResult<Box<dyn std::any::Any + Send>>,
+    Vec<(karmayoga_core::record::RecordKind, String)>,
+);
+
+/// The one `spawn_blocking` this crate's vault calls compile.
+///
+/// Not generic, and not inlined. A generic caller that inlined this would
+/// build the task type again for every closure, which is the cost the box
+/// was meant to remove.
+#[inline(never)]
+fn spawn_erased(
+    f: Box<dyn FnOnce() -> BlockingProduct + Send>,
+) -> tokio::task::JoinHandle<BlockingProduct> {
+    tokio::task::spawn_blocking(f)
 }
 
 /// A run this process has taken, released when it is dropped.
@@ -1625,5 +1675,20 @@ mod tests {
             Some(crate::supervisor::TaskState::Stopped),
             "close must stop a task even one that never notices the signal"
         );
+    }
+
+    /// The closure and the value it returns are both type-erased on the way
+    /// to the blocking pool. Each call has to come back as itself: a mix-up
+    /// in the downcast would hand one command another's answer.
+    #[tokio::test]
+    async fn blocking_returns_each_closures_own_result() {
+        assert_eq!(blocking(|| Ok::<u32, CommandError>(7)).await.unwrap(), 7);
+        let captured = 3u32;
+        assert_eq!(blocking(move || Ok::<u32, CommandError>(captured + 1)).await.unwrap(), 4);
+        assert_eq!(blocking(|| Ok::<String, CommandError>("fine".into())).await.unwrap(), "fine");
+        let err = blocking(|| Err::<u32, _>(CommandError::new(codes::NO_VAULT, "none")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, codes::NO_VAULT);
     }
 }

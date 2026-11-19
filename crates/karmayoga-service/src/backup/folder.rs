@@ -197,9 +197,32 @@ fn io_error(root: &Path, path: &Path, e: std::io::Error) -> TargetError {
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> TargetResult<T> + Send + 'static,
 ) -> TargetResult<T> {
-    tokio::task::spawn_blocking(f)
+    // Same erasure as `service::blocking`: the closure and its value are
+    // boxed, so every caller shares one `spawn_blocking` instantiation.
+    let f: Box<dyn FnOnce() -> TargetResult<Box<dyn std::any::Any + Send>> + Send> =
+        Box::new(move || match f() {
+            Ok(value) => Ok(Box::new(value)),
+            Err(error) => Err(error),
+        });
+    match spawn_erased(f)
         .await
         .map_err(|e| TargetError::other(format!("the file task failed: {e}")))?
+    {
+        Ok(value) => match value.downcast::<T>() {
+            Ok(value) => Ok(*value),
+            Err(_) => {
+                Err(TargetError::other("the file task returned an unexpected type".to_string()))
+            }
+        },
+        Err(error) => Err(error),
+    }
+}
+
+#[inline(never)]
+fn spawn_erased(
+    f: Box<dyn FnOnce() -> TargetResult<Box<dyn std::any::Any + Send>> + Send>,
+) -> tokio::task::JoinHandle<TargetResult<Box<dyn std::any::Any + Send>>> {
+    tokio::task::spawn_blocking(f)
 }
 
 #[cfg(test)]
