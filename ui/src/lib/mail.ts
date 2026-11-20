@@ -6,6 +6,7 @@ import {
   dateFormat,
   daysBetween,
   friendlyDate,
+  plural,
   relativeTime,
   rowDate,
   timeOfDay,
@@ -19,8 +20,11 @@ import type {
   CategoryCount,
   Draft,
   FollowUp,
+  FollowUpAccountStatus,
   FollowUpKind,
+  FollowUpModel,
   FollowUpSettings,
+  FollowUpStatus,
   InboxSender,
   Mailbox,
   MailboxId,
@@ -574,6 +578,119 @@ export function followUpSettingsProblems(
   else if (!Number.isInteger(n)) nudgeAfterDays = 'Whole days only.'
   else if (windowDays === null && n >= w) nudgeAfterDays = `Less than the ${w} days it looks back.`
   return { windowDays, nudgeAfterDays }
+}
+
+// ── Whether follow-ups are running ──────────────────────────────────────
+//
+// The pass that finds follow-ups runs in the background and says nothing when
+// it cannot: an Inbox with no list at the top looked the same whether nothing
+// was waiting or nothing was being asked. `FollowUpStatus` (read with the
+// sorting view) is how it says which -- on what model, for which accounts,
+// how far each got, and what stopped it. What is here turns that into the
+// words Settings → Mail sorting and the Inbox's one-line notice show.
+
+/**
+ * How long ago `iso` was, in the few words a status line has room for: "just
+ * now", "3 min ago", "2 hours ago", "4 days ago". Counted from `now`, not the
+ * clock, so a test can say what it is; `format.ts`'s `relativeTime` reads the
+ * clock and spells out "3 minutes ago". A moment in the future (a clock a
+ * little behind the backend's) is "just now" too.
+ */
+export function agoLabel(iso: string, now = new Date()): string {
+  const secs = Math.floor((now.getTime() - new Date(iso).getTime()) / 1000)
+  if (!Number.isFinite(secs) || secs < 45) return 'just now'
+  if (secs < 3600) return `${Math.max(1, Math.floor(secs / 60))} min ago`
+  if (secs < 86_400) return `${plural(Math.floor(secs / 3600), 'hour')} ago`
+  return `${plural(Math.floor(secs / 86_400), 'day')} ago`
+}
+
+/**
+ * Which model decides the follow-ups, as a sentence -- the decision model
+ * (named, when `decisionModel` says what it is) or the Small model it falls
+ * back to -- or `null` when no model can be asked, which `followUpHint` says.
+ */
+export function followUpModelLine(
+  model: FollowUpModel | null,
+  decisionModel: string | null = null,
+): string | null {
+  if (model === 'small') return 'Follow-ups are decided on the Small model.'
+  if (model === 'decision') {
+    return decisionModel
+      ? `Follow-ups are decided on the decision model (${decisionModel}).`
+      : 'Follow-ups are decided on the decision model.'
+  }
+  return null
+}
+
+/**
+ * One account's follow-up status, in a line: "Looked 3 min ago · 9 asked · 2
+ * to follow up · 41 set aside by the rules · 5 waiting for sorting · 12 waiting
+ * their turn". A count of nothing is left out, and a look with every count at
+ * nothing says there was nothing to ask about rather than ending after the
+ * time -- never when threads are waiting their turn, which is something asked
+ * of it that it has not got to. Not for an account that is `blocked` (its
+ * sentence is shown instead) or its `error`, which are shown apart. The first
+ * three counts are this session's; the last two are as of the last look: Inbox
+ * threads left until sorting has seen them, and threads left for a later look
+ * because the account's share of it, or the minute's budget, was spent.
+ */
+export function followUpAccountLine(account: FollowUpAccountStatus, now = new Date()): string {
+  const counts = [
+    account.asked > 0 && `${account.asked.toLocaleString()} asked`,
+    account.found > 0 && `${account.found.toLocaleString()} to follow up`,
+    account.marked > 0 && `${account.marked.toLocaleString()} set aside by the rules`,
+    account.waitingForSorting > 0 &&
+      `${account.waitingForSorting.toLocaleString()} waiting for sorting`,
+    account.waitingForTurn > 0 && `${account.waitingForTurn.toLocaleString()} waiting their turn`,
+  ].filter((part): part is string => part !== false)
+  if (!account.lookedAt) return ['Not looked at yet', ...counts].join(' · ')
+  const lead = `Looked ${agoLabel(account.lookedAt, now)}`
+  return [lead, ...(counts.length > 0 ? counts : ['nothing to ask about'])].join(' · ')
+}
+
+/**
+ * Why follow-ups run on no model at all -- none switched on to ask, a decision
+ * model that cannot answer yet -- as the sentence naming the fix, or `null`.
+ * `on` is whether they are switched on in the saved settings: switched off,
+ * the switch itself says so and nothing more is wanted. `null` too before the
+ * status has been read.
+ */
+export function followUpHint(
+  status: Pick<FollowUpStatus, 'blocked'> | null | undefined,
+  on: boolean,
+): string | null {
+  if (!on || !status) return null
+  return status.blocked || null
+}
+
+/** What the Inbox says when every account is held back and they differ -- each
+ *  one's own sentence is in Settings → Mail sorting. */
+const NO_ACCOUNT_READY =
+  'No mail account is ready for follow-ups. Each needs sorting switched on and the assistant allowed to reach its mail, under Settings → Accounts.'
+
+/**
+ * Why follow-ups cannot run for the Inbox on screen, in a sentence naming the
+ * fix, or `null` when they can -- even when they have found nothing, which is
+ * a different thing to say. With follow-ups switched on (`on`, as saved), that
+ * is `followUpHint`'s reason when no model can be asked, or else the account's
+ * own when it is held back. `account` is the Inbox's, or `null` for All
+ * inboxes, which is only stalled when every account is: one account's Inbox is
+ * no better for the next account being fine, but All inboxes with one account
+ * working has follow-ups to show. Several held back for their own reasons
+ * share one sentence; Settings → Mail sorting has each.
+ */
+export function followUpStall(
+  status: Pick<FollowUpStatus, 'blocked' | 'accounts'> | null | undefined,
+  on: boolean,
+  account: AccountId | null = null,
+): string | null {
+  if (!on || !status) return null
+  if (status.blocked) return status.blocked
+  const mine =
+    account === null ? status.accounts : status.accounts.filter((a) => a.accountId === account)
+  if (mine.length === 0 || mine.some((a) => !a.blocked)) return null
+  if (mine.length === 1) return mine[0]?.blocked || null
+  return NO_ACCOUNT_READY
 }
 
 // ── Marks from origin ───────────────────────────────────────────────────

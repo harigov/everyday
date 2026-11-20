@@ -7,6 +7,7 @@
   import { app, handle } from '../lib/state.svelte'
   import { insertFilled, templates } from '../lib/templates.svelte'
   import { longDate, plural, relativeTime } from '../lib/format'
+  import { documentToMarkdown, type PMNode } from '../lib/markdown-copy'
   import RichText from './RichText.svelte'
   import Toolbar from './Toolbar.svelte'
   import type { Editor as TipTapEditor } from '@tiptap/core'
@@ -173,6 +174,21 @@
     }
   }
 
+  /**
+   * The day as Markdown, for the toolbar's copy button.
+   *
+   * Read from the live editor, not from `entry.body`, which only catches up
+   * when a save is due -- so what is copied is what is on the page. A day
+   * with no title is headed with its date instead, because a page copied out
+   * of the journal with nothing above it would not say which day it was.
+   */
+  function dayAsMarkdown(): string {
+    const target = app.entry
+    if (!target || !editor) return ''
+    const heading = target.title.trim() || longDate(target.localDate)
+    return documentToMarkdown(heading, (editor.getJSON().content ?? []) as PMNode[])
+  }
+
   onDestroy(() => {
     // `RichText` captures the document on the way out; this makes sure it
     // reaches disk.
@@ -214,7 +230,12 @@
     role="region"
     aria-label="Entry editor"
   >
-    <Toolbar {editor} templateFor="journal" oninsert={(t: Template) => void insertTemplate(t)} />
+    <Toolbar
+      {editor}
+      templateFor="journal"
+      oninsert={(t: Template) => void insertTemplate(t)}
+      markdown={dayAsMarkdown}
+    />
 
     <div class="scroll canvas">
       <div class="page">

@@ -12,6 +12,8 @@
     MAIL_ONLY,
     categoryTabCount,
     followUpPill,
+    followUpScope,
+    followUpStall,
     isSnoozedMailbox,
     isUnifiedMailbox,
     mailboxDisplayName,
@@ -35,6 +37,7 @@
   import { listening } from '../lib/listen.svelte'
   import { mail } from '../lib/mail.svelte'
   import { notify } from '../lib/notify.svelte'
+  import { panels } from '../lib/panels.svelte'
   import { sorting } from '../lib/sorting.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -229,6 +232,48 @@
    *  have, in a nudge. */
   const listEmpty = $derived(mail.threads.length === 0 && followUpCount === 0)
   const searchRows = $derived<ListRow[]>(withDateSections(mail.searchResults, (t) => t.lastDate))
+
+  /**
+   * Why follow-ups cannot run for the list on screen, or `null`: an Inbox
+   * (the one `followUpScope` is asked for, so not a search, not Snoozed, not
+   * a list of sends) with follow-ups switched on that nothing is looking
+   * for -- no model to ask, or this account (every account, under All
+   * inboxes) not set up for it. Running and finding nothing is not this: the
+   * empty top of the list is then the answer. `sorting.view` is read with
+   * `load`, so there is nothing until it has been.
+   */
+  const followUpsStalled = $derived.by(() => {
+    if (mail.sendsView || mail.searchQuery.trim()) return null
+    // Follow-ups on the list say for themselves that something is running;
+    // a notice above them saying nothing is would only argue with them.
+    if (followUpCount > 0) return null
+    const scope = followUpScope(mail.mailbox)
+    if (!scope) return null
+    const on = sorting.sorting?.followUp?.on !== false
+    return followUpStall(sorting.followUps, on, scope.account)
+  })
+  /** The same, unless the person hid the notice for this very reason -- a
+   *  different one shows it again. */
+  const followUpsNotice = $derived(
+    followUpsStalled !== null && !sorting.stallDismissed(followUpsStalled)
+      ? followUpsStalled
+      : null,
+  )
+
+  // The notice is as true as the last read of the status, which nothing else
+  // here repeats: so look again every minute while there is one to be wrong,
+  // and as Settings closes, which is where it is put right.
+  $effect(() => {
+    if (followUpsStalled === null) return
+    const timer = setInterval(() => void sorting.refresh(), 60_000)
+    return () => clearInterval(timer)
+  })
+  let settingsWasOpen = false
+  $effect(() => {
+    const open = panels.settings !== null
+    if (settingsWasOpen && !open) void sorting.refresh()
+    settingsWasOpen = open
+  })
 
   function rowKey(row: ListRow): string {
     return row.type === 'header' ? `header:${row.key}` : row.thread.id
@@ -778,6 +823,30 @@
           <span>Emptying can't be undone.</span>
           <button class="empty-btn" onclick={() => (mail.wantsEmpty = box)}>
             <Icon name="trash" size={13} /> Empty {mailboxDisplayName(box)}
+          </button>
+        </div>
+      {/if}
+
+      {#if followUpsNotice !== null}
+        <!-- Where the follow-up sections would be, one quiet line saying why
+           there are none: an Inbox with nothing at the top looked the same
+           whether nothing was waiting or nothing was being asked. Outside the
+           virtual list, so its keyed rows stay as they are. -->
+        <div class="follow-note" role="status">
+          <Icon name="info" size={13} />
+          <span class="follow-note-text" title={followUpsNotice}>
+            Follow-ups aren't running. {followUpsNotice}
+          </span>
+          <button class="follow-note-link" onclick={() => panels.openSettings('sorting')}>
+            Open settings
+          </button>
+          <button
+            class="follow-note-dismiss"
+            aria-label="Dismiss"
+            title="Hide this until the reason changes"
+            onclick={() => sorting.dismissStall(followUpsNotice)}
+          >
+            <Icon name="close" size={12} />
           </button>
         </div>
       {/if}
@@ -1477,6 +1546,58 @@
   }
   .empty-btn:hover {
     background: color-mix(in oklab, var(--danger) 14%, transparent);
+  }
+
+  /* Why there are no follow-ups at the top: the follow-up banner's quiet
+     accent tint, one line (two at most, the whole of it in the title), the
+     way to mend it as words, and a cross. */
+  .follow-note {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: 0 var(--sp-4) var(--sp-2);
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+    border-radius: var(--radius-lg);
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    line-height: var(--leading-normal);
+  }
+  .follow-note > :global(svg) {
+    flex: none;
+    color: var(--journal-accent, var(--accent));
+  }
+  .follow-note-text {
+    flex: 1;
+    min-width: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .follow-note-link {
+    flex: none;
+    color: var(--journal-accent, var(--accent));
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .follow-note-link:hover {
+    text-decoration: underline;
+  }
+  .follow-note-dismiss {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    color: var(--fg-subtle);
+  }
+  .follow-note-dismiss:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
   }
 
   /* ── Rows ───────────────────────────────────────────────────────── */

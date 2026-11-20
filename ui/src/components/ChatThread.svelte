@@ -34,6 +34,7 @@
   import { agent } from '../lib/agent.svelte'
   import { api, fileUrl, fileVersion, mediaUrl, thumbnailUrl } from '../lib/api'
   import { APPS } from '../lib/apps'
+  import { clipboardPicture, mayBePicture } from '../lib/clipboard-picture'
   import { lookOf } from '../lib/companion'
   import { splitDigest } from '../lib/dream'
   import { lookupFiles, whyNotAdded } from '../lib/file-lookup'
@@ -627,11 +628,28 @@
 
   /** A pasted picture -- a screenshot on the clipboard -- is attached, and
    *  with a files catalog so is any other file; a paste of text is left to
-   *  the box. */
+   *  the box.
+   *
+   *  WebKitGTK brings the page no file for a screenshot: the paste is empty,
+   *  or only the HTML of an `<img>`. When `mayBePicture` says it might have
+   *  been one, the desktop shell is asked for the picture on the clipboard
+   *  (`clipboardPicture`) and what it finds is attached as if it had come as
+   *  a file. The box would have pasted nothing from such a paste, there
+   *  being no words in it, so stopping it loses nothing. */
   function onPaste(e: ClipboardEvent) {
     const pasted = Array.from(e.clipboardData?.files ?? [])
     const list = keepsFiles ? pasted : pasted.filter((f) => f.type.startsWith('image/'))
-    if (list.length === 0) return
+    if (list.length === 0) {
+      if (!mayBePicture(e)) return
+      e.preventDefault()
+      // The shell can be five seconds answering, and the picture is for the
+      // conversation that was open when it was pasted, not one opened since.
+      const asked = agent.conversationId
+      void clipboardPicture().then((picture) => {
+        if (picture && agent.conversationId === asked) take([picture])
+      })
+      return
+    }
     e.preventDefault()
     take(list)
   }

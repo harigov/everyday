@@ -15,6 +15,7 @@
   // the caret away on every autosave.
   import { onDestroy, untrack } from 'svelte'
   import { Editor } from '@tiptap/core'
+  import type { EditorView } from '@tiptap/pm/view'
   import StarterKit from '@tiptap/starter-kit'
   import Placeholder from '@tiptap/extension-placeholder'
   import Link from '@tiptap/extension-link'
@@ -25,6 +26,7 @@
   import TaskItem from '@tiptap/extension-task-item'
   import CharacterCount from '@tiptap/extension-character-count'
   import { TableKit } from '@tiptap/extension-table'
+  import { clipboardPicture, mayBePicture } from '../lib/clipboard-picture'
   import { Media } from '../lib/media-node'
   import { MarkdownClipboard } from '../lib/markdown-clipboard'
   import { app } from '../lib/state.svelte'
@@ -151,7 +153,10 @@
       ],
       editorProps: {
         attributes: { class: 'ed-content', spellcheck: 'true' },
-        handlePaste: (_view, event) => insertFiles(Array.from(event.clipboardData?.files ?? [])),
+        // Files first, as a browser and the webviews on macOS and Windows
+        // bring a pasted picture. WebKitGTK does not: see `pastePicture`.
+        handlePaste: (view, event) =>
+          insertFiles(Array.from(event.clipboardData?.files ?? [])) || pastePicture(view, event),
         handleDrop: (_view, event) => {
           const dt = event.dataTransfer
           return insertFiles(Array.from(dt?.files ?? []))
@@ -179,6 +184,48 @@
       wordTimer = null
       onwords?.(editor?.storage.characterCount.words() ?? 0)
     }, 400)
+  }
+
+  /**
+   * A paste that brought no files but may still have been a picture, which
+   * WebKitGTK keeps from the page: a screenshot alone on the clipboard
+   * reaches it as a paste with nothing in it, and a browser's "Copy image" as
+   * the HTML of an `<img>` -- which the schema has no node for, so it would be
+   * dropped without a word. The desktop shell can read the clipboard
+   * (`clipboardPicture`), so it is asked, and what it finds goes in as if it
+   * had been pasted as a file. Whether a paste is worth asking about is
+   * `mayBePicture`'s to say, and it says no to anything with words in it, so
+   * a paste of text, or of a note's own Markdown, never gets here.
+   *
+   * Answers true at once, for ProseMirror to stop pasting what it has: the
+   * shell's answer arrives after the event is over. Two things follow from
+   * that.
+   *
+   * The clipboard's HTML is read now, because the event's data is emptied
+   * when it ends. It is what is pasted if the shell finds no picture, so that
+   * nothing which used to paste has stopped. It goes in through `pasteHTML`,
+   * which runs this handler again with an event of its own making --
+   * `MarkdownClipboard` pastes through it as well -- and `mayBePicture` says
+   * no to any event that is not trusted, whatever data it has, so it cannot
+   * ask twice or swallow a paste it made itself.
+   *
+   * And the record and editor open now are remembered, as `insertFiles` does
+   * for the files it stores, because they may not be the ones open when the
+   * shell answers; the paste is dropped if they are not, and goes nowhere
+   * else.
+   */
+  function pastePicture(view: EditorView, event: ClipboardEvent): boolean {
+    if (!mayBePicture(event)) return false
+    const html = event.clipboardData?.getData('text/html') ?? ''
+    const target = docId
+    const ed = editor
+    void (async () => {
+      const picture = await clipboardPicture()
+      if (docId !== target || ed !== editor) return
+      if (picture && insertFiles([picture])) return
+      if (html) view.pasteHTML(html)
+    })()
+    return true
   }
 
   /**

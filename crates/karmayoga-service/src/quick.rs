@@ -109,6 +109,12 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
         .await
 }
 
+/// What [`run_prompt`] fails with when the model replied without calling
+/// `submit` -- in prose, or not at all. A caller asking one question per
+/// message tells it apart from a model that is down: it is about the message,
+/// and asking again would get the same.
+pub const NO_ANSWER: &str = "the model did not answer";
+
 /// One request, no tools but `submit`, tool choice forced — the exchange
 /// every one-shot structured ask in this application makes, whichever model
 /// it is aimed at. Split out of [`run`] so that `karmayoga_service::mailai`
@@ -213,7 +219,7 @@ pub async fn run_prompt_within(
         .lock()
         .expect("the quick answer slot is never poisoned")
         .take()
-        .ok_or_else(|| CommandError::new(codes::QUICK, "the model did not answer"))
+        .ok_or_else(|| CommandError::new(codes::QUICK, NO_ANSWER))
 }
 
 #[cfg(test)]

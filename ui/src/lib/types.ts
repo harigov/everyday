@@ -2290,12 +2290,60 @@ export interface OlderSortView {
   started: string
 }
 
+/** Which model answers the follow-up questions: the decision model when one
+ *  is switched on, otherwise the Small model. */
+export type FollowUpModel = 'decision' | 'small'
+
+/** How far one account's follow-ups got this session --
+ *  `karmayoga_service::mailfollowup::FollowUpAccountStatus`. */
+export interface FollowUpAccountStatus {
+  accountId: AccountId
+  /** Why this account is not looked at -- its sorting switch is off, or the
+   *  assistant has not been told it may reach its mail -- as a sentence
+   *  naming the fix. `null` when it is looked at. */
+  blocked: string | null
+  /** When it was last looked at, this session. */
+  lookedAt: string | null
+  /** When it was last read all the way back to the window. */
+  fullLookAt: string | null
+  /** This session: threads the model was asked about. */
+  asked: number
+  /** This session: of those, how many came back waiting on somebody. */
+  found: number
+  /** This session: threads set aside by the rules alone, without asking --
+   *  newsletters, notifications, mail not addressed to you by name. */
+  marked: number
+  /** On the last look: Inbox threads left until sorting has seen them. */
+  waitingForSorting: number
+  /** On the last look: threads that needed a question but were left for a
+   *  later look -- the account's share of the look, or the minute's budget
+   *  of requests, was spent. */
+  waitingForTurn: number
+  /** What went wrong on the last look, if it failed. */
+  error: string | null
+}
+
+/** Whether follow-ups can run, on what, and how far each account got --
+ *  `karmayoga_service::mailfollowup::FollowUpStatus`. Session state for the
+ *  counts: a restart starts them afresh. */
+export interface FollowUpStatus {
+  /** `null` when no model can be asked; see `blocked`. */
+  model: FollowUpModel | null
+  /** Why no account is looked at at all -- follow-ups off, no model to ask,
+   *  a decision model that cannot answer yet -- as a sentence naming the
+   *  fix. `null` when they run. */
+  blocked: string | null
+  /** Every mail account, in the order `accounts()` lists them. */
+  accounts: FollowUpAccountStatus[]
+}
+
 /** What every mail sorting command answers. */
 export interface MailSortingView {
   sorting: MailSorting
   /** `model at address`, or `null` when no decision model is switched on. */
   decisionModel: string | null
   older: OlderSortView[]
+  followUps: FollowUpStatus
 }
 
 /** Every field ANDed; `null`/absent means "do not filter on this." */

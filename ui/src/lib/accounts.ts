@@ -81,7 +81,7 @@ export const MAIL_AI_SWITCHES: { key: keyof MailAi; label: string; hint: string 
   {
     key: 'categorize',
     label: 'Categorise',
-    hint: 'Sort new mail into Priority, Important, Other, Newsletters and Notifications, or into your own categories under Settings → Mail sorting. Reads who it is from and to, the subject, and the start of the message. With a decision model, also says which recent threads need your reply or a nudge, which reads the start of your own last message too.',
+    hint: 'Sort new mail into Priority, Important, Other, Newsletters and Notifications, or into your own categories under Settings → Mail sorting. Reads who it is from and to, the subject, and the start of the message. Also says which recent threads need your reply or a nudge, on the same model, which reads the start of your own last message too.',
   },
   {
     key: 'autoDraft',

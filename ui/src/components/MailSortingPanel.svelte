@@ -15,6 +15,9 @@
   // Follow-ups are here too, rather than a pane of their own: the same model,
   // under the same per-account switch, reading the same mail, decides which
   // threads wait at the top of the Inbox -- `karmayoga_core::mail::follow_up`.
+  // With no decision model it is the Small model that decides, and the card
+  // says which, per account how far it has got, and what holds one back: the
+  // pass runs in the background and used to say nothing when it could not.
 
   import { onDestroy } from 'svelte'
   import { accounts } from '../lib/accounts.svelte'
@@ -24,11 +27,20 @@
     FOLLOW_UP_DEFAULTS,
     FOLLOW_UP_MAX_WINDOW_DAYS,
     FOLLOW_UP_MIN_WINDOW_DAYS,
+    followUpAccountLine,
+    followUpHint,
+    followUpModelLine,
     followUpSettingsProblems,
   } from '../lib/mail'
   import { panels } from '../lib/panels.svelte'
   import { sorting } from '../lib/sorting.svelte'
-  import type { FollowUpSettings, MailCategory, MailSorting, SortCategory } from '../lib/types'
+  import type {
+    FollowUpAccountStatus,
+    FollowUpSettings,
+    MailCategory,
+    MailSorting,
+    SortCategory,
+  } from '../lib/types'
   import Icon from './Icon.svelte'
 
   /** `MailSorting` as this pane edits it: with its follow-up settings always
@@ -58,10 +70,16 @@
     }, 4000)
   }
 
-  // A running sort of older mail moves on its own; look again now and then
-  // while the tab is open, so its count is not a number from minutes ago.
+  // A running sort of older mail moves on its own, and so do the follow-up
+  // counts as the background pass works; look again now and then while the
+  // tab is open, so neither is a number from minutes ago -- the older sort
+  // every 15 seconds, the follow-ups every other time. Only what `refresh`
+  // puts in `sorting.view` changes: the draft below was copied from it once,
+  // and is what the person is editing.
+  let ticks = 0
   const poll = setInterval(() => {
-    if (sorting.view?.older.length) void sorting.refresh()
+    ticks += 1
+    if (sorting.view?.older.length || ticks % 2 === 0) void sorting.refresh()
   }, 15_000)
   onDestroy(() => {
     clearInterval(poll)
@@ -81,6 +99,18 @@
     draft ? followUpSettingsProblems(draft.followUp) : { windowDays: null, nudgeAfterDays: null },
   )
   const followUpsWrong = $derived(problems.windowDays !== null || problems.nudgeAfterDays !== null)
+
+  /** How follow-ups are doing, as the backend last said. Whether they are on
+   *  is the saved setting's, not the draft's: what is shown is what runs, and
+   *  an unsaved switch changes nothing until it is saved. */
+  const followUps = $derived(sorting.followUps)
+  const followUpsOn = $derived(sorting.sorting?.followUp?.on !== false)
+  /** Why no account is looked at at all, if that is so -- a model problem,
+   *  mended under Models. */
+  const followUpBlocked = $derived(followUpHint(followUps, followUpsOn))
+  const modelLine = $derived(
+    followUps ? followUpModelLine(followUps.model, sorting.view?.decisionModel ?? null) : null,
+  )
 
   const WINDOWS: { days: number; label: string }[] = [
     { days: 1, label: 'The last day' },
@@ -156,6 +186,17 @@
     const a = accounts.list.find((x) => x.id === id)
     return a ? a.displayName || a.address : 'An account'
   }
+
+  /** Why one account is held back, with the account named -- unless the
+   *  sentence already says which, as it does when it names the address. */
+  function heldBack(status: FollowUpAccountStatus): string {
+    const why = status.blocked ?? ''
+    const a = accounts.list.find((x) => x.id === status.accountId)
+    const named = [a?.address, a?.displayName].some(
+      (name) => !!name && why.toLowerCase().includes(name.toLowerCase()),
+    )
+    return named ? why : `${accountName(status.accountId)}: ${why}`
+  }
 </script>
 
 {#if !draft && sorting.error}
@@ -175,7 +216,7 @@
         <span>
           <Icon name="info" size={14} />
           No decision model is switched on, so these categories are not used yet: mail is sorted on the
-          Small model into the five inbox tabs.
+          Small model into the five inbox tabs. Follow-ups are decided on the Small model too.
         </span>
         <button class="link" onclick={() => panels.openSettings('models')}>Set one up</button>
       </div>
@@ -328,11 +369,41 @@
         </label>
       </div>
       <p class="hint">
-        It runs on the decision model, for each account whose sorting is switched on under Settings
-        → Accounts. It reads the same parts of a message sorting does, and for a nudge your own last
-        message as well. Cold outreach, newsletters and automated mail are left out: a stranger's
-        pitch ends in a question too, but it is not waiting on you.
+        It runs on the decision model, or on the Small model when none is switched on, for each
+        account whose sorting is switched on under Settings → Accounts. It reads the same parts of a
+        message sorting does, and for a nudge your own last message as well. Cold outreach,
+        newsletters and automated mail are left out: a stranger's pitch ends in a question too, but
+        it is not waiting on you.
       </p>
+
+      {#if followUps && followUpsOn}
+        {#if followUpBlocked}
+          <div class="stored">
+            <span><Icon name="info" size={14} />{followUpBlocked}</span>
+            <button class="link" onclick={() => panels.openSettings('models')}>Open Models</button>
+          </div>
+        {:else}
+          <div class="follow-status">
+            {#if modelLine}<p class="hint">{modelLine}</p>{/if}
+            {#each followUps.accounts as account (account.accountId)}
+              {#if account.blocked}
+                <div class="stored">
+                  <span><Icon name="info" size={14} />{heldBack(account)}</span>
+                  <button class="link" onclick={() => panels.openSettings('accounts')}>
+                    Open Accounts
+                  </button>
+                </div>
+              {:else}
+                <p class="hint">
+                  <span class="who">{accountName(account.accountId)}</span>:
+                  {followUpAccountLine(account)}
+                </p>
+                {#if account.error}<p class="hint error">{account.error}</p>{/if}
+              {/if}
+            {/each}
+          </div>
+        {/if}
+      {/if}
     </section>
 
     <div class="save">
@@ -430,6 +501,20 @@
   }
   .hint.error {
     color: var(--danger, var(--fg));
+  }
+
+  /* Follow-ups' status under the card's own prose: what runs, then one line
+     for each account that does, in the quiet hint voice -- the ones held back
+     are the notice boxes the pane already has. */
+  .follow-status {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .who {
+    font-weight: 550;
+    color: var(--fg-muted);
   }
 
   .categories {

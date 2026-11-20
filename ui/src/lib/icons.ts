@@ -31,6 +31,11 @@ export const ICONS = {
 
   underline: '<path d="M6 4v6a6 6 0 0 0 12 0V4"/><path d="M4 20h16"/>',
 
+  // An S with a line struck through its middle -- the letter and the mark,
+  // as `underline` draws a U over its rule.
+  strike:
+    '<path d="M16 4H9a3 3 0 0 0-2.83 4"/><path d="M14 12a4 4 0 0 1 0 8H6"/><path d="M4 12h16"/>',
+
   // A marker pen mid-stroke, with the wet edge it just laid down.
   highlight:
     '<path d="m9 11-6 6v3h9l3-3"/>' +

@@ -28,7 +28,7 @@ const { modules, close } = await load([
   '@tiptap/pm/tables',
 ])
 const [
-  { sliceToMarkdown },
+  { sliceToMarkdown, documentToMarkdown },
   { getSchema, Node },
   { default: StarterKit },
   { default: Link },
@@ -200,6 +200,44 @@ for (const { name, doc: content, markdown } of fixture.cases) {
     'cells copied without their table are still a table',
   )
   assert.equal(between(d, 'Mi', 'les'), 'Miles', 'and text inside one cell is the text')
+}
+
+// ── The Copy as Markdown button ───────────────────────────────────────
+//
+// A whole page: the title as a heading, then the body as a select-all copy
+// writes it. Built through the schema, so the strike below is a mark the
+// editor really has.
+
+{
+  const page = (title, ...content) => documentToMarkdown(title, doc(...content).toJSON().content)
+  const empty = { type: 'paragraph' }
+
+  assert.equal(
+    page('Monday', h(2, 'Plans'), p('Some ', text('bold', 'bold'), ' words.')),
+    '# Monday\n\n## Plans\n\nSome **bold** words.',
+    'the title is a heading above the body',
+  )
+  assert.equal(
+    page('   ', p('Just the day.')),
+    'Just the day.',
+    'a blank title is no heading at all',
+  )
+  assert.equal(
+    page('  One\n line  ', p('Body.')),
+    '# One line\n\nBody.',
+    'a title is one line, trimmed',
+  )
+  assert.equal(
+    page(
+      'Struck',
+      p('Kept ', text('dropped', 'strike'), ' and ', text('both', 'bold', 'strike'), '.'),
+    ),
+    '# Struck\n\nKept ~~dropped~~ and **~~both~~**.',
+    'struck-through text is written between tildes',
+  )
+  assert.equal(page('', empty), '', 'an empty page with no title is nothing')
+  assert.equal(page('Only a title', empty), '# Only a title', 'an empty body leaves no blank lines')
+  assert.equal(documentToMarkdown('Only a title', []), '# Only a title', 'nor does no body at all')
 }
 
 await close()

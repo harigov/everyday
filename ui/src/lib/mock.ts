@@ -123,6 +123,7 @@ import type {
   MailSorting,
   MailWriting,
   MailSortingView,
+  FollowUpStatus,
   Memory,
   MemoryOrigin,
   ModelSettings,
@@ -4149,6 +4150,51 @@ function mailSortingView(): MailSortingView {
         ? `${d.model.trim().replace(/^d3/, 'd3-').toLowerCase()} on this computer`
         : `${d.model.trim()} at ${mockDecisionEndpoint(d)}`,
     older: mockOlderSortViews(),
+    followUps: mockFollowUpStatus(),
+  }
+}
+
+/** Follow-ups as `mailfollowup::status` reports them: on the decision model
+ *  when one is switched on, else on Small, and an account with sorting off
+ *  left out by name. */
+function mockFollowUpStatus(): FollowUpStatus {
+  const model = modelSettings.decision ? 'decision' : modelSettings.small ? 'small' : null
+  const lookedAt = new Date(Date.now() - 3 * 60_000).toISOString()
+  return {
+    model,
+    blocked:
+      model === null
+        ? 'No model can read mail for follow-ups: switch on a decision model or the Small model in Settings → Models.'
+        : null,
+    accounts: accounts
+      .filter((a) => a.services.mail)
+      .map((a) =>
+        a.mailAi?.categorize
+          ? {
+              accountId: a.id,
+              blocked: null,
+              lookedAt: model ? lookedAt : null,
+              fullLookAt: model ? lookedAt : null,
+              asked: model ? 9 : 0,
+              found: model ? 2 : 0,
+              marked: model ? 41 : 0,
+              waitingForSorting: 0,
+              waitingForTurn: 0,
+              error: null,
+            }
+          : {
+              accountId: a.id,
+              blocked: `${a.address} does not have AI categorisation switched on. Turn it on in Settings → Accounts → ${a.address} → Mail assistant.`,
+              lookedAt: null,
+              fullLookAt: null,
+              asked: 0,
+              found: 0,
+              marked: 0,
+              waitingForSorting: 0,
+              waitingForTurn: 0,
+              error: null,
+            },
+      ),
   }
 }
 const conversations: Conversation[] = []
@@ -5733,6 +5779,12 @@ export const mockInvoke = async <T>(
       }
       return hits.slice(0, Number(args.limit ?? 10)) as T
     }
+
+    // The shell reading a screenshot off the system clipboard, for the paste
+    // WebKitGTK gives the page no file for. A browser hands the picture over
+    // as a file, so there is nothing for it to read here.
+    case 'clipboard_image':
+      return null as T
 
     case 'put_blob': {
       requireUnlocked()

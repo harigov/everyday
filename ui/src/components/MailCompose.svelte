@@ -26,6 +26,7 @@
   import { api } from '../lib/api'
   import { accounts } from '../lib/accounts.svelte'
   import { Autosave } from '../lib/autosave'
+  import { clipboardPicture, mayBePicture } from '../lib/clipboard-picture'
   import { dictation } from '../lib/dictation.svelte'
   import { dismissable } from '../lib/dismiss'
   import { handle } from '../lib/errors'
@@ -713,10 +714,30 @@
         // is attached. Text is left to the editor (and `MarkdownClipboard`).
         // Words come first: a spreadsheet or a document copies a picture of
         // what was copied alongside its text, and the text is what was meant.
-        handlePaste: (_view, event) => {
+        handlePaste: (view, event) => {
           const data = event.clipboardData
           if (data?.getData('text/plain').trim()) return false
-          return addFiles(Array.from(data?.files ?? []))
+          if (addFiles(Array.from(data?.files ?? []))) return true
+          // WebKitGTK gives the page no file for a screenshot -- the paste
+          // is empty, or the HTML of an `<img>` -- so the desktop shell is
+          // asked for the picture on the clipboard, when `mayBePicture`
+          // says the paste might have been one (see `RichText.svelte`'s
+          // `pastePicture`, which does the same for notes). The HTML is read
+          // now because it is gone when the event ends; it is pasted as it
+          // would have been if there turns out to be no picture, through
+          // `pasteHTML`, whose own event is not a trusted one -- whatever data
+          // a browser gives it -- and so does not come back here to ask again.
+          if (!mayBePicture(event)) return false
+          const html = data?.getData('text/html') ?? ''
+          const here = editor
+          void (async () => {
+            const picture = await clipboardPicture()
+            // Closed while the shell was answering: there is nowhere to put it.
+            if (editor !== here) return
+            if (picture && addFiles([picture])) return
+            if (html) view.pasteHTML(html)
+          })()
+          return true
         },
         handleDrop: (view, event, _slice, moved) => {
           if (moved) return false

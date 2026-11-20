@@ -302,6 +302,20 @@ impl Service {
         self.mail.set_follow_up_skips(account, skips);
     }
 
+    /// What the follow-up pass has done for `account` since the app started
+    /// -- see `crate::mailfollowup::Tally`. Nothing, until its first look.
+    pub(crate) fn mail_follow_up_tally(&self, account: AccountId) -> crate::mailfollowup::Tally {
+        self.mail.follow_up_tally(account)
+    }
+
+    pub(crate) fn set_mail_follow_up_tally(
+        &self,
+        account: AccountId,
+        tally: crate::mailfollowup::Tally,
+    ) {
+        self.mail.set_follow_up_tally(account, tally);
+    }
+
     /// When the unattended learning pass last looked -- see
     /// `crate::mailvoicelearn`.
     pub(crate) fn mail_voice_learn_looked(&self) -> Option<Timestamp> {

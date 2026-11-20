@@ -14,6 +14,7 @@
   import { focusOnMount } from '../lib/focus'
   import { plural, relativeTime } from '../lib/format'
   import { renderMarkdown } from '../lib/markdown'
+  import { documentToMarkdown, type PMNode } from '../lib/markdown-copy'
   import RichText from './RichText.svelte'
   import Toolbar from './Toolbar.svelte'
   import type { Editor as TipTapEditor } from '@tiptap/core'
@@ -242,6 +243,19 @@
   }
 
   /**
+   * The note as Markdown, for the toolbar's copy button.
+   *
+   * Read from the live editor, not from `note.body`, which only catches up
+   * when a save is due -- so what is copied is what is on the page. An
+   * untitled note is copied with no heading rather than a made-up one.
+   */
+  function noteAsMarkdown(): string {
+    const target = notes.open
+    if (!target || !editor) return ''
+    return documentToMarkdown(target.title, (editor.getJSON().content ?? []) as PMNode[])
+  }
+
+  /**
    * "Rewrite summary" replaces the whole body with the model's markdown.
    *
    * The note's body is TipTap JSON, not markdown, and there is no
@@ -299,7 +313,12 @@
       </div>
     {/if}
 
-    <Toolbar {editor} templateFor="notes" oninsert={(t: Template) => void insertTemplate(t)} />
+    <Toolbar
+      {editor}
+      templateFor="notes"
+      oninsert={(t: Template) => void insertTemplate(t)}
+      markdown={noteAsMarkdown}
+    />
 
     <div class="scroll canvas">
       <div class="page">
