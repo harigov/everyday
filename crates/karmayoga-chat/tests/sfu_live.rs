@@ -116,13 +116,16 @@ struct Side {
     _events: UnboundedReceiver<VoiceEvent>,
 }
 
-/// Join `room` as `me`, listening to `caller`, with `keys` of theirs.
-async fn join(room: &str, me: &CallKey, caller: &str, keys: Vec<CallKey>) -> Side {
+/// Join `room` as `me`, listening to `caller`, with `keys` of theirs --
+/// waiting for the caller to be settled in the room first, as the bot does,
+/// or not, as a phone does not.
+async fn join(room: &str, me: &CallKey, caller: &str, keys: Vec<CallKey>, wait: bool) -> Side {
     let join = CallJoin {
         url: env("KARMAYOGA_TEST_LIVEKIT_URL"),
         token: token(&me.participant, room),
         caller: caller.into(),
         own_key: me.clone(),
+        wait_for_caller: wait,
     };
     let call = call::connect(&join, keys, addresses())
         .await
@@ -197,8 +200,10 @@ async fn two_participants_hear_each_other_through_the_server_encrypted() {
     let (alice_id, bob_id) = people();
     let (alice_key, bob_key) = (key_of(&alice_id, 0xa1), key_of(&bob_id, 0xb0));
 
-    let mut alice = join(&room, &alice_key, &bob_id, vec![bob_key.clone()]).await;
-    let mut bob = join(&room, &bob_key, &alice_id, Vec::new()).await;
+    // Alice is the phone, and joins at once; Bob is the bot, and waits for
+    // her to be settled in the room, as it would for FluffyChat.
+    let mut alice = join(&room, &alice_key, &bob_id, vec![bob_key.clone()], false).await;
+    let mut bob = join(&room, &bob_key, &alice_id, Vec::new(), true).await;
     // Bob's key for Alice's frames arrives late, as a key over a chat
     // service can, while the call runs.
     bob.to_call.send(ToCall::Keys(vec![alice_key.clone()])).expect("running");
@@ -229,9 +234,9 @@ async fn without_the_callers_key_nothing_is_heard() {
     let (alice_id, bob_id) = people();
     let (alice_key, bob_key) = (key_of(&alice_id, 0xa1), key_of(&bob_id, 0xb0));
 
-    let alice = join(&room, &alice_key, &bob_id, vec![bob_key.clone()]).await;
+    let alice = join(&room, &alice_key, &bob_id, vec![bob_key.clone()], false).await;
     // Bob has a key for Alice, but the wrong one.
-    let mut bob = join(&room, &bob_key, &alice_id, vec![key_of(&alice_id, 0x00)]).await;
+    let mut bob = join(&room, &bob_key, &alice_id, vec![key_of(&alice_id, 0x00)], true).await;
     alice.say.send(tone(440.0)).expect("running");
 
     let deadline = Instant::now() + Duration::from_secs(8);

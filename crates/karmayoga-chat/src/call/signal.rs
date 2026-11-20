@@ -229,6 +229,10 @@ pub struct ParticipantInfo {
     pub state: i32,
     #[prost(message, repeated, tag = "4")]
     pub tracks: Vec<TrackInfo>,
+    /// When they joined the room, in milliseconds since the Unix epoch, by
+    /// the server's clock. Zero from a server too old to say.
+    #[prost(int64, tag = "17")]
+    pub joined_at_ms: i64,
 }
 
 #[derive(Clone, PartialEq, Message)]

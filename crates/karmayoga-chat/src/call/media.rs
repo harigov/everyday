@@ -27,9 +27,8 @@ use super::frames::{Openers, Sealer, Unopened};
 use super::outbound::Outbound;
 use super::sfu::{self, Heard};
 use super::signal::{
-    AddTrackRequest, EncryptionType, JoinResponse, LeaveRequest, ParticipantInfo, ParticipantState,
-    Ping, Request, Response, SessionDescription, SignalTarget, TrackSource, TrackType,
-    TrickleRequest,
+    AddTrackRequest, EncryptionType, JoinResponse, ParticipantInfo, ParticipantState, Ping,
+    Request, Response, SessionDescription, SignalTarget, TrackSource, TrackType, TrickleRequest,
 };
 use crate::connector::{CallJoin, CallKey};
 use karmayoga_service::speech::{pcm, resample};
@@ -66,6 +65,17 @@ const FRAME_EVERY: Duration = Duration::from_millis(20);
 /// does not say.
 const PING_EVERY: Duration = Duration::from_secs(5);
 const SERVER_SILENT_FOR: Duration = Duration::from_secs(15);
+
+/// How long after the caller's connection is up this side rejoins, when it
+/// waits for them ([`CallJoin::wait_for_caller`]): their app has finished
+/// connecting by then, so this side's arrival is one it hears of.
+const CALLER_SETTLED: Duration = Duration::from_secs(2);
+
+/// How long before this side the caller must have joined, by the server's
+/// clock, to be taken as settled already when this side arrives -- with no
+/// rejoin. Generous, because when they joined is not when their connection
+/// came up: only somebody long in the room is surely past that.
+const SETTLED_ON_ARRIVAL_MS: i64 = 10_000;
 
 /// How long after the caller is in the room to start speaking, when the
 /// server does not say they have subscribed: about what subscribing takes.
@@ -131,11 +141,16 @@ pub enum CallEnd {
 struct Limits {
     connect_within: Duration,
     lost_after: Duration,
+    caller_settled: Duration,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { connect_within: CONNECT_WITHIN, lost_after: LOST_AFTER }
+        Self {
+            connect_within: CONNECT_WITHIN,
+            lost_after: LOST_AFTER,
+            caller_settled: CALLER_SETTLED,
+        }
     }
 }
 
@@ -183,8 +198,10 @@ pub struct Call {
     receiver: sfu::Receiver,
     welcome: JoinResponse,
     sockets: Sockets,
-    publisher: Link,
-    subscriber: Link,
+    /// Where and how it joined, to join again: see [`Call::settle`].
+    url: String,
+    token: String,
+    wait_for_caller: bool,
     caller: String,
     own_key: CallKey,
     keys: Vec<CallKey>,
@@ -203,8 +220,8 @@ struct Link {
 /// as far as they have arrived.
 ///
 /// Fails with a sentence when the server cannot be reached or refuses the
-/// token. Everything after -- the two connections, the caller's audio -- is
-/// [`Call::run`]'s.
+/// token. Everything after -- waiting for the caller if `join` says to, the
+/// two connections, the caller's audio -- is [`Call::run`]'s.
 pub async fn connect(
     join: &CallJoin,
     keys: Vec<CallKey>,
@@ -212,20 +229,35 @@ pub async fn connect(
 ) -> Result<Call, CallError> {
     let sockets =
         Sockets { publisher: bind(addresses.clone()).await?, subscriber: bind(addresses).await? };
-    let publisher = rtc_on(&sockets.publisher)?;
-    let subscriber = rtc_on(&sockets.subscriber)?;
     let (sender, receiver, welcome) = sfu::join(&join.url, &join.token).await?;
     Ok(Call {
         sender,
         receiver,
         welcome,
         sockets,
-        publisher,
-        subscriber,
+        url: join.url.clone(),
+        token: join.token.clone(),
+        wait_for_caller: join.wait_for_caller,
         caller: join.caller.clone(),
         own_key: join.own_key.clone(),
         keys,
         limits: Limits::default(),
+    })
+}
+
+/// Whether `caller` was in the room, connected, well before this side
+/// arrived -- [`SETTLED_ON_ARRIVAL_MS`] by the server's own clock, comparing
+/// when each joined -- so that their app was surely connected when this side
+/// came, and heard it come. Unknown times are not settled.
+fn settled_on_arrival(welcome: &JoinResponse, caller: &str) -> bool {
+    let Some(me) = welcome.participant.as_ref().filter(|me| me.joined_at_ms > 0) else {
+        return false;
+    };
+    welcome.other_participants.iter().any(|p| {
+        p.identity == caller
+            && p.state == ParticipantState::Active as i32
+            && p.joined_at_ms > 0
+            && me.joined_at_ms.saturating_sub(p.joined_at_ms) >= SETTLED_ON_ARRIVAL_MS
     })
 }
 
@@ -260,18 +292,6 @@ impl Call {
         mut to_call: mpsc::UnboundedReceiver<ToCall>,
         events: mpsc::UnboundedSender<VoiceEvent>,
     ) -> CallEnd {
-        let Call {
-            mut sender,
-            mut receiver,
-            welcome,
-            sockets,
-            publisher,
-            subscriber,
-            caller,
-            own_key,
-            keys,
-            limits,
-        } = self;
         let (encoder, decoder) = match (Encoder::new(), Decoder::new()) {
             (Ok(encoder), Ok(decoder)) => (encoder, decoder),
             (Err(e), _) | (_, Err(e)) => {
@@ -280,6 +300,28 @@ impl Call {
                 return CallEnd::Failed;
             }
         };
+        let settled = self.settle(&mut to_call).await;
+        let Call {
+            mut sender, mut receiver, welcome, sockets, caller, own_key, keys, limits, ..
+        } = match settled {
+            Ok(call) => call,
+            Err(end) => {
+                let _ = voice.input.send(VoiceInput::Stop);
+                return end;
+            }
+        };
+        // The connections are made now, not on joining: a wait for the
+        // caller can be long, and they would idle through it.
+        let (publisher, subscriber) =
+            match (rtc_on(&sockets.publisher), rtc_on(&sockets.subscriber)) {
+                (Ok(publisher), Ok(subscriber)) => (publisher, subscriber),
+                (Err(e), _) | (_, Err(e)) => {
+                    tracing::warn!("A call could not start its connections: {e}");
+                    let _ = voice.input.send(VoiceInput::Stop);
+                    sender.leave().await;
+                    return CallEnd::Failed;
+                }
+            };
         let (converted_tx, mut converted) = mpsc::unbounded_channel();
         let mut speech = Speech::new(encoder, decoder, converted_tx);
         let mut room = Room::new(welcome, publisher, subscriber, caller, &own_key, limits);
@@ -293,6 +335,134 @@ impl Call {
         }
         room.close(&sockets, &mut sender).await;
         end
+    }
+}
+
+impl Call {
+    /// Wait for the caller, if this call is to ([`CallJoin::wait_for_caller`]):
+    /// FluffyChat, calling, stops ringing only for somebody who joins the
+    /// room after its own connection is up, and announces the call before it
+    /// connects -- so this side, quick to answer, is usually there first.
+    ///
+    /// Unless the caller was settled in the room well before this side came
+    /// ([`settled_on_arrival`]), this side stays in the room as it is, saying
+    /// nothing, until it sees the caller's connection up; [`Limits::caller_settled`]
+    /// after that it leaves and joins again, once, and that arrival is the
+    /// one their app hears as the call being answered. Meanwhile the owner
+    /// hanging up, the relay ending the call, or the caller leaving ends it
+    /// at once, and the caller's keys are kept for after. A caller who never
+    /// comes up is given up on as unreachable after `connect_within`.
+    async fn settle(
+        mut self,
+        to_call: &mut mpsc::UnboundedReceiver<ToCall>,
+    ) -> Result<Call, CallEnd> {
+        if !self.wait_for_caller || settled_on_arrival(&self.welcome, &self.caller) {
+            return Ok(self);
+        }
+        let caller = self.caller.clone();
+        let is_caller = |p: &&ParticipantInfo| p.identity == caller;
+        let gone = ParticipantState::Disconnected as i32;
+        let active = ParticipantState::Active as i32;
+        // The caller's sessions in the room: a phone that reconnects is the
+        // same caller under a new one.
+        let mut sessions: std::collections::HashSet<String> = self
+            .welcome
+            .other_participants
+            .iter()
+            .filter(is_caller)
+            .filter(|p| p.state != gone)
+            .map(|p| p.sid.clone())
+            .collect();
+        let mut seen = !sessions.is_empty();
+        let mut up_since = self
+            .welcome
+            .other_participants
+            .iter()
+            .filter(is_caller)
+            .any(|p| p.state == active)
+            .then(Instant::now);
+        let give_up = Instant::now() + self.limits.connect_within;
+        let ping_every = u64::try_from(self.welcome.ping_interval)
+            .ok()
+            .filter(|s| *s > 0)
+            .map_or(PING_EVERY, Duration::from_secs);
+        let mut ping = interval(ping_every);
+        ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            let settle_at = up_since.map(|since| since + self.limits.caller_settled);
+            tokio::select! {
+                heard = self.receiver.next() => match heard {
+                    Heard::Said(Response::Update(update)) => {
+                        for p in update.participants.iter().filter(is_caller) {
+                            if p.state == gone {
+                                sessions.remove(&p.sid);
+                            } else {
+                                seen = true;
+                                sessions.insert(p.sid.clone());
+                                if p.state == active && up_since.is_none() {
+                                    up_since = Some(Instant::now());
+                                }
+                            }
+                        }
+                        if seen && sessions.is_empty() {
+                            tracing::info!("The caller left before the call was answered.");
+                            self.sender.leave().await;
+                            return Err(CallEnd::Ended);
+                        }
+                    }
+                    Heard::Said(Response::Leave(_)) => return Err(CallEnd::Ended),
+                    Heard::Said(_) | Heard::Nothing => {}
+                    Heard::Gone(why) => {
+                        tracing::info!("A call's media server went away while it waited: {why}.");
+                        return Err(CallEnd::Unreachable);
+                    }
+                },
+                message = to_call.recv() => match message {
+                    Some(ToCall::Keys(keys)) => self.keys.extend(keys),
+                    Some(ToCall::End) | None => {
+                        self.sender.leave().await;
+                        return Err(CallEnd::Ended);
+                    }
+                },
+                _ = ping.tick() => {
+                    let timestamp = jiff::Timestamp::now().as_millisecond();
+                    if self.sender.send(Request::PingReq(Ping { timestamp, rtt: 0 })).await.is_err() {
+                        return Err(CallEnd::Unreachable);
+                    }
+                }
+                _ = async {
+                    match settle_at {
+                        Some(at) => sleep_until(at.into()).await,
+                        None => pending().await,
+                    }
+                } => break,
+                _ = sleep_until(give_up.into()) => {
+                    tracing::info!("The caller never connected to the call's room.");
+                    self.sender.leave().await;
+                    return Err(CallEnd::Unreachable);
+                }
+            }
+        }
+
+        // Out, and in again: the arrival their app hears. Tried a few times,
+        // since a moment's trouble now should not lose a call that was
+        // answerable a moment ago.
+        self.sender.leave().await;
+        let mut last = String::new();
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            match sfu::join(&self.url, &self.token).await {
+                Ok((sender, receiver, welcome)) => {
+                    return Ok(Call { sender, receiver, welcome, ..self });
+                }
+                Err(CallError(why)) => last = why,
+            }
+        }
+        tracing::warn!("A call could not join its room again once the caller was there: {last}");
+        Err(CallEnd::Unreachable)
     }
 }
 
@@ -1101,13 +1271,7 @@ impl Room {
     /// Leave the room (best effort: the chat service's hang-up is what the
     /// owner's device acts on) and make str0m inert.
     async fn close(&mut self, sockets: &Sockets, sender: &mut sfu::Sender) {
-        let leave = Request::Leave(LeaveRequest {
-            can_reconnect: false,
-            reason: super::signal::CLIENT_INITIATED,
-            action: super::signal::DISCONNECT,
-        });
-        let _ = sender.send(leave).await;
-        sender.close().await;
+        sender.leave().await;
         for link in [Which::Publisher, Which::Subscriber] {
             let rtc = match link {
                 Which::Publisher => &mut self.publisher,
@@ -1281,7 +1445,7 @@ fn interface_addresses() -> Result<Vec<IpAddr>, CallError> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::signal::{self, ParticipantUpdate, TrackPublishedResponse};
+    use super::super::signal::{self, LeaveRequest, ParticipantUpdate, TrackPublishedResponse};
     use super::*;
     use futures::{SinkExt, StreamExt};
     use std::net::Ipv4Addr;
@@ -1303,18 +1467,20 @@ mod tests {
             identity: CALLER.into(),
             state: state as i32,
             tracks: Vec::new(),
+            joined_at_ms: 0,
         }
     }
 
-    /// A media server that lets one participant in, with the caller already
-    /// in the room, and then only listens -- it never answers an offer, so
-    /// no media ever flows. Enough for everything about a call that is not
-    /// its audio; the audio is `tests/call_live.rs`'s, against a real one.
+    /// A media server that lets participants in -- one at a time, each
+    /// connection welcomed by the next of `welcomes` (the last again for any
+    /// more) -- and then only listens: it never answers an offer, so no media
+    /// ever flows. Enough for everything about a call that is not its audio;
+    /// the audio is `tests/sfu_live.rs`'s, against a real one.
     struct Server {
         url: String,
-        /// Everything the participant said, in order.
-        heard: UnboundedReceiver<signal::Request>,
-        /// What to say to it.
+        /// Everything said, in order, with which connection said it.
+        heard: UnboundedReceiver<(usize, signal::Request)>,
+        /// What to say to the connection that is open.
         say: UnboundedSender<Response>,
         task: tokio::task::JoinHandle<()>,
     }
@@ -1325,42 +1491,52 @@ mod tests {
         }
     }
 
+    /// The caller in the room, connected; when they joined not said.
+    fn caller_there() -> JoinResponse {
+        JoinResponse {
+            other_participants: vec![caller_info(ParticipantState::Active)],
+            ping_interval: 5,
+            ping_timeout: 15,
+            ..Default::default()
+        }
+    }
+
     impl Server {
         async fn start() -> Self {
+            Self::start_with(vec![caller_there()]).await
+        }
+
+        async fn start_with(welcomes: Vec<JoinResponse>) -> Self {
+            use prost::Message as _;
             let listener = TcpListener::bind((LOOPBACK, 0)).await.expect("a port");
             let url = format!("ws://{}", listener.local_addr().expect("an address"));
             let (heard_tx, heard) = unbounded_channel();
             let (say, mut said) = unbounded_channel::<Response>();
             let task = tokio::spawn(async move {
-                let (tcp, _) = listener.accept().await.expect("a participant");
-                let mut ws = tokio_tungstenite::accept_async(tcp).await.expect("a WebSocket");
-                let welcome = signal::SignalResponse {
-                    message: Some(Response::Join(JoinResponse {
-                        other_participants: vec![caller_info(ParticipantState::Active)],
-                        ping_interval: 5,
-                        ping_timeout: 15,
-                        ..Default::default()
-                    })),
-                };
-                use prost::Message as _;
-                ws.send(Message::Binary(welcome.encode_to_vec().into())).await.expect("sent");
-                loop {
-                    tokio::select! {
-                        frame = ws.next() => match frame {
-                            Some(Ok(Message::Binary(bytes))) => {
-                                if let Ok(request) = signal::SignalRequest::decode(&bytes[..])
-                                    && let Some(message) = request.message
-                                {
-                                    let _ = heard_tx.send(message);
+                for connection in 0.. {
+                    let Ok((tcp, _)) = listener.accept().await else { return };
+                    let mut ws = tokio_tungstenite::accept_async(tcp).await.expect("a WebSocket");
+                    let welcome = welcomes[connection.min(welcomes.len() - 1)].clone();
+                    let welcome = signal::SignalResponse { message: Some(Response::Join(welcome)) };
+                    ws.send(Message::Binary(welcome.encode_to_vec().into())).await.expect("sent");
+                    loop {
+                        tokio::select! {
+                            frame = ws.next() => match frame {
+                                Some(Ok(Message::Binary(bytes))) => {
+                                    if let Ok(request) = signal::SignalRequest::decode(&bytes[..])
+                                        && let Some(message) = request.message
+                                    {
+                                        let _ = heard_tx.send((connection, message));
+                                    }
                                 }
-                            }
-                            Some(Ok(_)) => {}
-                            _ => break,
-                        },
-                        Some(response) = said.recv() => {
-                            let bytes = signal::SignalResponse { message: Some(response) }.encode_to_vec();
-                            if ws.send(Message::Binary(bytes.into())).await.is_err() {
-                                break;
+                                Some(Ok(_)) => {}
+                                _ => break,
+                            },
+                            Some(response) = said.recv() => {
+                                let bytes = signal::SignalResponse { message: Some(response) }.encode_to_vec();
+                                if ws.send(Message::Binary(bytes.into())).await.is_err() {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1369,24 +1545,30 @@ mod tests {
             Server { url, heard, say, task }
         }
 
-        /// The next thing the participant said that is not a ping.
+        /// The next thing a participant said that is not a ping.
         async fn next(&mut self) -> signal::Request {
+            self.next_from().await.1
+        }
+
+        /// The same, with which connection said it.
+        async fn next_from(&mut self) -> (usize, signal::Request) {
             loop {
                 match timeout(PATIENCE, self.heard.recv()).await.expect("said something") {
-                    Some(signal::Request::PingReq(_)) => {}
-                    Some(request) => return request,
+                    Some((_, signal::Request::PingReq(_))) => {}
+                    Some(heard) => return heard,
                     None => panic!("the participant went away"),
                 }
             }
         }
     }
 
-    fn join_for(server: &Server) -> CallJoin {
+    fn join_for(server: &Server, wait_for_caller: bool) -> CallJoin {
         CallJoin {
             url: server.url.clone(),
             token: "token".into(),
             caller: CALLER.into(),
             own_key: CallKey { participant: "@bot:hs:BOT".into(), index: 0, key: vec![7; 16] },
+            wait_for_caller,
         }
     }
 
@@ -1402,10 +1584,14 @@ mod tests {
 
     impl Harness {
         async fn new(limits: Limits) -> Self {
-            let server = Server::start().await;
-            let mut call = connect(&join_for(&server), Vec::new(), Addresses::Only(vec![LOOPBACK]))
-                .await
-                .expect("joined");
+            Self::on(Server::start().await, false, limits).await
+        }
+
+        /// On `server`, waiting for the caller or not.
+        async fn on(server: Server, wait_for_caller: bool, limits: Limits) -> Self {
+            let join = join_for(&server, wait_for_caller);
+            let mut call =
+                connect(&join, Vec::new(), Addresses::Only(vec![LOOPBACK])).await.expect("joined");
             call.limits = limits;
             let (input_tx, input) = unbounded_channel();
             let (output, output_rx) = unbounded_channel();
@@ -1645,12 +1831,110 @@ mod tests {
             token: "t".into(),
             caller: CALLER.into(),
             own_key: CallKey { participant: "@bot:hs:BOT".into(), index: 0, key: vec![1; 16] },
+            wait_for_caller: false,
         };
         let Err(CallError(why)) = connect(&join, Vec::new(), Addresses::Only(vec![LOOPBACK])).await
         else {
             panic!("no server, no call");
         };
         assert!(why.starts_with("The call's media server could not be reached"), "{why}");
+    }
+
+    #[test]
+    fn a_caller_is_settled_on_arrival_only_if_long_in_the_room_by_the_servers_clock() {
+        let arriving = |caller: Option<(ParticipantState, i64)>, me_at: i64| JoinResponse {
+            participant: Some(ParticipantInfo { joined_at_ms: me_at, ..Default::default() }),
+            other_participants: caller
+                .map(|(state, at)| ParticipantInfo { joined_at_ms: at, ..caller_info(state) })
+                .into_iter()
+                .collect(),
+            ..JoinResponse::default()
+        };
+        let me = 1_000_000;
+        assert!(!settled_on_arrival(&arriving(None, me), CALLER), "not there");
+        let long = Some((ParticipantState::Active, me - 30_000));
+        assert!(settled_on_arrival(&arriving(long, me), CALLER));
+        let lately = Some((ParticipantState::Active, me - 3_000));
+        assert!(!settled_on_arrival(&arriving(lately, me), CALLER), "joined lately");
+        let connecting = Some((ParticipantState::Joined, me - 30_000));
+        assert!(!settled_on_arrival(&arriving(connecting, me), CALLER), "not connected");
+        assert!(!settled_on_arrival(&arriving(long, 0), CALLER), "this side's time not said");
+        let untimed = Some((ParticipantState::Active, 0));
+        assert!(!settled_on_arrival(&arriving(untimed, me), CALLER), "theirs not said");
+    }
+
+    fn quick() -> Limits {
+        Limits { caller_settled: Duration::from_millis(200), ..Limits::default() }
+    }
+
+    #[tokio::test]
+    async fn waiting_for_the_caller_it_rejoins_once_their_connection_has_been_up_a_moment() {
+        // First in the room; then the caller arrives, and connects.
+        let server = Server::start_with(vec![JoinResponse::default(), caller_there()]).await;
+        let mut harness = Harness::on(server, true, quick()).await;
+        let (_task, _to_call, _events) = harness.run();
+        harness
+            .server
+            .say
+            .send(Response::Update(ParticipantUpdate {
+                participants: vec![caller_info(ParticipantState::Active)],
+            }))
+            .expect("server up");
+
+        let (first, said) = harness.server.next_from().await;
+        assert_eq!(first, 0);
+        assert!(matches!(said, signal::Request::Leave(_)), "out, said nothing first: {said:?}");
+        let (second, said) = harness.server.next_from().await;
+        assert_eq!(second, 1, "and in again");
+        assert!(matches!(said, signal::Request::AddTrack(_)), "{said:?}");
+    }
+
+    #[tokio::test]
+    async fn a_caller_long_in_the_room_is_answered_without_rejoining() {
+        let welcome = JoinResponse {
+            participant: Some(ParticipantInfo { joined_at_ms: 100_000, ..Default::default() }),
+            other_participants: vec![ParticipantInfo {
+                joined_at_ms: 50_000,
+                ..caller_info(ParticipantState::Active)
+            }],
+            ..caller_there()
+        };
+        let mut harness = Harness::on(Server::start_with(vec![welcome]).await, true, quick()).await;
+        let (_task, _to_call, _events) = harness.run();
+        let (connection, said) = harness.server.next_from().await;
+        assert_eq!(connection, 0);
+        assert!(matches!(said, signal::Request::AddTrack(_)), "{said:?}");
+    }
+
+    #[tokio::test]
+    async fn a_hang_up_while_waiting_for_the_caller_ends_the_call_at_once() {
+        let server = Server::start_with(vec![JoinResponse::default()]).await;
+        let mut harness = Harness::on(server, true, Limits::default()).await;
+        let (task, to_call, _events) = harness.run();
+        to_call.send(ToCall::End).expect("running");
+        assert_eq!(
+            timeout(Duration::from_secs(3), task).await.expect("at once").expect("no panic"),
+            CallEnd::Ended
+        );
+        let mut stopped = false;
+        while let Ok(message) = harness.input.try_recv() {
+            stopped |= matches!(message, VoiceInput::Stop);
+        }
+        assert!(stopped, "the session is told to stop");
+    }
+
+    #[tokio::test]
+    async fn the_caller_leaving_while_it_waits_ends_the_call() {
+        let server = Server::start_with(vec![JoinResponse::default()]).await;
+        let mut harness = Harness::on(server, true, Limits::default()).await;
+        let (task, _to_call, _events) = harness.run();
+        let joined =
+            ParticipantUpdate { participants: vec![caller_info(ParticipantState::Joined)] };
+        harness.server.say.send(Response::Update(joined)).expect("server up");
+        let left =
+            ParticipantUpdate { participants: vec![caller_info(ParticipantState::Disconnected)] };
+        harness.server.say.send(Response::Update(left)).expect("server up");
+        assert_eq!(ended(task).await, CallEnd::Ended);
     }
 
     #[test]
@@ -1680,6 +1964,7 @@ mod tests {
             identity: "@stranger:hs:X".into(),
             state: ParticipantState::Active as i32,
             tracks: Vec::new(),
+            joined_at_ms: 0,
         }]);
         room.sections.insert(Mid::from("1"), ("PA_other|TR_b".into(), "TR_b".into()));
         assert!(!room.carries_caller(&Mid::from("1")), "a stranger's track is not the caller's");

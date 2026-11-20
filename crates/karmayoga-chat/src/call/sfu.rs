@@ -4,11 +4,11 @@
 //! they are.
 
 use super::media::CallError;
-use super::signal::{self, JoinResponse, Request, Response};
+use super::signal::{self, JoinResponse, LeaveRequest, Request, Response};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rustls_platform_verifier::BuilderVerifierExt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -117,8 +117,16 @@ impl Sender {
         }
     }
 
-    /// Close the WebSocket, without waiting long for the server to agree.
-    pub(super) async fn close(&mut self) {
+    /// Leave the room: say so, then close the WebSocket, without waiting
+    /// long for the server to agree. Best effort; the server notices a
+    /// closed WebSocket anyway.
+    pub(super) async fn leave(&mut self) {
+        let leave = Request::Leave(LeaveRequest {
+            can_reconnect: false,
+            reason: signal::CLIENT_INITIATED,
+            action: signal::DISCONNECT,
+        });
+        let _ = self.send(leave).await;
         let _ = timeout(Duration::from_secs(1), self.0.close()).await;
     }
 }
@@ -167,17 +175,22 @@ fn rtc_address(url: &str, token: &str) -> Option<String> {
 /// TLS with an explicit `ring` provider and the platform's roots, as
 /// `karmayoga_mail::imap::tls_config` does and for the same reason: another
 /// rustls user in the process makes "the default provider" ambiguous enough
-/// to panic at connect time.
+/// to panic at connect time. Built once: a call may join more than once.
 fn tls_config() -> Arc<rustls::ClientConfig> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    Arc::new(
-        rustls::ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .expect("the ring provider supports rustls's default protocol versions")
-            .with_platform_verifier()
-            .expect("the platform verifier accepts the ring provider")
-            .with_no_client_auth(),
-    )
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            Arc::new(
+                rustls::ClientConfig::builder_with_provider(provider)
+                    .with_safe_default_protocol_versions()
+                    .expect("the ring provider supports rustls's default protocol versions")
+                    .with_platform_verifier()
+                    .expect("the platform verifier accepts the ring provider")
+                    .with_no_client_auth(),
+            )
+        })
+        .clone()
 }
 
 #[cfg(test)]

@@ -787,6 +787,9 @@ impl Calls {
             let state = self.state.lock().unwrap();
             state.ringing.as_ref().filter(|r| r.room == room_id).map(|r| r.service.clone())
         };
+        // A call the bot rang needs no waiting for the owner's app to settle
+        // in the room: it is the callee there, and does not ring.
+        let wait_for_caller = rung.is_none();
         let service = match rung.or_else(|| known.service.clone()) {
             Some(service) => service,
             None => self.discover_service().await?,
@@ -838,6 +841,7 @@ impl Calls {
                 index: 0,
                 key,
             },
+            wait_for_caller,
         })
     }
 

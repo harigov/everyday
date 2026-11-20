@@ -560,6 +560,8 @@ async fn the_owner_calls_the_assistant_and_hears_its_answer() {
                 index: 0,
                 key: owner_key,
             },
+            // The phone, which joins at once, as FluffyChat does.
+            wait_for_caller: false,
         },
         Vec::new(),
         Addresses::Only(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),

@@ -962,6 +962,7 @@ mod calls {
                 index: 0,
                 key: vec![0; 16],
             },
+            wait_for_caller: true,
         }
     }
 

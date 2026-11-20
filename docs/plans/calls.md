@@ -44,6 +44,13 @@ design; the wire format is what FluffyChat 2.11.5's own source sends.
   thread is new.
 - **The phone cancels its own echo.** Every phone does on every call, so the
   call transport needs nothing like the desktop's `sonora`.
+- **A call is answered once the caller is connected.** FluffyChat, calling,
+  stops ringing only when somebody joins the LiveKit room after its own
+  connection is up, and it announces the call before connecting -- so a bot
+  that answers at once is there first and FluffyChat rings over the answer.
+  The bot joins, waits until the caller's connection has been up two seconds,
+  then leaves and joins again once; that arrival is the pick-up. Not for a
+  call the bot rang, where the owner's app is the callee.
 - **Two connections to the SFU, as every LiveKit client keeps**: the
   *publisher*, which this side offers and sends on, and the *subscriber*,
   which the SFU offers and sends the caller's audio on. LiveKit signalling

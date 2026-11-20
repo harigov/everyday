@@ -197,6 +197,12 @@ pub struct CallJoin {
     /// This side's own key, which the caller has been sent: everything this
     /// side says is encrypted with it.
     pub own_key: CallKey,
+    /// Join the media room only once the caller has been connected in it a
+    /// moment. FluffyChat, calling, stops ringing only for somebody who joins
+    /// after its own connection is up -- not for anybody already there -- and
+    /// it says it is in the call before it connects, so answering at once
+    /// leaves it ringing over the answer.
+    pub wait_for_caller: bool,
 }
 
 /// Why this side is ending a call. A connector turns it into whatever its
