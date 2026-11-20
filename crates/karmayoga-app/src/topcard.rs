@@ -502,13 +502,8 @@ fn place(window: &gtk::Window) {
 fn prefers_dark() -> bool {
     use gtk::gio::prelude::*;
 
-    const SCHEMA: &str = "org.gnome.desktop.interface";
-    let Some(source) = gtk::gio::SettingsSchemaSource::default() else { return false };
-    let Some(schema) = source.lookup(SCHEMA, true) else { return false };
-    if !schema.has_key("color-scheme") {
-        return false;
-    }
-    gtk::gio::Settings::new(SCHEMA).string("color-scheme") == "prefer-dark"
+    crate::gnome::settings("org.gnome.desktop.interface", &["color-scheme"])
+        .is_some_and(|settings| settings.string("color-scheme") == "prefer-dark")
 }
 
 /// The card's look: the app's own light or dark theme (`themes.css`), so it

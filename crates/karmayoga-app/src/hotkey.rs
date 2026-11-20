@@ -473,7 +473,7 @@ impl Hotkeys {
                         if !pressed && binding != Binding::VoiceTyping {
                             return;
                         }
-                        activate(&handle, binding, pressed, None);
+                        activate(&handle, binding, pressed, None, None);
                     });
                 if let Err(e) = outcome {
                     tracing::info!(
@@ -490,8 +490,14 @@ impl Hotkeys {
 
 /// A key was pressed, or let go. `token` is the activation token a portal
 /// sent with it: proof the person asked, which is what lets a window take
-/// focus on Wayland.
-fn activate(app: &AppHandle, binding: Binding, pressed: bool, token: Option<String>) {
+/// focus on Wayland. `stamp` is when a portal says it happened.
+fn activate(
+    app: &AppHandle,
+    binding: Binding,
+    pressed: bool,
+    token: Option<String>,
+    stamp: Option<std::time::Duration>,
+) {
     // Through the portal a key switched off is still bound -- see `apply` --
     // and its presses and releases are dropped here.
     if !app.state::<Hotkeys>().inner.lock().expect("hotkeys lock").wanted(binding) {
@@ -509,7 +515,7 @@ fn activate(app: &AppHandle, binding: Binding, pressed: bool, token: Option<Stri
             }
         }
         Binding::Writing => crate::writing::trigger(app, token),
-        Binding::VoiceTyping => crate::voicetyping::key(app, pressed, token),
+        Binding::VoiceTyping => crate::voicetyping::key(app, pressed, token, stamp),
     }
 }
 
@@ -545,6 +551,9 @@ fn raise_main(app: &AppHandle, token: Option<String>) {
 /// returns before anything is claimed; the settings pane reads the outcome
 /// when it is drawn.
 pub fn install(app: &AppHandle) {
+    // Here, on the main thread, whose loop hears the setting change.
+    #[cfg(target_os = "linux")]
+    crate::voicetyping::watch_key_repeat();
     let writing = crate::writing::configured_shortcut();
     let voice_typing = crate::voicetyping::configured_shortcut();
     #[cfg(target_os = "linux")]
@@ -566,14 +575,14 @@ pub fn install(app: &AppHandle) {
             };
             let on_activate = {
                 let handle = handle.clone();
-                move |id: &str, pressed: bool, token: Option<String>| {
+                move |id: &str, pressed: bool, token: Option<String>, stamp| {
                     let binding = match id {
                         "palette" => Binding::Palette,
                         "writing" => Binding::Writing,
                         "voice-typing" => Binding::VoiceTyping,
                         _ => return,
                     };
-                    activate(&handle, binding, pressed, token);
+                    activate(&handle, binding, pressed, token, Some(stamp));
                 }
             };
             let portal = crate::portal::Shortcuts::connect(parent, on_activate).await;

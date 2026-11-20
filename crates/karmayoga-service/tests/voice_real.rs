@@ -204,6 +204,13 @@ fn silence(seconds: f32) -> Vec<i16> {
     vec![0; (seconds * SAMPLE_RATE as f32) as usize]
 }
 
+/// The quiet after somebody finishes that ends their turn, with room to
+/// spare: the detector counts it in whole 32 ms windows, starting a little
+/// after the last word, so exactly the tuning's pause is not enough.
+fn end_of_turn() -> Vec<i16> {
+    silence(Tuning::CONVERSATION.end_of_turn_seconds + 0.6)
+}
+
 async fn next(link: &mut VoiceLink) -> VoiceOutput {
     tokio::time::timeout(Duration::from_secs(90), link.output.recv())
         .await
@@ -250,7 +257,7 @@ async fn a_spoken_conversation_with_the_real_models() {
     let LiveTranscription { control, mut events } =
         svc.live_transcription(Tuning::CONVERSATION).await.expect("listening opens");
     let audio: Vec<i16> =
-        [silence(0.5), question.clone(), silence(1.2)].into_iter().flatten().collect();
+        [silence(0.5), question.clone(), end_of_turn()].into_iter().flatten().collect();
     for chunk in audio.chunks(480) {
         control.feed(chunk.to_vec());
     }
@@ -285,7 +292,7 @@ async fn a_spoken_conversation_with_the_real_models() {
     feed(&link, &silence(0.5));
     feed(&link, &question);
     let spoke_at = Instant::now();
-    feed(&link, &silence(1.2));
+    feed(&link, &end_of_turn());
 
     let mut heard = None;
     let mut first_audio = None;
@@ -340,7 +347,7 @@ async fn a_spoken_conversation_with_the_real_models() {
     // ---- talking over the next reply -----------------------------------------
     tokio::time::sleep(Duration::from_millis(300)).await;
     feed(&link, &question);
-    feed(&link, &silence(1.2));
+    feed(&link, &end_of_turn());
     let mut new_reply = None;
     let mut first_sentence = None;
     let mut second_sent = false;
@@ -360,7 +367,7 @@ async fn a_spoken_conversation_with_the_real_models() {
     let new_reply = new_reply.expect("a second turn");
     // The first sentence was heard and the second is playing when they cut in.
     feed(&link, &question);
-    feed(&link, &silence(1.2));
+    feed(&link, &end_of_turn());
     let (mut paused, mut cleared, mut cut, mut started_again) = (false, false, None, false);
     while !(cut.is_some() && started_again) {
         match next(&mut link).await {
