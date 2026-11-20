@@ -108,7 +108,7 @@ impl Shortcuts {
     /// it asks which keys -- should open over; see [`parent_of`].
     pub async fn connect(
         parent: Option<ashpd::WindowIdentifier>,
-        on_activate: impl Fn(&str, bool, Option<String>) + Send + Sync + 'static,
+        on_activate: impl Fn(&str, bool, Option<String>, Duration) + Send + Sync + 'static,
     ) -> Option<Self> {
         register().await;
         let portal = match GlobalShortcuts::new().await {
@@ -185,9 +185,9 @@ type Stream<T> = std::pin::Pin<Box<dyn futures_util::Stream<Item = T> + Send>>;
 type Activated = Stream<ashpd::desktop::global_shortcuts::Activated>;
 type Deactivated = Stream<ashpd::desktop::global_shortcuts::Deactivated>;
 type Changed = Stream<ashpd::desktop::global_shortcuts::ShortcutsChanged>;
-/// Called with the id of a key, whether it was pressed or let go, and the
-/// activation token sent with it.
-type OnActivate = Arc<dyn Fn(&str, bool, Option<String>) + Send + Sync>;
+/// Called with the id of a key, whether it was pressed or let go, the
+/// activation token sent with it, and when the desktop says it happened.
+type OnActivate = Arc<dyn Fn(&str, bool, Option<String>, Duration) + Send + Sync>;
 
 /// What the portal says on its own: a key pressed, a key let go -- where the
 /// desktop reports it -- and a key changed in its settings.
@@ -241,7 +241,7 @@ async fn run(
                     .options()
                     .get("activation_token")
                     .and_then(|v| v.downcast_ref::<String>().ok());
-                on_activate(a.shortcut_id(), true, token);
+                on_activate(a.shortcut_id(), true, token, a.timestamp());
             }
             Some(d) = async {
                 match deactivated.as_mut() {
@@ -253,7 +253,7 @@ async fn run(
                     .options()
                     .get("activation_token")
                     .and_then(|v| v.downcast_ref::<String>().ok());
-                on_activate(d.shortcut_id(), false, token);
+                on_activate(d.shortcut_id(), false, token, d.timestamp());
             }
             Some(c) = async {
                 match changed.as_mut() {

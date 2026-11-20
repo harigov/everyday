@@ -283,27 +283,140 @@ struct Inner {
     /// The latest activation token the key brought. Wayland only.
     token: Option<String>,
     pending: Option<Pending>,
-    /// The key is down, as far as its presses and releases say. Kept only
-    /// where releases are reported -- see [`first_press`].
-    key_down: bool,
+    /// What the key last said while down -- pressed, or the keyboard
+    /// repeating it -- with no release since. See [`first_press`].
+    down: Option<Edge>,
+    /// How many times the key has said anything, so a check made later can
+    /// tell whether it has spoken since.
+    edges: u64,
 }
 
-/// Whether this edge of the key means anything, keeping `key_down` up to date:
-/// a press while the key is already down is the keyboard repeating it -- GNOME
+/// One press of the key, or the keyboard repeating it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Edge {
+    /// When it got here.
+    at: Instant,
+    /// When the desktop says it happened, where it says: the portal's own
+    /// timestamp, which a busy runtime does not delay.
+    stamp: Option<Duration>,
+    /// It was the keyboard repeating the key, not the press.
+    repeat: bool,
+}
+
+/// How the desktop repeats a held key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Repeats {
+    /// Not known: not GNOME, or GNOME's setting not read yet.
+    Unknown,
+    /// Switched off: a held key says it is down once.
+    Off,
+    /// The first repeat `delay` after the press, then one every `interval`.
+    Every { delay: Duration, interval: Duration },
+}
+
+/// Whether this edge of the key means anything, keeping `down` up to date:
+/// a press that comes when the keyboard would repeat a held key -- GNOME
 /// sends a held key's activation again and again, the first time after its
-/// repeat delay -- and not a new press.
+/// repeat delay and then every 30 ms or so -- is the repeat, and not a new
+/// press. See [`is_repeat`].
 ///
-/// Only where releases are reported: without them the key would be "down"
-/// for ever after the first press. A desktop that does not report releases
-/// does not repeat presses either, as far as is known (X11 through the plugin
-/// reports both and repeats neither).
-fn first_press(key_down: &mut bool, pressed: bool) -> bool {
-    if pressed {
-        !std::mem::replace(key_down, true)
-    } else {
-        *key_down = false;
-        true
+/// A press at any other time with no release between is a new press whose
+/// release went missing. GNOME (50) sends no release when a modifier is let
+/// go before the key -- Ctrl+Alt+M with Ctrl up first -- which is how people
+/// often let go; taking the key to be down until a release came ignored every
+/// press after the first.
+fn first_press(
+    down: &mut Option<Edge>,
+    pressed: bool,
+    at: Instant,
+    stamp: Option<Duration>,
+    repeats: Repeats,
+) -> bool {
+    if !pressed {
+        *down = None;
+        return true;
     }
+    let repeat = down.as_ref().is_some_and(|last| is_repeat(last, at, stamp, repeats));
+    *down = Some(Edge { at, stamp, repeat });
+    !repeat
+}
+
+/// How far a repeat's timestamp may be from when the keyboard would repeat
+/// the key. GNOME's are within a millisecond or two; this is for a desktop
+/// under load.
+const STAMPED_SLACK: Duration = Duration::from_millis(150);
+
+/// The same, timed by when presses got here rather than by the desktop's
+/// own timestamps: either may have waited on a busy runtime.
+const ARRIVAL_SLACK: Duration = Duration::from_millis(400);
+
+/// How soon after the key last said it was down a press is taken for a
+/// repeat where the desktop's way of repeating is not known: past the
+/// common delays before the first repeat (GNOME's 500 ms, KDE's 600 ms).
+const UNKNOWN_REPEAT_WITHIN: Duration = Duration::from_millis(1_000);
+
+/// Whether a press at `at` (`stamp`, where the desktop gave one) is the
+/// keyboard repeating the key that last said it was down at `last`: it
+/// comes one repeat delay after the press, or one interval after the last
+/// repeat.
+fn is_repeat(last: &Edge, at: Instant, stamp: Option<Duration>, repeats: Repeats) -> bool {
+    let (gap, slack) = match (last.stamp, stamp) {
+        (Some(then), Some(now)) => (now.saturating_sub(then), STAMPED_SLACK),
+        _ => (at.saturating_duration_since(last.at), ARRIVAL_SLACK),
+    };
+    let expected = match repeats {
+        Repeats::Unknown => return gap < UNKNOWN_REPEAT_WITHIN,
+        Repeats::Off => return false,
+        Repeats::Every { interval, .. } if last.repeat => interval,
+        Repeats::Every { delay, .. } => delay,
+    };
+    gap + slack >= expected && gap <= expected + slack
+}
+
+/// How this desktop repeats a held key, as last read. Kept up to date by
+/// [`watch_key_repeat`], so that a key repeating thirty times a second reads
+/// no settings.
+static REPEATS: Mutex<Repeats> = Mutex::new(Repeats::Unknown);
+
+fn key_repeats() -> Repeats {
+    *REPEATS.lock().expect("key repeat lock")
+}
+
+/// Read GNOME's keyboard repeat setting, and read it again whenever it
+/// changes. Called once, on the main thread, whose loop delivers the
+/// changes. Elsewhere than GNOME the repeat stays [`Repeats::Unknown`].
+#[cfg(target_os = "linux")]
+pub fn watch_key_repeat() {
+    use gtk::gio::prelude::*;
+
+    const KEYS: [&str; 3] = ["repeat", "delay", "repeat-interval"];
+    if !crate::gnome::running() {
+        return;
+    }
+    let Some(settings) = crate::gnome::settings("org.gnome.desktop.peripherals.keyboard", &KEYS)
+    else {
+        return;
+    };
+    fn read(settings: &gtk::gio::Settings) {
+        let repeats = if settings.boolean("repeat") {
+            Repeats::Every {
+                delay: Duration::from_millis(settings.uint("delay").into()),
+                interval: Duration::from_millis(settings.uint("repeat-interval").into()),
+            }
+        } else {
+            Repeats::Off
+        };
+        *REPEATS.lock().expect("key repeat lock") = repeats;
+    }
+    read(&settings);
+    settings.connect_changed(None, |settings, key| {
+        if KEYS.contains(&key) {
+            read(settings);
+        }
+    });
+    // Watched for the life of the process: the settings object must outlive
+    // this call for its changes to be heard.
+    std::mem::forget(settings);
 }
 
 /// Voice typing's state, for the life of the process.
@@ -359,9 +472,10 @@ fn decide(mode: KeyMode, stage: Stage, pressed: bool, now: Instant) -> Act {
     match (mode, pressed) {
         (KeyMode::Toggle, true) => Act::Finish,
         (KeyMode::Toggle, false) => Act::Nothing,
-        // Hands-free, the next press ends it. Held, a press can only come
-        // after a release that went missing -- repeats never get here, see
-        // [`first_press`] -- and is the end, as it would be in toggle mode.
+        // Hands-free, the next press ends it. Held, a press comes after a
+        // release that went missing, or is a repeat that [`first_press`] did
+        // not recognise (a desktop repeating out of time); either way it is
+        // the end, as it would be in toggle mode.
         (KeyMode::Hold, true) => Act::Finish,
         (KeyMode::Hold, false) if hands_free => Act::Nothing,
         (KeyMode::Hold, false) => match down_since {
@@ -391,16 +505,20 @@ impl Session {
 
 /// The dictation key went down (`pressed`) or came up. `token` is the
 /// activation token the desktop sent with it, on Wayland: what lets the pill
-/// take the keyboard for the moment a paste needs it.
-pub fn key(app: &AppHandle, pressed: bool, token: Option<String>) {
-    // Read before the lock: only a press can start anything, and the hotkeys
-    // take a lock of their own.
-    let config = pressed.then(load_config);
+/// take the keyboard for the moment a paste needs it. `stamp` is when the
+/// desktop says it happened, where it says.
+pub fn key(app: &AppHandle, pressed: bool, token: Option<String>, stamp: Option<Duration>) {
+    // Read before the lock: the hotkeys take a lock of their own.
     let releases = app.state::<Hotkeys>().reports_releases();
+    let repeats = key_repeats();
     let now = Instant::now();
+    // A desktop that stamps nothing may send zero.
+    let stamp = stamp.filter(|s| !s.is_zero());
     let dictation = app.state::<VoiceTyping>();
     let mut inner = dictation.lock();
-    if releases && !first_press(&mut inner.key_down, pressed) {
+    inner.edges += 1;
+    if !first_press(&mut inner.down, pressed, now, stamp, repeats) {
+        watch_for_release(app, &inner, repeats);
         return;
     }
     let stage = inner.session.as_ref().map_or(Stage::Idle, Session::stage);
@@ -411,6 +529,52 @@ pub fn key(app: &AppHandle, pressed: bool, token: Option<String>) {
     if token.is_some() || act == Act::Start {
         inner.token = token;
     }
+    carry_out(app, &dictation, inner, act, now, releases);
+}
+
+/// A key held in hold mode, let go modifier first, says nothing of being let
+/// go -- but its repeats stop. Once they have started, a pause in them longer
+/// than an interval is taken as the release, when the last repeat came.
+///
+/// Only once they have started: a desktop that does not repeat, or a key let
+/// go before the first repeat, leaves the dictation listening until the next
+/// press, as before.
+fn watch_for_release(app: &AppHandle, inner: &Inner, repeats: Repeats) {
+    let Repeats::Every { interval, .. } = repeats else { return };
+    let Some(session) = inner.session.as_ref() else { return };
+    let held =
+        matches!(session.stage(), Stage::Listening { hands_free: false, down_since: Some(_) });
+    if session.mode != KeyMode::Hold || !held {
+        return;
+    }
+    let edge = inner.edges;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(interval + ARRIVAL_SLACK).await;
+        let dictation = app.state::<VoiceTyping>();
+        let mut inner = dictation.lock();
+        if inner.edges != edge {
+            return;
+        }
+        let Some(last) = inner.down.take() else { return };
+        inner.edges += 1;
+        let stage = inner.session.as_ref().map_or(Stage::Idle, Session::stage);
+        let mode = inner.session.as_ref().map_or(KeyMode::Toggle, |s| s.mode);
+        let act = decide(mode, stage, false, last.at);
+        carry_out(&app, &dictation, inner, act, last.at, true);
+    });
+}
+
+/// Do what the key asked for. `now` is when it asked; `releases`, whether
+/// the desktop says when the key is let go.
+fn carry_out(
+    app: &AppHandle,
+    dictation: &VoiceTyping,
+    mut inner: std::sync::MutexGuard<'_, Inner>,
+    act: Act,
+    now: Instant,
+    releases: bool,
+) {
     match act {
         Act::Nothing => {}
         Act::Finish => {
@@ -427,7 +591,12 @@ pub fn key(app: &AppHandle, pressed: bool, token: Option<String>) {
             emit(app, seq, phase, None, None);
         }
         Act::Start => {
-            let Some(mut config) = config.filter(|c| c.enabled) else { return };
+            // Read only for a press that starts something, not for every
+            // repeat of a held key.
+            let mut config = load_config();
+            if !config.enabled {
+                return;
+            }
             // Holding a key to talk needs to hear it let go. Where the
             // desktop does not say, the key starts and stops as in toggle.
             if !releases {
@@ -621,7 +790,17 @@ async fn run(
     inbox: UnboundedSender<Msg>,
     messages: UnboundedReceiver<Msg>,
 ) {
-    let Some(heard) = hear(&app, seq, inbox, messages).await else { return };
+    let heard = match hear(&app, seq, inbox, messages).await {
+        Ok(Some(heard)) => heard,
+        Ok(None) => return,
+        // Said only now that `hear` has let go of the microphone: the pill
+        // lingers on a failure, and the slot held that long refused the next
+        // press ("already dictating"), voice mode and a recording.
+        Err(why) => {
+            fail(&app, seq, &why, None, FAILURE_LINGER).await;
+            return;
+        }
+    };
     let text = heard.trim().to_string();
     if text.is_empty() {
         fail(&app, seq, "Nothing was heard.", None, NOTHING_LINGER).await;
@@ -689,8 +868,8 @@ async fn run(
 }
 
 /// Everything from the key to the words: open the microphone, listen, stop,
-/// and take what was heard. `None` when it ended some other way -- cancelled,
-/// or failed, in which case the pill already says so.
+/// and take what was heard. `None` when it was cancelled or another has
+/// begun; an error, for the pill, when it failed.
 ///
 /// The listening is the same dictation session mail's write-by-voice uses
 /// (`karmayoga_service::speech::dictate`): it ends on Stop, after 15 seconds
@@ -702,25 +881,21 @@ async fn hear(
     seq: u64,
     inbox: UnboundedSender<Msg>,
     mut messages: UnboundedReceiver<Msg>,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     if !emit(app, seq, Phase::Starting, None, None) {
-        return None;
+        return Ok(None);
     }
     pill::present(app);
     let state = app.state::<AppState>();
     if state.is_remote() {
         let refusal = "Voice typing uses this computer's microphone and speech model, so it is not available while this window is looking at a vault on another computer.";
-        fail(app, seq, refusal, None, FAILURE_LINGER).await;
-        return None;
+        return Err(refusal.to_string());
     }
     // One microphone: the slot mail's write-by-voice takes, so that voice
     // mode, a recording, listening or a dictation here and this refuse each
     // other both ways. Given back when this is over, however it ends -- a
     // cancel drops this future, and the claim with it.
-    if let Err(e) = crate::dictation::claim_for(&state, pill::LABEL) {
-        fail(app, seq, &e.message, None, FAILURE_LINGER).await;
-        return None;
-    }
+    crate::dictation::claim_for(&state, pill::LABEL).map_err(|e| e.message)?;
     let _claim = Claim(app.clone());
     // The microphone would hear the speakers.
     crate::listen::stop_listening(&state);
@@ -762,13 +937,10 @@ async fn hear(
     let options = EngineOptions { microphone: true, speaker: false, echo_cancellation: false };
     let mut engine = match AudioEngine::start(options, sink).await {
         Ok(engine) => Some(engine),
-        Err(e) => {
-            fail(app, seq, &e.to_string(), None, FAILURE_LINGER).await;
-            return None;
-        }
+        Err(e) => return Err(e.to_string()),
     };
     if !emit(app, seq, Phase::Listening, None, None) {
-        return None;
+        return Ok(None);
     }
 
     let mut session: Option<UnboundedSender<DictationInput>> = None;
@@ -790,7 +962,8 @@ async fn hear(
             _ => tokio::time::Instant::now() + Duration::from_secs(24 * 60 * 60),
         };
         let message = match tokio::time::timeout_at(wait, messages.recv()).await {
-            Ok(message) => message?,
+            Ok(Some(message)) => message,
+            Ok(None) => return Ok(None),
             Err(_) if engine.is_some() => {
                 // The tail is in: close the microphone and hand on whatever
                 // it delivered before it closed.
@@ -806,9 +979,7 @@ async fn hear(
             }
             Err(_) => {
                 tracing::warn!("the last of a voice typing was not worked out in time");
-                fail(app, seq, "The speech model did not finish in time.", None, FAILURE_LINGER)
-                    .await;
-                return None;
+                return Err("The speech model did not finish in time.".to_string());
             }
         };
         match message {
@@ -816,7 +987,7 @@ async fn hear(
                 if close_at.is_none() {
                     close_at = Some(tokio::time::Instant::now() + TAIL);
                     if !emit(app, seq, Phase::Transcribing, None, None) {
-                        return None;
+                        return Ok(None);
                     }
                 }
             }
@@ -841,18 +1012,8 @@ async fn hear(
                 }
                 session = Some(input);
             }
-            // The microphone is closed before the pill lingers on the
-            // failure: nothing is listening to it any more.
-            Msg::Opened(Err(e)) => {
-                drop(engine.take());
-                fail(app, seq, &e.message, None, FAILURE_LINGER).await;
-                return None;
-            }
-            Msg::Trouble(message) => {
-                drop(engine.take());
-                fail(app, seq, &message, None, FAILURE_LINGER).await;
-                return None;
-            }
+            Msg::Opened(Err(e)) => return Err(e.message),
+            Msg::Trouble(message) => return Err(message),
             Msg::Session(DictationEvent::Trouble { message }) => {
                 tracing::warn!(error = %message, "a piece of a voice typing was not transcribed");
             }
@@ -868,13 +1029,9 @@ async fn hear(
     drop(engine);
     let (reason, text, error) = ended;
     match reason {
-        DictationEnd::Stopped | DictationEnd::Silence | DictationEnd::TimeLimit => Some(text),
-        DictationEnd::Cancelled => None,
-        DictationEnd::Failed => {
-            let message = error.unwrap_or_else(|| "The speech model failed.".to_string());
-            fail(app, seq, &message, None, FAILURE_LINGER).await;
-            None
-        }
+        DictationEnd::Stopped | DictationEnd::Silence | DictationEnd::TimeLimit => Ok(Some(text)),
+        DictationEnd::Cancelled => Ok(None),
+        DictationEnd::Failed => Err(error.unwrap_or_else(|| "The speech model failed.".into())),
     }
 }
 
@@ -1131,14 +1288,126 @@ mod tests {
         assert_eq!(decide(KeyMode::Hold, free, true, up), Act::Finish);
     }
 
+    /// GNOME's defaults: the first repeat 500 ms after the press, then one
+    /// every 30 ms.
+    const GNOME: Repeats =
+        Repeats::Every { delay: Duration::from_millis(500), interval: Duration::from_millis(30) };
+
+    /// A press, then whatever follows, each at `ms` after the first -- with the
+    /// desktop's timestamps when `stamped`, by arrival when not. Says which
+    /// of them counted as presses.
+    fn presses(repeats: Repeats, stamped: bool, edges: &[(u64, bool)]) -> Vec<bool> {
+        let t = Instant::now();
+        let mut down = None;
+        edges
+            .iter()
+            .map(|&(ms, pressed)| {
+                let at = Duration::from_millis(ms);
+                let stamp = stamped.then_some(Duration::from_secs(1_000) + at);
+                first_press(&mut down, pressed, t + at, stamp, repeats)
+            })
+            .collect()
+    }
+
+    /// A key held for `ms`, as `repeats` says the desktop repeats it.
+    fn held_for(repeats: Repeats, ms: u64) -> Vec<(u64, bool)> {
+        let Repeats::Every { delay, interval } = repeats else { return vec![(0, true)] };
+        let (delay, interval) = (delay.as_millis() as u64, interval.as_millis() as u64);
+        let mut edges = vec![(0, true)];
+        let mut next = delay;
+        while next < ms {
+            edges.push((next, true));
+            next += interval;
+        }
+        edges
+    }
+
     #[test]
-    fn a_press_while_the_key_is_down_is_the_keyboard_repeating() {
-        let mut down = false;
-        assert!(first_press(&mut down, true), "the first press counts");
-        assert!(!first_press(&mut down, true), "the repeats do not");
-        assert!(!first_press(&mut down, true));
-        assert!(first_press(&mut down, false), "the release counts");
-        assert!(first_press(&mut down, true), "and so does the next press");
+    fn a_held_keys_repeats_are_not_presses() {
+        for stamped in [true, false] {
+            let counted = presses(GNOME, stamped, &held_for(GNOME, 60_000));
+            assert!(counted[0], "the press counts");
+            assert!(counted[1..].iter().all(|&c| !c), "no repeat does (stamped: {stamped})");
+        }
+    }
+
+    #[test]
+    fn a_release_ends_the_key_and_the_next_press_counts() {
+        let counted = presses(GNOME, true, &[(0, true), (500, true), (560, false), (700, true)]);
+        assert_eq!(counted, [true, false, true, true]);
+    }
+
+    #[test]
+    fn a_press_after_a_release_that_never_came_counts() {
+        // Ctrl let go before M: GNOME says nothing of the key coming up.
+        for stamped in [true, false] {
+            let counted = presses(GNOME, stamped, &[(0, true), (4_000, true)]);
+            assert_eq!(counted, [true, true], "stamped: {stamped}");
+        }
+    }
+
+    #[test]
+    fn a_quick_second_press_after_a_release_that_never_came_counts() {
+        // Toggle mode, "yes", and the key again 250 ms on: no repeat comes
+        // then, so it is a press. So are quick taps after it.
+        let counted = presses(GNOME, true, &[(0, true), (250, true), (1_000, true), (1_250, true)]);
+        assert_eq!(counted, [true, true, true, true]);
+    }
+
+    #[test]
+    fn slow_repeats_are_still_repeats() {
+        // Repeat Keys set slow, for somebody who needs it.
+        let slow = Repeats::Every {
+            delay: Duration::from_millis(500),
+            interval: Duration::from_millis(1_000),
+        };
+        let counted = presses(slow, true, &held_for(slow, 5_000));
+        assert!(counted[0] && counted[1..].iter().all(|&c| !c), "{counted:?}");
+        // And a long delay before the first, however long.
+        let long = Repeats::Every {
+            delay: Duration::from_millis(4_000),
+            interval: Duration::from_millis(30),
+        };
+        let counted = presses(long, true, &held_for(long, 6_000));
+        assert!(counted[0] && counted[1..].iter().all(|&c| !c), "{counted:?}");
+    }
+
+    #[test]
+    fn stamps_keep_a_late_repeat_a_repeat() {
+        // The first repeat reached the app 300 ms late, behind a busy runtime,
+        // but the desktop's stamp says when it happened.
+        let t = Instant::now();
+        let mut down = None;
+        let stamp = |ms: u64| Some(Duration::from_millis(1_000_000 + ms));
+        assert!(first_press(&mut down, true, t, stamp(0), GNOME));
+        let late = t + Duration::from_millis(800 + ARRIVAL_SLACK.as_millis() as u64);
+        assert!(!first_press(&mut down, true, late, stamp(500), GNOME));
+    }
+
+    #[test]
+    fn a_repeat_out_of_time_by_arrival_is_still_within_its_slack() {
+        let (delay, slack) = (500, ARRIVAL_SLACK.as_millis() as u64);
+        let counted = presses(GNOME, false, &[(0, true), (delay + slack - 1, true)]);
+        assert_eq!(counted, [true, false]);
+        let counted = presses(GNOME, false, &[(0, true), (delay + slack + 1, true)]);
+        assert_eq!(counted, [true, true]);
+    }
+
+    #[test]
+    fn without_repeats_every_press_counts() {
+        let counted = presses(Repeats::Off, true, &[(0, true), (500, true), (530, true)]);
+        assert_eq!(counted, [true, true, true]);
+    }
+
+    #[test]
+    fn unknown_repeats_take_anything_soon_for_a_repeat() {
+        let within = UNKNOWN_REPEAT_WITHIN.as_millis() as u64;
+        let counted = presses(
+            Repeats::Unknown,
+            false,
+            &[(0, true), (within - 1, true), (2 * within + 10, true)],
+        );
+        assert_eq!(counted, [true, false, true]);
     }
 
     #[test]

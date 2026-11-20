@@ -16,6 +16,8 @@ mod dictation;
 mod events;
 mod fanout;
 mod files;
+#[cfg(target_os = "linux")]
+mod gnome;
 mod health;
 mod hotkey;
 mod legacy;

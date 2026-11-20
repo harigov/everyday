@@ -51,7 +51,9 @@ It takes the same slot mail's write-by-voice does (`dictation::claim_for`),
 so it and a meeting recording, voice mode, listening or a dictation in Karma
 Yoga's own window refuse each other both ways (one microphone); it is also
 refused in a window looking at a vault on another computer (the speech model
-is this computer's). Audio kept while the speech model loads goes to the
+is this computer's). The slot is given back before a failure is shown: the
+pill lingers on one for 8 s, and a slot held that long refused the next press
+as "already dictating". Audio kept while the speech model loads goes to the
 session as `DictationInput::Backlog`, which does not count towards its 15 s
 of quiet. Anything being read aloud
 stops first. The record takes up to 20,000 characters, far more than three
@@ -64,10 +66,30 @@ Ctrl+Alt+D to "show desktop", and pressing it hid every window in the
 headless test.
 
 Repeats: GNOME sends a held key's activation again and again, the first
-time after its 500 ms repeat delay, so a press while the key is down (as its
-presses and releases say) is ignored, and no timing is guessed at. Where the
-desktop does not report releases (a portal without `Deactivated`), the key
-cannot be tracked or held, and hold mode works as toggle.
+time after its repeat delay (500 ms unless changed) and then every 30 ms, so a
+press that comes when a repeat would -- one delay after the press, or one
+interval after the last repeat, within 150 ms -- is a repeat. Gaps are
+measured with the portal's own timestamps (exact to a millisecond or two in
+GNOME), so a runtime slow to deliver them does not turn a repeat into a
+press; without timestamps, by arrival within 400 ms. The delay, interval and
+whether keys repeat at all are GNOME's own settings
+(`org.gnome.desktop.peripherals.keyboard`), read at startup and on change,
+and only under GNOME; elsewhere anything within a second of the last edge is
+a repeat.
+
+It is timed rather than taken from the releases alone because GNOME 50 sends
+no `Deactivated` when a modifier is let go before the key (Ctrl up before M),
+which is how people often let go. Trusting "down until released" took every
+later press for a repeat, and voice typing worked once per run of the app.
+Timed, a quick second press after such a release still counts unless it lands
+just where the first repeat would.
+Checked in a private headless GNOME 50 with a bare portal client: key let go
+first, `Activated` then `Deactivated`; any modifier first, `Activated` only;
+held, repeats every 30 ms after the delay, ending when a modifier goes up.
+
+Where the desktop does not report releases at all (a portal without
+`Deactivated`), the key cannot be tracked or held, and hold mode works as
+toggle.
 
 ## Wayland
 
@@ -76,7 +98,11 @@ palette's, all three bound once per process (GNOME remembers only the last
 set it was asked for, so adding the third shows its dialog once more).
 **Hold** needs the portal's `Deactivated` signal, which `portal.rs` now
 listens to; a desktop that never sends it still works, because a press after
-a tap ends a hands-free dictation.
+a tap ends a hands-free dictation. On GNOME a hold let go modifier first
+sends no release either, but its repeats stop: once they have started, a
+pause in them longer than an interval and 400 ms is taken as the key let go
+when the last repeat came. A hold let go that way before the first repeat is
+a tap, and listens on until the next press.
 
 The pill is the meeting card's kind of window: transparent, maximized, the
 pill drawn at its bottom middle and the input region cut down to the pill, so

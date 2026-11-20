@@ -93,14 +93,17 @@ pub struct Tuning {
 }
 
 impl Tuning {
-    /// Talking with somebody: about 0.7 s of quiet is the pause people leave
-    /// when they are done.
+    /// Talking with somebody: 1.2 s of quiet before the turn is over. People
+    /// leave about 0.7 s when they are done, but they leave that much to
+    /// think mid-sentence too, and 0.7 s answered them before they had
+    /// finished. Half a second more on every answer is the lesser cost.
     pub const CONVERSATION: Tuning =
-        Tuning { end_of_turn_seconds: 0.7, min_speech_seconds: 0.15, max_turn_seconds: 30.0 };
+        Tuning { end_of_turn_seconds: 1.2, min_speech_seconds: 0.15, max_turn_seconds: 30.0 };
 
-    /// Dictating: people pause to think mid-sentence, and an utterance only
-    /// decides where the recogniser is handed audio, not where the text
-    /// breaks, so a longer pause is allowed before one is cut.
+    /// Dictating: people pause to think mid-sentence here too, though less
+    /// rides on it -- an utterance only decides where the recogniser is
+    /// handed audio, not where the text breaks. The same pause as
+    /// [`Tuning::CONVERSATION`]; only the shortest sound that counts differs.
     pub const DICTATION: Tuning =
         Tuning { end_of_turn_seconds: 1.2, min_speech_seconds: 0.2, max_turn_seconds: 30.0 };
 }
@@ -684,11 +687,11 @@ mod tests {
     }
 
     #[test]
-    fn conversation_tuning_is_what_the_voice_mode_always_used() {
+    fn conversation_waits_out_a_pause_to_think() {
         let t = Tuning::CONVERSATION;
         assert_eq!(
             (t.end_of_turn_seconds, t.min_speech_seconds, t.max_turn_seconds),
-            (0.7, 0.15, 30.0)
+            (1.2, 0.15, 30.0)
         );
     }
 
