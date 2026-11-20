@@ -9,6 +9,7 @@
 import { mockGetThread, mockMailWriting } from './mock-mail'
 import { VaultError } from './types'
 import type {
+  DraftCheckReport,
   ImproveMode,
   MailMessageDetail,
   NeedsReply,
@@ -232,4 +233,13 @@ export async function mockLearnFromReplies(): Promise<VoiceLearningView> {
     edited: false,
   }
   return mockVoiceLearning()
+}
+
+/**
+ * `check_draft`: the checks Settings → Mail writing lists, put to a pretend
+ * model about the draft as stored. STUB -- answers "nothing to check".
+ */
+export async function mockCheckDraft(id: string): Promise<DraftCheckReport> {
+  void id
+  return { results: [] }
 }

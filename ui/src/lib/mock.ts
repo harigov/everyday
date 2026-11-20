@@ -156,6 +156,7 @@ import { sameAccount, validateLink } from './chat'
 import { signatureFor } from './mailwrite'
 import { imageEndpointOf, speechEndpointOf, voiceEndpointOf } from './accounts'
 import {
+  mockCheckDraft,
   mockDraftWithAi,
   mockImproveWriting,
   mockLearnFromReplies,
@@ -8237,6 +8238,9 @@ export const mockInvoke = async <T>(
         instruction: str(args.instruction),
         currentText: args.currentText as string | null | undefined,
       })) as T
+    case 'check_draft':
+      requireUnlocked()
+      return (await mockCheckDraft(str(args.id))) as T
     case 'improve_writing':
       requireUnlocked()
       return (await mockImproveWriting({
