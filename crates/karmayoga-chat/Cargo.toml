@@ -24,15 +24,28 @@ futures = "0.3.34"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 tokio = { version = "1.53.1", features = ["rt", "sync", "time", "macros", "net"] }
 # Calls (`call::media`): WebRTC -- ICE, DTLS-SRTP, RTP -- in Rust, sans-IO, so
-# the one task that owns a call's UDP socket drives it on tokio. Its own
+# the one task that owns a call's UDP sockets drives it on tokio. Its own
 # default features pull an example web server; only the crypto is wanted, on
 # aws-lc-rs as matrix-sdk's TLS already is.
 str0m = { version = "0.25", default-features = false, features = ["aws-lc-rs"] }
-# Opus, the codec every Matrix client calls with (`call::codec`). libopus
+# A call's media server (LiveKit) is reached over a WebSocket and spoken to in
+# protobuf: only the handful of messages a voice call needs, declared by hand
+# in `call::signal` rather than pulling LiveKit's generated crate.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
+prost = "0.14"
+# TLS for that WebSocket, with an explicit provider and the system's roots,
+# the way `karmayoga-mail` connects (see `call::sfu::tls_config`).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+# A call's audio is end-to-end encrypted frame by frame (`call::frames`):
+# AES-128-GCM, keys derived with HKDF, random keys and IVs.
+ring = "0.17"
+base64 = "0.22"
+# Opus, the codec every MatrixRTC client calls with (`call::codec`). libopus
 # (BSD), built from the source the crate bundles, with CMake.
 opus = "0.4"
-# This machine's addresses, offered to the caller as ICE host candidates: the
-# tailnet address is how a phone reaches a home server. No STUN, no TURN.
+# This machine's addresses, offered to the media server as ICE host
+# candidates. No STUN, no TURN: the media server is on the tailnet too.
 if-addrs = "0.15"
 # 0.19 is the first line on rusqlite 0.40, the version the rest of the
 # workspace links; 0.18 and older pull rusqlite 0.37, and the two cannot share
@@ -43,6 +56,9 @@ matrix-sdk = { version = "0.19.1", default-features = false, features = [
     "sqlite",
     "rustls-aws-lc-rs",
     "markdown",
+    # A call's media keys go to the owner's device Olm-encrypted, as
+    # `io.element.call.encryption_keys` to-device messages (`matrix::rtc`).
+    "experimental-send-custom-to-device",
 ] }
 
 [dev-dependencies]
@@ -52,6 +68,8 @@ karmayoga-vault.workspace = true
 mime = "0.3"
 tempfile = "3"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "test-util"] }
+# The bot's own log lines in `call_live`'s real-phone harness (`RUST_LOG`).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 # Local speech models in the service, for `tests/call_live.rs` only: a call

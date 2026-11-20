@@ -1,30 +1,34 @@
-//! A call to the assistant over a real homeserver, answered by the real
-//! runner with the real speech models, and a phone made of str0m on the
-//! other end.
+//! A call to the assistant over a real homeserver and a real LiveKit, answered
+//! by the real runner with the real speech models, and this crate's own media
+//! client playing the owner's phone.
 //!
-//! The owner's side is what FluffyChat does on a call: an `m.call.invite`
-//! carrying a WebRTC offer (Opus, one audio section, the host candidate of
-//! this machine's own address, as a phone on the tailnet offers its tailnet
-//! address), then audio. What it says is Phonon's voice asking a question;
-//! what comes back is decoded, and Parakeet has to hear the scripted model's
-//! answer in it. The thread has to hold both, marked as from the chat.
+//! The owner's side is what FluffyChat 2.11 does on a call (MatrixRTC): an
+//! `org.matrix.msc3401.call.member` state event naming the token service, a
+//! LiveKit token from that service for its OpenID token, its media key sent
+//! Olm-encrypted to the bot's device once the bot has joined, and audio,
+//! encrypted frame by frame. What it says is Phonon's voice asking a
+//! question; what comes back is decrypted with the bot's key and decoded, and
+//! Parakeet has to hear the scripted model's answer in it. The thread has to
+//! hold both, marked as from the chat.
 //!
 //! # Running it
 //!
-//! `#[ignore]`, and needs three things on top of `matrix_live.rs`'s throwaway
-//! Conduit (see that file): `KARMAYOGA_TEST_MATRIX_URL`,
-//! `KARMAYOGA_TEST_SPEECH=1`, and the speech kit and Parakeet in the models
-//! folder (Phonon is downloaded if missing). Built only with the `speech`
-//! feature:
+//! `#[ignore]`, built only with the `speech` feature, and run by `make
+//! test-call`, which starts the throwaway servers it needs on loopback: a
+//! Conduit with federation on (behind a TLS proxy with a self-signed
+//! certificate, since the token service checks OpenID tokens over the
+//! federation API), a LiveKit SFU, and `lk-jwt-service`. It needs:
 //!
-//! ```text
-//! KARMAYOGA_TEST_MATRIX_URL=http://127.0.0.1:16167 KARMAYOGA_TEST_SPEECH=1 \
-//!   cargo test -p karmayoga-chat --features speech --test call_live -- --ignored --nocapture
-//! ```
+//! - `KARMAYOGA_TEST_MATRIX_URL`: the Conduit, plain HTTP.
+//! - `KARMAYOGA_TEST_LIVEKIT_JWT_URL`: the token service.
+//! - `KARMAYOGA_TEST_SPEECH=1`, and the speech kit and Parakeet in the models
+//!   folder (Phonon is downloaded if missing).
 
 #![cfg(feature = "speech")]
 
 use karmayoga_chat::Runner;
+use karmayoga_chat::call::{self, Addresses, ToCall};
+use karmayoga_chat::connector::{CallJoin, CallKey};
 use karmayoga_core::agent::Role;
 use karmayoga_core::chat::{ChatLink, ChatService, MatrixLink};
 use karmayoga_core::llm::ModelSettings;
@@ -38,27 +42,22 @@ use karmayoga_service::chat::ChatState;
 use karmayoga_service::ctx::Ctx;
 use karmayoga_service::local::files as models;
 use karmayoga_service::speech::local as speech;
-use karmayoga_service::speech::resample;
 use karmayoga_service::speech::synth::build_synthesiser;
 use karmayoga_service::supervisor::Supervisor;
+use karmayoga_service::voice::{VoiceInput, VoiceLink, VoiceOutput};
 use matrix_sdk::Client;
 use matrix_sdk::config::SyncSettings;
+use matrix_sdk::deserialized_responses::EncryptionInfo;
 use matrix_sdk::ruma::api::client::account::register::v3::Request as RegistrationRequest;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy};
-use matrix_sdk::ruma::events::AnySyncTimelineEvent;
+use matrix_sdk::ruma::events::{AnySyncTimelineEvent, AnyToDeviceEvent, AnyToDeviceEventContent};
 use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, UserId};
 use serde_json::{Value, json};
-use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use str0m::change::{SdpAnswer, SdpPendingOffer};
-use str0m::media::{Direction, Frequency, MediaKind, MediaTime, Mid};
-use str0m::net::{Protocol, Receive};
-use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
-use tokio::net::UdpSocket;
-use tokio::sync::watch;
+use tokio::sync::mpsc;
 
 /// What the owner asks, aloud.
 const ASKED: &str = "What is on my calendar tomorrow morning?";
@@ -68,8 +67,11 @@ const ANSWER: &str = "You have the dentist at nine in the morning.";
 /// How long any one thing is given to happen.
 const WAIT: Duration = Duration::from_secs(90);
 
-/// The call's clock: Opus frames of 20 ms at 48 kHz.
-const FRAME: usize = 960;
+/// The media keys' to-device event type, as FluffyChat and Element Call name it.
+const KEYS: &str = "io.element.call.encryption_keys";
+
+/// A call membership's state event type.
+const MEMBER: &str = "org.matrix.msc3401.call.member";
 
 fn enabled() -> Option<String> {
     if std::env::var("KARMAYOGA_TEST_SPEECH").as_deref() != Ok("1") {
@@ -81,6 +83,14 @@ fn enabled() -> Option<String> {
         eprintln!("skipping: set KARMAYOGA_TEST_MATRIX_URL to a throwaway Conduit");
     }
     url.map(|u| u.trim().trim_end_matches('/').to_string())
+}
+
+/// The throwaway token service, which `make test-call` starts.
+fn token_service() -> String {
+    std::env::var("KARMAYOGA_TEST_LIVEKIT_JWT_URL")
+        .expect("KARMAYOGA_TEST_LIVEKIT_JWT_URL is not set; run `make test-call`")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 fn step(what: &str) {
@@ -326,134 +336,127 @@ impl Owner {
 }
 
 // ---------------------------------------------------------------------------
-// The phone
+// The owner's call, as FluffyChat makes it
 // ---------------------------------------------------------------------------
 
-/// This machine's address as a phone on the same network would reach it: the
-/// tailnet's if there is one, else the first other address that is up.
-fn this_machine() -> IpAddr {
-    let addresses: Vec<IpAddr> = if_addrs::get_if_addrs()
-        .unwrap()
-        .into_iter()
-        .filter(|i| !i.is_loopback())
-        .map(|i| i.ip())
-        .filter(IpAddr::is_ipv4)
-        .collect();
-    addresses
-        .iter()
-        .find(|ip| matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 100))
-        .or(addresses.first())
-        .copied()
-        .expect("an address that is not loopback")
+/// The owner's membership of the room's call, as FluffyChat 2.11 writes it.
+/// `{}` is leaving.
+fn membership(owner: &UserId, device: &str, room: &OwnedRoomId, service: &str) -> Value {
+    json!({
+        "application": "m.call",
+        "call_id": "",
+        "device_id": device,
+        "expires": 14_400_000,
+        "foci_preferred": [{
+            "type": "livekit",
+            "livekit_service_url": service,
+            "livekit_alias": room,
+        }],
+        "focus_active": { "type": "livekit", "focus_selection": "oldest_membership" },
+        "m.call.intent": "voice",
+        "membershipID": format!("{owner}:{device}"),
+        "scope": "m.room",
+        "created_at": jiff::Timestamp::now().as_millisecond(),
+    })
 }
 
-struct Phone {
-    rtc: Rtc,
-    socket: UdpSocket,
-    local: SocketAddr,
-    mid: Mid,
-    pending: Option<SdpPendingOffer>,
+/// A LiveKit token for the owner's device in `room`, from the token service,
+/// for an OpenID token: what FluffyChat asks `/sfu/get` for.
+async fn livekit_token(owner: &Client, room: &OwnedRoomId, service: &str) -> (String, String) {
+    let openid = owner.account().request_openid_token().await.expect("an OpenID token");
+    let body = json!({
+        "room": room,
+        "openid_token": {
+            "access_token": openid.access_token,
+            "token_type": "Bearer",
+            "matrix_server_name": openid.matrix_server_name,
+            "expires_in": openid.expires_in.as_secs(),
+        },
+        "device_id": owner.device_id().expect("signed in").as_str(),
+    });
+    // matrix-sdk's own HTTP client: its reqwest has neither a TLS provider
+    // of its own nor the `json` feature.
+    let answer = owner
+        .http_client()
+        .post(format!("{service}/sfu/get"))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&body).unwrap())
+        .send()
+        .await
+        .expect("the token service answers")
+        .error_for_status()
+        .expect("the token service gives a token")
+        .bytes()
+        .await
+        .expect("an answer");
+    let response: Value = serde_json::from_slice(&answer).expect("JSON");
+    let url = response["url"].as_str().expect("a url").to_string();
+    let jwt = response["jwt"].as_str().expect("a jwt").to_string();
+    (url, jwt)
 }
 
-impl Phone {
-    /// A phone with one Opus audio section, and its offer.
-    async fn dial() -> (Phone, String) {
-        let ip = this_machine();
-        let socket = UdpSocket::bind(SocketAddr::new(IpAddr::from([0, 0, 0, 0]), 0)).await.unwrap();
-        let local = SocketAddr::new(ip, socket.local_addr().unwrap().port());
-        let mut rtc = Rtc::builder().clear_codecs().enable_opus(true, false).build(Instant::now());
-        rtc.add_local_candidate(Candidate::host(local, "udp").unwrap());
-        let mut change = rtc.sdp_api();
-        let mid = change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
-        let (offer, pending) = change.apply().expect("an offer");
-        let sdp = offer.to_sdp_string();
-        (Phone { rtc, socket, local, mid, pending: Some(pending) }, sdp)
-    }
-
-    fn accept(&mut self, answer: &str) {
-        let answer = SdpAnswer::from_sdp_string(answer).expect("a readable answer");
-        let pending = self.pending.take().expect("an offer waiting");
-        self.rtc.sdp_api().accept_answer(pending, answer).expect("the answer is accepted");
-    }
-
-    /// Talk and listen until `stop`: `say` (48 kHz) after a second of
-    /// silence, then silence; everything heard, decoded to 16 kHz, into
-    /// `heard`.
-    async fn run(
-        mut self,
-        say: Vec<i16>,
-        heard: Arc<Mutex<Vec<i16>>>,
-        connected: Arc<AtomicBool>,
-        mut stop: watch::Receiver<bool>,
-    ) {
-        let mut encoder =
-            opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Voip).unwrap();
-        let mut decoder = opus::Decoder::new(SAMPLE_RATE, opus::Channels::Mono).unwrap();
-        let mut queue: std::collections::VecDeque<i16> =
-            std::iter::repeat_n(0, 48_000).chain(say).collect();
-        let mut tick = tokio::time::interval(Duration::from_millis(20));
-        let mut rtp: u64 = 0;
-        let mut buf = vec![0u8; 2000];
-        let mut packet = vec![0u8; 1500];
-        let mut pcm = vec![0i16; 5760];
-        loop {
-            // Drain, as str0m requires after every mutation.
-            let timeout = loop {
-                match self.rtc.poll_output().expect("the phone's peer") {
-                    Output::Timeout(t) => break t,
-                    Output::Transmit(t) => {
-                        let _ = self.socket.send_to(&t.contents, t.destination).await;
-                    }
-                    Output::Event(Event::IceConnectionStateChange(state)) => {
-                        if matches!(
-                            state,
-                            IceConnectionState::Connected | IceConnectionState::Completed
-                        ) {
-                            connected.store(true, Ordering::SeqCst);
-                        }
-                    }
-                    Output::Event(Event::MediaData(data)) => {
-                        if let Ok(n) = decoder.decode(&data.data, &mut pcm, false) {
-                            heard.lock().unwrap().extend_from_slice(&pcm[..n]);
-                        }
-                    }
-                    Output::Event(_) => {}
-                }
-            };
-            let wait = timeout.saturating_duration_since(Instant::now());
-            tokio::select! {
-                _ = stop.changed() => return,
-                received = self.socket.recv_from(&mut buf) => {
-                    let Ok((n, source)) = received else { continue };
-                    let Ok(contents) = buf[..n].try_into() else { continue };
-                    let input = Input::Receive(Instant::now(), Receive {
-                        proto: Protocol::Udp,
-                        source,
-                        destination: self.local,
-                        contents,
-                    });
-                    let _ = self.rtc.handle_input(input);
-                }
-                _ = tick.tick() => {
-                    if !connected.load(Ordering::SeqCst) {
-                        let _ = self.rtc.handle_input(Input::Timeout(Instant::now()));
-                        continue;
-                    }
-                    let frame: Vec<i16> =
-                        (0..FRAME).map(|_| queue.pop_front().unwrap_or(0)).collect();
-                    let n = encoder.encode(&frame, &mut packet).unwrap();
-                    let Some(writer) = self.rtc.writer(self.mid) else { continue };
-                    let Some(pt) = writer.payload_params().next().map(|p| p.pt()) else { continue };
-                    let time = MediaTime::new(rtp, Frequency::FORTY_EIGHT_KHZ);
-                    rtp += FRAME as u64;
-                    let _ = writer.write(pt, Instant::now(), time, &packet[..n]);
-                }
-                () = tokio::time::sleep(wait) => {
-                    let _ = self.rtc.handle_input(Input::Timeout(Instant::now()));
-                }
-            }
+/// Send the owner's media key to the bot's device, Olm-encrypted, as
+/// FluffyChat sends it.
+async fn send_key(owner: &Client, room: &OwnedRoomId, bot: &UserId, bot_device: &str, key: &[u8]) {
+    use base64::Engine;
+    let device_id = owner.device_id().expect("signed in").to_owned();
+    let content = json!({
+        "keys": { "index": 0, "key": base64::engine::general_purpose::STANDARD.encode(key) },
+        "member": { "id": format!("{}:{device_id}", owner.user_id().unwrap()), "claimed_device_id": device_id },
+        "room_id": room,
+        "session": { "application": "m.call", "call_id": "", "scope": "m.room" },
+        "sent_ts": jiff::Timestamp::now().as_millisecond(),
+    });
+    let encryption = owner.encryption();
+    let deadline = Instant::now() + WAIT;
+    let device = loop {
+        if let Ok(Some(device)) = encryption.get_device(bot, bot_device.into()).await {
+            break device;
         }
-    }
+        assert!(Instant::now() < deadline, "the bot's device never became known");
+        let _ = encryption.request_user_identity(bot).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let raw: Raw<AnyToDeviceEventContent> = Raw::new(&content).unwrap().cast_unchecked();
+    let failed = encryption
+        .encrypt_and_send_raw_to_device(
+            vec![&device],
+            KEYS,
+            raw,
+            // `CollectStrategy::AllDevices`, which matrix-sdk does not
+            // re-export: the bot's device is unverified.
+            Default::default(),
+        )
+        .await
+        .expect("the key is sent");
+    assert!(failed.is_empty(), "the key reached the bot's device: {failed:?}");
+}
+
+/// Keys of the bot's audio, as they reach the owner Olm-encrypted.
+fn hear_keys(owner: &Client) -> mpsc::UnboundedReceiver<CallKey> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    owner.add_event_handler(
+        move |event: Raw<AnyToDeviceEvent>, encryption: Option<EncryptionInfo>| {
+            let tx = tx.clone();
+            async move {
+                use base64::Engine;
+                let Ok(value) = event.deserialize_as::<Value>() else { return };
+                if value["type"] != KEYS || encryption.is_none() {
+                    return;
+                }
+                let content = &value["content"];
+                let sender = value["sender"].as_str().unwrap_or_default();
+                let device = content["member"]["claimed_device_id"].as_str().unwrap_or_default();
+                let Some(encoded) = content["keys"]["key"].as_str() else { return };
+                let Ok(key) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+                    return;
+                };
+                let index = content["keys"]["index"].as_u64().unwrap_or(0) as u8;
+                let _ = tx.send(CallKey { participant: format!("{sender}:{device}"), index, key });
+            }
+        },
+    );
+    rx
 }
 
 async fn transcribe(samples: Vec<i16>) -> String {
@@ -469,7 +472,7 @@ fn random() -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "needs a throwaway Conduit and the real speech models; see the module doc"]
+#[ignore = "needs throwaway Conduit, LiveKit and token service, and the speech models: make test-call"]
 async fn the_owner_calls_the_assistant_and_hears_its_answer() {
     let Some(homeserver) = enabled() else { return };
     assert!(models::speech_kit_installed(), "the speech kit is needed");
@@ -513,68 +516,92 @@ async fn the_owner_calls_the_assistant_and_hears_its_answer() {
     )
     .unwrap();
 
-    step("the question, in Phonon's voice, at the call's rate");
+    step("the question, in Phonon's voice");
     let vault = svc.get().unwrap();
     let voice = build_synthesiser(vault.voice_access().unwrap()).await.unwrap();
     let asked = voice.synthesise(ASKED).await.unwrap();
-    let floats = karmayoga_service::speech::pcm::to_f32(&asked.samples);
-    let say = karmayoga_service::speech::pcm::to_i16(
-        &resample::clip(&floats, asked.sample_rate, 48_000).unwrap(),
-    );
 
-    step("calling");
-    let (mut phone, offer) = Phone::dial().await;
-    let call_id = random();
-    let party_id = random();
+    step("calling: the owner's membership, then the owner's phone in the LiveKit room");
+    let service = token_service();
+    let mut bot_keys = hear_keys(&owner.client);
     let joined = owner.client.get_room(&room).expect("the owner is in the room");
+    let owner_device = owner.client.device_id().expect("signed in").to_string();
+    let state_key = format!("_{owner_id}_{owner_device}_m.call");
     joined
-        .send_raw(
-            "m.call.invite",
-            json!({
-                "call_id": call_id,
-                "party_id": party_id,
-                "version": "1",
-                "lifetime": 60_000,
-                "offer": { "type": "offer", "sdp": offer },
-            }),
+        .send_state_event_raw(
+            MEMBER,
+            &state_key,
+            membership(&owner_id, &owner_device, &room, &service),
         )
         .await
-        .expect("the invite is sent");
+        .expect("the owner joins the call");
+    let (url, jwt) = livekit_token(&owner.client, &room, &service).await;
+    let owner_key = uuid::Uuid::new_v4().as_bytes().to_vec();
 
-    let answer = owner
-        .wait_for("the bot's answer", &bot, |e| {
-            e["type"] == "m.call.answer" && e["content"]["call_id"] == call_id
+    step("waiting for the bot to join");
+    let bots = owner
+        .wait_for("the bot's membership", &bot, |e| {
+            e["type"] == MEMBER && e["content"]["device_id"].is_string()
         })
         .await;
-    let sdp = answer["content"]["answer"]["sdp"].as_str().expect("an answer SDP").to_string();
-    eprintln!("call_live: answered with:\n{sdp}");
-    phone.accept(&sdp);
-    joined
-        .send_raw(
-            "m.call.select_answer",
-            json!({
-                "call_id": call_id,
-                "party_id": party_id,
-                "version": "1",
-                "selected_party_id": answer["content"]["party_id"],
-            }),
-        )
+    let bot_device = bots["content"]["device_id"].as_str().unwrap().to_string();
+    let bot_participant = format!("{bot}:{bot_device}");
+    assert_eq!(bots["content"]["membershipID"], json!(bot_participant), "as FluffyChat needs it");
+    assert_eq!(bots["content"]["m.call.intent"], "voice");
+    send_key(&owner.client, &room, &bot, &bot_device, &owner_key).await;
+
+    let phone = call::connect(
+        &CallJoin {
+            url,
+            token: jwt,
+            caller: bot_participant.clone(),
+            own_key: CallKey {
+                participant: format!("{owner_id}:{owner_device}"),
+                index: 0,
+                key: owner_key,
+            },
+        },
+        Vec::new(),
+        Addresses::Only(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
+    )
+    .await
+    .expect("the phone joins the LiveKit room");
+    let (input, mut heard_rx) = mpsc::unbounded_channel();
+    let (say, output) = mpsc::unbounded_channel();
+    let (to_phone, to_phone_rx) = mpsc::unbounded_channel();
+    let (events, _events) = mpsc::unbounded_channel();
+    let talking = tokio::spawn(phone.run(VoiceLink { input, output }, to_phone_rx, events));
+
+    step("waiting for the bot's key");
+    let key = tokio::time::timeout(WAIT, bot_keys.recv())
         .await
-        .unwrap();
+        .expect("the bot sent its key")
+        .expect("the owner is listening");
+    assert_eq!(key.participant, bot_participant);
+    to_phone.send(ToCall::Keys(vec![key])).unwrap();
 
-    let heard: Arc<Mutex<Vec<i16>>> = Arc::default();
-    let connected = Arc::new(AtomicBool::new(false));
-    let (stop, stopped) = watch::channel(false);
-    let talking = tokio::spawn(phone.run(say, heard.clone(), connected.clone(), stopped));
-
-    step("waiting to connect");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !connected.load(Ordering::SeqCst) {
-        assert!(Instant::now() < deadline, "the call never connected");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    // The bot is in the room and has the owner's key; give its media a moment
+    // to connect, so that the question is not said to nobody.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    say.send(VoiceOutput::Play {
+        utterance: 1,
+        samples: asked.samples,
+        sample_rate: asked.sample_rate,
+    })
+    .unwrap();
 
     step("waiting for the answer to be said");
+    let heard: Arc<Mutex<Vec<i16>>> = Arc::default();
+    let gathering = tokio::spawn({
+        let heard = heard.clone();
+        async move {
+            while let Some(input) = heard_rx.recv().await {
+                if let VoiceInput::Audio(samples) = input {
+                    heard.lock().unwrap().extend(samples);
+                }
+            }
+        }
+    });
     // Speech is anything louder than the silence the bot sends between
     // sentences; the answer is over once a second and a half of quiet
     // follows some speech.
@@ -600,15 +627,15 @@ async fn the_owner_calls_the_assistant_and_hears_its_answer() {
     assert!(said.contains("dentist"), "the answer should have been heard: {said:?}");
 
     step("hanging up");
-    joined
-        .send_raw(
-            "m.call.hangup",
-            json!({ "call_id": call_id, "party_id": party_id, "version": "1", "reason": "user_hangup" }),
-        )
-        .await
-        .unwrap();
-    let _ = stop.send(true);
+    joined.send_state_event_raw(MEMBER, &state_key, json!({})).await.unwrap();
+    let _ = to_phone.send(ToCall::End);
     let _ = talking.await;
+    gathering.abort();
+    owner
+        .wait_for("the bot leaving the call", &bot, |e| {
+            e["type"] == MEMBER && e["content"].as_object().is_some_and(|c| c.is_empty())
+        })
+        .await;
 
     step("the thread holds the call");
     let deadline = Instant::now() + WAIT;
@@ -629,4 +656,155 @@ async fn the_owner_calls_the_assistant_and_hears_its_answer() {
         assert!(Instant::now() < deadline, "the thread never held the question and the answer");
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+/// What the scratch bot says to anything, on a call from a real phone.
+const PHONE_REPLY: &str =
+    "I can hear you. This is the test assistant on the new calling code, and the call works.";
+
+/// Not a test of anything automatic: a scratch bot, on the real homeserver,
+/// for a person to call from FluffyChat on their phone. It signs in as a
+/// throwaway account, opens its private room with the owner (who has to
+/// accept the invitation), and answers calls with the real speech models and
+/// a scripted reply, logging as it goes, until the owner has asked something
+/// on a call and been answered, or the time is up.
+///
+/// - `KARMAYOGA_TEST_PHONE_HOMESERVER`: where the bot signs in, e.g.
+///   `http://127.0.0.1:6167`.
+/// - `KARMAYOGA_TEST_PHONE_BOT`, `KARMAYOGA_TEST_PHONE_BOT_PASSWORD`: the
+///   throwaway account.
+/// - `KARMAYOGA_TEST_PHONE_OWNER`: who will call.
+/// - `KARMAYOGA_TEST_PHONE_MINUTES`: how long to wait (15).
+/// - `KARMAYOGA_TEST_PHONE_RING`: a token service URL, to ring the owner
+///   rather than wait to be called. The bot cannot place calls yet, so a
+///   second sign-in of the same account does what a caller's FluffyChat
+///   does -- its membership naming that service, then a ring -- and when the
+///   owner picks up, their joining is a call the bot answers as any other.
+/// - `KARMAYOGA_TEST_SPEECH=1`, and the models as for the test above.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "waits for a person to call from a phone; see the doc comment"]
+async fn a_real_phone_calls_a_scratch_bot() {
+    let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+    assert_eq!(std::env::var("KARMAYOGA_TEST_SPEECH").as_deref(), Ok("1"), "the speech models");
+    // What the bot does, as it does it: a person is on the other end, and a
+    // call that goes wrong is diagnosed from this.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
+    let homeserver = var("KARMAYOGA_TEST_PHONE_HOMESERVER");
+    let (bot, owner) = (var("KARMAYOGA_TEST_PHONE_BOT"), var("KARMAYOGA_TEST_PHONE_OWNER"));
+    let minutes: u64 = std::env::var("KARMAYOGA_TEST_PHONE_MINUTES")
+        .ok()
+        .and_then(|m| m.parse().ok())
+        .unwrap_or(15);
+    install_voice().await;
+
+    let endpoint = fake_model(PHONE_REPLY).await;
+    let (svc, _dir) = assistant(&endpoint);
+    let mut link = ChatLink::new_matrix();
+    link.service =
+        ChatService::Matrix(MatrixLink { homeserver, user_id: bot.clone(), owner: owner.clone() });
+    let password = var("KARMAYOGA_TEST_PHONE_BOT_PASSWORD");
+    svc.call(Ctx::local(), "save_chat_link", json!({ "link": link, "password": password.clone() }))
+        .await
+        .unwrap_or_else(|e| panic!("save_chat_link: {e}"));
+    wait_online(&svc, link.id).await;
+    step(&format!("{bot} is online; {owner} has to accept its invitation"));
+    let ringing = std::env::var("KARMAYOGA_TEST_PHONE_RING").ok().map(|service| {
+        let (homeserver, bot, owner) =
+            (var("KARMAYOGA_TEST_PHONE_HOMESERVER"), bot.clone(), owner.clone());
+        tokio::spawn(async move { ring(&homeserver, &bot, &password, &owner, &service).await })
+    });
+
+    let vault = svc.get().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(minutes * 60);
+    loop {
+        let conversations = vault.conversations(&ConversationQuery::default()).unwrap();
+        if let Some(thread) = conversations.iter().find(|c| c.via.is_some()) {
+            let messages = vault.messages(thread.id).unwrap();
+            let asked = messages.iter().find(|m| m.role == Role::User);
+            let answered = messages.iter().any(|m| m.role == Role::Assistant);
+            if let (Some(asked), true) = (asked, answered) {
+                step(&format!("heard on the call: {:?}; answered", asked.content));
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "nobody called within {minutes} minutes");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    // Long enough for the reply to be said before the bot goes away.
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    if let Some(ringing) = ringing {
+        ringing.abort();
+    }
+}
+
+/// Ring `owner` from a second sign-in of `bot`, as FluffyChat rings: once
+/// the owner is in the bot's private room, a call membership naming
+/// `service`, then `org.matrix.msc4075.rtc.notification`. Rings again every
+/// 40 seconds until the owner joins the call, then leaves it to the bot.
+async fn ring(homeserver: &str, bot: &str, password: &str, owner: &str, service: &str) {
+    use matrix_sdk::ruma::events::room::member::MembershipState;
+    let owner_id = UserId::parse(owner).expect("the owner's Matrix ID");
+    let ringer = Owner::sign_in(homeserver, &UserId::parse(bot).unwrap(), password).await;
+    let device = ringer.client.device_id().expect("signed in").to_string();
+
+    let room = loop {
+        let mut found = None;
+        for room in ringer.client.joined_rooms() {
+            if let Ok(Some(member)) = room.get_member_no_sync(&owner_id).await
+                && *member.membership() == MembershipState::Join
+            {
+                found = Some(room);
+            }
+        }
+        if let Some(room) = found {
+            break room;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+    let room_id = room.room_id().to_owned();
+    step(&format!("{owner} is in {room_id}; ringing"));
+
+    let state_key = format!("_{bot}_{device}_m.call");
+    let bot_id = UserId::parse(bot).unwrap();
+    for attempt in 1..=5 {
+        let content = membership(&bot_id, &device, &room_id, service);
+        room.send_state_event_raw(MEMBER, &state_key, content).await.expect("the ringer joins");
+        room.send_raw(
+            "org.matrix.msc4075.rtc.notification",
+            json!({
+                "sender_ts": jiff::Timestamp::now().as_millisecond(),
+                "lifetime": 30_000,
+                "notification_type": "ring",
+                "m.mentions": { "user_ids": [owner] },
+                "m.call.intent": "voice",
+            }),
+        )
+        .await
+        .expect("the ring is sent");
+        step(&format!("rang (attempt {attempt})"));
+
+        let deadline = Instant::now() + Duration::from_secs(40);
+        while Instant::now() < deadline {
+            let picked_up = ringer.heard.lock().unwrap().iter().any(|(r, e)| {
+                *r == room_id
+                    && e["type"] == MEMBER
+                    && e["sender"] == owner
+                    && e["content"].as_object().is_some_and(|c| !c.is_empty())
+            });
+            if picked_up {
+                step(&format!("{owner} picked up; the bot answers from here"));
+                // The ringer was only ever a ring: it leaves the call to the
+                // bot once there is somebody in it.
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let _ = room.send_state_event_raw(MEMBER, &state_key, json!({})).await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    let _ = room.send_state_event_raw(MEMBER, &state_key, json!({})).await;
+    step("nobody picked up");
 }

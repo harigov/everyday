@@ -56,6 +56,7 @@ pub(super) static TOOLS: &[Tool] = &[
                 ),
                 ("send_to_chat", flag(SEND_TO_CHAT)),
                 ("ask_in_chat", flag(ASK_IN_CHAT)),
+                ("call_me", flag(CALL_ME)),
                 ("email_me", flag(EMAIL_ME)),
                 ("email_account", text(EMAIL_ACCOUNT)),
                 ("model", one_of(MODEL, &MODELS)),
@@ -86,6 +87,7 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("enabled", flag("Switch it on or off without deleting it.")),
                 ("send_to_chat", flag(SEND_TO_CHAT)),
                 ("ask_in_chat", flag(ASK_IN_CHAT)),
+                ("call_me", flag(CALL_ME)),
                 ("email_me", flag(EMAIL_ME)),
                 ("email_account", text(EMAIL_ACCOUNT)),
                 ("model", one_of(MODEL, &MODELS)),
@@ -147,6 +149,11 @@ const ASK_IN_CHAT: &str = "While it runs, put questions to them in that chat: ap
      anything that deletes or sends, and a question when it needs a fact or a decision only \
      they have. Sends the result there too. False stops asking.";
 
+const CALL_ME: &str = "Call them with the result through that chat instead of writing it: you \
+     say it, and stay on the line for anything they ask about it. Written in the chat only if \
+     they do not pick up. Turns sending to the chat on. For a brief they asked to hear, or to \
+     be called with. False stops calling.";
+
 const EMAIL_ME: &str = "Also email the result to them, from one of their mail accounts to its \
      own address. False stops emailing it.";
 
@@ -201,6 +208,7 @@ fn routine_json(r: &Routine, now: &jiff::Zoned) -> Value {
             json!({
                 "chat": r.delivery.chat.is_some(),
                 "asks_in_chat": r.delivery.asks(),
+                "calls": r.delivery.calls(),
                 "email": r.delivery.email.is_some(),
             }),
         );
@@ -287,7 +295,7 @@ fn apply_how_args(args: &Args<'_>, routine: &mut Routine) -> Result<()> {
     Ok(())
 }
 
-/// `send_to_chat`, `ask_in_chat`, `email_me` and `email_account`, applied to
+/// `send_to_chat`, `ask_in_chat`, `call_me`, `email_me` and `email_account`, applied to
 /// what a routine already has. An omitted flag leaves its part alone, so the
 /// same function serves a new routine (which has nothing) and a change.
 ///
@@ -300,11 +308,13 @@ fn apply_delivery_args(
     delivery: &mut crate::routine::Delivery,
 ) -> Result<()> {
     let ask = args.opt_bool("ask_in_chat");
-    let chat = match (args.opt_bool("send_to_chat"), ask) {
-        // Asking happens in the chat, so asking for it is asking for the chat.
-        (_, Some(true)) | (Some(true), _) => Some(true),
-        (Some(false), _) => Some(false),
-        (None, _) => None,
+    let call = args.opt_bool("call_me");
+    let chat = match (args.opt_bool("send_to_chat"), ask, call) {
+        // Asking and calling happen through the chat, so asking for either is
+        // asking for the chat.
+        (_, Some(true), _) | (_, _, Some(true)) | (Some(true), _, _) => Some(true),
+        (Some(false), _, _) => Some(false),
+        (None, _, _) => None,
     };
     match chat {
         Some(true) if delivery.chat.is_none() => {
@@ -325,11 +335,15 @@ fn apply_delivery_args(
         Some(false) => {
             delivery.chat = None;
             delivery.ask = false;
+            delivery.call = false;
         }
         _ => {}
     }
     if let Some(ask) = ask {
         delivery.ask = ask;
+    }
+    if let Some(call) = call {
+        delivery.call = call;
     }
 
     let account = args.opt_str("email_account").map(str::trim).filter(|a| !a.is_empty());
@@ -456,10 +470,11 @@ fn apply_update_routine_args(
 
 /// The arguments that change what a routine does, where its results go, or
 /// what it spends doing it, rather than when it runs.
-const WHAT_AND_WHERE: [&str; 7] = [
+const WHAT_AND_WHERE: [&str; 8] = [
     "instructions",
     "send_to_chat",
     "ask_in_chat",
+    "call_me",
     "email_me",
     "email_account",
     "model",

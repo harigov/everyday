@@ -1,31 +1,48 @@
-//! The WebRTC peer for one call, and the task that drives it.
+//! A call's media: a room on a LiveKit media server, and the one task that
+//! carries it.
 //!
-//! str0m is sans-IO: it owns the call's state -- ICE, DTLS, SRTP -- and
-//! nothing else. It is told what arrived and when, and it says what to send
-//! and when it wants to be woken. [`Call::run`] is the loop that does the
-//! telling, on tokio, and also the one place the call's two other worlds
-//! meet: the voice session on one side (its two channels, 16 kHz samples in
-//! and any rate out) and the caller's device on the other (Opus, 20 ms at a
-//! time).
+//! The server forwards; it neither mixes nor decodes. This side joins the
+//! room over a WebSocket (`sfu`, in the messages of `signal`) and keeps two
+//! WebRTC connections to the server, as every LiveKit client does: the
+//! *publisher*, which this side offers and sends its voice on, and the
+//! *subscriber*, which the server offers and sends everybody else's audio
+//! on. Both are str0m, sans-IO -- told what arrived and when, saying what to
+//! send and when to be woken -- and [`Call::run`] is the loop that does the
+//! telling, for both, for the WebSocket, and for the voice session's two
+//! channels (16 kHz samples in, any rate out).
 //!
-//! One UDP socket is opened per address offered, not one for all of them.
-//! ICE matches an incoming packet to a candidate by the address it was sent
-//! *to*, and a socket bound to every address does not say which one that was.
+//! Only the caller is listened to: the participant the chat service named
+//! ([`CallJoin::caller`]), whose frames open with the keys it sent over the
+//! chat service's own encryption (`frames`). Everybody else in the room --
+//! nobody, on a call with the owner -- is not decoded, and could not be.
+//!
+//! Each connection has its own sockets, one per address offered. The server
+//! takes every participant on one port, so a datagram from it says nothing
+//! of which connection it is for; the socket it arrived on does. And ICE
+//! matches an incoming packet to a candidate by the address it was sent
+//! *to*, which a socket bound to every address does not say.
 
 use super::codec::{CALL_RATE, Decoder, Encoder, FRAME};
+use super::frames::{Openers, Sealer, Unopened};
 use super::outbound::Outbound;
-use crate::connector::IceCandidate;
+use super::sfu::{self, Heard};
+use super::signal::{
+    AddTrackRequest, EncryptionType, JoinResponse, LeaveRequest, ParticipantInfo, ParticipantState,
+    Ping, Request, Response, SessionDescription, SignalTarget, TrackSource, TrackType,
+    TrickleRequest,
+};
+use crate::connector::{CallJoin, CallKey};
 use karmayoga_service::speech::{pcm, resample};
 use karmayoga_service::voice::{VoiceEvent, VoiceInput, VoiceLink, VoiceOutput};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::{pending, poll_fn};
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::task::Poll;
 use std::time::{Duration, Instant};
-use str0m::change::SdpOffer;
+use str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
 use str0m::format::Codec;
-use str0m::media::{Frequency, MediaData, MediaTime, Mid, Pt};
+use str0m::media::{Direction, Frequency, MediaKind, MediaTime, Mid, Pt};
 use str0m::net::{Protocol, Receive, Transmit};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::io::ReadBuf;
@@ -33,34 +50,45 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::{MissedTickBehavior, interval, sleep_until};
 
-/// How long a call may take to connect, from the moment it is run, before the
-/// two devices are taken never to reach each other. A phone on mobile data
-/// that is not on the tailnet gets here: it offers addresses this machine
-/// cannot route to.
+/// How long a call may take to connect, from the moment it is run, before
+/// this side and the media server are taken never to reach each other -- or
+/// the caller, never to be in the room.
 const CONNECT_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long a connected call may be disconnected -- no answer to the checks
-/// ICE keeps making -- before it is taken to be lost. Long enough for a phone
-/// to change from wifi to mobile data and back, short enough that nobody
-/// talks to a dead line for a minute.
+/// ICE keeps making -- before it is taken to be lost.
 const LOST_AFTER: Duration = Duration::from_secs(15);
 
 /// How often audio goes out: one Opus frame's worth.
 const FRAME_EVERY: Duration = Duration::from_millis(20);
 
+/// How often to ping the server, and how long it may stay silent, when it
+/// does not say.
+const PING_EVERY: Duration = Duration::from_secs(5);
+const SERVER_SILENT_FOR: Duration = Duration::from_secs(15);
+
+/// How long after the caller is in the room to start speaking, when the
+/// server does not say they have subscribed: about what subscribing takes.
+const HEARD_WITHIN: Duration = Duration::from_secs(2);
+
 /// The largest datagram read. WebRTC keeps to the path's MTU, well under this.
 const DATAGRAM: usize = 2048;
 
-/// How many times closing a call drains what str0m wants to say goodbye with
-/// (an RTCP BYE, the DTLS close) before giving up, so that closing cannot
-/// loop if it keeps having more.
+/// How many times closing drains what str0m wants to say goodbye with (an
+/// RTCP BYE, the DTLS close) before giving up, so that closing cannot loop.
 const GOODBYE_POLLS: usize = 32;
 
-/// Which of this machine's addresses to offer the caller.
+/// This side's one track, as it names it to the server: the track id in the
+/// publisher offer's `a=msid`, which is how the server matches the offer to
+/// the [`AddTrackRequest`].
+const TRACK: &str = "karmayoga-voice";
+const STREAM: &str = "karmayoga";
+
+/// Which of this machine's addresses to offer the media server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Addresses {
     /// Every address of every interface that is up, except loopback: the
-    /// LAN, and the tailnet a phone reaches a home server over.
+    /// LAN, and the tailnet the media server is reached over.
     Interfaces,
     /// Exactly these. For tests, which talk over loopback.
     Only(Vec<IpAddr>),
@@ -71,19 +99,11 @@ pub enum Addresses {
 #[error("{0}")]
 pub struct CallError(pub String);
 
-/// An offer answered: what to send back, and the call to run.
-pub struct Answered {
-    /// This side's session description (SDP), with every one of this side's
-    /// candidates in it.
-    pub sdp: String,
-    pub call: Call,
-}
-
 /// What the relay tells a running call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToCall {
-    /// More of the caller's candidates.
-    Candidates(Vec<IceCandidate>),
+    /// More of the caller's keys.
+    Keys(Vec<CallKey>),
     /// End the call now: the owner hung up, `!stop`, or the relay is stopping.
     End,
 }
@@ -94,12 +114,11 @@ pub enum CallEnd {
     /// The voice session ended by itself: the owner said goodbye, or it hit
     /// something it cannot carry on from.
     SessionEnded,
-    /// [`ToCall::End`] was sent, or its sender dropped, or the caller's device
-    /// closed the connection itself (the DTLS close and RTCP BYE a phone
-    /// sends as it hangs up, which usually arrive before the chat's own
-    /// hang-up does).
+    /// [`ToCall::End`] was sent, or its sender dropped, or the caller left the
+    /// room, or the server ended this side's session.
     Ended,
-    /// The two devices never reached each other.
+    /// This side and the media server never reached each other, or the
+    /// caller never came into the room.
     Unreachable,
     /// They did, and then lost each other for too long.
     Lost,
@@ -126,57 +145,104 @@ struct Socket {
     addr: SocketAddr,
 }
 
-/// One answered call, not yet running.
+/// The sockets of both connections, which the loop reads and str0m's
+/// datagrams go out of.
+struct Sockets {
+    publisher: Vec<Socket>,
+    subscriber: Vec<Socket>,
+}
+
+impl Sockets {
+    fn of(&self, link: Which) -> &[Socket] {
+        match link {
+            Which::Publisher => &self.publisher,
+            Which::Subscriber => &self.subscriber,
+        }
+    }
+}
+
+/// Which of the two connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Which {
+    Publisher,
+    Subscriber,
+}
+
+impl Which {
+    fn target(self) -> SignalTarget {
+        match self {
+            Which::Publisher => SignalTarget::Publisher,
+            Which::Subscriber => SignalTarget::Subscriber,
+        }
+    }
+}
+
+/// A call joined, not yet running.
 pub struct Call {
-    rtc: Rtc,
-    sockets: Vec<Socket>,
-    /// The audio section of the offer, which is the only one answered with
-    /// media, and the Opus payload type it was agreed on.
-    mid: Mid,
-    pt: Pt,
+    sender: sfu::Sender,
+    receiver: sfu::Receiver,
+    welcome: JoinResponse,
+    sockets: Sockets,
+    publisher: Link,
+    subscriber: Link,
+    caller: String,
+    own_key: CallKey,
+    keys: Vec<CallKey>,
     limits: Limits,
 }
 
-/// Answer `offer`, the caller's session description, with `remote` -- the
-/// caller's candidates heard so far -- and this machine's `addresses`.
+/// One of the two connections, and this side's candidates for it as SDP
+/// lines, to trickle.
+struct Link {
+    rtc: Rtc,
+    candidates: Vec<String>,
+}
+
+/// Join the call's room on its media server: open this side's sockets on
+/// `addresses` and be let in with `join`'s token. `keys` are the caller's,
+/// as far as they have arrived.
 ///
-/// Binds the UDP socket the call will use and accepts only Opus audio; an
-/// offer with no Opus audio in it is refused. Video in the offer is
-/// declined, not refused, so a video call is answered with voice.
-pub async fn answer(
-    offer: &str,
-    remote: &[IceCandidate],
+/// Fails with a sentence when the server cannot be reached or refuses the
+/// token. Everything after -- the two connections, the caller's audio -- is
+/// [`Call::run`]'s.
+pub async fn connect(
+    join: &CallJoin,
+    keys: Vec<CallKey>,
     addresses: Addresses,
-) -> Result<Answered, CallError> {
-    let offer = SdpOffer::from_sdp_string(offer)
-        .map_err(|e| CallError(format!("The caller's offer could not be read: {e}.")))?;
+) -> Result<Call, CallError> {
+    let sockets =
+        Sockets { publisher: bind(addresses.clone()).await?, subscriber: bind(addresses).await? };
+    let publisher = rtc_on(&sockets.publisher)?;
+    let subscriber = rtc_on(&sockets.subscriber)?;
+    let (sender, receiver, welcome) = sfu::join(&join.url, &join.token).await?;
+    Ok(Call {
+        sender,
+        receiver,
+        welcome,
+        sockets,
+        publisher,
+        subscriber,
+        caller: join.caller.clone(),
+        own_key: join.own_key.clone(),
+        keys,
+        limits: Limits::default(),
+    })
+}
 
-    let sockets = bind(addresses).await?;
-
-    // Opus and nothing else: every other codec in the offer, video included,
-    // finds nothing to agree on and is declined.
+/// A connection that carries Opus and nothing else, offering `sockets`'
+/// addresses. Every other codec the server offers, video included, finds
+/// nothing to agree on and is declined.
+fn rtc_on(sockets: &[Socket]) -> Result<Link, CallError> {
     let mut rtc = Rtc::builder().clear_codecs().enable_opus(true, false).build(Instant::now());
-    for socket in &sockets {
+    let mut candidates = Vec::new();
+    for socket in sockets {
         let candidate = Candidate::host(socket.addr, "udp")
             .map_err(|e| CallError(format!("{} is not an address to offer: {e}.", socket.addr)))?;
-        rtc.add_local_candidate(candidate);
+        if let Some(added) = rtc.add_local_candidate(candidate) {
+            candidates.push(added.to_sdp_string());
+        }
     }
-
-    let answer = rtc
-        .sdp_api()
-        .accept_offer(offer)
-        .map_err(|e| CallError(format!("The caller's offer could not be answered: {e}.")))?;
-    let sdp = answer.to_sdp_string();
-
-    let (mid, pt) = opus_audio(&mut rtc, &sdp).ok_or_else(|| {
-        CallError("The caller's offer has no Opus audio, which is all a call here carries.".into())
-    })?;
-
-    for candidate in remote {
-        add_remote(&mut rtc, candidate);
-    }
-
-    Ok(Answered { sdp, call: Call { rtc, sockets, mid, pt, limits: Limits::default() } })
+    Ok(Link { rtc, candidates })
 }
 
 impl Call {
@@ -186,14 +252,26 @@ impl Call {
     /// with its `VoiceEvent::Ended` when the session ends by itself.
     ///
     /// However it ends, the session is told to stop (`VoiceInput::Stop`)
-    /// unless it was the one that ended, and the socket is closed.
+    /// unless it was the one that ended, this side leaves the room, and the
+    /// sockets are closed.
     pub async fn run(
         self,
         mut voice: VoiceLink,
         mut to_call: mpsc::UnboundedReceiver<ToCall>,
         events: mpsc::UnboundedSender<VoiceEvent>,
     ) -> CallEnd {
-        let Call { rtc, sockets, mid, pt, limits } = self;
+        let Call {
+            mut sender,
+            mut receiver,
+            welcome,
+            sockets,
+            publisher,
+            subscriber,
+            caller,
+            own_key,
+            keys,
+            limits,
+        } = self;
         let (encoder, decoder) = match (Encoder::new(), Decoder::new()) {
             (Ok(encoder), Ok(decoder)) => (encoder, decoder),
             (Err(e), _) | (_, Err(e)) => {
@@ -203,35 +281,33 @@ impl Call {
             }
         };
         let (converted_tx, mut converted) = mpsc::unbounded_channel();
-        let mut peer = Peer::new(rtc, mid, pt, limits, encoder, decoder, converted_tx);
+        let mut speech = Speech::new(encoder, decoder, converted_tx);
+        let mut room = Room::new(welcome, publisher, subscriber, caller, &own_key, limits);
+        room.take_keys(&keys);
 
-        let end = peer.drive(&sockets, &mut voice, &mut to_call, &mut converted, &events).await;
+        let wire = Wire { sockets: &sockets, sender: &mut sender, receiver: &mut receiver };
+        let end =
+            room.drive(wire, &mut speech, &mut voice, &mut to_call, &mut converted, &events).await;
         if end != CallEnd::SessionEnded {
             let _ = voice.input.send(VoiceInput::Stop);
         }
-        peer.close(&sockets);
+        room.close(&sockets, &mut sender).await;
         end
     }
 }
 
-/// A call as it runs: str0m, the codecs, and what the loop needs to know.
-struct Peer {
-    rtc: Rtc,
-    mid: Mid,
-    pt: Pt,
+// ---- the voice session's side ------------------------------------------------
+
+/// What the call does for the voice session: its speech queued, converted and
+/// encoded 20 ms at a time, and the caller's packets decoded for it.
+struct Speech {
     encoder: Encoder,
     decoder: Decoder,
     outbound: Outbound,
     /// Where the next frame is on the 48 kHz RTP clock.
     rtp_time: u64,
-    started: Instant,
-    /// Whether ICE and DTLS have both completed at least once.
-    reached: bool,
-    /// Since when ICE has had no answer, if it has not.
-    lost_since: Option<Instant>,
-    limits: Limits,
     /// Speech being converted to the call's rate, oldest first. See
-    /// [`Peer::queue`].
+    /// [`Speech::queue`].
     converting: VecDeque<Converting>,
     next_ticket: u64,
     /// Where a finished conversion is sent back to the loop.
@@ -253,186 +329,20 @@ struct Converted {
     samples: Vec<f32>,
 }
 
-impl Peer {
+impl Speech {
     fn new(
-        rtc: Rtc,
-        mid: Mid,
-        pt: Pt,
-        limits: Limits,
         encoder: Encoder,
         decoder: Decoder,
         converted: mpsc::UnboundedSender<Converted>,
     ) -> Self {
         Self {
-            rtc,
-            mid,
-            pt,
             encoder,
             decoder,
             outbound: Outbound::new(),
             rtp_time: 0,
-            started: Instant::now(),
-            reached: false,
-            lost_since: None,
-            limits,
             converting: VecDeque::new(),
             next_ticket: 0,
             converted,
-        }
-    }
-
-    /// The loop. Returns when the call is over, and why.
-    async fn drive(
-        &mut self,
-        sockets: &[Socket],
-        voice: &mut VoiceLink,
-        to_call: &mut mpsc::UnboundedReceiver<ToCall>,
-        converted: &mut mpsc::UnboundedReceiver<Converted>,
-        events: &mpsc::UnboundedSender<VoiceEvent>,
-    ) -> CallEnd {
-        let mut datagram = vec![0u8; DATAGRAM];
-        let mut tick = interval(FRAME_EVERY);
-        // A stall is not made up for by sending the frames it missed in a
-        // burst: the stream carries on 20 ms at a time from where it is.
-        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        loop {
-            let wake = match self.pump(sockets, &voice.input) {
-                Ok(wake) => wake,
-                Err(end) => return end,
-            };
-            let watchdog = self.watchdog();
-
-            tokio::select! {
-                received = receive_any(sockets, &mut datagram) => match received {
-                    Ok((which, len, source)) => {
-                        self.receive(sockets[which].addr, source, &datagram[..len]);
-                    }
-                    // A port that answered with "nobody here": the other end
-                    // of a candidate that never worked. Not the call's end.
-                    Err(e) if matches!(e.kind(), ErrorKind::ConnectionReset | ErrorKind::ConnectionRefused) => {}
-                    Err(e) => {
-                        tracing::warn!("A call's socket failed: {e}.");
-                        return CallEnd::Failed;
-                    }
-                },
-                _ = sleep_until(wake.into()) => {
-                    if let Err(e) = self.rtc.handle_input(Input::Timeout(Instant::now())) {
-                        tracing::warn!("A call could not carry on: {e}.");
-                        return CallEnd::Failed;
-                    }
-                }
-                message = to_call.recv() => match message {
-                    Some(ToCall::Candidates(candidates)) => {
-                        for candidate in &candidates {
-                            add_remote(&mut self.rtc, candidate);
-                        }
-                    }
-                    Some(ToCall::End) | None => return CallEnd::Ended,
-                },
-                output = voice.output.recv() => match output {
-                    Some(output) => {
-                        if let Some(end) = self.on_session(output, events) {
-                            return end;
-                        }
-                    }
-                    None => return CallEnd::SessionEnded,
-                },
-                Some(done) = converted.recv() => self.landed(done),
-                _ = tick.tick() => {
-                    if let Err(end) = self.send_frame(&voice.input) {
-                        return end;
-                    }
-                }
-                _ = async {
-                    match watchdog {
-                        Some((at, _)) => sleep_until(at.into()).await,
-                        None => pending().await,
-                    }
-                } => {
-                    if let Some((_, end)) = watchdog {
-                        tracing::info!("A call ended: {end:?}.");
-                        return end;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Let str0m say everything it has to: datagrams out, events handled,
-    /// until it asks to be woken at some time, which is returned.
-    fn pump(
-        &mut self,
-        sockets: &[Socket],
-        input: &mpsc::UnboundedSender<VoiceInput>,
-    ) -> Result<Instant, CallEnd> {
-        loop {
-            match self.rtc.poll_output() {
-                Ok(Output::Timeout(at)) => return Ok(at),
-                Ok(Output::Transmit(transmit)) => send(sockets, &transmit),
-                Ok(Output::Event(event)) => {
-                    if let Some(end) = self.on_event(event, input) {
-                        return Err(end);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("A call could not carry on: {e}.");
-                    return Err(CallEnd::Failed);
-                }
-            }
-        }
-    }
-
-    /// What str0m reports about the call.
-    fn on_event(
-        &mut self,
-        event: Event,
-        input: &mpsc::UnboundedSender<VoiceInput>,
-    ) -> Option<CallEnd> {
-        match event {
-            Event::Connected => {
-                self.reached = true;
-                tracing::info!("A call connected.");
-            }
-            Event::IceConnectionStateChange(state) => {
-                tracing::debug!("A call's ICE is {state:?}.");
-                if state.is_connected() {
-                    self.lost_since = None;
-                } else if state == IceConnectionState::Disconnected {
-                    self.lost_since.get_or_insert_with(Instant::now);
-                }
-            }
-            Event::MediaData(data) if data.mid == self.mid => self.heard(&data, input),
-            // The other end shut its side down (the DTLS close, an RTCP BYE):
-            // a hang-up, not a failure. The chat's own hang-up follows and
-            // may come first; either way there is nobody left to talk to.
-            Event::Closed => return Some(CallEnd::Ended),
-            _ => {}
-        }
-        None
-    }
-
-    /// One of the caller's packets, to the session as samples.
-    fn heard(&mut self, data: &MediaData, input: &mpsc::UnboundedSender<VoiceInput>) {
-        match self.decoder.decode(data.time.numer(), &data.data) {
-            Ok(samples) if !samples.is_empty() => {
-                // A closed session is noticed on its output, which closes too.
-                let _ = input.send(VoiceInput::Audio(samples));
-            }
-            Ok(_) => {}
-            Err(e) => tracing::debug!("A packet from the caller was not decoded: {e}."),
-        }
-    }
-
-    /// A datagram that came in on the socket bound to `to`.
-    fn receive(&mut self, to: SocketAddr, from: SocketAddr, bytes: &[u8]) {
-        // Not WebRTC (a port scan, a stray packet): not worth more than this.
-        let Ok(receive) = Receive::new(Protocol::Udp, from, to, bytes) else {
-            tracing::debug!("A datagram from {from} was not WebRTC.");
-            return;
-        };
-        if let Err(e) = self.rtc.handle_input(Input::Receive(Instant::now(), receive)) {
-            tracing::debug!("A datagram from {from} was refused: {e}.");
         }
     }
 
@@ -509,61 +419,779 @@ impl Peer {
         }
     }
 
-    /// Send the next 20 ms. Frames only go once the call is connected: what
-    /// is written before that is dropped by str0m, and an utterance must not
-    /// be reported played having gone nowhere.
-    fn send_frame(&mut self, input: &mpsc::UnboundedSender<VoiceInput>) -> Result<(), CallEnd> {
-        if !self.rtc.is_connected() {
-            return Ok(());
-        }
+    /// The next 20 ms as an Opus packet, where it is on the RTP clock, and
+    /// the utterances it finishes.
+    fn next_packet(&mut self) -> Result<(Vec<u8>, MediaTime, Vec<u64>), CallEnd> {
         let (frame, finished) = self.outbound.next_frame();
         let packet = self.encoder.encode(&frame).map_err(|e| {
             tracing::warn!("A call could not encode speech: {e}.");
             CallEnd::Failed
         })?;
-        if let Some(writer) = self.rtc.writer(self.mid) {
-            let time = MediaTime::new(self.rtp_time, Frequency::FORTY_EIGHT_KHZ);
-            if let Err(e) = writer.write(self.pt, Instant::now(), time, packet) {
-                tracing::debug!("A call frame was not written: {e}.");
+        let time = MediaTime::new(self.rtp_time, Frequency::FORTY_EIGHT_KHZ);
+        self.rtp_time += FRAME as u64;
+        Ok((packet, time, finished))
+    }
+
+    /// One of the caller's packets, to the session as samples.
+    fn heard(&mut self, time: MediaTime, packet: &[u8], input: &mpsc::UnboundedSender<VoiceInput>) {
+        match self.decoder.decode(time.numer(), packet) {
+            Ok(samples) if !samples.is_empty() => {
+                // A closed session is noticed on its output, which closes too.
+                let _ = input.send(VoiceInput::Audio(samples));
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!("A packet from the caller was not decoded: {e}."),
+        }
+    }
+}
+
+// ---- the media server's side -------------------------------------------------
+
+/// What the loop reads from and writes to: the sockets and the WebSocket.
+struct Wire<'a> {
+    sockets: &'a Sockets,
+    sender: &'a mut sfu::Sender,
+    receiver: &'a mut sfu::Receiver,
+}
+
+/// The room as the loop knows it: the two connections, who is in the room,
+/// and the keys.
+struct Room {
+    publisher: Rtc,
+    subscriber: Rtc,
+    /// This side's candidates for each, as SDP lines.
+    publisher_candidates: Vec<String>,
+    subscriber_candidates: Vec<String>,
+    /// Signalling to send, gathered while str0m was being handled (which is
+    /// not async) and sent by the loop straight after.
+    outgoing: Vec<Request>,
+    /// The publisher's audio section, from the moment it is offered.
+    sending_mid: Option<Mid>,
+    /// The publisher offer waiting for the server's answer.
+    pending: Option<SdpPendingOffer>,
+    /// The Opus payload type the server agreed to, once it has answered.
+    sending_pt: Option<Pt>,
+    /// What each of the subscriber's sections carries, as its `a=msid` says:
+    /// the stream (LiveKit's is `participant|track`) and the track.
+    sections: HashMap<Mid, (String, String)>,
+    /// Everybody in the room but this side, by the server's id for them.
+    participants: HashMap<String, ParticipantInfo>,
+    caller: String,
+    caller_seen: bool,
+    /// The server has said somebody subscribed to this side's track.
+    subscribed: bool,
+    /// When to start speaking anyway, for a server that never says so.
+    audible_from: Option<Instant>,
+    /// Whether each connection has completed ICE and DTLS at least once.
+    publisher_up: bool,
+    subscriber_up: bool,
+    /// Since when ICE has had no answer on each connection, if it has not.
+    publisher_lost: Option<Instant>,
+    subscriber_lost: Option<Instant>,
+    /// Whether this side's own candidates have been trickled for each.
+    publisher_trickled: bool,
+    subscriber_trickled: bool,
+    sealer: Sealer,
+    openers: Openers,
+    /// Whether a frame without its key has been reported, so that a missing
+    /// key is one log line and not fifty a second.
+    reported_missing_key: bool,
+    started: Instant,
+    heard_from_server: Instant,
+    ping_every: Duration,
+    server_silent_for: Duration,
+    next_offer_id: u32,
+    limits: Limits,
+}
+
+impl Room {
+    fn new(
+        welcome: JoinResponse,
+        publisher: Link,
+        subscriber: Link,
+        caller: String,
+        own_key: &CallKey,
+        limits: Limits,
+    ) -> Self {
+        let seconds = |s: i32, otherwise: Duration| {
+            u64::try_from(s).ok().filter(|s| *s > 0).map(Duration::from_secs).unwrap_or(otherwise)
+        };
+        let mut openers = Openers::default();
+        openers.set_sif_trailer(welcome.sif_trailer.clone());
+        let now = Instant::now();
+        let mut room = Self {
+            publisher: publisher.rtc,
+            subscriber: subscriber.rtc,
+            publisher_candidates: publisher.candidates,
+            subscriber_candidates: subscriber.candidates,
+            outgoing: Vec::new(),
+            sending_mid: None,
+            pending: None,
+            sending_pt: None,
+            sections: HashMap::new(),
+            participants: HashMap::new(),
+            caller,
+            caller_seen: false,
+            subscribed: false,
+            audible_from: None,
+            publisher_up: false,
+            subscriber_up: false,
+            publisher_lost: None,
+            subscriber_lost: None,
+            publisher_trickled: false,
+            subscriber_trickled: false,
+            sealer: Sealer::new(own_key.index, &own_key.key),
+            openers,
+            reported_missing_key: false,
+            started: now,
+            heard_from_server: now,
+            ping_every: seconds(welcome.ping_interval, PING_EVERY),
+            server_silent_for: seconds(welcome.ping_timeout, SERVER_SILENT_FOR),
+            next_offer_id: 1,
+            limits,
+        };
+        room.met(&welcome.other_participants);
+        room
+    }
+
+    /// The caller's keys, as far as they have arrived. Anybody else's are not
+    /// wanted: nobody else is listened to.
+    fn take_keys(&mut self, keys: &[CallKey]) {
+        for key in keys {
+            if key.participant != self.caller {
+                tracing::debug!(participant = %key.participant, "A call key not from the caller, ignored.");
+                continue;
+            }
+            if self.openers.add(&key.participant, key.index, &key.key) {
+                self.reported_missing_key = false;
             }
         }
-        self.rtp_time += FRAME as u64;
+    }
+
+    /// The loop. Returns when the call is over, and why.
+    async fn drive(
+        &mut self,
+        wire: Wire<'_>,
+        speech: &mut Speech,
+        voice: &mut VoiceLink,
+        to_call: &mut mpsc::UnboundedReceiver<ToCall>,
+        converted: &mut mpsc::UnboundedReceiver<Converted>,
+        events: &mpsc::UnboundedSender<VoiceEvent>,
+    ) -> CallEnd {
+        let Wire { sockets, sender, receiver } = wire;
+        // The track first; the offer that carries it follows once the server
+        // has accepted it (`Response::TrackPublished`).
+        self.outgoing.push(Request::AddTrack(AddTrackRequest {
+            cid: TRACK.into(),
+            name: "microphone".into(),
+            r#type: TrackType::Audio as i32,
+            muted: false,
+            source: TrackSource::Microphone as i32,
+            disable_red: true,
+            encryption: EncryptionType::Gcm as i32,
+        }));
+
+        let mut datagram = vec![0u8; DATAGRAM];
+        let mut tick = interval(FRAME_EVERY);
+        // A stall is not made up for by sending the frames it missed in a
+        // burst: the stream carries on 20 ms at a time from where it is.
+        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut ping = interval(self.ping_every);
+        ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            let wake = match self.pump(sockets, speech, &voice.input) {
+                Ok(wake) => wake,
+                Err(end) => return end,
+            };
+            if let Err(why) = self.flush(sender).await {
+                tracing::info!("A call's media server stopped taking messages: {why}.");
+                return self.gone();
+            }
+            let watchdog = self.watchdog();
+
+            tokio::select! {
+                heard = receiver.next() => match heard {
+                    Heard::Said(response) => {
+                        self.heard_from_server = Instant::now();
+                        if let Some(end) = self.on_server(response) {
+                            return end;
+                        }
+                    }
+                    Heard::Nothing => self.heard_from_server = Instant::now(),
+                    Heard::Gone(why) => {
+                        tracing::info!("A call's media server went away: {why}.");
+                        return self.gone();
+                    }
+                },
+                received = receive_any(sockets, &mut datagram) => match received {
+                    Ok((link, which, len, source)) => {
+                        let to = sockets.of(link)[which].addr;
+                        self.receive(link, to, source, &datagram[..len]);
+                    }
+                    // A port that answered with "nobody here": the other end
+                    // of a candidate that never worked. Not the call's end.
+                    Err(e) if matches!(e.kind(), ErrorKind::ConnectionReset | ErrorKind::ConnectionRefused) => {}
+                    Err(e) => {
+                        tracing::warn!("A call's socket failed: {e}.");
+                        return CallEnd::Failed;
+                    }
+                },
+                _ = sleep_until(wake.into()) => {
+                    if let Err(end) = self.tick_rtcs() {
+                        return end;
+                    }
+                }
+                message = to_call.recv() => match message {
+                    Some(ToCall::Keys(keys)) => self.take_keys(&keys),
+                    Some(ToCall::End) | None => return CallEnd::Ended,
+                },
+                output = voice.output.recv() => match output {
+                    Some(output) => {
+                        if let Some(end) = speech.on_session(output, events) {
+                            return end;
+                        }
+                    }
+                    None => return CallEnd::SessionEnded,
+                },
+                Some(done) = converted.recv() => speech.landed(done),
+                _ = tick.tick() => {
+                    // str0m's own wake-up time is not enough to go by: its ICE
+                    // agent says when it next wants the time only once it has
+                    // been given it, and until then sends no checks of its own.
+                    // Behind a NAT or a firewall that drops the server's checks
+                    // nothing else would ever start it. Telling both the time
+                    // every frame keeps everything moving; str0m does nothing
+                    // that is not due.
+                    if let Err(end) = self.tick_rtcs() {
+                        return end;
+                    }
+                    if let Err(end) = self.send_frame(speech, &voice.input) {
+                        return end;
+                    }
+                }
+                _ = ping.tick() => {
+                    let timestamp = jiff::Timestamp::now().as_millisecond();
+                    self.outgoing.push(Request::PingReq(Ping { timestamp, rtt: 0 }));
+                }
+                _ = async {
+                    match watchdog {
+                        Some((at, _)) => sleep_until(at.into()).await,
+                        None => pending().await,
+                    }
+                } => {
+                    if let Some((_, end)) = watchdog {
+                        tracing::info!("A call ended: {end:?}.");
+                        return end;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tell both connections the time.
+    fn tick_rtcs(&mut self) -> Result<(), CallEnd> {
+        let now = Instant::now();
+        for rtc in [&mut self.publisher, &mut self.subscriber] {
+            if let Err(e) = rtc.handle_input(Input::Timeout(now)) {
+                tracing::warn!("A call could not carry on: {e}.");
+                return Err(CallEnd::Failed);
+            }
+        }
+        Ok(())
+    }
+
+    /// Send what has been gathered to send.
+    async fn flush(&mut self, sender: &mut sfu::Sender) -> Result<(), String> {
+        for request in std::mem::take(&mut self.outgoing) {
+            sender.send(request).await?;
+        }
+        Ok(())
+    }
+
+    /// The server is gone: the call is lost if it ever connected, and never
+    /// reached it if not.
+    fn gone(&self) -> CallEnd {
+        if self.publisher_up && self.subscriber_up { CallEnd::Lost } else { CallEnd::Unreachable }
+    }
+
+    /// One message from the server. `Some` when it ends the call.
+    fn on_server(&mut self, response: Response) -> Option<CallEnd> {
+        match response {
+            Response::Offer(offer) => {
+                if let Err(end) = self.answer(offer) {
+                    return Some(end);
+                }
+            }
+            Response::Answer(answer) => {
+                if let Err(end) = self.answered(answer) {
+                    return Some(end);
+                }
+            }
+            Response::Trickle(trickle) => self.trickled(&trickle),
+            Response::TrackPublished(published) if published.cid == TRACK => {
+                if self.sending_mid.is_none()
+                    && let Err(end) = self.offer()
+                {
+                    return Some(end);
+                }
+            }
+            Response::Update(update) => {
+                if self.met(&update.participants) {
+                    tracing::info!("The caller left the call's room.");
+                    return Some(CallEnd::Ended);
+                }
+            }
+            Response::Leave(leave) => {
+                tracing::info!(
+                    reason = leave.reason,
+                    "The media server ended this side's session."
+                );
+                return Some(CallEnd::Ended);
+            }
+            Response::TrackSubscribed(_) => self.subscribed = true,
+            Response::TrackPublished(_) | Response::Join(_) | Response::PongResp(_) => {}
+        }
+        None
+    }
+
+    /// Who is in the room, as the server says: added, changed or gone.
+    /// Whether that means the caller has left, having been here.
+    ///
+    /// A phone that loses its connection comes back as the same identity
+    /// under a new session (`sid`), and the old one may be reported gone after
+    /// the new one is in: only the last of the caller's sessions leaving is
+    /// the caller leaving.
+    fn met(&mut self, participants: &[ParticipantInfo]) -> bool {
+        let mut caller_disconnected = false;
+        for participant in participants {
+            let is_caller = participant.identity == self.caller;
+            if participant.state == ParticipantState::Disconnected as i32 {
+                self.participants.remove(&participant.sid);
+                caller_disconnected |= is_caller;
+            } else {
+                if is_caller && !self.caller_seen {
+                    tracing::info!("The caller is in the call's room.");
+                    self.caller_seen = true;
+                }
+                self.participants.insert(participant.sid.clone(), participant.clone());
+            }
+        }
+        let still_here = self.participants.values().any(|p| p.identity == self.caller);
+        caller_disconnected && self.caller_seen && !still_here
+    }
+
+    /// Offer the publisher connection, with this side's one audio track.
+    fn offer(&mut self) -> Result<(), CallEnd> {
+        let mut api = self.publisher.sdp_api();
+        let mid = api.add_media(
+            MediaKind::Audio,
+            Direction::SendOnly,
+            Some(STREAM.into()),
+            Some(TRACK.into()),
+            None,
+        );
+        let Some((offer, pending)) = api.apply() else {
+            tracing::warn!("A call had nothing to offer the media server.");
+            return Err(CallEnd::Failed);
+        };
+        self.sending_mid = Some(mid);
+        self.pending = Some(pending);
+        let id = self.next_offer_id;
+        self.next_offer_id += 1;
+        self.outgoing.push(Request::Offer(SessionDescription {
+            r#type: "offer".into(),
+            sdp: offer.to_sdp_string(),
+            id,
+        }));
+        if !self.publisher_trickled {
+            self.publisher_trickled = true;
+            self.trickle_own(Which::Publisher, &mid);
+        }
+        Ok(())
+    }
+
+    /// The server answered the publisher offer.
+    fn answered(&mut self, answer: SessionDescription) -> Result<(), CallEnd> {
+        let Some(pending) = self.pending.take() else {
+            tracing::debug!("An answer from the media server with no offer waiting, ignored.");
+            return Ok(());
+        };
+        let parsed = SdpAnswer::from_sdp_string(&answer.sdp).map_err(|e| {
+            tracing::warn!("The media server's answer could not be read: {e}.");
+            CallEnd::Failed
+        })?;
+        self.publisher.sdp_api().accept_answer(pending, parsed).map_err(|e| {
+            tracing::warn!("The media server's answer could not be taken: {e}.");
+            CallEnd::Failed
+        })?;
+        let mid = self.sending_mid.ok_or(CallEnd::Failed)?;
+        let pt = self.publisher.writer(mid).and_then(|w| {
+            w.payload_params().find(|p| p.spec().codec == Codec::Opus).map(|p| p.pt())
+        });
+        match pt {
+            Some(pt) => {
+                self.sending_pt = Some(pt);
+                Ok(())
+            }
+            None => {
+                tracing::warn!("The media server would not take Opus from this side.");
+                Err(CallEnd::Failed)
+            }
+        }
+    }
+
+    /// The server offered the subscriber connection (again, each time what
+    /// this side receives changes): answer it.
+    fn answer(&mut self, offer: SessionDescription) -> Result<(), CallEnd> {
+        let parsed = SdpOffer::from_sdp_string(&offer.sdp).map_err(|e| {
+            tracing::warn!("The media server's offer could not be read: {e}.");
+            CallEnd::Failed
+        })?;
+        let answer = self.subscriber.sdp_api().accept_offer(parsed).map_err(|e| {
+            tracing::warn!("The media server's offer could not be answered: {e}.");
+            CallEnd::Failed
+        })?;
+        self.sections = sections_of(&offer.sdp);
+        self.outgoing.push(Request::Answer(SessionDescription {
+            r#type: "answer".into(),
+            sdp: answer.to_sdp_string(),
+            id: offer.id,
+        }));
+        if !self.subscriber_trickled
+            && let Some(mid) = first_mid(&offer.sdp)
+        {
+            self.subscriber_trickled = true;
+            self.trickle_own(Which::Subscriber, &mid);
+        }
+        Ok(())
+    }
+
+    /// Send this side's candidates for `link`. They are in its offer or
+    /// answer already; trickled too, as LiveKit's own clients do, so that a
+    /// server that only listens for those still hears them.
+    fn trickle_own(&mut self, link: Which, mid: &Mid) {
+        let candidates = match link {
+            Which::Publisher => self.publisher_candidates.clone(),
+            Which::Subscriber => self.subscriber_candidates.clone(),
+        };
+        for candidate in candidates {
+            let init = serde_json::json!({
+                "candidate": candidate,
+                "sdpMid": mid.to_string(),
+                "sdpMLineIndex": 0,
+            });
+            self.outgoing.push(Request::Trickle(TrickleRequest {
+                candidate_init: init.to_string(),
+                target: link.target() as i32,
+                r#final: false,
+            }));
+        }
+    }
+
+    /// One of the server's candidates, for the connection it names.
+    fn trickled(&mut self, trickle: &TrickleRequest) {
+        let Some(line) = candidate_line(&trickle.candidate_init) else {
+            tracing::debug!("A candidate from the media server was not understood, skipped.");
+            return;
+        };
+        let Some(candidate) = usable_candidate(&line) else { return };
+        if trickle.target == SignalTarget::Subscriber as i32 {
+            self.subscriber.add_remote_candidate(candidate);
+        } else {
+            self.publisher.add_remote_candidate(candidate);
+        }
+    }
+
+    /// Let str0m say everything it has to on both connections: datagrams
+    /// out, events handled, until each asks to be woken; the earlier of the
+    /// two is returned.
+    fn pump(
+        &mut self,
+        sockets: &Sockets,
+        speech: &mut Speech,
+        input: &mpsc::UnboundedSender<VoiceInput>,
+    ) -> Result<Instant, CallEnd> {
+        let mut wake: Option<Instant> = None;
+        for link in [Which::Publisher, Which::Subscriber] {
+            loop {
+                let rtc = match link {
+                    Which::Publisher => &mut self.publisher,
+                    Which::Subscriber => &mut self.subscriber,
+                };
+                match rtc.poll_output() {
+                    Ok(Output::Timeout(at)) => {
+                        wake = Some(wake.map_or(at, |w| w.min(at)));
+                        break;
+                    }
+                    Ok(Output::Transmit(transmit)) => send(sockets.of(link), &transmit),
+                    Ok(Output::Event(event)) => {
+                        if let Some(end) = self.on_event(link, event, speech, input) {
+                            return Err(end);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("A call could not carry on: {e}.");
+                        return Err(CallEnd::Failed);
+                    }
+                }
+            }
+        }
+        Ok(wake.unwrap_or_else(|| Instant::now() + FRAME_EVERY))
+    }
+
+    /// What str0m reports about one of the connections.
+    fn on_event(
+        &mut self,
+        link: Which,
+        event: Event,
+        speech: &mut Speech,
+        input: &mpsc::UnboundedSender<VoiceInput>,
+    ) -> Option<CallEnd> {
+        match event {
+            Event::Connected => {
+                match link {
+                    Which::Publisher => self.publisher_up = true,
+                    Which::Subscriber => self.subscriber_up = true,
+                }
+                tracing::info!(?link, "A call's connection to its media server is up.");
+            }
+            Event::IceConnectionStateChange(state) => {
+                tracing::debug!(?link, "A call's ICE is {state:?}.");
+                let lost = match link {
+                    Which::Publisher => &mut self.publisher_lost,
+                    Which::Subscriber => &mut self.subscriber_lost,
+                };
+                if state.is_connected() {
+                    *lost = None;
+                } else if state == IceConnectionState::Disconnected {
+                    lost.get_or_insert_with(Instant::now);
+                }
+            }
+            Event::MediaData(data) if link == Which::Subscriber => {
+                if self.carries_caller(&data.mid) {
+                    match self.openers.open(&self.caller, &data.data) {
+                        Ok(packet) => speech.heard(data.time, &packet, input),
+                        Err(Unopened::NoKey { index, .. }) => {
+                            if !self.reported_missing_key {
+                                self.reported_missing_key = true;
+                                tracing::info!(index, "The caller's audio arrived before its key.");
+                            }
+                        }
+                        // The server's own silence: not the caller's, and not
+                        // worth a line.
+                        Err(Unopened::FromTheServer) => {}
+                        Err(why) => {
+                            tracing::debug!("A frame from the caller was not opened: {why:?}.")
+                        }
+                    }
+                }
+            }
+            // The server shut a connection down: it is ending this side's
+            // session, and says so on the WebSocket too.
+            Event::Closed => return Some(CallEnd::Ended),
+            _ => {}
+        }
+        None
+    }
+
+    /// Whether the subscriber's section `mid` carries the caller's audio: its
+    /// stream or its track names a participant who is the caller. When the
+    /// section says nothing this side can place, and the caller is the only
+    /// other participant, it is theirs: on a call with the owner there is
+    /// nobody else, and a stranger's frames would not open with the caller's
+    /// keys anyway.
+    fn carries_caller(&self, mid: &Mid) -> bool {
+        let is_caller =
+            |sid: &str| self.participants.get(sid).is_some_and(|p| p.identity == self.caller);
+        if let Some((stream, track)) = self.sections.get(mid) {
+            let participant = stream.split('|').next().unwrap_or_default();
+            if self.participants.contains_key(participant) {
+                return is_caller(participant);
+            }
+            if let Some(owner) = self
+                .participants
+                .values()
+                .find(|p| p.tracks.iter().any(|t| t.sid == *track || stream.ends_with(&t.sid)))
+            {
+                return owner.identity == self.caller;
+            }
+        }
+        !self.participants.is_empty()
+            && self.participants.values().all(|p| p.identity == self.caller)
+    }
+
+    /// A datagram that came in on `link`'s socket bound to `to`.
+    fn receive(&mut self, link: Which, to: SocketAddr, from: SocketAddr, bytes: &[u8]) {
+        // Not WebRTC (a port scan, a stray packet): not worth more than this.
+        let Ok(receive) = Receive::new(Protocol::Udp, from, to, bytes) else {
+            tracing::debug!("A datagram from {from} was not WebRTC.");
+            return;
+        };
+        let rtc = match link {
+            Which::Publisher => &mut self.publisher,
+            Which::Subscriber => &mut self.subscriber,
+        };
+        if let Err(e) = rtc.handle_input(Input::Receive(Instant::now(), receive)) {
+            tracing::debug!("A datagram from {from} was refused: {e}.");
+        }
+    }
+
+    /// Send the next 20 ms, encrypted. Frames only go once the publisher is
+    /// connected and its offer answered: what is written before that is
+    /// dropped by str0m, and an utterance must not be reported played having
+    /// gone nowhere.
+    fn send_frame(
+        &mut self,
+        speech: &mut Speech,
+        input: &mpsc::UnboundedSender<VoiceInput>,
+    ) -> Result<(), CallEnd> {
+        let (Some(mid), Some(pt)) = (self.sending_mid, self.sending_pt) else { return Ok(()) };
+        if !self.publisher.is_connected() || !self.caller_can_hear() {
+            return Ok(());
+        }
+        let (packet, time, finished) = speech.next_packet()?;
+        let sealed = self.sealer.seal(&packet);
+        if let Some(writer) = self.publisher.writer(mid)
+            && let Err(e) = writer.write(pt, Instant::now(), time, sealed)
+        {
+            tracing::debug!("A call frame was not written: {e}.");
+        }
         for utterance in finished {
             let _ = input.send(VoiceInput::Played { utterance });
         }
         Ok(())
     }
 
-    /// When the call is given up on, and as what, if nothing changes: never
-    /// connected by the limit, or disconnected for too long.
-    fn watchdog(&self) -> Option<(Instant, CallEnd)> {
-        if !self.reached {
-            return Some((self.started + self.limits.connect_within, CallEnd::Unreachable));
+    /// Whether what is said now reaches the caller: they have subscribed to
+    /// this side's track, as the server says; or, from a server that does not
+    /// say, they have been in the room a little while. Until then nothing is
+    /// sent, and so nothing is reported played -- a call's opening is not
+    /// spent on a phone that cannot hear it yet.
+    fn caller_can_hear(&mut self) -> bool {
+        if self.subscribed {
+            return true;
         }
-        self.lost_since.map(|since| (since + self.limits.lost_after, CallEnd::Lost))
+        if !self.caller_seen {
+            return false;
+        }
+        Instant::now() >= *self.audible_from.get_or_insert_with(|| Instant::now() + HEARD_WITHIN)
     }
 
-    /// Say goodbye on the wire (best effort: the chat's hang-up is what the
-    /// caller acts on) and make str0m inert.
-    fn close(&mut self, sockets: &[Socket]) {
-        if self.rtc.close().is_ok() {
-            for _ in 0..GOODBYE_POLLS {
-                match self.rtc.poll_output() {
-                    Ok(Output::Transmit(transmit)) => send(sockets, &transmit),
-                    Ok(Output::Event(_)) => {}
-                    Ok(Output::Timeout(_)) | Err(_) => break,
+    /// When the call is given up on, and as what, if nothing changes: never
+    /// connected by the limit, the caller never in the room, disconnected for
+    /// too long, or the server silent for too long.
+    fn watchdog(&self) -> Option<(Instant, CallEnd)> {
+        let silent = (self.heard_from_server + self.server_silent_for, CallEnd::Lost);
+        if !(self.publisher_up && self.subscriber_up && self.caller_seen) {
+            let never = (self.started + self.limits.connect_within, CallEnd::Unreachable);
+            return Some(if silent.0 < never.0 { silent } else { never });
+        }
+        let lost = [self.publisher_lost, self.subscriber_lost]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|since| (since + self.limits.lost_after, CallEnd::Lost));
+        Some(match lost {
+            Some(lost) if lost.0 < silent.0 => lost,
+            _ => silent,
+        })
+    }
+
+    /// Leave the room (best effort: the chat service's hang-up is what the
+    /// owner's device acts on) and make str0m inert.
+    async fn close(&mut self, sockets: &Sockets, sender: &mut sfu::Sender) {
+        let leave = Request::Leave(LeaveRequest {
+            can_reconnect: false,
+            reason: super::signal::CLIENT_INITIATED,
+            action: super::signal::DISCONNECT,
+        });
+        let _ = sender.send(leave).await;
+        sender.close().await;
+        for link in [Which::Publisher, Which::Subscriber] {
+            let rtc = match link {
+                Which::Publisher => &mut self.publisher,
+                Which::Subscriber => &mut self.subscriber,
+            };
+            if rtc.close().is_ok() {
+                for _ in 0..GOODBYE_POLLS {
+                    match rtc.poll_output() {
+                        Ok(Output::Transmit(transmit)) => send(sockets.of(link), &transmit),
+                        Ok(Output::Event(_)) => {}
+                        Ok(Output::Timeout(_)) | Err(_) => break,
+                    }
                 }
             }
+            rtc.disconnect();
         }
-        self.rtc.disconnect();
     }
 }
 
+/// What each audio section of an offer carries: its `a=mid`, and the stream
+/// and track of its `a=msid`.
+fn sections_of(sdp: &str) -> HashMap<Mid, (String, String)> {
+    let mut sections = HashMap::new();
+    let (mut in_audio, mut mid, mut msid) = (false, None, None);
+    let mut close = |mid: &mut Option<Mid>, msid: &mut Option<(String, String)>| {
+        if let (Some(mid), Some(msid)) = (mid.take(), msid.take()) {
+            sections.insert(mid, msid);
+        }
+    };
+    for line in sdp.lines().map(str::trim) {
+        if let Some(media) = line.strip_prefix("m=") {
+            close(&mut mid, &mut msid);
+            in_audio = media.starts_with("audio ");
+        } else if !in_audio {
+            continue;
+        } else if let Some(m) = line.strip_prefix("a=mid:") {
+            mid = Some(Mid::from(m.trim()));
+        } else if let Some(m) = line.strip_prefix("a=msid:") {
+            let mut parts = m.split_whitespace();
+            if let (Some(stream), Some(track)) = (parts.next(), parts.next()) {
+                msid = Some((stream.to_string(), track.to_string()));
+            }
+        }
+    }
+    close(&mut mid, &mut msid);
+    sections
+}
+
+/// The `a=mid` of an offer's first section.
+fn first_mid(sdp: &str) -> Option<Mid> {
+    sdp.lines().map(str::trim).find_map(|l| l.strip_prefix("a=mid:")).map(|m| Mid::from(m.trim()))
+}
+
+/// The candidate line in a trickled `RTCIceCandidateInit`, without its `a=`.
+fn candidate_line(init: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(init).ok()?;
+    let line = value.get("candidate")?.as_str()?.trim();
+    let line = line.strip_prefix("a=").unwrap_or(line);
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+/// A candidate of the server's that the sockets here can use: UDP over IPv4.
+/// The rest are skipped, quietly; the server offers several ways of reaching
+/// it, and one is enough.
+fn usable_candidate(line: &str) -> Option<Candidate> {
+    let parsed = match Candidate::from_sdp_string(line) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            tracing::debug!("A candidate from the media server was not understood, skipped: {e}");
+            return None;
+        }
+    };
+    if parsed.proto() != Protocol::Udp || parsed.addr().is_ipv6() {
+        tracing::debug!("A candidate from the media server is not UDP over IPv4, skipped: {line}");
+        return None;
+    }
+    Some(parsed)
+}
+
 /// Send one datagram str0m wants sent: out of the socket that holds the
-/// address it is from, so the caller sees it come from where ICE said, or the
+/// address it is from, so the server sees it come from where ICE said, or the
 /// first socket if there is none. A failure is only logged: it is most often
-/// a candidate that cannot be reached from here (another network's address),
-/// which ICE is built to find out for itself.
+/// a candidate that cannot be reached from here, which ICE is built to find
+/// out for itself.
 fn send(sockets: &[Socket], transmit: &Transmit) {
     let Some(socket) = sockets.iter().find(|s| s.addr == transmit.source).or(sockets.first())
     else {
@@ -574,18 +1202,23 @@ fn send(sockets: &[Socket], transmit: &Transmit) {
     }
 }
 
-/// Read from whichever socket has something, and which it was.
+/// Read from whichever socket of either connection has something: which
+/// connection, which socket, how much, and from where.
 async fn receive_any(
-    sockets: &[Socket],
+    sockets: &Sockets,
     datagram: &mut [u8],
-) -> std::io::Result<(usize, usize, SocketAddr)> {
+) -> std::io::Result<(Which, usize, usize, SocketAddr)> {
     poll_fn(|cx| {
-        for (which, socket) in sockets.iter().enumerate() {
-            let mut buf = ReadBuf::new(&mut *datagram);
-            match socket.udp.poll_recv_from(cx, &mut buf) {
-                Poll::Ready(Ok(from)) => return Poll::Ready(Ok((which, buf.filled().len(), from))),
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => {}
+        for link in [Which::Publisher, Which::Subscriber] {
+            for (which, socket) in sockets.of(link).iter().enumerate() {
+                let mut buf = ReadBuf::new(&mut *datagram);
+                match socket.udp.poll_recv_from(cx, &mut buf) {
+                    Poll::Ready(Ok(from)) => {
+                        return Poll::Ready(Ok((link, which, buf.filled().len(), from)));
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => {}
+                }
             }
         }
         Poll::Pending
@@ -625,8 +1258,8 @@ async fn bind(addresses: Addresses) -> Result<Vec<Socket>, CallError> {
 }
 
 /// The IPv4 addresses of every interface that is up, but loopback and
-/// link-local: the ones a phone could reach. A tunnel such as the tailnet's
-/// reports its state as unknown rather than up, and is wanted.
+/// link-local: the ones the media server could reach. A tunnel such as the
+/// tailnet's reports its state as unknown rather than up, and is wanted.
 fn interface_addresses() -> Result<Vec<IpAddr>, CallError> {
     use if_addrs::{IfAddr, IfOperStatus};
     let interfaces = if_addrs::get_if_addrs().map_err(|e| {
@@ -646,120 +1279,138 @@ fn interface_addresses() -> Result<Vec<IpAddr>, CallError> {
         .collect())
 }
 
-/// The audio section of an answer, and the Opus payload type it uses. `None`
-/// when there is no audio section that was accepted, or it has no Opus.
-fn opus_audio(rtc: &mut Rtc, answer: &str) -> Option<(Mid, Pt)> {
-    let mid = audio_mid(answer)?;
-    let writer = rtc.writer(mid)?;
-    let pt = writer.payload_params().find(|p| p.spec().codec == Codec::Opus)?.pt();
-    Some((mid, pt))
-}
-
-/// The `a=mid` of the first audio media section that was not declined (a
-/// declined one has port 0).
-fn audio_mid(sdp: &str) -> Option<Mid> {
-    let mut in_audio = false;
-    for line in sdp.lines().map(str::trim) {
-        if let Some(media) = line.strip_prefix("m=") {
-            let mut fields = media.split_whitespace();
-            in_audio = fields.next() == Some("audio") && fields.next() != Some("0");
-        } else if in_audio && let Some(mid) = line.strip_prefix("a=mid:") {
-            return Some(Mid::from(mid.trim()));
-        }
-    }
-    None
-}
-
-/// Tell str0m about one of the caller's candidates, if it is one this socket
-/// can use. The rest are skipped, quietly: a phone offers many ways of
-/// reaching it, and most of them are not for us. Whether it was taken.
-fn add_remote(rtc: &mut Rtc, candidate: &IceCandidate) -> bool {
-    let line = candidate.candidate.trim();
-    let line = line.strip_prefix("a=").unwrap_or(line);
-    if line.is_empty() {
-        // The end of the caller's candidates, which needs nothing from us.
-        return false;
-    }
-    // A privacy hostname (`abcd.local`) in place of an address: resolving it
-    // is multicast DNS, which a phone on mobile data would not answer anyway.
-    if line.split_whitespace().nth(4).is_some_and(|host| host.ends_with(".local")) {
-        tracing::debug!("A call candidate is an mDNS name, skipped: {line}");
-        return false;
-    }
-    let parsed = match Candidate::from_sdp_string(line) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            tracing::debug!("A call candidate was not understood, skipped: {e}");
-            return false;
-        }
-    };
-    if parsed.proto() != Protocol::Udp {
-        tracing::debug!("A call candidate is not UDP, skipped: {line}");
-        return false;
-    }
-    if parsed.addr().is_ipv6() {
-        tracing::debug!("A call candidate is IPv6, skipped: {line}");
-        return false;
-    }
-    rtc.add_remote_candidate(parsed);
-    true
-}
-
 #[cfg(test)]
 mod tests {
-    use super::super::codec::tests::{rms, tone, tone_share};
+    use super::super::signal::{self, ParticipantUpdate, TrackPublishedResponse};
     use super::*;
-    use karmayoga_service::voice::SAMPLE_RATE;
+    use futures::{SinkExt, StreamExt};
     use std::net::Ipv4Addr;
-    use std::sync::{Arc, Mutex};
-    use str0m::change::SdpAnswer;
-    use str0m::media::{Direction, MediaKind};
+    use tokio::net::TcpListener;
     use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
     use tokio::time::timeout;
+    use tokio_tungstenite::tungstenite::Message;
 
     /// Long enough for a slow machine, short enough that a hang fails.
     const PATIENCE: Duration = Duration::from_secs(10);
 
     const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-    /// What the phone's side of a test heard, and what it should say.
-    struct Phone {
-        /// Everything it decoded, at 48 kHz, in the order it came.
-        heard: Arc<Mutex<Vec<f32>>>,
-        task: tokio::task::JoinHandle<()>,
-        /// Tells it to hang up: close its side of the connection.
-        hang_up: UnboundedSender<()>,
+    const CALLER: &str = "@owner:hs:PHONE";
+
+    fn caller_info(state: ParticipantState) -> ParticipantInfo {
+        ParticipantInfo {
+            sid: "PA_caller".into(),
+            identity: CALLER.into(),
+            state: state as i32,
+            tracks: Vec::new(),
+        }
     }
 
-    impl Drop for Phone {
+    /// A media server that lets one participant in, with the caller already
+    /// in the room, and then only listens -- it never answers an offer, so
+    /// no media ever flows. Enough for everything about a call that is not
+    /// its audio; the audio is `tests/call_live.rs`'s, against a real one.
+    struct Server {
+        url: String,
+        /// Everything the participant said, in order.
+        heard: UnboundedReceiver<signal::Request>,
+        /// What to say to it.
+        say: UnboundedSender<Response>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for Server {
         fn drop(&mut self) {
             self.task.abort();
         }
     }
 
-    /// Everything a test holds: the phone, the answer it gave, the call, and
-    /// the test's ends of the call's channels.
+    impl Server {
+        async fn start() -> Self {
+            let listener = TcpListener::bind((LOOPBACK, 0)).await.expect("a port");
+            let url = format!("ws://{}", listener.local_addr().expect("an address"));
+            let (heard_tx, heard) = unbounded_channel();
+            let (say, mut said) = unbounded_channel::<Response>();
+            let task = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.expect("a participant");
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.expect("a WebSocket");
+                let welcome = signal::SignalResponse {
+                    message: Some(Response::Join(JoinResponse {
+                        other_participants: vec![caller_info(ParticipantState::Active)],
+                        ping_interval: 5,
+                        ping_timeout: 15,
+                        ..Default::default()
+                    })),
+                };
+                use prost::Message as _;
+                ws.send(Message::Binary(welcome.encode_to_vec().into())).await.expect("sent");
+                loop {
+                    tokio::select! {
+                        frame = ws.next() => match frame {
+                            Some(Ok(Message::Binary(bytes))) => {
+                                if let Ok(request) = signal::SignalRequest::decode(&bytes[..])
+                                    && let Some(message) = request.message
+                                {
+                                    let _ = heard_tx.send(message);
+                                }
+                            }
+                            Some(Ok(_)) => {}
+                            _ => break,
+                        },
+                        Some(response) = said.recv() => {
+                            let bytes = signal::SignalResponse { message: Some(response) }.encode_to_vec();
+                            if ws.send(Message::Binary(bytes.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            Server { url, heard, say, task }
+        }
+
+        /// The next thing the participant said that is not a ping.
+        async fn next(&mut self) -> signal::Request {
+            loop {
+                match timeout(PATIENCE, self.heard.recv()).await.expect("said something") {
+                    Some(signal::Request::PingReq(_)) => {}
+                    Some(request) => return request,
+                    None => panic!("the participant went away"),
+                }
+            }
+        }
+    }
+
+    fn join_for(server: &Server) -> CallJoin {
+        CallJoin {
+            url: server.url.clone(),
+            token: "token".into(),
+            caller: CALLER.into(),
+            own_key: CallKey { participant: "@bot:hs:BOT".into(), index: 0, key: vec![7; 16] },
+        }
+    }
+
+    /// Everything a test holds: the server, the call, and the test's ends of
+    /// the voice session's channels.
     struct Harness {
-        /// The answer the call gave, as it was sent back to the phone.
-        sdp: String,
-        phone: Phone,
+        server: Server,
         call: Option<Call>,
         voice: Option<VoiceLink>,
-        /// The session's side: what the call sends it, and what it sends back.
         input: UnboundedReceiver<VoiceInput>,
         output: UnboundedSender<VoiceOutput>,
     }
 
     impl Harness {
-        /// A phone that sends `speaks` (a tone, 20 ms at a time) if it is
-        /// asked to, calling a call that has been answered over loopback.
-        async fn new(speaks: bool) -> Self {
-            let (call, phone, sdp) = connect(speaks).await;
+        async fn new(limits: Limits) -> Self {
+            let server = Server::start().await;
+            let mut call = connect(&join_for(&server), Vec::new(), Addresses::Only(vec![LOOPBACK]))
+                .await
+                .expect("joined");
+            call.limits = limits;
             let (input_tx, input) = unbounded_channel();
             let (output, output_rx) = unbounded_channel();
             Harness {
-                sdp,
-                phone,
+                server,
                 call: Some(call),
                 voice: Some(VoiceLink { input: input_tx, output: output_rx }),
                 input,
@@ -767,7 +1418,6 @@ mod tests {
             }
         }
 
-        /// Start the call running, with the channels a relay would hand it.
         fn run(
             &mut self,
         ) -> (
@@ -775,334 +1425,172 @@ mod tests {
             UnboundedSender<ToCall>,
             UnboundedReceiver<VoiceEvent>,
         ) {
+            let call = self.call.take().expect("not run yet");
+            let voice = self.voice.take().expect("not run yet");
             let (to_call, to_call_rx) = unbounded_channel();
             let (events_tx, events) = unbounded_channel();
-            let call = self.call.take().expect("a call not yet run");
-            let voice = self.voice.take().expect("a session not yet linked");
-            let task = tokio::spawn(call.run(voice, to_call_rx, events_tx));
-            (task, to_call, events)
+            (tokio::spawn(call.run(voice, to_call_rx, events_tx)), to_call, events)
         }
     }
 
-    /// An offer as a phone makes it (Opus audio, and `extra` of its own
-    /// choosing), answered by [`answer`] over loopback, with a phone that
-    /// accepts the answer and runs. The call is not running yet.
-    async fn connect(speaks: bool) -> (Call, Phone, String) {
-        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.expect("a phone socket");
-        let local = socket.local_addr().expect("an address");
+    async fn ended(task: tokio::task::JoinHandle<CallEnd>) -> CallEnd {
+        timeout(PATIENCE, task).await.expect("ends").expect("no panic")
+    }
 
-        let mut rtc = Rtc::builder().build(Instant::now());
-        rtc.add_local_candidate(Candidate::host(local, "udp").expect("a candidate"));
-        let mut api = rtc.sdp_api();
-        let mid = api.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
-        let (offer, pending) = api.apply().expect("an offer");
+    #[tokio::test]
+    async fn the_track_is_asked_for_first_then_offered_encrypted_and_without_red() {
+        let mut harness = Harness::new(Limits::default()).await;
+        let (_task, _to_call, _events) = harness.run();
 
-        let answered = answer(&offer.to_sdp_string(), &[], Addresses::Only(vec![LOOPBACK]))
+        let signal::Request::AddTrack(track) = harness.server.next().await else {
+            panic!("the track first");
+        };
+        assert_eq!(track.cid, TRACK);
+        assert_eq!(track.r#type, TrackType::Audio as i32);
+        assert_eq!(track.source, TrackSource::Microphone as i32);
+        assert_eq!(track.encryption, EncryptionType::Gcm as i32, "every frame is encrypted");
+        assert!(track.disable_red);
+
+        harness
+            .server
+            .say
+            .send(Response::TrackPublished(TrackPublishedResponse {
+                cid: TRACK.into(),
+                track: None,
+            }))
+            .expect("server up");
+        let signal::Request::Offer(offer) = harness.server.next().await else {
+            panic!("then the offer");
+        };
+        assert_eq!(offer.r#type, "offer");
+        assert!(offer.sdp.contains("m=audio"), "{}", offer.sdp);
+        assert!(offer.sdp.contains("a=sendonly"), "{}", offer.sdp);
+        assert!(offer.sdp.contains(&format!("a=msid:{STREAM} {TRACK}")), "{}", offer.sdp);
+        assert!(offer.sdp.to_lowercase().contains("opus/48000"), "{}", offer.sdp);
+
+        let signal::Request::Trickle(trickle) = harness.server.next().await else {
+            panic!("and this side's candidates");
+        };
+        assert_eq!(trickle.target, SignalTarget::Publisher as i32);
+        let line = candidate_line(&trickle.candidate_init).expect("a candidate");
+        assert!(line.contains("127.0.0.1") && line.contains("udp"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn ice_checks_start_without_waiting_for_the_server_to_check_first() {
+        // A server behind a NAT or a firewall that drops its own checks (a
+        // LiveKit in Docker, on a host whose firewall drops what containers
+        // send it) is reached only if this side checks first. Its answer is
+        // made by a str0m peer that is never driven, so it never speaks: the
+        // only way a STUN request arrives at its socket is this side sending
+        // one by itself.
+        //
+        // This passes even without the per-frame tick (`tick_rtcs` in the
+        // frame arm) that fixed exactly that against a real LiveKit in Docker
+        // on Nov 19 2026: what left str0m's ICE asleep there is not
+        // reproduced here. `tests/sfu_live.rs` run against the deployed
+        // server, with this machine's own addresses, is what catches it.
+        let mut harness = Harness::new(Limits::default()).await;
+        let (_task, _to_call, _events) = harness.run();
+        let signal::Request::AddTrack(_) = harness.server.next().await else { panic!("the track") };
+        harness
+            .server
+            .say
+            .send(Response::TrackPublished(TrackPublishedResponse {
+                cid: TRACK.into(),
+                track: None,
+            }))
+            .expect("server up");
+        let signal::Request::Offer(offer) = harness.server.next().await else {
+            panic!("the offer")
+        };
+
+        let socket = UdpSocket::bind((LOOPBACK, 0)).await.expect("a socket");
+        let mut silent =
+            Rtc::builder().clear_codecs().enable_opus(true, false).build(Instant::now());
+        silent.add_local_candidate(
+            Candidate::host(socket.local_addr().unwrap(), "udp").expect("a candidate"),
+        );
+        let answer = silent
+            .sdp_api()
+            .accept_offer(SdpOffer::from_sdp_string(&offer.sdp).expect("an offer"))
+            .expect("answered");
+        // As LiveKit does: the answer without candidates, and the candidate
+        // trickled after it.
+        let sdp: String = answer
+            .to_sdp_string()
+            .lines()
+            .filter(|l| !l.starts_with("a=candidate"))
+            .map(|l| format!("{l}\r\n"))
+            .collect();
+        harness
+            .server
+            .say
+            .send(Response::Answer(SessionDescription {
+                r#type: "answer".into(),
+                sdp,
+                id: offer.id,
+            }))
+            .expect("server up");
+        let candidate = Candidate::host(socket.local_addr().unwrap(), "udp").expect("a candidate");
+        let init = serde_json::json!({ "candidate": candidate.to_sdp_string(), "sdpMid": "0", "sdpMLineIndex": 0 });
+        harness
+            .server
+            .say
+            .send(Response::Trickle(TrickleRequest {
+                candidate_init: init.to_string(),
+                target: SignalTarget::Publisher as i32,
+                r#final: false,
+            }))
+            .expect("server up");
+
+        let mut datagram = [0u8; 1500];
+        let (len, _) = timeout(Duration::from_secs(3), socket.recv_from(&mut datagram))
             .await
-            .expect("an answer");
-        let answer_sdp = SdpAnswer::from_sdp_string(&answered.sdp).expect("a readable answer");
-        rtc.sdp_api().accept_answer(pending, answer_sdp).expect("an accepted answer");
-
-        let heard = Arc::new(Mutex::new(Vec::new()));
-        let (hang_up, hang_up_rx) = unbounded_channel();
-        let task = tokio::spawn(phone(rtc, socket, mid, speaks, heard.clone(), hang_up_rx));
-        (answered.call, Phone { heard, task, hang_up }, answered.sdp)
-    }
-
-    /// The phone: a str0m peer that says a 440 Hz tone, if it is meant to,
-    /// and keeps everything it hears.
-    async fn phone(
-        mut rtc: Rtc,
-        socket: UdpSocket,
-        mid: Mid,
-        speaks: bool,
-        heard: Arc<Mutex<Vec<f32>>>,
-        mut hang_up: UnboundedReceiver<()>,
-    ) {
-        let mut decoder = opus::Decoder::new(CALL_RATE, opus::Channels::Mono).expect("a decoder");
-        let mut encoder = super::super::codec::Encoder::new().expect("an encoder");
-        let frames = tone(440.0, 50);
-        let (mut next, mut rtp_time) = (0usize, 0u64);
-        let mut tick = interval(FRAME_EVERY);
-        let mut datagram = vec![0u8; DATAGRAM];
-        let local = socket.local_addr().expect("an address");
-
-        loop {
-            let wake = loop {
-                match rtc.poll_output() {
-                    Ok(Output::Timeout(at)) => break at,
-                    Ok(Output::Transmit(t)) => {
-                        let _ = socket.send_to(&t.contents, t.destination).await;
-                    }
-                    Ok(Output::Event(Event::MediaData(data))) => {
-                        let mut pcm = vec![0f32; 5760];
-                        if let Ok(len) = decoder.decode_float(&data.data, &mut pcm, false) {
-                            heard.lock().expect("the phone's ears").extend_from_slice(&pcm[..len]);
-                        }
-                    }
-                    Ok(Output::Event(_)) => {}
-                    Err(_) => return,
-                }
-            };
-            tokio::select! {
-                received = socket.recv_from(&mut datagram) => {
-                    if let Ok((len, from)) = received
-                        && let Ok(receive) = Receive::new(Protocol::Udp, from, local, &datagram[..len])
-                    {
-                        let _ = rtc.handle_input(Input::Receive(Instant::now(), receive));
-                    }
-                }
-                _ = sleep_until(wake.into()) => {
-                    let _ = rtc.handle_input(Input::Timeout(Instant::now()));
-                }
-                Some(()) = hang_up.recv() => {
-                    let _ = rtc.close();
-                }
-                _ = tick.tick() => {
-                    if speaks && rtc.is_connected() {
-                        let packet = encoder.encode(&frames[next % frames.len()]).expect("a packet");
-                        next += 1;
-                        let pt = rtc
-                            .writer(mid)
-                            .and_then(|w| w.payload_params().find(|p| p.spec().codec == Codec::Opus).map(|p| p.pt()));
-                        if let (Some(pt), Some(writer)) = (pt, rtc.writer(mid)) {
-                            let time = MediaTime::new(rtp_time, Frequency::FORTY_EIGHT_KHZ);
-                            let _ = writer.write(pt, Instant::now(), time, packet);
-                        }
-                        rtp_time += FRAME as u64;
-                    }
-                }
-            }
-        }
-    }
-
-    /// `len` samples of a 440 Hz tone at half scale, at `rate`.
-    fn tone_pcm(rate: u32, len: usize) -> Vec<i16> {
-        (0..len)
-            .map(|i| {
-                let t = i as f32 / rate as f32;
-                (0.5 * (std::f32::consts::TAU * 440.0 * t).sin() * 32767.0) as i16
-            })
-            .collect()
-    }
-
-    async fn next_played(input: &mut UnboundedReceiver<VoiceInput>) -> u64 {
-        loop {
-            match timeout(PATIENCE, input.recv()).await.expect("a Played in time") {
-                Some(VoiceInput::Played { utterance }) => return utterance,
-                Some(_) => {}
-                None => panic!("the call dropped its session before Played"),
-            }
-        }
+            .expect("a check arrives unprompted")
+            .expect("read");
+        assert!(len >= 20 && datagram[..2] == [0x00, 0x01], "a STUN binding request");
     }
 
     #[tokio::test]
-    async fn speech_reaches_the_phone_as_opus_and_is_reported_played() {
-        let mut harness = Harness::new(false).await;
-        let (task, to_call, _events) = harness.run();
-
-        // A second of 24 kHz tone.
-        harness
-            .output
-            .send(VoiceOutput::Play {
-                utterance: 7,
-                samples: tone_pcm(24_000, 24_000),
-                sample_rate: 24_000,
-            })
-            .expect("the call is listening");
-        assert_eq!(next_played(&mut harness.input).await, 7);
-
-        // Played means the last sample went out, not that it has arrived.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let heard = harness.phone.heard.lock().expect("ears").clone();
-        assert!(heard.len() > 40_000, "the phone heard a second or more: {}", heard.len());
-        let loudest = heard
-            .chunks(FRAME * 5)
-            .filter(|c| c.len() == FRAME * 5)
-            .max_by(|a, b| rms(a).total_cmp(&rms(b)))
-            .expect("a window");
-        assert!(rms(loudest) > 0.2, "the tone is audible: {}", rms(loudest));
-        assert!(tone_share(loudest, CALL_RATE, 440.0) > 0.8, "and it is the tone that was sent");
-
-        to_call.send(ToCall::End).expect("the call is listening");
-        assert_eq!(
-            timeout(PATIENCE, task).await.expect("the call ends").expect("no panic"),
-            CallEnd::Ended
-        );
-    }
-
-    #[tokio::test]
-    async fn the_callers_voice_reaches_the_session_as_samples() {
-        let mut harness = Harness::new(true).await;
-        let (task, to_call, _events) = harness.run();
-
-        let mut heard: Vec<i16> = Vec::new();
-        while heard.len() < SAMPLE_RATE as usize {
-            match timeout(PATIENCE, harness.input.recv()).await.expect("audio in time") {
-                Some(VoiceInput::Audio(samples)) => heard.extend(samples),
-                Some(_) => {}
-                None => panic!("the call dropped its session"),
-            }
-        }
-        let wide: Vec<f32> = heard.iter().map(|&s| f32::from(s) / 32768.0).collect();
-        let settled = &wide[wide.len() / 2..];
-        assert!(rms(settled) > 0.2, "there is a voice in it: {}", rms(settled));
-        assert!(tone_share(settled, SAMPLE_RATE, 440.0) > 0.8, "and it is the tone");
-
-        to_call.send(ToCall::End).expect("the call is listening");
-        assert_eq!(
-            timeout(PATIENCE, task).await.expect("the call ends").expect("no panic"),
-            CallEnd::Ended
-        );
-    }
-
-    #[tokio::test]
-    async fn pausing_holds_speech_and_clearing_drops_it() {
-        let mut harness = Harness::new(false).await;
-        let (task, to_call, _events) = harness.run();
-
-        // Held from the start: nothing is played however long it waits.
-        harness.output.send(VoiceOutput::Pause).expect("listening");
-        harness
-            .output
-            .send(VoiceOutput::Play {
-                utterance: 1,
-                samples: tone_pcm(16_000, 16_000),
-                sample_rate: 16_000,
-            })
-            .expect("listening");
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        assert!(
-            !std::iter::from_fn(|| harness.input.try_recv().ok())
-                .any(|m| matches!(m, VoiceInput::Played { .. })),
-            "nothing is played while held"
-        );
-
-        // Cleared: it is never played, and what comes after is not held.
-        harness.output.send(VoiceOutput::Clear).expect("listening");
-        harness
-            .output
-            .send(VoiceOutput::Play {
-                utterance: 2,
-                samples: tone_pcm(16_000, 3_200),
-                sample_rate: 16_000,
-            })
-            .expect("listening");
-        assert_eq!(next_played(&mut harness.input).await, 2, "1 was thrown away unplayed");
-
-        to_call.send(ToCall::End).expect("listening");
-        assert_eq!(timeout(PATIENCE, task).await.expect("ends").expect("no panic"), CallEnd::Ended);
-    }
-
-    #[tokio::test]
-    async fn ending_the_call_stops_the_session() {
-        let mut harness = Harness::new(false).await;
-        let (task, to_call, _events) = harness.run();
-
-        to_call.send(ToCall::End).expect("the call is listening");
-        assert_eq!(
-            timeout(PATIENCE, task).await.expect("the call ends").expect("no panic"),
-            CallEnd::Ended
-        );
-
-        let mut stopped = false;
-        while let Some(message) = harness.input.recv().await {
-            stopped |= matches!(message, VoiceInput::Stop);
-        }
-        assert!(stopped, "the session was told to stop");
-    }
-
-    #[tokio::test]
-    async fn the_phone_hanging_up_on_the_wire_is_an_ordinary_end_not_a_lost_call() {
-        let mut harness = Harness::new(false).await;
-        let (task, _to_call, _events) = harness.run();
-
-        // Wait until it is connected: speech played is speech that went out.
-        harness
-            .output
-            .send(VoiceOutput::Play {
-                utterance: 1,
-                samples: tone_pcm(16_000, 1_600),
-                sample_rate: 16_000,
-            })
-            .expect("listening");
-        assert_eq!(next_played(&mut harness.input).await, 1);
-
-        harness.phone.hang_up.send(()).expect("the phone is listening");
-        assert_eq!(timeout(PATIENCE, task).await.expect("ends").expect("no panic"), CallEnd::Ended);
-        let mut stopped = false;
-        while let Some(message) = harness.input.recv().await {
-            stopped |= matches!(message, VoiceInput::Stop);
-        }
-        assert!(stopped, "the session is told to stop");
-    }
-
-    /// A peer with nothing connected, for what happens to speech before it
-    /// reaches the wire. Returns where its conversions land.
-    fn idle_peer() -> (Peer, UnboundedReceiver<Converted>) {
-        let (tx, rx) = unbounded_channel();
-        let rtc = Rtc::builder().build(Instant::now());
-        let peer = Peer::new(
-            rtc,
-            Mid::from("0"),
-            Pt::from(111u8),
-            Limits::default(),
-            Encoder::new().expect("an encoder"),
-            Decoder::new().expect("a decoder"),
-            tx,
-        );
-        (peer, rx)
-    }
-
-    /// Every utterance the outbound queue reports finished, in order, over
-    /// frames enough for `seconds` of speech.
-    fn played(peer: &mut Peer, seconds: usize) -> Vec<u64> {
-        (0..seconds * 50).flat_map(|_| peer.outbound.next_frame().1).collect()
-    }
-
-    #[tokio::test]
-    async fn conversions_finishing_out_of_order_still_queue_in_the_order_asked() {
-        let (mut peer, mut landing) = idle_peer();
-        // A long one, then a tiny one that will certainly finish first.
-        peer.queue(1, tone_pcm(16_000, 16_000 * 20), 16_000);
-        peer.queue(2, tone_pcm(16_000, 160), 16_000);
-
-        let first = timeout(PATIENCE, landing.recv()).await.expect("a conversion").expect("open");
-        let second = timeout(PATIENCE, landing.recv()).await.expect("a conversion").expect("open");
-        // The second ticket lands before the first can be handed on.
-        let (early, late) = if first.ticket == 1 { (first, second) } else { (second, first) };
-        peer.landed(early);
-        assert!(played(&mut peer, 1).is_empty(), "the tiny one waits for the long one ahead of it");
-        peer.landed(late);
-        assert_eq!(played(&mut peer, 21), vec![1, 2]);
-    }
-
-    #[tokio::test]
-    async fn a_clear_drops_what_is_still_being_converted() {
-        let (mut peer, mut landing) = idle_peer();
-        peer.queue(1, tone_pcm(16_000, 16_000), 16_000);
-        peer.on_session(VoiceOutput::Clear, &unbounded_channel().0);
-        peer.queue(2, tone_pcm(16_000, 160), 16_000);
-
-        for _ in 0..2 {
-            let done =
-                timeout(PATIENCE, landing.recv()).await.expect("a conversion").expect("open");
-            peer.landed(done);
-        }
-        assert_eq!(played(&mut peer, 3), vec![2], "the one asked for before the clear never plays");
-    }
-
-    #[tokio::test]
-    async fn the_relay_dropping_its_end_ends_the_call_the_same_way() {
-        let mut harness = Harness::new(false).await;
+    async fn the_relay_dropping_its_end_ends_the_call_and_leaves_the_room() {
+        let mut harness = Harness::new(Limits::default()).await;
         let (task, to_call, _events) = harness.run();
         drop(to_call);
-        assert_eq!(timeout(PATIENCE, task).await.expect("ends").expect("no panic"), CallEnd::Ended);
+        assert_eq!(ended(task).await, CallEnd::Ended);
+        loop {
+            if let signal::Request::Leave(leave) = harness.server.next().await {
+                assert!(!leave.can_reconnect);
+                break;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_caller_leaving_the_room_ends_the_call() {
+        let mut harness = Harness::new(Limits::default()).await;
+        let (task, _to_call, _events) = harness.run();
+        harness
+            .server
+            .say
+            .send(Response::Update(ParticipantUpdate {
+                participants: vec![caller_info(ParticipantState::Disconnected)],
+            }))
+            .expect("server up");
+        assert_eq!(ended(task).await, CallEnd::Ended);
+    }
+
+    #[tokio::test]
+    async fn the_server_ending_the_session_ends_the_call() {
+        let mut harness = Harness::new(Limits::default()).await;
+        let (task, _to_call, _events) = harness.run();
+        harness.server.say.send(Response::Leave(LeaveRequest::default())).expect("server up");
+        assert_eq!(ended(task).await, CallEnd::Ended);
     }
 
     #[tokio::test]
     async fn the_session_ending_ends_the_call_and_its_last_event_is_forwarded() {
-        let mut harness = Harness::new(false).await;
+        let mut harness = Harness::new(Limits::default()).await;
         let (task, _to_call, mut events) = harness.run();
 
         harness
@@ -1113,10 +1601,7 @@ mod tests {
             .output
             .send(VoiceOutput::Event(VoiceEvent::Ended { error: None }))
             .expect("listening");
-        assert_eq!(
-            timeout(PATIENCE, task).await.expect("ends").expect("no panic"),
-            CallEnd::SessionEnded
-        );
+        assert_eq!(ended(task).await, CallEnd::SessionEnded);
 
         assert!(matches!(events.recv().await, Some(VoiceEvent::Heard { .. })));
         assert!(matches!(events.recv().await, Some(VoiceEvent::Ended { error: None })));
@@ -1131,138 +1616,212 @@ mod tests {
 
     #[tokio::test]
     async fn the_session_closing_its_output_ends_the_call() {
-        let mut harness = Harness::new(false).await;
+        let mut harness = Harness::new(Limits::default()).await;
         let (task, _to_call, _events) = harness.run();
         drop(std::mem::replace(&mut harness.output, unbounded_channel().0));
-        assert_eq!(
-            timeout(PATIENCE, task).await.expect("ends").expect("no panic"),
-            CallEnd::SessionEnded
-        );
+        assert_eq!(ended(task).await, CallEnd::SessionEnded);
     }
 
     #[tokio::test]
-    async fn a_phone_that_never_answers_is_unreachable() {
-        let mut harness = Harness::new(false).await;
-        // The phone goes away: nothing is there to answer the checks.
-        harness.phone.task.abort();
-        harness.call.as_mut().expect("a call").limits.connect_within = Duration::from_millis(400);
+    async fn a_call_whose_media_never_connects_is_unreachable_and_stops_the_session() {
+        let limits = Limits { connect_within: Duration::from_millis(300), ..Limits::default() };
+        let mut harness = Harness::new(limits).await;
         let (task, _to_call, _events) = harness.run();
-
-        assert_eq!(
-            timeout(PATIENCE, task).await.expect("ends").expect("no panic"),
-            CallEnd::Unreachable
-        );
+        assert_eq!(ended(task).await, CallEnd::Unreachable);
         let mut stopped = false;
-        while let Some(message) = harness.input.recv().await {
+        while let Ok(message) = harness.input.try_recv() {
             stopped |= matches!(message, VoiceInput::Stop);
         }
-        assert!(stopped, "the session is told to stop when the call never connected");
+        assert!(stopped, "the session is told to stop");
     }
 
     #[tokio::test]
-    async fn an_offer_with_no_opus_is_refused_in_a_sentence() {
-        let mut rtc = Rtc::builder().clear_codecs().enable_pcmu(true, false).build(Instant::now());
-        rtc.add_local_candidate(
-            Candidate::host("127.0.0.1:9".parse().expect("an address"), "udp")
-                .expect("a candidate"),
-        );
-        let mut api = rtc.sdp_api();
-        api.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
-        let (offer, _) = api.apply().expect("an offer");
-
-        let refused = answer(&offer.to_sdp_string(), &[], Addresses::Only(vec![LOOPBACK])).await;
-        let Err(CallError(why)) = refused else { panic!("an offer with only G.711 is refused") };
-        assert!(why.contains("Opus"), "it says why: {why}");
-    }
-
-    #[tokio::test]
-    async fn video_in_the_offer_is_declined_and_the_call_is_voice() {
-        let mut rtc = Rtc::builder().build(Instant::now());
-        rtc.add_local_candidate(
-            Candidate::host("127.0.0.1:9".parse().expect("an address"), "udp")
-                .expect("a candidate"),
-        );
-        let mut api = rtc.sdp_api();
-        api.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
-        api.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
-        let (offer, _) = api.apply().expect("an offer");
-
-        let answered = answer(&offer.to_sdp_string(), &[], Addresses::Only(vec![LOOPBACK]))
-            .await
-            .expect("a video call is answered");
-        assert!(
-            answered.sdp.lines().any(|l| l.starts_with("m=video 0 ")),
-            "the video section is declined:\n{}",
-            answered.sdp
-        );
-        assert!(
-            answered.sdp.lines().any(|l| l.starts_with("m=audio ") && !l.starts_with("m=audio 0 ")),
-            "and the audio section is taken"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_answer_carries_this_sides_candidates() {
-        let harness = Harness::new(false).await;
-        let port = harness.call.as_ref().expect("a call").sockets[0].addr.port();
-        let candidate = format!("127.0.0.1 {port} typ host");
-        assert!(
-            harness.sdp.lines().any(|l| l.starts_with("a=candidate:") && l.contains(&candidate)),
-            "the address and port the socket is bound to are in the answer:\n{}",
-            harness.sdp
-        );
-    }
-
-    fn candidate(line: &str) -> IceCandidate {
-        IceCandidate {
-            candidate: line.into(),
-            sdp_mid: Some("0".into()),
-            sdp_m_line_index: Some(0),
-        }
+    async fn a_server_that_is_not_there_is_a_sentence() {
+        let listener = TcpListener::bind((LOOPBACK, 0)).await.expect("a port");
+        let url = format!("ws://{}", listener.local_addr().expect("an address"));
+        drop(listener);
+        let join = CallJoin {
+            url,
+            token: "t".into(),
+            caller: CALLER.into(),
+            own_key: CallKey { participant: "@bot:hs:BOT".into(), index: 0, key: vec![1; 16] },
+        };
+        let Err(CallError(why)) = connect(&join, Vec::new(), Addresses::Only(vec![LOOPBACK])).await
+        else {
+            panic!("no server, no call");
+        };
+        assert!(why.starts_with("The call's media server could not be reached"), "{why}");
     }
 
     #[test]
-    fn candidates_the_socket_cannot_use_are_skipped() {
-        let mut rtc = Rtc::builder().build(Instant::now());
-        for line in [
-            "",
-            "candidate:1 1 tcp 1518280447 192.168.1.2 9 typ host tcptype active",
-            "candidate:2 1 udp 2122260223 2d4f4a0e-5b1c-4d2a-8f1e-0123456789ab.local 50123 typ host",
-            "candidate:3 1 udp 2122260223 fe80::1 50123 typ host",
-            "candidate:4 1 udp 2122260223 2001:db8::1 50123 typ host",
-            "not a candidate at all",
-        ] {
-            assert!(!add_remote(&mut rtc, &candidate(line)), "skipped: {line:?}");
-        }
+    fn audio_sections_are_found_with_their_stream_and_track() {
+        let sdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n\
+                   a=msid:PA_abc|TR_def TR_def\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:1\r\n\
+                   a=msid:PA_abc|TR_vid TR_vid\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+                   a=mid:2\r\n";
+        let sections = sections_of(sdp);
+        assert_eq!(sections.len(), 1, "only audio");
+        assert_eq!(
+            sections.get(&Mid::from("0")),
+            Some(&("PA_abc|TR_def".to_string(), "TR_def".to_string()))
+        );
+        assert_eq!(first_mid(sdp), Some(Mid::from("0")));
     }
 
     #[test]
-    fn candidates_it_can_use_are_taken_with_or_without_the_a_prefix() {
-        let mut rtc = Rtc::builder().build(Instant::now());
-        assert!(add_remote(
-            &mut rtc,
-            &candidate("candidate:5 1 udp 2122260223 100.70.65.114 50123 typ host generation 0")
-        ));
-        assert!(add_remote(
-            &mut rtc,
-            &candidate("a=candidate:6 1 udp 2122260223 192.168.1.2 50124 typ host")
-        ));
+    fn the_callers_section_is_known_by_its_participant() {
+        let mut room = idle_room();
+        room.met(&[caller_info(ParticipantState::Active)]);
+        room.sections.insert(Mid::from("0"), ("PA_caller|TR_a".into(), "TR_a".into()));
+        assert!(room.carries_caller(&Mid::from("0")));
+
+        room.met(&[ParticipantInfo {
+            sid: "PA_other".into(),
+            identity: "@stranger:hs:X".into(),
+            state: ParticipantState::Active as i32,
+            tracks: Vec::new(),
+        }]);
+        room.sections.insert(Mid::from("1"), ("PA_other|TR_b".into(), "TR_b".into()));
+        assert!(!room.carries_caller(&Mid::from("1")), "a stranger's track is not the caller's");
+        assert!(
+            !room.carries_caller(&Mid::from("9")),
+            "nor one nobody can place, with a stranger in"
+        );
+    }
+
+    #[test]
+    fn the_caller_coming_back_under_a_new_session_has_not_left() {
+        let mut room = idle_room();
+        room.met(&[caller_info(ParticipantState::Active)]);
+        let mut again = caller_info(ParticipantState::Active);
+        again.sid = "PA_caller_again".into();
+        // The new session in, then the old one gone: the order a resume can
+        // be reported in.
+        assert!(!room.met(&[again.clone(), caller_info(ParticipantState::Disconnected)]));
+        again.state = ParticipantState::Disconnected as i32;
+        assert!(room.met(&[again]), "the last of their sessions leaving is them leaving");
+    }
+
+    #[test]
+    fn keys_for_anybody_but_the_caller_are_not_taken() {
+        let mut room = idle_room();
+        room.take_keys(&[CallKey {
+            participant: "@stranger:hs:X".into(),
+            index: 0,
+            key: vec![1; 16],
+        }]);
+        assert!(!room.openers.has_keys_for("@stranger:hs:X"));
+        room.take_keys(&[CallKey { participant: CALLER.into(), index: 0, key: vec![1; 16] }]);
+        assert!(room.openers.has_keys_for(CALLER));
+    }
+
+    #[test]
+    fn the_servers_candidates_are_taken_only_for_udp_over_ipv4() {
+        let init = |c: &str| format!(r#"{{"candidate":"{c}","sdpMid":"0","sdpMLineIndex":0}}"#);
+        let udp = candidate_line(&init("candidate:1 1 udp 2130706431 100.70.65.114 7892 typ host"))
+            .expect("a line");
+        assert!(usable_candidate(&udp).is_some());
+        let tcp = candidate_line(&init(
+            "candidate:2 1 tcp 1671430143 100.70.65.114 7891 typ host tcptype passive",
+        ))
+        .expect("a line");
+        assert!(usable_candidate(&tcp).is_none());
+        assert_eq!(candidate_line(r#"{"candidate":""}"#), None);
+        assert_eq!(candidate_line("not json"), None);
     }
 
     #[test]
     fn the_interfaces_offered_are_ipv4_and_never_loopback() {
-        // Whatever this machine has, which a sandbox may leave empty.
-        let addresses = interface_addresses().expect("the interfaces can be listed");
-        assert!(addresses.iter().all(|a| a.is_ipv4() && !a.is_loopback()));
+        for ip in interface_addresses().expect("readable") {
+            assert!(ip.is_ipv4() && !ip.is_loopback(), "{ip}");
+        }
+    }
+
+    /// A room with nothing connected, for what is decided without a server.
+    fn idle_room() -> Room {
+        Room::new(
+            JoinResponse::default(),
+            Link { rtc: Rtc::builder().build(Instant::now()), candidates: Vec::new() },
+            Link { rtc: Rtc::builder().build(Instant::now()), candidates: Vec::new() },
+            CALLER.into(),
+            &CallKey { participant: "@bot:hs:BOT".into(), index: 0, key: vec![7; 16] },
+            Limits::default(),
+        )
+    }
+
+    // ---- the voice session's side -------------------------------------------
+
+    fn tone_pcm(rate: u32, len: usize) -> Vec<i16> {
+        (0..len)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                (0.5 * (std::f32::consts::TAU * 440.0 * t).sin() * 32767.0) as i16
+            })
+            .collect()
+    }
+
+    /// The voice session's side with nothing connected, for what happens to
+    /// speech before it reaches the wire. Returns where its conversions land.
+    fn idle_speech() -> (Speech, UnboundedReceiver<Converted>) {
+        let (tx, rx) = unbounded_channel();
+        let speech = Speech::new(
+            Encoder::new().expect("an encoder"),
+            Decoder::new().expect("a decoder"),
+            tx,
+        );
+        (speech, rx)
+    }
+
+    /// Every utterance the outbound queue reports finished, in order, over
+    /// frames enough for `seconds` of speech.
+    fn played(speech: &mut Speech, seconds: usize) -> Vec<u64> {
+        (0..seconds * 50).flat_map(|_| speech.next_packet().expect("encoded").2).collect()
+    }
+
+    #[tokio::test]
+    async fn conversions_finishing_out_of_order_still_queue_in_the_order_asked() {
+        let (mut speech, mut landing) = idle_speech();
+        // A long one, then a tiny one that will certainly finish first.
+        speech.queue(1, tone_pcm(16_000, 16_000 * 20), 16_000);
+        speech.queue(2, tone_pcm(16_000, 160), 16_000);
+
+        let first = timeout(PATIENCE, landing.recv()).await.expect("a conversion").expect("open");
+        let second = timeout(PATIENCE, landing.recv()).await.expect("a conversion").expect("open");
+        // The second ticket lands before the first can be handed on.
+        let (early, late) = if first.ticket == 1 { (first, second) } else { (second, first) };
+        speech.landed(early);
+        assert!(
+            played(&mut speech, 1).is_empty(),
+            "the tiny one waits for the long one ahead of it"
+        );
+        speech.landed(late);
+        assert_eq!(played(&mut speech, 21), vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn a_clear_drops_what_is_still_being_converted() {
+        let (mut speech, mut landing) = idle_speech();
+        speech.queue(1, tone_pcm(16_000, 16_000), 16_000);
+        speech.on_session(VoiceOutput::Clear, &unbounded_channel().0);
+        speech.queue(2, tone_pcm(16_000, 160), 16_000);
+
+        for _ in 0..2 {
+            let done =
+                timeout(PATIENCE, landing.recv()).await.expect("a conversion").expect("open");
+            speech.landed(done);
+        }
+        assert_eq!(
+            played(&mut speech, 3),
+            vec![2],
+            "the one asked for before the clear never plays"
+        );
     }
 
     #[test]
-    fn the_audio_section_is_found_by_its_mid() {
-        let sdp = "v=0\r\nm=video 0 UDP/TLS/RTP/SAVPF 96\r\na=mid:1\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:audio0\r\n";
-        assert_eq!(audio_mid(sdp).map(|m| m.to_string()), Some("audio0".to_string()));
-        assert!(
-            audio_mid("v=0\r\nm=audio 0 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n").is_none(),
-            "declined"
-        );
+    fn packets_advance_the_rtp_clock_a_frame_at_a_time() {
+        let (mut speech, _landing) = idle_speech();
+        let (_, first, _) = speech.next_packet().expect("encoded");
+        let (_, second, _) = speech.next_packet().expect("encoded");
+        assert_eq!(second.numer() - first.numer(), FRAME as u64);
     }
 }

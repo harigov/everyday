@@ -12,19 +12,19 @@
 //!   for a minute while the owner is already talking to the assistant helps
 //!   nobody.
 //! - [`CallSlot`]: what the dispatcher keeps in a chat's `Shared` about its
-//!   call, so a candidate or a hang-up that arrives while the worker is busy
+//!   call, so a key or a hang-up that arrives while the worker is busy
 //!   finds it: buffered until the worker has started the call, forwarded to
 //!   the running call after.
 //! - [`Confirming`]: when a confirmation the voice session cannot take by
 //!   voice is to be put to the owner in the chat, and when it is no longer
 //!   wanted.
-//! - [`CallBackend`]: opening the voice session and answering the media need
-//!   speech models and real sockets, so a test substitutes them. The real
-//!   thing is [`RealCalls`].
+//! - [`CallBackend`]: opening the voice session and joining the media server
+//!   need speech models and real sockets, so a test substitutes them. The
+//!   real thing is [`RealCalls`].
 //! - What is said to the owner, and which [`HangUp`] each [`CallEnd`] is.
 
 use crate::call::{self, Addresses, CallEnd, CallError, ToCall};
-use crate::connector::{CallId, HangUp, IceCandidate};
+use crate::connector::{CallId, CallJoin, CallKey, HangUp};
 use futures::future::BoxFuture;
 use jiff::Timestamp;
 use karmayoga_core::ConversationId;
@@ -54,23 +54,16 @@ pub trait CallBackend: Send + Sync + 'static {
         via: Via,
     ) -> BoxFuture<'static, CommandResult<VoiceLink>>;
 
-    /// Answer `offer` -- the caller's session description -- given what is
-    /// known so far of the caller's `candidates`.
-    fn answer(
+    /// Join the call's room on its media server, as `join` says, with what
+    /// has arrived so far of the caller's `keys`.
+    fn connect(
         &self,
-        offer: String,
-        candidates: Vec<IceCandidate>,
-    ) -> BoxFuture<'static, Result<Accepted, CallError>>;
+        join: CallJoin,
+        keys: Vec<CallKey>,
+    ) -> BoxFuture<'static, Result<Box<dyn Media>, CallError>>;
 }
 
-/// An offer answered: what to send back, and the call to run.
-pub struct Accepted {
-    /// This side's session description, to be sent to the caller.
-    pub sdp: String,
-    pub media: Box<dyn Media>,
-}
-
-/// One answered call, not yet running. [`call::Call`] is the real one.
+/// One joined call, not yet running. [`call::Call`] is the real one.
 pub trait Media: Send + 'static {
     /// Carry the call until it ends. As [`call::Call::run`] says: the
     /// caller's audio to `voice` and what it says back, the session's events
@@ -95,8 +88,8 @@ impl Media for call::Call {
     }
 }
 
-/// The real thing: a voice session from the service, and WebRTC over this
-/// machine's own interfaces.
+/// The real thing: a voice session from the service, and the media server
+/// over this machine's own interfaces.
 pub struct RealCalls;
 
 impl CallBackend for RealCalls {
@@ -109,14 +102,14 @@ impl CallBackend for RealCalls {
         Box::pin(async move { service.voice_open_via(conversation, Some(via)).await })
     }
 
-    fn answer(
+    fn connect(
         &self,
-        offer: String,
-        candidates: Vec<IceCandidate>,
-    ) -> BoxFuture<'static, Result<Accepted, CallError>> {
+        join: CallJoin,
+        keys: Vec<CallKey>,
+    ) -> BoxFuture<'static, Result<Box<dyn Media>, CallError>> {
         Box::pin(async move {
-            let answered = call::answer(&offer, &candidates, Addresses::Interfaces).await?;
-            Ok(Accepted { sdp: answered.sdp, media: Box::new(answered.call) })
+            let call = call::connect(&join, keys, Addresses::Interfaces).await?;
+            Ok(Box::new(call) as Box<dyn Media>)
         })
     }
 }
@@ -191,6 +184,16 @@ impl Line {
         }
     }
 
+    /// Whether a call has the line at `now`: one running, or one still
+    /// ringing that could yet be answered.
+    pub(crate) fn is_busy(&self, now: Timestamp) -> bool {
+        match &self.held {
+            None => false,
+            Some(Held { rings_until: Some(until), .. }) => !has_expired(*until, now),
+            Some(_) => true,
+        }
+    }
+
     /// `call` is over. Only the call that holds the line can free it.
     pub(crate) fn release(&mut self, call: &CallId) {
         if self.held.as_ref().is_some_and(|held| held.call == *call) {
@@ -205,8 +208,6 @@ impl Line {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CallOffer {
     pub call: CallId,
-    /// The caller's session description.
-    pub sdp: String,
     /// When the call stops ringing: answering later than this is answering
     /// nothing.
     pub expires: Timestamp,
@@ -223,31 +224,30 @@ pub(crate) struct CallSlot {
 }
 
 enum Stage {
-    /// Queued behind whatever the worker is doing. What the caller has sent
-    /// so far, to be handed to the answer.
-    Queued { candidates: Vec<IceCandidate> },
-    /// The worker has taken it up: later candidates, and the end, go down
-    /// this.
+    /// Queued behind whatever the worker is doing. The caller's keys so far,
+    /// to be handed to the media when it connects.
+    Queued { keys: Vec<CallKey> },
+    /// The worker has taken it up: later keys, and the end, go down this.
     Started { to_call: mpsc::UnboundedSender<ToCall> },
 }
 
 impl CallSlot {
     pub(crate) fn queued(id: CallId) -> Self {
-        Self { id, stage: Stage::Queued { candidates: Vec::new() }, ended: false }
+        Self { id, stage: Stage::Queued { keys: Vec::new() }, ended: false }
     }
 
-    /// More of the caller's candidates, for this call: buffered while it
-    /// waits to start, forwarded once it has.
-    pub(crate) fn heard(&mut self, candidates: Vec<IceCandidate>) {
-        if self.ended || candidates.is_empty() {
+    /// More of the caller's keys, for this call: buffered while it waits to
+    /// start, forwarded once it has.
+    pub(crate) fn heard(&mut self, keys: Vec<CallKey>) {
+        if self.ended || keys.is_empty() {
             return;
         }
         match &mut self.stage {
-            Stage::Queued { candidates: held } => held.extend(candidates),
+            Stage::Queued { keys: held } => held.extend(keys),
             // The call ending an instant ago closes the channel; nothing
             // depends on what it would have been told.
             Stage::Started { to_call } => {
-                let _ = to_call.send(ToCall::Candidates(candidates));
+                let _ = to_call.send(ToCall::Keys(keys));
             }
         }
     }
@@ -278,16 +278,15 @@ impl CallSlot {
     /// call will be told the rest down. `None` if the call ended while it
     /// waited, in which case it is not to be answered.
     ///
-    /// The channel exists from here, before the media does, so that a
-    /// candidate that arrives while the offer is being answered is neither
-    /// lost nor answered twice: the answer is given what was buffered, and
-    /// the call gets the rest.
-    pub(crate) fn start(&mut self) -> Option<(Vec<IceCandidate>, mpsc::UnboundedReceiver<ToCall>)> {
+    /// The channel exists from here, before the media does, so that a key
+    /// that arrives while the call is being joined is not lost: the media is
+    /// given what was buffered, and the call gets the rest.
+    pub(crate) fn start(&mut self) -> Option<(Vec<CallKey>, mpsc::UnboundedReceiver<ToCall>)> {
         if self.ended {
             return None;
         }
-        let Stage::Queued { candidates } = &mut self.stage else { return None };
-        let heard = std::mem::take(candidates);
+        let Stage::Queued { keys } = &mut self.stage else { return None };
+        let heard = std::mem::take(keys);
         let (to_call, rx) = mpsc::unbounded_channel();
         self.stage = Stage::Started { to_call };
         Some((heard, rx))
@@ -442,15 +441,15 @@ pub(crate) fn cannot_take_calls(why: &str) -> String {
     format!("I can't take calls yet: {}", why.trim())
 }
 
-/// Said when the media could not be set up for an offer.
+/// Said when the call's media server could not be joined.
 pub(crate) fn could_not_answer(why: &str) -> String {
     format!("I couldn't answer that call: {}", why.trim())
 }
 
-/// Said when the chat service would not take the answer.
-pub(crate) fn could_not_send_answer(why: &str) -> String {
+/// Said when the chat service would not let this side join the call.
+pub(crate) fn could_not_join(why: &str) -> String {
     format!(
-        "I couldn't answer that call: the chat server wouldn't take my answer ({}).",
+        "I couldn't answer that call: the chat server wouldn't let me join it ({}).",
         why.trim()
     )
 }
@@ -513,8 +512,8 @@ mod tests {
         CallId(s.into())
     }
 
-    fn candidate(s: &str) -> IceCandidate {
-        IceCandidate { candidate: s.into(), sdp_mid: Some("0".into()), sdp_m_line_index: Some(0) }
+    fn key(index: u8) -> CallKey {
+        CallKey { participant: "@owner:hs:PHONE".into(), index, key: vec![index; 16] }
     }
 
     // ---- the line ----
@@ -528,6 +527,19 @@ mod tests {
         let mut line = Line::default();
         assert_eq!(line.offer(&id("a"), t(60), t(0)), Offered::Taken);
         assert_eq!(line.offer(&id("b"), t(60), t(1)), Offered::Busy);
+    }
+
+    #[test]
+    fn the_line_is_busy_while_a_call_has_it_or_could_still_be_answered() {
+        let mut line = Line::default();
+        assert!(!line.is_busy(t(0)));
+        line.offer(&id("a"), t(60), t(0));
+        assert!(line.is_busy(t(30)), "ringing");
+        assert!(!line.is_busy(t(60)), "rang out");
+        line.started(&id("a"));
+        assert!(line.is_busy(t(600)), "taken up, however long ago it rang");
+        line.release(&id("a"));
+        assert!(!line.is_busy(t(600)));
     }
 
     #[test]
@@ -586,15 +598,15 @@ mod tests {
     // ---- the slot ----
 
     #[test]
-    fn candidates_are_buffered_until_the_call_starts_and_forwarded_after() {
+    fn keys_are_buffered_until_the_call_starts_and_forwarded_after() {
         let mut slot = CallSlot::queued(id("a"));
-        slot.heard(vec![candidate("one")]);
-        slot.heard(vec![candidate("two")]);
+        slot.heard(vec![key(1)]);
+        slot.heard(vec![key(2)]);
         let (heard, mut rx) = slot.start().expect("it was not ended");
-        assert_eq!(heard, vec![candidate("one"), candidate("two")]);
+        assert_eq!(heard, vec![key(1), key(2)]);
 
-        slot.heard(vec![candidate("three")]);
-        assert_eq!(rx.try_recv().unwrap(), ToCall::Candidates(vec![candidate("three")]));
+        slot.heard(vec![key(3)]);
+        assert_eq!(rx.try_recv().unwrap(), ToCall::Keys(vec![key(3)]));
         assert!(rx.try_recv().is_err(), "and nothing is sent twice");
     }
 
@@ -616,17 +628,17 @@ mod tests {
     }
 
     #[test]
-    fn candidates_after_the_end_are_dropped() {
+    fn keys_after_the_end_are_dropped() {
         let mut slot = CallSlot::queued(id("a"));
         let (_, mut rx) = slot.start().unwrap();
         slot.end();
-        slot.heard(vec![candidate("late")]);
+        slot.heard(vec![key(9)]);
         assert_eq!(rx.try_recv().unwrap(), ToCall::End);
         assert!(rx.try_recv().is_err());
     }
 
     #[test]
-    fn an_empty_batch_of_candidates_says_nothing() {
+    fn an_empty_batch_of_keys_says_nothing() {
         let mut slot = CallSlot::queued(id("a"));
         let (_, mut rx) = slot.start().unwrap();
         slot.heard(Vec::new());

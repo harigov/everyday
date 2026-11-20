@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup app-deps run dev ui build dist test test-speech test-postgres test-imap test-smtp test-mail test-caldav test-matrix lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup app-deps run dev ui build dist test test-speech test-postgres test-imap test-smtp test-mail test-caldav test-matrix test-livekit test-call lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Karma Yoga -- make <target>"
@@ -269,6 +269,85 @@ test-matrix: ## Run the chat bot end to end against a throwaway Conduit in Docke
 		cargo test -p karmayoga-chat --test matrix_live -- --nocapture; \
 	status=$$?; \
 	docker rm -f karmayoga-matrixtest >/dev/null; \
+	exit $$status
+
+# A call's media against a real LiveKit server (crates/karmayoga-chat/tests/
+# sfu_live.rs). Host networking, on loopback and ports of its own, so the
+# media's ICE candidates are 127.0.0.1 and nothing is published; a throwaway
+# API key signs the test's tokens.
+test-livekit: ## Run a call's media end to end against a throwaway LiveKit server in Docker
+	@docker rm -f karmayoga-livekittest >/dev/null 2>&1 || true
+	@docker run -d --rm --name karmayoga-livekittest --network host \
+		-e LIVEKIT_KEYS="testkey: throwaway-secret-for-tests-only-0123456789" -e NODE_IP=127.0.0.1 \
+		-e LIVEKIT_CONFIG="$$(printf 'port: 17880\nbind_addresses: [127.0.0.1]\nrtc:\n  tcp_port: 17881\n  udp_port: 17882\n  use_external_ip: false\n')" \
+		livekit/livekit-server:v1.13.11 >/dev/null; \
+	echo "waiting for LiveKit..."; \
+	for i in $$(seq 1 30); do \
+		curl -sf -o /dev/null http://127.0.0.1:17880/ && break; \
+		sleep 1; \
+	done; \
+	KARMAYOGA_TEST_LIVEKIT_URL=ws://127.0.0.1:17880 \
+	KARMAYOGA_TEST_LIVEKIT_KEY=testkey \
+	KARMAYOGA_TEST_LIVEKIT_SECRET=throwaway-secret-for-tests-only-0123456789 \
+		cargo test -p karmayoga-chat --test sfu_live -- --ignored --nocapture $(ARGS); \
+	status=$$?; \
+	docker logs karmayoga-livekittest > target/livekit-test.log 2>&1 || true; \
+	docker rm -f karmayoga-livekittest >/dev/null; \
+	exit $$status
+
+# A call to the assistant end to end (crates/karmayoga-chat/tests/call_live.rs):
+# the real runner and speech models answering a MatrixRTC call. Four
+# throwaway servers, all on loopback with host networking: Conduit with
+# federation on, nginx in front of it with a self-signed certificate (the
+# token service checks OpenID tokens over the federation API, which is HTTPS
+# only), LiveKit, and lk-jwt-service. The server name carries the proxy's
+# port, so federation goes straight to it. Speech models come from
+# MODELS_DIR, linked into a scratch data folder.
+CALLTEST := target/calltest
+MODELS_DIR ?= $(HOME)/.local/share/everyday/models
+test-call: ## Run a call to the assistant end to end: throwaway Conduit, LiveKit and token service, real speech
+	@docker rm -f karmayoga-calltest-conduit karmayoga-calltest-tls karmayoga-calltest-livekit karmayoga-calltest-jwt >/dev/null 2>&1 || true
+	@mkdir -p $(CALLTEST)/data/karmayoga/models
+	@for m in parakeetV3 speechKit phonon; do ln -sfn $(MODELS_DIR)/$$m $(CALLTEST)/data/karmayoga/models/$$m; done
+	@openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=rtc-test.localhost \
+		-keyout $(CALLTEST)/key.pem -out $(CALLTEST)/cert.pem 2>/dev/null
+	@printf 'events {}\nhttp { server { listen 127.0.0.1:18448 ssl; ssl_certificate /tls/cert.pem; ssl_certificate_key /tls/key.pem;\n  location / { proxy_pass http://127.0.0.1:16168; proxy_set_header Host $$host; } } }\n' > $(CALLTEST)/nginx.conf
+	@docker run -d --rm --name karmayoga-calltest-conduit --network host \
+		-e CONDUIT_SERVER_NAME=rtc-test.localhost:18448 \
+		-e CONDUIT_DATABASE_PATH=/var/lib/matrix-conduit/ -e CONDUIT_DATABASE_BACKEND=rocksdb \
+		-e CONDUIT_PORT=16168 -e CONDUIT_ADDRESS=127.0.0.1 \
+		-e CONDUIT_ALLOW_REGISTRATION=true -e CONDUIT_ALLOW_FEDERATION=true \
+		-e CONDUIT_ALLOW_CHECK_FOR_UPDATES=false -e CONDUIT_TRUSTED_SERVERS='[]' -e CONDUIT_CONFIG='' \
+		--tmpfs /var/lib/matrix-conduit:rw,size=512m \
+		matrixconduit/matrix-conduit:v0.10.12 >/dev/null
+	@docker run -d --rm --name karmayoga-calltest-tls --network host \
+		-v $(CURDIR)/$(CALLTEST)/nginx.conf:/etc/nginx/nginx.conf:ro -v $(CURDIR)/$(CALLTEST):/tls:ro \
+		nginx:alpine >/dev/null
+	@docker run -d --rm --name karmayoga-calltest-livekit --network host \
+		-e LIVEKIT_KEYS="testkey: throwaway-secret-for-tests-only-0123456789" -e NODE_IP=127.0.0.1 \
+		-e LIVEKIT_CONFIG="$$(printf 'port: 17880\nbind_addresses: [127.0.0.1]\nrtc:\n  tcp_port: 17881\n  udp_port: 17882\n  use_external_ip: false\n')" \
+		livekit/livekit-server:v1.13.11 >/dev/null
+	@docker run -d --rm --name karmayoga-calltest-jwt --network host \
+		--add-host rtc-test.localhost:127.0.0.1 \
+		-e LIVEKIT_JWT_BIND=127.0.0.1:18080 -e LIVEKIT_URL=ws://127.0.0.1:17880 \
+		-e LIVEKIT_KEY=testkey -e LIVEKIT_SECRET=throwaway-secret-for-tests-only-0123456789 \
+		-e LIVEKIT_FULL_ACCESS_HOMESERVERS=rtc-test.localhost:18448 \
+		-e LIVEKIT_INSECURE_SKIP_VERIFY_TLS=YES_I_KNOW_WHAT_I_AM_DOING \
+		ghcr.io/element-hq/lk-jwt-service:0.10.0 >/dev/null; \
+	echo "waiting for Conduit, LiveKit and the token service..."; \
+	for i in $$(seq 1 60); do \
+		curl -sf -o /dev/null http://127.0.0.1:16168/_matrix/client/versions \
+			&& curl -sf -o /dev/null http://127.0.0.1:17880/ \
+			&& curl -sf -o /dev/null http://127.0.0.1:18080/healthz && break; \
+		sleep 1; \
+	done; \
+	XDG_DATA_HOME=$(CURDIR)/$(CALLTEST)/data KARMAYOGA_TEST_SPEECH=1 \
+	KARMAYOGA_TEST_MATRIX_URL=http://127.0.0.1:16168 \
+	KARMAYOGA_TEST_LIVEKIT_JWT_URL=http://127.0.0.1:18080 \
+		cargo test -p karmayoga-chat --features speech --test call_live -- --ignored --nocapture $(ARGS); \
+	status=$$?; \
+	for c in conduit tls livekit jwt; do docker logs karmayoga-calltest-$$c > $(CALLTEST)/$$c.log 2>&1 || true; done; \
+	docker rm -f karmayoga-calltest-conduit karmayoga-calltest-tls karmayoga-calltest-livekit karmayoga-calltest-jwt >/dev/null; \
 	exit $$status
 
 # `karmayoga-service`'s own end-to-end suite

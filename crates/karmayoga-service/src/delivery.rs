@@ -17,7 +17,7 @@
 //! routine set up by the assistant cannot be talked into mailing somebody
 //! else.
 
-use crate::chat::{ChatOutlet, FromRun};
+use crate::chat::{CallDelivered, ChatOutlet, FromRun};
 use crate::service::{Service, blocking};
 use karmayoga_core::mail::{Address, Draft, Origin};
 use karmayoga_core::routine::{Delivered, DeliveredTo, Outcome, Routine, RoutineRun};
@@ -30,6 +30,11 @@ use std::time::Duration;
 /// waiting for it. Generous, because it waits behind whatever the owner's
 /// own chat is doing at the time.
 pub(crate) const POST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long delivering by a call may take before the run stops waiting: the
+/// wait behind the chat's own work, then the ringing, then the message that
+/// goes instead if nobody picks up.
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(240);
 
 /// Send `run`'s result to every place `routine` names. One [`Delivered`] per
 /// place, in the order the routine's [`Delivery`] lists them; empty when it
@@ -83,6 +88,32 @@ pub(crate) async fn deliver(
                 ok: false,
                 detail: format!("{label} was not connected"),
             },
+            // A result worth calling about: one that ran. A run that failed is
+            // written, not rung through.
+            (Some(label), Some(outlet)) if delivery.calls() && run.outcome == Outcome::Done => {
+                let from =
+                    FromRun { routine: routine.name.clone(), conversation: run.conversation_id };
+                let spoken = spoken(&routine.name, run, waiting);
+                let call = outlet.call(from, message.clone(), spoken);
+                match tokio::time::timeout(CALL_TIMEOUT, call).await {
+                    Ok(Ok(CallDelivered::PickedUp)) => Delivered {
+                        to: DeliveredTo::Chat,
+                        ok: true,
+                        detail: format!("{label}, on a call they picked up"),
+                    },
+                    Ok(Ok(CallDelivered::Messaged { why })) => Delivered {
+                        to: DeliveredTo::Chat,
+                        ok: true,
+                        detail: format!("{label}, as a message: {why}"),
+                    },
+                    Ok(Err(why)) => Delivered { to: DeliveredTo::Chat, ok: false, detail: why },
+                    Err(_) => Delivered {
+                        to: DeliveredTo::Chat,
+                        ok: false,
+                        detail: format!("{label} did not call or send it in time"),
+                    },
+                }
+            }
             (Some(label), Some(outlet)) => {
                 let from =
                     FromRun { routine: routine.name.clone(), conversation: run.conversation_id };
@@ -135,6 +166,28 @@ pub(crate) async fn deliver(
         });
     }
     delivered
+}
+
+/// What is said when the owner picks up a call made with `run`'s result: who
+/// is calling about what, the result, anything left waiting, and that they
+/// can ask about it. Written as speech; the voice reads it as it reads a
+/// reply, so the result's own Markdown is fine.
+pub(crate) fn spoken(name: &str, run: &RoutineRun, waiting: usize) -> String {
+    let mut out = format!("This is your {}.", name.trim().trim_end_matches('.'));
+    let said = run.summary.trim();
+    if !said.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(said);
+    }
+    match waiting {
+        0 => {}
+        1 => out.push_str("\n\nOne thing is waiting for you to decide in the Assistant app."),
+        n => out.push_str(&format!(
+            "\n\n{n} things are waiting for you to decide in the Assistant app."
+        )),
+    }
+    out.push_str("\n\nAsk me anything about it, or say goodbye to hang up.");
+    out
 }
 
 /// The one message a run's result goes out as, in Markdown -- or `None` when
@@ -331,6 +384,17 @@ mod tests {
         assert_eq!(
             said,
             "**Tidy**\n\n_One thing is waiting for you to decide in the Assistant app._"
+        );
+    }
+
+    #[test]
+    fn a_call_opens_with_whose_it_is_then_the_result_then_an_offer_to_ask() {
+        let said = spoken("Morning brief", &run(Outcome::Done, "Three things are due.", 2), 1);
+        assert_eq!(
+            said,
+            "This is your Morning brief.\n\nThree things are due.\n\nOne thing is waiting for \
+             you to decide in the Assistant app.\n\nAsk me anything about it, or say goodbye \
+             to hang up."
         );
     }
 

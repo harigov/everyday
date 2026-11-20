@@ -622,6 +622,10 @@
             "description": "Time of day, 24-hour, as HH:MM. For example 07:00.",
             "type": "string"
           },
+          "call_me": {
+            "description": "Call them with the result through that chat instead of writing it: you say it, and stay on the line for anything they ask about it. Written in the chat only if they do not pick up. Turns sending to the chat on. For a brief they asked to hear, or to be called with. False stops calling.",
+            "type": "boolean"
+          },
           "days": {
             "description": "Days it runs: mon, tue, wed, thu, fri, sat, sun. Omit for every day.",
             "items": {
@@ -4957,6 +4961,10 @@
           "at": {
             "description": "New time of day as HH:MM.",
             "type": "string"
+          },
+          "call_me": {
+            "description": "Call them with the result through that chat instead of writing it: you say it, and stay on the line for anything they ask about it. Written in the chat only if they do not pick up. Turns sending to the chat on. For a brief they asked to hear, or to be called with. False stops calling.",
+            "type": "boolean"
           },
           "days": {
             "description": "Replaces the days entirely.",

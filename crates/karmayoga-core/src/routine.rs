@@ -340,6 +340,12 @@ pub struct Delivery {
     /// set. Off, a run has nobody to ask and refuses or parks as it always
     /// has.
     pub ask: bool,
+    /// Call the owner on that chat link with the result instead of writing
+    /// it there: the assistant says it, and stays on the line for whatever
+    /// they ask about it, in the run's own conversation (which the app keeps,
+    /// as it keeps every run). Written in the chat only if they do not pick
+    /// up, or the call cannot be made. Read only when `chat` is set.
+    pub call: bool,
     /// Email the result from this account to its own address.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<AccountId>,
@@ -354,6 +360,11 @@ impl Delivery {
     /// Whether a run may ask its person something while it works.
     pub fn asks(&self) -> bool {
         self.ask && self.chat.is_some()
+    }
+
+    /// Whether the result is delivered by calling its person.
+    pub fn calls(&self) -> bool {
+        self.call && self.chat.is_some()
     }
 }
 

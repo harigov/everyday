@@ -222,7 +222,7 @@ class AssistantState {
         name: template?.name ?? blank.name,
         instructions: template?.instructions ?? blank.instructions,
         trigger: template?.trigger ?? blank.trigger,
-        delivery: blank.delivery ?? { ask: false },
+        delivery: blank.delivery ?? { ask: false, call: false },
         when: '',
       }
       this.setPane('routines')
@@ -233,7 +233,7 @@ class AssistantState {
   }
 
   edit(routine: RoutineInfo) {
-    this.editing = { ...routine, delivery: { ask: false, ...routine.delivery } }
+    this.editing = { ...routine, delivery: { ask: false, call: false, ...routine.delivery } }
     this.setPane('routines')
     void this.#destinations()
   }

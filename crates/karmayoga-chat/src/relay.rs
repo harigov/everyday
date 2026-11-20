@@ -40,8 +40,8 @@
 //! **Calls go through the same workers.** A call the owner makes to the
 //! assistant is delivered as [`Incoming::Called`] and queued on its chat's
 //! worker as one more piece of work, so a chat never has a call and a typed turn
-//! at once. What cannot wait for the worker -- the caller's candidates, the
-//! owner hanging up, `!stop` -- is found by the dispatcher in the chat's
+//! at once. What cannot wait for the worker -- the caller's keys, the owner
+//! hanging up, `!stop` -- is found by the dispatcher in the chat's
 //! [`Shared`]. See [`crate::calling`], and `docs/plans/calls.md`.
 //!
 //! **A [`Shared`] per chat** is the only thing the dispatcher and a worker both
@@ -63,8 +63,8 @@
 use crate::call::{CallEnd, ToCall};
 use crate::calling::{self, CallOffer, CallSlot, Confirmation, Confirming, Line, Offered};
 use crate::connector::{
-    CallId, ChatId, Choice, Connector, Document, HangUp, IceCandidate, Incoming, MessageRef,
-    Picture, Question, Sent,
+    CallId, CallKey, ChatId, Choice, Connector, Document, HangUp, Incoming, MessageRef, Picture,
+    Question, Sent,
 };
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -72,7 +72,7 @@ use jiff::{SignedDuration, Timestamp};
 use karmayoga_core::chat::{ChatLink, Via};
 use karmayoga_core::{ChatLinkId, Conversation, ConversationId, ConversationQuery, Vault};
 use karmayoga_service::agent::{AgentEvent, ConfirmAnswer, Pending, Sink, Turned};
-use karmayoga_service::chat::{ChatOutlet, FromRun, escape_markdown};
+use karmayoga_service::chat::{CallDelivered, ChatOutlet, FromRun, escape_markdown};
 use karmayoga_service::error::CommandResult;
 use karmayoga_service::service::Service;
 use karmayoga_service::voice::{VoiceEvent, VoiceInput, VoiceLink};
@@ -85,7 +85,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 
-pub use crate::calling::{Accepted, CallBackend, Media, RealCalls};
+pub use crate::calling::{CallBackend, Media, RealCalls};
 
 /// How long a question may go unanswered before the relay answers it itself.
 ///
@@ -135,6 +135,8 @@ pub struct Timing {
     pub shutdown_grace: Duration,
     /// See [`PICTURE_WAIT`].
     pub picture_wait: Duration,
+    /// See [`RING_FOR`].
+    pub ring_for: Duration,
 }
 
 impl Default for Timing {
@@ -144,6 +146,7 @@ impl Default for Timing {
             stale_after: STALE_AFTER,
             shutdown_grace: SHUTDOWN_GRACE,
             picture_wait: PICTURE_WAIT,
+            ring_for: RING_FOR,
         }
     }
 }
@@ -154,6 +157,10 @@ const NOTHING_RUNNING: &str = "Nothing is running.";
 const NO_REPLY: &str = "(no reply)";
 const UNREADABLE_REPLY: &str = "I couldn't read that message \u{2014} it was encrypted for a session I don't have. Try sending it again.";
 const NO_ANSWER: &str = "No answer, so I'll carry on with my best guess.";
+/// Leads a routine's result that was to be said on a call, written instead
+/// because the owner was on a call already; and why, for the run's log.
+const BUSY_INSTEAD: &str = "I'd have called with this, but you were already on a call.";
+const BUSY_WHY: &str = "another call had the line";
 
 /// Answer what arrives in `inbox` until `stop` turns true or the inbox
 /// closes.
@@ -292,6 +299,14 @@ pub(crate) enum RoutineJob {
         choices: Vec<String>,
         answer: oneshot::Sender<Option<String>>,
     },
+    /// Call the owner with a run's result: `spoken` when they pick up, and
+    /// `markdown` posted instead if they do not.
+    Call {
+        from: FromRun,
+        markdown: String,
+        spoken: String,
+        delivered: oneshot::Sender<Result<CallDelivered, String>>,
+    },
 }
 
 /// [`ChatOutlet`] over a running relay: finds the owner's private chat, and
@@ -359,6 +374,21 @@ impl ChatOutlet for RelayOutlet {
                 return None;
             }
             answered.await.ok().flatten()
+        })
+    }
+
+    fn call(
+        &self,
+        from: FromRun,
+        markdown: String,
+        spoken: String,
+    ) -> BoxFuture<'static, Result<CallDelivered, String>> {
+        let (connector, outbound) = (self.connector.clone(), self.outbound.clone());
+        Box::pin(async move {
+            let (delivered, done) = oneshot::channel();
+            let job = RoutineJob::Call { from, markdown, spoken, delivered };
+            Self::queue(connector, outbound, job).await?;
+            done.await.map_err(|_| "the chat link stopped before it called".to_string())?
         })
     }
 }
@@ -512,19 +542,22 @@ enum Job {
 /// held for as long as this exists.
 struct CallWork {
     offer: CallOffer,
-    _line: LineHeld,
+    _line: LineHeld<Arc<Context>>,
 }
 
 /// The relay's one line, held by one call. Given back when this is dropped,
 /// however the call ends -- finished, refused, its worker panicking, or the
 /// queue it sat in being thrown away -- so a call that goes wrong cannot
 /// leave the line engaged for the rest of the relay's life.
-struct LineHeld {
-    context: Arc<Context>,
+///
+/// Over the context however it is held: shared by the dispatcher, borrowed by
+/// a worker.
+struct LineHeld<C: std::ops::Deref<Target = Context>> {
+    context: C,
     call: CallId,
 }
 
-impl Drop for LineHeld {
+impl<C: std::ops::Deref<Target = Context>> Drop for LineHeld<C> {
     fn drop(&mut self) {
         // Not `unwrap`: a panic while unwinding aborts the process.
         if let Ok(mut line) = self.context.line.lock() {
@@ -598,6 +631,23 @@ impl Chats {
                 tokio::spawn(async move { context.tell(&chat, reply).await });
             }
             Route::Call(offer) => {
+                // The owner picking up a call this side placed: the worker
+                // that rang is waiting for exactly this, and holds the line.
+                let offer = match shared.ringing.take() {
+                    Some(answer) => {
+                        shared.call = Some(CallSlot::queued(offer.call.clone()));
+                        match answer.send(offer) {
+                            Ok(()) => return,
+                            // It gave up ringing a moment ago: an ordinary
+                            // call, then.
+                            Err(offer) => {
+                                shared.call = None;
+                                offer
+                            }
+                        }
+                    }
+                    None => offer,
+                };
                 // Under the chat's lock, like every route, and the line
                 // taken inside it: a hang-up for this call cannot arrive
                 // between the line being taken and the call being findable.
@@ -617,7 +667,7 @@ impl Chats {
                     }
                 }
             }
-            Route::CallCandidates { call, candidates } => shared.call_candidates(&call, candidates),
+            Route::CallKeys { call, keys } => shared.call_keys(&call, keys),
             Route::CallEnded(call) => {
                 shared.call_ended(&call);
                 // A call that was still ringing -- waiting behind a turn --
@@ -630,8 +680,30 @@ impl Chats {
     /// Queue what a routine needs on `chat`'s worker. Dropped, if the relay
     /// is winding down, with its answering half -- which the routine reads
     /// as the chat having gone.
+    ///
+    /// A call while the owner is on one already is written instead, then
+    /// and there: queued, it would wait for their call to end and ring them
+    /// the moment they hung up.
     fn routine(&mut self, chat: ChatId, job: RoutineJob) {
-        let _ = self.handle_for(&chat).queue.send(Job::Routine(job));
+        match job {
+            RoutineJob::Call { markdown, delivered, .. }
+                if self.context.line.lock().unwrap().is_busy(Timestamp::now()) =>
+            {
+                // Sent beside the call rather than queued behind it, and
+                // without taking the chat's conversation over from the call.
+                let connector = self.context.connector.clone();
+                tokio::spawn(async move {
+                    let sent = connector.send(&chat, &instead(BUSY_INSTEAD, &markdown)).await;
+                    let _ = delivered.send(
+                        sent.map(|_| CallDelivered::Messaged { why: BUSY_WHY.into() })
+                            .map_err(|e| e.to_string()),
+                    );
+                });
+            }
+            job => {
+                let _ = self.handle_for(&chat).queue.send(Job::Routine(job));
+            }
+        }
     }
 
     /// End the workers: see [`run_with`] for the two ways this goes.
@@ -687,6 +759,9 @@ struct Shared {
     closed: bool,
     /// The call this chat has, queued or running.
     call: Option<CallSlot>,
+    /// The worker is ringing the owner, and their picking up -- which arrives
+    /// as a call like any other -- goes to it rather than being queued.
+    ringing: Option<oneshot::Sender<CallOffer>>,
 }
 
 /// The turn a worker has in hand.
@@ -845,11 +920,11 @@ impl Shared {
         }
     }
 
-    /// More of the caller's candidates, for `call` if it is the one this chat
+    /// More of the caller's keys, for `call` if it is the one this chat
     /// has. For any other they are nobody's.
-    fn call_candidates(&mut self, call: &CallId, candidates: Vec<IceCandidate>) {
+    fn call_keys(&mut self, call: &CallId, keys: Vec<CallKey>) {
         if let Some(slot) = self.call.as_mut().filter(|slot| slot.id == *call) {
-            slot.heard(candidates);
+            slot.heard(keys);
         }
     }
 
@@ -858,7 +933,7 @@ impl Shared {
     fn call_start(
         &mut self,
         call: &CallId,
-    ) -> Option<(Vec<IceCandidate>, mpsc::UnboundedReceiver<ToCall>)> {
+    ) -> Option<(Vec<CallKey>, mpsc::UnboundedReceiver<ToCall>)> {
         self.call.as_mut().filter(|slot| slot.id == *call).and_then(CallSlot::start)
     }
 
@@ -906,6 +981,8 @@ impl Shared {
     fn close(&mut self) {
         self.closed = true;
         self.decline();
+        // A ring the worker is waiting on stops, and the worker takes it down.
+        self.ringing = None;
     }
 
     /// The owner's `!stop`: cancel the turn that is running, and decline the
@@ -913,7 +990,8 @@ impl Shared {
     fn stop(&mut self, pending: &Pending) -> &'static str {
         // A call is stopped by ending it, and is something running as far as
         // what to say back goes.
-        let calling = self.stop_call();
+        // So is a ring: the worker that placed it stops ringing.
+        let calling = self.stop_call() | self.ringing.take().is_some();
         let Some(running) = &mut self.running else {
             return if calling { STOPPED } else { NOTHING_RUNNING };
         };
@@ -993,9 +1071,9 @@ pub(crate) enum Route {
     /// A call: answer it in turn, if the line is free -- which only the
     /// dispatcher, with the relay's line in hand, can say.
     Call(CallOffer),
-    /// More of the caller's candidates. For the call this chat has, they are
-    /// at once buffered or forwarded; for any other, nothing.
-    CallCandidates { call: CallId, candidates: Vec<IceCandidate> },
+    /// More of the caller's keys. For the call this chat has, they are at
+    /// once buffered or forwarded; for any other, nothing.
+    CallKeys { call: CallId, keys: Vec<CallKey> },
     /// The owner hung up, now, not in turn.
     CallEnded(CallId),
     /// It means nothing.
@@ -1017,7 +1095,7 @@ pub(crate) enum Route {
 /// * `!stop` is never queued.
 /// * A picture or a file never answers a question. It is the owner moving
 ///   on, as typed text that is not an answer is.
-/// * A call, its candidates and its hang-up never answer a question either,
+/// * A call, its keys and its hang-up never answer a question either,
 ///   and never decline one: the owner phoning is not the owner replying.
 ///
 /// Takes the item rather than borrowing it, so that a file of two hundred
@@ -1032,15 +1110,11 @@ pub(crate) fn route(
         Incoming::Unreadable { .. } => Route::Queue(Work::Reply(UNREADABLE_REPLY.to_string())),
         // How old a call is does not matter here: it stops ringing at its
         // own `expires`, which the worker checks when it comes to answer, and
-        // a call is never "sent last night". The candidates and the hang-up
-        // are acted on at once, as `!stop` is, for the same reason: they must
-        // not wait behind the turn that is running.
-        Incoming::Called { call, offer, expires, .. } => {
-            Route::Call(CallOffer { call, sdp: offer, expires })
-        }
-        Incoming::CallCandidates { call, candidates, .. } => {
-            Route::CallCandidates { call, candidates }
-        }
+        // a call is never "sent last night". The keys and the hang-up are
+        // acted on at once, as `!stop` is, for the same reason: they must not
+        // wait behind the turn that is running.
+        Incoming::Called { call, expires, .. } => Route::Call(CallOffer { call, expires }),
+        Incoming::CallKeys { call, keys, .. } => Route::CallKeys { call, keys },
         Incoming::CallEnded { call, .. } => Route::CallEnded(call),
         Incoming::Chose { question, choice, .. } => match asked {
             Asked::Sent(waiting_on) if *waiting_on == question => Route::Answer(choice),
@@ -1444,14 +1518,7 @@ async fn for_routine(
     };
     match job {
         RoutineJob::Post { from, markdown, done } => {
-            let sent = context.connector.send(chat, &markdown).await;
-            if sent.is_ok()
-                && let Some(conversation) = from.conversation
-            {
-                memory.adopt(conversation);
-                context.adopt_conversation(chat, conversation).await;
-            }
-            let _ = done.send(sent.map(|_| ()).map_err(|e| e.to_string()));
+            let _ = done.send(post_for_run(context, chat, memory, &from, &markdown).await);
         }
         RoutineJob::Confirm { from, kind, subject, can_park, answer } => {
             running(&from);
@@ -1473,6 +1540,9 @@ async fn for_routine(
             let given = ask_free(context, chat, shared, &from.routine, &question, &choices).await;
             shared.lock().unwrap().running = None;
             let _ = answer.send(given);
+        }
+        RoutineJob::Call { from, markdown, spoken, delivered } => {
+            call_owner(context, chat, shared, memory, from, markdown, spoken, delivered).await;
         }
     }
 }
@@ -1797,7 +1867,7 @@ async fn take_call(
 ) {
     let CallWork { offer, _line } = work;
     let call = offer.call.clone();
-    carry_call(context, chat, shared, memory, offer).await;
+    let _ = carry_call(context, chat, shared, memory, offer, None).await;
     // The call is not findable any more, and then -- as `_line` drops -- the
     // line is free for the next. In that order, so a call that comes the
     // instant the line is free finds the slot it is about to replace empty
@@ -1821,8 +1891,10 @@ async fn take_call(
 ///    carries on the same thread.
 /// 3. The voice session. If it will not open the owner is told why, in the
 ///    service's own words, and the call is refused.
-/// 4. The offer answered, and the answer sent. A failure on either tells the
-///    owner, hangs up as failed, and stops the voice session.
+/// 4. The call joined on the chat service -- this side said to be in it,
+///    and its key sent to the caller -- and then its room on the media
+///    server. A failure on either tells the owner, hangs up as failed, and
+///    stops the voice session.
 /// 5. The call, run; and while it runs, any confirmation only a tap can
 ///    answer is put to the owner in the chat.
 /// 6. Hung up, with the reason that fits how it ended.
@@ -1832,8 +1904,9 @@ async fn carry_call(
     shared: &Mutex<Shared>,
     memory: &mut Memory,
     offer: CallOffer,
-) {
-    let CallOffer { call, sdp, expires } = offer;
+    opening: Option<Opening>,
+) -> Option<Opening> {
+    let CallOffer { call, expires } = offer;
 
     let started = {
         // The line is told under the chat's lock, as the dispatcher frees it
@@ -1848,15 +1921,24 @@ async fn carry_call(
     };
     let Some((heard, to_call)) = started else {
         hang_up(context, chat, &call, HangUp::Refused).await;
-        return;
+        return opening;
     };
     if calling::has_expired(expires, Timestamp::now()) {
         hang_up(context, chat, &call, HangUp::Refused).await;
         context.tell(chat, calling::MISSED).await;
-        return;
+        return opening;
     }
 
-    let conversation = memory.conversation(context, chat).await;
+    // A call this side placed for a run is in that run's conversation, as a
+    // reply to its message would be; so is what is typed after it.
+    let conversation = match opening.as_ref().and_then(|o| o.conversation) {
+        Some(conversation) => {
+            memory.adopt(conversation);
+            context.adopt_conversation(chat, conversation).await;
+            conversation
+        }
+        None => memory.conversation(context, chat).await,
+    };
     let via = Via {
         link: context.link.id,
         service: context.link.service.label().to_string(),
@@ -1868,46 +1950,65 @@ async fn carry_call(
         Err(e) => {
             context.tell(chat, &calling::cannot_take_calls(&e.message)).await;
             hang_up(context, chat, &call, HangUp::Refused).await;
-            return;
+            return opening;
         }
     };
-    let accepted = match context.calls.answer(sdp, heard).await {
-        Ok(accepted) => accepted,
-        Err(e) => {
-            context.tell(chat, &calling::could_not_answer(&e.to_string())).await;
-            hang_up(context, chat, &call, HangUp::Failed).await;
-            let _ = voice.input.send(VoiceInput::Stop);
-            return;
-        }
-    };
-
-    // Setting up takes seconds, and the owner may have given up in them, or
-    // the call have stopped ringing: answering now would be answering a phone
-    // nobody is holding.
-    let over = shared.lock().unwrap().call_is_over(&call);
-    if over || calling::has_expired(expires, Timestamp::now()) {
+    // Opening the voice can take seconds: the owner may have given up in
+    // them, or the call rung out. Joining now would show them a join and a
+    // leave for nothing.
+    if let Some(over) = given_up(shared, &call, expires) {
         let _ = voice.input.send(VoiceInput::Stop);
         hang_up(context, chat, &call, HangUp::Refused).await;
         if !over {
             context.tell(chat, calling::MISSED).await;
         }
-        return;
+        return opening;
     }
-    if let Err(e) = context.connector.answer_call(chat, &call, &accepted.sdp).await {
-        let _ = voice.input.send(VoiceInput::Stop);
-        // The owner hung up in the instant since the check above, and the
-        // chat service has forgotten the call: that is why this failed, and
-        // it is not a failure to tell them about.
-        if shared.lock().unwrap().call_is_over(&call) {
-            hang_up(context, chat, &call, HangUp::Refused).await;
-            return;
+    let join = match context.connector.join_call(chat, &call).await {
+        Ok(join) => join,
+        Err(e) => {
+            let _ = voice.input.send(VoiceInput::Stop);
+            // The owner hung up in the moments it took to get here, and the
+            // chat service has forgotten the call: that is why this failed,
+            // and it is not a failure to tell them about.
+            if shared.lock().unwrap().call_is_over(&call) {
+                hang_up(context, chat, &call, HangUp::Refused).await;
+                return opening;
+            }
+            context.tell(chat, &calling::could_not_join(&e.to_string())).await;
+            hang_up(context, chat, &call, HangUp::Failed).await;
+            return opening;
         }
-        context.tell(chat, &calling::could_not_send_answer(&e.to_string())).await;
-        hang_up(context, chat, &call, HangUp::Failed).await;
-        return;
+    };
+    let media = match context.calls.connect(join, heard).await {
+        Ok(media) => media,
+        Err(e) => {
+            context.tell(chat, &calling::could_not_answer(&e.to_string())).await;
+            hang_up(context, chat, &call, HangUp::Failed).await;
+            let _ = voice.input.send(VoiceInput::Stop);
+            return opening;
+        }
+    };
+
+    // Setting up takes seconds, and the owner may have given up in them, or
+    // the call have stopped ringing: carrying on now would be talking to a
+    // phone nobody is holding.
+    if let Some(over) = given_up(shared, &call, expires) {
+        let _ = voice.input.send(VoiceInput::Stop);
+        hang_up(context, chat, &call, HangUp::Refused).await;
+        if !over {
+            context.tell(chat, calling::MISSED).await;
+        }
+        return opening;
     }
 
-    let (end, session_error) = run_call(context, chat, shared, accepted, voice, to_call).await;
+    if let Some(opening) = opening {
+        // Said first, before the owner says anything: why the call. From
+        // here the run's result is the call's to give.
+        let _ = voice.input.send(VoiceInput::Say(opening.spoken));
+        let _ = opening.delivered.send(Ok(CallDelivered::PickedUp));
+    }
+    let (end, session_error) = run_call(context, chat, shared, media, voice, to_call).await;
     memory.used(conversation);
 
     // A session that ended in an error was a failed call, not a goodbye.
@@ -1921,6 +2022,194 @@ async fn carry_call(
         if let Some(note) = note {
             context.tell(chat, &note).await;
         }
+    }
+    None
+}
+
+/// Whether `call` is no longer to be answered: `Some(true)` when the owner
+/// ended it, `Some(false)` when it rang out, `None` while it can still be.
+fn given_up(shared: &Mutex<Shared>, call: &CallId, expires: Timestamp) -> Option<bool> {
+    if shared.lock().unwrap().call_is_over(call) {
+        Some(true)
+    } else if calling::has_expired(expires, Timestamp::now()) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// What a call this side placed opens with.
+struct Opening {
+    /// The run it was placed for, whose conversation it carries on.
+    conversation: Option<ConversationId>,
+    /// What is said when the owner picks up.
+    spoken: String,
+    /// Told that the run's result was given, once the call is under way.
+    delivered: oneshot::Sender<Result<CallDelivered, String>>,
+}
+
+/// How long the owner's devices ring before the call is given up and the
+/// result written instead. A little past the ring's own lifetime on their
+/// devices, so a pick-up at the last moment is still heard.
+pub const RING_FOR: Duration = Duration::from_secs(50);
+
+/// A run's message to the owner, and the chat carried on in the run's
+/// conversation from then, as a reply to it would be.
+async fn post_for_run(
+    context: &Context,
+    chat: &ChatId,
+    memory: &mut Memory,
+    from: &FromRun,
+    markdown: &str,
+) -> Result<(), String> {
+    context.connector.send(chat, markdown).await.map_err(|e| e.to_string())?;
+    if let Some(conversation) = from.conversation {
+        memory.adopt(conversation);
+        context.adopt_conversation(chat, conversation).await;
+    }
+    Ok(())
+}
+
+/// A result that was to be said, written instead, led by why.
+fn instead(lead: &str, markdown: &str) -> String {
+    format!("_{lead}_\n\n{markdown}")
+}
+
+/// How a ring ended.
+enum Rang {
+    PickedUp(CallOffer),
+    /// Nobody picked up in time.
+    Unanswered,
+    /// `!stop`, or the relay stopping.
+    Stopped,
+}
+
+/// Call the owner with a run's result, in turn with the chat's own work.
+///
+/// 1. The run must still be waiting for it: a job that sat queued past the
+///    run's patience is written rather than rung through, late.
+/// 2. The line, held while it rings: a call already running means the
+///    result is written instead.
+/// 3. Ring. Their picking up arrives as an ordinary call, which the
+///    dispatcher hands here (`Shared::ringing`) rather than queueing.
+///    `!stop` stops the ringing.
+/// 4. Picked up: the call is carried as any other, opening with `spoken`, in
+///    the run's conversation; the run hears it was delivered once the call is
+///    under way. A call that never gets that far, a ring nobody picks up in
+///    [`Timing::ring_for`], and a stopped ring all end the ringing and write
+///    the result, saying so.
+#[allow(clippy::too_many_arguments)]
+async fn call_owner(
+    context: &Context,
+    chat: &ChatId,
+    shared: &Mutex<Shared>,
+    memory: &mut Memory,
+    from: FromRun,
+    markdown: String,
+    spoken: String,
+    delivered: oneshot::Sender<Result<CallDelivered, String>>,
+) {
+    let write = async |memory: &mut Memory, lead: &str, why: &str| {
+        post_for_run(context, chat, memory, &from, &instead(lead, &markdown))
+            .await
+            .map(|()| CallDelivered::Messaged { why: why.to_string() })
+    };
+
+    if delivered.is_closed() {
+        let lead = "This was to be a call, but I couldn't get to it in time.";
+        let _ = write(memory, lead, "it waited too long to call").await;
+        return;
+    }
+
+    let now = Timestamp::now();
+    let ringing_id = CallId(format!("ringing:{}", chat.0));
+    let ring_for = context.timing.ring_for;
+    let until = now + SignedDuration::try_from(ring_for).unwrap_or(SignedDuration::from_secs(50));
+    let offered = context.line.lock().unwrap().offer(&ringing_id, until, now);
+    if offered != Offered::Taken {
+        let _ = delivered.send(write(memory, BUSY_INSTEAD, BUSY_WHY).await);
+        return;
+    }
+    let ringing_line = LineHeld { context, call: ringing_id };
+
+    let (answer, mut answered) = oneshot::channel();
+    shared.lock().unwrap().ringing = Some(answer);
+    let ring = match context.connector.ring(chat).await {
+        Ok(ring) => ring,
+        Err(e) => {
+            shared.lock().unwrap().ringing = None;
+            drop(ringing_line);
+            tracing::warn!(chat = %chat.0, error = %e, "could not call the owner");
+            let why = format!("the call could not be placed ({e})");
+            let lead = "I tried to call you with this, but the call couldn't be placed.";
+            let _ = delivered.send(write(memory, lead, &why).await);
+            return;
+        }
+    };
+
+    let rang = match tokio::time::timeout(ring_for, &mut answered).await {
+        Ok(Ok(offer)) => Rang::PickedUp(offer),
+        Ok(Err(_)) => Rang::Stopped,
+        Err(_) => {
+            // The dispatcher hands a pick-up over under the chat's lock: once
+            // the ring is taken back under it, either nothing came or it is
+            // already here.
+            let taken_back = shared.lock().unwrap().ringing.take().is_some();
+            match answered.try_recv() {
+                Ok(offer) if !taken_back => Rang::PickedUp(offer),
+                _ => Rang::Unanswered,
+            }
+        }
+    };
+    shared.lock().unwrap().ringing = None;
+    drop(ringing_line);
+    let offer = match rang {
+        Rang::PickedUp(offer) => offer,
+        Rang::Unanswered => {
+            hang_up(context, chat, &ring, HangUp::Unreachable).await;
+            let lead = "I called you with this, but you didn't pick up.";
+            let _ = delivered.send(write(memory, lead, "they did not pick up").await);
+            return;
+        }
+        Rang::Stopped => {
+            hang_up(context, chat, &ring, HangUp::Finished).await;
+            let lead = "I stopped calling. Here it is instead.";
+            let _ = delivered.send(write(memory, lead, "the call was stopped").await);
+            return;
+        }
+    };
+
+    // The line, now for the call they picked up.
+    let call = offer.call.clone();
+    let taken = context.line.lock().unwrap().offer(&call, offer.expires, Timestamp::now());
+    if taken != Offered::Taken {
+        // Another call took the line in the instant between: this one cannot
+        // be carried, and the membership that rang them is still standing.
+        shared.lock().unwrap().call = None;
+        refuse_busy(context, chat, &call).await;
+        hang_up(context, chat, &ring, HangUp::Refused).await;
+        let _ = delivered.send(write(memory, BUSY_INSTEAD, BUSY_WHY).await);
+        return;
+    }
+    let call_line = LineHeld { context, call: call.clone() };
+    let opening = Opening { conversation: from.conversation, spoken, delivered };
+    let unsaid = carry_call(context, chat, shared, memory, offer, Some(opening)).await;
+    {
+        let mut shared = shared.lock().unwrap();
+        if shared.call.as_ref().is_some_and(|slot| slot.id == call) {
+            shared.call = None;
+        }
+    }
+    drop(call_line);
+    // Joining the call they picked up takes over the ring's membership and
+    // forgets the ring. If the call never got that far, that membership is
+    // still in the room, and ending the ring is what takes it down. Ending
+    // a ring that joining already forgot does nothing.
+    hang_up(context, chat, &ring, HangUp::Finished).await;
+    if let Some(Opening { delivered, .. }) = unsaid {
+        let lead = "You picked up, but the call couldn't go ahead, so here it is.";
+        let _ =
+            delivered.send(write(memory, lead, "the call they picked up did not go ahead").await);
     }
 }
 
@@ -1940,12 +2229,12 @@ async fn run_call(
     context: &Context,
     chat: &ChatId,
     shared: &Mutex<Shared>,
-    accepted: calling::Accepted,
+    media: Box<dyn calling::Media>,
     voice: VoiceLink,
     to_call: mpsc::UnboundedReceiver<ToCall>,
 ) -> (CallEnd, Option<String>) {
     let (events_tx, mut events) = mpsc::unbounded_channel::<VoiceEvent>();
-    let mut run = accepted.media.run(voice, to_call, events_tx);
+    let mut run = media.run(voice, to_call, events_tx);
     let mut confirming = Confirming::default();
     // The question in the chat, and the confirmation it is about.
     let mut asking: Option<(String, CallQuestion<'_>)> = None;
@@ -3062,19 +3351,14 @@ mod tests {
         CallId(id.into())
     }
 
-    fn candidate(line: &str) -> IceCandidate {
-        IceCandidate {
-            candidate: line.into(),
-            sdp_mid: Some("0".into()),
-            sdp_m_line_index: Some(0),
-        }
+    fn key(index: u8) -> CallKey {
+        CallKey { participant: "@owner:example.org:PHONE".into(), index, key: vec![index; 16] }
     }
 
     fn called(id: &str) -> Incoming {
         Incoming::Called {
             chat: chat(),
             call: call_id(id),
-            offer: "v=0 offer".into(),
             at: now(),
             expires: now() + SignedDuration::from_secs(60),
         }
@@ -3088,7 +3372,6 @@ mod tests {
                 routed(&called("c1"), asked),
                 Route::Call(CallOffer {
                     call: call_id("c1"),
-                    sdp: "v=0 offer".into(),
                     expires: now() + SignedDuration::from_secs(60),
                 }),
                 "{asked:?}: ringing is not an answer, and does not decline one"
@@ -3101,7 +3384,6 @@ mod tests {
         let old = Incoming::Called {
             chat: chat(),
             call: call_id("c1"),
-            offer: "v=0".into(),
             at: ago(13),
             expires: now() + SignedDuration::from_secs(1),
         };
@@ -3109,19 +3391,12 @@ mod tests {
     }
 
     #[test]
-    fn candidates_and_a_hang_up_are_acted_on_at_once() {
-        let heard = Incoming::CallCandidates {
-            chat: chat(),
-            call: call_id("c1"),
-            candidates: vec![candidate("candidate:1")],
-            at: now(),
-        };
+    fn keys_and_a_hang_up_are_acted_on_at_once() {
+        let heard =
+            Incoming::CallKeys { chat: chat(), call: call_id("c1"), keys: vec![key(1)], at: now() };
         assert_eq!(
             routed(&heard, Asked::Nothing),
-            Route::CallCandidates {
-                call: call_id("c1"),
-                candidates: vec![candidate("candidate:1")]
-            }
+            Route::CallKeys { call: call_id("c1"), keys: vec![key(1)] }
         );
         let ended = Incoming::CallEnded { chat: chat(), call: call_id("c1"), at: now() };
         let question = MessageRef("$q".into());
@@ -3131,17 +3406,17 @@ mod tests {
     }
 
     #[test]
-    fn candidates_are_buffered_while_a_call_waits_and_forwarded_once_it_runs() {
+    fn keys_are_buffered_while_a_call_waits_and_forwarded_once_it_runs() {
         let mut shared =
             Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
-        shared.call_candidates(&call_id("c1"), vec![candidate("early")]);
-        shared.call_candidates(&call_id("other"), vec![candidate("somebody else's")]);
+        shared.call_keys(&call_id("c1"), vec![key(1)]);
+        shared.call_keys(&call_id("other"), vec![key(7)]);
 
         let (heard, mut to_call) = shared.call_start(&call_id("c1")).expect("not ended");
-        assert_eq!(heard, vec![candidate("early")], "only this call's, and in order");
+        assert_eq!(heard, vec![key(1)], "only this call's, and in order");
 
-        shared.call_candidates(&call_id("c1"), vec![candidate("late")]);
-        assert_eq!(to_call.try_recv().unwrap(), ToCall::Candidates(vec![candidate("late")]));
+        shared.call_keys(&call_id("c1"), vec![key(2)]);
+        assert_eq!(to_call.try_recv().unwrap(), ToCall::Keys(vec![key(2)]));
     }
 
     #[test]

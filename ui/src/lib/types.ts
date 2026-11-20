@@ -793,6 +793,10 @@ export interface Delivery {
   /** Ask in that chat while the run works -- approvals for what deletes or
    *  sends, and a question only they can answer. Read only with `chat`. */
   ask: boolean
+  /** Call them on that chat link with the result: the assistant says it and
+   *  stays on the line for questions. Written there instead if they do not
+   *  pick up. Read only with `chat`. */
+  call?: boolean
   /** Email the result from this account to its own address. */
   email?: AccountId | null
 }

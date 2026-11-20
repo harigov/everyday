@@ -15,23 +15,26 @@
 //! - `verification`: the owner verifying the bot by comparing emoji, the bot's
 //!   half shown in Settings rather than in the chat.
 //! - `rooms`: finding, or making, the bot's private room with the owner.
+//! - `rtc`: the owner's calls (MatrixRTC): hearing their device join, and
+//!   joining after it.
 //! - `speaking`: messages, questions answered by reaction, and typing.
 //! - `rules` and `errors`: the decisions that need no network, so they
 //!   can be tested without a server.
 
-mod call;
 mod errors;
 mod hearing;
 mod identity;
 mod listen;
 mod rooms;
+mod rtc;
 mod rules;
 mod signin;
 mod speaking;
 mod verification;
 
 use crate::connector::{
-    CallId, ChatError, ChatId, Connector, HangUp, Incoming, MessageRef, Question, Report, Setup,
+    CallId, CallJoin, ChatError, ChatId, Connector, HangUp, Incoming, MessageRef, Question, Report,
+    Setup,
 };
 use async_trait::async_trait;
 use karmayoga_core::chat::ChatService;
@@ -68,7 +71,7 @@ pub struct MatrixConnector {
     /// The owner verifying the bot, and the bot them.
     verifying: Arc<Verifying>,
     /// The owner's calls.
-    calls: Arc<call::Calls>,
+    calls: Arc<rtc::Calls>,
 }
 
 impl MatrixConnector {
@@ -125,7 +128,7 @@ impl MatrixConnector {
             owner.clone(),
             Arc::clone(&setup.trust),
         ));
-        let calls = Arc::new(call::Calls::new(client.clone(), bot.clone(), owner.clone()));
+        let calls = Arc::new(rtc::Calls::new(client.clone(), bot.clone(), owner.clone()));
         Ok(Self {
             client,
             bot,
@@ -185,13 +188,12 @@ impl Connector for MatrixConnector {
         Some(Arc::new(Verifier(Arc::clone(&self.verifying))))
     }
 
-    async fn answer_call(
-        &self,
-        chat: &ChatId,
-        call: &CallId,
-        answer: &str,
-    ) -> Result<(), ChatError> {
-        self.calls.answer(chat, call, answer).await
+    async fn join_call(&self, chat: &ChatId, call: &CallId) -> Result<CallJoin, ChatError> {
+        self.calls.join(chat, call).await
+    }
+
+    async fn ring(&self, chat: &ChatId) -> Result<CallId, ChatError> {
+        self.calls.ring(chat).await
     }
 
     async fn end_call(&self, chat: &ChatId, call: &CallId, why: HangUp) -> Result<(), ChatError> {

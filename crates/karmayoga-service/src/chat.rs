@@ -143,6 +143,36 @@ pub trait ChatOutlet: Send + Sync + 'static {
         question: String,
         choices: Vec<String>,
     ) -> BoxFuture<'static, Option<String>>;
+
+    /// Call the owner, say `spoken` when they pick up, and stay on the line
+    /// for whatever they ask, in the run's own conversation. Answers as soon
+    /// as it is known whether they picked up, not when the call ends. When
+    /// they do not -- or there is no calling on this link, or another call
+    /// has the line -- `markdown` is posted instead, as [`ChatOutlet::post`]
+    /// would, and the answer says why. `Err` only when even that failed.
+    fn call(
+        &self,
+        from: FromRun,
+        markdown: String,
+        spoken: String,
+    ) -> BoxFuture<'static, Result<CallDelivered, String>> {
+        let _ = spoken;
+        let post = self.post(from, markdown);
+        Box::pin(async move {
+            post.await?;
+            Ok(CallDelivered::Messaged { why: "this chat link cannot make calls".into() })
+        })
+    }
+}
+
+/// How a result that was to be said on a call reached the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallDelivered {
+    /// They picked up and heard it; the call goes on without the run.
+    PickedUp,
+    /// It was posted as a message instead, for the reason given: they did
+    /// not pick up, or calling was not possible.
+    Messaged { why: String },
 }
 
 /// A running link's half of interactive verification: the owner comparing

@@ -102,6 +102,11 @@ pub enum VoiceInput {
     Muted(bool),
     /// What the person has on screen now, for the next turn.
     Screen(Option<OnScreen>),
+    /// Say this, in the assistant's voice, after whatever is already queued:
+    /// why a call the assistant made is being made. Not a turn -- it is in
+    /// the conversation already, or need not be -- so the person can talk
+    /// over it, and what they say is the first turn.
+    Say(String),
     /// End the session.
     Stop,
 }

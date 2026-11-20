@@ -151,27 +151,57 @@ impl Sent {
     }
 }
 
-/// One voice call, as the service names it: a Matrix `call_id`.
+/// One voice call, as the service names it. On Matrix: the owner's device's
+/// membership of the room's call (MatrixRTC).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CallId(pub String);
 
-/// One way of reaching the caller's device, as WebRTC writes it and as the
-/// caller's service carried it. Matrix carries these in `m.call.candidates`.
+/// One key of a call's end-to-end encrypted audio, as the participant it
+/// belongs to sent it over the chat service's own encryption. A call's audio
+/// is encrypted frame by frame with keys the media server never sees.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CallKey {
+    /// Whose frames it opens, as the media server names that participant:
+    /// on Matrix, `@user:server:DEVICE`.
+    pub participant: String,
+    /// Which of the participant's keys it is: each frame says which it was
+    /// encrypted with.
+    pub index: u8,
+    /// The key material as sent, before it is derived into a cipher key.
+    pub key: Vec<u8>,
+}
+
+impl std::fmt::Debug for CallKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallKey")
+            .field("participant", &self.participant)
+            .field("index", &self.index)
+            .field("key", &format_args!("<{} bytes>", self.key.len()))
+            .finish()
+    }
+}
+
+/// Where a call's audio is, once this side has joined it: a room on a
+/// LiveKit media server, which the owner's device sends to and receives from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IceCandidate {
-    /// The candidate line without its `a=`: `candidate:1 1 udp 2122260223
-    /// 100.70.65.114 50123 typ host ...`. Empty marks the end of the caller's
-    /// candidates, which WebRTC allows and nothing here needs.
-    pub candidate: String,
-    /// Which media section of the offer it is for, by its `a=mid`.
-    pub sdp_mid: Option<String>,
-    /// The same, by position.
-    pub sdp_m_line_index: Option<u32>,
+pub struct CallJoin {
+    /// The media server's WebSocket address (`wss://…`).
+    pub url: String,
+    /// The access token it was given for this side, naming this side's
+    /// participant and the room.
+    pub token: String,
+    /// The one participant whose audio is listened to, as the media server
+    /// names them: the owner's device that is calling. Anybody else in the
+    /// room is ignored.
+    pub caller: String,
+    /// This side's own key, which the caller has been sent: everything this
+    /// side says is encrypted with it.
+    pub own_key: CallKey,
 }
 
 /// Why this side is ending a call. A connector turns it into whatever its
-/// service says: on Matrix, a call never answered is rejected and one
-/// answered is hung up, with the reason that fits.
+/// service says: on Matrix, a call this side joined is left, and one it
+/// never joined needs nothing (MatrixRTC has no rejection FluffyChat reads).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HangUp {
     /// The conversation is over: the owner said goodbye, `!stop` was sent,
@@ -208,16 +238,16 @@ pub enum Incoming {
     /// They sent something this side could not read -- an encrypted message
     /// whose key never arrived. Worth saying so rather than staying silent.
     Unreadable { chat: ChatId, at: Timestamp },
-    /// They are calling. `offer` is their WebRTC session description (SDP),
-    /// and the call must be answered -- [`Connector::answer_call`] -- before
-    /// `expires`, or not at all. A connector delivers only a call that has
-    /// not expired yet, from the owner, in a chat nobody else is in, and only
-    /// a voice call: one that offers video is still answered, with audio.
-    Called { chat: ChatId, call: CallId, offer: String, at: Timestamp, expires: Timestamp },
-    /// More ways of reaching the caller's device, for a call delivered as
+    /// They are calling: their device has joined a call in the chat, which
+    /// this side joins -- [`Connector::join_call`] -- to answer, before
+    /// `expires` or not at all. A connector delivers only a call that has not
+    /// expired yet, from the owner, in a chat nobody else is in. A call that
+    /// asks for video is answered with voice.
+    Called { chat: ChatId, call: CallId, at: Timestamp, expires: Timestamp },
+    /// Keys of the caller's encrypted audio, for a call delivered as
     /// [`Incoming::Called`]. May arrive before that call is answered, and
-    /// keep arriving after.
-    CallCandidates { chat: ChatId, call: CallId, candidates: Vec<IceCandidate>, at: Timestamp },
+    /// again while it runs (a new key replaces none: frames name theirs).
+    CallKeys { chat: ChatId, call: CallId, keys: Vec<CallKey>, at: Timestamp },
     /// The owner hung up, declined their own call, or answered it somewhere
     /// else. Nothing more is to be sent for it.
     CallEnded { chat: ChatId, call: CallId, at: Timestamp },
@@ -232,7 +262,7 @@ impl Incoming {
             | Incoming::Chose { chat, .. }
             | Incoming::Unreadable { chat, .. }
             | Incoming::Called { chat, .. }
-            | Incoming::CallCandidates { chat, .. }
+            | Incoming::CallKeys { chat, .. }
             | Incoming::CallEnded { chat, .. } => chat,
         }
     }
@@ -245,7 +275,7 @@ impl Incoming {
             | Incoming::Chose { at, .. }
             | Incoming::Unreadable { at, .. }
             | Incoming::Called { at, .. }
-            | Incoming::CallCandidates { at, .. }
+            | Incoming::CallKeys { at, .. }
             | Incoming::CallEnded { at, .. } => *at,
         }
     }
@@ -337,18 +367,26 @@ pub trait Connector: Send + Sync + 'static {
         None
     }
 
-    /// Answer a call delivered as [`Incoming::Called`] with `answer`, this
-    /// side's session description (SDP). Every way of reaching this side is
-    /// in it already, so nothing is trickled after.
+    /// Join a call delivered as [`Incoming::Called`], to answer it: tell the
+    /// service this side is in it, send the caller this side's key, and say
+    /// where its audio is. Hanging up afterwards is [`Connector::end_call`].
     ///
     /// A service without calls never delivers one, so is never asked.
-    async fn answer_call(
-        &self,
-        chat: &ChatId,
-        call: &CallId,
-        answer: &str,
-    ) -> Result<(), ChatError> {
-        let _ = (chat, call, answer);
+    async fn join_call(&self, chat: &ChatId, call: &CallId) -> Result<CallJoin, ChatError> {
+        let _ = (chat, call);
+        Err(ChatError::Transient("This chat service has no calls.".into()))
+    }
+
+    /// Ring the owner in `chat`: this side joins a call there and the
+    /// owner's devices ring. When they pick up, their joining arrives through
+    /// [`Connector::listen`] as an ordinary [`Incoming::Called`], answered
+    /// with [`Connector::join_call`]. The ring is the returned call: ending it
+    /// with [`Connector::end_call`] stops the ringing and leaves, if nobody
+    /// picked up.
+    ///
+    /// A service without calls says so.
+    async fn ring(&self, chat: &ChatId) -> Result<CallId, ChatError> {
+        let _ = chat;
         Err(ChatError::Transient("This chat service has no calls.".into()))
     }
 

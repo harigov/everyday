@@ -794,7 +794,11 @@ async fn what_a_routine_said_on_the_way_is_not_its_result() {
     let outlet = FakeOutlet::answering(ConfirmAnswer::Confirm, None);
     svc.open_chat_outlet(link, outlet.clone());
     let routine = due_now(&svc, "Plan tomorrow.");
-    delivered_to(&svc, &routine, Delivery { chat: Some(link), ask: false, email: None });
+    delivered_to(
+        &svc,
+        &routine,
+        Delivery { chat: Some(link), ask: false, call: false, email: None },
+    );
 
     karmayoga_service::scheduler::tick(&svc).await;
     karmayoga_service::scheduler::settle(&svc).await;
@@ -1418,7 +1422,11 @@ async fn a_routine_that_asks_in_its_chat_puts_the_delete_to_its_person_and_does_
     let outlet = FakeOutlet::answering(ConfirmAnswer::Confirm, None);
     svc.open_chat_outlet(link, outlet.clone());
     let routine = due_now(&svc, "Tidy up.");
-    delivered_to(&svc, &routine, Delivery { chat: Some(link), ask: true, email: None });
+    delivered_to(
+        &svc,
+        &routine,
+        Delivery { chat: Some(link), ask: true, call: false, email: None },
+    );
 
     karmayoga_service::scheduler::tick(&svc).await;
     karmayoga_service::scheduler::settle(&svc).await;
@@ -1462,7 +1470,11 @@ async fn later_from_the_chat_parks_it_as_this_runs_proposal_and_the_message_says
     let outlet = FakeOutlet::answering(ConfirmAnswer::Later, None);
     svc.open_chat_outlet(link, outlet.clone());
     let routine = due_now(&svc, "Tidy up.");
-    delivered_to(&svc, &routine, Delivery { chat: Some(link), ask: true, email: None });
+    delivered_to(
+        &svc,
+        &routine,
+        Delivery { chat: Some(link), ask: true, call: false, email: None },
+    );
 
     karmayoga_service::scheduler::tick(&svc).await;
     karmayoga_service::scheduler::settle(&svc).await;
@@ -1498,7 +1510,11 @@ async fn a_routine_can_put_a_question_of_its_own_to_its_person() {
     let outlet = FakeOutlet::answering(ConfirmAnswer::Decline, Some("Thursday 14:00"));
     svc.open_chat_outlet(link, outlet.clone());
     let routine = due_now(&svc, "Book the dentist.");
-    delivered_to(&svc, &routine, Delivery { chat: Some(link), ask: true, email: None });
+    delivered_to(
+        &svc,
+        &routine,
+        Delivery { chat: Some(link), ask: true, call: false, email: None },
+    );
 
     karmayoga_service::scheduler::tick(&svc).await;
     karmayoga_service::scheduler::settle(&svc).await;
@@ -1536,7 +1552,11 @@ async fn a_routine_whose_chat_is_not_connected_asks_nobody_and_says_where_it_cou
     let link = a_chat_link(&svc);
     // No outlet: the link's relay is not running in this process.
     let routine = due_now(&svc, "Tidy up.");
-    delivered_to(&svc, &routine, Delivery { chat: Some(link), ask: true, email: None });
+    delivered_to(
+        &svc,
+        &routine,
+        Delivery { chat: Some(link), ask: true, call: false, email: None },
+    );
 
     // Not detached: with nobody to ask, there is nothing to wait for.
     karmayoga_service::scheduler::tick(&svc).await;
@@ -1566,7 +1586,11 @@ async fn an_emailed_result_goes_from_the_account_to_itself() {
     account.services.mail = true;
     vault.save_account(&account).unwrap();
     let routine = due_now(&svc, "Say what is due.");
-    delivered_to(&svc, &routine, Delivery { chat: None, ask: false, email: Some(account.id) });
+    delivered_to(
+        &svc,
+        &routine,
+        Delivery { chat: None, ask: false, call: false, email: Some(account.id) },
+    );
 
     karmayoga_service::scheduler::tick(&svc).await;
 

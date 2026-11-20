@@ -117,19 +117,22 @@
       assistant.mailAccounts[0],
   )
 
-  /** Send the result to a chat, or stop. Asking goes with it: there is
-   *  nowhere else to ask. */
+  /** Send the result to a chat, or stop. Asking and calling go with it:
+   *  there is nowhere else to do either. */
   function setChat(on: boolean) {
     if (!editing) return
-    const delivery = (editing.delivery ??= { ask: false })
+    const delivery = (editing.delivery ??= { ask: false, call: false })
     const first = assistant.chatLinks.find((v) => v.link.enabled) ?? assistant.chatLinks[0] ?? null
     delivery.chat = on ? (first?.link.id ?? null) : null
-    if (!on) delivery.ask = false
+    if (!on) {
+      delivery.ask = false
+      delivery.call = false
+    }
   }
 
   function setEmail(on: boolean) {
     if (!editing) return
-    const delivery = (editing.delivery ??= { ask: false })
+    const delivery = (editing.delivery ??= { ask: false, call: false })
     delivery.email = on ? (assistant.mailAccounts[0]?.id ?? null) : null
   }
 
@@ -659,6 +662,16 @@
                     </small>
                   </span>
                 </label>
+                <label class="toggle sub">
+                  <input type="checkbox" bind:checked={editing.delivery.call} />
+                  <span>
+                    <b>Call me with it</b>
+                    <small>
+                      Your phone rings, the assistant tells you, and you can ask it anything about
+                      it. If you don't pick up, it's sent as a message instead.
+                    </small>
+                  </span>
+                </label>
               {/if}
               <label class="toggle">
                 <input
@@ -749,7 +762,10 @@
               {#if routine.delivery?.chat || routine.delivery?.email}
                 <span class="dim">
                   · {[
-                    routine.delivery?.chat && (routine.delivery.ask ? 'chat, asks' : 'chat'),
+                    routine.delivery?.chat &&
+                      [routine.delivery.call ? 'call' : 'chat', routine.delivery.ask && 'asks']
+                        .filter(Boolean)
+                        .join(', '),
                     routine.delivery?.email && 'email',
                   ]
                     .filter(Boolean)

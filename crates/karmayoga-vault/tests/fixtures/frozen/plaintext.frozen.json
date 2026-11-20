@@ -797,7 +797,8 @@
     "record": {
       "createdAt": "2023-11-14T22:13:41Z",
       "delivery": {
-        "ask": false
+        "ask": false,
+        "call": false
       },
       "enabled": true,
       "graceMinutes": 60,

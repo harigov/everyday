@@ -1212,11 +1212,12 @@ fn outlet_for(service: &Arc<Service>, routine: &Routine) -> Option<Arc<dyn ChatO
     routine.delivery.chat.and_then(|link| service.chat_outlet(link))
 }
 
-/// Whether a run of `routine` may wait on somebody's answer -- and so must
-/// run beside the tick rather than in it, for the reason
-/// `RoutineRuntime::detach` gives in `runtime::routine`.
+/// Whether a run of `routine` may wait on somebody -- their answer to a
+/// question, or their picking up a call with its result -- and so must run
+/// beside the tick rather than in it, for the reason `RoutineRuntime::detach`
+/// gives in `runtime::routine`.
 fn may_wait(service: &Arc<Service>, routine: &Routine) -> bool {
-    routine.delivery.asks() && outlet_for(service, routine).is_some()
+    (routine.delivery.asks() || routine.delivery.calls()) && outlet_for(service, routine).is_some()
 }
 
 /// How a run of `routine` reaches its person: an asker over `outlet` when the

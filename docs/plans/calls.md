@@ -1,19 +1,42 @@
-# Calling the assistant
+# Calling
 
 Call the assistant's Matrix account from FluffyChat on a phone, as you would
 call a person, and talk to it. It answers, listens, does what it is asked and
 talks back, and what was said lands in the same thread as what is typed in that
-chat. Whatever runs the chat link answers: the desktop app, or `karmayoga
-serve` on a machine with no screen and no sound card.
+chat. It can also call you: a routine set to "Call me with it" rings the phone
+with the run's result, says it, and stays on the line for whatever you ask
+about it. If you don't pick up, the result is sent as a message instead.
+Whatever runs the chat link answers: the desktop app, or `karmayoga serve` on a
+machine with no screen and no sound card.
+
+**Changed Nov 19 2026: MatrixRTC, not legacy calls.** The first version
+(9d19ea0e) answered legacy one-to-one calls (`m.call.*`), on the belief that
+FluffyChat made them. FluffyChat 2.10.0 (October 2 2026) had already removed
+them for MatrixRTC, so its call button never appeared and nothing ever rang the
+bot. The test that passed used a fake phone. What follows is the MatrixRTC
+design; the wire format is what FluffyChat 2.11.5's own source sends.
 
 ## Decisions
 
-- **Legacy one-to-one Matrix VoIP (`m.call.*`, version 1).** It is what
-  FluffyChat speaks: WebRTC between the two devices, with the session
-  descriptions and candidates carried as room events. MatrixRTC (Element Call,
-  LiveKit) is what Element X speaks instead; it needs an SFU, a token service
-  and homeserver features Conduit 0.10 lacks, so it waits until somebody needs
-  it.
+- **MatrixRTC with LiveKit, as FluffyChat 2.10+ calls.** A call is a room on a
+  LiveKit media server (an SFU): every participant sends its audio there and
+  receives everybody else's from there. Joining is three things on Matrix:
+  - an `org.matrix.msc3401.call.member` state event (state key
+    `_@user:server_DEVICE_m.call`) saying this device is in the room's call,
+    emptied to `{}` on leaving;
+  - a LiveKit token from the homeserver's token service (`lk-jwt-service`),
+    which checks a Matrix OpenID token: `POST {service}/sfu/get`;
+  - this side's media key, sent to the caller's device as an Olm-encrypted
+    `io.element.call.encryption_keys` to-device message.
+- **Every frame is end-to-end encrypted**, always, as FluffyChat does
+  whatever the room's encryption: AES-128-GCM, keys per participant derived
+  with HKDF, the Opus TOC byte in the clear. The SFU never sees a key. Keys
+  are accepted only Olm-encrypted from the owner (FluffyChat also takes
+  plaintext ones; this side does not).
+- **The token service is found where FluffyChat finds it**: the caller's
+  membership names it (`foci_preferred`), and the bot joins the same one. For
+  a call the bot places, its homeserver's MSC4143 `rtc/transports`, then
+  `.well-known/matrix/client` `org.matrix.msc4143.rtc_foci`.
 - **A call is a voice session with a different transport.** `voice::session`
   already takes 16 kHz mono and gives back audio and events; the desktop's
   microphone and speakers were its first transport and a call is its second.
@@ -21,84 +44,99 @@ serve` on a machine with no screen and no sound card.
   thread is new.
 - **The phone cancels its own echo.** Every phone does on every call, so the
   call transport needs nothing like the desktop's `sonora`.
-- **Direct connections only: no STUN, no TURN.** The phone reaches the
-  homeserver over the tailnet, so it can reach the machine answering too. This
-  side offers every address of every interface that is up (the tailnet's
-  `100.x` among them) as host candidates, one UDP socket each (str0m accepts
-  a packet only at the exact address of a candidate), and that is all. A phone that is not
-  on the tailnet cannot reach Conduit either.
-- **Opus only, at 48 kHz, decoded straight to 16 kHz.** libopus decodes to
-  16 kHz itself; only the voice's own rate is resampled, to 48 kHz on the way
-  out. Every Matrix client offers Opus.
-- **A video call is answered with voice.** The video section of the offer is
-  declined.
-- **Only the owner, only in the private room**, exactly as for messages: an
-  invite from anyone else, or in a room anyone else is in or invited to, is
-  never heard. Invites that expired before the bot heard them are dropped, and
-  the backlog rule for messages (a fresh sign-in does not answer history)
-  holds for calls too.
+- **Two connections to the SFU, as every LiveKit client keeps**: the
+  *publisher*, which this side offers and sends on, and the *subscriber*,
+  which the SFU offers and sends the caller's audio on. LiveKit signalling
+  protocol 15, protobuf over a WebSocket, only the messages a voice call uses
+  declared by hand (`call::signal`). str0m for both connections, as before.
+- **No STUN, no TURN.** The SFU runs beside the homeserver on the tailnet and
+  advertises its tailnet address; this side offers every address of every
+  interface that is up as host candidates.
+- **Opus only, at 48 kHz, decoded straight to 16 kHz.** No RED (FluffyChat
+  turns it off when it encrypts). A video track is declined; this side asks
+  for voice (`"m.call.intent": "voice"`), so FluffyChat answering one of the
+  bot's calls would not start its camera.
+- **Only the owner, only in the private room**, exactly as for messages. State
+  events cannot be end-to-end encrypted, so a membership is trusted by its
+  sender and room; the media then listens only to the owner's device's
+  participant in the SFU room (whose identity the token service vouches for)
+  and opens only frames that the owner's own keys open.
 - **One call at a time, and never beside a typed turn.** A call is a work item
   on its chat's worker, like a message: it waits for a turn that is running,
   and a message typed during a call waits for the call. A second call while one
-  is running is refused at once, with a sentence in the chat.
+  is running is refused at once, with a sentence in the chat. A routine that
+  would call while the line is busy is written instead, and says so.
+- **A routine calls by ringing, then talking.** `Connector::ring` joins the
+  room's call and sends FluffyChat's ring. Picking up is the owner's device
+  joining, the same `Incoming::Called` as a call they placed. The voice
+  session opens in the run's own conversation, says the result
+  (`VoiceInput::Say`, no turn of its own), and then listens, so a follow-up
+  is an ordinary spoken turn in that conversation. Nobody picking up within
+  about 50 seconds stops the ring and posts the result. A run that failed is
+  written, not rung through.
 - **Approvals the voice cannot take are asked in the chat.** Spoken approval is
   as narrow as at the desktop (see `voice.md`). Anything else is asked as the
   usual question in the chat, with the reactions, and the session says "That
   needs your go-ahead in our chat." A tap or a typed yes answers it; if the
   voice or the turn settles it first, the question is withdrawn.
-- **Failure is said in the chat.** A call that cannot be taken (no speech model
-  or voice chosen, the vault locking) is rejected and the owner told why in a
-  sentence; a call that never connects is hung up and the owner told the phone
-  must reach this computer directly.
-- **No renegotiation yet.** `m.call.negotiate` (hold, or adding video) is
-  ignored.
+- **Failure is said in the chat**: a call that cannot be taken (no speech model
+  or voice chosen, the vault locking), a token service or SFU that cannot be
+  reached, a call whose media never connects.
+- **No delayed events.** Conduit 0.10 has none (MSC4140), and FluffyChat does
+  not use them, so a device that drops off without leaving keeps its
+  membership until it expires (4 hours). A ringing call from a membership more
+  than a minute old is never answered.
 
 ## Shape
 
 ```text
-  FluffyChat ──m.call.invite / candidates / hangup──▶ matrix::call ──Incoming::Called…──▶ relay
-       ▲                                                                                    │
-       │                                           Connector::answer_call / end_call ◀──────┤
-       │                                                                                    ▼
-       └──────────── UDP: ICE, DTLS-SRTP, Opus ───────────▶ call::media ◀── VoiceLink ── calling
-                                                                              ▲
-                                                     Service::voice_open_via ─┘
+  FluffyChat ──call.member state / Olm keys──▶ matrix::rtc ──Incoming::{Called, CallKeys, CallEnded}──▶ relay
+       │                                           ▲                                                  │
+       │                                           └── Connector::join_call / end_call ◀──────────────┤
+       │                                               (OpenID → /sfu/get, own membership, own key)   ▼
+       └──▶ LiveKit SFU ◀── WebSocket + 2 × UDP (ICE, DTLS-SRTP, encrypted Opus) ── call::media ◀── VoiceLink ── calling
+                                                                                                  ▲
+                                                                          Service::voice_open_via ┘
 ```
 
 | Piece | What it does |
 |---|---|
-| `connector.rs` | `Incoming::{Called, CallCandidates, CallEnded}`, `Connector::{answer_call, end_call}`, `HangUp`. Service-agnostic. |
-| `matrix/call.rs` | Hears the owner's `m.call.*` events and sends the bot's: answer (with the stream metadata matrix-dart-sdk reads), reject, hangup. |
-| `relay.rs`, `calling.rs` | Routes a call to its chat's worker, buffers candidates until it is answered, picks the conversation as for a message, opens the voice session, answers, carries approvals into the chat, and hangs up with the right reason. |
-| `call/` | The WebRTC peer (str0m, sans-IO, one task per call), Opus in and out, and the paced outbound queue that honours `Play`/`Pause`/`Resume`/`Clear` and reports `Played`. |
+| `connector.rs` | `Incoming::{Called, CallKeys, CallEnded}`, `Connector::{ring, join_call, end_call}`, `CallJoin`, `CallKey`, `HangUp`. Service-agnostic. |
+| `matrix/rtc.rs` | Hears the owner's call memberships and keys; rings (own membership, then FluffyChat's notification); joins (OpenID token, `/sfu/get`, its own membership, its key to the owner's device) and leaves. |
+| `relay.rs`, `calling.rs` | Routes a call to its chat's worker, buffers keys until the media runs, picks the conversation as for a message, opens the voice session, joins, carries approvals into the chat, and hangs up with the right reason. A routine's call rings, and on pickup opens by saying the result in the run's conversation. |
+| `call/` | The SFU client: WebSocket and protobuf (`sfu`, `signal`), the two str0m connections in one task (`media`), frame encryption (`frames`), Opus in and out, and the paced outbound queue that honours `Play`/`Pause`/`Resume`/`Clear` and reports `Played`. |
 | `Service::voice_open_via` | A voice session whose turns run as turns from the chat (`via`), spoken. |
-| `speech::resample` | Moved down from the desktop app so a server without devices converts rates the same way. |
 
 ## Setting it up
 
 - In Settings → Models, choose a speech model and a voice, as for voice mode.
-  Without them a call is rejected with a sentence saying so.
+  Without them a call is refused with a sentence saying so.
+- The homeserver needs a LiveKit SFU and `lk-jwt-service`, and has to say
+  where the token service is. On Hari's server (runtipi's Conduit app) they
+  are extra services in `user-config/migrated/matrix-conduit/docker-compose.yml`:
+  - LiveKit with signalling through Traefik at `/livekit/sfu` and media on
+    7891/tcp and 7892/udp at the tailnet address (`NODE_IP`);
+  - the token service at `/livekit/jwt`, with the tailnet name pointed at the
+    host so it can check OpenID tokens through Conduit's federation API —
+    hence `ALLOW_FEDERATION=true`;
+  - nginx answering `/.well-known/matrix/client` (with `rtc_foci`) and MSC4143
+    `rtc/transports` in Conduit's place. FluffyChat caches the `.well-known`
+    for three days but asks `rtc/transports` every time.
 - The phone must be on the tailnet while calling.
-- Conduit's `CONDUIT_TURN_URIS` on the home server points at `turn:localhost`
-  with a placeholder secret, and nothing listens there. Clients ask for TURN
-  servers and try that one; it does no harm, since the direct path is the one
-  that connects, but it is worth removing (or replacing with a real coturn)
-  so a failed call is not blamed on it.
+- In the room, the owner needs the power to send
+  `org.matrix.msc3401.call.member` for FluffyChat to show the call button. The
+  bot needs the same, plus `org.matrix.msc4075.rtc.notification`, to ring.
+- A routine calls when its delivery has "Call me with it" on (the routine
+  editor, or `call_me` when the assistant sets the routine up). Both need a
+  chat link.
 
 ## Testing
 
 - Unit tests beside each piece; the relay's call handling against a fake
-  connector and a fake call backend in `tests/relay.rs`.
-- The media over loopback against a second str0m peer playing the phone.
-- End to end, `tests/call_live.rs`: a throwaway Conduit, the real runner,
-  Parakeet and Phonon, and a str0m peer playing the phone over this
-  machine's own address. The phone asks a question in Phonon's voice;
-  Parakeet must hear the scripted answer in what comes back, and the thread
-  must hold both. `#[ignore]` and built only with `--features speech`:
-
-  ```text
-  KARMAYOGA_TEST_MATRIX_URL=http://127.0.0.1:16167 KARMAYOGA_TEST_SPEECH=1 \
-    cargo test -p karmayoga-chat --features speech --test call_live -- --ignored --nocapture
-  ```
-
-  Not yet tried against FluffyChat on a real phone.
+  connector and a fake call backend in `tests/relay.rs`; the SFU client
+  against a WebSocket server that only lets it in (`call::media`'s tests).
+- `make test-livekit` (`tests/sfu_live.rs`): two of this crate's clients in
+  one room on a throwaway LiveKit, hearing each other's tones through it,
+  encrypted; and a wrong key hearing nothing.
+- The frame key derivation against an independent HKDF (`call::frames`).
+- A call from FluffyChat on the iPhone to the real bot.

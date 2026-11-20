@@ -39,7 +39,7 @@ use crate::error::{CommandError, CommandResult, codes};
 use crate::speech::detect::DetectorMode;
 use crate::speech::live::{LiveControl, LiveEvent, LiveTranscription};
 use crate::speech::narrate::{Narrated, Narrator, Sentence, Synthesised};
-use crate::speech::text::SentenceSplitter;
+use crate::speech::text::{SentenceSplitter, sentences};
 use karmayoga_core::agent::onscreen::OnScreen;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -454,6 +454,13 @@ impl Session {
                 }
             }
             VoiceInput::Screen(screen) => self.screen = screen,
+            VoiceInput::Say(text) => {
+                if !self.stopping {
+                    for sentence in sentences(&text) {
+                        self.say(sentence);
+                    }
+                }
+            }
             // Handled by the loop, which must not leave it to us.
             VoiceInput::Stop => {}
         }
@@ -1723,6 +1730,17 @@ mod tests {
             .await;
         assert!(matches!(&rig.seen[at], VoiceOutput::Event(VoiceEvent::Ended { error: None })));
         assert!(rig.next().await.is_none(), "the output closes after Ended");
+    }
+
+    #[tokio::test]
+    async fn something_to_say_is_said_without_a_turn() {
+        let mut rig = Rig::start(Vec::new(), &[]).await;
+        rig.send(VoiceInput::Say(
+            "This is your **Morning brief**.\n\nThree things are due today.".into(),
+        ));
+        rig.play_out().await;
+        assert_eq!(rig.said(), ["This is your Morning brief.", "Three things are due today."]);
+        assert!(rig.record.prompts.lock().unwrap().is_empty(), "no turn was run for it");
     }
 
     #[tokio::test]
