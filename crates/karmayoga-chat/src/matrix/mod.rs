@@ -34,7 +34,7 @@ mod verification;
 
 use crate::connector::{
     CallId, CallJoin, ChatError, ChatId, Connector, HangUp, Incoming, MessageRef, Question, Report,
-    Setup,
+    Setup, Shown,
 };
 use async_trait::async_trait;
 use karmayoga_core::chat::ChatService;
@@ -174,6 +174,10 @@ impl Connector for MatrixConnector {
 
     async fn ask(&self, chat: &ChatId, question: &Question) -> Result<MessageRef, ChatError> {
         self.ask_impl(chat, question).await
+    }
+
+    async fn show(&self, chat: &ChatId, picture: &Shown) -> Result<MessageRef, ChatError> {
+        self.show_impl(chat, picture).await
     }
 
     async fn home(&self) -> Option<ChatId> {

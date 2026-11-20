@@ -13,9 +13,11 @@
 use super::MatrixConnector;
 use super::errors::classify;
 use super::rules::{self, MAX_MARKDOWN_BYTES};
-use crate::connector::{ChatError, ChatId, MessageRef, Question};
+use crate::connector::{ChatError, ChatId, MessageRef, Question, Shown};
 use matrix_sdk::Room;
 use matrix_sdk::RoomState;
+use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo};
+use matrix_sdk::ruma::UInt;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::message::{FormattedBody, RoomMessageEventContent};
@@ -120,6 +122,36 @@ impl MatrixConnector {
         let room = self.joined_room(chat)?;
         let event = self.send_markdown(&room, markdown).await?;
         Ok(rules::message_ref(&event))
+    }
+
+    /// Send a picture the assistant made, as an `m.image` with its size.
+    /// Uploaded encrypted when the room is, by the SDK. No caption: what it
+    /// shows is in the reply before it, and a caption would be the model's
+    /// words in a second place for [`html_of`]'s rules to cover.
+    pub(super) async fn show_impl(
+        &self,
+        chat: &ChatId,
+        picture: &Shown,
+    ) -> Result<MessageRef, ChatError> {
+        let room = self.joined_room(chat)?;
+        let mime: mime::Mime = picture.mime.parse().unwrap_or(mime::IMAGE_PNG);
+        let info = AttachmentInfo::Image(BaseImageInfo {
+            width: picture.width.map(UInt::from),
+            height: picture.height.map(UInt::from),
+            size: UInt::new(picture.bytes.len() as u64),
+            blurhash: None,
+            is_animated: Some(false),
+        });
+        let sent = room
+            .send_attachment(
+                picture.filename.clone(),
+                &mime,
+                picture.bytes.clone(),
+                AttachmentConfig::new().info(info),
+            )
+            .await
+            .map_err(|e| classify(e.client_api_error_kind(), false, "send a picture", &e))?;
+        Ok(rules::message_ref(&sent.event_id))
     }
 
     /// Send the question, remember it, and put each answer under it as a

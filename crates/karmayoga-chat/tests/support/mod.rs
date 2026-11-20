@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use jiff::Timestamp;
 use karmayoga_chat::connector::{
-    ChatError, ChatId, Choice, Connector, Incoming, MessageRef, Question,
+    ChatError, ChatId, Choice, Connector, Incoming, MessageRef, Question, Shown,
 };
 use karmayoga_chat::relay::{self, Timing};
 use karmayoga_core::chat::{ChatLink, ChatService, MatrixLink};
@@ -23,12 +23,14 @@ use tokio::task::JoinHandle;
 
 // ---- a connector that writes things down ------------------------------------
 
-/// One thing the relay asked the connector to do.
+/// One thing the relay asked the connector to do. A picture is written down
+/// as "name type width×height", not its bytes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Sent { chat: ChatId, text: String },
     Asked { chat: ChatId, question: Question, reference: MessageRef },
     Typing { chat: ChatId, on: bool },
+    Showed { chat: ChatId, shown: String },
 }
 
 /// A [`Connector`] that records everything it is asked to do, in order, and
@@ -219,6 +221,20 @@ impl Connector for FakeConnector {
         }
         self.record(Event::Sent { chat: chat.clone(), text: markdown.to_string() });
         Ok(self.next_reference("$message"))
+    }
+
+    async fn show(&self, chat: &ChatId, picture: &Shown) -> Result<MessageRef, ChatError> {
+        assert!(!picture.bytes.is_empty(), "a picture with nothing in it");
+        let side = |n: Option<u32>| n.map_or("?".to_string(), |n| n.to_string());
+        let shown = format!(
+            "{} {} {}\u{d7}{}",
+            picture.filename,
+            picture.mime,
+            side(picture.width),
+            side(picture.height)
+        );
+        self.record(Event::Showed { chat: chat.clone(), shown });
+        Ok(self.next_reference("$picture"))
     }
 
     async fn ask(&self, chat: &ChatId, question: &Question) -> Result<MessageRef, ChatError> {

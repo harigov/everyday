@@ -73,6 +73,46 @@ async fn a_message_gets_one_reply_while_the_chat_shows_typing() {
     );
 }
 
+/// A drawing the assistant makes while answering is sent as a picture the
+/// moment it is made, ahead of the reply that says what it is.
+#[tokio::test]
+async fn a_drawing_goes_to_the_chat_as_soon_as_it_is_made() {
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60">
+        <rect width="120" height="60" fill="#22c55e"/></svg>"##;
+    let arguments = serde_json::json!({
+        "format": "svg",
+        "source": svg,
+        "title": "Green box",
+        "description": "A green box.",
+    })
+    .to_string();
+    let mut h = Harness::start(
+        |_| support::calls("draw_illustration", arguments, "Here is a green box."),
+        Timing::default(),
+    )
+    .await;
+
+    h.say("draw me a green box").await;
+    h.connector
+        .until("the picture", |events| events.iter().any(|e| matches!(e, Event::Showed { .. })))
+        .await;
+    h.finish().await;
+
+    let after_typing: Vec<Event> =
+        h.connector.events().into_iter().filter(|e| !matches!(e, Event::Typing { .. })).collect();
+    let [Event::Showed { chat, shown }, Event::Sent { text, .. }] = after_typing.as_slice() else {
+        panic!("the picture, then the reply: {after_typing:?}");
+    };
+    assert_eq!(chat, &room());
+    // Named for its title -- with a " (2)" when an earlier run left one of
+    // that name in the test folder, which every test shares.
+    assert!(
+        shown.starts_with("Green box") && shown.ends_with(".png image/png 120\u{d7}60"),
+        "{shown}"
+    );
+    assert_eq!(text, "Here is a green box.");
+}
+
 #[tokio::test]
 async fn a_second_message_continues_the_same_conversation() {
     let mut h = Harness::start(|_| says("Noted."), Timing::default()).await;
@@ -609,6 +649,44 @@ async fn outlet(h: &Harness) -> Arc<dyn karmayoga_service::chat::ChatOutlet> {
         }
     })
     .await
+}
+
+/// A run's pictures go to the owner's room as pictures; one trashed since the
+/// run is skipped rather than failing the rest.
+#[tokio::test]
+async fn a_routines_pictures_go_to_the_owners_room() {
+    let mut h = Harness::start(|_| says("Unused."), Timing::default()).await;
+    h.connector.set_home(room());
+    let (_, from) = routine_run(&h, "Morning brief");
+    // A blue picture three pixels by two.
+    let png: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 3, 0, 0, 0, 2, 8, 2,
+        0, 0, 0, 18, 22, 241, 77, 0, 0, 0, 15, 73, 68, 65, 84, 120, 156, 99, 96, 96, 248, 15, 67,
+        48, 22, 0, 53, 222, 5, 251, 226, 150, 96, 158, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
+        130,
+    ];
+    let options = karmayoga_core::ImportOptions::new(karmayoga_core::FileOrigin::Jobs);
+    let kept = h.vault.import_bytes(png, "Week.png", &options).unwrap();
+    let gone = h.vault.import_bytes(png, "Gone.png", &options).unwrap();
+    h.vault.trash_files(&[gone.id]).unwrap();
+
+    let sent = outlet(&h).await.show(from, vec![gone.id, kept.id]).await;
+    assert_eq!(sent, Ok(1));
+    let shown: Vec<String> = h
+        .connector
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::Showed { chat, shown } if chat == room() => Some(shown),
+            _ => None,
+        })
+        .collect();
+    let [shown] = shown.as_slice() else { panic!("one picture: {shown:?}") };
+    assert!(
+        shown.starts_with(&kept.name.replace(".png", "")) && shown.contains("image/png"),
+        "{shown}"
+    );
+    h.finish().await;
 }
 
 #[tokio::test]

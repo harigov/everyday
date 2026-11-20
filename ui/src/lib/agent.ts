@@ -69,6 +69,10 @@ export interface ToolCard {
   /** The thread a mail write named itself, once it has finished. See
    *  [[MailLink]]. */
   mailLink: MailLink | null
+  /** The pictures the call made and kept in Files, once it has finished:
+   *  `generate_image` and `draw_illustration` only. Drawn with the reply
+   *  rather than on the card, which a long turn folds away. */
+  files: FileId[]
 }
 
 /**
@@ -201,6 +205,7 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
           confirmKind: null,
           canPark: false,
           mailLink: null,
+          files: [],
         })
       break
     }
@@ -218,6 +223,7 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
         confirmKind: event.kind,
         canPark: event.canPark,
         mailLink: null,
+        files: [],
       })
       break
 
@@ -232,6 +238,7 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
         card.state = event.ok ? 'done' : 'failed'
         card.summary = event.summary
         card.mailLink = event.mailLink ?? null
+        card.files = event.ok ? (event.files ?? []) : []
       }
       // A result goes back to the model, which now has to read it. Unless
       // something else is still running or asking, that is thinking again --
@@ -285,6 +292,11 @@ export function settle(turn: Turn, now = Date.now()): void {
   if (turn.startedAt !== null && turn.endedAt === null) turn.endedAt = now
 }
 
+/** The pictures a turn's calls made, in the order they were made. */
+export function madePictures(turn: Turn): FileId[] {
+  return turn.cards.flatMap((c) => (c.state === 'done' ? c.files : []))
+}
+
 /**
  * Rebuild the panel's turns from a stored thread.
  *
@@ -319,6 +331,7 @@ export function replay(messages: AgentMessage[]): Turn[] {
           confirmKind: null,
           canPark: false,
           mailLink: null,
+          files: [],
         })),
       })
       continue
@@ -331,6 +344,7 @@ export function replay(messages: AgentMessage[]): Turn[] {
         card.state = m.failed ? 'failed' : 'done'
         card.summary = m.content.slice(0, 200)
         card.mailLink = m.mailLink ?? null
+        card.files = m.failed ? [] : (m.files ?? [])
       }
     }
     if (m.role === 'system') {
@@ -542,6 +556,16 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
       return {
         text: running ? 'Closing the browser' : done ? 'Closed the browser' : 'Close the browser',
         detail: null,
+      }
+    case 'generate_image':
+      return {
+        text: running ? 'Making a picture' : done ? 'Made a picture' : 'Make a picture',
+        detail: arg(args, 'title'),
+      }
+    case 'draw_illustration':
+      return {
+        text: running ? 'Drawing' : done ? 'Drew' : 'Draw',
+        detail: arg(args, 'title') ?? 'an illustration',
       }
     case 'read_skill':
       return {

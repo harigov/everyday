@@ -1012,6 +1012,79 @@ async fn a_claude_model_is_told_where_to_cache() {
     assert!(!requests[0].contains("cache_control"), "not for a model that caches by itself");
 }
 
+/// A drawing the assistant makes in a chat turn is kept in Files, under the
+/// name and caption it gave, and its id rides on the call's finished event --
+/// which the relay sends the picture from -- and on the stored result, which
+/// a reopened thread draws it from.
+#[tokio::test]
+async fn a_drawing_made_in_a_turn_is_kept_in_files_and_named_on_its_call() {
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+        <rect width="200" height="100" fill="#3b82f6"/></svg>"##;
+    let model = fake_model(calls(
+        "draw_illustration",
+        json!({
+            "format": "svg",
+            "source": svg,
+            "title": "Two boxes",
+            "description": "A blue box.",
+            "width": 400,
+        })
+        .to_string(),
+        "Here is the plan.",
+    ))
+    .await;
+    let (svc, _dir) = assistant_service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
+    let sink: Sink = {
+        let events = events.clone();
+        Arc::new(move |event| events.lock().unwrap().push(event))
+    };
+    let conversation = ConversationId::new();
+    if let Err(e) =
+        svc.chat_turn(via(), conversation, "Draw me the plan.".into(), Vec::new(), sink).await
+    {
+        panic!("the turn failed: {e:?}");
+    }
+
+    let finished: Vec<_> = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolFinished { name, ok, files, summary, .. }
+                if name == "draw_illustration" =>
+            {
+                Some((*ok, files.clone(), summary.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    let [(true, files, summary)] = finished.as_slice() else {
+        panic!("one successful drawing: {finished:?}");
+    };
+    let [file] = files.as_slice() else { panic!("one picture: {files:?}") };
+
+    // Named for its title -- with a " (2)" when an earlier run left one of
+    // that name in the test folder, which every test shares.
+    let entry = vault.file(*file).unwrap();
+    assert!(entry.name.starts_with("Two boxes") && entry.name.ends_with(".png"), "{}", entry.name);
+    assert_eq!(summary, &entry.name);
+    assert_eq!(entry.caption, "A blue box.");
+    assert_eq!(entry.origin, karmayoga_core::FileOrigin::Assistant);
+    assert_eq!(entry.mime, "image/png");
+
+    let stored = vault.messages(conversation).unwrap();
+    let result = stored
+        .iter()
+        .find(|m| m.role == karmayoga_core::agent::Role::Tool)
+        .expect("the call's result is kept");
+    assert_eq!(result.files, vec![*file]);
+    // Read when it was kept, not by a later pass: the chat sends it with
+    // its size straight away.
+    assert_eq!((entry.media.width, entry.media.height), (Some(400), Some(200)));
+}
+
 /// Ask the assistant, through a chat, to delete a task it has been given, and
 /// answer the question it asks with `answer`. What the turn said, what it
 /// asked, and whether the task survived.

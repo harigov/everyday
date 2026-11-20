@@ -116,7 +116,9 @@ import type {
   HealthSource,
   HealthSourceId,
   Heartbeat,
+  IllustrationMarkup,
   ImageResult,
+  ImageShape,
   ImportFormat,
   ImportPreview,
   ImportProgress,
@@ -580,7 +582,7 @@ export interface Commands {
   flush: { args: Record<string, never>; result: void }
   forgetMissingFiles: { args: { ids: string[] }; result: number }
   forgetScreenItem: { args: { key: string }; result: number }
-  generateImage: { args: { prompt: string }; result: GeneratedImage }
+  generateImage: { args: { prompt: string; shape?: ImageShape | null }; result: GeneratedImage }
   getAccount: { args: { id: AccountId }; result: AccountView }
   getEntry: { args: { id: EntryId }; result: Entry }
   getEvent: { args: { id: EventId }; result: CalendarEvent }
@@ -910,6 +912,15 @@ export interface Commands {
   removeFromAlbum: { args: { id: string; files: string[] }; result: void }
   renameFile: { args: { id: string; name: string }; result: FileEntry }
   renameFolder: { args: { path: string; name: string }; result: string }
+  renderIllustration: {
+    args: {
+      markup: IllustrationMarkup
+      source: string
+      width?: number | null
+      height?: number | null
+    }
+    result: GeneratedImage
+  }
   renderTemplate: {
     args: { template: Template; date?: string | null; journalId?: JournalId | null }
     result: RenderedTemplate
@@ -1523,6 +1534,7 @@ export const COMMAND_NAMES = {
   removeFromAlbum: 'remove_from_album',
   renameFile: 'rename_file',
   renameFolder: 'rename_folder',
+  renderIllustration: 'render_illustration',
   renderTemplate: 'render_template',
   rescanFiles: 'rescan_files',
   respondToInvite: 'respond_to_invite',
@@ -2069,6 +2081,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'remove_from_album',
   'rename_file',
   'rename_folder',
+  'render_illustration',
   'render_template',
   'rescan_files',
   'respond_to_invite',

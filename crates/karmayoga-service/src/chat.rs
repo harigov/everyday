@@ -54,7 +54,7 @@ use crate::supervisor::{TaskFuture, TaskState};
 use futures::future::BoxFuture;
 use jiff::Timestamp;
 use karmayoga_core::chat::{ChatLink, Via};
-use karmayoga_core::{ChatLinkId, ConversationId, Vault};
+use karmayoga_core::{ChatLinkId, ConversationId, FileId, Vault};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -162,6 +162,19 @@ pub trait ChatOutlet: Send + Sync + 'static {
             post.await?;
             Ok(CallDelivered::Messaged { why: "this chat link cannot make calls".into() })
         })
+    }
+
+    /// Send the owner pictures a run made, kept in Files, as pictures: after
+    /// its result has been posted or said. Answers how many went; `Err` only
+    /// when none could be sent at all, in words for the run log. A picture
+    /// trashed since the run is skipped.
+    fn show(
+        &self,
+        from: FromRun,
+        pictures: Vec<FileId>,
+    ) -> BoxFuture<'static, Result<usize, String>> {
+        let _ = (from, pictures);
+        Box::pin(async { Err("this chat link cannot send pictures".to_string()) })
     }
 }
 

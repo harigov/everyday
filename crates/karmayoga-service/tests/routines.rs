@@ -1325,6 +1325,7 @@ async fn a_dream_with_nothing_added_can_be_switched_off_from_the_editor() {
 /// it is asked, and answers as it is told to.
 struct FakeOutlet {
     posts: Mutex<Vec<(FromRun, String)>>,
+    shown: Mutex<Vec<karmayoga_core::FileId>>,
     confirms: Mutex<Vec<(String, String, bool)>>,
     asks: Mutex<Vec<(String, Vec<String>)>>,
     confirm_with: ConfirmAnswer,
@@ -1335,6 +1336,7 @@ impl FakeOutlet {
     fn answering(confirm_with: ConfirmAnswer, say: Option<&str>) -> Arc<Self> {
         Arc::new(Self {
             posts: Mutex::default(),
+            shown: Mutex::default(),
             confirms: Mutex::default(),
             asks: Mutex::default(),
             confirm_with,
@@ -1370,6 +1372,16 @@ impl ChatOutlet for FakeOutlet {
         self.asks.lock().unwrap().push((question, choices));
         let said = self.say.clone();
         Box::pin(async move { said })
+    }
+
+    fn show(
+        &self,
+        _from: FromRun,
+        pictures: Vec<karmayoga_core::FileId>,
+    ) -> BoxFuture<'static, Result<usize, String>> {
+        let n = pictures.len();
+        self.shown.lock().unwrap().extend(pictures);
+        Box::pin(async move { Ok(n) })
     }
 }
 
@@ -1610,6 +1622,75 @@ async fn an_emailed_result_goes_from_the_account_to_itself() {
     assert_eq!(
         run.delivered,
         vec![Delivered { to: DeliveredTo::Email, ok: true, detail: "me@example.com".into() }]
+    );
+}
+
+/// What a run drew goes with its result: to the chat after the message, and
+/// into the email as an attachment -- the same file both ways, kept in Files
+/// under the routine's own folder.
+#[tokio::test]
+async fn a_runs_pictures_go_with_its_result_to_the_chat_and_the_email() {
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40">
+        <rect width="80" height="40" fill="#f59e0b"/></svg>"##;
+    let model = fake_model(calls(
+        "draw_illustration",
+        serde_json::json!({ "format": "svg", "source": svg, "title": "Week chart" }).to_string(),
+        "Here is your week.",
+    ))
+    .await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let mut account = karmayoga_core::account::Account::new(
+        karmayoga_core::account::Provider::Custom,
+        "me@example.com",
+    );
+    account.services.mail = true;
+    vault.save_account(&account).unwrap();
+    let link = a_chat_link(&svc);
+    let outlet = FakeOutlet::answering(ConfirmAnswer::Decline, None);
+    svc.open_chat_outlet(link, outlet.clone());
+    let routine = due_now(&svc, "Draw my week.");
+    delivered_to(
+        &svc,
+        &routine,
+        Delivery { chat: Some(link), ask: false, call: false, email: Some(account.id) },
+    );
+
+    karmayoga_service::scheduler::tick(&svc).await;
+    karmayoga_service::scheduler::settle(&svc).await;
+
+    let run = &vault.runs(&RunQuery::for_routine(routine.id)).unwrap()[0];
+    assert_eq!(run.outcome, Outcome::Done);
+    let shown = outlet.shown.lock().unwrap().clone();
+    let [picture] = shown.as_slice() else { panic!("one picture to the chat: {shown:?}") };
+    let file = vault.file(*picture).unwrap();
+    assert!(file.name.starts_with("Week chart"), "{}", file.name);
+    assert_eq!(
+        file.origin,
+        karmayoga_core::FileOrigin::Jobs,
+        "a run keeps what it makes as a job's"
+    );
+    assert_eq!(outlet.posts.lock().unwrap().len(), 1, "the message, then the picture");
+
+    let draft = &vault.drafts(account.id).unwrap()[0];
+    assert_eq!(draft.attachments.len(), 1);
+    assert_eq!(draft.attachments[0].filename, file.name);
+    assert_eq!(draft.attachments[0].mime_type, "image/png");
+    assert_eq!(
+        vault.blob(draft.attachments[0].blob).unwrap(),
+        vault.read_file_range(file.id, 0, file.size).unwrap(),
+        "the picture itself"
+    );
+    assert_eq!(
+        run.delivered,
+        vec![
+            Delivered { to: DeliveredTo::Chat, ok: true, detail: "Matrix, with a picture".into() },
+            Delivered {
+                to: DeliveredTo::Email,
+                ok: true,
+                detail: "me@example.com, with a picture".into()
+            },
+        ]
     );
 }
 

@@ -890,6 +890,7 @@ mod tests {
                     ok: false,
                     summary: String::new(),
                     mail_link: None,
+                    files: Vec::new(),
                 },
             },
             VoiceEvent::Agent { event: AgentEvent::Finished { message_id: "m".into() } },

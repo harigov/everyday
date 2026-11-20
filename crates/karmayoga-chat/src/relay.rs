@@ -66,13 +66,13 @@ use crate::calling::{
 };
 use crate::connector::{
     CallId, CallKey, ChatId, Choice, Connector, Document, HangUp, Incoming, MessageRef, Picture,
-    Question, Sent,
+    Question, Sent, Shown,
 };
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use jiff::{SignedDuration, Timestamp};
 use karmayoga_core::chat::{ChatLink, Via};
-use karmayoga_core::{ChatLinkId, Conversation, ConversationId, ConversationQuery, Vault};
+use karmayoga_core::{ChatLinkId, Conversation, ConversationId, ConversationQuery, FileId, Vault};
 use karmayoga_service::agent::{AgentEvent, ConfirmAnswer, Pending, Sink, Turned};
 use karmayoga_service::chat::{CallDelivered, ChatOutlet, FromRun, escape_markdown};
 use karmayoga_service::error::CommandResult;
@@ -309,6 +309,11 @@ pub(crate) enum RoutineJob {
         spoken: String,
         delivered: oneshot::Sender<Result<CallDelivered, String>>,
     },
+    /// Send the pictures a run made, after its result. Answers how many went.
+    Show {
+        pictures: Vec<FileId>,
+        done: oneshot::Sender<Result<usize, String>>,
+    },
 }
 
 /// [`ChatOutlet`] over a running relay: finds the owner's private chat, and
@@ -393,6 +398,19 @@ impl ChatOutlet for RelayOutlet {
             done.await.map_err(|_| "the chat link stopped before it called".to_string())?
         })
     }
+
+    fn show(
+        &self,
+        _from: FromRun,
+        pictures: Vec<FileId>,
+    ) -> BoxFuture<'static, Result<usize, String>> {
+        let (connector, outbound) = (self.connector.clone(), self.outbound.clone());
+        Box::pin(async move {
+            let (done, shown) = oneshot::channel();
+            Self::queue(connector, outbound, RoutineJob::Show { pictures, done }).await?;
+            shown.await.map_err(|_| "the chat link stopped before they were sent".to_string())?
+        })
+    }
 }
 
 /// Resolve once `stop` has been flipped, and never otherwise.
@@ -446,6 +464,29 @@ impl Context {
         if let Err(e) = self.connector.send(chat, markdown).await {
             tracing::warn!(chat = %chat.0, error = %e, "could not send a message to the chat");
         }
+    }
+
+    /// Send a picture kept in Files, as a picture: `Ok(false)` for one that
+    /// is no longer a picture in Files, `Err` for one that could not be read
+    /// or sent, logged here. The picture is in Files whether or not it
+    /// arrives, so a chat turn carries on as it does past [`Self::tell`].
+    async fn show(&self, chat: &ChatId, file: FileId) -> Result<bool, String> {
+        show_picture(&self.vault, &self.connector, chat, file).await
+    }
+
+    /// A task that sends the pictures it is handed to `chat`, one after
+    /// another in the order they came, so that whoever hands them over -- a
+    /// turn's event loop, a call's -- never waits on an upload. Ends once the
+    /// sender is dropped and the last has gone.
+    fn showing(&self, chat: &ChatId) -> (mpsc::UnboundedSender<FileId>, Showing) {
+        let (to_show, mut queued) = mpsc::unbounded_channel::<FileId>();
+        let (vault, connector, chat) = (self.vault.clone(), self.connector.clone(), chat.clone());
+        let task = tokio::spawn(async move {
+            while let Some(file) = queued.recv().await {
+                let _ = show_picture(&vault, &connector, &chat, file).await;
+            }
+        });
+        (to_show, task)
     }
 
     /// Show, or stop showing, that the bot is typing. Best effort, like
@@ -1546,6 +1587,20 @@ async fn for_routine(
         RoutineJob::Call { from, markdown, spoken, delivered } => {
             call_owner(context, chat, shared, memory, from, markdown, spoken, delivered).await;
         }
+        RoutineJob::Show { pictures, done } => {
+            let (mut sent, mut why) = (0, None);
+            for file in pictures {
+                match context.show(chat, file).await {
+                    Ok(true) => sent += 1,
+                    Ok(false) => {}
+                    Err(e) => why = Some(e),
+                }
+            }
+            let _ = done.send(match why {
+                Some(why) if sent == 0 => Err(why),
+                _ => Ok(sent),
+            });
+        }
     }
 }
 
@@ -1599,6 +1654,9 @@ async fn converse(
     context.typing(chat, true).await;
 
     let mut told = String::new();
+    // What the assistant makes goes out as it is made, ahead of the words
+    // about it, by a task of its own: the turn is not held up by an upload.
+    let (to_show, showing) = context.showing(chat);
     // Pictures are shown to the model, and every one is also kept as a file;
     // anything else is only kept, and the assistant told. The service takes
     // the two apart and does not care what order they came in.
@@ -1621,7 +1679,7 @@ async fn converse(
         tokio::select! {
             biased;
             Some(event) = events.recv() => {
-                on_event(context, chat, shared, conversation, &mut told, event).await;
+                on_event(context, chat, shared, conversation, &mut told, &to_show, event).await;
             }
             result = &mut turn => break result,
         }
@@ -1632,8 +1690,20 @@ async fn converse(
         match event {
             AgentEvent::Delta { text } => told.push_str(&text),
             AgentEvent::Retrying { text } => told = text,
+            AgentEvent::ToolFinished { ok: true, files, .. } => {
+                for file in files {
+                    let _ = to_show.send(file);
+                }
+            }
             _ => {}
         }
+    }
+    // The pictures before the reply that says what they are.
+    drop(to_show);
+    let mut showing = showing;
+    if tokio::time::timeout(SHOW_FOR, &mut showing).await.is_err() {
+        showing.abort();
+        tracing::warn!(chat = %chat.0, "a turn's pictures did not all go before its reply");
     }
 
     let owner_said_stopped =
@@ -1657,10 +1727,21 @@ async fn on_event(
     shared: &Mutex<Shared>,
     conversation: ConversationId,
     told: &mut String,
+    to_show: &mpsc::UnboundedSender<FileId>,
     event: AgentEvent,
 ) {
     match event {
         AgentEvent::Delta { text } => told.push_str(&text),
+        // A picture the assistant made goes out the moment it is made, as the
+        // panel draws it: ahead of the words about it, which come when the
+        // turn ends -- and a picture a local model took minutes over is not
+        // held back for the rest of the turn. Handed to `Context::showing`'s
+        // task, so the turn's events are not held up by the upload.
+        AgentEvent::ToolFinished { ok: true, files, .. } => {
+            for file in files {
+                let _ = to_show.send(file);
+            }
+        }
         // A step asked for again: what it had begun to say is said again.
         AgentEvent::Retrying { text } => *told = text,
         AgentEvent::Started { .. } => {
@@ -2252,10 +2333,15 @@ async fn run_call(
     // in order, since the call's audio is paced by this loop and must never
     // wait on the chat server.
     let mut transcript = Transcript::default();
-    let (writes, writing) = mpsc::unbounded_channel::<String>();
-    let writer = tokio::spawn(write_down(context.connector.clone(), chat.clone(), writing));
+    let (writes, writing) = mpsc::unbounded_channel::<Written>();
+    let writer = tokio::spawn(write_down(
+        context.vault.clone(),
+        context.connector.clone(),
+        chat.clone(),
+        writing,
+    ));
     if let Some(first) = first_written {
-        let _ = writes.send(first);
+        let _ = writes.send(Written::Line(first));
     }
     // The question in the chat, and the confirmation it is about.
     let mut asking: Option<(String, CallQuestion<'_>)> = None;
@@ -2267,8 +2353,8 @@ async fn run_call(
             biased;
             Some(event) = events.recv() => {
                 note_session_error(&event, &mut session_error);
-                for line in transcript.on_event(&event) {
-                    let _ = writes.send(line);
+                for written in written_of(&mut transcript, &event) {
+                    let _ = writes.send(written);
                 }
                 let step = confirming.on_event(&event);
                 if let Some(withdrawn) = step.withdraw {
@@ -2300,12 +2386,12 @@ async fn run_call(
     // ending is in the channel still.
     while let Ok(event) = events.try_recv() {
         note_session_error(&event, &mut session_error);
-        for line in transcript.on_event(&event) {
-            let _ = writes.send(line);
+        for written in written_of(&mut transcript, &event) {
+            let _ = writes.send(written);
         }
     }
     for line in transcript.finish() {
-        let _ = writes.send(line);
+        let _ = writes.send(Written::Line(line));
     }
     // The call is over, and so is any question about it.
     withdraw(context, shared, asking.take(), false);
@@ -2316,6 +2402,58 @@ async fn run_call(
 
 /// What is still being written into the chat of a call that has ended.
 type Writing = tokio::task::JoinHandle<()>;
+
+/// Pictures still on their way to a chat -- see [`Context::showing`].
+type Showing = tokio::task::JoinHandle<()>;
+
+/// How long a turn's reply waits for its pictures to have gone first: an
+/// upload of a few megabytes, or a few of them, to a server that answers.
+const SHOW_FOR: Duration = Duration::from_secs(60);
+
+/// Send a picture kept in Files to `chat`, as a picture: `Ok(false)` for one
+/// that is no longer a picture in Files, `Err` for one that could not be read
+/// or sent, logged here. The picture is in Files whether or not it arrives.
+async fn show_picture(
+    vault: &Arc<Vault>,
+    connector: &Arc<dyn Connector>,
+    chat: &ChatId,
+    file: FileId,
+) -> Result<bool, String> {
+    let vault = vault.clone();
+    let read = karmayoga_service::blocking(move || {
+        let entry = vault.file(file)?;
+        if entry.kind != karmayoga_core::files::FileKind::Image
+            || entry.status.is_trashed()
+            || entry.size > crate::connector::MAX_FILE_BYTES
+        {
+            return Ok(None);
+        }
+        let bytes = vault.read_file_range(file, 0, entry.size)?;
+        Ok(Some(Shown {
+            filename: entry.name,
+            mime: entry.mime,
+            bytes,
+            width: entry.media.width,
+            height: entry.media.height,
+        }))
+    })
+    .await;
+    let picture = match read {
+        Ok(Some(picture)) => picture,
+        Ok(None) => return Ok(false),
+        Err(e) => {
+            tracing::warn!(%file, error = %e.message, "could not read a picture to send");
+            return Err(format!("a picture could not be read: {}", e.message));
+        }
+    };
+    match connector.show(chat, &picture).await {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            tracing::warn!(chat = %chat.0, error = %e, "could not send a picture to the chat");
+            Err(e.to_string())
+        }
+    }
+}
 
 /// How long the end of a call waits for what was said on it to be written
 /// into the chat.
@@ -2331,17 +2469,42 @@ async fn finish_writing(chat: &ChatId, mut writing: Writing) {
     }
 }
 
-/// Send each of `lines` to `chat`, in order, until there are no more. A
+/// One thing a call puts into its chat: a line of what was said, or a
+/// picture the assistant made while it was said.
+enum Written {
+    Line(String),
+    Picture(FileId),
+}
+
+/// What `event` puts into the chat: the transcript's lines, then any picture
+/// a tool that finished just made.
+fn written_of(transcript: &mut Transcript, event: &VoiceEvent) -> Vec<Written> {
+    let mut out: Vec<Written> = transcript.on_event(event).into_iter().map(Written::Line).collect();
+    if let VoiceEvent::Agent { event: AgentEvent::ToolFinished { ok: true, files, .. } } = event {
+        out.extend(files.iter().copied().map(Written::Picture));
+    }
+    out
+}
+
+/// Send each of `written` to `chat`, in order, until there are no more. A
 /// failure is logged and the rest still sent: one message the chat server
 /// refused is no reason to lose the others.
 async fn write_down(
+    vault: Arc<Vault>,
     connector: Arc<dyn Connector>,
     chat: ChatId,
-    mut lines: mpsc::UnboundedReceiver<String>,
+    mut written: mpsc::UnboundedReceiver<Written>,
 ) {
-    while let Some(markdown) = lines.recv().await {
-        if let Err(e) = connector.send(&chat, &markdown).await {
-            tracing::warn!(chat = %chat.0, error = %e, "could not write a call into the chat");
+    while let Some(next) = written.recv().await {
+        match next {
+            Written::Line(markdown) => {
+                if let Err(e) = connector.send(&chat, &markdown).await {
+                    tracing::warn!(chat = %chat.0, error = %e, "could not write a call into the chat");
+                }
+            }
+            Written::Picture(file) => {
+                let _ = show_picture(&vault, &connector, &chat, file).await;
+            }
         }
     }
 }
@@ -3051,7 +3214,35 @@ mod tests {
             stopped,
             ended_voice: false,
             read_aloud: Vec::new(),
+            pictures: Vec::new(),
         })
+    }
+
+    #[test]
+    fn a_picture_made_on_a_call_goes_into_its_chat() {
+        let file = FileId::new();
+        let finished = |ok: bool| VoiceEvent::Agent {
+            event: AgentEvent::ToolFinished {
+                call_id: "c1".into(),
+                name: "draw_illustration".into(),
+                ok,
+                summary: "Plan.png".into(),
+                mail_link: None,
+                files: vec![file],
+            },
+        };
+        let mut transcript = Transcript::default();
+        let pictures = |written: Vec<Written>| {
+            written
+                .into_iter()
+                .filter_map(|w| match w {
+                    Written::Picture(id) => Some(id),
+                    Written::Line(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pictures(written_of(&mut transcript, &finished(true))), vec![file]);
+        assert!(pictures(written_of(&mut transcript, &finished(false))).is_empty());
     }
 
     #[test]
