@@ -395,14 +395,11 @@ class MeetingsState {
     offer: MeetingOfferPayload,
     answer: MeetingOfferAnswer,
   ): Promise<Recording | null> {
-    // Join under auto-record only opens the link and arms the countdown.
-    // The offer stays until that runs out, or until it is cancelled.
-    const arms = answer === 'join' && offer.autoRecord
-    const begins = (answer === 'take' || answer === 'join') && !arms
+    const begins = answer === 'take' || answer === 'join'
     if (begins) this.starting = true
     try {
       const recording = await api.meetingOfferAnswer(offer.key, answer)
-      if (!arms) this.#dropOffer(offer.key)
+      this.#dropOffer(offer.key)
       if (begins) {
         this.capture = await api.meetingStatus().catch(() => null)
         await this.refreshRecordings()

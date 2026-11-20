@@ -5,8 +5,11 @@
 //! is a small always-on-top window near the bottom middle of the screen the
 //! pointer is on. On Wayland, which places windows itself, it is a
 //! transparent window over the desktop with the pill drawn at its bottom
-//! middle and clicks everywhere else going through -- the meeting card's way
-//! (`recnotice.rs`).
+//! middle and clicks everywhere else going through. The meeting card was once
+//! drawn this way too, with the region that lets clicks through worked out
+//! once, before the window had its final size, and nothing else on the screen
+//! could be clicked while it was up; here the region follows every size
+//! change (`cover`).
 //!
 //! # The keyboard on Wayland
 //!
@@ -213,8 +216,7 @@ async fn reveal(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
 }
 
 /// Wayland: a transparent window over the work area, the pill drawn at its
-/// bottom middle, and clicks anywhere else going through to what is behind it.
-/// As the meeting card does (`recnotice.rs`), and for the same reason:
+/// bottom middle, and clicks anywhere else going through to what is behind it:
 /// Wayland puts windows where it likes.
 #[cfg(target_os = "linux")]
 async fn cover(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {

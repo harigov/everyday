@@ -66,7 +66,7 @@ static FAILED: AtomicBool = AtomicBool::new(false);
 /// Whether the card can be drawn this way: there is an X server to draw it
 /// on, and drawing the card that is up on it has not failed. Asked only in a
 /// Wayland session; otherwise the card stays in this process
-/// ([`crate::recnotice`]'s overlay).
+/// ([`crate::recnotice`]'s own window).
 pub fn available() -> bool {
     !FAILED.load(Ordering::Relaxed) && std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
 }
@@ -202,7 +202,7 @@ fn start(app: &AppHandle) -> std::io::Result<Running> {
             // Anything else on its stdout -- a library that prints -- is not
             // a button.
             let Ok(pressed) = serde_json::from_str::<Pressed>(&line) else { continue };
-            if matches!(pressed.answer.as_str(), JOIN | NOT_NOW) {
+            if matches!(pressed.answer.as_str(), TAKE | JOIN | NOT_NOW) {
                 crate::offers::on_notice_action(&app, &pressed.key, &pressed.answer);
             }
         }
@@ -224,6 +224,7 @@ struct Pressed {
 
 /// The answers a card can give, as [`crate::offers::on_notice_action`] names
 /// them.
+const TAKE: &str = "take";
 const JOIN: &str = "join";
 const NOT_NOW: &str = "notNow";
 
@@ -283,9 +284,10 @@ struct Card {
     kicker: gtk::Label,
     count: gtk::Label,
     title: gtk::Label,
-    /// "Not now", before the meeting is joined.
+    /// "Not now" before the meeting is joined, "Cancel" while counting down.
     second: gtk::Button,
-    /// "Join and start recording", or "Cancel" while counting down.
+    /// "Join and start recording" before, "Take notes" -- now, not when the
+    /// countdown ends -- while counting down.
     first: gtk::Button,
     /// What the card is showing, for the buttons to answer.
     shown: std::cell::RefCell<Option<RecordingCard>>,
@@ -349,7 +351,6 @@ impl Card {
             button
         };
         let second = button(None);
-        second.set_label("Not now");
         let first = button(Some("primary"));
 
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -386,7 +387,7 @@ impl Card {
         card.first.connect_clicked(move |_| {
             if let Some(card) = weak.upgrade() {
                 let counting = card.shown.borrow().as_ref().is_some_and(|c| c.phase == "countdown");
-                card.press(if counting { NOT_NOW } else { JOIN });
+                card.press(if counting { TAKE } else { JOIN });
             }
         });
         let weak = std::rc::Rc::downgrade(&card);
@@ -411,9 +412,11 @@ impl Card {
         if counting {
             self.kicker.set_text("RECORDING STARTS IN");
             self.count.set_text(&format!("{}s", card.seconds));
-            self.first.set_label("Cancel");
+            self.second.set_label("Cancel");
+            self.first.set_label("Take notes");
         } else {
             self.kicker.set_text("MEETING");
+            self.second.set_label("Not now");
             self.first.set_label(if card.can_join {
                 "Join and start recording"
             } else {
@@ -440,7 +443,6 @@ impl Card {
             gtk::glib::idle_add_local_once(move || place(&window));
         }
         self.count.set_visible(counting);
-        self.second.set_visible(!counting);
     }
 
     /// Tell the app a button was pressed. The buttons wait for the card that

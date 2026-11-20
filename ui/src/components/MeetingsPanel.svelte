@@ -230,8 +230,8 @@
           <span>Start recording automatically after you join</span>
         </label>
         <p class="hint">
-          A card in the corner of the screen offers to join and record. After you join, recording
-          starts in 15 seconds unless you cancel.
+          A card in the corner of the screen offers to join and record. If you join the call another
+          way, recording starts in 15 seconds unless you cancel.
         </p>
       {/if}
       <label class="toggle small">
