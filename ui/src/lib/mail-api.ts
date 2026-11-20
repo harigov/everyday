@@ -24,6 +24,7 @@ import type {
   AttachmentPreview,
   CategoryCount,
   Draft,
+  DraftCheckReport,
   DraftId,
   FollowUpList,
   InboxSender,
@@ -309,6 +310,15 @@ export const outbox = (account?: AccountId | null): Promise<OutboxItem[]> =>
  *  replies are shown being written only for a thread that will get some. */
 export const needsReply = (id: ThreadId): Promise<NeedsReply> =>
   callCommand<NeedsReply>('needs_reply', { id })
+
+/** The checks Settings → Mail writing lists, put to a model about the draft
+ *  `id` as it is *stored* -- so only after the draft is saved. Several
+ *  seconds, and up to about 45 at worst. Empty `results` and no `skipped`:
+ *  nothing is switched on, send at once. `skipped`: they could not run, which
+ *  warns and still lets the message go. Throws for a locked vault or a draft
+ *  that is gone. */
+export const checkDraft = (id: DraftId): Promise<DraftCheckReport> =>
+  callCommand<DraftCheckReport>('check_draft', { id })
 
 /** Up to three replies to the thread's newest message, in the person's
  *  own voice; empty when the thread does not want one. */

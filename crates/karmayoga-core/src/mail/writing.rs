@@ -151,8 +151,10 @@ mod tests {
     #[test]
     fn checks_before_sending_are_short_lines() {
         let check = |text: &str| SendCheck { text: text.into(), on: true };
-        let mut writing = MailWriting::default();
-        writing.send_checks = vec![check("The tone is friendly"), check("The grammar is correct")];
+        let mut writing = MailWriting {
+            send_checks: vec![check("The tone is friendly"), check("The grammar is correct")],
+            ..Default::default()
+        };
         assert!(writing.validate().is_ok());
         writing.send_checks.push(check("  "));
         assert!(writing.validate().is_err(), "empty");

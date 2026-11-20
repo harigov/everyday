@@ -115,7 +115,7 @@ use karmayoga_core::RoutineRunId;
 use karmayoga_core::agent::onscreen::OnScreen;
 use karmayoga_core::agent::tools::{self, Caller as ToolCaller, Drafting, Effect, ToolContext};
 use karmayoga_core::agent::{
-    AgentSettings, Conversation, MailLink, Message as VaultMessage, Role, ToolCall,
+    AgentSettings, Conversation, MailLink, Message as VaultMessage, Role, ToolCall, sites,
 };
 use karmayoga_core::id::ThreadId;
 use karmayoga_core::llm::{ModelAccess, ModelTier};
@@ -293,12 +293,14 @@ pub enum AgentEvent {
         /// for each: `"destructive"` (removes something, no undo),
         /// `"outward"` (reaches somebody who is not the vault's owner),
         /// `"search"` (mail was read this turn, and this would send its own
-        /// query to a search provider), `"fetch"` (`read_web_page` or
-        /// `browser_open` with an address the model composed itself rather
-        /// than one the person gave or a search or page returned -- or any
-        /// address at all once mail has been read this turn -- so the
-        /// address, which is what would carry anything out, is shown before
-        /// it is visited), `"type"` (the browser about to type into a page,
+        /// query to a search provider), `"fetch"` (`read_web_page`,
+        /// `browser_open`, a feed, a lookup or a cover with an address the
+        /// model composed itself rather than one the person gave or a search
+        /// or page returned, and not on a safe website -- or on one, when it
+        /// carries what could be data once a stranger's words are in the
+        /// turn or with nobody watching -- so the address, which is what
+        /// would carry anything out, is shown before it is visited; `site`
+        /// offers "always allow" for its website), `"type"` (the browser about to type into a page,
         /// always asked: the subject is the text, the field and the site) or
         /// `"click"` (a click in the browser once mail has been read this
         /// turn), `"routine"` (a routine naming an address nobody gave) or
@@ -672,6 +674,19 @@ struct ConfirmGate {
     /// for the reason `ledger` is: the same two hook methods read and write
     /// it. Never held across an `await`.
     provenance: Arc<Mutex<Provenance>>,
+    /// The websites the person has said may be opened without asking --
+    /// [`AgentSettings::safe_sites`] as the turn began, and every site an
+    /// "always allow" has added since, so that the next page on it in this
+    /// same turn does not ask again. Read by [`ConfirmGate::fetch_question`]
+    /// and written by [`ConfirmGate::always_allow`]; behind a mutex for the
+    /// reason `provenance` is, and never held across an `await`.
+    safe_sites: Arc<Mutex<Vec<String>>>,
+    /// Set the moment an "always allow" has saved a site to the person's list
+    /// -- by [`ConfirmGate::always_allow`], not for a save that failed. The
+    /// list is the settings, which no tool call writes and so [`written`]
+    /// never sees; `run_turn` reads this to report the change. See
+    /// [`written_in_turn`].
+    site_trusted: Arc<AtomicBool>,
     /// How many more times `create_note` may run for real this turn. `Some`
     /// only while drafting -- see [`Turn::drafting`] -- and always started at
     /// one: a dream may write at most one note, and `direct` on
@@ -824,6 +839,10 @@ struct Opening {
     /// Whether it has anything in it that could be data -- see
     /// [`webpage::carries_data`].
     carries_data: bool,
+    /// Whether its site is one the person has said may be opened without
+    /// asking -- [`AgentSettings::safe_sites`], and what the rule does with it
+    /// is in [`must_confirm_fetch`].
+    safe_site: bool,
 }
 
 /// [`must_confirm`]'s sibling for `read_web_page`: whether this address may
@@ -854,9 +873,23 @@ struct Opening {
 ///   shown, which is exactly where anything being smuggled out would be
 ///   visible.
 /// - **With nobody watching** -- a routine, a dream, a job, a job's
-///   follow-up -- an address the model put together itself always stops:
-///   there is nobody who asked for it, and a routine's instructions or a
-///   job's brief may have been written from a stranger's mail.
+///   follow-up -- an address the model put together itself always stops
+///   (but on a safe website, below): there is nobody who asked for it, and a
+///   routine's instructions or a job's brief may have been written from a
+///   stranger's mail.
+/// - **One the model put together itself, on a safe website** (`safe_site`:
+///   a site on the person's list, or one they answered "always allow" to)
+///   opens when it carries nothing that could be data -- after a stranger's
+///   words have come into the turn, and with nobody watching, too. The
+///   person has said which site they trust, so a page's name on it opens in
+///   a routine or a research job as it does in the conversation. An address
+///   that carries what could be data still asks once a stranger's words are
+///   in the turn, or with nobody watching to have asked for it: the site is
+///   trusted, but a query or a sentence in a path is where something would
+///   ride out, and a trusted site can still have a form that takes a
+///   submission by GET and keeps what it was sent. While the person is
+///   watching and no stranger has spoken, the model has only their question
+///   to go on, and such an address opens as well.
 ///
 /// `confirm_web` off is the person saying not to ask, while they are in the
 /// conversation. The gate for an unattended turn is built with it still
@@ -874,6 +907,9 @@ fn must_confirm_fetch(
     }
     match open.trust {
         Trust::NotAnAddress | Trust::Seen => None,
+        Trust::Unseen if open.safe_site => {
+            (open.carries_data && (strangers || !watched)).then_some("fetch")
+        }
         Trust::Unseen if watched && !open.carries_data && !strangers => None,
         Trust::Unseen => Some("fetch"),
     }
@@ -953,6 +989,57 @@ fn reads_like_a_message(address: &str) -> bool {
 /// or [`reads_like_a_message`].
 fn carries_data(address: &str) -> bool {
     webpage::carries_data(address) || reads_like_a_message(address)
+}
+
+/// Whether `address` is on one of `safe_sites` -- its host is one, or a name
+/// under one. An address [`webpage::parse`] would not read is on none.
+fn on_safe_site(safe_sites: &[String], address: &str) -> bool {
+    let Ok(url) = webpage::parse(address) else { return false };
+    url.host_str().is_some_and(|host| sites::covers(safe_sites, host))
+}
+
+/// The address `name`'s call would fetch, read from the one argument that
+/// tool fetches it from and no other -- `url` for a page or a feed,
+/// `image_url` for a library tool's cover, `title` for a lookup that is an
+/// address -- or `None` when the call fetches nothing.
+///
+/// The one place that says so. [`ConfirmGate::confirmation`] judges this
+/// address, and a "fetch" question shows it ([`fetch_subject`]) and offers
+/// its site, so the address asked about, the address the card shows and the
+/// address the tool then opens cannot be three different ones. A provider
+/// that does not hold a model to a tool's schema lets it add an argument
+/// that tool never reads -- `create_item` with `url` a trusted page and
+/// `image_url` somebody else's -- and a card that read the wrong one would
+/// show the trusted page and offer to trust it while the cover came from
+/// the other.
+///
+/// Following a feed is a fetch with a delay: the refresher will ask that
+/// address for news within a minute, so an address the model composed -- or
+/// any address once a stranger's words are in the context -- is the same way
+/// out `read_web_page` is, and is held to the same check. Following Hacker
+/// News names no address and is an ordinary write. Looking up an address
+/// reads that page (see `look_up_item_tool`), which makes it a fetch like
+/// `read_web_page`; a title that is not an address is a query. A cover named
+/// by address is fetched before the item is saved -- see
+/// `websearch::prefetch_cover` -- so it is a way out exactly as a page is.
+fn fetched_address<'a>(name: &str, arguments: &'a Value) -> Option<&'a str> {
+    let argument = |key: &str| arguments.get(key).and_then(Value::as_str);
+    let named = |address: Option<&'a str>| address.filter(|a| !a.trim().is_empty());
+    match name {
+        READ_WEB_PAGE => argument("url"),
+        FOLLOW_SOURCE => named(argument("url")),
+        LOOK_UP_ITEM => argument("title").filter(|t| SearchResult::for_address(t).is_some()),
+        _ if crate::websearch::COVER_TOOLS.contains(&name) => named(argument("image_url")),
+        _ => None,
+    }
+}
+
+/// What a "fetch" question names: the whole address, untrimmed and
+/// unshortened, because it is the thing being asked about and the part that
+/// would carry anything out is usually the end of it. See [`fetched_address`]
+/// for where it is read from.
+fn fetch_subject(name: &str, arguments: &Value) -> String {
+    fetched_address(name, arguments).unwrap_or_default().to_string()
 }
 
 /// What a turn with nobody there is told when a call that would have stopped
@@ -1264,15 +1351,7 @@ impl AgentHook for ConfirmGate {
         };
 
         let subject = match kind {
-            // The whole address, untrimmed and unshortened: it is the thing
-            // being asked about, and the part that would carry anything out
-            // is usually the end of it.
-            "fetch" => arguments
-                .get("url")
-                .or_else(|| arguments.get("image_url"))
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
+            "fetch" => fetch_subject(&name, &arguments),
             // The addresses themselves, whole, for the same reason.
             "routine" => {
                 self.unvouched_routine_addresses(&name, &arguments).unwrap_or_default().join(" ")
@@ -1366,14 +1445,17 @@ impl ConfirmGate {
                 // A dropped sender is a cancelled turn: nothing was agreed to.
                 let answer = waiter.await.unwrap_or(ConfirmAnswer::Decline);
                 // The question's own card is done; each call draws its own as
-                // it runs, or is told it was declined.
+                // it runs, or is told it was declined. (It offers no site, so
+                // an "always allow" given to it is only a yes.)
+                let yes = matches!(answer, ConfirmAnswer::Confirm | ConfirmAnswer::TrustSite);
                 (self.channel)(AgentEvent::ToolFinished {
                     call_id,
                     name: CONFIRM_TOGETHER.into(),
-                    ok: answer == ConfirmAnswer::Confirm,
-                    summary: match answer {
-                        ConfirmAnswer::Confirm => format!("yes to all {}", asked.len()),
-                        _ => "declined".into(),
+                    ok: yes,
+                    summary: if yes {
+                        format!("yes to all {}", asked.len())
+                    } else {
+                        "declined".into()
                     },
                     mail_link: None,
                     files: Vec::new(),
@@ -1405,7 +1487,9 @@ impl ConfirmGate {
         arguments: Value,
     ) -> ToolCallAction {
         match together.answer {
-            ConfirmAnswer::Confirm if together.shown != self.describe(&name, &arguments) => {
+            ConfirmAnswer::Confirm | ConfirmAnswer::TrustSite
+                if together.shown != self.describe(&name, &arguments) =>
+            {
                 ToolCallAction::Skip(
                     "What this would do changed while the person was deciding, so the \
                      answer they gave was not to this. Not done. If it should still happen, \
@@ -1413,7 +1497,7 @@ impl ConfirmGate {
                         .into(),
                 )
             }
-            ConfirmAnswer::Confirm => {
+            ConfirmAnswer::Confirm | ConfirmAnswer::TrustSite => {
                 (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
                 ToolCallAction::Run
             }
@@ -1467,10 +1551,15 @@ impl ConfirmGate {
         // no proposal form -- see `park`'s own doc -- so none is ever
         // offered "later".
         let can_park = has_proposal_form;
+        // A page's address is its question's subject, and its site -- when
+        // that is not trusted already -- is what "always allow" would add.
+        // Nothing else offers it: it is the one question whose answer, once
+        // given, is about a place rather than about this call.
+        let site = if kind == "fetch" { self.site_to_offer(&subject) } else { None };
         let answer = match &self.asker {
             // A scheduled run's person is somewhere else: the question goes to
             // them there, and comes back answered one way or another.
-            Some(asker) => Some(asker.confirm(kind, &subject, can_park, None).await),
+            Some(asker) => Some(asker.confirm(kind, &subject, can_park, site.as_deref()).await),
             None => {
                 let waiter = self.pending.register(&call_id);
                 self.issued.lock().unwrap().push(call_id.clone());
@@ -1480,7 +1569,7 @@ impl ConfirmGate {
                     subject,
                     arguments: arguments.clone(),
                     kind: kind.to_string(),
-                    site: None,
+                    site: site.clone(),
                     can_park,
                 });
                 // A dropped sender means the turn was cancelled or the window
@@ -1489,8 +1578,17 @@ impl ConfirmGate {
                 waiter.await.ok()
             }
         };
+        // "Always allow" is a yes to this page, and the site is saved first:
+        // what follows is exactly what a plain yes would do. On a question
+        // that offered no site it is only the yes -- a card that never
+        // showed the button cannot have meant more.
+        if answer == Some(ConfirmAnswer::TrustSite)
+            && let Some(site) = &site
+        {
+            self.always_allow(site);
+        }
         match answer {
-            Some(ConfirmAnswer::Confirm)
+            Some(ConfirmAnswer::Confirm | ConfirmAnswer::TrustSite)
                 if shown.as_ref().is_some_and(|shown| {
                     *shown
                         != match kind {
@@ -1506,13 +1604,7 @@ impl ConfirmGate {
                         .into(),
                 )
             }
-            Some(ConfirmAnswer::Confirm) => {
-                (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
-                ToolCallAction::Run
-            }
-            // CONTRACT PLACEHOLDER: "always allow" is a yes until the gate
-            // saves the site (agent S1 replaces this arm).
-            Some(ConfirmAnswer::TrustSite) => {
+            Some(ConfirmAnswer::Confirm | ConfirmAnswer::TrustSite) => {
                 (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
                 ToolCallAction::Run
             }
@@ -1910,13 +2002,59 @@ impl ConfirmGate {
     /// read, or a search or page come back -- is in the turn yet.
     fn fetch_question(&self, address: &str) -> Option<&'static str> {
         let address = address.trim();
+        let safe_site = self.on_safe_site(address);
         let (open, heard) = {
             let seen = self.provenance.lock().unwrap();
-            let open = Opening { trust: seen.check(address), carries_data: carries_data(address) };
+            let open = Opening {
+                trust: seen.check(address),
+                carries_data: carries_data(address),
+                safe_site,
+            };
             (open, seen.heard_strangers())
         };
         let strangers = heard || self.mail_read_this_turn.load(Ordering::Acquire);
         must_confirm_fetch(open, strangers, self.confirm_web, self.watched)
+    }
+
+    /// Whether `address` is on a website the person has said may be opened
+    /// without asking -- one on [`Self::safe_sites`], or a name under one.
+    fn on_safe_site(&self, address: &str) -> bool {
+        on_safe_site(&self.safe_sites.lock().unwrap(), address)
+    }
+
+    /// The website a "fetch" question about `address` offers to "always
+    /// allow", as [`AgentEvent::ConfirmationRequired`]'s `site` names it:
+    /// `address`'s own, unless it is on the list already. Then the question is
+    /// being asked for what the address carries, which trusting the site does
+    /// not change, so there is nothing to offer.
+    fn site_to_offer(&self, address: &str) -> Option<String> {
+        if self.on_safe_site(address) {
+            return None;
+        }
+        sites::site_of(address)
+    }
+
+    /// "Always allow" on a fetch question: put `site` on the person's list of
+    /// safe websites, and on this turn's, so the next page on it asks about
+    /// nothing a plain address would not. The person said yes to this page
+    /// either way, so a list that could not be saved is logged and does not
+    /// stop it: they will be asked again next time, which is the cost of the
+    /// vault being unwell, not of their answer. A list that was saved is a
+    /// change to the settings, which the turn reports when it ends -- see
+    /// [`ConfirmGate::site_trusted`].
+    fn always_allow(&self, site: &str) {
+        let Ok(site) = sites::normalize_site(site) else {
+            tracing::warn!(site, "not a website that can be put on the safe list");
+            return;
+        };
+        match self.vault.trust_site(&site) {
+            Ok(_) => self.site_trusted.store(true, Ordering::Release),
+            Err(e) => tracing::warn!(error = %e, site, "could not save a website as safe"),
+        }
+        let mut safe = self.safe_sites.lock().unwrap();
+        if !sites::covers(&safe, &site) {
+            safe.push(site);
+        }
     }
 
     /// Whether a call must stop and ask first, and as what kind of question
@@ -1928,40 +2066,16 @@ impl ConfirmGate {
         // `tools::find` answers `None` for both -- so they reach this hook
         // exactly like every other tool and are singled out here rather than
         // by a second hook. See the module doc's "the exfiltration path
-        // through `web_search`", and `must_confirm_fetch` for the page.
-        // Following a feed is a fetch with a delay: the refresher will ask
-        // that address for news within a minute, so an address the model
-        // composed -- or any address once a stranger's words are in the
-        // context -- is the same way out `read_web_page` is, and is held to
-        // the same check. Following Hacker News names no address and is an
-        // ordinary write.
-        let follows_address = name == FOLLOW_SOURCE
-            && arguments.get("url").and_then(|v| v.as_str()).is_some_and(|u| !u.trim().is_empty());
-        // Looking up an address reads that page (see `look_up_item_tool`),
-        // which makes it a fetch like `read_web_page`, held to the same
-        // check. A title that is not an address is a query, as before.
-        let looked_up_address = (name == LOOK_UP_ITEM)
-            .then(|| arguments.get("title").and_then(|v| v.as_str()))
-            .flatten()
-            .filter(|t| SearchResult::for_address(t).is_some());
-        // A cover named by address is fetched before the item is saved --
-        // see `websearch::prefetch_cover` -- so it is a way out exactly as a
-        // page is: an address the model composed, or one written after a
-        // stranger's words arrived, could carry what it read. Held to the
-        // same check, and then to the write's own, as following a feed is.
-        let cover_address = crate::websearch::COVER_TOOLS
-            .contains(&name)
-            .then(|| arguments.get("image_url").and_then(|v| v.as_str()))
-            .flatten()
-            .map(str::trim)
-            .filter(|u| !u.is_empty());
+        // through `web_search`", and `must_confirm_fetch` for the page. The
+        // other calls that fetch an address -- a feed, a lookup, a cover --
+        // are held to the same check; see `fetched_address`.
+        let fetched = fetched_address(name, arguments);
         let own = || {
             let kind = must_confirm(self.effect_of(name, arguments), self.enabled)?;
             (!self.approved_by_voice(name, arguments, kind)).then_some(kind)
         };
         if name == READ_WEB_PAGE {
-            let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
-            self.fetch_question(address)
+            self.fetch_question(fetched.unwrap_or_default())
         } else if self.keeps_what_strangers_may_have_written(name, arguments) {
             // Asked before the routine question below, which it includes: a
             // routine saved after a stranger's words asks about its whole
@@ -1972,12 +2086,10 @@ impl ConfirmGate {
             // Asked whatever `confirm_web` says: that switch is about this
             // conversation, and these addresses are for runs nobody watches.
             (!unvouched.is_empty()).then_some("routine").or_else(own)
-        } else if let Some(address) = looked_up_address {
+        } else if let Some(address) = fetched.filter(|_| name == LOOK_UP_ITEM) {
             self.fetch_question(address)
-        } else if follows_address {
-            let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
-            self.fetch_question(address).or_else(own)
-        } else if let Some(address) = cover_address {
+        } else if let Some(address) = fetched {
+            // Followed, or a cover: held to the write's own check as well.
             self.fetch_question(address).or_else(own)
         } else if rewrites_money(name, arguments) && self.strangers_heard() {
             // Money's writes are ordinary writes -- recoverable by hand, so
@@ -2225,7 +2337,8 @@ impl ConfirmGate {
             return None;
         }
         let instructions = arguments.get("instructions").and_then(Value::as_str)?;
-        Some(unvouched_addresses(&self.provenance.lock().unwrap(), instructions))
+        let safe_sites = self.safe_sites.lock().unwrap().clone();
+        Some(unvouched_addresses(&self.provenance.lock().unwrap(), &safe_sites, instructions))
     }
 
     /// What this call does -- the tool's own effect, unless its arguments
@@ -2356,11 +2469,23 @@ fn learn_addresses(provenance: &mut Provenance, tool: &str, result: &Value) {
 /// model would have had to ask about to open now is asked about before it is
 /// saved for later -- the bare host-like words included, which a run trusts
 /// the same way.
-fn unvouched_addresses(provenance: &Provenance, instructions: &str) -> Vec<String> {
+///
+/// An address on one of the person's `safe_sites` that carries nothing that
+/// could be data is vouched for too: a run would open it unasked anyway, being
+/// the name of a page on a site they trust (see [`must_confirm_fetch`]), so
+/// saving it opens nothing that was not open already.
+fn unvouched_addresses(
+    provenance: &Provenance,
+    safe_sites: &[String],
+    instructions: &str,
+) -> Vec<String> {
     let typed = webpage::urls_in(instructions).into_iter().map(str::to_string);
     let bare = webpage::bare_hosts_in(instructions).into_iter().map(|h| format!("https://{h}"));
-    let mut out: Vec<String> =
-        typed.chain(bare).filter(|a| provenance.check(a) == Trust::Unseen).collect();
+    let mut out: Vec<String> = typed
+        .chain(bare)
+        .filter(|a| provenance.check(a) == Trust::Unseen)
+        .filter(|a| !(on_safe_site(safe_sites, a) && !carries_data(a)))
+        .collect();
     out.dedup();
     out
 }
@@ -5137,6 +5262,22 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
     out
 }
 
+/// [`written`], and the settings if this turn changed them without a tool:
+/// an "always allow" saved a website to the safe list. The gate writes that
+/// itself ([`ConfirmGate::always_allow`]), which no tool call in `ran` shows,
+/// so without this an open Settings pane -- or another window -- would go on
+/// showing the list as it was. Not twice when a tool already reported the
+/// settings.
+fn written_in_turn(ran: &[Ran], site_trusted: &AtomicBool) -> Vec<(Kind, Vec<String>)> {
+    let mut wrote = written(ran);
+    if site_trusted.load(Ordering::Acquire)
+        && !wrote.iter().any(|(kind, _)| *kind == Kind::Settings)
+    {
+        wrote.push((Kind::Settings, Vec::new()));
+    }
+    wrote
+}
+
 /// What the model is told about a turn that arrived through a chat, in place
 /// of a description of the screen.
 ///
@@ -5459,6 +5600,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         build(&meta, vault.clone(), &settings, &access, context.as_deref(), history_trimmed)?;
     let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
     let issued: Arc<Mutex<Vec<String>>> = Arc::default();
+    let site_trusted: Arc<AtomicBool> = Arc::default();
     let gate = ConfirmGate {
         pending: pending.clone(),
         issued: issued.clone(),
@@ -5498,6 +5640,8 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         )),
         together: Arc::default(),
         provenance: Arc::new(Mutex::new(provenance)),
+        safe_sites: Arc::new(Mutex::new(settings.safe_sites.clone())),
+        site_trusted: site_trusted.clone(),
         note_budget,
     };
 
@@ -5544,7 +5688,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // What ran, whether or not the turn as a whole succeeded. A run that
     // failed after deleting a project must still show the deletion.
     let ran = std::mem::take(&mut *ledger.lock().unwrap());
-    let wrote = written(&ran);
+    let wrote = written_in_turn(&ran, &site_trusted);
 
     match outcome {
         // Stopped before it had said or done anything: there is nothing to
@@ -6839,7 +6983,12 @@ mod tests {
     // ---- must_confirm_fetch / provenance ----------------------------------
 
     fn opening(trust: Trust, carries_data: bool) -> Opening {
-        Opening { trust, carries_data }
+        Opening { trust, carries_data, safe_site: false }
+    }
+
+    /// An address the model put together on a website the person trusts.
+    fn on_safe_website(carries_data: bool) -> Opening {
+        Opening { trust: Trust::Unseen, carries_data, safe_site: true }
     }
 
     /// The exfiltration path through `read_web_page`, while somebody is in
@@ -6884,6 +7033,47 @@ mod tests {
             must_confirm_fetch(opening(Trust::Unseen, false), false, true, false),
             Some("fetch")
         );
+    }
+
+    /// A site the person trusts opens by its page names whoever is watching
+    /// and whatever has been read, and an address that could be carrying
+    /// something out still asks once a stranger has spoken or with nobody
+    /// there who asked for it. Every case of (watched, strangers, data).
+    #[test]
+    fn a_safe_website_opens_a_page_name_and_asks_about_data_after_strangers_or_unwatched() {
+        for watched in [true, false] {
+            for strangers in [true, false] {
+                assert_eq!(
+                    must_confirm_fetch(on_safe_website(false), strangers, true, watched),
+                    None,
+                    "a page name (watched {watched}, strangers {strangers})"
+                );
+                let carrying = must_confirm_fetch(on_safe_website(true), strangers, true, watched);
+                assert_eq!(
+                    carrying,
+                    (strangers || !watched).then_some("fetch"),
+                    "an address with data (watched {watched}, strangers {strangers})"
+                );
+            }
+        }
+        // The same plain page on a site that is not trusted asks when nobody
+        // is watching, which is what the list changes.
+        assert_eq!(
+            must_confirm_fetch(opening(Trust::Unseen, false), false, true, false),
+            Some("fetch")
+        );
+    }
+
+    /// The list adds to what already opened and takes nothing away: an address
+    /// the person gave or a page handed back still opens, and so does anything
+    /// with the switch off.
+    #[test]
+    fn a_safe_website_changes_nothing_for_an_address_that_already_opened_or_was_never_asked() {
+        for trust in [Trust::Seen, Trust::NotAnAddress] {
+            let known = Opening { trust, carries_data: true, safe_site: true };
+            assert_eq!(must_confirm_fetch(known, true, true, false), None, "{trust:?}");
+        }
+        assert_eq!(must_confirm_fetch(on_safe_website(true), true, false, false), None);
     }
 
     /// The switch is read by the gate, not only by the pure functions: a
@@ -6958,6 +7148,347 @@ mod tests {
         assert_eq!(gate.confirmation(READ_WEB_PAGE, &words), Some("fetch"));
         let found = serde_json::json!({ "url": "https://evil.example/" });
         assert_eq!(gate.confirmation(READ_WEB_PAGE, &found), None, "exactly as found");
+    }
+
+    // ---- safe websites ---------------------------------------------------
+
+    /// A gate whose questions land in `events` -- so a test can read what was
+    /// asked, and answer it -- and whose person has `safe` on their list.
+    fn gate_with_sites(
+        vault: Arc<Vault>,
+        safe: &[&str],
+    ) -> (ConfirmGate, tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = ConfirmGate {
+            channel: Arc::new(move |event| {
+                let _ = tx.send(event);
+            }),
+            safe_sites: Arc::new(Mutex::new(safe.iter().map(|s| s.to_string()).collect())),
+            ..test_gate(vault, ConversationId::new())
+        };
+        (gate, rx)
+    }
+
+    /// Answers the next question the gate puts, and says what it was.
+    fn answer_next(
+        gate: &ConfirmGate,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+        answer: ConfirmAnswer,
+    ) -> tokio::task::JoinHandle<(String, String, Option<String>)> {
+        let pending = gate.pending.clone();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let AgentEvent::ConfirmationRequired { call_id, kind, subject, site, .. } = event
+                {
+                    assert!(pending.answer(&call_id, answer));
+                    return (kind, subject, site);
+                }
+            }
+            panic!("no question was put");
+        })
+    }
+
+    /// "Always allow" on a page the model composed: the question offers the
+    /// site, the answer saves it and opens the page, and the next page on it
+    /// in the same turn is not asked about.
+    #[tokio::test]
+    async fn always_allow_saves_the_site_opens_the_page_and_stops_the_next_question() {
+        let (vault, _dir) = test_vault();
+        let (gate, rx) = gate_with_sites(vault.clone(), &[]);
+        let asked = answer_next(&gate, rx, ConfirmAnswer::TrustSite);
+
+        // A code in the address: asked about, though nobody has spoken.
+        let order = serde_json::json!({ "url": "https://www.shop.example/orders/MHIE4G21" });
+        let action = gate.browser_call("c1".into(), "browser_open".into(), order).await;
+        assert!(matches!(action, ToolCallAction::Run), "{action:?}");
+        let (kind, subject, site) = asked.await.unwrap();
+        assert_eq!(kind, "fetch");
+        assert_eq!(subject, "https://www.shop.example/orders/MHIE4G21");
+        assert_eq!(site.as_deref(), Some("shop.example"), "the host as it would be listed");
+
+        assert_eq!(vault.agent_settings().unwrap().safe_sites, vec!["shop.example".to_string()]);
+        assert_eq!(*gate.safe_sites.lock().unwrap(), vec!["shop.example".to_string()]);
+        // The list is the settings, and the turn says they changed.
+        assert!(written_in_turn(&[], &gate.site_trusted).contains(&(Kind::Settings, Vec::new())));
+
+        // Another address with a code, on a name under it: not asked.
+        let other = serde_json::json!({ "url": "https://help.shop.example/orders/ZXCV9988" });
+        let action = gate.browser_call("c2".into(), "browser_open".into(), other).await;
+        assert!(matches!(action, ToolCallAction::Run), "{action:?}");
+        assert_eq!(gate.issued.lock().unwrap().len(), 1, "one question, for the first only");
+    }
+
+    /// Yes this once is yes this once: the list is as it was, and the next
+    /// page on the site asks again.
+    #[tokio::test]
+    async fn a_plain_yes_to_a_page_does_not_trust_its_site() {
+        let (vault, _dir) = test_vault();
+        let (gate, rx) = gate_with_sites(vault.clone(), &[]);
+        let asked = answer_next(&gate, rx, ConfirmAnswer::Confirm);
+        let order = serde_json::json!({ "url": "https://shop.example/orders/MHIE4G21" });
+        let action = gate.browser_call("c1".into(), "browser_open".into(), order).await;
+        assert!(matches!(action, ToolCallAction::Run), "{action:?}");
+        assert_eq!(asked.await.unwrap().2.as_deref(), Some("shop.example"), "still offered");
+        assert!(vault.agent_settings().unwrap().safe_sites.is_empty());
+        assert!(gate.safe_sites.lock().unwrap().is_empty());
+        assert!(written_in_turn(&[], &gate.site_trusted).is_empty(), "nothing was changed");
+    }
+
+    /// A trusted site's address that carries data, once a stranger's words
+    /// are in the turn, asks for that reason -- and offers no site, since
+    /// trusting it again would change nothing. An "always allow" the card
+    /// never offered is only a yes.
+    #[tokio::test]
+    async fn an_address_with_data_on_a_safe_site_asks_after_strangers_and_offers_no_site() {
+        let (vault, _dir) = test_vault();
+        let (gate, rx) = gate_with_sites(vault.clone(), &["shop.example"]);
+        let order = serde_json::json!({ "url": "https://shop.example/orders/MHIE4G21" });
+        assert_eq!(gate.confirmation(READ_WEB_PAGE, &order), None, "nobody else has spoken");
+        gate.mail_read_this_turn.store(true, Ordering::Release);
+        assert_eq!(gate.confirmation(READ_WEB_PAGE, &order), Some("fetch"));
+        let plain = serde_json::json!({ "url": "https://shop.example/orders" });
+        assert_eq!(gate.confirmation(READ_WEB_PAGE, &plain), None, "a page's name still opens");
+
+        let asked = answer_next(&gate, rx, ConfirmAnswer::TrustSite);
+        let subject = fetch_subject(READ_WEB_PAGE, &order);
+        let action = gate
+            .put_to_person("fetch", subject, "c1".into(), READ_WEB_PAGE.into(), order.clone())
+            .await;
+        assert!(matches!(action, ToolCallAction::Run), "{action:?}");
+        assert_eq!(asked.await.unwrap().2, None);
+        assert!(vault.agent_settings().unwrap().safe_sites.is_empty(), "nothing to add");
+        assert!(written_in_turn(&[], &gate.site_trusted).is_empty(), "so nothing changed");
+    }
+
+    /// With nobody watching, a trusted site's page name opens and an
+    /// address with data is refused; a site not on the list is refused
+    /// either way.
+    #[tokio::test]
+    async fn a_run_nobody_watches_opens_a_page_name_on_a_safe_site_and_nothing_else() {
+        let (vault, _dir) = test_vault();
+        let (gate, _rx) = gate_with_sites(vault, &["docs.example"]);
+        let gate = ConfirmGate { unattended: true, watched: false, ..gate };
+        let open = |url: &str| serde_json::json!({ "url": url });
+
+        let page = open("https://docs.example/guide/install");
+        let action = gate.browser_call("c1".into(), "browser_open".into(), page).await;
+        assert!(matches!(action, ToolCallAction::Run), "{action:?}");
+
+        for url in ["https://docs.example/guide?token=abc", "https://stranger.example/guide"] {
+            let action = gate.browser_call("c2".into(), "browser_open".into(), open(url)).await;
+            assert_eq!(skipped(&action), Some(unattended_refusal("fetch", false)), "{url}");
+        }
+    }
+
+    /// A routine that asks with somebody to ask puts the site to them, and
+    /// takes their "always allow" as the person in the rail's would be taken.
+    #[tokio::test]
+    async fn a_routines_asker_is_offered_the_site_and_can_always_allow_it() {
+        struct Trusting(Mutex<Vec<(String, Option<String>)>>);
+        impl Asker for Arc<Trusting> {
+            fn confirm(
+                &self,
+                kind: &str,
+                _subject: &str,
+                _can_park: bool,
+                site: Option<&str>,
+            ) -> futures::future::BoxFuture<'static, ConfirmAnswer> {
+                self.0.lock().unwrap().push((kind.into(), site.map(str::to_string)));
+                Box::pin(async { ConfirmAnswer::TrustSite })
+            }
+            fn ask(
+                &self,
+                _question: String,
+                _choices: Vec<String>,
+            ) -> futures::future::BoxFuture<'static, Option<String>> {
+                Box::pin(async { None })
+            }
+        }
+
+        let (vault, _dir) = test_vault();
+        let asker = Arc::new(Trusting(Mutex::default()));
+        let gate = ConfirmGate {
+            unattended: true,
+            watched: false,
+            asker: Some(Arc::new(asker.clone())),
+            ..test_gate(vault.clone(), ConversationId::new())
+        };
+        let page = serde_json::json!({ "url": "https://news.example/today" });
+        assert_eq!(gate.confirmation(READ_WEB_PAGE, &page), Some("fetch"));
+        let action = gate
+            .put_to_person(
+                "fetch",
+                "https://news.example/today".into(),
+                "c1".into(),
+                READ_WEB_PAGE.into(),
+                page.clone(),
+            )
+            .await;
+        assert!(matches!(action, ToolCallAction::Run), "{action:?}");
+        assert_eq!(
+            *asker.0.lock().unwrap(),
+            vec![("fetch".to_string(), Some("news.example".to_string()))]
+        );
+        assert_eq!(vault.agent_settings().unwrap().safe_sites, vec!["news.example".to_string()]);
+        assert_eq!(gate.confirmation(READ_WEB_PAGE, &page), None, "and the next run's page opens");
+    }
+
+    /// Only a page's question offers a site: a send, a delete and a
+    /// connection's tool have no place to trust.
+    #[tokio::test]
+    async fn only_a_fetch_question_offers_a_site() {
+        let (vault, _dir) = test_vault();
+        let task = karmayoga_core::Task::new("Book the dentist");
+        vault.save_task(&task).unwrap();
+        let (gate, rx) = gate_with_sites(vault, &[]);
+        let asked = answer_next(&gate, rx, ConfirmAnswer::TrustSite);
+        let delete = serde_json::json!({ "task_id": task.id.to_string() });
+        let subject = gate.describe("delete_task", &delete);
+        let action = gate
+            .put_to_person("destructive", subject, "c1".into(), "delete_task".into(), delete)
+            .await;
+        assert!(matches!(action, ToolCallAction::Run), "a yes, then: {action:?}");
+        assert_eq!(asked.await.unwrap().2, None);
+    }
+
+    /// The address a lookup by address is about is its title, and the
+    /// question must name it.
+    #[test]
+    fn a_fetch_question_names_the_address_whichever_argument_holds_it() {
+        let by = |name: &str, key: &str| {
+            fetch_subject(name, &serde_json::json!({ key: "https://a.example/x" }))
+        };
+        assert_eq!(by(READ_WEB_PAGE, "url"), "https://a.example/x");
+        assert_eq!(by("create_item", "image_url"), "https://a.example/x");
+        assert_eq!(by(LOOK_UP_ITEM, "title"), "https://a.example/x");
+        assert_eq!(by("create_item", "title"), "", "a title is an address for a lookup only");
+    }
+
+    /// A model that is not held to a tool's schema can add an argument the
+    /// tool never reads. The card must show -- and offer to trust -- the
+    /// address the tool fetches, whatever else the call carries.
+    #[tokio::test]
+    async fn a_decoy_argument_cannot_change_the_address_a_question_names() {
+        let (vault, _dir) = test_vault();
+        let (gate, rx) = gate_with_sites(vault.clone(), &[]);
+        let evil = "https://evil.example/c.png?journal=everything-they-wrote";
+        let calls = [
+            ("create_item", serde_json::json!({ "title": "Dune", "image_url": evil })),
+            ("update_item", serde_json::json!({ "item_id": "x", "image_url": evil })),
+            (LOOK_UP_ITEM, serde_json::json!({ "title": evil })),
+            (READ_WEB_PAGE, serde_json::json!({ "url": evil })),
+        ];
+        let decoys = serde_json::json!({
+            "url": "https://en.wikipedia.org/wiki/Dune",
+            "image_url": "https://en.wikipedia.org/wiki/Dune.png",
+            "title": "https://en.wikipedia.org/wiki/Dune",
+        });
+        for (name, mut call) in calls {
+            // Each decoy goes in whichever argument this tool does not read.
+            let read = match name {
+                LOOK_UP_ITEM => "title",
+                READ_WEB_PAGE => "url",
+                _ => "image_url",
+            };
+            for (key, value) in decoys.as_object().unwrap() {
+                if key != read {
+                    call[key] = value.clone();
+                }
+            }
+            assert_eq!(gate.confirmation(name, &call), Some("fetch"), "{name}");
+            assert_eq!(fetch_subject(name, &call), evil, "{name}");
+            assert_eq!(
+                gate.site_to_offer(&fetch_subject(name, &call)).as_deref(),
+                Some("evil.example")
+            );
+        }
+
+        // Put as on_tool_call puts it: the card names the cover's own address.
+        let asked = answer_next(&gate, rx, ConfirmAnswer::TrustSite);
+        let mut cover = serde_json::json!({ "title": "Dune", "image_url": evil });
+        cover["url"] = decoys["url"].clone();
+        let subject = fetch_subject("create_item", &cover);
+        let action =
+            gate.put_to_person("fetch", subject, "c1".into(), "create_item".into(), cover).await;
+        assert!(matches!(action, ToolCallAction::Run), "{action:?}");
+        let (_, shown, site) = asked.await.unwrap();
+        assert_eq!((shown.as_str(), site.as_deref()), (evil, Some("evil.example")));
+        assert_eq!(vault.agent_settings().unwrap().safe_sites, vec!["evil.example".to_string()]);
+
+        // A lookup whose title is a name, not an address, fetches nothing.
+        let query = serde_json::json!({ "title": "Dune", "url": evil });
+        assert_eq!(fetch_subject(LOOK_UP_ITEM, &query), "");
+    }
+
+    /// The settings are written by the gate and not by a tool, so the turn
+    /// reports them itself: once a site was saved, and not otherwise.
+    #[test]
+    fn a_turn_that_trusted_a_site_reports_the_settings_and_one_that_did_not_does_not() {
+        let (vault, _dir) = test_vault();
+        let gate = test_gate(vault.clone(), ConversationId::new());
+        let wrote = |gate: &ConfirmGate, ran: &[Ran]| written_in_turn(ran, &gate.site_trusted);
+
+        assert!(wrote(&gate, &[ran("list_notes")]).is_empty());
+        gate.always_allow("https://www.docs.example/guide");
+        assert_eq!(wrote(&gate, &[ran("list_notes")]), vec![(Kind::Settings, Vec::new())]);
+        assert_eq!(vault.agent_settings().unwrap().safe_sites, vec!["docs.example".to_string()]);
+
+        // Beside what the tools wrote, and not twice if one wrote the settings.
+        let kinds: Vec<Kind> =
+            wrote(&gate, &[ran("create_task")]).iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, vec![Kind::Task, Kind::Settings]);
+        let profile = wrote(&gate, &[ran("update_profile")]);
+        assert_eq!(profile.iter().filter(|(k, _)| *k == Kind::Settings).count(), 1);
+    }
+
+    /// A site that cannot be listed -- a public suffix, which would be every
+    /// name under it -- is neither saved, nor reported, nor trusted for the
+    /// rest of the turn.
+    #[test]
+    fn a_site_that_cannot_be_listed_is_not_saved_reported_or_trusted() {
+        let (vault, _dir) = test_vault();
+        let gate = test_gate(vault.clone(), ConversationId::new());
+        for site in ["co.uk", "github.io", "localhost", "not a site"] {
+            gate.always_allow(site);
+        }
+        assert!(vault.agent_settings().unwrap().safe_sites.is_empty());
+        assert!(gate.safe_sites.lock().unwrap().is_empty());
+        assert!(written_in_turn(&[], &gate.site_trusted).is_empty());
+        let page = serde_json::json!({ "url": "https://anything.co.uk/orders/MHIE4G21" });
+        assert_eq!(gate.confirmation(READ_WEB_PAGE, &page), Some("fetch"));
+    }
+
+    /// An address a routine's instructions name on a site the person
+    /// trusts is one its runs would open unasked anyway, so saving it is not
+    /// a question -- unless it carries data, or the site is another.
+    #[test]
+    fn a_routine_naming_a_page_on_a_safe_site_is_not_asked_about() {
+        let (vault, _dir) = test_vault();
+        let (gate, _rx) = gate_with_sites(vault, &["docs.example"]);
+        let routine = |instructions: &str| serde_json::json!({ "name": "Changelog", "instructions": instructions });
+        let unvouched = |instructions: &str| {
+            gate.unvouched_routine_addresses(CREATE_ROUTINE, &routine(instructions)).unwrap()
+        };
+
+        assert!(unvouched("Read https://docs.example/changelog and docs.example/news").is_empty());
+        assert!(unvouched("Read https://api.docs.example/releases").is_empty(), "a name under it");
+        assert_eq!(
+            unvouched("Read https://docs.example/search?q=my+diagnosis"),
+            vec!["https://docs.example/search?q=my+diagnosis".to_string()],
+            "a query is where data rides"
+        );
+        assert_eq!(
+            unvouched("Read https://stranger.example/changelog"),
+            vec!["https://stranger.example/changelog".to_string()]
+        );
+        assert_eq!(
+            gate.confirmation(CREATE_ROUTINE, &routine("Read https://docs.example/changelog")),
+            None
+        );
+        assert_eq!(
+            gate.confirmation(CREATE_ROUTINE, &routine("Read https://stranger.example/changelog")),
+            Some("routine")
+        );
     }
 
     // ---- the browser ----------------------------------------------------
@@ -9093,6 +9624,8 @@ mod tests {
             mail_read_this_turn: Arc::default(),
             together: Arc::default(),
             provenance: Arc::default(),
+            safe_sites: Arc::default(),
+            site_trusted: Arc::default(),
             note_budget: None,
         }
     }

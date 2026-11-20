@@ -2295,9 +2295,13 @@ export interface DraftCheckResult {
 export interface DraftCheckReport {
   /** One per check switched on, in Settings' order. */
   results: DraftCheckResult[]
-  /** Why the checks did not run, as a sentence, when they did not. Warn with
-   *  it, and still let the message go. */
+  /** Why the checks did not run this time (the model failing or slow), as a
+   *  sentence. Warn with it before sending, and still let the message go. */
   skipped?: string | null
+  /** Why the checks cannot run at all as things are set up (writing help off
+   *  for the account, no model switched on), naming the fix. Not a reason to
+   *  stop every message: send at once and say this alongside. */
+  off?: string | null
   model?: CheckModel | null
 }
 

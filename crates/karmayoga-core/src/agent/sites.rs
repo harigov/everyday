@@ -21,11 +21,20 @@ const MAX_SITE_CHARS: usize = 253;
 /// (`Example.COM.`) or a pattern somebody would type (`*.example.com`), as
 /// the host it names -- lower-cased, without a scheme, a port, a path, a
 /// trailing dot or a leading `www.`. Refused when what is left is not a
-/// host name with a dot in it: a site is somewhere on the web, not a word.
+/// host name with a dot in it -- a site is somewhere on the web, not a word
+/// -- and when it is a public suffix (`co.uk`, `github.io`): those are shared
+/// by everybody who registers under them, and trusting one would trust them
+/// all.
 pub fn normalize_site(input: &str) -> Result<String> {
     let invalid = || Error::Invalid(format!("{:?} is not a website's address", input.trim()));
     let mut rest = input.trim();
-    if let Some(at) = rest.find("://") {
+    // A scheme only where one can be: letters, digits, `+`, `-` and `.`
+    // before the `://`. One further on is part of a path or a query --
+    // `good.example/go?to=https://evil.example` names good.example.
+    if let Some(at) = rest.find("://")
+        && rest[..at].starts_with(|c: char| c.is_ascii_alphabetic())
+        && rest[..at].chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
         rest = &rest[at + 3..];
     }
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
@@ -57,6 +66,12 @@ pub fn normalize_site(input: &str) -> Result<String> {
     });
     if !labels_ok {
         return Err(invalid());
+    }
+    if psl::domain_str(&host).is_none() {
+        return Err(Error::Invalid(format!(
+            "{host} is shared by many unrelated websites; add the website itself, such as \
+             example.{host}"
+        )));
     }
     Ok(host)
 }
@@ -118,8 +133,26 @@ mod tests {
         assert_eq!(normalize_site("https://www.Example.com/a/b?c=1#d").unwrap(), "example.com");
         assert_eq!(normalize_site("en.wikipedia.org").unwrap(), "en.wikipedia.org");
         assert_eq!(normalize_site("  docs.rs. ").unwrap(), "docs.rs");
-        assert_eq!(normalize_site("*.github.io").unwrap(), "github.io");
+        assert_eq!(normalize_site("*.example.com").unwrap(), "example.com");
         assert_eq!(normalize_site("http://user:pw@example.org:8080/x").unwrap(), "example.org");
+        assert_eq!(normalize_site("bbc.co.uk").unwrap(), "bbc.co.uk");
+    }
+
+    #[test]
+    fn an_address_inside_a_path_is_not_the_site() {
+        assert_eq!(
+            normalize_site("good.example/go?to=https://evil.example").unwrap(),
+            "good.example"
+        );
+        assert_eq!(normalize_site("good.example/a#https://evil.example").unwrap(), "good.example");
+    }
+
+    #[test]
+    fn a_suffix_everybody_registers_under_is_refused() {
+        for shared in ["co.uk", "github.io", "*.github.io", "com", "blogspot.com"] {
+            assert!(normalize_site(shared).is_err(), "{shared:?} should be refused");
+        }
+        assert_eq!(normalize_site("someone.github.io").unwrap(), "someone.github.io");
     }
 
     #[test]

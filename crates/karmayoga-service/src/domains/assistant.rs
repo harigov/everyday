@@ -72,7 +72,9 @@ pub struct Confirm {
     #[serde(default)]
     pub later: bool,
     /// Yes, and always allow the question's website -- see
-    /// `ConfirmAnswer::TrustSite`. Defaulted for the same reason as `later`.
+    /// `ConfirmAnswer::TrustSite`. Only with `approved`: without it the
+    /// answer is no, whatever this says. Defaulted for the same reason as
+    /// `later`.
     #[serde(default)]
     pub always: bool,
 }
@@ -183,14 +185,19 @@ async fn save_agent_settings(
 ) -> CommandResult<AgentSettings> {
     let vault = svc.require()?;
     let settings = blocking(move || {
-        let previous = vault.agent_settings()?;
-        let dreaming_before = previous.dreaming;
-        // The safe websites are `trust_site`'s and `untrust_site`'s to change:
-        // a pane opened before "always allow" added one would otherwise take
-        // it away again by saving what it had.
-        let mut settings = args.settings.clone();
-        settings.safe_sites = previous.safe_sites.clone();
-        vault.save_agent_settings(&settings)?;
+        // The safe websites are `trust_site`'s and `untrust_site`'s to change,
+        // and the quick asks `set_quick_ask`'s: a pane opened before either
+        // changed -- "always allow" answered in a chat, a switch flicked in
+        // another window -- would otherwise put back what it had by saving.
+        let mut dreaming_before = false;
+        vault.update_agent_settings(|stored| {
+            dreaming_before = stored.dreaming;
+            let kept =
+                (std::mem::take(&mut stored.safe_sites), std::mem::take(&mut stored.quick_asks));
+            *stored = args.settings.clone();
+            (stored.safe_sites, stored.quick_asks) = kept;
+            Ok(())
+        })?;
 
         // The dream routines. `set_dreaming` is idempotent, so it is only
         // worth calling when something might actually change: the switch
@@ -285,7 +292,7 @@ async fn delete_conversation(
 async fn confirm_tool_call(svc: Arc<Service>, _ctx: Ctx, args: Confirm) -> CommandResult<bool> {
     let answer = if args.later {
         crate::agent::ConfirmAnswer::Later
-    } else if args.always {
+    } else if args.approved && args.always {
         crate::agent::ConfirmAnswer::TrustSite
     } else if args.approved {
         crate::agent::ConfirmAnswer::Confirm
@@ -302,11 +309,7 @@ async fn trust_site(svc: Arc<Service>, _ctx: Ctx, args: SiteArg) -> CommandResul
 }
 
 /// Take `site` off the websites the assistant may open without asking.
-async fn untrust_site(
-    svc: Arc<Service>,
-    _ctx: Ctx,
-    args: SiteArg,
-) -> CommandResult<AgentSettings> {
+async fn untrust_site(svc: Arc<Service>, _ctx: Ctx, args: SiteArg) -> CommandResult<AgentSettings> {
     svc.on_vault(move |vault| vault.untrust_site(&args.site)).await
 }
 

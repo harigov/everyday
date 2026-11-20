@@ -141,6 +141,7 @@ import { DEFAULT_COLORS } from './colors'
 import { addDays, blockKindFor, isoDate, minutesBetween } from './time'
 import { WEEKDAYS, expandDays, weekdayOf } from './recurrence'
 import { DIGEST_MARKER, ordinal } from './dream'
+import { sitesCover } from './agent'
 import { noteOrigin } from './note-list'
 import type { Draft, ImproveMode, MailCategory } from './types'
 import type {
@@ -7330,7 +7331,13 @@ export const mockInvoke = async <T>(
 
     case 'save_agent_settings': {
       requireUnlocked()
-      agentSettings = args.settings as AgentSettings
+      // The safe websites are `trust_site`'s and `untrust_site`'s to change,
+      // and the quick asks `set_quick_ask`'s, as in the service: whatever a
+      // save carries for either is not read.
+      const next = { ...(args.settings as AgentSettings), quickAsks: agentSettings.quickAsks }
+      if (agentSettings.safeSites?.length) next.safeSites = [...agentSettings.safeSites]
+      else delete next.safeSites
+      agentSettings = next
       // The real one makes the three dream routines the first time dreaming
       // is turned on, and switches them with it after that.
       const dreams = routines.filter((r) => r.kind?.type === 'dream')
@@ -7338,6 +7345,19 @@ export const mockInvoke = async <T>(
       for (const r of routines) {
         if (r.kind?.type === 'dream') r.enabled = agentSettings.dreaming === true
       }
+      return agentSettings as T
+    }
+
+    case 'trust_site':
+      requireUnlocked()
+      return mockTrustSite(str(args.site)) as T
+
+    case 'untrust_site': {
+      requireUnlocked()
+      const site = mockNormalizeSite(str(args.site))
+      const kept = (agentSettings.safeSites ?? []).filter((s) => s !== site)
+      const { safeSites: _before, ...rest } = agentSettings
+      agentSettings = kept.length > 0 ? { ...rest, safeSites: kept } : rest
       return agentSettings as T
     }
 
@@ -7441,7 +7461,12 @@ export const mockInvoke = async <T>(
 
     case 'confirm_tool_call':
       requireUnlocked()
-      return mockConfirm(str(args.callId), args.approved === true, args.later === true) as T
+      return mockConfirm(
+        str(args.callId),
+        args.approved === true,
+        args.later === true,
+        args.always === true,
+      ) as T
 
     case 'cancel_turn':
       requireUnlocked()
@@ -9028,12 +9053,63 @@ type MockAnswer = 'confirm' | 'decline' | 'later'
 /** Confirmations the scripted turn below is waiting on. */
 const mockPending = new Map<string, (answer: MockAnswer) => void>()
 
-function mockConfirm(callId: string, approved: boolean, later: boolean): boolean {
+/**
+ * The website each of those questions offered "Always allow" for, by call --
+ * what the service's gate holds on to for `ConfirmAnswer::TrustSite`.
+ */
+const mockPendingSite = new Map<string, string>()
+
+function mockConfirm(callId: string, approved: boolean, later: boolean, always = false): boolean {
   const resolve = mockPending.get(callId)
   if (!resolve) return false
   mockPending.delete(callId)
+  const site = mockPendingSite.get(callId)
+  mockPendingSite.delete(callId)
+  // Only a yes carries it, and only a question that named a site: anywhere
+  // else the service reads "always" as a plain yes, and so does this.
+  if (always && approved && !later && site) mockTrustSite(site)
   resolve(later ? 'later' : approved ? 'confirm' : 'decline')
   return true
+}
+
+/**
+ * `karmayoga_core::agent::sites::normalize_site`: an address or a host as the
+ * host it names -- lower-case, no scheme, credentials, port, path, trailing
+ * dot or `www.` -- and a refusal for what is not a host with a dot in it.
+ */
+function mockNormalizeSite(input: string): string {
+  const invalid = () =>
+    new VaultError('invalid', `${JSON.stringify(input.trim())} is not a website's address`)
+  let rest = input.trim()
+  const scheme = rest.indexOf('://')
+  if (scheme >= 0) rest = rest.slice(scheme + 3)
+  const end = rest.search(/[/?#]/)
+  if (end >= 0) rest = rest.slice(0, end)
+  const at = rest.lastIndexOf('@')
+  if (at >= 0) rest = rest.slice(at + 1)
+  const colon = rest.lastIndexOf(':')
+  if (colon >= 0 && /^\d*$/.test(rest.slice(colon + 1))) rest = rest.slice(0, colon)
+  let host = rest
+    .replace(/^(\*\.)+/, '')
+    .replace(/\.+$/, '')
+    .toLowerCase()
+  if (host.startsWith('www.')) host = host.slice(4)
+  if (!host || host.length > 253 || !host.includes('.')) throw invalid()
+  const labelsOk = host
+    .split('.')
+    .every((l) => l.length > 0 && l.length <= 63 && !/^-|-$/.test(l) && /^[a-z0-9-]+$/.test(l))
+  if (!labelsOk) throw invalid()
+  return host
+}
+
+/** `Vault::trust_site`: add the host `site` names, unless already covered. */
+function mockTrustSite(site: string): AgentSettings {
+  const host = mockNormalizeSite(site)
+  const sites = agentSettings.safeSites ?? []
+  if (!sitesCover(sites, host)) {
+    agentSettings = { ...agentSettings, safeSites: [...sites, host] }
+  }
+  return agentSettings
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -9124,6 +9200,7 @@ export async function mockSendMessage(
       mockPending.set(callId, resolve)
       run.wake = () => {
         mockPending.delete(callId)
+        mockPendingSite.delete(callId)
         resolve('decline')
       }
     })
@@ -9433,6 +9510,11 @@ export async function mockSendMessage(
       const callId = 'call-mock-fetch'
       const url = 'https://collector.example/save?note=dentist%20on%20friday'
       await tool('web_search', { query: 'dentist opening hours' }, 900, '5 results')
+      // "Always allow" is offered only for a site not already on the list --
+      // see `AgentEvent`'s `confirmationRequired`.
+      const site = 'collector.example'
+      const offer = !sitesCover(agentSettings.safeSites ?? [], site)
+      if (offer) mockPendingSite.set(callId, site)
       onEvent({
         type: 'confirmationRequired',
         callId,
@@ -9441,6 +9523,7 @@ export async function mockSendMessage(
         arguments: { url },
         kind: 'fetch',
         canPark: false,
+        ...(offer ? { site } : {}),
       })
       const answer = await ask(callId)
       if (answer === 'confirm' && !run.stopped) {

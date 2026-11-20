@@ -50,6 +50,30 @@ impl Vault {
         self.with_agent(|a| a.put_settings(settings))
     }
 
+    /// Read the settings, change them with `change`, and save them, with no
+    /// other such change in between -- and answer with what was stored.
+    ///
+    /// For every write that changes part of the record: the settings pane's
+    /// save, a quick ask switched, a website trusted from a question while
+    /// the pane is saving. Each reads the whole record and writes it back, so
+    /// two at once would each write over what the other added. One lock for
+    /// the process rather than per vault: these are rare, quick, and a
+    /// process has one vault open at a time.
+    pub fn update_agent_settings(
+        &self,
+        change: impl FnOnce(&mut AgentSettings) -> Result<()>,
+    ) -> Result<AgentSettings> {
+        static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _writing = WRITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut settings = self.agent_settings()?;
+        let before = settings.clone();
+        change(&mut settings)?;
+        if settings != before {
+            self.save_agent_settings(&settings)?;
+        }
+        self.agent_settings()
+    }
+
     /// Add `site` to the websites the assistant may open without asking --
     /// see [`crate::agent::sites`] -- and answer with the settings as stored.
     /// `site` may be an address or a host; it is stored as the host
@@ -57,25 +81,22 @@ impl Vault {
     /// Already there (or covered by a site already there) is not an error.
     pub fn trust_site(&self, site: &str) -> Result<AgentSettings> {
         let site = crate::agent::sites::normalize_site(site)?;
-        let mut settings = self.agent_settings()?;
-        if !crate::agent::sites::covers(&settings.safe_sites, &site) {
-            settings.safe_sites.push(site);
-            self.save_agent_settings(&settings)?;
-        }
-        self.agent_settings()
+        self.update_agent_settings(|settings| {
+            if !crate::agent::sites::covers(&settings.safe_sites, &site) {
+                settings.safe_sites.push(site);
+            }
+            Ok(())
+        })
     }
 
     /// Take `site` off the websites the assistant may open without asking,
     /// and answer with the settings as stored. Not there is not an error.
     pub fn untrust_site(&self, site: &str) -> Result<AgentSettings> {
         let site = crate::agent::sites::normalize_site(site)?;
-        let mut settings = self.agent_settings()?;
-        let before = settings.safe_sites.len();
-        settings.safe_sites.retain(|s| s != &site);
-        if settings.safe_sites.len() != before {
-            self.save_agent_settings(&settings)?;
-        }
-        self.agent_settings()
+        self.update_agent_settings(|settings| {
+            settings.safe_sites.retain(|s| s != &site);
+            Ok(())
+        })
     }
 
     /// The settings and the model a turn runs on, for the one kind of caller

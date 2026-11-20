@@ -1796,9 +1796,24 @@ export const api = {
    * `later` parks the call as a proposal instead of running or refusing it;
    * `approved` keeps its old meaning either way, for a card that never
    * offered "later" at all. See `docs/plans/dreaming.md`'s Phase 5.
+   *
+   * `always` (with `approved`) is "yes, and open pages on this question's
+   * website without asking from now on" -- the site is the one the question
+   * named, so it is added by the backend, not sent from here.
    */
-  confirmToolCall: (callId: string, approved: boolean, later = false) =>
-    call('confirmToolCall', { callId, approved, later }),
+  confirmToolCall: (callId: string, approved: boolean, later = false, always = false) =>
+    call('confirmToolCall', { callId, approved, later, always }),
+
+  /**
+   * Let the assistant open pages on a website without asking. `site` may be
+   * an address or a host; the backend keeps it as a host (lower-case, no
+   * `www.`, scheme or path) and refuses what is not one -- its message is
+   * for showing. Answers with the settings as stored.
+   */
+  trustSite: (site: string) => call('trustSite', { site }),
+
+  /** Take a website off the safe ones. Answers with the settings as stored. */
+  untrustSite: (site: string) => call('untrustSite', { site }),
 
   /**
    * Stop the turn running in a thread. What it had said and done so far is

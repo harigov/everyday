@@ -1353,6 +1353,22 @@ export function mockSaveMailWriting(writing: MailWriting): void {
       'that is too long to go with every reply; keep it under 4000 characters',
     )
   }
+  // And its checks before sending: at most 12, each one short line.
+  const checks = writing.sendChecks ?? []
+  if (checks.length > 12) {
+    throw new VaultError('invalid', 'there can be 12 checks before sending at most')
+  }
+  for (const check of checks) {
+    const text = check.text.trim()
+    if (!text) throw new VaultError('invalid', 'a check before sending needs some words')
+    if (/[\r\n]/.test(text)) throw new VaultError('invalid', 'a check before sending is one line')
+    if ([...text].length > 200) {
+      throw new VaultError(
+        'invalid',
+        'a check before sending is a short line; keep it under 200 characters',
+      )
+    }
+  }
   mockWriting = structuredClone(writing)
 }
 

@@ -313,6 +313,19 @@ pub enum FollowUpModel {
     Small,
 }
 
+/// Why `decision` cannot answer now, as a sentence -- `None` when it can. Only
+/// one on this computer can be unready: one at an address is unusable only for
+/// want of a key, which [`Vault::decision_access`] has already refused. Shared
+/// with [`crate::mailcheck`], which asks the same model the same question.
+pub(crate) fn decision_not_ready(decision: &DecisionAccess) -> Option<String> {
+    let model = decision.config.local_model()?;
+    let why = crate::local::decide::not_ready(model)?;
+    Some(format!(
+        "The decision model, {} on this computer, is {why}. Settings \u{2192} Models has more.",
+        model.name()
+    ))
+}
+
 impl Judge {
     fn model(&self) -> FollowUpModel {
         match self {
@@ -327,12 +340,7 @@ impl Judge {
     /// nobody anything, and Settings → Mail sorting says why.
     fn not_ready(&self) -> Option<String> {
         let Judge::Decision(decision) = self else { return None };
-        let model = decision.config.local_model()?;
-        let why = crate::local::decide::not_ready(model)?;
-        Some(format!(
-            "The decision model, {} on this computer, is {why}. Settings \u{2192} Models has more.",
-            model.name()
-        ))
+        decision_not_ready(decision)
     }
 
     /// Whether this model may read `account`'s mail for follow-ups: the

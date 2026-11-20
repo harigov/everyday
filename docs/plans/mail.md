@@ -922,6 +922,27 @@ Two changes this phase's tool file cannot make itself, because they live in
 - **The three suggestions** now lead with the one the person would most
   likely send, and vary length and detail instead of inventing a refusal when
   the message plainly wants one answer.
+- **Checks before sending** (`MailWriting.send_checks`,
+  `karmayoga_service::mailcheck`). Settings → Mail writing lists statements the
+  person wants every message to meet -- "The tone is friendly", "The grammar is
+  correct" -- each switched on or off. Compose saves the draft and calls
+  `check_draft` when Send is pressed; a check that fails, or checks that could
+  not run, warn, and the message can still go. The decision model asks each
+  check as its own `pass`/`fail` question (all at once at a provider, one at a
+  time on this computer); with no decision model switched on -- or one that
+  cannot be used -- the Small model gets every check in one prompt and says in
+  a sentence what to change for each that fails. Never Medium. Only the
+  person's own words are read: the quote of the message answered and the
+  signature are cut, and the subject, who it is to and the names of what is
+  attached go with them. It is writing help, so it runs only for an account
+  that has allowed it and acknowledged the model, and spends the mail rate
+  limiter once a call. Checks that cannot run never come back as an error that
+  stops the message, but as a sentence in one of two places: `off` for how
+  things are set up (writing help off for the account, the model not
+  acknowledged, no model usable), which the interface sends past at once and
+  mentions, and `skipped` for this time only (the limiter, a model that is
+  down or refusing, forty-five seconds with no answer), which it warns with
+  and offers Send anyway.
 
 ### Phase 8 — Words
 

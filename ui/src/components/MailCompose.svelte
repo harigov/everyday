@@ -29,7 +29,7 @@
   import { clipboardPicture, mayBePicture } from '../lib/clipboard-picture'
   import { dictation } from '../lib/dictation.svelte'
   import { dismissable } from '../lib/dismiss'
-  import { handle } from '../lib/errors'
+  import { errorMessage, handle } from '../lib/errors'
   import { focusOnMount } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
   import { keysLabel } from '../lib/keys'
@@ -71,12 +71,15 @@
     DeclineReason,
     Draft,
     DraftAttachment,
+    DraftCheckReport,
+    DraftCheckResult,
     DraftId,
     ImproveMode,
     MailAddress,
   } from '../lib/types'
   import Avatar from './Avatar.svelte'
   import Icon from './Icon.svelte'
+  import SendCheckWarning from './SendCheckWarning.svelte'
 
   /** Polish, Shorter, Longer, Friendlier, More formal, Fix -- the Improve
    *  menu's own fixed order, a mode and the label its button draws. */
@@ -455,8 +458,49 @@
    *  opened under its thread) says nothing. */
   let edited = false
 
+  /**
+   * The checks before sending are being put to the model, for a send at
+   * `at` (absent: now). Send reads "Checking…", and a second press, or the
+   * keyboard's, does not start another.
+   */
+  let checking = $state<{ at: string | undefined } | null>(null)
+  /** What the checks found, for `SendCheckWarning`: those that did not pass,
+   *  or why they could not run, and the `at` a Send anyway goes out at. */
+  let findings = $state<{
+    failed: DraftCheckResult[]
+    skipped: string | null
+    at: string | undefined
+  } | null>(null)
+  /**
+   * The last answer that had results in it, with what it was about -- who it
+   * goes to, the subject, the words and the attachments' names, as `checkKey`
+   * reads them -- so Send pressed again on the same message, after Keep
+   * editing and no change, shows the same warning at once and does not put
+   * the model to the same question twice. Never an answer that said it could
+   * not run this time (`skipped`): that was a model failing or slow, and a
+   * second ask may well go through. Not kept past the sheet.
+   */
+  let lastChecked: { key: string; report: DraftCheckReport } | null = null
+  /**
+   * One more with every check asked for and every one given up on -- an edit,
+   * Send without checking, the sheet closing or the draft going -- so an
+   * answer for a check nobody waits on any more is dropped here, and never
+   * sends what was not what it was asked about.
+   */
+  let checkRun = 0
+
+  /** Stop waiting for a check under way, whatever it comes back with. */
+  function dropChecks() {
+    checkRun++
+    checking = null
+  }
+
   function touch() {
     edited = true
+    // What the model is reading is not what is written now, and its answer
+    // would be about the old words. Send reads "Send" again; it is pressed
+    // when they are ready.
+    if (checking) dropChecks()
     syncBody()
     working.updatedAt = new Date().toISOString()
     saver.touch(working.id)
@@ -1102,8 +1146,15 @@
    * into a chip, and a person who types an address and clicks Send without
    * pressing either would otherwise lose it silently, sending to whoever
    * *was* already committed. `commitTyped` no-ops on an empty field.
+   *
+   * Between storing the draft and letting it go, the checks Settings → Mail
+   * writing lists are put to a model (`checksPass`), unless `checked` says
+   * they have been, or are not wanted. They only ever warn: a failed check
+   * stops this send and shows why, and Send anyway comes back here, `checked`,
+   * with the same `scheduledAt`.
    */
-  async function send(scheduledAt?: string) {
+  async function send(scheduledAt?: string, checked = false) {
+    if (checking) return
     commitTyped('to', toText)
     commitTyped('cc', ccText)
     commitTyped('bcc', bccText)
@@ -1111,12 +1162,103 @@
     // Written whatever `saver` thinks: a reply nobody has typed in has never
     // been saved, and there is no draft to send until it has.
     saver.touch(working.id)
-    if (!(await written())) return
+    // Whatever was said about the last Send is about words that are going
+    // now, or being checked again.
+    findings = null
+    sendingLater = false
+    const run = ++checkRun
+    // `checked`: Send anyway, or Send without checking -- the person has
+    // heard about the checks, or does not want to.
+    if (!checked) checking = { at: scheduledAt }
+    const stored = await written()
+    // Not sent: given up on while it was stored (an edit, Send without
+    // checking, the sheet closing), or not stored, or a warning is up. A send
+    // given up on has reset `checking` itself, and may since have been
+    // followed by one of its own, so `checking` is left alone when `run` is no
+    // longer the latest.
+    if (run !== checkRun || !stored || (!checked && !(await checksPass(run, scheduledAt)))) {
+      if (run === checkRun) checking = null
+      return
+    }
     onclose()
     // Not awaited: `mail.send` handles its own failure (a toast, via
     // `handle`) now that this sheet is already gone, so there is nothing
     // left here to await it for.
     void mail.send($state.snapshot(working), scheduledAt ? undefined : UNDO_WINDOW_S, scheduledAt)
+  }
+
+  /** What the checks are about, for `lastChecked`: what the model reads of
+   *  the draft, as `send` has just left it. */
+  function checkKey(): string {
+    return JSON.stringify([
+      working.to,
+      working.cc,
+      working.subject,
+      working.bodyHtml,
+      working.attachments.map((a) => a.filename),
+    ])
+  }
+
+  /**
+   * Put the checks Settings → Mail writing lists to the model, about the
+   * draft as `written` has just stored it -- the model reads the stored one --
+   * and say whether it may go. A failed check, or checks that could not run
+   * this time, is a warning put up in `findings` and not a send; so is an
+   * answer that is an error (a locked vault, a draft gone): it is never taken
+   * for a pass. Nothing to check, or everything passed, goes at once -- and
+   * so does a message the checks cannot run for at all (`off`: writing help
+   * off for the account, no model), which is said beside it, not instead.
+   * False too when this check was given up on while it ran, with nothing said.
+   */
+  async function checksPass(run: number, scheduledAt: string | undefined): Promise<boolean> {
+    const key = checkKey()
+    let report: DraftCheckReport
+    if (lastChecked?.key === key) {
+      report = lastChecked.report
+    } else {
+      try {
+        report = await mailApi.checkDraft(working.id)
+      } catch (e) {
+        report = { results: [], skipped: errorMessage(e) }
+      }
+      if (run !== checkRun) return false
+      lastChecked = report.results.length > 0 && !report.skipped ? { key, report } : null
+    }
+    const failed = report.results.filter((r) => !r.passed)
+    const skipped = report.skipped || null
+    if (failed.length === 0 && !skipped) {
+      // Not a reason to stop every message, and not to say nothing: said
+      // under one key, so it replaces itself instead of stacking.
+      if (report.off) {
+        notify.info("Checks before sending didn't run", {
+          key: 'mail-send-checks-off',
+          body: report.off,
+        })
+      }
+      return true
+    }
+    findings = { failed, skipped, at: scheduledAt }
+    return false
+  }
+
+  /** The link beside "Checking…": send now, as it was asked for, without
+   *  waiting for the answer -- which is dropped when it comes. */
+  function sendWithoutChecking() {
+    const at = checking?.at
+    dropChecks()
+    void send(at, true)
+  }
+
+  /** Send anyway, from the warning: the same send, at the same time, once
+   *  more stored -- it may have been edited since -- and not checked again. */
+  function sendAnyway() {
+    void send(findings?.at, true)
+  }
+
+  /** Keep editing, from the warning: put it away and go back to the words. */
+  function keepEditing() {
+    findings = null
+    editor?.commands.focus()
   }
 
   async function sendLater() {
@@ -1181,6 +1323,8 @@
   }
 
   async function discard() {
+    // Closing is not sending, whatever a check on its way says.
+    dropChecks()
     syncBody()
     if (isBlankDraft(working)) {
       if (!(await discardStored(working.id))) return
@@ -1199,6 +1343,7 @@
     const worthKeeping = edited || ownText().trim().length > 0
     const kept = $state.snapshot(working)
     const thread = underThread ? mail.selectedThread : null
+    dropChecks()
     throwingAway = true
     if (!(await discardStored(kept.id))) {
       throwingAway = false
@@ -1263,6 +1408,9 @@
   }
 
   onDestroy(() => {
+    // Nobody is left to send what a check on its way finds, or to ask again.
+    checkRun++
+    lastChecked = null
     // Nothing is left to hear the words once the sheet is gone.
     if (dictation.active && dictation.owner === dictationOwner) dictation.cancel()
 
@@ -1595,6 +1743,15 @@
     </div>
   {/if}
 
+  {#if findings && !proposal}
+    <SendCheckWarning
+      failed={findings.failed}
+      skipped={findings.skipped}
+      onsend={sendAnyway}
+      onedit={keepEditing}
+    />
+  {/if}
+
   <!-- The two ways out on the left, where the eye finishes the last line
        written; the tools on the right, out of the way until they are wanted. -->
   <div class="foot">
@@ -1625,13 +1782,16 @@
       <button
         class="btn btn-primary btn-sm"
         title={`Send (${keyName('mod+Enter')})`}
+        disabled={checking !== null}
+        aria-busy={checking !== null}
         onclick={() => void send()}
       >
-        Send
+        {checking ? 'Checking…' : 'Send'}
       </button>
       <div class="later-wrap">
         <button
           class="btn btn-outline btn-sm"
+          disabled={checking !== null}
           aria-expanded={sendingLater}
           onclick={() => {
             sendingLater = !sendingLater
@@ -1669,6 +1829,9 @@
           </div>
         {/if}
       </div>
+      {#if checking}
+        <button class="textlink" onclick={sendWithoutChecking}>Send without checking</button>
+      {/if}
     {/if}
     <span class="spacer"></span>
     <button

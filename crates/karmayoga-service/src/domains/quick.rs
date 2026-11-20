@@ -97,12 +97,13 @@ pub struct SetAsk {
 async fn set_quick_ask(svc: Arc<Service>, _ctx: Ctx, args: SetAsk) -> CommandResult<Vec<AskRow>> {
     let vault = svc.require()?;
     blocking(move || {
-        let mut settings = vault.agent_settings()?;
-        let mut policy: QuickPolicy = settings.quick_asks.clone();
-        policy.set(&args.name, args.on);
-        settings.quick_asks = policy;
-        vault.save_agent_settings(&settings)?;
-        Ok(rows(&vault.agent_settings()?))
+        let settings = vault.update_agent_settings(|settings| {
+            let mut policy: QuickPolicy = settings.quick_asks.clone();
+            policy.set(&args.name, args.on);
+            settings.quick_asks = policy;
+            Ok(())
+        })?;
+        Ok(rows(&settings))
     })
     .await
 }

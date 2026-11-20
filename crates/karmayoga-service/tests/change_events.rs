@@ -1254,6 +1254,10 @@ async fn every_offline_write_announces_what_was_written_down() {
         json!({ "settings": serde_json::to_value(&agent_settings).unwrap() }),
     )
     .await;
+    // A site given as an address is listed as its host, and taken off by any
+    // spelling of it.
+    run(&svc, &h, "trust_site", json!({ "site": "https://www.Docs.example/guide?page=2" })).await;
+    run(&svc, &h, "untrust_site", json!({ "site": "docs.example" })).await;
 
     // ---- the models -----------------------------------------------------------
     let models = karmayoga_core::llm::ModelSettings::default();

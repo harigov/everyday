@@ -66,6 +66,19 @@ export interface ToolCard {
    * See `docs/plans/dreaming.md`'s Phase 5.
    */
   canPark: boolean
+  /**
+   * The website "Always allow" would add to the safe websites, on a `waiting`
+   * card that offers it -- a `'fetch'` question about an address not on one
+   * already. Absent or null: the card offers yes and no only.
+   */
+  site?: string | null
+  /**
+   * The website this card's answer asked to add to the safe websites -- set
+   * by `agent.confirm(…, 'always')`. Only what was asked: the card says it
+   * was added once the settings cover it (`sitesCover`), not before. Kept
+   * apart from `site` because that one only means "may offer".
+   */
+  trusted?: string | null
   /** The thread a mail write named itself, once it has finished. See
    *  [[MailLink]]. */
   mailLink: MailLink | null
@@ -222,6 +235,7 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
         subject: event.subject,
         confirmKind: event.kind,
         canPark: event.canPark,
+        site: event.site ?? null,
         mailLink: null,
         files: [],
       })
@@ -290,6 +304,26 @@ export function settle(turn: Turn, now = Date.now()): void {
   turn.phase = 'done'
   turn.preparing = null
   if (turn.startedAt !== null && turn.endedAt === null) turn.endedAt = now
+}
+
+/**
+ * Whether `host` is one of `sites` or a name under one -- `wikipedia.org`
+ * covers `en.wikipedia.org`, `notwikipedia.org` is not covered by it.
+ * `karmayoga_core::agent::sites::covers`, for the places that must say
+ * whether a website is safe the way the service decides it: a card's note
+ * that "Always allow" took.
+ */
+export function sitesCover(sites: readonly string[], host: string): boolean {
+  let name = host.replace(/\.+$/, '').toLowerCase()
+  if (name.startsWith('www.')) name = name.slice(4)
+  if (!name) return false
+  return sites.some(
+    (site) =>
+      name === site ||
+      (name.length > site.length &&
+        name.endsWith(site) &&
+        name[name.length - site.length - 1] === '.'),
+  )
 }
 
 /** The pictures a turn's calls made, in the order they were made. */

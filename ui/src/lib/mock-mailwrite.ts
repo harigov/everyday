@@ -6,10 +6,12 @@
 // writing help has learned from the replies sent -- `voice_learning` and the
 // two commands that change it.
 
-import { mockGetThread, mockMailWriting } from './mock-mail'
+import { htmlToPlainText, splitQuoted, splitSignature } from './mailwrite'
+import { mockGetThread, mockListDrafts, mockMailWriting } from './mock-mail'
 import { VaultError } from './types'
 import type {
   DraftCheckReport,
+  DraftCheckResult,
   ImproveMode,
   MailMessageDetail,
   NeedsReply,
@@ -235,11 +237,57 @@ export async function mockLearnFromReplies(): Promise<VoiceLearningView> {
   return mockVoiceLearning()
 }
 
+/** The mock's two mail accounts, by id, for finding a draft by its own: the
+ *  store of drafts is `mock-mail.ts`'s, which lists them per account. Named
+ *  here for the reason `MOCK_OWN_ADDRESSES` is. */
+const MOCK_MAIL_ACCOUNTS = ['acct-google', 'acct-fastmail']
+
 /**
  * `check_draft`: the checks Settings → Mail writing lists, put to a pretend
- * model about the draft as stored. STUB -- answers "nothing to check".
+ * model about the draft as stored. None switched on: nothing to say, and no
+ * wait. Writing help off for the account (Fastmail, here): `off`, and no
+ * wait either. Otherwise a short pause, as a model takes, and a deterministic read
+ * of the person's own words (not the quote under them, not the signature):
+ * a check about tone or being friendly fails on "ASAP" or "!!!", one about
+ * grammar or spelling on " teh " or a lone lowercase " i ", and any other
+ * passes.
  */
 export async function mockCheckDraft(id: string): Promise<DraftCheckReport> {
-  void id
-  return { results: [] }
+  const checks = (mockMailWriting().sendChecks ?? [])
+    .filter((c) => c.on !== false)
+    .map((c) => c.text.trim())
+    .filter(Boolean)
+  if (checks.length === 0) return { results: [] }
+
+  const draft = MOCK_MAIL_ACCOUNTS.flatMap((a) => mockListDrafts(a)).find((d) => d.id === id)
+  if (!draft) throw new VaultError('notFound', 'no such draft')
+  // Writing help is off on the Fastmail account, as `mock.ts` seeds it. The
+  // real command says so with `off` -- in the words `MailAiRefusal::message`
+  // gives -- and asks no model, so there is no wait.
+  if (draft.accountId === 'acct-fastmail') {
+    return {
+      results: [],
+      off:
+        'me@fastmail.com does not have writing help switched on. Turn it on in ' +
+        'Settings → Accounts → me@fastmail.com → Mail assistant.',
+    }
+  }
+  await delay(600)
+
+  const words = htmlToPlainText(splitSignature(splitQuoted(draft.bodyHtml).own).words)
+  // Spaced round, so a word at either end of a line still has one each side.
+  const spaced = ` ${words.replace(/\s+/g, ' ')} `
+  const results = checks.map((check): DraftCheckResult => {
+    const notes: string[] = []
+    if (/friendly|tone/i.test(check) && /asap|!!!/i.test(spaced)) {
+      notes.push('"ASAP" and "!!!" read as pushy. Say when you need it, and calmly.')
+    }
+    if (/grammar|spelling/i.test(check) && (/ teh /i.test(spaced) || / i /.test(spaced))) {
+      notes.push('"teh" should be "the", and a lone "i" should be "I".')
+    }
+    return notes.length > 0
+      ? { check, passed: false, note: notes.join(' ') }
+      : { check, passed: true }
+  })
+  return { results, model: 'small' }
 }

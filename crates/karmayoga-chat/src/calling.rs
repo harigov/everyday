@@ -311,6 +311,8 @@ pub(crate) struct Confirmation {
     pub subject: String,
     pub kind: String,
     pub can_park: bool,
+    /// The website the chat question may offer to always allow.
+    pub site: Option<String>,
 }
 
 /// A question put in the chat that is not wanted any more.
@@ -362,13 +364,15 @@ impl Confirming {
     pub(crate) fn on_event(&mut self, event: &VoiceEvent) -> Step {
         match event {
             VoiceEvent::Agent {
-                event: AgentEvent::ConfirmationRequired { call_id, subject, kind, can_park, .. },
+                event:
+                    AgentEvent::ConfirmationRequired { call_id, subject, kind, can_park, site, .. },
             } => {
                 let confirmation = Confirmation {
                     call_id: call_id.clone(),
                     subject: subject.clone(),
                     kind: kind.clone(),
                     can_park: *can_park,
+                    site: site.clone(),
                 };
                 self.waiting = Some(confirmation);
                 if self.clicking {
@@ -861,6 +865,25 @@ mod tests {
         assert_eq!(confirmation.kind, "destructive");
         assert!(confirmation.can_park);
         assert_eq!(step.withdraw, None);
+    }
+
+    #[test]
+    fn the_site_a_page_question_offers_to_trust_goes_to_the_chat_with_it() {
+        let page = VoiceEvent::Agent {
+            event: AgentEvent::ConfirmationRequired {
+                call_id: "c1".into(),
+                name: "read_web_page".into(),
+                subject: "https://example.org/?q=a".into(),
+                arguments: serde_json::Value::Null,
+                kind: "fetch".into(),
+                site: Some("example.org".into()),
+                can_park: false,
+            },
+        };
+        let mut c = Confirming::default();
+        c.on_event(&page);
+        let confirmation = c.on_event(&state(VoiceState::WaitingForClick)).ask.unwrap();
+        assert_eq!(confirmation.site.as_deref(), Some("example.org"));
     }
 
     #[test]

@@ -242,6 +242,49 @@
     return [s.large, s.medium, s.small].every((t) => t == null || isLoopback(t.baseUrl))
   })
 
+  // ── Safe websites ────────────────────────────────────────────────────
+  //
+  // Not part of the pane's Save, and not in the draft at all. The list is
+  // changed on its own, by the two buttons below and by "Always allow" on a
+  // card in the rail -- which can happen while this pane is open -- so what is
+  // drawn is what the store last heard the backend say, never this pane's
+  // copy from when it opened. The backend keeps the stored list whatever a
+  // save carries, so the draft's own `safeSites` is never read.
+  const sites = $derived(agent.settings?.safeSites ?? [])
+  let siteInput = $state('')
+  let siteError = $state<string | null>(null)
+  let siteBusy = $state(false)
+
+  async function addSite() {
+    const site = siteInput.trim()
+    if (!site || siteBusy) return
+    siteBusy = true
+    siteError = null
+    try {
+      await agent.trustSite(site)
+      siteInput = ''
+    } catch (e) {
+      // The backend's own sentence -- "is not a website's address" -- beside
+      // the box it is about; what was typed stays so it can be corrected.
+      siteError = e instanceof Error ? e.message : String(e)
+    } finally {
+      siteBusy = false
+    }
+  }
+
+  async function removeSite(site: string) {
+    if (siteBusy) return
+    siteBusy = true
+    siteError = null
+    try {
+      await agent.untrustSite(site)
+    } catch (e) {
+      siteError = e instanceof Error ? e.message : String(e)
+    } finally {
+      siteBusy = false
+    }
+  }
+
   async function save() {
     if (!draft) return
     if (noticeTimer) clearTimeout(noticeTimer)
@@ -499,6 +542,60 @@
             </small>
           </span>
         </label>
+
+        <div class="group">
+          <span class="group-name">Safe websites</span>
+          <p class="hint">
+            Pages on these sites open without asking, and so do pages on the sites under them. An
+            address that carries what looks like data after it has read somebody else's words still
+            asks.
+          </p>
+          {#if sites.length > 0}
+            <ul class="sites">
+              {#each sites as site (site)}
+                <li>
+                  <span class="site">{site}</span>
+                  <button
+                    class="btn btn-sm btn-ghost-danger"
+                    aria-label="Remove {site} from the safe websites"
+                    disabled={siteBusy}
+                    onclick={() => void removeSite(site)}
+                  >
+                    Remove
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="hint">
+              None yet. Answer “Always allow” when the assistant asks to open a page, or add one
+              here.
+            </p>
+          {/if}
+          <div class="add">
+            <input
+              bind:value={siteInput}
+              placeholder="example.com"
+              aria-label="A website to add"
+              autocapitalize="off"
+              autocomplete="off"
+              spellcheck="false"
+              onkeydown={(e) => {
+                if (e.key !== 'Enter' || e.isComposing) return
+                e.preventDefault()
+                void addSite()
+              }}
+            />
+            <button
+              class="btn btn-sm btn-outline"
+              disabled={siteBusy || !siteInput.trim()}
+              onclick={() => void addSite()}
+            >
+              Add
+            </button>
+          </div>
+          {#if siteError}<p class="error">{siteError}</p>{/if}
+        </div>
       {/if}
       <label class="setting narrow">
         <span>Steps per request</span>
@@ -722,6 +819,44 @@
 
   .switch-label {
     font-size: var(--text-sm);
+  }
+
+  /* The safe websites: a list of names, each with a way to take it off, and
+     one box to put another on. A name wraps rather than widening the pane. */
+  .sites {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .sites li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    min-width: 0;
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+  }
+  .site {
+    min-width: 0;
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+  }
+  .add {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .add input {
+    flex: 1;
+  }
+  .add .btn {
+    flex: none;
   }
 
   /* Every box in here is `width: 100%` of a column that has `min-width: 0`.
