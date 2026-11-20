@@ -79,6 +79,22 @@ mod engine {
     /// job at a time to give, so two sentences would only fight over them.
     struct Engine {
         tts: Mutex<ptts::synth::Synth>,
+        /// The speakers that have said something, or been got ready to,
+        /// since this load: see [`LocalSynthesiser::warm`].
+        primed: Mutex<Vec<&'static str>>,
+    }
+
+    impl Engine {
+        fn is_primed(&self, speaker: &str) -> bool {
+            self.primed.lock().unwrap_or_else(|e| e.into_inner()).contains(&speaker)
+        }
+
+        fn primed(&self, speaker: &'static str) {
+            let mut primed = self.primed.lock().unwrap_or_else(|e| e.into_inner());
+            if !primed.contains(&speaker) {
+                primed.push(speaker);
+            }
+        }
     }
 
     static VOICES: Resident<LocalVoice, Engine> = Resident::new("voice");
@@ -145,7 +161,7 @@ mod engine {
         }
         let tts =
             builder.build().map_err(|e| failed("could not load the voice on this computer", e))?;
-        Ok(Engine { tts: Mutex::new(tts) })
+        Ok(Engine { tts: Mutex::new(tts), primed: Mutex::new(Vec::new()) })
     }
 
     #[derive(Clone, Copy)]
@@ -161,11 +177,43 @@ mod engine {
             Self { voice, speaker, speed }
         }
 
-        /// Load the voice now, if it is not loaded already. It is not held
-        /// on to: that is the [`Resident`]'s to do, and to let go of.
+        /// Load the voice now, if it is not loaded already, and start getting
+        /// this speaker ready behind it. It is not held on to: that is the
+        /// [`Resident`]'s to do, and to let go of.
+        ///
+        /// A speaker's first sentence after a load costs about 300 ms more
+        /// than any after it, measured on a 12-core desktop: `ptts` primes
+        /// each speaker the first time it is asked for one. Priming it here,
+        /// in the background, spends that while voice mode waits for the
+        /// person to speak rather than in its first reply; a caller that asks
+        /// for a sentence at once just waits for it under the lock, as it
+        /// would have anyway. Priming is a session `ptts` builds and this
+        /// drops at once, which allocates its whole cache; so a speaker that
+        /// has been primed, or has spoken, since the load is not primed again
+        /// -- Listen builds a synthesiser on every change of speed.
         pub async fn warm(&self) -> CommandResult<()> {
             let voice = self.voice;
-            crate::service::blocking(move || VOICES.get(voice, || load(voice)).map(|_| ())).await
+            let engine =
+                crate::service::blocking(move || VOICES.get(voice, || load(voice))).await?;
+            let speaker = self.speaker;
+            if engine.is_primed(speaker) {
+                return Ok(());
+            }
+            tokio::spawn(crate::service::blocking(move || {
+                let tts = engine.tts.lock().unwrap_or_else(|e| e.into_inner());
+                if engine.is_primed(speaker) {
+                    return Ok(());
+                }
+                let options = ptts::synth::SpeechOptions::default().voice(speaker);
+                match tts.session_default(&options) {
+                    Ok(_) => engine.primed(speaker),
+                    Err(error) => {
+                        tracing::warn!(error = %error, speaker, "could not get the voice's speaker ready")
+                    }
+                }
+                Ok(())
+            }));
+            Ok(())
         }
 
         /// Blocking, as is everything that runs the model.
@@ -180,6 +228,7 @@ mod engine {
                 let pcm = tts
                     .say_with(text, &options)
                     .map_err(|e| failed("the voice on this computer could not say that", e))?;
+                engine.primed(self.speaker);
                 (pcm, tts.sample_rate())
             };
             // The model has no pace of its own to set, so the speed is the

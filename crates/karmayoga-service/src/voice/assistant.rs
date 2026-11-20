@@ -151,7 +151,9 @@ impl Service {
     /// that has to be on this computer has not been downloaded -- all of which
     /// [`Service::live_transcription`] and [`Service::speech_synthesiser`]
     /// check. Loading what is there can take seconds, so it happens here and
-    /// not in the session, which starts with everything ready and listening.
+    /// not in the session, which starts listening at once. A recogniser on
+    /// this computer is the exception: it goes on loading while the person
+    /// talks, and their first words wait for whatever of it is left.
     pub async fn voice_open(
         self: &Arc<Self>,
         conversation: ConversationId,
@@ -169,8 +171,11 @@ impl Service {
         via: Option<Via>,
     ) -> CommandResult<VoiceLink> {
         self.require_unlocked()?;
-        let live = self.live_transcription(Tuning::CONVERSATION).await?;
+        // The voice first: listening starts a recogniser loading, which a
+        // voice that is missing would leave running for a session that never
+        // opened.
         let synthesiser = self.speech_synthesiser().await?;
+        let live = self.live_transcription(Tuning::CONVERSATION).await?;
         Ok(session::spawn(VoiceParts {
             live,
             synthesiser,

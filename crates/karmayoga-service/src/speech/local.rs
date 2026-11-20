@@ -468,10 +468,16 @@ impl Recogniser {
     }
 }
 
+static RECOGNISERS: Resident<LocalModel, Recogniser> = Resident::new("speech recogniser");
+
+/// Whether `model` is in memory right now, without loading it.
+pub fn recogniser_loaded(model: LocalModel) -> bool {
+    RECOGNISERS.is_loaded(&model)
+}
+
 /// A [`Recogniser`] for `model`, loaded on first use and shared. See this
 /// module's doc on sharing.
 pub fn recogniser(model: LocalModel) -> CommandResult<Arc<Recogniser>> {
-    static RECOGNISERS: Resident<LocalModel, Recogniser> = Resident::new("speech recogniser");
     RECOGNISERS.get(model, || Recogniser::load(model))
 }
 

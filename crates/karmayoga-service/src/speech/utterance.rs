@@ -34,6 +34,12 @@ const MIN_UTTERANCE_MS: u64 = 200;
 /// Turns one finished utterance into text. Empty when nothing was said.
 pub trait UtteranceTranscriber: Send + Sync {
     fn hear<'a>(&'a self, samples: &'a [i16]) -> BoxFuture<'a, CommandResult<String>>;
+
+    /// Start getting ready to hear, in the background, for a caller that is
+    /// about to listen. A recogniser on this computer starts loading, which
+    /// takes seconds; a server has nothing to get ready. Must be called on a
+    /// Tokio runtime.
+    fn warm(&self) {}
 }
 
 /// The configured speech model, as a [`UtteranceTranscriber`].
@@ -56,7 +62,7 @@ fn local_utterances(
     model: karmayoga_core::speech::LocalModel,
     language: Option<String>,
 ) -> CommandResult<Arc<dyn UtteranceTranscriber>> {
-    Ok(Arc::new(LocalUtterances { model, language }))
+    Ok(Arc::new(LocalUtterances { model, language, warming: std::sync::Mutex::new(None) }))
 }
 
 #[cfg(not(feature = "speech"))]
@@ -119,7 +125,15 @@ impl UtteranceTranscriber for RemoteUtterances {
 struct LocalUtterances {
     model: karmayoga_core::speech::LocalModel,
     language: Option<String>,
+    /// The load [`UtteranceTranscriber::warm`] started, until the first
+    /// utterance takes it. That utterance waits for this load rather than
+    /// asking for its own: a load that failed is not remembered, so asking
+    /// again would spend the seconds a second time before saying so.
+    warming: std::sync::Mutex<Option<Warming>>,
 }
+
+#[cfg(feature = "speech")]
+type Warming = tokio::task::JoinHandle<CommandResult<Arc<crate::speech::local::Recogniser>>>;
 
 #[cfg(feature = "speech")]
 impl LocalUtterances {
@@ -129,7 +143,15 @@ impl LocalUtterances {
         }
         // Loading takes seconds the first time, and recognising is real work:
         // neither belongs on the runtime.
-        let recogniser = crate::speech::local::recogniser_async(self.model).await?;
+        let warming = self.warming.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let recogniser = match warming {
+            Some(load) => match load.await {
+                Ok(loaded) => loaded?,
+                // It panicked: try once more, and report what that says.
+                Err(_) => crate::speech::local::recogniser_async(self.model).await?,
+            },
+            None => crate::speech::local::recogniser_async(self.model).await?,
+        };
         let language = self.language.clone();
         let heard = samples.to_vec();
         let text = crate::service::blocking(move || {
@@ -152,6 +174,13 @@ impl LocalUtterances {
 impl UtteranceTranscriber for LocalUtterances {
     fn hear<'a>(&'a self, samples: &'a [i16]) -> BoxFuture<'a, CommandResult<String>> {
         Box::pin(async move { self.hear_local(samples).await })
+    }
+
+    fn warm(&self) {
+        let mut warming = self.warming.lock().unwrap_or_else(|e| e.into_inner());
+        if warming.is_none() {
+            *warming = Some(tokio::spawn(crate::speech::local::recogniser_async(self.model)));
+        }
     }
 }
 
