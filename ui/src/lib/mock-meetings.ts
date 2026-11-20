@@ -307,7 +307,7 @@ export function mockDecisionModels(): LocalModelInfo[] {
 export async function mockBenchmarkDecisionModel(id: string): Promise<DecisionBenchmark> {
   await new Promise((r) => setTimeout(r, 600))
   const ms = id === 'd3Lite' ? 900 : id === 'd3Nano' ? 1800 : 4200
-  return { loadMs: 400, msPerMessage: ms }
+  return { loadMs: 400, msPerMessage: ms, gpu: null }
 }
 
 export function mockDownloadSpeechModel(id: string): void {

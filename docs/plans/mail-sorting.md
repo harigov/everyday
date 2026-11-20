@@ -214,7 +214,8 @@ llama.cpp does not read -- the one to swap in once it does.
   must not need CMake; a vault served from it sorts at a provider), through
   `llama-cpp-sys-2`'s raw bindings and a small safe layer of our own
   (`local::llama`), which build llama.cpp from source -- CMake and a C++
-  compiler at build time; Metal on Apple Silicon, the CPU elsewhere. Not the
+  compiler at build time; Metal on Apple Silicon, Vulkan on Linux (below),
+  the CPU on Windows and Intel Macs. Not the
   `llama-cpp-2` safe bindings: they always link llama.cpp's `common`
   library, whose load-time `std::regex` clashed with the copy inside
   sherpa-onnx's prebuilt library, and a binary with both features aborted
@@ -226,6 +227,45 @@ llama.cpp does not read -- the one to swap in once it does.
   plain words, with special tokens off, so a message that spells out
   `<|im_end|>` cannot end the turn it is in (llama.cpp's server reads the
   whole prompt with them on).
+- **Graphics cards** (Nov 19). On Linux, llama.cpp is built with its
+  Vulkan backend, which drives NVIDIA, AMD and Intel cards alike, separate or
+  built in (separate ones first, as llama.cpp picks them). A model whose
+  file fits in the card's free memory is loaded onto it, and stays if
+  llama.cpp can then set aside room to read a 1,024-token prompt beside
+  it. Otherwise it goes on the processor. The room is tried rather than
+  estimated: llama.cpp's working memory for a prompt grows by about a
+  megabyte a token for these models, and the file overstates the layers,
+  since the vocabulary stays in main memory. Other programs use the card
+  too; on the machine this was built on, the desktop, browsers and Karma
+  Yoga's own webview held 4–5 GB of 8. So a model on the card can still
+  meet a prompt with no room for it. That prompt is read on the processor,
+  from a second copy loaded the first time one is needed, and the next
+  prompt tries the card again. A processor-only load
+  hides the card from llama.cpp entirely; with the card in view it would
+  still send a long prompt's multiplications there. "Check speed" in
+  Settings names the card it ran on.
+  - **Build.** The Vulkan headers, SPIRV-Headers and `glslc` come from the
+    distribution (`scripts/setup-linux.sh`) or from LunarG's SDK
+    (`scripts/vulkan-sdk.sh`, pinned by SHA-256). The release, built on
+    Ubuntu 22.04, which packages no `glslc`, uses the SDK. `make build`
+    stops early, saying what to install, when neither is there.
+  - **Cost.** The app links `libvulkan.so.1` (a dependency of the .deb and
+    .rpm) and carries about 45 MB more of compiled shaders.
+  - **Measured.** d3-nano on an RTX 3070 against the same machine's
+    i7-12700F at 8 threads, with other builds running: 512-token prompt
+    0.11 s against 10.7 s, 1,024 tokens 0.2 s against 22 s. The label scores
+    agreed to about 0.06. d3-lite took 0.08 s. d3-mini's 3.7 GB file did
+    not fit beside the 4 GB the desktop held on that 8 GB card, so it stays
+    on the processor there. Through the app's own path on that card, d3-nano
+    sorted the five sample messages in 117 ms each, all into the right
+    category, and scored 52 of 54 on the set below at 124 ms a message. The
+    two it missed are vague "Other" messages, the same kind the table leaves
+    out of the count. A prompt too long for the card's free memory was
+    answered on the processor, and the next short one ran on the card again,
+    at 156 ms.
+  - **First use.** The NVIDIA driver compiles llama.cpp's shaders the first
+    time a new binary runs them, then caches them in `~/.cache/nvidia`. A
+    fresh build's first answers took about 5 s each, and 0.14 s after that.
 - **Memory.** `local::resident`: loaded on first use (under a second for
   d3-lite, up to about ten for the larger two from a cold disk cache), let
   go of after 15 minutes unused, never while in use. The same holds for the
@@ -276,9 +316,13 @@ was not allowed in the session that built this.
 
 ## Not done
 
-- A graphics card on Linux or Windows: llama.cpp's Vulkan backend would make
-  every size several times quicker where there is one, at the cost of the
-  Vulkan SDK at build time. Metal on Apple Silicon already comes with it.
+- A graphics card on Windows: the same Vulkan build, once the Windows
+  release runner installs LunarG's SDK (the bindings read `VULKAN_SDK`
+  there too).
+- Part of a model on the card: one that does not fit whole goes wholly on
+  the processor, where llama.cpp could split it by layer.
+- A switch to keep the model off the card: on a laptop with a separate card
+  it wakes the card, and a model held for 15 idle minutes keeps it awake.
 - A shorter prompt for a local model: the snippet repeats the start of the
   excerpt, and every token costs time here.
 - Filtering the list by one of the person's categories: the label is sealed,

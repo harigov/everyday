@@ -179,7 +179,10 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
 
       # Same set as scripts/setup-linux.sh, plus the three tools linuxdeploy
-      # shells out to when it assembles the AppImage. libpipewire/libspa are
+      # shells out to when it assembles the AppImage -- less the Vulkan
+      # headers and `glslc`, which Ubuntu 22.04 does not package; the step
+      # after this fetches them. `libvulkan1` is the loader the app links,
+      # which linuxdeploy has to find to bundle the AppImage. libpipewire/libspa are
       # for `capture.rs`'s loopback track, built with the `pipewire` cpal
       # feature on this target only; libclang is for `bindgen`, which
       # `libspa-sys`/`pipewire-sys` run at build time against those headers --
@@ -201,7 +204,18 @@ jobs:
             libasound2-dev \
             libspa-0.2-dev \
             libclang-dev \
+            libvulkan1 \
             build-essential curl wget file patchelf desktop-file-utils
+
+      # llama.cpp's Vulkan backend (see crates/karmayoga-service/Cargo.toml)
+      # needs the Vulkan headers, SPIRV-Headers and `glslc` to build. LunarG's
+      # SDK carries all three, checked against a pinned SHA-256.
+      - name: Fetch and check the Vulkan SDK
+        if: matrix.name == 'linux'
+        run: |
+          set -euo pipefail
+          sdk=$(scripts/vulkan-sdk.sh "$RUNNER_TEMP/vulkan-sdk")
+          echo "VULKAN_SDK=$sdk" >> "$GITHUB_ENV"
 
       - name: Install interface packages
         run: npm --prefix ui ci

@@ -3184,13 +3184,19 @@ its own schema.
 ### Run it
 
 ```sh
-make setup    # WebKitGTK headers on Linux, Tauri CLI, npm packages
+make setup    # WebKitGTK and Vulkan headers on Linux, Tauri CLI, npm packages
 make run      # the desktop app, with hot reload
 ```
 
 `make` on its own lists every target. It is a thin wrapper and not a build
 system of its own: `make run` is `./scripts/dev.sh`, `make test` is
 `./scripts/test.sh`. Use the scripts directly if you prefer them.
+
+On Linux the app builds llama.cpp with Vulkan, so a decision model can run on
+a graphics card. That needs the Vulkan headers, SPIRV-Headers and `glslc`,
+which `make setup` installs. Where the distribution has no `glslc` (Ubuntu
+22.04), or there is no root to install with, use LunarG's SDK instead:
+`export VULKAN_SDK=$(scripts/vulkan-sdk.sh ~/.cache/vulkan-sdk)`.
 
 ### Build it
 

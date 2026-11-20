@@ -78,10 +78,11 @@ async fn each_model_sorts_the_sample_mail() {
         ensure_installed(model).await;
         let bench = decide::benchmark(model).await.unwrap();
         eprintln!(
-            "{}: loaded in {:?} ms, {} ms a message",
+            "{}: loaded in {:?} ms, {} ms a message, on {}",
             model.name(),
             bench.load_ms,
-            bench.ms_per_message
+            bench.ms_per_message,
+            bench.gpu.as_deref().unwrap_or("the processor")
         );
         let mut right = 0;
         for (want, text) in samples::labelled() {
@@ -93,6 +94,48 @@ async fn each_model_sorts_the_sample_mail() {
             right += usize::from(choice.name == want);
         }
         assert!(right >= 4, "{} sorted only {right} of 5 sample messages right", model.name());
+    }
+}
+
+/// A prompt too long for the room left on a graphics card is still
+/// answered -- on the processor, from a copy loaded for it -- and the model
+/// goes back to the card for the next. About 2,300 tokens of categories
+/// described at length: more than d3-nano had room to read beside itself on
+/// an 8 GB card with a desktop on it. On a computer without a card, or with
+/// a large one, both are simply answered where the model is.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "downloads gigabytes of models; set KARMAYOGA_TEST_DECISIONS=1"]
+async fn a_prompt_too_long_for_the_card_is_still_answered() {
+    if !enabled() {
+        eprintln!("KARMAYOGA_TEST_DECISIONS is not 1; skipping");
+        return;
+    }
+    let mut options = samples::categories();
+    for o in &mut options {
+        o.description = format!(
+            "{} {}",
+            o.description,
+            "Mail like this, from anyone at all, about anything of the kind, goes here. "
+                .repeat(25)
+        );
+    }
+    let (want, text) = samples::labelled().remove(0);
+    for model in models() {
+        ensure_installed(model).await;
+        let started = Instant::now();
+        let choice = decide::choose(model, &content(text.clone()), samples::INSTRUCTIONS, &options)
+            .await
+            .unwrap();
+        eprintln!("{}: a long prompt took {:?}", model.name(), started.elapsed());
+        assert!(options.iter().any(|o| o.name == choice.name), "{} is no option", choice.name);
+        assert_eq!(choice.name, want, "{}", model.name());
+        let bench = decide::benchmark(model).await.unwrap();
+        eprintln!(
+            "{}: then {} ms a message, on {}",
+            model.name(),
+            bench.ms_per_message,
+            bench.gpu.as_deref().unwrap_or("the processor")
+        );
     }
 }
 

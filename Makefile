@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build dist test test-speech test-postgres test-imap test-smtp test-mail test-caldav test-matrix lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup app-deps run dev ui build dist test test-speech test-postgres test-imap test-smtp test-mail test-caldav test-matrix lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Karma Yoga -- make <target>"
@@ -45,7 +45,7 @@ $(UI_DIR)/node_modules: $(UI_DIR)/package-lock.json
 	npm --prefix $(UI_DIR) install
 	@touch $@
 
-run: $(UI_DIR)/node_modules ## Run the desktop app in development, with hot reload
+run: $(UI_DIR)/node_modules app-deps ## Run the desktop app in development, with hot reload
 	./scripts/dev.sh
 
 dev: run ## Alias for `run`
@@ -57,6 +57,32 @@ ui: $(UI_DIR)/node_modules ## Run the interface alone in a browser, on its mock 
 # Where cargo puts what it builds -- CARGO_TARGET_DIR moves it out of the
 # checkout, which `desktop-entry` below looks for too.
 TARGET_DIR := $(or $(CARGO_TARGET_DIR),target)
+
+# What building the desktop shell needs on Linux beyond Rust and a C++
+# compiler: the WebKitGTK headers, and -- for the llama.cpp it builds with
+# Vulkan, see crates/karmayoga-service/Cargo.toml -- the Vulkan headers,
+# SPIRV-Headers and `glslc`, from the distribution or from a Vulkan SDK named
+# by VULKAN_SDK (scripts/vulkan-sdk.sh fetches one). APP_MISSING names what
+# is not here; it is empty when nothing is missing, and off Linux. `make
+# setup` installs both.
+ifeq ($(shell uname -s),Linux)
+HAVE_WEBKIT := $(shell pkg-config --exists webkit2gtk-4.1 2>/dev/null && echo yes)
+HAVE_VULKAN := $(or $(VULKAN_SDK),$(shell command -v glslc >/dev/null \
+	&& [ -f /usr/include/vulkan/vulkan.hpp ] \
+	&& [ -f /usr/include/spirv/unified1/spirv.hpp ] && echo yes))
+APP_MISSING := $(strip $(if $(HAVE_WEBKIT),,WebKitGTK) $(if $(HAVE_VULKAN),,Vulkan))
+endif
+# Printed in single quotes, so the command in it is shown, not run.
+VULKAN_HINT := or set VULKAN_SDK to a Vulkan SDK: export VULKAN_SDK=$$(scripts/vulkan-sdk.sh ~/.cache/vulkan-sdk)
+
+# Stops a build that would otherwise fail minutes in, at a pkg-config or
+# CMake error, and says what to install instead.
+app-deps:
+	@if [ -n "$(APP_MISSING)" ]; then \
+		echo "Building the app needs the $(APP_MISSING) development files: run make setup" >&2; \
+		$(if $(findstring Vulkan,$(APP_MISSING)),echo '$(VULKAN_HINT)' >&2;) \
+		exit 1; \
+	fi
 
 # Two builds, for two different people. `build` is the app for this machine,
 # run in place (`make desktop-entry` points the desktop at it): optimised
@@ -75,12 +101,12 @@ TARGET_DIR := $(or $(CARGO_TARGET_DIR),target)
 # old profile. `make build JOBS=4` on a machine with less to spare.
 JOBS ?= 8
 
-build: $(UI_DIR)/node_modules ## Build the desktop app to run on this machine
+build: $(UI_DIR)/node_modules app-deps ## Build the desktop app to run on this machine
 	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build --no-bundle
 	@echo
 	@echo "Built $(TARGET_DIR)/release/karmayoga-app"
 
-dist: $(UI_DIR)/node_modules ## Build the installers the way a release does (slow)
+dist: $(UI_DIR)/node_modules app-deps ## Build the installers the way a release does (slow)
 	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build -- --profile dist
 	@echo
 	@echo "Installers are under $(TARGET_DIR)/dist/bundle/"
@@ -91,9 +117,10 @@ test: ## Run the test suite under a memory cap
 	@# webview -- so a plain `cargo test` skips it, and its tests would
 	@# otherwise run nowhere at all. That includes the one holding a feed's
 	@# subscription URL, which is a bearer credential, out of error messages
-	@# and logs. Skipped when ARGS names a package, and when the headers to
-	@# build it are missing; CI installs them and runs it unconditionally.
-	@if [ -z "$(ARGS)" ] && { [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; }; then \
+	@# and logs. Skipped when ARGS names a package, and when what it takes to
+	@# build it is missing (APP_MISSING); CI installs it and runs it
+	@# unconditionally.
+	@if [ -z "$(ARGS)" ] && [ -z "$(APP_MISSING)" ]; then \
 		./scripts/test.sh -p karmayoga-app; \
 	fi
 	@# Not the `speech` feature -- see `test-speech` below for why that is a
@@ -293,13 +320,19 @@ test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dove
 # `crates/karmayoga-service/Cargo.toml`'s own comment on that dependency.
 # The `decisions` feature (`local::decide`; see docs/plans/mail-sorting.md)
 # compiles llama.cpp from source, which needs CMake (point `CMAKE` at one
-# that is not on PATH) and a C++ compiler.
+# that is not on PATH) and a C++ compiler -- and on Linux, where it is built
+# with Vulkan, the Vulkan headers and `glslc` too (HAVE_VULKAN above).
 # Neither `test` nor `lint` below build them, on purpose: a plain clone's
 # first `make test` must not need that download or a native toolchain it may
 # not have. This is the manual equivalent of .github/workflows/check.yml's
 # separate `rust-speech` job, and the one job of the three there that `lint`
 # does not otherwise mirror.
 test-speech: ## Clippy and test the local-model features (downloads sherpa-onnx, builds llama.cpp)
+	@if [ "$$(uname -s)" = Linux ] && [ -z "$(HAVE_VULKAN)" ]; then \
+		echo "llama.cpp is built with Vulkan here: run make setup," >&2; \
+		echo '$(VULKAN_HINT)' >&2; \
+		exit 1; \
+	fi
 	cargo clippy -p karmayoga-service --all-targets --features speech,decisions -- -D warnings
 	cargo test -p karmayoga-service --features speech,decisions
 
@@ -321,11 +354,12 @@ lint: $(UI_DIR)/node_modules ## Format check, clippy and interface typecheck -- 
 	cargo fmt --all -- --check
 	cargo clippy --all-targets -- -D warnings
 	@# The shell links the platform webview, so it is not a workspace default
-	@# member and cannot be linted on a machine without those headers.
-	@if [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
+	@# member and cannot be linted on a machine without those headers, or
+	@# the Vulkan ones (APP_MISSING).
+	@if [ -z "$(APP_MISSING)" ]; then \
 		cargo clippy -p karmayoga-app --all-targets -- -D warnings; \
 	else \
-		echo "skipping karmayoga-app: WebKitGTK headers missing, run make setup"; \
+		echo "skipping karmayoga-app: $(APP_MISSING) headers missing, run make setup"; \
 	fi
 	npm --prefix $(UI_DIR) run check
 	@# The generated client must be what the Rust command table says. The
@@ -347,7 +381,7 @@ fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 	@# uncommitted tree cargo would otherwise refuse to touch -- commit or
 	@# stash first if you want the changes separable.
 	cargo clippy --fix --all-targets --allow-dirty --allow-staged
-	@if [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
+	@if [ -z "$(APP_MISSING)" ]; then \
 		cargo clippy --fix -p karmayoga-app --all-targets --allow-dirty --allow-staged; \
 	fi
 	@# Formatting a Rust file can leave it in a shape clippy reads differently

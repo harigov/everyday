@@ -3437,6 +3437,8 @@ export interface DecisionBenchmark {
   /** How long loading it took, when it was not already in memory. */
   loadMs: number | null
   msPerMessage: number
+  /** The graphics card it ran on, by name -- `null` on the processor. */
+  gpu: string | null
 }
 
 /** One model: where it is, and which to ask there. Flat on the wire. */
