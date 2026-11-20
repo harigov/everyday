@@ -368,9 +368,7 @@ fn open(host: &cpal::Host, options: EngineOptions) -> Result<Opened, AudioError>
     // A speaker can play the sound of working, made now for its rate rather
     // than when it is first wanted, under the lock its callback tries for.
     let queue = Arc::new(Mutex::new(match &speaker {
-        Some((_, config)) => {
-            PlaybackQueue::with_working_sound(Bed::new(config.sample_rate().into()))
-        }
+        Some((_, config)) => PlaybackQueue::with_working_sound(Bed::new(config.sample_rate())),
         None => PlaybackQueue::new(),
     }));
     let finished = Arc::new(AtomicBool::new(false));
