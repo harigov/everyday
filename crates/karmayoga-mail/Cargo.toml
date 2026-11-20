@@ -107,7 +107,7 @@ css-inline = { version = "=0.21.2", default-features = false }
 #   - hostname: reads the local machine's hostname for the EHLO command's
 #     default, the one place this crate still lets `lettre` decide
 #     something rather than deciding it itself.
-lettre = { version = "=0.11.23", default-features = false, features = [
+lettre = { version = "=0.11.24", default-features = false, features = [
     "smtp-transport",
     "pool",
     "tokio1-rustls",
