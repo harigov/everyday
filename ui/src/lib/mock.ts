@@ -9073,16 +9073,25 @@ function mockConfirm(callId: string, approved: boolean, later: boolean, always =
 }
 
 /**
+ * A few of the public suffixes the backend refuses (it reads the whole Public
+ * Suffix List): enough for the mock to say no the same way in a browser.
+ */
+const MOCK_SHARED_SUFFIXES = new Set(['co.uk', 'org.uk', 'com.au', 'github.io', 'blogspot.com'])
+
+/**
  * `karmayoga_core::agent::sites::normalize_site`: an address or a host as the
  * host it names -- lower-case, no scheme, credentials, port, path, trailing
- * dot or `www.` -- and a refusal for what is not a host with a dot in it.
+ * dot or `www.` -- and a refusal for what is not a host with a dot in it, or
+ * is a suffix everybody registers under.
  */
 function mockNormalizeSite(input: string): string {
   const invalid = () =>
     new VaultError('invalid', `${JSON.stringify(input.trim())} is not a website's address`)
   let rest = input.trim()
-  const scheme = rest.indexOf('://')
-  if (scheme >= 0) rest = rest.slice(scheme + 3)
+  // A scheme only at the start: `good.example/go?to=https://evil.example`
+  // names good.example.
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(rest)
+  if (scheme) rest = rest.slice(scheme[0].length)
   const end = rest.search(/[/?#]/)
   if (end >= 0) rest = rest.slice(0, end)
   const at = rest.lastIndexOf('@')
@@ -9099,6 +9108,12 @@ function mockNormalizeSite(input: string): string {
     .split('.')
     .every((l) => l.length > 0 && l.length <= 63 && !/^-|-$/.test(l) && /^[a-z0-9-]+$/.test(l))
   if (!labelsOk) throw invalid()
+  if (MOCK_SHARED_SUFFIXES.has(host)) {
+    throw new VaultError(
+      'invalid',
+      `${host} is shared by many unrelated websites; add the website itself, such as example.${host}`,
+    )
+  }
   return host
 }
 

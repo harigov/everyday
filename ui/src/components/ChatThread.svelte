@@ -980,7 +980,8 @@
                   {#each plain as card (card.callId)}
                     <ToolCardView
                       {card}
-                      onanswer={(answer) => void agent.confirm(card.callId, answer)}
+                      onanswer={(answer: 'confirm' | 'decline' | 'later' | 'always') =>
+                        void agent.confirm(card.callId, answer)}
                     />
                   {/each}
                 </div>
