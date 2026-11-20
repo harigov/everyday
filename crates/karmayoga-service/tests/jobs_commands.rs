@@ -715,6 +715,7 @@ impl ChatOutlet for Posts {
         kind: String,
         subject: String,
         _can_park: bool,
+        _site: Option<String>,
     ) -> BoxFuture<'static, ConfirmAnswer> {
         self.confirms.lock().unwrap().push((from, kind, subject));
         let answer = self.confirm_with;

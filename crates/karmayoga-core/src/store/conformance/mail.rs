@@ -1405,6 +1405,7 @@ fn mail_writing_round_trips(store: &dyn JournalStore) {
         instructions: "Short. No exclamation marks.".into(),
         use_calendar: false,
         learn: false,
+        send_checks: vec![crate::mail::SendCheck { text: "The tone is friendly".into(), on: true }],
     };
     m.put_mail_writing(&mine).unwrap();
     assert_eq!(m.mail_writing().unwrap(), mine);

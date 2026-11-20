@@ -186,6 +186,58 @@ async fn a_delete_asks_first_and_a_tap_on_yes_does_it() {
     );
 }
 
+/// A turn that reads a page at an address the model put together itself,
+/// on a site (`.invalid` never resolves) that is not the owner's to trust yet.
+fn reading_a_page(then: &str) -> support::Script {
+    let page = serde_json::json!({ "url": "https://pages.example.invalid/find?q=sourdough" });
+    support::calls("read_web_page", page.to_string(), then)
+}
+
+/// A harness whose assistant may use the web, and so ask to open pages.
+async fn with_the_web(then: &'static str) -> Harness {
+    let h = Harness::start(|_| reading_a_page(then), Timing::default()).await;
+    let mut settings = h.vault.agent_settings().unwrap();
+    settings.web = true;
+    h.vault.save_agent_settings(&settings).unwrap();
+    h
+}
+
+#[tokio::test]
+async fn a_page_question_in_a_turn_offers_always_and_a_tap_on_it_adds_the_site() {
+    let mut h = with_the_web("Read it.").await;
+
+    h.say("find me a sourdough recipe").await;
+    let (question, reference) = h.connector.wait_for_question().await;
+    assert!(question.markdown.contains("Open this address"), "{}", question.markdown);
+    assert_eq!(question.choices, vec![Choice::Yes, Choice::No, Choice::Always]);
+    assert!(
+        question.markdown.contains("pages on `pages.example.invalid` from now on"),
+        "{}",
+        question.markdown
+    );
+    assert!(h.vault.agent_settings().unwrap().safe_sites.is_empty(), "nothing is saved yet");
+
+    h.choose(&reference, Choice::Always).await;
+    h.connector.wait_for_sent(1).await;
+    h.finish().await;
+
+    assert_eq!(h.vault.agent_settings().unwrap().safe_sites, vec!["pages.example.invalid"]);
+    assert_eq!(h.connector.questions().len(), 1);
+}
+
+#[tokio::test]
+async fn a_plain_yes_to_a_page_question_saves_no_site() {
+    let mut h = with_the_web("Read it.").await;
+
+    h.say("find me a sourdough recipe").await;
+    let (_, reference) = h.connector.wait_for_question().await;
+    h.choose(&reference, Choice::Yes).await;
+    h.connector.wait_for_sent(1).await;
+    h.finish().await;
+
+    assert!(h.vault.agent_settings().unwrap().safe_sites.is_empty(), "yes is only for this page");
+}
+
 #[tokio::test]
 async fn a_typed_yes_does_it_too() {
     let mut h = Harness::start(|task| deleting(task, "Deleted it."), Timing::default()).await;
@@ -225,6 +277,27 @@ async fn a_typed_no_leaves_the_task_alone_and_is_not_run_as_a_message() {
         .map(|m| m.content)
         .collect();
     assert_eq!(said, vec!["delete the dentist task"], "the \"no\" was an answer, not a message");
+}
+
+#[tokio::test]
+async fn always_is_not_a_yes_to_a_delete_it_was_never_offered_on() {
+    let mut h = Harness::start(|task| deleting(task, "Left it."), Timing::default()).await;
+
+    h.say("delete the dentist task").await;
+    let (question, reference) = h.connector.wait_for_question().await;
+    assert!(!question.choices.contains(&Choice::Always), "{:?}", question.choices);
+    h.choose(&reference, Choice::Always).await;
+    h.connector.wait_for_sent(1).await;
+    h.finish().await;
+    assert!(h.vault.task(h.task.id).is_ok(), "a reaction that was not offered did not delete it");
+
+    let mut h = Harness::start(|task| deleting(task, "Left it."), Timing::default()).await;
+    h.say("delete the dentist task").await;
+    h.connector.wait_for_question().await;
+    h.say("trust it").await;
+    h.connector.wait_for_sent(1).await;
+    h.finish().await;
+    assert!(h.vault.task(h.task.id).is_ok(), "nor did words that were not offered");
 }
 
 #[tokio::test]
@@ -761,6 +834,7 @@ async fn a_routines_approval_is_asked_in_the_room_and_a_tap_answers_it() {
         "destructive".into(),
         "Book the dentist".into(),
         true,
+        None,
     ));
     let (question, reference) = h.connector.wait_for_question().await;
     assert!(
@@ -777,6 +851,101 @@ async fn a_routines_approval_is_asked_in_the_room_and_a_tap_answers_it() {
     h.finish().await;
     assert!(h.connector.typing().is_empty(), "nothing in this room was typing");
     assert_eq!(h.conversations().len(), 1, "no turn ran here");
+}
+
+#[tokio::test]
+async fn a_routines_page_question_offers_always_and_a_tap_on_it_trusts_the_site() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    h.connector.set_home(room());
+    let (_, from) = routine_run(&h, "Morning brief");
+
+    let asking = tokio::spawn(outlet(&h).await.confirm(
+        from,
+        "fetch".into(),
+        "https://example.org/search?q=sourdough".into(),
+        false,
+        Some("example.org".into()),
+    ));
+    let (question, reference) = h.connector.wait_for_question().await;
+    assert_eq!(question.choices, vec![Choice::Yes, Choice::No, Choice::Always]);
+    assert!(
+        question.markdown.contains("pages on `example.org` from now on"),
+        "{}",
+        question.markdown
+    );
+
+    h.choose(&reference, Choice::Always).await;
+    let answer = within("the answer", asking).await.unwrap();
+    assert_eq!(answer, karmayoga_service::agent::ConfirmAnswer::TrustSite);
+    h.finish().await;
+    assert_eq!(h.conversations().len(), 1, "no turn ran here");
+}
+
+#[tokio::test]
+async fn typing_always_to_a_page_question_trusts_the_site_too() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    h.connector.set_home(room());
+    let (_, from) = routine_run(&h, "Morning brief");
+
+    let asking = tokio::spawn(outlet(&h).await.confirm(
+        from,
+        "fetch".into(),
+        "https://example.org/search?q=sourdough".into(),
+        false,
+        Some("example.org".into()),
+    ));
+    h.connector.wait_for_question().await;
+    h.say("Always allow.").await;
+    let answer = within("the answer", asking).await.unwrap();
+    assert_eq!(answer, karmayoga_service::agent::ConfirmAnswer::TrustSite);
+    h.finish().await;
+    assert_eq!(h.connector.sent().len(), 0, "the answer started no turn and got no reply");
+}
+
+#[tokio::test]
+async fn always_on_a_question_that_named_no_site_is_declined_and_saves_nothing() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    h.connector.set_home(room());
+    let (_, from) = routine_run(&h, "Tidy up");
+
+    let asking = tokio::spawn(outlet(&h).await.confirm(
+        from,
+        "destructive".into(),
+        "Book the dentist".into(),
+        false,
+        None,
+    ));
+    let (question, reference) = h.connector.wait_for_question().await;
+    assert_eq!(question.choices, vec![Choice::Yes, Choice::No], "always is not on offer");
+    assert!(!question.markdown.contains("always"), "{}", question.markdown);
+
+    // A client lets them react with anything, but this question never offered
+    // that, and a reaction that meant nothing before must not say yes to it.
+    h.choose(&reference, Choice::Always).await;
+    let answer = within("the answer", asking).await.unwrap();
+    assert_eq!(answer, karmayoga_service::agent::ConfirmAnswer::Decline);
+    h.finish().await;
+    assert!(h.vault.agent_settings().unwrap().safe_sites.is_empty(), "nothing is saved");
+}
+
+#[tokio::test]
+async fn an_unanswered_page_question_is_declined_not_trusted() {
+    let timing = Timing { confirm_timeout: Duration::from_millis(200), ..Timing::default() };
+    let mut h = Harness::start(|_| says("unused"), timing).await;
+    h.connector.set_home(room());
+    let (_, from) = routine_run(&h, "Morning brief");
+
+    let asking = tokio::spawn(outlet(&h).await.confirm(
+        from,
+        "fetch".into(),
+        "https://example.org/search?q=sourdough".into(),
+        false,
+        Some("example.org".into()),
+    ));
+    h.connector.wait_for_question().await;
+    let answer = within("the answer", asking).await.unwrap();
+    assert_eq!(answer, karmayoga_service::agent::ConfirmAnswer::Decline);
+    h.finish().await;
 }
 
 #[tokio::test]
@@ -1895,6 +2064,7 @@ mod calls {
                 subject: subject.into(),
                 arguments: serde_json::Value::Null,
                 kind: "destructive".into(),
+                site: None,
                 can_park: false,
             },
         }

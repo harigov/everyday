@@ -42,6 +42,7 @@ const {
   planOf,
   replay,
   settle,
+  sitesCover,
   threadGroups,
   toolLabel,
   workSummary,
@@ -224,6 +225,42 @@ const {
     canPark: false,
   })
   assert.equal(turn.cards[1].canPark, false)
+}
+
+// "Always allow" is offered only when the question named a website -- see
+// `AgentEvent`'s `site` -- and the card keeps it for the button and for the
+// words it says afterwards. No site, or a null one, is no button.
+{
+  const turn = emptyTurn('assistant', 'x')
+  const page = { name: 'read_web_page', arguments: {}, kind: 'fetch', canPark: false }
+  const base = { ...page, type: 'confirmationRequired' }
+  applyEvent(turn, {
+    ...base,
+    callId: 'c1',
+    subject: 'https://en.wikipedia.org/wiki/Lisbon',
+    site: 'en.wikipedia.org',
+  })
+  applyEvent(turn, { ...base, callId: 'c2', subject: 'https://a.example/x' })
+  applyEvent(turn, { ...base, callId: 'c3', subject: 'https://b.example/x', site: null })
+  assert.equal(turn.cards[0].site, 'en.wikipedia.org')
+  assert.equal(turn.cards[1].site, null, 'an event with no site leaves none on the card')
+  assert.equal(turn.cards[2].site, null)
+  assert.equal(turn.cards[0].trusted ?? null, null, 'nothing is added until it is answered')
+}
+
+// A website is safe when the list has it or a name above it. The card's note
+// that "Always allow" took waits on exactly this, so it has to answer as the
+// service's `sites::covers` does.
+{
+  const sites = ['wikipedia.org', 'docs.rs']
+  assert.equal(sitesCover(sites, 'wikipedia.org'), true, 'a site covers itself')
+  assert.equal(sitesCover(sites, 'en.wikipedia.org'), true, 'and the names under it')
+  assert.equal(sitesCover(sites, 'WWW.Wikipedia.org.'), true, 'whatever the case, www. or dot')
+  assert.equal(sitesCover(sites, 'notwikipedia.org'), false, 'not a name that ends the same way')
+  assert.equal(sitesCover(sites, 'wikipedia.org.evil.example'), false, 'nor one it is a prefix of')
+  assert.equal(sitesCover(['en.wikipedia.org'], 'wikipedia.org'), false, 'only downwards')
+  assert.equal(sitesCover([], 'wikipedia.org'), false, 'an empty list covers nothing')
+  assert.equal(sitesCover(sites, ''), false, 'and nothing is covered by anything')
 }
 
 // docs/plans/dreaming.md's Phase 5: parking a call as a proposal is a third

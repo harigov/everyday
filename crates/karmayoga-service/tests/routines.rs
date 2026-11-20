@@ -1357,6 +1357,7 @@ impl ChatOutlet for FakeOutlet {
         kind: String,
         subject: String,
         can_park: bool,
+        _site: Option<String>,
     ) -> BoxFuture<'static, ConfirmAnswer> {
         self.confirms.lock().unwrap().push((kind, subject, can_park));
         let answer = self.confirm_with;

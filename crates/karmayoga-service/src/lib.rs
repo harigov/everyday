@@ -69,6 +69,7 @@ pub mod listen;
 pub mod llm;
 pub mod local;
 pub mod mailai;
+pub mod mailcheck;
 pub mod mailfollowup;
 pub mod mailpreview;
 pub mod mailsort;

@@ -59,7 +59,7 @@ pub use outbox::{
 pub use rate_limit::{RateLimitState, TokenBucket};
 pub use records::*;
 pub use sorting::{MailSorting, SortCategory, SortMark, SortedAs};
-pub use writing::MailWriting;
+pub use writing::{MailWriting, SendCheck};
 
 /// What is wrong with `label` as a mail label, or `None` if nothing is.
 ///

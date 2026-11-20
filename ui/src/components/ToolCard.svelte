@@ -10,7 +10,8 @@
   // ran, and the buttons on it are the last point at which anything can be
   // undone, because this application has no undo.
 
-  import { toolLabel, type ToolCard } from '../lib/agent'
+  import { sitesCover, toolLabel, type ToolCard } from '../lib/agent'
+  import { agent } from '../lib/agent.svelte'
   import type { IconName } from '../lib/icons'
   import { mail } from '../lib/mail.svelte'
   import Icon from './Icon.svelte'
@@ -18,7 +19,10 @@
   let {
     card,
     onanswer,
-  }: { card: ToolCard; onanswer: (answer: 'confirm' | 'decline' | 'later') => void } = $props()
+  }: {
+    card: ToolCard
+    onanswer: (answer: 'confirm' | 'decline' | 'later' | 'always') => void
+  } = $props()
 
   /**
    * What the call is called, in the tense the card is in -- "Searching the
@@ -107,6 +111,28 @@
     },
   } as const satisfies Record<string, { ask: string; yes: string; icon: IconName }>
   const asking = $derived(ASKS[card.confirmKind ?? 'destructive'])
+  /**
+   * The question as asked. A page question that can be answered "Always
+   * allow" says what that does, once, here -- on the button it would be a
+   * title nobody reads on a touch screen or a narrow rail.
+   */
+  const ask = $derived(
+    card.site
+      ? `${asking.ask} “Always allow” opens pages on ${card.site} without asking again. ` +
+          'You can take that back in Settings → Assistant.'
+      : asking.ask,
+  )
+  /**
+   * What "Always allow" did, said only when it is so: the settings the store
+   * holds -- read again when the call finished -- cover the site. The service
+   * logs a failed save and opens the page all the same, so the answer having
+   * gone through is not the same as the site having been added.
+   */
+  const trustedNote = $derived(
+    card.trusted && sitesCover(agent.settings?.safeSites ?? [], card.trusted)
+      ? `${card.trusted} added to safe websites`
+      : '',
+  )
   /** One answer for several calls says so on its button. */
   const yes = $derived(card.name === 'confirm_together' ? `${asking.yes} all` : asking.yes)
 
@@ -172,6 +198,11 @@
       {:else if card.state === 'stopped'}
         <span class="said">stopped</span>
       {/if}
+      {#if trustedNote}
+        <!-- What "Always allow" did, beside whatever the page came to: it
+             stays true even if the page itself then failed to open. -->
+        <span class="said note">{trustedNote}</span>
+      {/if}
     </div>
   </div>
 
@@ -181,7 +212,7 @@
            back to being one line in the transcript. -->
       <div class="long">{subjectText}</div>
     {/if}
-    <p class="ask">{asking.ask}</p>
+    <p class="ask">{ask}</p>
     <div class="answer">
       <button class="no" onclick={() => onanswer('decline')}>Don't</button>
       {#if card.canPark}
@@ -192,6 +223,15 @@
         {yes}
       </button>
     </div>
+    {#if card.site}
+      <!-- On a line of its own, as a pill: a fourth button beside these
+           would not fit the rail, and it is not the answer a misread click
+           should land on. -->
+      <button class="btn btn-sm btn-outline always" onclick={() => onanswer('always')}>
+        <Icon name="check" size={12} />
+        <span class="always-text">Always allow {card.site}</span>
+      </button>
+    {/if}
   {/if}
 </div>
 
@@ -258,6 +298,11 @@
   }
   .said.bad {
     color: var(--danger);
+  }
+  /* A second note after the first stays beside it at the right-hand end,
+     rather than sharing the free space with it. */
+  .said + .said.note {
+    margin-left: 0;
   }
   /* A card's own summary, made a link when a mail write named a thread --
      same size and place as the plain `.said` text, just clickable and in
@@ -416,5 +461,16 @@
   }
   .yes:hover {
     filter: brightness(1.08);
+  }
+  /* The shared pill, kept to the card's width: a long host name shortens
+     rather than pushing the card wider than the rail. */
+  .always {
+    max-width: 100%;
+    margin-top: var(--sp-2);
+  }
+  .always-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

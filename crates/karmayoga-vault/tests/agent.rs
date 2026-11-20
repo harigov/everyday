@@ -581,3 +581,47 @@ fn unlocking_again_leaves_saved_models_alone() {
     assert_eq!(vault.model_settings().unwrap(), models);
     assert_eq!(vault.model_access(ModelTier::Medium).unwrap().key.as_deref(), Some("sk-mine"));
 }
+
+/// A safe website is kept as the host somebody would say, once: an address
+/// is cut down to its host, a site already covered is not added again, a
+/// public suffix is refused, and taking one off leaves the rest.
+#[test]
+fn safe_websites_are_kept_as_hosts_once_each() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    let settings = vault.trust_site("https://www.Wikipedia.org/wiki/Konark").unwrap();
+    assert_eq!(settings.safe_sites, vec!["wikipedia.org".to_string()]);
+    let settings = vault.trust_site("en.wikipedia.org").unwrap();
+    assert_eq!(settings.safe_sites, vec!["wikipedia.org".to_string()], "already covered");
+    let settings = vault.trust_site("docs.rs").unwrap();
+    assert_eq!(settings.safe_sites, vec!["wikipedia.org".to_string(), "docs.rs".to_string()]);
+    assert!(vault.trust_site("co.uk").is_err(), "shared by every site under it");
+    assert!(vault.trust_site("not a site").is_err());
+
+    let settings = vault.untrust_site("WIKIPEDIA.org").unwrap();
+    assert_eq!(settings.safe_sites, vec!["docs.rs".to_string()]);
+    assert_eq!(vault.agent_settings().unwrap().safe_sites, vec!["docs.rs".to_string()]);
+}
+
+/// A change to part of the settings keeps everything else as stored.
+#[test]
+fn a_partial_settings_change_keeps_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault
+        .update_agent_settings(|s| {
+            s.name = "Robin".into();
+            Ok(())
+        })
+        .unwrap();
+    let settings = vault.trust_site("docs.rs").unwrap();
+    assert_eq!(settings.name, "Robin");
+    assert_eq!(settings.safe_sites, vec!["docs.rs".to_string()]);
+    let refused = vault.update_agent_settings(|s| {
+        s.max_steps = 0;
+        Ok(())
+    });
+    assert!(refused.is_err(), "the record is still validated");
+    assert_eq!(vault.agent_settings().unwrap().max_steps, karmayoga_core::agent::DEFAULT_MAX_STEPS);
+}

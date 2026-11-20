@@ -37,6 +37,9 @@ pub enum Choice {
     Yes,
     No,
     Later,
+    /// Yes, and always allow this website -- offered only on a question about
+    /// opening a page that names a site.
+    Always,
 }
 
 impl Choice {
@@ -46,6 +49,7 @@ impl Choice {
             Choice::Yes => "✅",
             Choice::No => "❌",
             Choice::Later => "⏰",
+            Choice::Always => "🌐",
         }
     }
 
@@ -56,12 +60,13 @@ impl Choice {
             "✅" | "✔" | "👍" => Some(Choice::Yes),
             "❌" | "✖" | "👎" => Some(Choice::No),
             "⏰" | "🕐" | "⏳" => Some(Choice::Later),
+            "🌐" | "🔓" => Some(Choice::Always),
             _ => None,
         }
     }
 
-    /// The answer a typed reply stands for: "yes", "no", "later" and their
-    /// usual short forms, case and a trailing full stop ignored. Anything
+    /// The answer a typed reply stands for: "yes", "no", "later", "always" and
+    /// their usual short forms, case and a trailing full stop ignored. Anything
     /// else is not an answer, and is treated as a new message.
     pub fn from_text(text: &str) -> Option<Self> {
         let word = text.trim().trim_end_matches(['.', '!']).to_lowercase();
@@ -69,6 +74,8 @@ impl Choice {
             "yes" | "y" | "ok" | "okay" | "go" | "go ahead" | "do it" | "sure" => Some(Choice::Yes),
             "no" | "n" | "cancel" | "stop" | "don't" | "dont" => Some(Choice::No),
             "later" | "not now" | "save it" | "park it" => Some(Choice::Later),
+            "always" | "always allow" | "allow always" | "always allow it" | "trust it"
+            | "trust this site" => Some(Choice::Always),
             _ => Choice::from_emoji(&word),
         }
     }
@@ -473,11 +480,34 @@ mod tests {
     }
 
     #[test]
+    fn always_is_recognised_by_its_words_and_its_reaction() {
+        for text in [
+            "always",
+            "Always.",
+            " ALWAYS ALLOW ",
+            "allow always",
+            "Always allow it!",
+            "trust it",
+            "Trust this site.",
+            "🌐",
+            "🔓",
+        ] {
+            assert_eq!(Choice::from_text(text), Some(Choice::Always), "{text:?}");
+        }
+        assert_eq!(Choice::from_text("always allow it, and book a table"), None);
+        assert_eq!(Choice::from_text("trust"), None);
+    }
+
+    #[test]
     fn reactions_match_with_or_without_the_variation_selector() {
         assert_eq!(Choice::from_emoji("✅"), Some(Choice::Yes));
         assert_eq!(Choice::from_emoji("✔\u{fe0f}"), Some(Choice::Yes));
         assert_eq!(Choice::from_emoji("❌"), Some(Choice::No));
         assert_eq!(Choice::from_emoji("⏰"), Some(Choice::Later));
+        assert_eq!(Choice::from_emoji("🌐"), Some(Choice::Always));
+        assert_eq!(Choice::from_emoji("🌐\u{fe0f}"), Some(Choice::Always));
+        assert_eq!(Choice::from_emoji("🔓"), Some(Choice::Always));
+        assert_eq!(Choice::from_emoji("🔓\u{fe0f}"), Some(Choice::Always));
         assert_eq!(Choice::from_emoji("🎉"), None);
     }
 }

@@ -522,10 +522,12 @@ fn questions_for(
 /// late answer finds nothing to answer, which is harmless.
 fn ask_in_chat(pending: Arc<Pending>, outlet: Arc<dyn ChatOutlet>, from: FromRun) -> Sink {
     Arc::new(move |event| {
-        if let AgentEvent::ConfirmationRequired { call_id, kind, subject, can_park, .. } = event {
+        if let AgentEvent::ConfirmationRequired { call_id, kind, subject, can_park, site, .. } =
+            event
+        {
             let (pending, outlet, from) = (pending.clone(), outlet.clone(), from.clone());
             tokio::spawn(async move {
-                let answer = outlet.confirm(from, kind, subject, can_park).await;
+                let answer = outlet.confirm(from, kind, subject, can_park, site).await;
                 pending.answer(&call_id, answer);
             });
         }

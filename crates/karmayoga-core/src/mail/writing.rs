@@ -14,6 +14,28 @@ use serde::{Deserialize, Serialize};
 /// reply, which appear as a thread opens on the fastest model there is.
 pub const MAX_INSTRUCTIONS_CHARS: usize = 4_000;
 
+/// The most [`MailWriting::send_checks`] there may be. Each is a question put
+/// to a model while the person waits to send.
+pub const MAX_SEND_CHECKS: usize = 12;
+
+/// Longest one [`SendCheck::text`] may be: a short line, "The tone is
+/// friendly", not a style guide.
+pub const MAX_SEND_CHECK_CHARS: usize = 200;
+
+/// One thing to check a message for before it goes, in the person's words:
+/// "The tone is friendly", "The grammar is correct". See
+/// `karmayoga_service::mailcheck`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SendCheck {
+    /// What the message should be, as a statement the model can hold it to.
+    pub text: String,
+    /// Off keeps the check in the list without running it.
+    #[serde(default = "yes")]
+    pub on: bool,
+}
+
 /// The sealed singleton behind Settings → Mail writing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -37,6 +59,13 @@ pub struct MailWriting {
     /// reads for every suggestion.
     #[serde(default = "yes")]
     pub learn: bool,
+    /// What every message is checked for when Send is pressed, by the
+    /// decision model or, with none switched on, the Small model -- under the
+    /// sending account's writing help switch, since it reads what was
+    /// written. A check that fails warns; it never stops the message going.
+    /// See `karmayoga_service::mailcheck`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub send_checks: Vec<SendCheck>,
 }
 
 fn yes() -> bool {
@@ -45,7 +74,12 @@ fn yes() -> bool {
 
 impl Default for MailWriting {
     fn default() -> Self {
-        Self { instructions: String::new(), use_calendar: false, learn: true }
+        Self {
+            instructions: String::new(),
+            use_calendar: false,
+            learn: true,
+            send_checks: Vec::new(),
+        }
     }
 }
 
@@ -57,7 +91,37 @@ impl MailWriting {
                  characters"
             )));
         }
+        if self.send_checks.len() > MAX_SEND_CHECKS {
+            return Err(Error::Invalid(format!(
+                "there can be {MAX_SEND_CHECKS} checks before sending at most"
+            )));
+        }
+        for check in &self.send_checks {
+            let text = check.text.trim();
+            if text.is_empty() {
+                return Err(Error::Invalid("a check before sending needs some words".into()));
+            }
+            if text.contains(['\n', '\r']) {
+                return Err(Error::Invalid("a check before sending is one line".into()));
+            }
+            if text.chars().count() > MAX_SEND_CHECK_CHARS {
+                return Err(Error::Invalid(format!(
+                    "a check before sending is a short line; keep it under \
+                     {MAX_SEND_CHECK_CHARS} characters"
+                )));
+            }
+        }
         Ok(())
+    }
+
+    /// The checks to run before sending: those switched on, trimmed.
+    pub fn checks_to_run(&self) -> Vec<String> {
+        self.send_checks
+            .iter()
+            .filter(|c| c.on)
+            .map(|c| c.text.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
     }
 }
 
@@ -82,5 +146,35 @@ mod tests {
         assert!(writing.validate().is_ok());
         writing.instructions.push('x');
         assert!(writing.validate().is_err());
+    }
+
+    #[test]
+    fn checks_before_sending_are_short_lines() {
+        let check = |text: &str| SendCheck { text: text.into(), on: true };
+        let mut writing = MailWriting {
+            send_checks: vec![check("The tone is friendly"), check("The grammar is correct")],
+            ..Default::default()
+        };
+        assert!(writing.validate().is_ok());
+        writing.send_checks.push(check("  "));
+        assert!(writing.validate().is_err(), "empty");
+        writing.send_checks.pop();
+        writing.send_checks.push(check("one\ntwo"));
+        assert!(writing.validate().is_err(), "two lines");
+        writing.send_checks.pop();
+        writing.send_checks.push(check(&"x".repeat(MAX_SEND_CHECK_CHARS + 1)));
+        assert!(writing.validate().is_err(), "too long");
+        writing.send_checks = vec![check("ok"); MAX_SEND_CHECKS + 1];
+        assert!(writing.validate().is_err(), "too many");
+    }
+
+    #[test]
+    fn only_the_checks_switched_on_run() {
+        let read: MailWriting = serde_json::from_str(
+            r#"{"sendChecks":[{"text":" Friendly "},{"text":"Formal","on":false}]}"#,
+        )
+        .unwrap();
+        assert_eq!(read.checks_to_run(), vec!["Friendly".to_string()]);
+        assert!(MailWriting::default().checks_to_run().is_empty());
     }
 }

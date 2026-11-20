@@ -301,7 +301,7 @@ pub fn quote_start(body: &str) -> Option<usize> {
 }
 
 /// The whole signature block in a draft body, if there is one above the quote.
-fn find_signature(body: &str) -> Option<&str> {
+pub fn find_signature(body: &str) -> Option<&str> {
     let start = body.find(SIGNATURE_MARK)?;
     if quote_start(body).is_some_and(|quote| quote < start) {
         return None;

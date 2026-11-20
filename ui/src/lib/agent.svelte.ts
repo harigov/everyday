@@ -293,7 +293,7 @@ class AgentState {
 
     try {
       await sendMessage(conversationId, text, onScreen, pictures, files, (event) =>
-        applyEvent(reply, event),
+        this.#fold(reply, event),
       )
       // The thread has a title now, and has moved to the top of the list.
       this.threads = await api.conversations(50)
@@ -382,7 +382,7 @@ class AgentState {
   applySpoken(event: AgentEvent) {
     const reply = this.#spoken
     if (!reply) return
-    applyEvent(reply, event)
+    this.#fold(reply, event)
     if (event.type === 'finished' || event.type === 'failed') this.endSpoken()
   }
 
@@ -430,22 +430,64 @@ class AgentState {
   /**
    * Answer a confirmation: confirm, decline, or -- for a card that offers it
    * -- park the call as a proposal for later. See `docs/plans/dreaming.md`'s
-   * Phase 5.
+   * Phase 5. `'always'` is a yes that also adds the question's website to the
+   * safe websites; only a card with a `site` offers it, and the backend reads
+   * it as a plain yes for one that does not.
    *
    * A false result means nothing was waiting any more — the turn was
    * cancelled between the question and the click — so the card is marked
    * rather than left with buttons that do nothing.
    */
-  async confirm(callId: string, answer: 'confirm' | 'decline' | 'later') {
+  async confirm(callId: string, answer: 'confirm' | 'decline' | 'later' | 'always') {
     const card = this.turns.flatMap((t) => t.cards).find((c) => c.callId === callId)
     if (!card || card.state !== 'waiting') return
     // Marked before the round trip so a second click cannot answer twice.
-    card.state = answer === 'confirm' ? 'running' : answer === 'later' ? 'later' : 'declined'
+    const yes = answer === 'confirm' || answer === 'always'
+    card.state = yes ? 'running' : answer === 'later' ? 'later' : 'declined'
+    // `site` is what the card offered; `trusted` is what this answer asked
+    // to add -- the card says it was added only once the settings show it.
+    if (answer === 'always') card.trusted = card.site ?? null
     try {
-      const answered = await api.confirmToolCall(callId, answer === 'confirm', answer === 'later')
-      if (!answered) card.state = 'failed'
+      const answered = await api.confirmToolCall(
+        callId,
+        yes,
+        answer === 'later',
+        answer === 'always',
+      )
+      if (!answered) {
+        card.state = 'failed'
+        card.trusted = null
+      }
     } catch (e) {
+      card.trusted = null
       await handle(e)
+    }
+  }
+
+  /**
+   * Fold an event into the turn it belongs to -- and, when it is the end of a
+   * call somebody answered "Always allow", read the settings. The service
+   * saves the website as it takes that answer, and by the time the call has
+   * finished it has either done so or logged why not; nothing sooner says
+   * which, so this is the one read, and the card's note waits for it.
+   */
+  #fold(turn: Turn, event: AgentEvent) {
+    applyEvent(turn, event)
+    if (event.type !== 'toolFinished') return
+    if (turn.cards.some((c) => c.callId === event.callId && c.trusted)) void this.#reloadSettings()
+  }
+
+  /**
+   * Read the settings again once an answer has changed them behind this
+   * store's back -- "always allow" adds a website -- so Settings and the
+   * card's note show what is stored. A failure here changes nothing: the
+   * settings stay as they were and the note stays unsaid.
+   */
+  async #reloadSettings() {
+    try {
+      this.settings = await api.agentSettings()
+    } catch (e) {
+      await quietly(e)
     }
   }
 
@@ -453,6 +495,24 @@ class AgentState {
 
   async saveSettings(settings: AgentSettings) {
     this.settings = await api.saveAgentSettings(settings)
+  }
+
+  /**
+   * Let the assistant open pages on `site` without asking. `site` may be an
+   * address or a host; what the backend stores is in the settings it answers
+   * with. Throws its refusal -- "not a website's address" -- for the pane to
+   * show beside the box that was typed in.
+   *
+   * Not `saveSettings`: the list is the backend's to change only through
+   * these two, so saving the pane's other settings never carries it.
+   */
+  async trustSite(site: string) {
+    this.settings = await api.trustSite(site)
+  }
+
+  /** Take `site` off the safe websites. Throws as `trustSite` does. */
+  async untrustSite(site: string) {
+    this.settings = await api.untrustSite(site)
   }
 
   async loadMemories() {

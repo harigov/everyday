@@ -57,7 +57,13 @@ Each layer assumes the one above it failed.
    address the person gave, a search returned, or the page the browser is on
    links to. Any other address asks first and shows it (`"fetch"`); once mail
    has been read this turn, every address asks. A new turn inherits the open
-   page's links as known addresses.
+   page's links as known addresses. A website the person has put on their
+   list of safe websites (`AgentSettings::safe_sites`), or answered "always
+   allow" to on this question, opens without asking when the address carries
+   nothing that could be data, whoever is watching; one that does carry data
+   still asks once a stranger's words are in the turn, or with nobody
+   watching. The question offers "always allow" only for a site not yet on
+   the list.
 3. **Typing always asks** (`"type"`), showing the exact text, the field as
    the page names it, and the site as the browser knows it. A page can read
    keystrokes as they happen, so this is the moment something leaves the

@@ -509,9 +509,15 @@ impl Asker for OwnerAsker {
         kind: &str,
         subject: &str,
         can_park: bool,
+        site: Option<&str>,
     ) -> BoxFuture<'static, ConfirmAnswer> {
-        let asked =
-            self.outlet.confirm(self.from.clone(), kind.to_string(), subject.to_string(), can_park);
+        let asked = self.outlet.confirm(
+            self.from.clone(),
+            kind.to_string(),
+            subject.to_string(),
+            can_park,
+            site.map(str::to_string),
+        );
         let stop = self.withdrawn.clone();
         Box::pin(async move {
             tokio::select! {
@@ -627,6 +633,7 @@ mod tests {
             kind: String,
             subject: String,
             can_park: bool,
+            _site: Option<String>,
         ) -> BoxFuture<'static, ConfirmAnswer> {
             self.confirms.lock().unwrap().push((from, kind, subject, can_park));
             Box::pin(async { ConfirmAnswer::Confirm })
@@ -1156,7 +1163,7 @@ mod tests {
         svc.open_chat_outlet(older, first.clone());
         let asker = svc.owner_asker(from.clone()).expect("a chat is running");
 
-        let answer = asker.confirm("delete", "the old itinerary", true).await;
+        let answer = asker.confirm("delete", "the old itinerary", true, None).await;
         assert_eq!(answer, ConfirmAnswer::Confirm);
         let reply = asker.ask("Which hotel?".into(), vec!["The red one".into()]).await;
         assert_eq!(reply.as_deref(), Some("the red one"));

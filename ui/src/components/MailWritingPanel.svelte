@@ -5,9 +5,10 @@
   // right or forgotten, rather than kept somewhere they cannot see.
   //
   // Beside Mail sorting and for the same reason: it is about the mail, and it
-  // is the models that read it. The signature is not here, because that is one
-  // per account and belongs with the account. See
-  // `karmayoga_core::mail::writing` and `karmayoga_core::mail::learning`.
+  // is the models that read it. Also here, what every message is checked for
+  // when Send is pressed -- answered in `MailCompose.svelte`. The signature is
+  // not here, because that is one per account and belongs with the account.
+  // See `karmayoga_core::mail::writing` and `karmayoga_core::mail::learning`.
 
   import { onDestroy } from 'svelte'
   import { accounts } from '../lib/accounts.svelte'
@@ -18,18 +19,39 @@
   import { panels } from '../lib/panels.svelte'
   import type { MailWriting, VoiceLearningView } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import Icon from './Icon.svelte'
 
   /** `MAX_INSTRUCTIONS_CHARS` in `crates/karmayoga-core/src/mail/writing.rs`. */
   const MAX_INSTRUCTIONS = 4_000
   /** `MAX_NOTES_CHARS` in `crates/karmayoga-core/src/mail/learning.rs`. */
   const MAX_NOTES = 2_000
+  /** `MAX_SEND_CHECKS` in `crates/karmayoga-core/src/mail/writing.rs`. */
+  const MAX_CHECKS = 12
+  /** `MAX_SEND_CHECK_CHARS`, the same file's. */
+  const MAX_CHECK_CHARS = 200
+  /** Offered while there are none, one tap each: what most people want said
+   *  of mail before it goes. */
+  const SUGGESTED_CHECKS = [
+    'The tone is friendly',
+    'The grammar and spelling are correct',
+    "It says clearly what I'm asking for",
+  ]
 
-  /** `MailWriting` as this pane edits it: `learn` always there to bind to, on
-   *  for a record saved before it existed, as the backend reads one. */
-  type Editing = MailWriting & { learn: boolean }
+  /** A check as this pane edits it: `on` always there to bind to, on when
+   *  the record leaves it out, as the backend reads one. */
+  type EditingCheck = { text: string; on: boolean }
+
+  /** `MailWriting` as this pane edits it: `learn` and the checks always there
+   *  to bind to, `learn` on for a record saved before it existed, as the
+   *  backend reads one. */
+  type Editing = Omit<MailWriting, 'sendChecks'> & { learn: boolean; sendChecks: EditingCheck[] }
 
   function editable(writing: MailWriting): Editing {
-    return { ...writing, learn: writing.learn !== false }
+    return {
+      ...writing,
+      learn: writing.learn !== false,
+      sendChecks: (writing.sendChecks ?? []).map((c) => ({ text: c.text, on: c.on !== false })),
+    }
   }
 
   let draft = $state<Editing | null>(null)
@@ -144,12 +166,41 @@
     accounts.list.length > 0 && !accounts.list.some((a) => a.mailAi?.writing === true),
   )
 
+  // ── Checks before sending ────────────────────────────────────────────
+
+  /** What is typed in the box under the list, not yet one of them. */
+  let newCheck = $state('')
+  const checkCount = $derived(draft?.sendChecks.length ?? 0)
+  const checkFull = $derived(checkCount >= MAX_CHECKS)
+
+  function addCheck(text: string = newCheck) {
+    if (!draft || draft.sendChecks.length >= MAX_CHECKS) return
+    // One line, as the backend wants it; a pasted line break is a space.
+    const said = text.replace(/\s+/g, ' ').trim()
+    if (!said) return
+    // The same check twice would be asked twice, and warned about twice.
+    const again = draft.sendChecks.some((c) => c.text.trim().toLowerCase() === said.toLowerCase())
+    if (!again) draft.sendChecks.push({ text: said, on: true })
+    newCheck = ''
+  }
+
+  function removeCheck(index: number) {
+    draft?.sendChecks.splice(index, 1)
+  }
+
   async function save() {
     if (!draft) return
     notice = null
+    // Typed in the box and not yet added is still meant: Save would lose it.
+    addCheck()
+    const sendChecks = draft.sendChecks.map((c) => ({ text: c.text.trim(), on: c.on }))
+    if (sendChecks.some((c) => !c.text)) {
+      notice = 'A check before sending has no words. Write it, or remove it.'
+      return
+    }
     saving = true
     try {
-      draft = editable(await api.saveMailWriting($state.snapshot(draft)))
+      draft = editable(await api.saveMailWriting({ ...$state.snapshot(draft), sendChecks }))
       savedLearn = draft.learn
       notice = 'Saved.'
       if (noticeTimer) clearTimeout(noticeTimer)
@@ -240,6 +291,74 @@
           </span>
         </span>
       </label>
+    </section>
+
+    <section>
+      <span class="eyebrow" id="writing-checks">Checks before sending</span>
+      <p class="hint">
+        When you press Send, each check switched on is put to your decision model, or to the Small
+        model when you have none switched on, along with the message. It needs writing help on for
+        the account you send from. A check that does not pass warns you, and you can still send.
+      </p>
+      {#if draft.sendChecks.length > 0}
+        <ul class="checks" aria-labelledby="writing-checks">
+          {#each draft.sendChecks as check, i (i)}
+            <li class="check">
+              <input
+                class="check-on"
+                type="checkbox"
+                bind:checked={check.on}
+                aria-label="Run check {i + 1} before sending"
+                title={check.on ? 'On: runs when you send' : 'Off: kept, but not run'}
+              />
+              <input
+                class="field"
+                class:off={!check.on}
+                bind:value={check.text}
+                maxlength={MAX_CHECK_CHARS}
+                aria-label="Check {i + 1}"
+              />
+              <button
+                class="remove"
+                aria-label="Remove this check"
+                title="Remove"
+                onclick={() => removeCheck(i)}
+              >
+                <Icon name="close" size={12} />
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <form
+        class="add-check"
+        onsubmit={(e) => {
+          e.preventDefault()
+          addCheck()
+        }}
+      >
+        <input
+          class="field"
+          bind:value={newCheck}
+          maxlength={MAX_CHECK_CHARS}
+          placeholder="The tone is friendly"
+          aria-label="A new check"
+          disabled={checkFull}
+        />
+        <button class="btn btn-outline" disabled={checkFull || !newCheck.trim()}>Add</button>
+      </form>
+      {#if checkFull}
+        <p class="hint">That is the most there can be: {MAX_CHECKS}.</p>
+      {:else if draft.sendChecks.length === 0}
+        <div class="suggested">
+          {#each SUGGESTED_CHECKS as suggestion (suggestion)}
+            <button class="btn btn-sm btn-outline" onclick={() => addCheck(suggestion)}>
+              <Icon name="plus" size={12} />
+              {suggestion}
+            </button>
+          {/each}
+        </div>
+      {/if}
     </section>
 
     <div class="save">
@@ -419,6 +538,55 @@
   }
   .spacer {
     flex: 1;
+  }
+  /* One check to a line: whether it runs, what it says, and a way to drop it. */
+  .checks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .check,
+  .add-check {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .check-on {
+    flex: none;
+    margin: 0 var(--sp-1);
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .check .field,
+  .add-check .field {
+    flex: 1;
+    min-width: 0;
+  }
+  /* A check left in the list but not run. */
+  .field.off {
+    color: var(--fg-subtle);
+  }
+  .remove {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+  }
+  .remove:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .suggested {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
   }
   .notice {
     flex: 1;
