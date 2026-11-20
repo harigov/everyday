@@ -968,8 +968,13 @@ export function mockTriggerMicOffer(withEvent: boolean): void {
     automatic: false,
     autoRecord: settings.offer === 'ask' && settings.autoRecord && offersReady(),
   }
+  // The microphone going live is the join, so the shell counts down.
+  const raiseJoined = (payload: MeetingOfferPayload) => {
+    raiseOffer(payload)
+    if (payload.autoRecord) armMockCountdown(payload)
+  }
   if (!withEvent) {
-    raiseOffer({
+    raiseJoined({
       ...base,
       key: newId('mic'),
       eventId: null,
@@ -986,7 +991,7 @@ export function mockTriggerMicOffer(withEvent: boolean): void {
   const eventId = newId('evt-offer')
   const calendarId = newId('cal-offer')
   const uid = `evt-offer-${eventId}`
-  raiseOffer({
+  raiseJoined({
     ...base,
     key: `event:${calendarId}:${uid}`,
     eventId,
@@ -1011,14 +1016,6 @@ export function mockMeetingOfferAnswer(key: string, answer: MeetingOfferAnswer):
   const offer = at === -1 ? null : pendingOffers[at]!
   if (!offer) throw new VaultError('not_found', 'That offer has already been answered.')
   let recording: Recording | null = null
-  if (answer === 'join' && offer.autoRecord) {
-    if (!offersReady()) {
-      throw new VaultError('unusable', 'Meeting notes are not set up yet.')
-    }
-    // The offer stays. Recording starts when the countdown runs out.
-    armMockCountdown(offer)
-    return null
-  }
   clearCountdown(key)
   if (answer === 'take' || answer === 'join') {
     if (!offersReady()) {
@@ -1038,7 +1035,7 @@ export function mockMeetingOfferAnswer(key: string, answer: MeetingOfferAnswer):
   return recording
 }
 
-/** Fifteen seconds, then the recording the join button armed. */
+/** Fifteen seconds, then the recording a call that was joined arms. */
 function armMockCountdown(offer: MeetingOfferPayload): void {
   clearCountdown(offer.key)
   let left = 15

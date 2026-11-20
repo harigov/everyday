@@ -11,7 +11,6 @@
     phase: 'join' | 'countdown'
     seconds: number
     canJoin: boolean
-    overlay: boolean
   }
 
   let card = $state<Card | null>(null)
@@ -28,7 +27,7 @@
     return () => unlisten()
   })
 
-  async function answer(which: 'join' | 'notNow') {
+  async function answer(which: 'take' | 'join' | 'notNow') {
     if (!card || busy) return
     busy = true
     try {
@@ -42,15 +41,16 @@
 </script>
 
 {#if card}
-  <div class="stage" class:overlay={card.overlay}>
+  <div class="stage">
     <section class="card">
       {#if card.phase === 'countdown'}
         <p class="kicker">Recording starts in</p>
         <p class="count">{card.seconds}<span>s</span></p>
         <h1>{card.title}</h1>
         <div class="actions">
-          <button class="btn primary" disabled={busy} onclick={() => void answer('notNow')}>
-            Cancel
+          <button class="btn" disabled={busy} onclick={() => void answer('notNow')}>Cancel</button>
+          <button class="btn primary" disabled={busy} onclick={() => void answer('take')}>
+            Take notes
           </button>
         </div>
       {:else}
@@ -80,12 +80,7 @@
     height: 100vh;
   }
 
-  .stage.overlay {
-    pointer-events: none;
-  }
-
   .card {
-    pointer-events: auto;
     box-sizing: border-box;
     width: 100%;
     height: 100%;
@@ -99,14 +94,6 @@
     border-radius: 16px;
     box-shadow: var(--shadow-lg, 0 12px 40px rgb(0 0 0 / 18%));
     font-family: var(--font-ui);
-  }
-
-  .overlay .card {
-    position: fixed;
-    top: 16px;
-    right: 16px;
-    width: 360px;
-    height: 176px;
   }
 
   .kicker {

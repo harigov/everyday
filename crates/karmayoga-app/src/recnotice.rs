@@ -7,10 +7,13 @@
 //! Wayland lets an application do neither -- keep a window on top, or put it
 //! where it asks -- so there the card is drawn by this program run again under
 //! X11, through XWayland, which allows both ([`crate::topcard`]). Only without
-//! XWayland, or if that fails, is it the window below: a transparent window
-//! over the desktop with the card drawn in its top-right corner, the same
-//! constraint writing help works under -- and on GNOME that goes behind
-//! whatever window is in front.
+//! XWayland, or if that fails, is it the window below, wherever the desktop
+//! puts it, and on GNOME behind whatever window is in front.
+//!
+//! It is never a window over the whole desktop with the card drawn in its
+//! corner. That was the Wayland fallback once: the rest of it was meant to
+//! let clicks through, and when that did not take, nothing else on the
+//! screen could be clicked while the card was up.
 //!
 //! The shell owns what the card says (`offers`). This module only makes the
 //! window be there. The page asks the shell for the current card when it
@@ -30,7 +33,7 @@ const LABEL: &str = "recording-notice";
 /// The card's size where it is a window of its own, in logical pixels.
 const WIDTH: f64 = 360.0;
 const HEIGHT: f64 = 176.0;
-/// Inset from the corner of the monitor, and of the Wayland overlay.
+/// Inset from the corner of the monitor.
 const MARGIN: f64 = 16.0;
 
 /// Show the card. A window that is already up is left where it is: the page
@@ -50,7 +53,7 @@ pub fn present(app: &AppHandle) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = open(&app).await;
+        let result = open(&app);
         OPENING.store(false, Ordering::SeqCst);
         if let Err(e) = result {
             tracing::warn!(error = %e, "the meeting card could not be shown");
@@ -87,14 +90,10 @@ fn window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn open(app: &AppHandle) -> Result<(), String> {
+fn open(app: &AppHandle) -> Result<(), String> {
     let window = window(app)?;
-    if crate::writing::wayland_session(app) {
-        cover(app, &window).await?;
-    } else {
-        place(app, &window);
-        let _ = window.show();
-    }
+    place(app, &window);
+    let _ = window.show();
     Ok(())
 }
 
@@ -113,44 +112,4 @@ fn place(app: &AppHandle, window: &tauri::WebviewWindow) {
     let x = pos.x as f64 / scale + size.width as f64 / scale - WIDTH - MARGIN;
     let y = pos.y as f64 / scale + MARGIN;
     let _ = window.set_position(LogicalPosition::new(x, y));
-}
-
-/// Wayland: a transparent window over the work area, the card in its
-/// top-right, and clicks outside the card going through to whatever is
-/// behind it so joining the meeting is still possible.
-#[cfg(target_os = "linux")]
-async fn cover(app: &AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
-    let shown = window.clone();
-    crate::writing::on_main(app, move || -> Result<(), String> {
-        use gtk::prelude::*;
-        let gtk_window = shown.gtk_window().map_err(|e| e.to_string())?;
-        gtk_window.set_keep_above(true);
-        gtk_window.set_focus_on_map(false);
-        gtk_window.set_resizable(true);
-        gtk_window.maximize();
-        gtk_window.show_all();
-        // The card sits in the top-right of this window. Everything else
-        // must not take the click, or the person cannot press Join in the
-        // meeting itself.
-        if let Some(gdk_window) = gtk_window.window() {
-            let scale = gdk_window.scale_factor();
-            let width = gdk_window.width();
-            let card_w = (WIDTH * scale as f64) as i32;
-            let card_h = (HEIGHT * scale as f64) as i32;
-            let margin = (MARGIN * scale as f64) as i32;
-            let x = (width - card_w - margin).max(0);
-            let rect = gtk::cairo::RectangleInt::new(x, margin, card_w, card_h);
-            let region = gtk::cairo::Region::create_rectangle(&rect);
-            gdk_window.input_shape_combine_region(&region, 0, 0);
-        }
-        Ok(())
-    })
-    .await??;
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn cover(_app: &AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
-    let _ = window.show();
-    Ok(())
 }

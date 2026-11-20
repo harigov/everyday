@@ -41,10 +41,13 @@
 //!
 //! With auto-record on, an offer that is ready replaces its system
 //! notification with a card in the corner of the screen ([`crate::recnotice`]).
-//! Before the meeting is joined the card offers to join; after, this module
-//! counts fifteen seconds and then starts recording, unless the card is
-//! cancelled, the vault locks, or the offer expires. The window only draws
-//! what it is told, so closing it cannot start a recording.
+//! Before the meeting is joined the card offers to join and record, which
+//! a press does at once. Once the call is joined some other way -- the
+//! microphone goes live -- this module counts fifteen seconds and then
+//! starts recording, unless the card is cancelled, the vault locks, or the
+//! offer expires; "Take notes" on the card starts it without the wait. The
+//! window only draws what it is told, so closing it cannot start a
+//! recording.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -144,8 +147,6 @@ pub struct RecordingCard {
     pub seconds: u32,
     /// The card's primary button opens a join link.
     pub can_join: bool,
-    /// Drawn inside a transparent window covering the desktop. Wayland.
-    pub overlay: bool,
 }
 
 /// An answer to an offer.
@@ -461,6 +462,40 @@ struct Inner {
     /// Bumped whenever a countdown is replaced or cancelled, so the task
     /// that was counting stops without starting a recording.
     countdown_gen: u64,
+    /// The offer whose recording is being started right now -- by a press,
+    /// or by its countdown running out -- so a press in the same instant as
+    /// the countdown's end does not start it twice.
+    starting: Option<String>,
+}
+
+impl Inner {
+    /// The offer the card asks to join, if the card is `key`'s and the offer
+    /// is still pending.
+    fn asking(&self, key: &str, now: jiff::Timestamp) -> Option<OfferPayload> {
+        let shown = self.notice.as_ref().is_some_and(|n| n.key == key && n.phase == "join");
+        shown.then(|| self.book.find(key, now).map(|p| p.payload.clone())).flatten()
+    }
+
+    /// The offer the card is counting down for, if it is still pending.
+    fn counting(&self, now: jiff::Timestamp) -> Option<OfferPayload> {
+        let card = self.notice.as_ref().filter(|n| n.phase == "countdown")?;
+        self.book.find(&card.key, now).map(|p| p.payload.clone())
+    }
+
+    /// Claim starting `key`'s recording. False if it is being started already.
+    fn claim_start(&mut self, key: &str) -> bool {
+        if self.starting.as_deref() == Some(key) {
+            return false;
+        }
+        self.starting = Some(key.to_string());
+        true
+    }
+
+    fn release_start(&mut self, key: &str) {
+        if self.starting.as_deref() == Some(key) {
+            self.starting = None;
+        }
+    }
 }
 
 /// Held in Tauri state: the offers still waiting for an answer, and what
@@ -517,6 +552,9 @@ fn offer_event(app: &AppHandle, payload: OfferPayload, end: jiff::Timestamp, joi
     let now = jiff::Timestamp::now();
     let first = offers(app).with(|o| o.book.mark_offered(&payload.key, end, now));
     if !first {
+        if joined {
+            count_down_if_asking(app, &payload.key);
+        }
         return;
     }
     if end <= now {
@@ -598,14 +636,13 @@ fn mic_live(app: &AppHandle) -> bool {
     app.try_state::<crate::micwatch::MicWatch>().is_some_and(|m| m.session_active())
 }
 
-fn card_for(app: &AppHandle, payload: &OfferPayload, phase: &str, seconds: u32) -> RecordingCard {
+fn card_for(payload: &OfferPayload, phase: &str, seconds: u32) -> RecordingCard {
     RecordingCard {
         key: payload.key.clone(),
         title: payload.title.clone(),
         phase: phase.to_string(),
         seconds,
         can_join: payload.join_url.is_some(),
-        overlay: crate::writing::wayland_session(app),
     }
 }
 
@@ -627,9 +664,17 @@ fn publish_card(app: &AppHandle, card: Option<RecordingCard>) {
     }
 }
 
+/// The meeting the card asks to join has been joined from the meeting
+/// itself -- the microphone went live -- so the card counts down instead.
+fn count_down_if_asking(app: &AppHandle, key: &str) {
+    if let Some(payload) = offers(app).with(|o| o.asking(key, jiff::Timestamp::now())) {
+        arm_countdown(app, &payload);
+    }
+}
+
 fn show_join(app: &AppHandle, payload: &OfferPayload) {
     offers(app).with(|o| o.countdown_gen = o.countdown_gen.wrapping_add(1));
-    publish_card(app, Some(card_for(app, payload, "join", 0)));
+    publish_card(app, Some(card_for(payload, "join", 0)));
 }
 
 fn arm_countdown(app: &AppHandle, payload: &OfferPayload) {
@@ -638,7 +683,7 @@ fn arm_countdown(app: &AppHandle, payload: &OfferPayload) {
         o.countdown_gen
     });
     let deadline = std::time::Instant::now() + COUNTDOWN;
-    publish_card(app, Some(card_for(app, payload, "countdown", seconds_left(deadline))));
+    publish_card(app, Some(card_for(payload, "countdown", seconds_left(deadline))));
     let app = app.clone();
     let key = payload.key.clone();
     tauri::async_runtime::spawn(async move {
@@ -662,12 +707,8 @@ fn arm_countdown(app: &AppHandle, payload: &OfferPayload) {
             if e.code == "not_found" {
                 return;
             }
+            // `answer` has put the card back up, as the ask.
             report_failure(&app, &key, &e);
-            if let Some(payload) = offers(&app)
-                .with(|o| o.book.find(&key, jiff::Timestamp::now()).map(|p| p.payload.clone()))
-            {
-                show_join(&app, &payload);
-            }
         }
     });
 }
@@ -693,7 +734,6 @@ fn countdown_card(app: &AppHandle, key: &str, seconds: u32) -> RecordingCard {
             phase: "countdown".into(),
             seconds,
             can_join: false,
-            overlay: false,
         })
     });
     card.phase = "countdown".into();
@@ -701,14 +741,17 @@ fn countdown_card(app: &AppHandle, key: &str, seconds: u32) -> RecordingCard {
     card
 }
 
-fn drop_notice(app: &AppHandle, key: &str) {
+/// Take the card down if it is `key`'s, stopping its countdown. True if it
+/// was.
+fn drop_notice(app: &AppHandle, key: &str) -> bool {
     let showing = offers(app).with(|o| o.notice.as_ref().is_some_and(|n| n.key == key));
     if !showing {
-        return;
+        return false;
     }
     offers(app).with(|o| o.countdown_gen = o.countdown_gen.wrapping_add(1));
     publish_card(app, None);
     emit(app, COUNTDOWN_EVENT, &json!({ "key": key, "seconds": null }));
+    true
 }
 
 /// The card the corner window draws, if one is up.
@@ -909,6 +952,12 @@ pub fn on_mic_ended(app: &AppHandle) {
     });
     settle_where(app, |p| p.payload.source == OfferSource::Microphone);
     offers(app).with(|o| withdrawn.iter().for_each(|key| o.book.forget_offered(key)));
+    // A calendar meeting's card that began counting down when the call was
+    // joined goes back to asking: the call is over, and nobody said to record
+    // an empty room.
+    if let Some(payload) = offers(app).with(|o| o.counting(jiff::Timestamp::now())) {
+        show_join(app, &payload);
+    }
     let (linked, name) =
         offers(app).with(|o| (std::mem::take(&mut o.mic_linked), o.mic_app.take()));
     if !linked || !crate::meeting::state_already_recording(app) {
@@ -1034,8 +1083,12 @@ pub fn on_notice_action(app: &AppHandle, key: &str, action: &str) {
     let app = app.clone();
     let key = key.to_string();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = self::answer(&app, &key, answer).await {
-            report_failure(&app, &key, &e);
+        match self::answer(&app, &key, answer).await {
+            // Answered already -- by the countdown running out as the button
+            // was pressed, or elsewhere. Nothing went wrong.
+            Err(e) if e.code == "not_found" => {}
+            Err(e) => report_failure(&app, &key, &e),
+            Ok(_) => {}
         }
     });
 }
@@ -1115,20 +1168,8 @@ async fn answer(
     };
     let session = app.state::<AppState>().session().as_session();
 
-    // Joining under the auto-record setting opens the link and arms the
-    // countdown. Recording starts when that runs out, unless it is cancelled.
-    let arm = matches!(answer, OfferAnswer::Join if payload.auto_record && payload.ready);
     let recording = match answer {
-        OfferAnswer::Take => Some(take(app, &payload).await?),
-        OfferAnswer::Join if arm => {
-            if let Some(url) = payload.join_url.clone()
-                && let Err(e) = app.opener().open_url(url, None::<&str>)
-            {
-                tracing::warn!(error = %e, "could not open the meeting link");
-            }
-            arm_countdown(app, &payload);
-            None
-        }
+        OfferAnswer::Take => start(app, &payload).await?,
         OfferAnswer::Join => {
             if let Some(url) = payload.join_url.clone()
                 && let Err(e) = app.opener().open_url(url, None::<&str>)
@@ -1137,7 +1178,7 @@ async fn answer(
                 // "Join & take notes", and the second half still stands.
                 tracing::warn!(error = %e, "could not open the meeting link");
             }
-            Some(take(app, &payload).await?)
+            start(app, &payload).await?
         }
         OfferAnswer::NotNow => {
             if let (Some(calendar_id), Some(uid)) = (payload.calendar_id, &payload.uid) {
@@ -1155,14 +1196,40 @@ async fn answer(
             None
         }
     };
+    // Being started by the other of a press and the countdown, which settles
+    // it -- or, if starting fails, leaves it pending to be tried again.
+    if recording.is_none() && matches!(answer, OfferAnswer::Take | OfferAnswer::Join) {
+        return Ok(None);
+    }
     // After a recording starts `on_recording_started` has already settled
     // this offer, along with the rest; this finds nothing to do then.
-    // Arming the countdown leaves the offer pending: cancel and the timer
-    // both still have to be able to find it.
-    if !arm {
-        settle(app, key);
-    }
+    settle(app, key);
     Ok(recording)
+}
+
+/// Start recording now -- a press, or the countdown running out. The countdown
+/// is only the time to cancel in when nobody has said anything, so a press
+/// does not wait for it: the card goes at once, and its countdown with it,
+/// which would otherwise start a second recording when it ran out.
+///
+/// `None` if this offer's recording is already being started: the other
+/// start answers for both. If starting fails, the card comes back as the ask
+/// -- the offer is still pending -- so it can be pressed again.
+async fn start(app: &AppHandle, payload: &OfferPayload) -> CommandResult<Option<Recording>> {
+    let key = &payload.key;
+    if !offers(app).with(|o| o.claim_start(key)) {
+        return Ok(None);
+    }
+    let had_card = drop_notice(app, key);
+    let result = take(app, payload).await;
+    offers(app).with(|o| o.release_start(key));
+    if result.is_err() && had_card {
+        let pending = offers(app).with(|o| o.book.find(key, jiff::Timestamp::now()).is_some());
+        if pending {
+            show_join(app, payload);
+        }
+    }
+    result.map(Some)
 }
 
 async fn take(app: &AppHandle, payload: &OfferPayload) -> CommandResult<Recording> {
@@ -1521,5 +1588,57 @@ mod tests {
         assert!(book.oldest(at(0)).is_some());
         book.push(mic_payload(2, Some("Meet".into()), true), None);
         assert_eq!(book.oldest_ready(at(0)).unwrap().title, "Call on Meet");
+    }
+
+    // ---- the corner card ----------------------------------------------------
+
+    fn card(key: &str, phase: &str) -> RecordingCard {
+        RecordingCard {
+            key: key.into(),
+            title: "Design sync".into(),
+            phase: phase.into(),
+            seconds: 15,
+            can_join: false,
+        }
+    }
+
+    #[test]
+    fn joining_the_call_turns_the_ask_into_the_countdown() {
+        let mut inner = Inner::default();
+        let key = pending_event(&mut inner.book, "u", OfferSource::Calendar, 100);
+        inner.notice = Some(card(&key, "join"));
+        assert_eq!(inner.asking(&key, at(0)).map(|p| p.key), Some(key.clone()));
+        assert!(inner.asking("event:cal:other", at(0)).is_none(), "another meeting's card");
+
+        inner.notice = Some(card(&key, "countdown"));
+        assert!(inner.asking(&key, at(0)).is_none(), "counting down already");
+
+        inner.notice = Some(card(&key, "join"));
+        inner.book.remove(&key);
+        assert!(inner.asking(&key, at(0)).is_none(), "answered since");
+    }
+
+    #[test]
+    fn the_call_ending_finds_the_countdown_to_take_back() {
+        let mut inner = Inner::default();
+        let key = pending_event(&mut inner.book, "u", OfferSource::Calendar, 100);
+        assert!(inner.counting(at(0)).is_none(), "no card");
+        inner.notice = Some(card(&key, "join"));
+        assert!(inner.counting(at(0)).is_none(), "still asking");
+        inner.notice = Some(card(&key, "countdown"));
+        assert_eq!(inner.counting(at(0)).map(|p| p.key), Some(key.clone()));
+        inner.book.remove(&key);
+        assert!(inner.counting(at(0)).is_none(), "answered since");
+    }
+
+    #[test]
+    fn a_press_as_the_countdown_ends_starts_one_recording() {
+        let mut inner = Inner::default();
+        assert!(inner.claim_start("event:cal:u"), "the countdown");
+        assert!(!inner.claim_start("event:cal:u"), "the press at the same moment");
+        inner.release_start("event:cal:other");
+        assert!(!inner.claim_start("event:cal:u"), "only its own start releases it");
+        inner.release_start("event:cal:u");
+        assert!(inner.claim_start("event:cal:u"), "tried again after a failure");
     }
 }

@@ -103,7 +103,16 @@
     </div>
     <div class="actions">
       {#if counting != null}
-        <button class="btn btn-primary" onclick={() => void answer('notNow')}>Cancel</button>
+        <button class="btn" disabled={meetings.starting} onclick={() => void answer('notNow')}>
+          Cancel
+        </button>
+        <button
+          class="btn btn-primary"
+          disabled={meetings.starting}
+          onclick={() => void answer('take')}
+        >
+          {meetings.starting ? 'Starting…' : 'Take notes'}
+        </button>
       {:else}
         <button class="btn quiet" disabled={meetings.starting} onclick={() => void answer('never')}>
           {microphone ? 'Don’t ask when the mic turns on' : 'Never for this meeting'}
