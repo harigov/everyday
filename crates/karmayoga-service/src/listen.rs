@@ -9,9 +9,9 @@
 
 use crate::error::CommandResult;
 use crate::service::Service;
-use crate::speech::listen::ListenLink;
+use crate::speech::listen::{ListenLink, PieceStream};
 use karmayoga_core::StoryId;
-use karmayoga_core::id::ThreadId;
+use karmayoga_core::id::{MailMessageId, ThreadId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -28,6 +28,19 @@ pub enum ListenSource {
         #[serde(default)]
         as_written: bool,
     },
+}
+
+/// What a spoken conversation reads out in full when the assistant is asked
+/// to (`read_aloud`): read by the voice session after the reply, as the
+/// Listen player reads it. Never on the wire; the tool decides it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadAloud {
+    /// An article from the Feed, a newsletter story included, made fit to
+    /// hear as the Feed's Listen makes it.
+    Story(StoryId),
+    /// One mail message -- a newsletter in the inbox -- in full, made fit to
+    /// hear the same way.
+    Message(MailMessageId),
 }
 
 /// A session under way, and what it is reading, for the player to show.
@@ -78,5 +91,24 @@ impl Service {
         });
         let link = crate::speech::listen::spawn(ListenParts { pieces, synthesiser, speed, voice });
         Ok(ListenOpened { link, title, notice })
+    }
+
+    /// The text of `what`, to be read aloud in a spoken conversation: the
+    /// same preparation the Listen player's, and what it would have said to
+    /// the listener first (a story read only from what its feed carried, or
+    /// read as written because no model may be used) ahead of it.
+    pub async fn read_aloud_text(self: &Arc<Self>, what: ReadAloud) -> CommandResult<PieceStream> {
+        use crate::speech::listen::Piece;
+        use futures::StreamExt;
+
+        let opened = match what {
+            ReadAloud::Story(story_id) => crate::news::listen::open(self, story_id, false).await?,
+            ReadAloud::Message(message) => crate::news::listen::open_message(self, message).await?,
+        };
+        let Some(notice) = opened.notice else { return Ok(opened.pieces) };
+        // Its own part, so it is a sentence of its own before the first.
+        let said = futures::stream::once(async move { Ok(Piece { text: notice, part: 0 }) });
+        let rest = opened.pieces.map(|piece| piece.map(|p| Piece { part: p.part + 1, ..p }));
+        Ok(said.chain(rest).boxed())
     }
 }

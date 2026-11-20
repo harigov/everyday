@@ -528,6 +528,7 @@ impl Speech {
             }
             VoiceOutput::Pause => self.outbound.pause(),
             VoiceOutput::Resume => self.outbound.resume(),
+            VoiceOutput::Working(on) => self.outbound.working(on),
             VoiceOutput::Clear => {
                 self.outbound.clear();
                 self.converting.clear();

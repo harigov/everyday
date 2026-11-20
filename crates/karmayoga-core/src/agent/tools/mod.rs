@@ -130,6 +130,7 @@ mod time;
 mod trackers;
 
 pub use journals::{READ_OWN_JOURNAL, WRITE_OWN_JOURNAL};
+pub use mail::readable_thread;
 
 /// What running a tool does to the vault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

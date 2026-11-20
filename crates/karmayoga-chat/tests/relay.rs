@@ -1989,11 +1989,60 @@ mod calls {
 
         assert_eq!(*h.fake.said.lock().unwrap(), [SPOKEN]);
         assert_eq!(h.fake.opened()[0].conversation, conversation.unwrap(), "the run's own");
-        assert!(h.connector.chat.sent().is_empty(), "nothing written: it was said");
 
         h.fake.finish(CallEnd::SessionEnded);
         h.until_ended("c1", HangUp::Finished).await;
         h.finish().await;
+        // Said, and written into the chat as everything said on a call is --
+        // once, and not as a result that could not be said.
+        assert_eq!(h.connector.chat.sent(), [MARKDOWN], "{:?}", h.connector.chat.sent());
+    }
+
+    #[tokio::test]
+    async fn what_is_said_on_a_call_is_written_into_the_chat() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+
+        h.fake.report(VoiceEvent::Heard { text: "what's on today?".into() });
+        h.fake.report(VoiceEvent::State { state: VoiceState::Thinking });
+        for event in [
+            AgentEvent::Started { message_id: "m1".into() },
+            AgentEvent::Delta { text: "Just the dentist at three.".into() },
+            AgentEvent::Finished { message_id: "m1".into() },
+        ] {
+            h.fake.report(VoiceEvent::Agent { event });
+        }
+        h.fake.report(VoiceEvent::State { state: VoiceState::Speaking });
+        h.fake.report(VoiceEvent::State { state: VoiceState::Listening });
+        h.connector.chat.until("the reply", |e| e.iter().filter(|e| is_sent(e)).count() == 2).await;
+        // Talked over: only what was heard is written.
+        h.fake.report(VoiceEvent::Heard { text: "and tomorrow?".into() });
+        for event in [
+            AgentEvent::Started { message_id: "m2".into() },
+            AgentEvent::Delta { text: "Tomorrow is free. Friday is not.".into() },
+            AgentEvent::Finished { message_id: "m2".into() },
+        ] {
+            h.fake.report(VoiceEvent::Agent { event });
+        }
+        h.fake.report(VoiceEvent::ReplyCut {
+            message_id: "m2".into(),
+            text: "Tomorrow is free.".into(),
+        });
+
+        h.fake.finish(CallEnd::Ended);
+        h.until_ended("c1", HangUp::Finished).await;
+        h.finish().await;
+        let sent = h.connector.chat.sent();
+        assert_eq!(sent.len(), 4, "{sent:?}");
+        assert!(sent[0].starts_with("> ") && sent[0].contains("what's on today?"), "{sent:?}");
+        assert_eq!(sent[1], "Just the dentist at three.");
+        assert!(sent[2].starts_with("> ") && sent[2].contains("and tomorrow?"), "{sent:?}");
+        assert_eq!(sent[3], "Tomorrow is free.");
+    }
+
+    fn is_sent(event: &super::Event) -> bool {
+        matches!(event, super::Event::Sent { .. })
     }
 
     #[tokio::test]

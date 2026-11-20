@@ -9,8 +9,10 @@
 use super::{BoxFuture, TurnOutcome, VoiceAssistant, VoiceLink, VoiceParts, session};
 use crate::agent::{ConfirmAnswer, Reach, Sink, Turn};
 use crate::error::{CommandError, CommandResult, codes};
+use crate::listen::ReadAloud;
 use crate::service::{Service, blocking};
 use crate::speech::detect::Tuning;
+use crate::speech::listen::PieceStream;
 use karmayoga_core::agent::onscreen::OnScreen;
 use karmayoga_core::chat::Via;
 use karmayoga_core::{ConversationId, MessageId, Vault};
@@ -38,6 +40,7 @@ impl VoiceAssistant for ServiceAssistant {
     fn turn(
         &self,
         prompt: String,
+        heard_clear: bool,
         on_screen: Option<OnScreen>,
         sink: Sink,
     ) -> BoxFuture<'static, CommandResult<TurnOutcome>> {
@@ -45,6 +48,10 @@ impl VoiceAssistant for ServiceAssistant {
         let conversation = self.conversation;
         let via = self.via.clone();
         let origin = if via.is_some() { CALL_ORIGIN } else { ORIGIN };
+        // What they asked for is theirs to have done -- unless it may be an
+        // echo, or they are on a call through a chat, where a destructive
+        // call always asks.
+        let voice_approves = heard_clear && via.is_none();
         Box::pin(async move {
             let vault = service.require()?;
             let turned = crate::agent::run_turn(Turn {
@@ -67,6 +74,7 @@ impl VoiceAssistant for ServiceAssistant {
                 via,
                 // What the model writes is read aloud, and it is told so.
                 spoken: true,
+                voice_approves,
                 reach: Reach::default(),
                 job: None,
                 follow_up: None,
@@ -75,7 +83,11 @@ impl VoiceAssistant for ServiceAssistant {
             })
             .await?;
             service.announce_turn(&turned, conversation, Some(origin.to_string()));
-            Ok(TurnOutcome { stopped: turned.stopped, ended_voice: turned.ended_voice })
+            Ok(TurnOutcome {
+                stopped: turned.stopped,
+                ended_voice: turned.ended_voice,
+                read_aloud: turned.read_aloud,
+            })
         })
     }
 
@@ -110,6 +122,11 @@ impl VoiceAssistant for ServiceAssistant {
             }
             Ok(())
         })
+    }
+
+    fn open_reading(&self, what: ReadAloud) -> BoxFuture<'static, CommandResult<PieceStream>> {
+        let service = self.service.clone();
+        Box::pin(async move { service.read_aloud_text(what).await })
     }
 }
 

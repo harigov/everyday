@@ -11,8 +11,12 @@
 //! throws away everything queued and also the hold, and an utterance is
 //! reported once its last sample has gone out, never if it was cleared first.
 //! It is pure data, so those rules are tested without a network.
+//!
+//! When nothing is queued or held, the sound of the assistant working
+//! ([`Bed`]) can fill the frames instead of silence, as on the desktop.
 
-use super::codec::FRAME;
+use super::codec::{CALL_RATE, FRAME};
+use karmayoga_service::voice::cue::Bed;
 use std::collections::VecDeque;
 
 struct Segment {
@@ -30,6 +34,8 @@ pub struct Outbound {
     /// Utterances with nothing in them that were queued behind nothing: they
     /// have nothing to wait for, and are reported with the next frame.
     finished: Vec<u64>,
+    /// The sound of working, once it has been asked for.
+    bed: Option<Bed>,
 }
 
 impl Outbound {
@@ -67,9 +73,18 @@ impl Outbound {
         self.segments.clear();
     }
 
+    /// Fill the frames with the sound of working while nothing is queued or
+    /// held, or stop it.
+    pub fn working(&mut self, on: bool) {
+        if on || self.bed.is_some() {
+            self.bed.get_or_insert_with(|| Bed::new(CALL_RATE)).set(on);
+        }
+    }
+
     /// The next 20 ms: queued speech, or silence while there is none or it is
-    /// held, with the utterances whose last sample is in this frame (or that
-    /// were empty), oldest first.
+    /// held -- the sound of working, if that is on and nothing is queued --
+    /// with the utterances whose last sample is in this frame (or that were
+    /// empty), oldest first.
     pub fn next_frame(&mut self) -> ([f32; FRAME], Vec<u64>) {
         let mut frame = [0.0; FRAME];
         let mut written = 0;
@@ -94,6 +109,9 @@ impl Outbound {
             if let Some(done) = self.segments.pop_front() {
                 self.finished.push(done.utterance);
             }
+        }
+        if let Some(bed) = self.bed.as_mut() {
+            bed.fill_idle(&mut frame[written..], !self.paused && self.segments.is_empty());
         }
         (frame, std::mem::take(&mut self.finished))
     }
@@ -215,6 +233,27 @@ mod tests {
         let (frame, done) = out.next_frame();
         assert_eq!(frame[0], 2.0, "what is said after a clear is not held");
         assert_eq!(done, vec![2]);
+    }
+
+    #[test]
+    fn the_working_sound_fills_frames_only_when_nothing_is_queued() {
+        let mut out = Outbound::new();
+        out.working(true);
+        // Its pause first, then the pulse within the second.
+        let heard = (0..50).any(|_| out.next_frame().0.iter().any(|&s| s != 0.0));
+        assert!(heard, "the pulse goes out");
+
+        out.push(1, vec![0.5; 960]);
+        let (frame, done) = out.next_frame();
+        assert!(frame.iter().all(|&s| s == 0.5), "speech is never mixed with it");
+        assert_eq!(done, vec![1]);
+
+        out.working(false);
+        for _ in 0..2 {
+            out.next_frame();
+        }
+        let (frame, _) = out.next_frame();
+        assert!(frame.iter().all(|&s| s == 0.0), "faded out and gone");
     }
 
     #[test]

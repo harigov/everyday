@@ -1144,6 +1144,7 @@ async fn resume(
         drafting,
         via: None,
         spoken: false,
+        voice_approves: false,
         reach,
         job: None,
         follow_up: None,

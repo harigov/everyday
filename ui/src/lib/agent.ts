@@ -483,6 +483,19 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
         text: running ? 'Updating the plan' : done ? 'Updated the plan' : 'Update the plan',
         detail: null,
       }
+    // A mail thread or a newsletter, summarised as the Mail app's
+    // Summarise does.
+    case 'summarize_thread':
+      return {
+        text: running ? 'Summarising' : done ? 'Summarised' : 'Summarise',
+        detail: null,
+      }
+    // Read out in full after the reply, in a spoken conversation.
+    case 'read_aloud':
+      return {
+        text: running ? 'Getting ready to read' : 'Read aloud',
+        detail: null,
+      }
     // The spoken conversation ends once the goodbye has been heard; the
     // thread stays.
     case 'end_voice_mode':

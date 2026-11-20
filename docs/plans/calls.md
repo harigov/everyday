@@ -81,6 +81,23 @@ design; the wire format is what FluffyChat 2.11.5's own source sends.
   is an ordinary spoken turn in that conversation. Nobody picking up within
   about 50 seconds stops the ring and posts the result. A run that failed is
   written, not rung through.
+- **What is said is written in the chat as it goes** (Nov 19 2026), as the
+  thread at the desk shows a conversation being talked: each thing the owner
+  said, quoted behind a microphone, and each reply once what was heard of it is
+  known -- played out (`ReplyHeard`, before anything read aloud after it), cut
+  where the owner talked over it (only the heard part, as the vault keeps), or
+  the owner moved on. A routine's result said on pickup is written too.
+  Written by a task of its own (`calling::Transcript`, `relay::write_down`),
+  since the call's audio is paced by the relay's loop and must not wait on the
+  chat server. The call is hung up first; then the writing gets up to 15 s to
+  finish and is stopped there, so any note about how the call ended comes
+  after all of it.
+- **A spoken request is not a go-ahead on a call.** At the desk, asking aloud
+  to delete or reschedule something is approval enough (see `voice.md`); on a
+  call, as for a typed message from the phone, a destructive call always asks.
+  A delete of a task, an event or a library item is asked aloud ("Should I
+  delete Book the dentist?") and a spoken yes does it; an invitation is asked
+  in the chat.
 - **Approvals the voice cannot take are asked in the chat.** Spoken approval is
   as narrow as at the desktop (see `voice.md`). Anything else is asked as the
   usual question in the chat, with the reactions, and the session says "That

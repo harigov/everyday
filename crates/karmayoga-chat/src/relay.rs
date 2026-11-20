@@ -61,7 +61,9 @@
 //! fake connector and a fake model.
 
 use crate::call::{CallEnd, ToCall};
-use crate::calling::{self, CallOffer, CallSlot, Confirmation, Confirming, Line, Offered};
+use crate::calling::{
+    self, CallOffer, CallSlot, Confirmation, Confirming, Line, Offered, Transcript,
+};
 use crate::connector::{
     CallId, CallKey, ChatId, Choice, Connector, Document, HangUp, Incoming, MessageRef, Picture,
     Question, Sent,
@@ -2002,18 +2004,23 @@ async fn carry_call(
         return opening;
     }
 
+    let mut first_written = None;
     if let Some(opening) = opening {
         // Said first, before the owner says anything: why the call. From
         // here the run's result is the call's to give.
         let _ = voice.input.send(VoiceInput::Say(opening.spoken));
         let _ = opening.delivered.send(Ok(CallDelivered::PickedUp));
+        first_written = Some(opening.written);
     }
-    let (end, session_error) = run_call(context, chat, shared, media, voice, to_call).await;
+    let (end, session_error, writing) =
+        run_call(context, chat, shared, media, voice, to_call, first_written).await;
     memory.used(conversation);
 
     // A session that ended in an error was a failed call, not a goodbye.
     let end = calling::settle_end(end, session_error.as_deref());
+    // Hung up first: the call is over whether or not the chat has caught up.
     hang_up(context, chat, &call, calling::hang_up_for(end)).await;
+    finish_writing(chat, writing).await;
     if !context.stopping() {
         let note = match (&session_error, end) {
             (Some(error), CallEnd::Failed) => Some(calling::session_failed(error)),
@@ -2044,6 +2051,9 @@ struct Opening {
     conversation: Option<ConversationId>,
     /// What is said when the owner picks up.
     spoken: String,
+    /// The same, as written: what the chat shows of it, as it shows
+    /// everything said on a call.
+    written: String,
     /// Told that the run's result was given, once the call is under way.
     delivered: oneshot::Sender<Result<CallDelivered, String>>,
 }
@@ -2192,7 +2202,8 @@ async fn call_owner(
         return;
     }
     let call_line = LineHeld { context, call: call.clone() };
-    let opening = Opening { conversation: from.conversation, spoken, delivered };
+    let opening =
+        Opening { conversation: from.conversation, spoken, written: markdown.clone(), delivered };
     let unsaid = carry_call(context, chat, shared, memory, offer, Some(opening)).await;
     {
         let mut shared = shared.lock().unwrap();
@@ -2232,10 +2243,20 @@ async fn run_call(
     media: Box<dyn calling::Media>,
     voice: VoiceLink,
     to_call: mpsc::UnboundedReceiver<ToCall>,
-) -> (CallEnd, Option<String>) {
+    first_written: Option<String>,
+) -> (CallEnd, Option<String>, Writing) {
     let (events_tx, mut events) = mpsc::unbounded_channel::<VoiceEvent>();
     let mut run = media.run(voice, to_call, events_tx);
     let mut confirming = Confirming::default();
+    // What is said, written into the chat as it goes -- by a task of its own,
+    // in order, since the call's audio is paced by this loop and must never
+    // wait on the chat server.
+    let mut transcript = Transcript::default();
+    let (writes, writing) = mpsc::unbounded_channel::<String>();
+    let writer = tokio::spawn(write_down(context.connector.clone(), chat.clone(), writing));
+    if let Some(first) = first_written {
+        let _ = writes.send(first);
+    }
     // The question in the chat, and the confirmation it is about.
     let mut asking: Option<(String, CallQuestion<'_>)> = None;
     // Why the voice session ended, if it ended in an error.
@@ -2246,6 +2267,9 @@ async fn run_call(
             biased;
             Some(event) = events.recv() => {
                 note_session_error(&event, &mut session_error);
+                for line in transcript.on_event(&event) {
+                    let _ = writes.send(line);
+                }
                 let step = confirming.on_event(&event);
                 if let Some(withdrawn) = step.withdraw {
                     withdraw(context, shared, asking.take(), withdrawn.settled);
@@ -2276,10 +2300,50 @@ async fn run_call(
     // ending is in the channel still.
     while let Ok(event) = events.try_recv() {
         note_session_error(&event, &mut session_error);
+        for line in transcript.on_event(&event) {
+            let _ = writes.send(line);
+        }
+    }
+    for line in transcript.finish() {
+        let _ = writes.send(line);
     }
     // The call is over, and so is any question about it.
     withdraw(context, shared, asking.take(), false);
-    (end, session_error)
+    // Nothing more is coming; the writer finishes with what it has.
+    drop(writes);
+    (end, session_error, writer)
+}
+
+/// What is still being written into the chat of a call that has ended.
+type Writing = tokio::task::JoinHandle<()>;
+
+/// How long the end of a call waits for what was said on it to be written
+/// into the chat.
+const WRITE_DOWN_FOR: Duration = Duration::from_secs(15);
+
+/// Let what is being written of a call finish -- for as long as a chat
+/// server that answers at all takes -- and stop it there, so that anything
+/// said about how the call ended comes after it, never in the middle.
+async fn finish_writing(chat: &ChatId, mut writing: Writing) {
+    if tokio::time::timeout(WRITE_DOWN_FOR, &mut writing).await.is_err() {
+        writing.abort();
+        tracing::warn!(chat = %chat.0, "the end of a call was not all written into the chat");
+    }
+}
+
+/// Send each of `lines` to `chat`, in order, until there are no more. A
+/// failure is logged and the rest still sent: one message the chat server
+/// refused is no reason to lose the others.
+async fn write_down(
+    connector: Arc<dyn Connector>,
+    chat: ChatId,
+    mut lines: mpsc::UnboundedReceiver<String>,
+) {
+    while let Some(markdown) = lines.recv().await {
+        if let Err(e) = connector.send(&chat, &markdown).await {
+            tracing::warn!(chat = %chat.0, error = %e, "could not write a call into the chat");
+        }
+    }
 }
 
 /// Remember why the voice session ended, if it ended in an error.
@@ -2986,6 +3050,7 @@ mod tests {
             wrote: Vec::new(),
             stopped,
             ended_voice: false,
+            read_aloud: Vec::new(),
         })
     }
 

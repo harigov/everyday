@@ -24,10 +24,46 @@ goes into the same thread as what is typed.
   70 ms. English only. It replaces Supertonic 3, which Supertone stopped
   maintaining; saved `supertonic3` settings read as Phonon. A speed set for it is
   applied afterwards by `speech::tempo`, which keeps the pitch.
-- **Spoken approval is narrow.** Web searches and page fetches can be answered
-  by voice, when the question can say all of what would be sent: a long search,
-  or an address with a query, login, port or escapes, waits for the card. So does
-  everything else.
+- **What is asked for out loud is approved by asking** (Nov 19 2026). At this
+  computer, adding, finishing and moving tasks, scheduling, moving and
+  cancelling events, changing what is on a shelf and writing notes
+  (`voice::confirm::CHANGED_BY_VOICE`) run in a spoken turn without a card,
+  invitations and cancellations to guests included. Held back:
+  - **Words that may be an echo.** Only what the person began saying while
+    nothing of the assistant's own was audible approves anything
+    (`Turn::voice_approves`): a reply, or an article being read aloud, coming
+    back through the microphone must never be the yes.
+  - **After a stranger's words** (a mail, a page, an invitation's description;
+    listing events counts): only a change the person's own words this turn
+    asked for (`request_asks_for`: "cancel", "remove", "reschedule", "remind
+    me", ... -- whole words, not in a question, not after a "don't"), and for
+    the calendar only a new time or a cancellation; an invitation to somebody
+    new, or a title, place or description sent to the guests, asks.
+  - **On a call through a chat.** A destructive call from a phone always asks
+    (`confirms_destructive`), spoken or typed.
+
+  What is held back is asked about: a delete aloud, by the name of what goes
+  ("Should I delete Book the dentist?"), and a spoken yes does it; anything
+  else on the card, or in the chat on a call. The model is told, in the note
+  to a spoken turn, not to ask "are you sure?" itself.
+- **Other spoken approval is narrow.** Web searches and page fetches can be
+  answered by voice, when the question can say all of what would be sent: a
+  long search, or an address with a query, login, port or escapes, waits for
+  the card. So does everything else: a mail sent, a memory kept, a project
+  deleted.
+- **Silence while it works is filled.** From the moment the person stops
+  talking until the first of the answer plays -- understanding, thinking, a
+  tool running, the first sentence being made into a voice -- the transport
+  plays a soft pulse (`voice::cue`, `VoiceOutput::Working`): a pause of about
+  half a second, then a low swell, every 1.6 s, faded out when it stops. Never
+  while the person talks, while anything plays or is held, or while the
+  assistant waits on them (a question, a card).
+- **Mail and articles, the way the apps tell them.** `summarize_thread`
+  summarises a thread or a newsletter with the Mail app's own Summarise prompt,
+  cache and per-account switch -- in a spoken turn, the Listen button's spoken
+  briefing instead. `read_aloud`, offered to spoken turns, reads a newsletter,
+  an email or a Feed article out in full after the reply, made fit to hear as
+  the Listen player makes it; the text never reaches the model.
 - **Audio is not kept.** The thread holds words only.
 - **This computer only, for now.** A window connected to a remote vault, and the
   web interface, have no voice mode. A call through a chat link is answered by
@@ -122,6 +158,32 @@ tasks. Nothing the loop awaits may block it from hearing `Stop`.
     session stops as for `Stop`. Words said over the goodbye that are not an echo or a stop
     word start a turn, which takes the ending back. Only the talking ends: the
     thread stays. On a call through a chat, ending the session hangs up.
+11. **Reading aloud.** A turn whose `read_aloud` ran reports what it chose,
+    each call in order (`TurnOutcome::read_aloud`, never for a stopped turn),
+    and they are read one after another. The session opens its
+    text on a task of its own (`VoiceAssistant::open_reading`, which is
+    `Service::read_aloud_text`: the Feed's or a newsletter's Listen
+    preparation) while the reply plays, then reads it sentence by sentence
+    after the reply, as `Kind::Reading`: said and echo-checked like anything
+    else, but not part of the reply, so nothing of it is kept. Its text is
+    asked for a piece at a time, only while fewer than four of its sentences
+    wait to be played, so stopping early does not pay for the rest. Talking
+    over it is talking over a reply: an echo resumes it; anything else, a stop
+    word included, ends it, and whatever was still to be read. A text that
+    cannot be opened says why aloud when the reason is a sentence for a person
+    ("There is nothing in this email to read."), and "Sorry, I couldn't read
+    that" when it is not. The reply's own end is announced
+    (`VoiceEvent::ReplyHeard`) once its last sentence has played, so a call's
+    chat can write it before the reading is over.
+12. **The sound of working.** `VoiceOutput::Working(true)` while the state is
+    `Understanding`, `Thinking` or `Speaking` with nothing yet handed to the
+    transport to play (`Narrator::playing`), and nothing held; `false` as soon
+    as anything plays, the person talks, or the session stops. Sent before the
+    state it goes with. The detector stays `Open` for it: most of it is
+    silence, a desktop without a speaker plays none of it, and a short "stop"
+    said while a slow tool runs must be heard. The desktop mixes `cue::Bed` into the speaker queue
+    when it has no speech (so the echo canceller hears it as it hears speech);
+    a call puts it in the 20 ms frames.
 
 ## The desktop transport (`karmayoga-app/src/voice`)
 

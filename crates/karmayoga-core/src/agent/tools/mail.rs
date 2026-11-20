@@ -677,6 +677,22 @@ pub(super) fn offered_to(
 
 // ---- shared reads --------------------------------------------------------
 
+/// Thread `id`, its messages and its account, if `ctx`'s caller may read it
+/// as [`read_thread`] would: the same account check, refused in the same
+/// words, under `tool`'s name. For the tools that read a thread elsewhere --
+/// the service's summary and its reading aloud, which must reach no further
+/// than reading it here does.
+pub fn readable_thread(
+    ctx: &ToolContext<'_>,
+    id: ThreadId,
+    tool: &str,
+) -> Result<(Thread, Vec<crate::mail::Message>, Account)> {
+    let (thread, messages) = ctx.vault.thread(id)?;
+    let account = ctx.vault.account(thread.account_id)?;
+    require_permission(ctx, &account, Permission::Read, tool)?;
+    Ok((thread, messages, account))
+}
+
 fn thread_and_account(ctx: &ToolContext<'_>, id: ThreadId) -> Result<(Thread, Account)> {
     let (thread, _messages) = ctx.vault.thread(id)?;
     let account = ctx.vault.account(thread.account_id)?;
