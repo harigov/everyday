@@ -51,6 +51,16 @@ Three features on the speech layers in `docs/plans/voice.md`:
 - **Later:** highlighting the paragraph being read in the article, and clicking a
   paragraph to start there. Every sentence already carries its paragraph (`part`).
 
+## From the assistant
+
+The assistant reaches both through the same code (Nov 19 2026):
+`summarize_thread` gives it the Mail app's own summary of a thread or a
+newsletter (the spoken briefing above, in a spoken turn), and `read_aloud`, in a
+spoken turn, has the voice session read a newsletter, an email (its newest
+message, `news::listen::open_message`) or a Feed article in full after the
+reply, prepared exactly as the player prepares it (`Service::read_aloud_text`).
+See `voice.md`, item 11.
+
 ## The layers
 
 | Where | What |

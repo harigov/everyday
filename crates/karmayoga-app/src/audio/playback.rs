@@ -11,8 +11,13 @@
 //! out is not dropped there. It moves to a graveyard the engine thread empties
 //! ([`PlaybackQueue::take_finished`]), and the lists it moves into are kept at
 //! a capacity that makes a push in the callback a copy, not a growth.
+//!
+//! Under the speech, when there is none, the sound of the assistant working
+//! ([`Bed`]) can play: built on the engine thread, only filled here.
 
 use std::collections::VecDeque;
+
+use karmayoga_service::voice::cue::Bed;
 
 /// How many finished utterances, and how many spent buffers, the lists hold
 /// without growing. Several sentences can end between two visits of the engine
@@ -33,6 +38,8 @@ pub struct PlaybackQueue {
     finished: Vec<u64>,
     /// Their buffers, waiting for a thread that may free them.
     spent: Vec<Vec<f32>>,
+    /// The sound of working, once it has been asked for.
+    bed: Option<Bed>,
 }
 
 impl Default for PlaybackQueue {
@@ -48,6 +55,20 @@ impl PlaybackQueue {
             paused: false,
             finished: Vec::with_capacity(SPARE),
             spent: Vec::with_capacity(SPARE),
+            bed: None,
+        }
+    }
+
+    /// A queue for a speaker that can play the sound of working, built
+    /// where building may allocate: when the speaker opens.
+    pub fn with_working_sound(bed: Bed) -> Self {
+        Self { bed: Some(bed), ..Self::new() }
+    }
+
+    /// Play the sound of working while nothing else plays, or stop it.
+    pub fn set_working(&mut self, on: bool) {
+        if let Some(bed) = self.bed.as_mut() {
+            bed.set(on);
         }
     }
 
@@ -86,7 +107,8 @@ impl PlaybackQueue {
     }
 
     /// Write the next `out.len()` mono samples, silence for whatever there is
-    /// not (or all of it, when paused). Returns how many were audio.
+    /// not (or all of it, when paused) -- or the sound of working, if it is
+    /// on and nothing is queued or held. Returns how many were speech.
     ///
     /// Every utterance whose last sample lands in `out`, even exactly at its
     /// end, is finished by the time this returns.
@@ -114,7 +136,12 @@ impl PlaybackQueue {
                 self.spent.push(done.samples);
             }
         }
-        out[written..].fill(0.0);
+        let rest = &mut out[written..];
+        match self.bed.as_mut() {
+            // Speech comes first, and a hold is a hold on everything.
+            Some(bed) => bed.fill_idle(rest, !self.paused && self.segments.is_empty()),
+            None => rest.fill(0.0),
+        }
         written
     }
 
@@ -306,6 +333,38 @@ mod tests {
 
         queue.fill(&mut out);
         assert_eq!(finished(&mut queue), vec![3]);
+    }
+
+    #[test]
+    fn the_working_sound_plays_only_when_nothing_else_is_queued() {
+        let mut queue = PlaybackQueue::with_working_sound(Bed::new(1_000));
+        queue.set_working(true);
+        // A second of it: its pause, then its pulse.
+        let mut out = [0.0; 1_000];
+        assert_eq!(queue.fill(&mut out), 0, "none of it is speech");
+        assert!(out.iter().any(|&s| s != 0.0), "the pulse is heard");
+
+        queue.push(1, vec![0.5; 4]);
+        let mut out = [0.0; 4];
+        queue.fill(&mut out);
+        assert_eq!(out, [0.5; 4], "speech is never mixed with it");
+
+        queue.push(2, vec![0.25; 4]);
+        queue.pause();
+        let mut out = [9.0; 4];
+        queue.fill(&mut out);
+        assert_eq!(out, [0.0; 4], "a hold is silence");
+    }
+
+    #[test]
+    fn the_working_sound_stops_when_told() {
+        let mut queue = PlaybackQueue::with_working_sound(Bed::new(1_000));
+        queue.set_working(true);
+        queue.fill(&mut [0.0; 700]);
+        queue.set_working(false);
+        let mut out = [1.0; 200];
+        queue.fill(&mut out);
+        assert!(out[100..].iter().all(|&s| s == 0.0), "faded out and gone");
     }
 
     #[test]

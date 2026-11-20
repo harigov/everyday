@@ -24,11 +24,14 @@
 
 pub mod assistant;
 pub mod confirm;
+pub mod cue;
 pub mod phrases;
 pub mod session;
 
 use crate::agent::{AgentEvent, ConfirmAnswer, Sink};
 use crate::error::CommandResult;
+use crate::listen::ReadAloud;
+use crate::speech::listen::PieceStream;
 use crate::speech::live::LiveTranscription;
 use crate::speech::synth::Synthesiser;
 pub use crate::speech::transcribe::BoxFuture;
@@ -81,6 +84,12 @@ pub enum VoiceEvent {
         message_id: String,
         text: String,
     },
+    /// Every sentence of reply `message_id` has played: it was heard whole,
+    /// and will not be cut. What comes after it -- something read aloud --
+    /// is not part of it.
+    ReplyHeard {
+        message_id: String,
+    },
     /// Something went wrong, and the session carries on.
     Trouble {
         message: String,
@@ -122,6 +131,11 @@ pub enum VoiceOutput {
     Resume,
     /// Throw away everything queued, and anything held.
     Clear,
+    /// Play the sound of working ([`cue::Bed`]) while nothing else is
+    /// playing, or stop it. On while the assistant is working out what to say
+    /// and has nothing to say yet; off while the person talks, while anything
+    /// is said, and while the assistant waits on them.
+    Working(bool),
     /// Tell the interface.
     Event(VoiceEvent),
 }
@@ -134,12 +148,16 @@ pub struct VoiceLink {
 }
 
 /// How a turn ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TurnOutcome {
     pub stopped: bool,
     /// The assistant ended the conversation out loud -- see [`END_TOOL`]. The
     /// session ends once what it said has been heard.
     pub ended_voice: bool,
+    /// What the assistant was asked to read out in full (`read_aloud`), in
+    /// order: read by the session after the reply, one after another, a
+    /// sentence at a time, as the Listen player reads it.
+    pub read_aloud: Vec<ReadAloud>,
 }
 
 /// The tool a spoken turn is offered for ending the conversation out loud,
@@ -153,10 +171,15 @@ pub const END_TOOL: &str = karmayoga_core::agent::END_VOICE_TOOL;
 /// The assistant, as a session needs it: what [`assistant::ServiceAssistant`]
 /// implements over the real thing, and a test over a script.
 pub trait VoiceAssistant: Send + Sync {
-    /// Run one spoken turn, streaming into `sink`.
+    /// Run one spoken turn, streaming into `sink`. `heard_clear` says the
+    /// person began saying `prompt` while nothing of the session's own was
+    /// audible, so it cannot be an echo of a reply or of something read
+    /// aloud: only then may what they asked for be done without asking (see
+    /// `Turn::voice_approves`).
     fn turn(
         &self,
         prompt: String,
+        heard_clear: bool,
         on_screen: Option<OnScreen>,
         sink: Sink,
     ) -> BoxFuture<'static, CommandResult<TurnOutcome>>;
@@ -170,6 +193,10 @@ pub trait VoiceAssistant: Send + Sync {
         message_id: String,
         heard: String,
     ) -> BoxFuture<'static, CommandResult<()>>;
+    /// The text of what a turn asked to have read aloud, as it is written:
+    /// made fit to hear, by the model where one may be used. The error is a
+    /// sentence fit to say.
+    fn open_reading(&self, what: ReadAloud) -> BoxFuture<'static, CommandResult<PieceStream>>;
 }
 
 /// What a session is built from.

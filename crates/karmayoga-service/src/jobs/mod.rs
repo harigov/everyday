@@ -538,6 +538,7 @@ async fn execute(
         drafting: None,
         via: None,
         spoken: false,
+        voice_approves: false,
         job: Some(JobTurn { id, question: job.title(), context: executor.context() }),
         follow_up: None,
         max_steps: Some(executor.max_steps()),

@@ -21,6 +21,8 @@
 //! - [`CallBackend`]: opening the voice session and joining the media server
 //!   need speech models and real sockets, so a test substitutes them. The
 //!   real thing is [`RealCalls`].
+//! - [`Transcript`]: what is said on the call, written into the chat as it
+//!   goes, as the thread at the desk shows a conversation being talked.
 //! - What is said to the owner, and which [`HangUp`] each [`CallEnd`] is.
 
 use crate::call::{self, Addresses, CallEnd, CallError, ToCall};
@@ -30,6 +32,7 @@ use jiff::Timestamp;
 use karmayoga_core::ConversationId;
 use karmayoga_core::chat::Via;
 use karmayoga_service::agent::AgentEvent;
+use karmayoga_service::chat::escape_markdown;
 use karmayoga_service::error::CommandResult;
 use karmayoga_service::service::Service;
 use karmayoga_service::voice::{VoiceEvent, VoiceLink, VoiceState};
@@ -425,6 +428,123 @@ impl Confirming {
     }
 }
 
+// ---- the call, written down -------------------------------------------------
+
+/// Follows the session's events to write the call into the chat as it goes:
+/// each thing the owner said, quoted as it was heard, and each reply once it
+/// is settled -- the same words the thread at the desk shows for a
+/// conversation being talked, and the vault keeps.
+///
+/// A reply is settled when what was heard of it is known: it has been played
+/// out (`ReplyHeard`, before anything read aloud after it), it was cut short
+/// where the owner talked over it (`ReplyCut`, which is what the vault keeps
+/// of it -- nothing, when nothing was heard), the owner has moved on to the
+/// next thing, or the call is over. Written whole and once, since a message in the chat cannot
+/// be taken back the way the desk redraws one.
+#[derive(Debug, Default)]
+pub(crate) struct Transcript {
+    reply: Option<Reply>,
+}
+
+#[derive(Debug, Default)]
+struct Reply {
+    message_id: Option<String>,
+    text: String,
+    /// The turn is over: nothing more of it is coming.
+    finished: bool,
+    /// It failed, saying this.
+    failed: Option<String>,
+}
+
+impl Transcript {
+    /// What to write in the chat after `event`, in order.
+    pub(crate) fn on_event(&mut self, event: &VoiceEvent) -> Vec<String> {
+        match event {
+            VoiceEvent::Heard { text } => {
+                let mut out = self.settle();
+                if !text.trim().is_empty() {
+                    out.push(said_by_owner(text));
+                }
+                self.reply = Some(Reply::default());
+                out
+            }
+            VoiceEvent::Agent { event } => {
+                let reply = self.reply.get_or_insert_with(Reply::default);
+                match event {
+                    AgentEvent::Started { message_id } => {
+                        reply.message_id.get_or_insert_with(|| message_id.clone());
+                    }
+                    AgentEvent::Delta { text } => reply.text.push_str(text),
+                    AgentEvent::Retrying { text } => reply.text.clone_from(text),
+                    AgentEvent::Finished { .. } => reply.finished = true,
+                    AgentEvent::Failed { message } => {
+                        reply.finished = true;
+                        reply.failed = Some(message.clone());
+                    }
+                    _ => {}
+                }
+                Vec::new()
+            }
+            VoiceEvent::ReplyCut { message_id, text } => {
+                match self.reply.as_mut() {
+                    Some(reply) if reply.message_id.as_deref() == Some(message_id.as_str()) => {
+                        reply.text.clone_from(text);
+                        reply.failed = None;
+                    }
+                    _ => return Vec::new(),
+                }
+                self.settle()
+            }
+            VoiceEvent::ReplyHeard { message_id } => {
+                let ours = self
+                    .reply
+                    .as_ref()
+                    .is_some_and(|reply| reply.message_id.as_deref() == Some(message_id.as_str()));
+                if ours { self.settle() } else { Vec::new() }
+            }
+            VoiceEvent::State { state: VoiceState::Listening } => {
+                if self.reply.as_ref().is_some_and(|reply| reply.finished) {
+                    self.settle()
+                } else {
+                    Vec::new()
+                }
+            }
+            VoiceEvent::Ended { .. } => self.settle(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// What is left to write once the call is over.
+    pub(crate) fn finish(&mut self) -> Vec<String> {
+        self.settle()
+    }
+
+    /// The reply under way, written down, if there is anything to write.
+    fn settle(&mut self) -> Vec<String> {
+        let Some(reply) = self.reply.take() else { return Vec::new() };
+        let text = reply.text.trim();
+        if !text.is_empty() {
+            return vec![text.to_string()];
+        }
+        match reply.failed {
+            Some(why) => vec![format!("Something went wrong: {}", why.trim())],
+            None => Vec::new(),
+        }
+    }
+}
+
+/// What the owner said on a call, as the chat shows it: quoted, since the
+/// bot is the one writing it, behind a microphone.
+pub(crate) fn said_by_owner(text: &str) -> String {
+    let lines: Vec<String> = text
+        .trim()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| escape_markdown(line.trim()))
+        .collect();
+    format!("> \u{1f399}\u{fe0f} {}", lines.join("\n> "))
+}
+
 // ---- what is said ------------------------------------------------------------
 
 /// Said in the chat, and the call refused, when another call has the line.
@@ -816,6 +936,128 @@ mod tests {
             Step::default(),
             "the question is still there in the chat"
         );
+    }
+
+    // ---- the transcript ----
+
+    fn heard(text: &str) -> VoiceEvent {
+        VoiceEvent::Heard { text: text.into() }
+    }
+
+    fn agent(event: AgentEvent) -> VoiceEvent {
+        VoiceEvent::Agent { event }
+    }
+
+    fn reply(id: &str, text: &str) -> Vec<VoiceEvent> {
+        vec![
+            agent(AgentEvent::Started { message_id: id.into() }),
+            agent(AgentEvent::Delta { text: text.into() }),
+            agent(AgentEvent::Finished { message_id: id.into() }),
+        ]
+    }
+
+    fn written(t: &mut Transcript, events: &[VoiceEvent]) -> Vec<String> {
+        events.iter().flat_map(|e| t.on_event(e)).collect()
+    }
+
+    #[test]
+    fn what_was_said_is_written_and_each_reply_once_it_has_been_heard() {
+        let mut t = Transcript::default();
+        let mut events = vec![heard("what's on today?")];
+        events.extend(reply("m1", "Just the dentist at three."));
+        assert_eq!(
+            written(&mut t, &events),
+            [said_by_owner("what's on today?")],
+            "the reply waits until it has been heard"
+        );
+        assert_eq!(
+            written(&mut t, &[state(VoiceState::Speaking), state(VoiceState::Listening)]),
+            ["Just the dentist at three."]
+        );
+        assert!(t.finish().is_empty(), "and only once");
+        assert!(said_by_owner("what's on today?").starts_with("> "));
+        assert!(said_by_owner("what's on today?").contains("what's on today?"));
+    }
+
+    #[test]
+    fn a_reply_heard_whole_is_written_before_anything_read_after_it_ends() {
+        let mut t = Transcript::default();
+        let mut events = vec![heard("read me the Morning Brew")];
+        events.extend(reply("m1", "Here is the Morning Brew."));
+        events.push(state(VoiceState::Speaking));
+        assert_eq!(written(&mut t, &events), [said_by_owner("read me the Morning Brew")]);
+        assert_eq!(
+            t.on_event(&VoiceEvent::ReplyHeard { message_id: "m1".into() }),
+            ["Here is the Morning Brew."],
+            "while the reading goes on"
+        );
+        assert!(t.on_event(&VoiceEvent::ReplyHeard { message_id: "m0".into() }).is_empty());
+        assert!(written(&mut t, &[state(VoiceState::Listening)]).is_empty(), "and only once");
+    }
+
+    #[test]
+    fn a_reply_talked_over_is_written_as_far_as_it_was_heard() {
+        let mut t = Transcript::default();
+        let mut events = vec![heard("tell me about the week")];
+        events.extend(reply("m1", "Monday is busy. Tuesday is quiet."));
+        events
+            .push(VoiceEvent::ReplyCut { message_id: "m1".into(), text: "Monday is busy.".into() });
+        events.push(heard("what about Friday?"));
+        assert_eq!(
+            written(&mut t, &events),
+            [
+                said_by_owner("tell me about the week"),
+                "Monday is busy.".to_string(),
+                said_by_owner("what about Friday?"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reply_nobody_heard_is_not_written() {
+        let mut t = Transcript::default();
+        let mut events = vec![heard("hello")];
+        events.extend(reply("m1", "Hi there."));
+        events.push(VoiceEvent::ReplyCut { message_id: "m1".into(), text: String::new() });
+        assert_eq!(written(&mut t, &events), [said_by_owner("hello")]);
+    }
+
+    #[test]
+    fn a_retry_replaces_what_was_said_and_a_failure_is_written() {
+        let mut t = Transcript::default();
+        let events = vec![
+            heard("hello"),
+            agent(AgentEvent::Started { message_id: "m1".into() }),
+            agent(AgentEvent::Delta { text: "Half a th".into() }),
+            agent(AgentEvent::Retrying { text: String::new() }),
+            agent(AgentEvent::Delta { text: "Hello!".into() }),
+            agent(AgentEvent::Finished { message_id: "m1".into() }),
+            heard("and?"),
+            agent(AgentEvent::Started { message_id: "m2".into() }),
+            agent(AgentEvent::Failed { message: "the model is down".into() }),
+            VoiceEvent::Ended { error: None },
+        ];
+        assert_eq!(
+            written(&mut t, &events),
+            [
+                said_by_owner("hello"),
+                "Hello!".to_string(),
+                said_by_owner("and?"),
+                "Something went wrong: the model is down".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reply_still_being_said_when_the_call_ends_is_written() {
+        let mut t = Transcript::default();
+        let events = vec![
+            heard("read me the news"),
+            agent(AgentEvent::Started { message_id: "m1".into() }),
+            agent(AgentEvent::Delta { text: "Here it is.".into() }),
+        ];
+        written(&mut t, &events);
+        assert_eq!(t.finish(), ["Here it is."]);
     }
 
     #[test]

@@ -52,6 +52,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, SupportedStreamConfig};
 use karmayoga_service::speech::SAMPLE_RATE;
+use karmayoga_service::voice::cue::Bed;
 
 use super::AudioError;
 use super::echo::Canceller;
@@ -129,6 +130,7 @@ enum Control {
     Pause,
     Resume,
     Clear,
+    Working(bool),
     Stop,
 }
 
@@ -185,6 +187,12 @@ impl AudioEngine {
 
     pub fn clear(&self) {
         let _ = self.control.send(Control::Clear);
+    }
+
+    /// Play the sound of the assistant working while nothing else is
+    /// playing, or stop it. See `karmayoga_service::voice::cue`.
+    pub fn working(&self, on: bool) {
+        let _ = self.control.send(Control::Working(on));
     }
 
     /// Close the devices. Does not wait for it; safe to say twice.
@@ -357,7 +365,14 @@ fn open(host: &cpal::Host, options: EngineOptions) -> Result<Opened, AudioError>
     };
 
     let (tx, events) = std::sync::mpsc::sync_channel::<Event>(CHANNEL_CAPACITY);
-    let queue = Arc::new(Mutex::new(PlaybackQueue::new()));
+    // A speaker can play the sound of working, made now for its rate rather
+    // than when it is first wanted, under the lock its callback tries for.
+    let queue = Arc::new(Mutex::new(match &speaker {
+        Some((_, config)) => {
+            PlaybackQueue::with_working_sound(Bed::new(config.sample_rate().into()))
+        }
+        None => PlaybackQueue::new(),
+    }));
     let finished = Arc::new(AtomicBool::new(false));
     let latencies = Arc::new(Latencies::default());
 
@@ -722,6 +737,7 @@ impl Pipeline {
                 lock(&opened.queue).clear();
                 opened.finished.store(true, Ordering::Release);
             }
+            Control::Working(on) => lock(&opened.queue).set_working(on),
             Control::Stop => {}
         }
     }

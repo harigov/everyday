@@ -1325,8 +1325,11 @@ const SPOKEN_NOTE: &str = concat!(
     "The person is talking to you and your reply is read aloud by a voice. Answer the way you \
      would out loud: a sentence or two unless they ask for more, plain words, no markdown, \
      lists, tables, links or code. Say numbers, dates and times as a person says them. If the \
-     full answer is long, give the gist and offer the detail. When they make clear they are \
-     done talking for now, call ",
+     full answer is long, give the gist and offer the detail. What they ask you out loud to do \
+     with their tasks, calendar, library or notes -- add, finish, move, schedule, reschedule, \
+     cancel, remove, record -- they have already said yes to: do it without asking them to \
+     confirm, then say in a few words what you did. When they make clear they are done \
+     talking for now, call ",
     end_voice_tool!(),
     " and say a short goodbye."
 );

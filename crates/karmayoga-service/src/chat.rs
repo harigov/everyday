@@ -599,6 +599,7 @@ impl Service {
             drafting: None,
             via: Some(via),
             spoken: false,
+            voice_approves: false,
             // The owner is right there in the chat; a scheduled run's ways of
             // reaching them are not needed.
             reach: Reach::default(),

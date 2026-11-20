@@ -193,7 +193,7 @@ async fn a_spoken_turn_that_says_goodbye_ends_the_conversation_out_loud() {
     let conversation = ConversationId::new();
     let assistant = ServiceAssistant { service: svc.clone(), conversation, via: None };
 
-    let outcome = assistant.turn("That's all I have.".into(), None, quiet()).await.unwrap();
+    let outcome = assistant.turn("That's all I have.".into(), true, None, quiet()).await.unwrap();
 
     assert!(outcome.ended_voice, "the session is told to end once the goodbye is heard");
     assert!(!outcome.stopped);
@@ -212,7 +212,7 @@ async fn a_spoken_turn_that_carries_on_does_not() {
     let assistant =
         ServiceAssistant { service: svc.clone(), conversation: ConversationId::new(), via: None };
 
-    let outcome = assistant.turn("What is the weather?".into(), None, quiet()).await.unwrap();
+    let outcome = assistant.turn("What is the weather?".into(), true, None, quiet()).await.unwrap();
 
     assert!(!outcome.ended_voice);
 }
@@ -235,6 +235,7 @@ async fn a_typed_turn_is_not_offered_it() {
         drafting: None,
         via: None,
         spoken: false,
+        voice_approves: false,
         reach: Reach::default(),
         job: None,
         follow_up: None,

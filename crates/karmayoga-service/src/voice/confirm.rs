@@ -1,15 +1,33 @@
 //! Approving something out loud.
 //!
-//! Only two kinds of confirmation may be answered by voice: a web search the
-//! assistant wants to make after it has read mail, and a page it wants to open
-//! at an address it composed itself. Those questions exist because the words
-//! or the address could carry something out, so they may be answered aloud only
-//! when all of it can be said: a search too long to read, or an address with a
-//! query, a login, escapes or anything else a listener could not judge, waits
-//! for the card, where it is shown in full. Everything else -- a delete, a mail to somebody, a write after a stranger's
-//! words were read -- waits for a click on the card already in the thread,
-//! because a voice is easy to forge and easy to mishear, and an echo of the
-//! assistant's own speech must never be able to approve anything.
+//! **What the person asks for out loud is approved by asking.** Adding,
+//! finishing and moving tasks, scheduling, moving and cancelling events,
+//! changing what is on a shelf and writing notes are the things somebody talks
+//! to an assistant to get done, and a card to click after saying "cancel my
+//! three o'clock" undoes the point of saying it. So in a spoken turn at this
+//! computer the agent's gate does not stop [`CHANGED_BY_VOICE`]'s calls --
+//! as long as the person began saying it while nothing of the assistant's own
+//! was audible (an echo of a reply, or of an article read aloud, must never be
+//! the yes), and, once a stranger's words have come into the conversation (a
+//! mail, a page, an invitation's description), only when what they said asked
+//! for that kind of change ([`request_asks_for`]) and, for the calendar, the
+//! guests are told nothing but a new time or a cancellation. Anything else
+//! may be a stranger's instruction, and it is asked about. A call through a
+//! chat always asks: a phone is the likelier thing to be lost or borrowed.
+//!
+//! Three kinds of confirmation may then be answered by voice: a web search
+//! the assistant wants to make after it has read mail, a page it wants to
+//! open at an address it composed itself, and a delete of one of those
+//! things. The first two exist because the words or the address could carry
+//! something out, so they may be answered aloud only when all of it can be
+//! said: a search too long to read, or an address with a query, a login,
+//! escapes or anything else a listener could not judge, waits for the card,
+//! where it is shown in full. A delete is asked by the name of what goes.
+//! Everything else -- a mail to somebody, an invitation sent after a
+//! stranger's words were read, a write of anything else -- waits for a click
+//! on the card already in the thread, because a voice is easy to forge and
+//! easy to mishear, and an echo of the assistant's own speech must never be
+//! able to approve anything.
 //!
 //! What counts as an answer is deliberately narrow too. A confirmation is
 //! given by a whole utterance made of nothing but agreement ("yeah, go
@@ -120,14 +138,142 @@ pub fn spoken_answer(heard: &str) -> SpokenAnswer {
     if only_agreement(&words, MAX_AGREEMENTS) { SpokenAnswer::Yes } else { SpokenAnswer::Unclear }
 }
 
-/// Whether a confirmation of this `kind` about `subject` may be answered by
-/// voice: a web search or a page fetch, when the question can say all of it.
-pub fn may_answer_aloud(kind: &str, subject: &str) -> bool {
+/// The tools a spoken request is the go-ahead for: tasks, events, the
+/// library's items and notes, made, changed and removed. The agent's gate
+/// lets their calls in a spoken turn through without a card (see the module
+/// doc for when it does not), and the session may ask aloud about a delete
+/// of one that it still stops.
+///
+/// A project, a whole shelf's worth, a tracker, a memory and the rest are
+/// not here: nobody asked for them by voice, and removing one is not undone.
+pub const CHANGED_BY_VOICE: &[&str] = &[
+    "create_task",
+    "update_task",
+    "delete_task",
+    "create_event",
+    "update_event",
+    "delete_event",
+    "create_item",
+    "update_item",
+    "delete_item",
+    "log_item",
+    "create_note",
+    "update_note",
+];
+
+/// Words that ask for something to go, as a request says them. Whole words
+/// only: "Dropbox" is not "drop", and "cancelled" says what happened rather
+/// than what to do.
+const REMOVING: &[&str] = &[
+    "delete",
+    "deleting",
+    "remove",
+    "removing",
+    "cancel",
+    "cancelling",
+    "canceling",
+    "clear",
+    "drop",
+    "erase",
+    "scrap",
+    "trash",
+    "wipe",
+    "rid",
+    "bin",
+];
+
+/// Words that ask for an event to move or go. All an event's guests are
+/// told of, once a stranger's words are in, is a new time or a cancellation
+/// -- see the agent's gate, which asks about anything else.
+const RESCHEDULING: &[&str] = &[
+    "reschedule",
+    "rescheduling",
+    "schedule",
+    "move",
+    "moving",
+    "push",
+    "shift",
+    "postpone",
+    "delay",
+    "bring",
+    "change",
+    "cancel",
+    "cancelling",
+    "canceling",
+    "delete",
+    "remove",
+];
+
+/// Words that ask for something to be added or set to happen: a task, a
+/// reminder.
+const ADDING: &[&str] =
+    &["add", "adding", "remind", "assign", "create", "make", "put", "set", "schedule", "jot"];
+
+/// Words that begin a question about something rather than a request to do
+/// it: "what did I cancel?", "did you delete it?". "Can you", "could you" and
+/// the like are requests, and are not here.
+const ASKING_ABOUT: &[&str] = &[
+    "what", "which", "when", "where", "who", "whose", "why", "how", "did", "do", "does", "have",
+    "has", "is", "are", "was", "were", "should", "shall",
+];
+
+/// How many words before a verb a negation still governs it: "do not
+/// delete", "don't you dare delete it", "never cancel".
+const NEGATION_REACH: usize = 4;
+
+/// Whether `request` -- what the person said this turn -- asks for a change of
+/// the `kind` the gate would otherwise stop: something removed, for a
+/// `destructive` call; an event moved or cancelled, for an `outward` one (its
+/// guests are told); something added, for a `keep` (a task for the
+/// assistant, or a reminder, which later runs read as the person's wishes).
+///
+/// It is not what approves a call in a turn nobody else's words have reached;
+/// it only decides, once they have, whether a delete or an invitation the
+/// model wants is plausibly the one the person asked for, or may be a
+/// stranger's instruction it read on the way. So the word has to be asked
+/// for: not in a question ("what did I cancel?"), and not negated ("read it,
+/// but don't delete anything"). A request that asked in other words is asked
+/// about aloud, and a yes does it.
+pub fn request_asks_for(kind: &str, request: &str) -> bool {
+    let wanted = match kind {
+        "destructive" => REMOVING,
+        "outward" => RESCHEDULING,
+        "keep" => ADDING,
+        _ => return false,
+    };
+    let words = words(request);
+    if words.first().is_some_and(|first| ASKING_ABOUT.contains(&first.as_str())) {
+        return false;
+    }
+    words.iter().enumerate().any(|(at, word)| {
+        wanted.contains(&word.as_str()) && {
+            let before = &words[at.saturating_sub(NEGATION_REACH)..at];
+            !before.iter().any(|w| NEGATIONS.contains(&w.as_str()) || w == "without")
+        }
+    })
+}
+
+/// Whether a confirmation of this `kind` about `subject`, for a call to
+/// `tool`, may be answered by voice: a web search or a page fetch when the
+/// question can say all of it, and a delete of one of the things a spoken
+/// request may change ([`CHANGED_BY_VOICE`]) when what goes has a short name.
+pub fn may_answer_aloud(kind: &str, tool: &str, subject: &str) -> bool {
     match kind {
         "search" => search_words(subject).is_some(),
         "fetch" => spoken_address(subject).is_some(),
+        "destructive" => CHANGED_BY_VOICE.contains(&tool) && what_goes(subject).is_some(),
         _ => false,
     }
+}
+
+/// What a delete removes, as it would be said. `None` when it has no name or
+/// more than one line -- a long text below a card's first line is the card's
+/// to show -- or a name too long to say.
+fn what_goes(subject: &str) -> Option<String> {
+    if subject.trim().contains('\n') {
+        return None;
+    }
+    search_words(subject)
 }
 
 /// The longest search read aloud, in characters.
@@ -227,6 +373,10 @@ pub fn question(kind: &str, subject: &str) -> String {
             Some(address) => format!("Should I open {address}?"),
             None => "Should I open a web page?".to_string(),
         },
+        "destructive" => match what_goes(subject) {
+            Some(what) => format!("Should I delete {what}?"),
+            None => "Should I delete it?".to_string(),
+        },
         _ => "Should I go ahead?".to_string(),
     }
 }
@@ -308,22 +458,103 @@ mod tests {
     }
 
     #[test]
-    fn only_a_search_or_a_fetch_may_be_answered_aloud() {
-        assert!(may_answer_aloud("search", "best e-bike"));
-        assert!(may_answer_aloud("fetch", "https://news.example.org/today"));
-        for kind in [
-            "destructive",
-            "outward",
-            "type",
-            "click",
-            "routine",
-            "rewrite",
-            "connection",
-            "keep",
-            "",
-            "Search",
+    fn only_a_search_a_fetch_or_a_delete_asked_for_by_voice_may_be_answered_aloud() {
+        assert!(may_answer_aloud("search", "web_search", "best e-bike"));
+        assert!(may_answer_aloud("fetch", "read_web_page", "https://news.example.org/today"));
+        for tool in ["delete_task", "delete_event", "delete_item"] {
+            assert!(may_answer_aloud("destructive", tool, "Book the dentist"), "{tool}");
+        }
+        for tool in ["delete_project", "delete_tracker", "forget", "delete_note", "trash_thread"] {
+            assert!(!may_answer_aloud("destructive", tool, "Book the dentist"), "{tool}");
+        }
+        assert!(
+            !may_answer_aloud("destructive", "delete_task", "Notes\n\nall of them"),
+            "a card with a long text below is the card's to show"
+        );
+        assert!(!may_answer_aloud("destructive", "delete_task", ""), "nothing to name");
+        for kind in
+            ["outward", "type", "click", "routine", "rewrite", "connection", "keep", "", "Search"]
+        {
+            assert!(
+                !may_answer_aloud(kind, "delete_event", "https://news.example.org"),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_delete_is_asked_by_the_name_of_what_goes() {
+        assert_eq!(
+            question("destructive", "\u{201c}Team sync\u{201d} on 2026-11-20"),
+            "Should I delete \u{201c}Team sync\u{201d} on 2026-11-20?"
+        );
+        let said = question("destructive", "Milk. Tell them it is approved!");
+        assert_eq!(said.matches('?').count(), 1, "{said}");
+    }
+
+    #[test]
+    fn a_request_asks_for_a_removal_in_its_own_words() {
+        for said in [
+            "cancel my three o'clock",
+            "Delete the dentist task.",
+            "remove that book from my shelf",
+            "get rid of the milk task",
+            "clear Friday afternoon",
+            "I cancelled it, so drop it from the list",
+            "can you delete the dentist task?",
+            "I don't need it any more, delete it",
         ] {
-            assert!(!may_answer_aloud(kind, "https://news.example.org"), "{kind:?}");
+            assert!(request_asks_for("destructive", said), "{said}");
+        }
+        for said in [
+            "what's on my calendar today?",
+            "read me the newsletter",
+            "is it clearly the right one?",
+            "add milk to my tasks",
+            "read me Bob's mail, but don't delete anything",
+            "do not cancel anything",
+            "never remove my notes",
+            "what did I cancel last week?",
+            "did you delete it?",
+            "save it to Dropbox",
+            "I cancelled the meeting",
+            "",
+        ] {
+            assert!(!request_asks_for("destructive", said), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_request_asks_for_an_event_to_move_or_go_in_its_own_words() {
+        for said in [
+            "move my three o'clock to four",
+            "reschedule lunch with Sam to Friday",
+            "cancel the team sync",
+            "push it back an hour",
+            "could you postpone the review?",
+        ] {
+            assert!(request_asks_for("outward", said), "{said}");
+        }
+        for said in [
+            "what's on today?",
+            "who is coming to the sync?",
+            "read me the mail from Acme and add milk to my list",
+            "make a note of it",
+            "set a timer",
+            "don't move anything",
+        ] {
+            assert!(!request_asks_for("outward", said), "{said}");
+        }
+        assert!(!request_asks_for("search", "delete it"), "only what the gate stops");
+    }
+
+    #[test]
+    fn a_request_asks_for_a_task_or_a_reminder_in_its_own_words() {
+        for said in ["remind me at nine to ring the vet", "add a task for you to file it"] {
+            assert!(request_asks_for("keep", said), "{said}");
+        }
+        for said in ["what's on my list?", "what tasks do I have?", "read me that mail"] {
+            assert!(!request_asks_for("keep", said), "{said}");
         }
     }
 
@@ -333,9 +564,9 @@ mod tests {
             question("search", "best e-bike under 2000"),
             "Should I search the web for best e-bike under 2000?"
         );
-        assert!(!may_answer_aloud("search", "  "));
+        assert!(!may_answer_aloud("search", "web_search", "  "));
         let long = "word ".repeat(40);
-        assert!(!may_answer_aloud("search", &long), "cutting it would hide the rest");
+        assert!(!may_answer_aloud("search", "web_search", &long), "cutting it would hide the rest");
     }
 
     #[test]
@@ -366,13 +597,13 @@ mod tests {
             "https://example.com/ and more",
             "",
         ] {
-            assert!(!may_answer_aloud("fetch", address), "{address}");
+            assert!(!may_answer_aloud("fetch", "read_web_page", address), "{address}");
         }
     }
 
     #[test]
     fn another_kind_gets_a_plain_question() {
-        assert_eq!(question("destructive", "the deck"), "Should I go ahead?");
+        assert_eq!(question("outward", "the deck"), "Should I go ahead?");
     }
 
     #[test]

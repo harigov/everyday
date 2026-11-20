@@ -17,6 +17,8 @@ use crate::speech::listen::{Piece, PieceStream};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use karmayoga_core::StoryId;
+use karmayoga_core::account::Account;
+use karmayoga_core::id::MailMessageId;
 use karmayoga_core::llm::{ModelAccess, ModelTier};
 use karmayoga_core::mail::MailAiFeature;
 use karmayoga_core::news::{BodyOrigin, Story};
@@ -80,29 +82,91 @@ pub async fn open(
         blocking(move || Ok(vault.story(story_id)?)).await?
     };
     let title = story.title.clone();
-    let mut notices: Vec<&'static str> = Vec::new();
 
-    // The text, and the account it is mail of when it is a newsletter.
-    let (paragraphs, newsletter_of) = if let Some(message) = story.mail_message {
-        let (text, account) = {
-            let vault = vault.clone();
-            blocking(move || {
-                let account = vault.mail_message(message)?.account_id;
-                let body = vault.body(message)?;
-                Ok((body.model_text(), vault.account(account)?))
-            })
-            .await?
-        };
-        (paragraphs_from_text(&text), Some(account))
-    } else {
-        let (paragraphs, summary_only) = story_paragraphs(&vault, &story).await?;
-        if summary_only {
-            notices.push(NO_ARTICLE);
-        }
-        (paragraphs, None)
+    // A newsletter is mail, and is read as a mail message is.
+    if let Some(message) = story.mail_message {
+        let (paragraphs, account) = mail_paragraphs(&vault, message).await?;
+        let source = Source::Newsletter(account);
+        return prepare(&vault, title, paragraphs, source, as_written, Vec::new()).await;
+    }
+    let mut notices: Vec<&'static str> = Vec::new();
+    let (paragraphs, summary_only) = story_paragraphs(&vault, &story).await?;
+    if summary_only {
+        notices.push(NO_ARTICLE);
+    }
+    prepare(&vault, title, paragraphs, Source::Article, as_written, notices).await
+}
+
+/// One mail message read in full, made fit to hear as a newsletter story is:
+/// what the assistant reads out when asked to read a newsletter in the inbox.
+pub async fn open_message(service: &Arc<Service>, message: MailMessageId) -> CommandResult<Opened> {
+    let vault = service.require_unlocked()?;
+    let (paragraphs, account) = mail_paragraphs(&vault, message).await?;
+    let title = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.mail_message(message)?.subject)).await?
     };
+    prepare(&vault, title, paragraphs, Source::Email(account), false, Vec::new()).await
+}
+
+/// A mail message's text as paragraphs, and the account it is mail of.
+async fn mail_paragraphs(
+    vault: &Arc<karmayoga_core::Vault>,
+    message: MailMessageId,
+) -> CommandResult<(Vec<String>, Account)> {
+    let vault = vault.clone();
+    let (text, account) = blocking(move || {
+        let account = vault.mail_message(message)?.account_id;
+        let body = vault.body(message)?;
+        Ok((body.model_text(), vault.account(account)?))
+    })
+    .await?;
+    Ok((paragraphs_from_text(&text), account))
+}
+
+/// Where the paragraphs being read came from, which decides the model they
+/// may go to and what the listener is told about them.
+enum Source {
+    /// An article from the Feed: the Medium model, as other features that
+    /// are not about mail use.
+    Article,
+    /// A newsletter in the Feed, which is mail of this account: the model
+    /// only as summaries go to it.
+    Newsletter(Account),
+    /// An email read out in full, likewise.
+    Email(Account),
+}
+
+impl Source {
+    /// Said when there is nothing to read.
+    fn nothing(&self) -> &'static str {
+        match self {
+            Source::Article | Source::Newsletter(_) => "There is nothing in this story to read.",
+            Source::Email(_) => "There is nothing in this email to read.",
+        }
+    }
+
+    /// Said when its mail may not go to the model.
+    fn refused(&self) -> &'static str {
+        match self {
+            Source::Email(_) => EMAIL_REFUSED,
+            Source::Article | Source::Newsletter(_) => NEWSLETTER_REFUSED,
+        }
+    }
+}
+
+/// `paragraphs` ready to read: as written, or made fit to hear by the model
+/// when one may be used. Mail goes to the model only as summaries do.
+async fn prepare(
+    vault: &Arc<karmayoga_core::Vault>,
+    title: String,
+    paragraphs: Vec<String>,
+    source: Source,
+    as_written: bool,
+    mut notices: Vec<&'static str>,
+) -> CommandResult<Opened> {
     if paragraphs.is_empty() {
-        return Err(CommandError::new(codes::INVALID, "There is nothing in this story to read."));
+        return Err(CommandError::new(codes::INVALID, source.nothing()));
     }
 
     if as_written {
@@ -116,8 +180,9 @@ pub async fn open(
     // The model, if one may be used. A newsletter is mail, and goes to the
     // model only as summaries do; anything else uses the Medium model as the
     // other features that are not about mail do.
-    let access = match newsletter_of {
-        Some(account) => {
+    let refused = source.refused();
+    let access = match source {
+        Source::Newsletter(account) | Source::Email(account) => {
             let vault = vault.clone();
             blocking(move || {
                 crate::mailai::mail_model(
@@ -128,9 +193,9 @@ pub async fn open(
                 )
             })
             .await
-            .map_err(|e| (e.code == codes::FORBIDDEN).then_some(NEWSLETTER_REFUSED))
+            .map_err(|e| (e.code == codes::FORBIDDEN).then_some(refused))
         }
-        None => {
+        Source::Article => {
             let vault = vault.clone();
             blocking(move || {
                 vault
@@ -160,6 +225,8 @@ const NO_ARTICLE: &str =
 const NO_MODEL: &str =
     "No model is set up to prepare this for listening, so it is read as written.";
 const NEWSLETTER_REFUSED: &str = "Mail's AI features are not switched on for this newsletter's account, so it is read as written.";
+const EMAIL_REFUSED: &str =
+    "Mail's AI features are not switched on for this email's account, so it is read as written.";
 
 /// The notices joined into one sentence-or-two, or none.
 fn notice(notices: &[&str]) -> Option<String> {

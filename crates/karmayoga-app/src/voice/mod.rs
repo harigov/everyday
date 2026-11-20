@@ -300,6 +300,11 @@ async fn pump(
             VoiceOutput::Pause => engine.pause(),
             VoiceOutput::Resume => engine.resume(),
             VoiceOutput::Clear => engine.clear(),
+            VoiceOutput::Working(on) => {
+                if !window_gone {
+                    engine.working(on);
+                }
+            }
         }
     }
     if !ended {

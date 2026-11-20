@@ -675,6 +675,9 @@ check('delete_log', 'waiting', 'Delete log')
 check('unstar_thread', 'running', 'Unstarring thread')
 check('unstar_thread', 'done', 'Unstarred thread')
 // Ending a spoken conversation: the voice, not the thread.
+check('summarize_thread', 'running', 'Summarising')
+check('summarize_thread', 'done', 'Summarised')
+check('read_aloud', 'done', 'Read aloud')
 check('end_voice_mode', 'running', 'Ending voice mode')
 check('end_voice_mode', 'done', 'Ended voice mode')
 

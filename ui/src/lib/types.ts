@@ -4647,6 +4647,8 @@ export type VoiceEvent =
   /** The person talked over the reply: `messageId` now reads `text`, which is
    *  what they actually heard of it. */
   | { type: 'replyCut'; messageId: MessageId; text: string }
+  /** Every sentence of reply `messageId` has played: it was heard whole. */
+  | { type: 'replyHeard'; messageId: MessageId }
   /** Something went wrong, and the session carries on. */
   | { type: 'trouble'; message: string }
   /** The session is over; `error` says why when it did not end on request. */

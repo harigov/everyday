@@ -172,6 +172,12 @@ impl<T: Clone + Send + 'static> Narrator<T> {
         self.ready.clear();
     }
 
+    /// Whether anything made has been handed over to be played and has not
+    /// been played yet: whether the transport has something to play.
+    pub fn playing(&self) -> bool {
+        !self.ready.is_empty()
+    }
+
     /// Whether anything is queued, being made or still to be played.
     pub fn outstanding(&self) -> bool {
         !self.queued.is_empty() || self.making.is_some() || !self.ready.is_empty()

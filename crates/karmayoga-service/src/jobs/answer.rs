@@ -184,6 +184,7 @@ pub async fn answer_now(
         drafting: None,
         via: conversation.via.clone(),
         spoken: false,
+        voice_approves: false,
         job: None,
         follow_up: Some(job.id),
         max_steps: None,
@@ -647,6 +648,7 @@ mod tests {
             wrote: Vec::new(),
             stopped,
             ended_voice: false,
+            read_aloud: Vec::new(),
         }
     }
 
