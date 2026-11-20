@@ -3186,6 +3186,11 @@
           "name": "prompt",
           "required": true,
           "type": "string"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "type": "ImageShape | null"
         }
       ],
       "changes": null,
@@ -7098,6 +7103,38 @@
       "orScope": null,
       "returns": "string",
       "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "markup",
+          "required": true,
+          "type": "IllustrationMarkup"
+        },
+        {
+          "name": "source",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "width",
+          "required": false,
+          "type": "number | null"
+        },
+        {
+          "name": "height",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "render_illustration",
+      "orScope": null,
+      "returns": "GeneratedImage",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

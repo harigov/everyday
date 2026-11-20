@@ -217,12 +217,33 @@ pub async fn answer_now(
 
     if let Some(via) = &conversation.via {
         let note_title = note.as_ref().map(|(_, title)| title.as_str());
-        if let Some(markdown) = chat_message(&turned, &job, note_title)
-            && let Err(e) = tell_chat(service, via, job.kind.label(), asked_in, markdown).await
-        {
-            // Not worth failing the answer over. It is in the thread, and a
-            // link that is down has nobody listening on it to be told.
-            tracing::warn!(job = %job_id, error = %e, "could not send the answer to the chat");
+        if let Some(markdown) = chat_message(&turned, &job, note_title) {
+            // What the job drew while it worked, and what the answer drew,
+            // go with it: the chat cannot open the Assistant app's thread.
+            let mut pictures = match job.conversation_id {
+                Some(transcript) => blocking({
+                    let vault = vault.clone();
+                    move || Ok(crate::images::tools::made_in(&vault.messages(transcript)?))
+                })
+                .await
+                .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            pictures.extend(turned.pictures.iter().copied());
+            let label = job.kind.label();
+            match tell_chat(service, via, label, asked_in, markdown).await {
+                Ok(()) if !pictures.is_empty() => {
+                    if let Err(e) = show_chat(service, via, label, asked_in, pictures).await {
+                        tracing::warn!(job = %job_id, error = %e, "could not send its pictures");
+                    }
+                }
+                Ok(()) => {}
+                // Not worth failing the answer over. It is in the thread, and
+                // a link that is down has nobody listening on it to be told.
+                Err(e) => {
+                    tracing::warn!(job = %job_id, error = %e, "could not send the answer to the chat");
+                }
+            }
         }
     }
 
@@ -260,6 +281,26 @@ async fn tell_chat(
         Ok(sent) => sent,
         Err(_) => Err("the chat did not take it in time".to_string()),
     }
+}
+
+/// Send pictures to the chat a conversation came from, after its answer, as
+/// [`tell_chat`] sends the answer.
+async fn show_chat(
+    service: &Arc<Service>,
+    via: &karmayoga_core::chat::Via,
+    label: &str,
+    asked_in: ConversationId,
+    pictures: Vec<karmayoga_core::FileId>,
+) -> Result<usize, String> {
+    let outlet: Arc<dyn ChatOutlet> = service
+        .chat_outlet(via.link)
+        .ok_or_else(|| format!("the {} link is not running here", via.service))?;
+    tokio::time::timeout(
+        crate::delivery::POST_TIMEOUT,
+        outlet.show(from_job(label, asked_in), pictures),
+    )
+    .await
+    .unwrap_or_else(|_| Err("the chat did not take them in time".to_string()))
 }
 
 /// Who a message to the owner's chat is from: a job of this kind, and the
@@ -649,6 +690,7 @@ mod tests {
             stopped,
             ended_voice: false,
             read_aloud: Vec::new(),
+            pictures: Vec::new(),
         }
     }
 

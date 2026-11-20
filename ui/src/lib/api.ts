@@ -14,6 +14,8 @@ import type {
   BankLink,
   BankLinkId,
   CsvMapping,
+  IllustrationMarkup,
+  ImageShape,
   ImportFormat,
   MoneyCategory,
   MoneyCategoryId,
@@ -1065,7 +1067,16 @@ export const api = {
   downloadImageModel: (id: string) => call('downloadImageModel', { id }),
   cancelImageModelDownload: (id: string) => call('cancelImageModelDownload', { id }),
   deleteImageModel: (id: string) => call('deleteImageModel', { id }),
-  generateImage: (prompt: string) => call('generateImage', { prompt }),
+  generateImage: (prompt: string, shape?: ImageShape) =>
+    call('generateImage', { prompt, shape: shape ?? null }),
+  // A drawing from an SVG or an HTML page; no model needed. See
+  // `illustrate` in the service.
+  renderIllustration: (
+    markup: IllustrationMarkup,
+    source: string,
+    width?: number,
+    height?: number,
+  ) => call('renderIllustration', { markup, source, width: width ?? null, height: height ?? null }),
 
   dismissMeetingOffer: (calendarId: string, uid: string, series: string | null, never: boolean) =>
     call('dismissMeetingOffer', { calendarId, uid, series, never }),

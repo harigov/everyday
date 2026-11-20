@@ -16,10 +16,6 @@ use std::time::{Duration, Instant};
 /// A quantized model on a CPU can take several minutes for one picture.
 const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
-/// Square side, in pixels. 512 is the size these quantized builds are
-/// documented to finish in, including on a machine without much memory.
-const SIDE: u32 = 512;
-
 const ENV_BIN: &str = "KARMAYOGA_SD_CLI";
 
 const BIN: &str = if cfg!(windows) { "sd-cli.exe" } else { "sd-cli" };
@@ -32,12 +28,14 @@ const ENGINE_DIR: &str = "engine-";
 /// a failure is explained.
 const STDERR_KEPT: usize = 64 * 1024;
 
-/// Run `bin` on `weights` and return the PNG it wrote.
+/// Run `bin` on `weights` and return the PNG it wrote, `size` pixels wide
+/// and tall -- see [`super::Shape::local_size`].
 pub fn paint(
     bin: &Path,
     model: LocalImageModel,
     weights: &ImageWeightPaths,
     prompt: &str,
+    (width, height): (u32, u32),
 ) -> CommandResult<Vec<u8>> {
     let scratch = std::env::temp_dir().join(format!("karmayoga-image-{}", unique()));
     std::fs::create_dir_all(&scratch).map_err(|e| {
@@ -64,9 +62,9 @@ pub fn paint(
         .arg("--diffusion-fa")
         .arg("--vae-tiling")
         .arg("-W")
-        .arg(SIDE.to_string())
+        .arg(width.to_string())
         .arg("-H")
-        .arg(SIDE.to_string())
+        .arg(height.to_string())
         .arg("-p")
         .arg(prompt)
         .arg("-o")
@@ -228,6 +226,14 @@ fn too_old(stderr: &str) -> Option<String> {
 /// one unpacked from the downloaded engine.
 ///
 /// Reads and writes files, so it is called from a blocking thread.
+/// Whether there is an engine to run, without unpacking it: one named by
+/// `KARMAYOGA_SD_CLI`, or the downloaded archive. What decides whether a
+/// picture is offered at all; [`engine`] is what finds it to run.
+pub fn engine_present() -> bool {
+    std::env::var_os(ENV_BIN).is_some_and(|over| !over.is_empty())
+        || files::sd_cli_archive().is_some()
+}
+
 pub fn engine() -> CommandResult<PathBuf> {
     if let Some(over) = std::env::var_os(ENV_BIN) {
         let path = PathBuf::from(over);
@@ -444,7 +450,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = stand_in(dir.path(), "");
         for model in LocalImageModel::ALL {
-            let png = paint(&bin, model, &weights(dir.path()), "a red fox").unwrap();
+            let png = paint(&bin, model, &weights(dir.path()), "a red fox", (768, 512)).unwrap();
             assert!(png.starts_with(b"\x89PNG"));
             let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
             let args: Vec<&str> = args.lines().collect();
@@ -459,6 +465,7 @@ mod tests {
             assert!(after("--vae").ends_with("vae.safetensors"));
             assert_eq!(after("--steps"), model.steps().to_string());
             assert_eq!(after("-p"), "a red fox");
+            assert_eq!((after("-W"), after("-H")), ("768", "512"));
             assert!(args.contains(&"--diffusion-fa"), "{model:?}: {args:?}");
             assert!(args.contains(&"--offload-to-cpu"), "{model:?}: {args:?}");
         }
@@ -472,7 +479,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = stand_in(dir.path(), "head -c 1000000 /dev/zero | tr '\\0' x >&2");
         let started = Instant::now();
-        paint(&bin, LocalImageModel::Flux2KleinQ4, &weights(dir.path()), "a fox").unwrap();
+        paint(&bin, LocalImageModel::Flux2KleinQ4, &weights(dir.path()), "a fox", (512, 512))
+            .unwrap();
         assert!(started.elapsed() < Duration::from_secs(60));
     }
 
@@ -482,7 +490,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = stand_in(dir.path(), "echo 'loading' >&2; echo 'unknown model type' >&2; exit 3");
         let err =
-            paint(&bin, LocalImageModel::ZImageTurboQ4, &weights(dir.path()), "a fox").unwrap_err();
+            paint(&bin, LocalImageModel::ZImageTurboQ4, &weights(dir.path()), "a fox", (512, 512))
+                .unwrap_err();
         assert_eq!(err.code, codes::INVALID);
         assert!(err.message.contains("unknown model type"), "{}", err.message);
 
@@ -491,7 +500,8 @@ mod tests {
             "echo \"sd-cli: /lib/x86_64-linux-gnu/libc.so.6: version \\`GLIBC_2.38' not found\" >&2; exit 1",
         );
         let err =
-            paint(&bin, LocalImageModel::ZImageTurboQ4, &weights(dir.path()), "a fox").unwrap_err();
+            paint(&bin, LocalImageModel::ZImageTurboQ4, &weights(dir.path()), "a fox", (512, 512))
+                .unwrap_err();
         assert_eq!(err.code, codes::UNSUPPORTED);
         assert!(err.message.contains("Ubuntu 24.04"), "{}", err.message);
     }

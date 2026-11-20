@@ -4347,6 +4347,9 @@ export type AgentEvent =
       summary: string
       /** See [[MailLink]]. */
       mailLink?: MailLink | null
+      /** The pictures a `generate_image` or `draw_illustration` made and
+       *  kept in Files, drawn with the reply. Absent for every other tool. */
+      files?: FileId[]
     }
   | {
       type: 'confirmationRequired'
@@ -4737,10 +4740,19 @@ export interface ImageConfig {
   generator: ImageGeneratorConfig
 }
 
-/** One picture from `generate_image`, PNG, base64. */
+/** One picture from `generate_image` or `render_illustration`, PNG,
+ *  base64. */
 export interface GeneratedImage {
   png: string
 }
+
+/** The shape `generate_image` makes a picture in: square when absent, wide
+ *  is 3:2 landscape, tall is 2:3 portrait. */
+export type ImageShape = 'square' | 'wide' | 'tall'
+
+/** What `render_illustration`'s source is written in. An SVG is drawn in
+ *  the service at once; an HTML page needs Chrome or Chromium. */
+export type IllustrationMarkup = 'svg' | 'html'
 
 /** A few seconds of the saved voice, to hear it before using it:
  *  `voice_sample`. */

@@ -11,6 +11,7 @@
 
 import type {
   AddedItem,
+  FileId,
   Deed,
   KarmaReport,
   QuickAskRow,
@@ -197,7 +198,7 @@ import { mockBackup } from './mock-backup'
 import { mockConnections } from './mock-connections'
 import { mockMoney } from './mock-money'
 import { mockScreenMinutes, mockScreenTime } from './mock-screentime'
-import { isMockFilesCommand, mockFilesInvoke } from './mock-files'
+import { isMockFilesCommand, mockFilesInvoke, mockMadePicture } from './mock-files'
 import { mockHealth, mockHealthDaily } from './mock-health'
 import {
   mockAllowRemoteImagesOnce,
@@ -8756,6 +8757,9 @@ export const mockInvoke = async <T>(
         )
       }
       return mockGenerateImage() as T
+    case 'render_illustration':
+      if (!str(args.source).trim()) throw new VaultError('invalid', 'there is nothing to draw')
+      return mockGenerateImage() as T
 
     case 'dismiss_meeting_offer':
       requireUnlocked()
@@ -9017,7 +9021,7 @@ export async function mockSendMessage(
     args: unknown,
     ms: number,
     summary: string,
-    effect?: (callId: string) => void,
+    effect?: (callId: string) => FileId[] | void,
   ) => {
     if (run.stopped) return false
     const callId = `call-mock-${++step}`
@@ -9028,8 +9032,8 @@ export async function mockSendMessage(
     toolCalls.push({ id: callId, name, arguments: args })
     await pause(ms)
     if (run.stopped) return false
-    effect?.(callId)
-    onEvent({ type: 'toolFinished', callId, name, ok: true, summary })
+    const files = effect?.(callId) ?? []
+    onEvent({ type: 'toolFinished', callId, name, ok: true, summary, files })
     await pause(350)
     return !run.stopped
   }
@@ -9269,6 +9273,38 @@ export async function mockSendMessage(
               'Sources: [visitlisboa.com](https://www.visitlisboa.com/en/events), Open-Meteo.',
             ].join('\n')
           : 'You have *Pottery class* on Saturday at 14:00 and nothing on Sunday. ' + webOff
+    } else if (/\b(draw|diagram|illustrat\w*|picture of)\b/.test(lower)) {
+      // What `draw_illustration` does: markup drawn into a picture, kept in
+      // Files, its id on the call's card -- which is what the thread draws.
+      const title = 'How a picture reaches you'
+      const ok = await tool(
+        'draw_illustration',
+        { format: 'svg', title, description: 'Three steps, left to right.' },
+        700,
+        `${title}.png`,
+        (callId) => {
+          const file = mockMadePicture(
+            `${title}.png`,
+            'Three steps, left to right.',
+            MOCK_DIAGRAM,
+            1200,
+            540,
+          )
+          toolResults.push({
+            id: `msg-${nextId++}`,
+            conversationId,
+            role: 'tool',
+            content: `${title}.png`,
+            toolCalls: [],
+            toolCallId: callId,
+            failed: false,
+            files: [file.id],
+            createdAt: new Date().toISOString(),
+          })
+          return [file.id]
+        },
+      )
+      reply = ok ? 'Here it is: you ask, I write the drawing, and it is kept in your Files.' : ''
     } else if (lower.includes('strange') && agentSettings.web) {
       // The shape a model talked into sending something out would take: an
       // address it wrote itself, carrying words, that nobody gave it. The
@@ -9439,3 +9475,18 @@ function pictureSize(url: string): Promise<{ width: number; height: number } | n
     img.src = url
   })
 }
+
+/** The drawing the mock's `draw_illustration` makes. */
+const MOCK_DIAGRAM = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 360" width="1200" height="540">
+<rect width="800" height="360" fill="#f7f8fb"/>
+<text x="400" y="44" text-anchor="middle" font-family="sans-serif" font-size="26" font-weight="700" fill="#1f2937">How a picture reaches you</text>
+<g font-family="sans-serif" font-size="16" fill="#1f2937" text-anchor="middle">
+<rect x="40" y="120" width="180" height="90" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+<text x="130" y="170">You ask</text>
+<rect x="310" y="120" width="180" height="90" rx="14" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+<text x="400" y="170">I draw it</text>
+<rect x="580" y="120" width="180" height="90" rx="14" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+<text x="670" y="170">Kept in Files</text>
+</g>
+<path d="M222 165h76M492 165h76" stroke="#6b7280" stroke-width="2.5"/>
+</svg>`

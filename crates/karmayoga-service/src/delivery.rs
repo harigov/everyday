@@ -12,6 +12,11 @@
 //! for a decision. A run that failed says so, once per streak of failures,
 //! exactly as the desktop notification does.
 //!
+//! The pictures the run made -- `generate_image`, `draw_illustration` -- go
+//! with it: to the chat as pictures, after the message, and into the email
+//! as attachments. They are read back from the run's own transcript, so
+//! only what this run made goes, and they are in Files whatever happens.
+//!
 //! The email goes from the account to its own address and nowhere else. The
 //! address is read from the account, never from anything a model wrote, so a
 //! routine set up by the assistant cannot be talked into mailing somebody
@@ -19,7 +24,9 @@
 
 use crate::chat::{CallDelivered, ChatOutlet, FromRun};
 use crate::service::{Service, blocking};
-use karmayoga_core::mail::{Address, Draft, Origin};
+use karmayoga_core::FileId;
+use karmayoga_core::files::FileKind;
+use karmayoga_core::mail::{Address, Draft, DraftAttachment, Origin};
 use karmayoga_core::routine::{Delivered, DeliveredTo, Outcome, Routine, RoutineRun};
 use karmayoga_core::{ProposalQuery, Vault};
 use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
@@ -35,6 +42,11 @@ pub(crate) const POST_TIMEOUT: Duration = Duration::from_secs(120);
 /// wait behind the chat's own work, then the ringing, then the message that
 /// goes instead if nobody picks up.
 pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(240);
+
+/// The most a run's pictures may add to its email, in bytes. Past this the
+/// rest stay in Files: most mail servers refuse a message over 25 MB, and
+/// attachments grow by a third on the way.
+const EMAILED_PICTURE_BYTES: u64 = 15 * 1024 * 1024;
 
 /// Send `run`'s result to every place `routine` names. One [`Delivered`] per
 /// place, in the order the routine's [`Delivery`] lists them; empty when it
@@ -67,6 +79,15 @@ pub(crate) async fn deliver(
     .await
     .unwrap_or(0);
     let Some(message) = report(&routine.name, run, waiting) else { return Vec::new() };
+    let pictures = match (run.outcome == Outcome::Done, run.conversation_id) {
+        (true, Some(conversation)) => blocking({
+            let vault = vault.clone();
+            move || Ok(crate::images::tools::made_in(&vault.messages(conversation)?))
+        })
+        .await
+        .unwrap_or_default(),
+        _ => Vec::new(),
+    };
 
     let mut delivered = Vec::new();
     if let Some(link) = delivery.chat {
@@ -77,7 +98,8 @@ pub(crate) async fn deliver(
         .await
         .ok()
         .flatten();
-        delivered.push(match (label, outlet) {
+        let shows = outlet.clone();
+        let mut sent = match (label, outlet) {
             (None, _) => Delivered {
                 to: DeliveredTo::Chat,
                 ok: false,
@@ -127,7 +149,25 @@ pub(crate) async fn deliver(
                     },
                 }
             }
-        });
+        };
+        if let Some(outlet) = shows
+            && sent.ok
+            && !pictures.is_empty()
+        {
+            let from = FromRun { routine: routine.name.clone(), conversation: run.conversation_id };
+            let shown = tokio::time::timeout(POST_TIMEOUT, outlet.show(from, pictures.clone()));
+            sent.detail.push_str(&match shown.await {
+                Ok(Ok(0)) => String::new(),
+                Ok(Ok(n)) => format!(", with {}", pictures_said(n)),
+                Ok(Err(why)) => format!("; its pictures did not go: {why}"),
+                // Queued behind the chat's own work, they still go when it
+                // gets to them; this only stopped waiting to say so.
+                Err(_) => "; its pictures were still waiting behind the chat after two minutes, \
+                           and go when it is free"
+                    .to_string(),
+            });
+        }
+        delivered.push(sent);
     }
     if let Some(account) = delivery.email {
         let sent = blocking({
@@ -135,6 +175,7 @@ pub(crate) async fn deliver(
             let (name, run) = (routine.name.clone(), run.clone());
             let html = html_of(&message);
             let origin = Origin::Routine { run: run.id.to_string() };
+            let pictures = pictures.clone();
             move || {
                 let subject = subject(&name, &run, vault.agent_settings().ok());
                 let account = vault.account(account)?;
@@ -146,16 +187,29 @@ pub(crate) async fn deliver(
                     vec![Address::new(account.display_name.clone(), account.address.clone())];
                 draft.subject = subject;
                 draft.body_html = html;
+                let (attached, left) = attach_pictures(&vault, &pictures);
+                draft.attachments = attached;
+                let attached = draft.attachments.len();
                 vault.save_draft(&draft)?;
                 vault.queue_draft_send(draft.id, jiff::Timestamp::now(), origin)?;
-                Ok(Ok((account.id, account.address)))
+                let mut detail = account.address;
+                if attached > 0 {
+                    detail.push_str(&format!(", with {}", pictures_said(attached)));
+                }
+                if left > 0 {
+                    detail.push_str(&format!(
+                        " ({} too big to email, left in Files)",
+                        pictures_said(left)
+                    ));
+                }
+                Ok(Ok((account.id, detail)))
             }
         })
         .await;
         delivered.push(match sent {
-            Ok(Ok((account, address))) => {
+            Ok(Ok((account, detail))) => {
                 service.notify_mail_write(account);
-                Delivered { to: DeliveredTo::Email, ok: true, detail: address }
+                Delivered { to: DeliveredTo::Email, ok: true, detail }
             }
             Ok(Err(why)) => Delivered { to: DeliveredTo::Email, ok: false, detail: why },
             Err(e) => Delivered {
@@ -166,6 +220,34 @@ pub(crate) async fn deliver(
         });
     }
     delivered
+}
+
+/// `pictures` as a mail's attachments, as many as fit in
+/// [`EMAILED_PICTURE_BYTES`], and how many did not fit. One that is gone from
+/// Files, or cannot be read, is skipped without a word: the run's own thread
+/// says what it made.
+fn attach_pictures(vault: &Vault, pictures: &[FileId]) -> (Vec<DraftAttachment>, usize) {
+    let (mut attached, mut left, mut bytes) = (Vec::new(), 0, 0u64);
+    for &id in pictures {
+        let Ok(entry) = vault.file(id) else { continue };
+        if entry.status.is_trashed() || entry.kind != FileKind::Image {
+            continue;
+        }
+        if bytes + entry.size > EMAILED_PICTURE_BYTES {
+            left += 1;
+            continue;
+        }
+        let Ok(content) = vault.read_file_range(id, 0, entry.size) else { continue };
+        let Ok(blob) = vault.put_blob(&content) else { continue };
+        bytes += entry.size;
+        attached.push(DraftAttachment { blob, filename: entry.name, mime_type: entry.mime });
+    }
+    (attached, left)
+}
+
+/// "a picture", "3 pictures".
+fn pictures_said(n: usize) -> String {
+    if n == 1 { "a picture".into() } else { format!("{n} pictures") }
 }
 
 /// What is said when the owner picks up a call made with `run`'s result: who

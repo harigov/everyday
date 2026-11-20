@@ -93,6 +93,15 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 # Pure Rust; its DCT comes from mozjpeg, hence the IJG notice in
 # THIRD-PARTY-NOTICES.md.
 jpeg-encoder = "0.7.1"
+# Illustrations: an SVG the assistant writes, drawn into a PNG in this
+# process -- see `illustrate::svg`. Milliseconds, and no browser needed, which
+# is why it is not Chrome's job as an HTML page is. Pure Rust, MIT/Apache-2.0.
+# This computer's fonts are read once and kept (`illustrate::svg::fonts`).
+resvg = { version = "0.45.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }
+# Takes `http-equiv` off every `<meta>` of a page the assistant draws, read as
+# a browser reads it -- see `illustrate::html::without_refresh`. Pinned as
+# karmayoga-mail pins it; already in the tree.
+lol_html = "=3.0.1"
 # Files: what a photo or a video says about itself -- when it was taken, on
 # what, where, how big and how long -- read once when a file arrives and kept
 # in the catalog. See `files::meta`. Both pure Rust; kamadak-exif reads the

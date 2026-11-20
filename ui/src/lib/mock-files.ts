@@ -1550,6 +1550,28 @@ export function mockHealthFile(name: string, size: number, at?: string): FileEnt
   return wire(added)
 }
 
+/** Pictures the assistant made, by file id: the SVG each is drawn from. */
+const made = new Map<string, string>()
+
+/**
+ * A picture the assistant made -- what `draw_illustration` and
+ * `generate_image` keep -- as a file in the assistant's folder, captioned,
+ * drawn from `svg`. Answers the file as the catalog has it.
+ */
+export function mockMadePicture(
+  name: string,
+  caption: string,
+  svg: string,
+  width: number,
+  height: number,
+): FileEntry {
+  const added = addFile(name, svg.length, { origin: 'assistant' })
+  added.caption = caption
+  added.media = { width, height }
+  made.set(added.id, svg)
+  return wire(added)
+}
+
 /** What `FileEntry` the catalog holds for `id`, if it holds one. */
 export function mockCatalogFile(id: string): FileEntry | undefined {
   const found = db().files.find((f) => f.id === id)
@@ -1863,6 +1885,8 @@ export function mockFileUrl(id: string): string {
       `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="#8a8a8a"/></svg>`,
     )
   }
+  const drawn = made.get(id)
+  if (drawn) return svgUrl(drawn)
   const ext = extensionOf(f.name)
   if (f.kind === 'image') return svgUrl(pictureSvg(f))
   if (f.kind === 'video' || f.kind === 'audio') return svgUrl(mediaSvg(f))

@@ -26,6 +26,7 @@
     elapsed,
     isChoices,
     isPlan,
+    madePictures,
     planOf,
     workSummary,
     type Turn,
@@ -310,7 +311,7 @@
 
   /** The files turns carry, by id; `undefined` until asked for. */
   let entries = $state<Record<FileId, FileEntry | null | undefined>>({})
-  const carried = $derived(agent.turns.flatMap((t) => t.files))
+  const carried = $derived(agent.turns.flatMap((t) => [...t.files, ...madePictures(t)]))
   $effect(() => {
     const missing = carried.filter((id) => untrack(() => entries[id]) === undefined)
     if (missing.length === 0) return
@@ -339,6 +340,18 @@
   function tileOf(turn: Turn, file: FileEntry): string {
     const copy = turn.pictures.find((p) => p.filename === file.name)
     return thumbnailUrl(file) ?? (copy ? mediaUrl(copy.blob) : fileUrl(file.id, fileVersion(file)))
+  }
+
+  /** How big a picture the assistant made is drawn: its own size, shrunk
+   *  to fit -- one alone large enough to read, several as smaller tiles.
+   *  Worked out here because a frame that shrinks to fit its picture takes
+   *  the picture's full width from it before any CSS limit applies. */
+  function fitted(file: FileEntry, alone: boolean): { width: number; height: number } | null {
+    const { width, height } = file.media
+    if (!width || !height) return null
+    const [most, tallest] = alone ? [560, 480] : [240, 240]
+    const k = Math.min(1, most / width, tallest / height)
+    return { width: Math.round(width * k), height: Math.round(height * k) }
   }
 
   /** A `files:` link in a reply, which `renderMarkdown` draws as a button
@@ -897,6 +910,7 @@
             {@const started = steps.filter((c) => startedJobs.has(c.callId))}
             {@const plain = steps.filter((c) => !startedJobs.has(c.callId))}
             {@const status = activity(turn)}
+            {@const made = madePictures(turn)}
 
             {#if turn.thinking}
               <!-- The model's own reasoning, when its provider streams any.
@@ -954,6 +968,39 @@
                   {/each}
                 </div>
               {/if}
+            {/if}
+
+            {#if made.length}
+              <!-- What the turn made -- a picture from the image model, a
+                   drawing from an SVG or a page -- kept in Files and drawn
+                   here whole, ahead of the words about it: where a reopened
+                   thread has it too, since there the reply is a turn of its
+                   own after this one. Each opens the viewer, with the
+                   turn's others a key away. -->
+              <div class="made" class:single={made.length === 1}>
+                {#each made as id (id)}
+                  {@const file = entries[id]}
+                  {#if file}
+                    {@const size = fitted(file, made.length === 1)}
+                    <button
+                      class="picture"
+                      title={file.caption || file.name}
+                      onclick={() => openCarried(made, id)}
+                    >
+                      <img
+                        src={fileUrl(file.id, fileVersion(file))}
+                        alt={file.caption || file.name}
+                        width={size?.width}
+                        height={size?.height}
+                        style:width={size ? `${size.width}px` : null}
+                        loading="lazy"
+                      />
+                    </button>
+                  {:else if file === null}
+                    <span class="gone">A picture that is no longer in Files</span>
+                  {/if}
+                {/each}
+              </div>
             {/if}
 
             {#if turn.text}
@@ -1355,6 +1402,31 @@
   .sent .picture {
     padding: 0;
     cursor: pointer;
+  }
+  /* What the assistant made sits ahead of its reply, on its side, large
+     enough to read: a drawing is no use as a tile. */
+  .made {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    max-width: 100%;
+  }
+  .made .picture {
+    max-width: 100%;
+    padding: 0;
+    cursor: zoom-in;
+    background: #fff;
+  }
+  /* Sized by `fitted`; these only shrink it further in a narrow panel, and
+     keep one whose size is not known yet from being a thumbnail's square. */
+  .made .picture img {
+    max-width: 100%;
+    height: auto;
+    object-fit: contain;
+  }
+  .made .picture img:not([width]) {
+    width: auto;
+    max-height: 240px;
   }
   .gone {
     align-self: center;

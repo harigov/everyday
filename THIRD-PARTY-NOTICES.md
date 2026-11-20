@@ -69,6 +69,7 @@ Reproduced below in full:
   60. ptts and xn — Gradium's text-to-speech runtime and the tensor library it runs on, https://github.com/gradium-ai/xn-ptts and https://github.com/LaurentMazare/xn
   61. xn-gemm — © 2021 sarah, https://github.com/gradium-ai/gemm
   62. tokenizers — © Hugging Face, https://github.com/huggingface/tokenizers
+  63. resvg (with usvg, tiny-skia and fontdb) — © 2017 the Resvg Authors, https://github.com/linebender/resvg
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -4035,3 +4036,34 @@ SOFTWARE.
 (https://github.com/huggingface/tokenizers), built without its C parts. Apache-2.0
 licensed; see entry 32 above for the licence text, reproduced there rather than
 again.
+
+---
+
+## 63. resvg
+
+The assistant's drawings -- an SVG it writes, turned into a picture -- are
+drawn by `resvg` (https://github.com/linebender/resvg), with the `usvg`,
+`tiny-skia` and `fontdb` crates of the same project. MIT OR Apache-2.0
+licensed, reproduced here under MIT.
+
+MIT License
+
+Copyright 2017 the Resvg Authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

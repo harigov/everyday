@@ -12,10 +12,6 @@ const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// OpenAI's own ceiling for a complex prompt is two minutes.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The square the hosted models are asked for. Their API takes this size
-/// without further negotiation.
-const SIZE: &str = "1024x1024";
-
 pub struct OpenAiPainter {
     base_url: String,
     key: String,
@@ -56,11 +52,13 @@ impl OpenAiPainter {
         }
     }
 
-    pub async fn paint(&self, prompt: &str) -> CommandResult<Vec<u8>> {
+    /// `size` is one the API takes as it is -- see
+    /// [`super::Shape::openai_size`].
+    pub async fn paint(&self, prompt: &str, size: &str) -> CommandResult<Vec<u8>> {
         let body = serde_json::json!({
             "model": self.model,
             "prompt": prompt,
-            "size": SIZE,
+            "size": size,
             "n": 1,
             "output_format": "png",
         });
@@ -143,7 +141,7 @@ mod tests {
         let captured = Captured::default();
         let base = spawn(captured.clone()).await;
         let painter = OpenAiPainter::new(base, "sk-secret", "gpt-image-2.6-flare");
-        let png = painter.paint("a red fox").await.unwrap();
+        let png = painter.paint("a red fox", "1024x1024").await.unwrap();
         assert!(png.starts_with(b"\x89PNG"));
 
         let body = captured.body.lock().unwrap().clone().unwrap();

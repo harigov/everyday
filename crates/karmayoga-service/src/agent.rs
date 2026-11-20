@@ -270,6 +270,12 @@ pub enum AgentEvent {
         /// [`karmayoga_core::agent::Message::mail_link`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mail_link: Option<MailLink>,
+        /// The pictures a successful `generate_image` or `draw_illustration`
+        /// made and kept in Files, which the panel draws with the reply and
+        /// a chat sends as it arrives -- see [`crate::images::tools::files_of`].
+        /// Empty for every other tool.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<FileId>,
     },
     /// A call is waiting on a person before it may run. The panel draws the
     /// confirm/decline buttons and answers with `confirm_tool_call`.
@@ -679,6 +685,10 @@ struct Ran {
     /// [`mail_link_of`]. Carried through to [`write_results`] so a
     /// reopened thread shows the same link the live turn drew.
     mail_link: Option<MailLink>,
+    /// The pictures the call made, if it made any -- see
+    /// [`crate::images::tools::files_of`]. Carried through to
+    /// [`write_results`] for the same reason as `mail_link`.
+    files: Vec<FileId>,
 }
 
 /// One call in a question asked about several at once, and what the person
@@ -1057,7 +1067,7 @@ fn unattended_refusal(kind: &str, job: bool) -> &'static str {
 /// can compile, so it is used here, in one place, with the warning allowed
 /// -- switch to `try_update` once nothing older than 1.99 needs to build it.
 #[allow(deprecated)]
-fn take_one(budget: &AtomicU32) -> bool {
+pub(crate) fn take_one(budget: &AtomicU32) -> bool {
     budget.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok()
 }
 
@@ -1170,6 +1180,7 @@ impl AgentHook for ConfirmGate {
             ids: Vec::new(),
             saved_kind: None,
             mail_link: None,
+            files: Vec::new(),
         });
 
         // The dream's one note. Checked before anything else -- a call over
@@ -1185,6 +1196,7 @@ impl AgentHook for ConfirmGate {
                 ok: false,
                 summary: "declined: a dream may write one note per run".into(),
                 mail_link: None,
+                files: Vec::new(),
             });
             return ToolCallAction::Skip(
                 "You have already written this run's one note. Do not write another -- say \
@@ -1329,6 +1341,7 @@ impl ConfirmGate {
                         _ => "declined".into(),
                     },
                     mail_link: None,
+                    files: Vec::new(),
                 });
                 answer
             }
@@ -1545,6 +1558,7 @@ impl ConfirmGate {
                     ok: false,
                     summary: "refused".into(),
                     mail_link: None,
+                    files: Vec::new(),
                 });
                 return ToolCallAction::Skip(reason);
             }
@@ -1588,6 +1602,7 @@ impl ConfirmGate {
                     ok: false,
                     summary: "refused".into(),
                     mail_link: None,
+                    files: Vec::new(),
                 });
                 ToolCallAction::Skip(why)
             }
@@ -1603,6 +1618,7 @@ impl ConfirmGate {
         };
 
         let mut mail_link = None;
+        let mut files = Vec::new();
         if ok {
             // The taint the fetch gate reads -- see `mail_read_this_turn`.
             // Set on any successful mail `Read` tool, not only `read_thread`:
@@ -1650,6 +1666,9 @@ impl ConfirmGate {
                 self.mail_read_this_turn.store(true, Ordering::Release);
             }
             mail_link = mail_link_of(event.tool_name, event.raw_result.output());
+            if let Some(json) = event.raw_result.output().as_json() {
+                files = crate::images::tools::files_of(event.tool_name, json);
+            }
 
             // What a search or a page handed back may be read next without
             // asking -- exactly as written, and never its whole site. See
@@ -1680,6 +1699,7 @@ impl ConfirmGate {
                         .and_then(|v| v.as_str())
                         .map(str::to_string);
                     ran.mail_link = mail_link.clone();
+                    ran.files = files.clone();
                 }
             }
         }
@@ -1690,6 +1710,7 @@ impl ConfirmGate {
             ok,
             summary,
             mail_link,
+            files,
         });
 
         // A research job is not shown the page it read. This is the hook that
@@ -1793,6 +1814,7 @@ impl ConfirmGate {
                 ok: false,
                 summary: "saved as a proposal for the person to decide".into(),
                 mail_link: None,
+                files: Vec::new(),
             });
             return ToolCallAction::Skip(
                 "Not done. It has been saved as a proposal for the person to decide \
@@ -1818,6 +1840,7 @@ impl ConfirmGate {
             ok: false,
             summary: "declined: nobody was there to confirm it".into(),
             mail_link: None,
+            files: Vec::new(),
         });
         ToolCallAction::Skip(unattended_refusal(kind, self.job).into())
     }
@@ -2851,6 +2874,35 @@ fn build(
     if browser_offered {
         offered.extend(crate::browser::tools(meta.conversation));
     }
+    // Pictures: painted by their image model, or drawn from markup the model
+    // writes, and kept in Files -- so only in a vault with Files, and not in
+    // a dream, which writes one note and nothing else. A routine or a job
+    // keeps them where its other files go.
+    let pictures = (!is_dream && vault.supports_files()).then(|| {
+        use crate::images::tools;
+        let origin = if meta.job || meta.unattended {
+            karmayoga_core::FileOrigin::Jobs
+        } else {
+            karmayoga_core::FileOrigin::Assistant
+        };
+        let allowance = tools::Allowance::new();
+        let painter = crate::images::painter(&vault);
+        if let Some(local) = painter {
+            offered.push(tools::generate_image_tool(
+                meta.service.clone(),
+                origin,
+                allowance.clone(),
+                local,
+            ));
+        }
+        offered.push(tools::draw_illustration_tool(
+            meta.service.clone(),
+            origin,
+            allowance,
+            crate::illustrate::can_draw_html(),
+        ));
+        Pictures { generate: painter.is_some() }
+    });
     // Connections: other services' tools, reached through two of ours. Not
     // in a dream, which reads the vault and nothing else. A routine or a job
     // is offered only the connections the person allowed unattended, and
@@ -2937,6 +2989,7 @@ fn build(
             // parked on its own -- see `ConfirmGate::ask_together`.
             together: !is_dream && (!meta.unattended || meta.asker.is_some()),
             choosing,
+            pictures,
         }
         .to_string(),
     );
@@ -3026,6 +3079,15 @@ struct Guidance {
     /// Whether `offer_choices` is offered: when to offer options and when
     /// to choose, and what to learn from a pick.
     choosing: bool,
+    /// Which picture tools are offered, when `draw_illustration` is.
+    pictures: Option<Pictures>,
+}
+
+/// What [`Guidance`] says of making pictures. `draw_illustration` is always
+/// offered with it; `generate_image` only with an image model to run.
+#[derive(Debug, Clone, Copy)]
+struct Pictures {
+    generate: bool,
 }
 
 impl std::fmt::Display for Guidance {
@@ -3128,6 +3190,24 @@ impl std::fmt::Display for Guidance {
                      remember it with learned set.",
                 )?;
             }
+        }
+        if let Some(pictures) = self.pictures {
+            f.write_str(
+                "\n\nWhen they ask for a picture, an image, a diagram, a chart or an \
+                 illustration, or to be shown something, make one. Use draw_illustration for \
+                 anything that has to be exact or has words in it: a diagram, a chart, a \
+                 timeline, a table, a card.",
+            )?;
+            f.write_str(if pictures.generate {
+                " Use generate_image for a scene, a likeness, a mood or an artistic style."
+            } else {
+                " No image model is set up, so you cannot paint a scene or a likeness; if they \
+                 want one, say they can choose an image model in Settings \u{2192} Models."
+            })?;
+            f.write_str(
+                " What you make is shown to them with your reply and kept in their Files: say \
+                 in a sentence what it shows, and do not link it.",
+            )?;
         }
         if self.own_journal {
             f.write_str(
@@ -4768,6 +4848,10 @@ pub struct Turned {
     /// reply, one after another. Only ever filled for a [`Turn::spoken`] turn
     /// that was not stopped.
     pub read_aloud: Vec<crate::listen::ReadAloud>,
+    /// The pictures this turn's `generate_image` and `draw_illustration`
+    /// made and kept in Files, in the order they were made: for a caller that
+    /// sends its reply somewhere a picture has to be sent too.
+    pub pictures: Vec<FileId>,
 }
 
 /// One [`Kind`] per domain the tools in `ran` wrote to, paired with every id
@@ -5290,6 +5374,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
                 stopped: true,
                 ended_voice: false,
                 read_aloud: Vec::new(),
+                pictures: Vec::new(),
             })
         }
         Ok(Streamed { text, last, stopped }) => {
@@ -5313,6 +5398,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
                     .iter()
                     .any(|r| r.call.name == END_VOICE_MODE && matches!(r.outcome, Some(Ok(_))));
             let read_aloud = if stopped { Vec::new() } else { read_aloud_of(&ran) };
+            let pictures = ran.iter().flat_map(|r| r.files.iter().copied()).collect();
             Ok(Turned {
                 text: said,
                 prose,
@@ -5321,6 +5407,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
                 stopped,
                 ended_voice,
                 read_aloud,
+                pictures,
             })
         }
         Err(e) => {
@@ -5359,8 +5446,9 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
 fn write_results(vault: &Vault, conversation: ConversationId, ran: &[Ran]) {
     for entry in ran {
         let Some(outcome) = entry.outcome.clone() else { continue };
-        let message =
+        let mut message =
             VaultMessage::tool_result(conversation, &entry.call, outcome, entry.mail_link.clone());
+        message.files = entry.files.clone();
         if let Err(e) = vault.save_message(&message) {
             tracing::warn!(error = %e, "could not write down a tool result");
         }
@@ -6274,6 +6362,9 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
     }
     if crate::connections::tools::is_tool(tool) {
         return crate::connections::tools::summarise(tool, result);
+    }
+    if crate::images::tools::is_tool(tool) {
+        return crate::images::tools::summarise(result);
     }
     match tool {
         ASK_OWNER => {
@@ -7201,6 +7292,7 @@ mod tests {
             own_journal: false,
             together: false,
             choosing: false,
+            pictures: None,
         }
         .to_string();
         assert!(on.contains("read_web_page") && on.contains("get_weather"));
@@ -7227,6 +7319,7 @@ mod tests {
             own_journal: false,
             together: false,
             choosing: false,
+            pictures: None,
         }
         .to_string();
         assert!(off.contains("cannot reach the web"));
@@ -7252,6 +7345,7 @@ mod tests {
             own_journal: false,
             together: false,
             choosing: false,
+            pictures: None,
         }
         .to_string();
         assert!(dream.is_empty(), "a dream is told nothing about tools it was not given");
@@ -7273,6 +7367,7 @@ mod tests {
             own_journal: false,
             together: false,
             choosing: false,
+            pictures: None,
         }
         .to_string();
         assert!(long.contains("only its most recent part") && long.contains("use remember"));
@@ -7295,6 +7390,7 @@ mod tests {
             // Offered choices too: the line about learning from a pick names
             // `remember`, and must not when there is none.
             choosing: true,
+            pictures: None,
         }
         .to_string();
         assert!(!long_forgetful.contains("remember"));
@@ -7374,6 +7470,7 @@ mod tests {
             own_journal: false,
             together: false,
             choosing: false,
+            pictures: None,
         }
         .to_string();
         assert!(said.contains(&off));
@@ -7403,6 +7500,7 @@ mod tests {
                 own_journal: false,
                 together: false,
                 choosing: false,
+                pictures: None,
             }
             .to_string()
         };
@@ -7444,6 +7542,7 @@ mod tests {
                 own_journal: false,
                 together: false,
                 choosing: false,
+                pictures: None,
             }
             .to_string()
         };
@@ -7478,6 +7577,7 @@ mod tests {
                 own_journal: false,
                 together: false,
                 choosing: false,
+                pictures: None,
             }
             .to_string()
         };
@@ -7816,6 +7916,7 @@ mod tests {
             ids: id.map(|i| vec![i.to_string()]).unwrap_or_default(),
             saved_kind: None,
             mail_link: None,
+            files: Vec::new(),
         }
     }
 
@@ -8875,6 +8976,7 @@ mod tests {
                 own_journal: false,
                 together: false,
                 choosing: false,
+                pictures: None,
             }
             .to_string()
         };

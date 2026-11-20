@@ -132,6 +132,31 @@ impl std::fmt::Debug for Document {
     }
 }
 
+/// A picture the assistant made, on its way to the owner: what it is called,
+/// what it is, and its size, which a chat app uses to keep room for it while
+/// it downloads.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Shown {
+    pub filename: String,
+    /// `image/png` or `image/jpeg`.
+    pub mime: String,
+    pub bytes: Vec<u8>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+impl std::fmt::Debug for Shown {
+    /// The name and the size, not the bytes, for the reason [`Picture`]
+    /// gives.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shown")
+            .field("filename", &self.filename)
+            .field("mime", &self.mime)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
 /// One thing the owner sent beside their words, in the order they sent it: a
 /// picture the assistant is shown, or a file it is told about. What the relay
 /// holds for what is said next, and hands the service with the turn.
@@ -355,6 +380,16 @@ pub trait Connector: Send + Sync + 'static {
     /// [`Incoming::Chose`] (a tapped choice) or [`Incoming::Said`] (a typed
     /// one).
     async fn ask(&self, chat: &ChatId, question: &Question) -> Result<MessageRef, ChatError>;
+
+    /// Send a picture to `chat`, as a picture rather than a file: what the
+    /// assistant made while answering, sent as soon as it is made.
+    ///
+    /// A service that cannot send pictures says so; the reply has already
+    /// gone, and the picture is in the owner's Files either way.
+    async fn show(&self, chat: &ChatId, picture: &Shown) -> Result<MessageRef, ChatError> {
+        let _ = (chat, picture);
+        Err(ChatError::Transient("This chat service cannot send pictures.".into()))
+    }
 
     /// The owner's private chat with the bot, where something that is not a
     /// reply -- a routine's result, its question -- goes. `None` until there

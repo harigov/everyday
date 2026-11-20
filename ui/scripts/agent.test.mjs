@@ -37,6 +37,7 @@ const {
   gerund,
   isLoopback,
   liveTurn,
+  madePictures,
   pastTense,
   planOf,
   replay,
@@ -127,6 +128,38 @@ const {
   })
   assert.equal(turn.cards[0].state, 'done')
   assert.equal(turn.cards[0].summary, '3 results')
+}
+
+// A picture a call made rides on its finished event, and is the turn's to
+// draw; a failed call's is not, whatever the event says.
+{
+  const turn = emptyTurn('assistant', 'x')
+  for (const callId of ['c1', 'c2']) {
+    applyEvent(turn, { type: 'toolStarted', callId, name: 'draw_illustration', arguments: {} })
+  }
+  applyEvent(turn, {
+    type: 'toolFinished',
+    callId: 'c1',
+    name: 'draw_illustration',
+    ok: true,
+    summary: 'Plan.png',
+    files: ['f-1'],
+  })
+  applyEvent(turn, {
+    type: 'toolFinished',
+    callId: 'c2',
+    name: 'draw_illustration',
+    ok: false,
+    summary: 'that is not an SVG that can be drawn',
+    files: ['f-2'],
+  })
+  assert.deepEqual(turn.cards[0].files, ['f-1'])
+  assert.deepEqual(madePictures(turn), ['f-1'])
+  assert.deepEqual(toolLabel('draw_illustration', { title: 'Plan' }, 'done'), {
+    text: 'Drew',
+    detail: 'Plan',
+  })
+  assert.equal(toolLabel('generate_image', {}, 'running').text, 'Making a picture')
 }
 
 // A failed tool is drawn as failed rather than as a result. The interface
@@ -415,6 +448,23 @@ function msg(over) {
   assert.equal(turns[1].cards[0].state, 'done')
   assert.equal(turns[1].cards[0].summary, 'created task Ring the vet')
   assert.equal(turns[2].text, 'Added it.')
+}
+
+// A reopened thread draws what a call made from its stored result.
+{
+  const turns = replay([
+    msg({ id: 'm1', role: 'user', content: 'draw the plan' }),
+    msg({
+      id: 'm2',
+      role: 'assistant',
+      content: '',
+      toolCalls: [{ id: 'call_1', name: 'draw_illustration', arguments: { title: 'Plan' } }],
+    }),
+    msg({ id: 'm3', role: 'tool', content: 'Plan.png', toolCallId: 'call_1', files: ['f-1'] }),
+    msg({ id: 'm4', role: 'assistant', content: 'Here is the plan.' }),
+  ])
+  assert.deepEqual(madePictures(turns[1]), ['f-1'])
+  assert.deepEqual(madePictures(turns[2]), [])
 }
 
 // A picture the person sent comes back with their words, and a message that
