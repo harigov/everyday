@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backup::{self, BackupError};
 use crate::command;
-use crate::ctx::{Caller, Ctx, Scope};
+use crate::ctx::{Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::Notification;
 use crate::files;
@@ -272,12 +272,6 @@ const MAX_CHUNK: usize = 64 * 1024 * 1024;
 const FOLDER_IS_LOCAL: &str = "the files folder can be chosen only from this computer's own \
     window: a folder named from anywhere else could be any folder this computer can read";
 
-/// Whether this caller is the shell on the vault's own machine: the only one
-/// that may pick files, or the folder, by path. See the module docs.
-fn is_local(ctx: &Ctx) -> bool {
-    matches!(ctx.caller, Caller::Local | Caller::Window(_))
-}
-
 /// The folder Settings offers when nothing has been chosen.
 fn suggested_folder() -> String {
     disk::default_folder().map(|p| p.display().to_string()).unwrap_or_default()
@@ -343,7 +337,7 @@ fn legacy_counts()
 }
 
 async fn files_status(svc: Arc<Service>, ctx: Ctx, _args: Nothing) -> CommandResult<FilesStatus> {
-    let local = is_local(&ctx);
+    let local = ctx.is_local();
     svc.on_vault(move |vault| status_of(vault, local)).await
 }
 
@@ -355,7 +349,7 @@ async fn save_files_settings(
     ctx: Ctx,
     args: SaveFilesSettings,
 ) -> CommandResult<FilesStatus> {
-    let local = is_local(&ctx);
+    let local = ctx.is_local();
     let vault = svc.require()?;
     let status = blocking(move || {
         if !local && vault.files_settings()?.folder != args.settings.folder {
@@ -376,7 +370,7 @@ async fn set_up_files_folder(
     ctx: Ctx,
     args: SetUpFolder,
 ) -> CommandResult<FilesStatus> {
-    let local = is_local(&ctx);
+    let local = ctx.is_local();
     let vault = svc.require()?;
     let status = blocking(move || {
         // From anywhere else, only the first setup, at the default place.
@@ -490,7 +484,7 @@ async fn import_files(
     ctx: Ctx,
     args: ImportFiles,
 ) -> CommandResult<Vec<FileEntry>> {
-    if !is_local(&ctx) {
+    if !ctx.is_local() {
         return Err(CommandError::new(
             codes::FORBIDDEN,
             "files can be picked by path only from this computer's own window; upload them \
@@ -1187,6 +1181,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ctx::Caller;
 
     fn caller(caller: Caller) -> Ctx {
         Ctx { caller, scopes: vec![Scope::Files], proved_at: None, request_id: None }
@@ -1194,12 +1189,12 @@ mod tests {
 
     #[test]
     fn only_the_shell_on_this_machine_is_local() {
-        assert!(is_local(&Ctx::local()));
-        assert!(is_local(&Ctx::window("app-files")));
+        assert!(Ctx::local().is_local());
+        assert!(Ctx::window("app-files").is_local());
         for other in
             [Caller::Socket, Caller::Device("phone".into()), Caller::Assistant("run-1".into())]
         {
-            assert!(!is_local(&caller(other.clone())), "{other:?}");
+            assert!(!caller(other.clone()).is_local(), "{other:?}");
         }
     }
 

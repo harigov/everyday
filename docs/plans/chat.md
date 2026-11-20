@@ -134,8 +134,10 @@ machine, reachable from their devices over Tailscale. Matrix is first.
   - **The bot does not answer, or write, in an unencrypted room.** An owner
     message there gets one notice per room (about the room, nothing private);
     routine results go only to an encrypted private room.
-  - **Only this computer's own window can change the list**
-    (`set_chat_trusted_devices` refuses every other caller), and
+  - **Only this computer can change the list** — its own window, or a
+    program of the same user over the local socket, which is how a headless
+    `karmayoga serve` gets one (`set_chat_trusted_devices` refuses a paired
+    device, a web session and the assistant) — and
     `save_chat_link` never takes the list from the link it is given: a device
     that could add itself would make the list worth nothing.
 - **One complete reply per turn.** While the assistant works, the bot shows
@@ -221,7 +223,7 @@ A save always restarts that link's task, so new settings take effect at once.
 | `answer_chat_verification` | Write | `{ id, flow: string, answer: 'match' \| 'mismatch' \| 'cancel' }` → `void` |
 | `start_chat_verification` | Write | `{ id: ChatLinkId }` → `void` |
 | `chat_devices` | Read | `{ id: ChatLinkId }` → `ChatDevice[]` (the owner's devices as the running bot sees them; `conflict` if it is not running) |
-| `set_chat_trusted_devices` | Write, `Settings/Updated`, this computer's window only | `{ id: ChatLinkId, devices: string[] }` → `ChatLinkView` |
+| `set_chat_trusted_devices` | Write, `Settings/Updated`, this computer only (window or local socket) | `{ id: ChatLinkId, devices: string[] }` → `ChatLinkView` |
 
 `ChatLinkView` is `{ link, status: ChatStatus, signedIn: boolean, hasPassword: boolean, ownerVerified: boolean | null, verification: ChatVerification | null, untrustedDevice: ChatUntrustedDevice | null }`.
 `ChatDevice` is `{ deviceId, displayName, crossSigned, trusted }` and `ChatUntrustedDevice` is `{ deviceId, displayName, at }`.

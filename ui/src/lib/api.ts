@@ -2689,7 +2689,8 @@ export const api = {
    * Choose, by hand, which of the owner's devices the bot trusts: exactly
    * `devices`, replacing the list. It believes an encrypted message only from
    * one of them and gives its keys to no other, and it takes effect at once.
-   * Rejects with `forbidden` from anywhere but this computer's own window.
+   * Rejects with `forbidden` from anywhere but this computer (its own window or
+   * its local socket).
    */
   setChatTrustedDevices: (id: ChatLinkId, devices: string[]) =>
     call('setChatTrustedDevices', { id, devices }),

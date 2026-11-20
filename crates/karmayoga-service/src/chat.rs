@@ -50,9 +50,10 @@
 //! it also reports, through [`Service::report_untrusted_chat_device`], the
 //! device that last tried to talk without being on the list, so the pane can
 //! say so and a desktop notification can be raised, once per device. Only
-//! this computer's own window may change the list -- a device that could add
-//! itself would make the list worth nothing -- and that is enforced by the
-//! command (`domains::chat`).
+//! this computer may change the list -- its own window, or a program of the
+//! same user over the local socket, which is how a headless `karmayoga serve`
+//! gets one; a device that could add itself would make the list worth nothing
+//! -- and that is enforced by the command (`domains::chat`).
 //!
 //! The supervisor keeps a task's factory after the task stops (that is how a
 //! lock and an unlock bring it back), and has no way to forget one. A link

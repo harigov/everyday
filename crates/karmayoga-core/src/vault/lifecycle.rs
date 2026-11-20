@@ -219,8 +219,9 @@ impl Vault {
     }
 
     /// Lock the vault: close the backend, drop the index, zeroize the key,
-    /// and delete the decrypted copies of sealed files and the staged sealed
-    /// uploads this vault keeps in the cache directory.
+    /// and -- where this process holds the vault's write lock -- delete the
+    /// decrypted copies of sealed files and the staged sealed uploads this
+    /// vault keeps in the cache directory.
     ///
     /// The copies go here, in the one place every way of locking passes
     /// through -- the lock screen, the idle timer, the service closing the
@@ -230,11 +231,21 @@ impl Vault {
     /// and a passport scan that stays on disk in the clear after the key is
     /// gone breaks it. They would otherwise wait for the hourly sweep, which
     /// only runs while the vault is unlocked.
+    ///
+    /// Only the process that holds the write lock deletes them. The folders
+    /// are named by the vault's path, so a read-only handle -- `karmayoga
+    /// serve`, or a second window that fell back to reading -- shares them
+    /// with the process that can write, and locking *its* handle must not pull
+    /// a viewer's file, or a phone's upload half way through, from under that
+    /// one. What a read-only process opened for itself is left for the sweeps
+    /// (the hourly one, and the next start by a process that can write).
     pub fn lock(&self) {
         // Take the state out and drop it outside the lock so that a slow
         // backend shutdown does not hold every reader.
         let previous = self.state_write().take();
-        self.remove_plaintext_scratch();
+        if self.is_writable() {
+            self.remove_plaintext_scratch();
+        }
         drop(previous); // SecretKey zeroizes here; SearchIndex frees plaintext
     }
 

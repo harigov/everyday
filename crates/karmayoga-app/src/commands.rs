@@ -677,12 +677,19 @@ pub async fn share_status(
 /// a reason to restart a server: the interface used to call `share_start`
 /// again to flip it, which rebound the port and could fail with "address
 /// already in use" -- leaving sharing off because somebody moved a switch.
+///
+/// Turning it on asks first, in a dialog of the platform's own; see `guard`.
+/// Turning it off is never asked about.
 #[tauri::command]
 pub async fn set_remote_unlock(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     allow: bool,
 ) -> CommandResult<crate::sharing::ShareStatus> {
     let registry = state.registry()?;
+    if allow {
+        crate::guard::ask(&app, crate::guard::remote_unlock_prompt()).await?;
+    }
     state.sharing().set_remote_unlock(&registry, allow)
 }
 
@@ -726,9 +733,8 @@ pub async fn share_start(
     };
     config.listen = std::net::SocketAddr::new(ip, port);
 
-    if let Some(prompt) =
-        crate::guard::listening_prompt(crate::guard::Served::Sharing, config.listen)
-    {
+    let served = crate::guard::Served::Sharing { allow_remote_unlock: config.allow_remote_unlock };
+    if let Some(prompt) = crate::guard::listening_prompt(served, config.listen) {
         crate::guard::ask(&app, prompt).await?;
     }
     let status = state.sharing().start(state.service(), config, state.registry()?).await?;
@@ -746,11 +752,20 @@ pub async fn share_stop(state: State<'_, AppState>) -> CommandResult<crate::shar
 }
 
 /// Offer to pair, for the next five minutes.
+///
+/// A code is what turns another computer into a device of this vault, so the
+/// person is asked first, in a dialog of the platform's own; see `guard`. Not
+/// when sharing is off: there is nothing to pair with then, `invite` says so,
+/// and a question that leads only to that refusal is noise.
 #[tauri::command]
 pub async fn new_pairing_code(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> CommandResult<crate::sharing::ShareStatus> {
     let registry = state.registry()?;
+    if state.sharing().status(&registry).sharing {
+        crate::guard::ask(&app, crate::guard::pairing_prompt()).await?;
+    }
     state.sharing().invite(&registry)
 }
 
@@ -867,6 +882,10 @@ pub async fn web_start(
     if let Some(port) = port {
         config.port = port;
     }
+    // Opens the vault's interface to browsers on the tailnet, signed in to with
+    // the vault password: asked about in a dialog of the platform's own, as
+    // `share_start` is. See `guard`.
+    crate::guard::ask(&app, crate::guard::web_access_prompt(config.port)).await?;
     let registry = state.registry()?;
     let status = state
         .web()
@@ -887,11 +906,18 @@ pub async fn web_stop(
 
 /// Change whether a destructive tool is offered at all. Off by default; see
 /// `docs/plans/mcp.md`'s "Destructive tools are absent, not refused".
+///
+/// Turning it on asks first, in a dialog of the platform's own; see `guard`.
+/// Turning it off is never asked about.
 #[tauri::command]
 pub async fn mcp_set_destructive(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     allow: bool,
 ) -> CommandResult<crate::mcp::McpStatus> {
+    if allow {
+        crate::guard::ask(&app, crate::guard::destructive_tools_prompt()).await?;
+    }
     let status = state.mcp().set_destructive(state.service(), allow, state.registry()?).await?;
     state.recompose_events();
     Ok(status)

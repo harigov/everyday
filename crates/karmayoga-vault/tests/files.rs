@@ -1762,6 +1762,34 @@ fn locking_deletes_every_decrypted_copy_and_staged_sealed_upload() {
 }
 
 #[test]
+fn a_read_only_handle_locking_leaves_the_writers_copies_and_uploads_alone() {
+    let w = world();
+    let secret = w.vault.import_bytes(b"secret", "s.txt", &sealed(FileOrigin::Files)).unwrap();
+    let copy = w.vault.open_file_copy(secret.id).unwrap();
+    let ticket = w.vault.begin_upload("v.bin", 6, &sealed(FileOrigin::Files)).unwrap();
+    w.vault.upload_chunk(&ticket.upload, 0, b"abc").unwrap();
+    let staged = staging(&w).upload_path(&ticket.upload).unwrap();
+
+    // `karmayoga serve`, or a second window that fell back to reading, shares
+    // the vault's folders with the process that can write. Its lock drops its
+    // own key and nothing else: the viewer still has its file, and the phone's
+    // upload carries on.
+    let beside = karmayoga_vault::open(w.vault.path()).unwrap();
+    assert!(!beside.is_writable());
+    beside.lock();
+    assert!(!beside.is_unlocked());
+    assert_eq!(std::fs::read(&copy).unwrap(), b"secret", "a viewer's file vanished");
+    assert!(staged.exists(), "an upload in progress was pulled from under it");
+    assert_eq!(w.vault.upload_chunk(&ticket.upload, 3, b"def").unwrap(), 6);
+    let f = w.vault.finish_upload(&ticket.upload).unwrap();
+    assert_eq!(w.vault.read_file_range(f.id, 0, 10).unwrap(), b"abcdef");
+
+    // The one that holds the write lock still clears them when it locks.
+    w.vault.lock();
+    assert!(!copy.exists());
+}
+
+#[test]
 fn plaintext_an_earlier_run_left_is_cleared_by_the_one_that_holds_the_vault() {
     let w = world();
     let secret = w.vault.import_bytes(b"secret", "s.txt", &sealed(FileOrigin::Files)).unwrap();

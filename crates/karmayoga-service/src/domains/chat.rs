@@ -17,10 +17,13 @@
 //!
 //! The bot believes an encrypted message only from a device on that list, so
 //! whoever can add a device to it can talk to the assistant and read its
-//! replies. `set_chat_trusted_devices` therefore refuses every caller but the
-//! desktop's own window ([`require_local`]), and `save_chat_link` -- which any
-//! client with the `Agent` scope may call -- never takes the list from the link
-//! it is given: it keeps the stored one ([`ChatLink::inherit_trusted_devices`]).
+//! replies. `set_chat_trusted_devices` therefore refuses every caller but this
+//! computer's own: the desktop's window, or a program of the same user over the
+//! local socket ([`require_local`]) -- which is how a headless `karmayoga
+//! serve` has its list chosen at all. A paired device, a web session and the
+//! assistant are refused. `save_chat_link` -- which any client with the `Agent`
+//! scope may call -- never takes the list from the link it is given: it keeps
+//! the stored one ([`ChatLink::inherit_trusted_devices`]).
 //!
 //! # What a client is told, and what it is not
 //!
@@ -154,18 +157,20 @@ fn view(svc: &Service, link: ChatLink, secret: &ChatSecret, writable: bool) -> C
     }
 }
 
-/// Why a caller that is not the desktop itself may not choose which devices
-/// the bot trusts.
+/// Why a caller that is not on this computer may not choose which devices the
+/// bot trusts.
 const TRUST_IS_LOCAL: &str = "which devices the assistant trusts can be chosen only from this \
-    computer's own window: a device that could add itself to the list would make the list worth \
-    nothing";
+    computer: its own window, or a program of yours running on it over the local socket. A device \
+    that could add itself to the list would make the list worth nothing";
 
-/// Whether this caller is the desktop's own window.
+/// Whether this caller is on the vault's own machine: the desktop's window, or
+/// a process of the same user the operating system vouched for over the local
+/// socket. A paired device or a web session is not, however it signed in.
 fn is_local(ctx: &Ctx) -> bool {
-    matches!(ctx.caller, Caller::Local | Caller::Window(_))
+    matches!(ctx.caller, Caller::Local | Caller::Window(_) | Caller::Socket)
 }
 
-/// Refuse what only the desktop itself may do.
+/// Refuse what only this computer itself may do.
 fn require_local(ctx: &Ctx) -> CommandResult<()> {
     if is_local(ctx) { Ok(()) } else { Err(CommandError::new(codes::FORBIDDEN, TRUST_IS_LOCAL)) }
 }
@@ -401,7 +406,8 @@ async fn chat_devices(
 /// Choose, by hand, which of the owner's devices the bot trusts; the bot
 /// changes at once.
 ///
-/// This computer's own window only ([`require_local`]). Saved first, so the
+/// This computer only -- its own window or its local socket
+/// ([`require_local`]). Saved first, so the
 /// choice is kept whether or not the bot is running: one that is not picks it
 /// up when it starts, and one that is has the new list applied without
 /// restarting. If applying it fails -- the encryption store would not take it
@@ -488,7 +494,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: chat_devices,
     },
     // Writes the vault (the link's list), and says so; refuses every caller
-    // but the desktop's own window. See [`require_local`].
+    // that is not on this computer. See [`require_local`].
     command! {
         name: "set_chat_trusted_devices", scope: Agent, effect: Write,
         change: Settings / Updated,
@@ -503,11 +509,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_desktops_own_window_may_choose_the_trusted_devices() {
+    fn only_this_computer_may_choose_the_trusted_devices() {
         for (caller, local) in [
             (Caller::Local, true),
             (Caller::Window("window:app-chat".into()), true),
-            (Caller::Socket, false),
+            // The same user's own process, over the local socket: how a
+            // headless `karmayoga serve` has its list chosen.
+            (Caller::Socket, true),
             (Caller::Device("phone".into()), false),
             (Caller::Assistant("run-1".into()), false),
         ] {
@@ -554,26 +562,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_desktop_picks_the_trusted_devices_and_nobody_else_can() {
+    async fn this_computer_picks_the_trusted_devices_and_nobody_else_can() {
         let (svc, _dir, id) = a_service_with_a_link().await;
         let pick = |devices: &[&str]| serde_json::json!({ "id": id, "devices": devices });
 
-        // A paired device, the local socket and the assistant itself are refused,
-        // and the list is as it was.
-        for caller in
-            [Caller::Device("phone".into()), Caller::Socket, Caller::Assistant("run-1".into())]
-        {
+        // A paired device (a web session is one too) and the assistant itself
+        // are refused, and the list is as it was.
+        for caller in [Caller::Device("phone".into()), Caller::Assistant("run-1".into())] {
             let ctx = Ctx { caller: caller.clone(), ..Ctx::local() };
             let e = svc
                 .call(ctx, "set_chat_trusted_devices", pick(&["INTRUDER"]))
                 .await
-                .expect_err("a caller that is not the desktop picked a device");
+                .expect_err("a caller that is not on this computer picked a device");
             assert_eq!(e.code, codes::FORBIDDEN, "{caller:?}");
             assert!(stored_devices(&svc, id).is_empty(), "{caller:?}");
         }
 
-        // The desktop's own window can, from either of its callers. Saved
-        // tidy, and with the bot not running that is all it does.
+        // This computer can, from the desktop's window or over the local
+        // socket. Saved tidy, and with the bot not running that is all it does.
         let untidy = pick(&[" PHONE ", "LAPTOP", "PHONE", ""]);
         svc.call(Ctx::local(), "set_chat_trusted_devices", untidy).await.unwrap();
         assert_eq!(stored_devices(&svc, id), ["LAPTOP", "PHONE"]);
@@ -582,6 +588,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(view["link"]["service"]["trustedDevices"], serde_json::json!(["PHONE"]));
+        let over_the_socket = Ctx { caller: Caller::Socket, ..Ctx::local() };
+        svc.call(over_the_socket, "set_chat_trusted_devices", pick(&["LAPTOP"])).await.unwrap();
+        assert_eq!(stored_devices(&svc, id), ["LAPTOP"]);
     }
 
     #[tokio::test]

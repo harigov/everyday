@@ -20,7 +20,7 @@
 
 use super::Nothing;
 use crate::command;
-use crate::ctx::{Caller, Ctx};
+use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use karmayoga_core::account::{
@@ -171,7 +171,7 @@ async fn save_account(svc: Arc<Service>, ctx: Ctx, args: SaveAccount) -> Command
     let account_id = account.id;
     let mail_on = account.services.mail;
     let now = svc.now();
-    let local = is_local(&ctx);
+    let local = ctx.is_local();
     let (signatures_changed, reconnect) = blocking({
         let vault = vault.clone();
         move || {
@@ -235,14 +235,6 @@ async fn save_account(svc: Arc<Service>, ctx: Ctx, args: SaveAccount) -> Command
 const SERVERS_ARE_LOCAL: &str = "the servers an account signs in to can be changed only from \
     the computer that holds the vault: from anywhere else the stored password or sign-in \
     would be sent to whatever address was typed. Change it there";
-
-/// Whether this caller is the shell on the vault's own machine -- the
-/// desktop's window, not a paired device, a browser session or the socket.
-/// The same question `domains::connections` asks before it will run a
-/// program.
-fn is_local(ctx: &Ctx) -> bool {
-    matches!(ctx.caller, Caller::Local | Caller::Window(_))
-}
 
 /// The address a sign-in is begun at and exchanged with, for an OAuth
 /// account; nothing for a password one, which has no such address.
@@ -588,6 +580,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ctx::Caller;
     use crate::ctx::Scope;
     use karmayoga_core::account::Endpoint;
     use serde_json::json;

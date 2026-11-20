@@ -22,7 +22,9 @@
 //!   unreadable on a device that is not on the list. It is re-applied when the
 //!   bot starts, when the list changes, and when the owner's device list does
 //!   (a device signed in a moment ago is turned away before the next message,
-//!   not after).
+//!   not after). A message is also preceded by a look, [`Trust::ready_to_send`],
+//!   which asks the server for the owner's devices and re-applies -- but only
+//!   if something changed or a minute has passed, not for every message.
 //!
 //! An empty list trusts no device: nothing is believed and nothing is
 //! readable. That is what an existing link has until its owner picks devices,
@@ -31,7 +33,8 @@
 //! the assistant but is not trusted yet", and for the service to raise a
 //! notification, once.
 
-use super::rules::{Reported, TrustedDevices};
+use super::rtc::Calls;
+use super::rules::{self, Applied, Reported, TrustedDevices};
 use crate::connector::UntrustedReport;
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -49,6 +52,10 @@ use tokio::task::AbortHandle;
 /// bot goes on with the ones it already knows.
 const LOOKUP_PATIENCE: Duration = Duration::from_secs(20);
 
+/// The same, when a message is waiting to be sent: a slow homeserver should
+/// not hold the reply up for long, and one that is down cannot take it anyway.
+const PRESEND_PATIENCE: Duration = Duration::from_secs(8);
+
 /// The owner's trusted devices, for one running bot.
 pub(super) struct Trust {
     client: Client,
@@ -58,6 +65,8 @@ pub(super) struct Trust {
     report: UntrustedReport,
     /// Which untrusted devices were reported lately.
     reported: Mutex<Reported>,
+    /// Whether the marks in the crypto store are known to match the list.
+    applied: Mutex<Applied>,
 }
 
 impl Trust {
@@ -73,6 +82,7 @@ impl Trust {
             trusted: RwLock::new(trusted),
             report,
             reported: Mutex::new(Reported::default()),
+            applied: Mutex::new(Applied::default()),
         })
     }
 
@@ -91,13 +101,15 @@ impl Trust {
         !self.trusted.read().unwrap().is_empty()
     }
 
-    /// Trust exactly `devices` from now on, and make the encryption say so.
+    /// Trust exactly `devices` from now on, without yet touching the store.
     ///
-    /// The list is swapped before the store is touched, so that a device
-    /// taken off it stops being believed at once, whatever the store does.
-    pub(super) async fn set_trusted(&self, devices: TrustedDevices) -> Result<(), String> {
+    /// The list is swapped first, so that a device taken off it stops being
+    /// believed at once, whatever the store does next. What the store holds is
+    /// no longer known to match it, which [`Trust::apply`] puts right: the
+    /// caller does that when it has dealt with what the old list allowed.
+    pub(super) fn swap(&self, devices: TrustedDevices) {
         *self.trusted.write().unwrap() = devices;
-        self.apply().await
+        self.applied.lock().unwrap().changed();
     }
 
     /// Mark each of the owner's devices the store knows trusted if it is on
@@ -105,8 +117,15 @@ impl Trust {
     /// what is not as the list says, so the store's own note of the change
     /// does not start it again.
     ///
-    /// Tries every device even when one fails, and says what failed.
+    /// Tries every device even when one fails. It answers `Err` only for a
+    /// failure that leaves keys going where they should not -- a device that
+    /// ought to be blacklisted and would still be given them (see
+    /// [`rules::failure_leaks_keys`]) -- because that is what has to stop the
+    /// bot writing. A trusted device that could not be marked, or one that
+    /// is shut out of keys anyway, is logged and the rest carry on; but it is
+    /// not counted as applied, so the next send tries again.
     pub(super) async fn apply(&self) -> Result<(), String> {
+        let token = self.applied.lock().unwrap().begin();
         let trusted = self.trusted.read().unwrap().clone();
         let devices = self
             .client
@@ -114,27 +133,56 @@ impl Trust {
             .get_user_devices(&self.owner)
             .await
             .map_err(|e| format!("The owner's devices could not be read ({e})."))?;
-        let mut failed = Vec::new();
+        let mut failed = false;
+        let mut leaking = Vec::new();
         for device in devices.devices() {
             let wanted = if trusted.contains(device.device_id().as_str()) {
                 LocalTrust::Verified
             } else {
                 LocalTrust::BlackListed
             };
-            if device.local_trust_state() == wanted {
+            let current = device.local_trust_state();
+            if current == wanted {
                 continue;
             }
             if let Err(error) = device.set_local_trust(wanted).await {
                 let id = device.device_id();
                 tracing::warn!(device = %id, "couldn't change a device's trust: {error}");
-                failed.push(device.device_id().to_string());
+                failed = true;
+                let signed = device.is_verified_with_cross_signing();
+                if rules::failure_leaks_keys(wanted, current, signed) {
+                    leaking.push(id.to_string());
+                }
             }
         }
-        if failed.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("The trust of {} could not be saved.", failed.join(", ")))
+        if !leaking.is_empty() {
+            return Err(format!(
+                "{} could not be shut out of the bot's keys, so it is not writing.",
+                leaking.join(", ")
+            ));
         }
+        if !failed {
+            self.applied.lock().unwrap().done(token, Instant::now());
+        }
+        Ok(())
+    }
+
+    /// Make sure the store matches the list before something is written for
+    /// the owner's devices to read.
+    ///
+    /// Marking the store is a scan and a write for each device that differs,
+    /// so it is skipped when nothing has changed since it last succeeded -- the
+    /// list, or a device of the owner's -- and a minute has not passed. When it
+    /// is not skipped the owner's device list is asked for first, so a device
+    /// that signed in a moment ago and that the bot has not heard of yet is in
+    /// the store to be marked before it can be given a key. Fails when a
+    /// device that should be shut out could not be (see [`Trust::apply`]).
+    pub(super) async fn ready_to_send(&self) -> Result<(), String> {
+        if self.applied.lock().unwrap().is_current(Instant::now()) {
+            return Ok(());
+        }
+        self.refresh(PRESEND_PATIENCE).await;
+        self.apply().await
     }
 
     /// Follow the owner's devices as the SDK learns of them, and apply the
@@ -156,6 +204,7 @@ impl Trust {
                 if !update.new.contains_key(&me.owner) && !update.changed.contains_key(&me.owner) {
                     continue;
                 }
+                me.applied.lock().unwrap().changed();
                 if let Err(problem) = me.apply().await {
                     tracing::warn!("{problem}");
                 }
@@ -167,7 +216,7 @@ impl Trust {
     /// The owner's devices as the bot sees them, asking the server first so a
     /// device signed in a moment ago is on the list.
     pub(super) async fn list(&self) -> CommandResult<Vec<ChatDevice>> {
-        self.refresh().await;
+        self.refresh(LOOKUP_PATIENCE).await;
         // Whatever the lookup found is turned away before anything else is
         // sent, rather than at the next change.
         if let Err(problem) = self.apply().await {
@@ -204,12 +253,13 @@ impl Trust {
         Ok(listed)
     }
 
-    /// Ask the server for the owner's current devices, within
-    /// [`LOOKUP_PATIENCE`]. A failure leaves the store as it was.
-    async fn refresh(&self) {
+    /// Ask the server for the owner's current devices -- a keys query, which
+    /// puts any the bot has not heard of in the store -- within `patience`. A
+    /// failure leaves the store as it was.
+    async fn refresh(&self, patience: Duration) {
         let encryption = self.client.encryption();
         let ask = encryption.request_user_identity(&self.owner);
-        match tokio::time::timeout(LOOKUP_PATIENCE, ask).await {
+        match tokio::time::timeout(patience, ask).await {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => {
                 tracing::debug!("couldn't ask for the owner's devices, using known ones: {error}")
@@ -235,7 +285,7 @@ impl Trust {
             tracing::warn!("ignoring a message from a device of the owner's that can't be named");
             let me = Arc::clone(self);
             tokio::spawn(async move {
-                me.refresh().await;
+                me.refresh(LOOKUP_PATIENCE).await;
                 let _ = me.apply().await;
             });
             return;
@@ -268,21 +318,29 @@ impl Drop for Watching {
 
 /// [`Trust`] as the service sees it: a type of its own because the futures it
 /// hands back must own what they use, and an `Arc` is what they can own.
-pub(super) struct Devices(pub Arc<Trust>);
+///
+/// It holds the bot's calls too, because taking a device off the list has to
+/// end what that device already has going.
+pub(super) struct Devices {
+    pub trust: Arc<Trust>,
+    pub calls: Arc<Calls>,
+}
 
 impl ChatDevices for Devices {
     fn list(&self) -> BoxFuture<'static, CommandResult<Vec<ChatDevice>>> {
-        let trust = Arc::clone(&self.0);
+        let trust = Arc::clone(&self.trust);
         Box::pin(async move { trust.list().await })
     }
 
     fn trust(&self, devices: Vec<String>) -> BoxFuture<'static, CommandResult<()>> {
-        let trust = Arc::clone(&self.0);
+        let (trust, calls) = (Arc::clone(&self.trust), Arc::clone(&self.calls));
         Box::pin(async move {
-            trust
-                .set_trusted(TrustedDevices::new(devices))
-                .await
-                .map_err(|problem| CommandError::new(codes::INTERNAL, problem))
+            // In this order: the list first, so that nothing more from a device
+            // taken off it is believed; then the calls it already had, which
+            // are ended without waiting for the store; and only then the store.
+            trust.swap(TrustedDevices::new(devices));
+            calls.end_untrusted().await;
+            trust.apply().await.map_err(|problem| CommandError::new(codes::INTERNAL, problem))
         })
     }
 }

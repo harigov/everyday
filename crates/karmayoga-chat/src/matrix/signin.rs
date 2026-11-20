@@ -276,14 +276,25 @@ async fn build_client(setup: &Setup, link: &MatrixLink) -> Result<Client, ChatEr
         // who signs in there, or a device the homeserver invents -- and the
         // assistant writes mail, journal, health and money. `devices` marks
         // each of the owner's devices that is on the hand-picked list
-        // `Verified` and every other `BlackListed`; this strategy shares only
-        // with devices that are trusted (locally verified, or cross-signed by
-        // an identity the bot has verified) and never with a blacklisted one
+        // `Verified` and every other `BlackListed`, and both strategies skip a
+        // blacklisted device. `OnlyTrustedDevices` goes further: it also
+        // withholds from a device that is not marked at all yet, unless the
+        // owner's identity has signed it
         // (`withheld_code_for_device_for_only_trusted_devices_strategy` in
-        // matrix-sdk-crypto 0.19.1). Both strategies skip a blacklisted device;
-        // this one also skips a device not marked yet, so a device that has
-        // only just appeared is not given a key in the moment before the list
-        // is applied to it.
+        // matrix-sdk-crypto 0.19.1). So a device that signs in with nothing but
+        // the account's password is given no key even in the moment before the
+        // list is applied to it.
+        //
+        // That moment is not closed for every device. Once the owner has
+        // verified the bot by comparing emoji, the bot trusts the owner's
+        // identity, and a new device that identity signs counts as trusted
+        // here until `Trust::apply` blacklists it. Getting a device signed
+        // takes the owner's cross-signing keys -- the recovery key, or another
+        // verified device -- which signing in with the password does not give.
+        // The moment is made short rather than none: the owner's devices are
+        // marked as soon as the SDK learns of a new one, and before a send
+        // that follows any change or a minute of quiet the bot asks the server
+        // for them and marks them again (`Trust::ready_to_send`).
         .with_room_key_recipient_strategy(CollectStrategy::OnlyTrustedDevices)
         // Nothing else opens this store, and the lock a second process would
         // need only gets in the way of a restart that begins before the last

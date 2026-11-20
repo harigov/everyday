@@ -85,12 +85,6 @@ impl Outgoing {
     }
 }
 
-/// Do `scopes` hold `scope`, as [`karmayoga_service::ctx::Ctx::holds`] says
-/// it: by name, or through [`Scope::All`].
-fn holds(scopes: &[Scope], scope: Scope) -> bool {
-    scopes.iter().any(|s| *s == Scope::All || *s == scope)
-}
-
 /// May a stream opened by a caller holding `scopes` be told `event`?
 ///
 /// Pure, and the only place that decides it, so that what each kind of
@@ -102,18 +96,18 @@ fn is_for(scopes: &[Scope], event: &Outgoing) -> bool {
     match event {
         Outgoing::LockState { .. } => true,
         Outgoing::Notify(notice) => match notice.domain {
-            Some(domain) => holds(scopes, domain),
-            None => holds(scopes, Scope::All),
+            Some(domain) => domain.granted_by(scopes),
+            None => Scope::All.granted_by(scopes),
         },
         Outgoing::Changed(change) => match change.kind.scope() {
-            Some(domain) => holds(scopes, domain),
-            None => holds(scopes, Scope::All),
+            Some(domain) => domain.granted_by(scopes),
+            None => Scope::All.granted_by(scopes),
         },
         // An offer is a calendar event with a recording attached to it: the
         // title, the calendar's name and the way in. Either reading the
         // calendars or running the meetings is a good enough reason to see it.
         Outgoing::MeetingOffer(_) => {
-            holds(scopes, Scope::Calendars) || holds(scopes, Scope::Meetings)
+            Scope::Calendars.granted_by(scopes) || Scope::Meetings.granted_by(scopes)
         }
     }
 }

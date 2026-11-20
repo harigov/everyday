@@ -200,6 +200,20 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// Whether a caller granted `scopes` holds this one: granted it by name,
+    /// or granted [`Scope::All`]. [`Ctx::holds`]'s rule, for code that has
+    /// only the list -- an event stream deciding what to pass on.
+    pub fn granted_by(self, scopes: &[Scope]) -> bool {
+        // `Any` asks a different question from every other scope: not "were
+        // you granted this" but "were you granted anything". A caller with an
+        // empty scope list is nobody, and must not slip through a check that
+        // was written to mean "somebody".
+        if self == Scope::Any {
+            return !scopes.is_empty();
+        }
+        scopes.iter().any(|s| *s == Scope::All || *s == self)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Scope::All => "all",
@@ -352,14 +366,17 @@ impl Ctx {
     }
 
     pub fn holds(&self, scope: Scope) -> bool {
-        // `Any` asks a different question from every other scope: not "were
-        // you granted this" but "were you granted anything". A caller with an
-        // empty scope list is nobody, and must not slip through a check that
-        // was written to mean "somebody".
-        if scope == Scope::Any {
-            return !self.scopes.is_empty();
-        }
-        self.scopes.iter().any(|s| *s == Scope::All || *s == scope)
+        scope.granted_by(&self.scopes)
+    }
+
+    /// Whether this call comes from the desktop app's own window on the
+    /// computer holding the vault -- not a paired device, a browser session,
+    /// the local socket or the assistant. What may pick a folder or a file by
+    /// path, set up a program to run, or point an account at another server:
+    /// from anywhere else each of those would reach this computer's files,
+    /// its programs, or the stored passwords.
+    pub fn is_local(&self) -> bool {
+        matches!(self.caller, Caller::Local | Caller::Window(_))
     }
 
     /// Was `scope` granted *by name* -- not merely covered by [`Scope::All`]?

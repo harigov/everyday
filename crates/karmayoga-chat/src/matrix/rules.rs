@@ -11,8 +11,9 @@
 use crate::connector::{ChatError, ChatId, MessageRef};
 use jiff::Timestamp;
 use matrix_sdk::deserialized_responses::EncryptionInfo;
+use matrix_sdk::encryption::LocalTrust;
 use matrix_sdk::ruma::{EventId, MilliSecondsSinceUnixEpoch, OwnedRoomId, RoomId};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 /// Who can read what the bot writes in a room.
@@ -170,6 +171,153 @@ pub(crate) fn judge_arrival(
         Some(device) => Welcome::Untrusted(Some(device.to_owned())),
         None => Welcome::Untrusted(None),
     }
+}
+
+/// What to make of a reaction that claims to be the owner's.
+///
+/// By the owner's choice a reaction that arrived in plain text still answers
+/// a question, exactly as it always did: it is not encrypted and names no
+/// device, and the owner accepts that. But one that arrived *encrypted* does
+/// name the device that sent it, and then that device has to be a trusted
+/// one: an answer from a device the owner never picked is not the owner's.
+/// [`Welcome::Accepted`] or [`Welcome::Untrusted`], nothing else.
+pub(crate) fn judge_reaction(arrival: Arrival<'_>, trusted: &TrustedDevices) -> Welcome {
+    match arrival {
+        Arrival::Plain => Welcome::Accepted,
+        Arrival::Encrypted { device: Some(device) } if trusted.contains(device) => {
+            Welcome::Accepted
+        }
+        Arrival::Encrypted { device } => Welcome::Untrusted(device.map(str::to_owned)),
+    }
+}
+
+/// What to make of an event from the owner's account that could not be
+/// decrypted, given the device its (unauthenticated) content claims to come
+/// from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Unreadable {
+    /// Say the message could not be read -- subject to [`UnreadableLimit`].
+    Reply,
+    /// It names a device that is not trusted: ignore it.
+    Untrusted(String),
+}
+
+/// Decide whether an undecryptable event from the owner's id earns the "I
+/// couldn't read that" reply. The event names the device that sent it
+/// (`device_id` in its Megolm content) only on its sender's word, so a
+/// device that is named and not trusted is turned away, while one that is
+/// trusted, or not named at all, gets the reply -- which is why the reply is
+/// also rate-limited.
+pub(crate) fn judge_unreadable(claimed: Option<&str>, trusted: &TrustedDevices) -> Unreadable {
+    match claimed {
+        Some(device) if !trusted.contains(device) => Unreadable::Untrusted(device.to_owned()),
+        _ => Unreadable::Reply,
+    }
+}
+
+/// How rarely the bot says it could not read something, per room. An
+/// undecryptable event is cheap to send and the reply goes to the owner's
+/// trusted devices, so without a limit anybody holding the owner's account
+/// could make the bot spam them.
+pub(crate) const UNREADABLE_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// How many rooms to remember having said it in, at most.
+const UNREADABLE_ROOMS_REMEMBERED: usize = 32;
+
+/// When the bot last said it could not read something, room by room. Plain
+/// data, so the rule is tested.
+#[derive(Debug, Default)]
+pub(crate) struct UnreadableLimit {
+    last: HashMap<String, Instant>,
+}
+
+impl UnreadableLimit {
+    /// Whether to reply in `room` now, noting that it did if so.
+    pub(crate) fn should_reply(&mut self, room: &str, now: Instant) -> bool {
+        let recent = |at: &Instant| now.saturating_duration_since(*at) < UNREADABLE_EVERY;
+        if self.last.get(room).is_some_and(recent) {
+            return false;
+        }
+        if self.last.len() >= UNREADABLE_ROOMS_REMEMBERED && !self.last.contains_key(room) {
+            let oldest = self.last.iter().min_by_key(|(_, at)| **at).map(|(room, _)| room.clone());
+            if let Some(oldest) = oldest {
+                self.last.remove(&oldest);
+            }
+        }
+        self.last.insert(room.to_owned(), now);
+        true
+    }
+}
+
+/// How long the trust marks in the crypto store are believed to be right
+/// without looking again, when nothing is known to have changed.
+pub(crate) const REAPPLY_AFTER: Duration = Duration::from_secs(60);
+
+/// Whether the trust marks in the crypto store are known to match the list.
+///
+/// Marking every device of the owner's is a scan of the store and a write for
+/// each one that differs, so it is done when something changed -- the list, or
+/// a device of the owner's -- and otherwise at most once in [`REAPPLY_AFTER`],
+/// not before every message. Plain data, so the rule is tested.
+#[derive(Debug, Default)]
+pub(crate) struct Applied {
+    /// How many times something has changed.
+    changes: u64,
+    /// The `changes` the last successful apply started from, and when it
+    /// finished.
+    last: Option<(u64, Instant)>,
+}
+
+impl Applied {
+    /// Something that decides who is trusted changed: the list, or the
+    /// owner's devices.
+    pub(crate) fn changed(&mut self) {
+        self.changes += 1;
+    }
+
+    /// Start applying: what `changes` is now. A change that comes in while
+    /// the apply runs makes it not count as current.
+    pub(crate) fn begin(&self) -> u64 {
+        self.changes
+    }
+
+    /// An apply that started from `token` succeeded.
+    pub(crate) fn done(&mut self, token: u64, now: Instant) {
+        self.last = Some((token, now));
+    }
+
+    /// Whether the marks can be believed without applying again.
+    pub(crate) fn is_current(&self, now: Instant) -> bool {
+        self.last.is_some_and(|(seen, at)| {
+            seen == self.changes && now.saturating_duration_since(at) < REAPPLY_AFTER
+        })
+    }
+}
+
+/// Whether a device whose store trust is `current` would be given the bot's
+/// room keys, with `OnlyTrustedDevices`: one marked verified or ignored is, one
+/// blacklisted never is, and one not marked is only if the owner's identity,
+/// which the bot has verified, has signed it (`cross_signing_trusted`).
+pub(crate) fn would_be_given_keys(current: LocalTrust, cross_signing_trusted: bool) -> bool {
+    match current {
+        LocalTrust::BlackListed => false,
+        LocalTrust::Verified | LocalTrust::Ignored => true,
+        LocalTrust::Unset => cross_signing_trusted,
+    }
+}
+
+/// Whether failing to give a device the trust `wanted`, when it has `current`,
+/// leaves the bot sharing keys it should not. Only the failure to blacklist a
+/// device that would be given keys does: a device that could not be marked
+/// trusted just does not get them, a device already blacklisted or not trusted
+/// is as shut out as it should be, and neither is a reason to stop writing to
+/// the devices that are fine.
+pub(crate) fn failure_leaks_keys(
+    wanted: LocalTrust,
+    current: LocalTrust,
+    cross_signing_trusted: bool,
+) -> bool {
+    wanted == LocalTrust::BlackListed && would_be_given_keys(current, cross_signing_trusted)
 }
 
 /// How often the same untrusted device is reported to Settings. It may write
@@ -540,6 +688,122 @@ mod tests {
             assert!(reported.should_report(Some(&format!("D{n}")), now));
         }
         assert_eq!(reported.last.len(), REPORTED_REMEMBERED);
+    }
+
+    #[test]
+    fn a_plain_reaction_still_answers_and_an_encrypted_one_must_come_from_a_trusted_device() {
+        let list = trusted(&["PHONE"]);
+        // Hari's decision: a reaction in plain text is taken as it always was.
+        assert_eq!(judge_reaction(Arrival::Plain, &list), Welcome::Accepted);
+        assert_eq!(judge_reaction(Arrival::Plain, &TrustedDevices::default()), Welcome::Accepted);
+        // One that arrived encrypted names its device, and it must be trusted.
+        assert_eq!(
+            judge_reaction(Arrival::Encrypted { device: Some("PHONE") }, &list),
+            Welcome::Accepted
+        );
+        assert_eq!(
+            judge_reaction(Arrival::Encrypted { device: Some("NEW") }, &list),
+            Welcome::Untrusted(Some("NEW".into()))
+        );
+        assert_eq!(
+            judge_reaction(Arrival::Encrypted { device: None }, &list),
+            Welcome::Untrusted(None)
+        );
+        let nobody = TrustedDevices::default();
+        assert_eq!(
+            judge_reaction(Arrival::Encrypted { device: Some("PHONE") }, &nobody),
+            Welcome::Untrusted(Some("PHONE".into()))
+        );
+    }
+
+    #[test]
+    fn an_unreadable_event_from_a_named_untrusted_device_gets_no_reply() {
+        let list = trusted(&["PHONE"]);
+        assert_eq!(judge_unreadable(Some("PHONE"), &list), Unreadable::Reply);
+        // Not named: nothing to hold against it, and the limit is what stops spam.
+        assert_eq!(judge_unreadable(None, &list), Unreadable::Reply);
+        assert_eq!(judge_unreadable(Some("NEW"), &list), Unreadable::Untrusted("NEW".into()));
+        assert_eq!(
+            judge_unreadable(Some("PHONE"), &TrustedDevices::default()),
+            Unreadable::Untrusted("PHONE".into())
+        );
+    }
+
+    #[test]
+    fn the_bot_says_it_could_not_read_something_once_in_ten_minutes_per_room() {
+        let start = Instant::now();
+        let mut limit = UnreadableLimit::default();
+        let (a, b) = ("!a:example.org", "!b:example.org");
+        let second = Duration::from_secs(1);
+        assert!(limit.should_reply(a, start));
+        assert!(!limit.should_reply(a, start + 60 * second));
+        // Another room is its own count.
+        assert!(limit.should_reply(b, start + 61 * second));
+        assert!(!limit.should_reply(a, start + UNREADABLE_EVERY - second));
+        assert!(limit.should_reply(a, start + UNREADABLE_EVERY));
+        assert!(!limit.should_reply(a, start + UNREADABLE_EVERY + second));
+    }
+
+    #[test]
+    fn only_so_many_rooms_are_remembered_for_the_unreadable_limit() {
+        let now = Instant::now();
+        let mut limit = UnreadableLimit::default();
+        for n in 0..UNREADABLE_ROOMS_REMEMBERED * 2 {
+            let room = format!("!room{n}:example.org");
+            assert!(limit.should_reply(&room, now + Duration::from_millis(n as u64)));
+        }
+        assert_eq!(limit.last.len(), UNREADABLE_ROOMS_REMEMBERED);
+    }
+
+    #[test]
+    fn the_store_is_marked_again_only_when_something_changed_or_a_minute_has_gone() {
+        let start = Instant::now();
+        let mut applied = Applied::default();
+        assert!(!applied.is_current(start), "nothing has been applied yet");
+
+        let token = applied.begin();
+        applied.done(token, start);
+        assert!(applied.is_current(start + Duration::from_secs(1)));
+        assert!(applied.is_current(start + REAPPLY_AFTER - Duration::from_secs(1)));
+        assert!(!applied.is_current(start + REAPPLY_AFTER));
+
+        // A change -- the list, or a device -- makes the marks stale at once.
+        applied.changed();
+        assert!(!applied.is_current(start + Duration::from_secs(1)));
+        let token = applied.begin();
+        applied.done(token, start + Duration::from_secs(2));
+        assert!(applied.is_current(start + Duration::from_secs(3)));
+
+        // One that lands while an apply is running is not covered by it.
+        let token = applied.begin();
+        applied.changed();
+        applied.done(token, start + Duration::from_secs(4));
+        assert!(!applied.is_current(start + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_device_that_would_be_given_keys_is_the_one_that_must_not_fail_to_be_blacklisted() {
+        use LocalTrust::{BlackListed, Ignored, Unset, Verified};
+        // The strategy's own rule.
+        assert!(!would_be_given_keys(BlackListed, true));
+        assert!(would_be_given_keys(Verified, false));
+        assert!(would_be_given_keys(Ignored, false));
+        assert!(would_be_given_keys(Unset, true));
+        assert!(!would_be_given_keys(Unset, false));
+
+        // A device that was trusted and could not be taken off: keys would
+        // still flow, so that is a failure that stops the bot writing.
+        assert!(failure_leaks_keys(BlackListed, Verified, false));
+        // So is one the owner's identity has signed that could not be blacklisted.
+        assert!(failure_leaks_keys(BlackListed, Unset, true));
+        // An unsigned device that could not be blacklisted is withheld from anyway,
+        // and one already blacklisted needed nothing.
+        assert!(!failure_leaks_keys(BlackListed, Unset, false));
+        assert!(!failure_leaks_keys(BlackListed, BlackListed, true));
+        // A trusted device that could not be marked trusted gets no key; that
+        // is a pity for it and no reason to silence the rest.
+        assert!(!failure_leaks_keys(Verified, BlackListed, true));
+        assert!(!failure_leaks_keys(Verified, Unset, false));
     }
 
     #[test]

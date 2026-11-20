@@ -192,3 +192,76 @@ fn every_note_a_tool_returns_says_who_started_it() {
         assert_eq!(hit["origin"], expected, "{hit}");
     }
 }
+
+#[test]
+fn a_note_that_only_looks_like_the_assistants_is_still_the_persons_to_lose() {
+    // A note saved before origins were kept has none, and is guessed at from
+    // its tags -- so a `research` tag, which is a plain write, must not be a
+    // way to overwrite it unasked. Only an origin that was recorded exempts a
+    // note, which is what lets an interrupted research job rewrite its own.
+    use super::support::ctx;
+    use karmayoga_core::NoteOrigin;
+    use karmayoga_core::agent::tools::{self, Effect};
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let mut legacy = karmayoga_core::Note::written("Old notes", "What the surveyor said.");
+    legacy.origin = None;
+    vault.save_note(&legacy, None).unwrap();
+    let ctx = ctx(&vault);
+    let rewrite =
+        |id: &str| serde_json::json!({ "note_id": id, "body": "Something else entirely." });
+    let id = legacy.id.to_string();
+
+    assert_eq!(tools::effect_for(&ctx, "update_note", &rewrite(&id)), Some(Effect::Destructive));
+    // The tag goes on as a plain write, and the guess now says "assistant"...
+    call(&vault, "update_note", serde_json::json!({ "note_id": id, "tags": ["research"] }));
+    let tagged = vault.note(legacy.id).unwrap();
+    assert_eq!(tagged.origin, None, "a guess is never saved");
+    assert_eq!(tagged.origin(), NoteOrigin::Assistant);
+    // ...and the rewrite is still asked about.
+    assert_eq!(tools::effect_for(&ctx, "update_note", &rewrite(&id)), Some(Effect::Destructive));
+
+    // A note the assistant made itself, with the origin recorded, is its own.
+    let made = call(
+        &vault,
+        "create_note",
+        serde_json::json!({ "title": "Answer", "body": "What the job found." }),
+    );
+    let mine = made["id"].as_str().unwrap().to_string();
+    assert_eq!(vault.note(mine.parse().unwrap()).unwrap().origin, Some(NoteOrigin::Assistant));
+    assert_eq!(tools::effect_for(&ctx, "update_note", &rewrite(&mine)), Some(Effect::Write));
+}
+
+#[test]
+fn a_blank_body_changes_nothing_and_so_is_not_a_loss() {
+    // A model fills in optional fields it has nothing for with "". The tools
+    // read a blank string as an omitted argument, so the text stays -- and
+    // there is nothing to confirm. (Were a blank body ever to be written, it
+    // would be a replacement: see `replaces_text`.)
+    use super::support::ctx;
+    use karmayoga_core::agent::tools::{self, Effect};
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let made = call(
+        &vault,
+        "create_note",
+        serde_json::json!({ "title": "Monday", "body": "Order the timber." }),
+    );
+    let id = made["id"].as_str().unwrap().to_string();
+    let mine = karmayoga_core::Note::written("Mine", "Ring the surveyor.");
+    vault.save_note(&mine, None).unwrap();
+    let ctx = ctx(&vault);
+
+    for (note, text) in [(id, "Order the timber."), (mine.id.to_string(), "Ring the surveyor.")] {
+        for blank in ["", "   ", "\n"] {
+            let args = serde_json::json!({ "note_id": note, "body": blank, "title": "Renamed" });
+            assert_eq!(tools::effect_for(&ctx, "update_note", &args), Some(Effect::Write));
+            call(&vault, "update_note", args);
+            let got = call(&vault, "get_note", serde_json::json!({ "note_id": note }));
+            assert_eq!(got["title"], "Renamed");
+            assert_eq!(got["body"], text, "a blank body must not wipe the note ({blank:?})");
+        }
+    }
+}

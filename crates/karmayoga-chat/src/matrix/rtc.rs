@@ -272,6 +272,18 @@ impl Remembered {
         self.calls.iter().find(|(id, _)| id == call).map(|(_, known)| known)
     }
 
+    /// Forget every call whose caller's device is not on `trusted`, joined or
+    /// not, and hand them back: the owner took that device off the list, so
+    /// nothing it has going is to carry on, and nothing it rings is to be
+    /// answered.
+    fn drop_untrusted(&mut self, trusted: &TrustedDevices) -> Vec<(CallId, Known)> {
+        let all = std::mem::take(&mut self.calls);
+        let (kept, dropped) =
+            all.into_iter().partition(|(_, known)| trusted.contains(&known.device));
+        self.calls = kept;
+        dropped
+    }
+
     fn forget(&mut self, call: &CallId) -> Option<Known> {
         let at = self.calls.iter().position(|(id, _)| id == call)?;
         Some(self.calls.remove(at).1)
@@ -443,6 +455,10 @@ pub(super) struct Calls {
     /// Which of the owner's devices are trusted: the only ones a call is
     /// answered for, and the only ones the bot's key is sent to.
     trust: Arc<Trust>,
+    /// Where the relay hears of a call ending, while the bot is listening.
+    /// Weak: the relay's own end of the channel is what keeps it open, and
+    /// the connector's `listen` must be able to close it by dropping its own.
+    inbox: Mutex<Option<mpsc::WeakSender<Incoming>>>,
     state: Mutex<State>,
 }
 
@@ -453,7 +469,14 @@ impl Calls {
         owner: OwnedUserId,
         trust: Arc<Trust>,
     ) -> Self {
-        Self { client, bot, owner, trust, state: Mutex::new(State::default()) }
+        Self {
+            client,
+            bot,
+            owner,
+            trust,
+            inbox: Mutex::new(None),
+            state: Mutex::new(State::default()),
+        }
     }
 
     /// Start hearing the owner's calls: their devices' memberships, and the
@@ -468,6 +491,7 @@ impl Calls {
         // reach the handler, but taken raw: the content is read by hand (see
         // `StateParts`). A state event is handed to this kind of handler
         // whether it came in a sync's state or in its timeline.
+        *self.inbox.lock().unwrap() = Some(inbox.downgrade());
         let calls = Arc::clone(self);
         let tx = inbox.clone();
         let memberships = client.add_event_handler(
@@ -616,6 +640,37 @@ impl Calls {
             Heard::Again(None) | Heard::Repeat => {}
             Heard::Stale => {
                 tracing::debug!(call = %call.0, "not ringing for a call that began too long ago");
+            }
+        }
+    }
+
+    /// The list of trusted devices changed: end every call whose caller's
+    /// device is no longer on it.
+    ///
+    /// The relay is told the call ended, so it stops listening and speaking,
+    /// and the bot's membership is emptied, as when the owner hangs up. A call
+    /// the bot had not joined is let go the same way, so the relay stops
+    /// waiting to answer it. Nothing the device sends after this is believed:
+    /// its membership and its keys are turned away like any untrusted
+    /// device's.
+    pub(super) async fn end_untrusted(&self) {
+        let ended = self.state.lock().unwrap().calls.drop_untrusted(&self.trust.trusted());
+        let inbox = self.inbox.lock().unwrap().as_ref().and_then(mpsc::WeakSender::upgrade);
+        for (call, known) in ended {
+            tracing::info!(call = %call.0, "ending a call from a device that is no longer trusted");
+            if let Some(inbox) = &inbox {
+                let ended = Incoming::CallEnded {
+                    chat: rules::chat_id(&known.room),
+                    call: call.clone(),
+                    at: Timestamp::now(),
+                };
+                Self::deliver(inbox, ended).await;
+            }
+            let Some(joined) = known.joined else { continue };
+            if let Some(room) = self.joined_room(&known.room)
+                && let Err(error) = self.leave(&room, &joined.state_key).await
+            {
+                tracing::warn!(call = %call.0, "couldn't leave a call from a device no longer trusted: {error}");
             }
         }
     }
@@ -2048,6 +2103,33 @@ mod tests {
         }
         assert!(calls.get(&id("running")).unwrap().joined.is_some());
         assert_eq!(calls.calls.len(), CALLS_REMEMBERED);
+    }
+
+    #[test]
+    fn taking_a_device_off_the_list_ends_its_calls_and_leaves_the_others() {
+        let mut calls = Remembered::default();
+        calls.heard(id("phone"), known("PHONE", NOW, NOW + 1_000_000), NOW);
+        calls.heard(id("laptop"), known("LAPTOP", NOW, NOW + 1_000_000), NOW);
+        calls.heard(id("tablet"), known("TABLET", NOW, NOW + 1_000_000), NOW);
+        calls.mark_joined(&id("phone"), joined());
+        calls.mark_joined(&id("laptop"), joined());
+
+        // Both PHONE (joined) and TABLET (ringing) come off; LAPTOP stays.
+        let dropped = calls.drop_untrusted(&TrustedDevices::new(["LAPTOP"]));
+        let mut names: Vec<_> = dropped.iter().map(|(call, _)| call.0.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["phone", "tablet"]);
+        assert!(dropped.iter().any(|(_, k)| k.device == "PHONE" && k.joined.is_some()));
+        assert!(calls.get(&id("phone")).is_none() && calls.get(&id("tablet")).is_none());
+        assert!(calls.get(&id("laptop")).unwrap().joined.is_some());
+
+        // With nothing trusted, nothing is left.
+        let dropped = calls.drop_untrusted(&TrustedDevices::default());
+        assert_eq!(dropped.len(), 1);
+        assert!(calls.calls.is_empty());
+        // And a list that still has them all changes nothing.
+        calls.heard(id("again"), known("PHONE", NOW, NOW + 1_000_000), NOW);
+        assert!(calls.drop_untrusted(&TrustedDevices::new(["PHONE"])).is_empty());
     }
 
     #[test]

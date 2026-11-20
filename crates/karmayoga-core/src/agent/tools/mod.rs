@@ -222,6 +222,17 @@ pub enum Domain {
     Health,
 }
 
+/// The domains private enough that an MCP client reaches them only through a
+/// token that names each one, a background job never reaches them at all, and
+/// a tool of another domain that could hand one of their records over leaves
+/// it out for a caller that may not see it ([`ToolContext::withheld`]).
+///
+/// One list, read by `karmayoga-server`'s `mcp.rs`, `karmayoga-service`'s
+/// `domains::meta` and its agent's job tools, so that a fifth such domain is
+/// added once and kept from every one of them alike.
+pub const PRIVATE_DOMAINS: &[Domain] =
+    &[Domain::Money, Domain::ScreenTime, Domain::Files, Domain::Health];
+
 impl Domain {
     /// What a person calls this domain, for a sentence that says it was kept
     /// from them.
@@ -948,6 +959,20 @@ impl<'a> ToolContext<'a> {
         self.withheld.contains(&domain)
     }
 
+    /// Whether the assistant's own writing -- a note it started, a page of its
+    /// own journal -- is left out for this caller.
+    ///
+    /// It is for an MCP client that is kept from some domain, and for no one
+    /// else. What the assistant wrote was written with every tool there is,
+    /// so it may quote a domain the token was never given -- and the tools
+    /// that return a note's text would hand it over as readily as `list_runs`
+    /// does. A job's turn is withheld from the same domains and must still
+    /// read, and rewrite, the notes it made itself, so this is keyed on the
+    /// caller and not on [`ToolContext::withheld`] alone.
+    pub fn hides_assistants_writing(&self) -> bool {
+        matches!(self.caller, Some(Caller::Mcp { .. })) && !self.withheld.is_empty()
+    }
+
     /// The line a tool puts where it left out text because of
     /// [`ToolContext::withheld`]: what was left out is the assistant's own
     /// writing, which may quote any domain, and which of them this caller may
@@ -1542,8 +1567,8 @@ pub(crate) fn one_line(text: &str) -> String {
 }
 
 /// Whether a `body` argument would throw away words that are already there:
-/// the text it carries is not empty, what the record holds is not empty, and
-/// the two are not the same.
+/// what the record holds is not empty, and what it is to be given is not the
+/// same -- including nothing at all.
 ///
 /// What `update_note` and `update_entry` ask before they are called a loss.
 /// Both take the whole body or none of it, so a call that sends one has no
@@ -1551,13 +1576,19 @@ pub(crate) fn one_line(text: &str) -> String {
 /// folded through Markdown the way it will be stored before it is compared,
 /// so sending back what was already written -- to change the title and
 /// nothing else -- is not a replacement.
+///
+/// A blank body is a replacement here, because that is what it would be: the
+/// two tools never get to ask, since [`Args::opt_str`] reads a blank string
+/// as an omitted argument and the call then leaves the text alone. If that
+/// ever changed, a blank body would be confirmed rather than wipe a record
+/// as a plain write.
 fn replaces_text(held_markdown: &str, new: &str) -> bool {
     let held = held_markdown.trim();
-    let new = new.trim();
-    if held.is_empty() || new.is_empty() {
+    if held.is_empty() {
         return false;
     }
-    crate::richtext::RichDoc::from_markdown(new).to_markdown().trim() != held
+    let new = new.trim();
+    new.is_empty() || crate::richtext::RichDoc::from_markdown(new).to_markdown().trim() != held
 }
 
 /// The subject of the confirmation card for a call that [`replaces_text`]:
@@ -2069,10 +2100,13 @@ mod tests {
         // not a loss.
         assert!(!replaces_text("Cut the joists.", "Cut the joists."));
         assert!(!replaces_text("Cut the joists.", "  Cut the joists.\n"));
-        // Nothing there to lose, and nothing to write over it with.
+        // Nothing there to lose.
         assert!(!replaces_text("", "First words"));
         assert!(!replaces_text("  \n", "First words"));
-        assert!(!replaces_text("Cut the joists.", "   "));
+        assert!(!replaces_text("", ""));
+        // Words written over with nothing are the plainest loss of all.
+        assert!(replaces_text("Cut the joists.", ""));
+        assert!(replaces_text("Cut the joists.", "   "));
     }
 
     #[test]

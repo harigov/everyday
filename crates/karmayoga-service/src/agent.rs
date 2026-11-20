@@ -2501,6 +2501,29 @@ fn marked_as_saved_words(summary: &str) -> String {
     format!("{summary} {SAVED_WORDS_MARK}").trim().to_string()
 }
 
+/// The tools whose answers carry an `"origin"` that says who wrote each note,
+/// journal entry or meeting transcript in them -- `own`, `assistant` or
+/// `meeting` -- and so the only ones whose results are searched for one that is
+/// not the person's ([`reads_back_saved_words`]).
+///
+/// A list rather than every tool, because `"origin"` means something else
+/// elsewhere: the files tools say where a file came from, and `assistant` is a
+/// picture the assistant made, which is nothing a stranger wrote. Listing
+/// those would taint a conversation for nothing. Every other tool that hands
+/// back what a run or a call wrote is either named in
+/// [`READS_BACK_WHAT_WAS_SAVED`] or a read of a domain [`reads_strangers_words`]
+/// already arms.
+const READS_ORIGIN_MARKED_RECORDS: [&str; 8] = [
+    "get_note",
+    "list_notes",
+    "search",
+    "get_entry",
+    "list_entries",
+    tools::READ_OWN_JOURNAL,
+    "list_meeting_notes",
+    "get_transcript",
+];
+
 /// The deepest a tool's result is searched for a record marked as written by
 /// the assistant or a meeting -- see [`marks_saved_words`]. A list of notes
 /// or entries is two or three levels down at most; this is generous, and
@@ -2539,17 +2562,19 @@ fn marks_saved_words(result: &Value, depth: usize) -> bool {
 /// what a routine reported after reading the person's mail, a page of the
 /// assistant's own journal -- each is somebody's words once removed, and each
 /// is read back through an ordinary tool of the vault that
-/// [`reads_strangers_words`] has no reason to name. So the result is
-/// searched instead: any record in it marked as the assistant's or a
-/// meeting's arms the taint, and [`READS_BACK_WHAT_WAS_SAVED`] always does
-/// when it returned something (`count` is how a list says so; a single
-/// record has none). `result` is `None` for an answer that was not JSON,
-/// which for those tools is treated as having returned something.
+/// [`reads_strangers_words`] has no reason to name. So the result of a tool
+/// in [`READS_ORIGIN_MARKED_RECORDS`] is searched instead: any record in it
+/// marked as the assistant's or a meeting's arms the taint. Those of
+/// [`READS_BACK_WHAT_WAS_SAVED`] always do when they returned something
+/// (`count` is how a list says so; a single record has none). `result` is
+/// `None` for an answer that was not JSON, which for the latter is treated as
+/// having returned something.
 fn reads_back_saved_words(name: &str, result: Option<&Value>) -> bool {
     let returned_something =
         result.is_none_or(|json| json.get("count").and_then(Value::as_u64).is_none_or(|n| n > 0));
     (READS_BACK_WHAT_WAS_SAVED.contains(&name) && returned_something)
-        || result.is_some_and(|json| marks_saved_words(json, 0))
+        || (READS_ORIGIN_MARKED_RECORDS.contains(&name)
+            && result.is_some_and(|json| marks_saved_words(json, 0)))
 }
 
 /// Whether a call by this name, in an earlier turn of the conversation, put
@@ -2808,16 +2833,18 @@ struct JobTools {
     drafting: bool,
 }
 
-/// The domains a background job's turn is kept from: Money, Screen time,
-/// Files and Health. A job is not offered their tools (see
-/// [`JobTools::offers`]), and every [`ToolContext`] built for a job's turn
-/// withholds them too ([`ToolContext::withheld`]), because leaving the tools
-/// out stops a job calling them and does nothing about the others that can
-/// reach the same records -- a tracker that counts a blood-glucose reading, a
-/// goal that tallies a day's browsing, a routine's report. One list, so that
-/// what a job is not offered and what it is not shown cannot drift apart.
-const WITHHELD_FROM_JOBS: &[tools::Domain] =
-    &[tools::Domain::Money, tools::Domain::ScreenTime, tools::Domain::Files, tools::Domain::Health];
+/// The domains a background job's turn is kept from: the core's
+/// [`tools::PRIVATE_DOMAINS`] -- Money, Screen time, Files and Health. A job
+/// is not offered their tools (see [`JobTools::offers`]), and every
+/// [`ToolContext`] built for a job's turn withholds them too
+/// ([`ToolContext::withheld`]), because leaving the tools out stops a job
+/// calling them and does nothing about the others that can reach the same
+/// records -- a tracker that counts a blood-glucose reading, a goal that
+/// tallies a day's browsing, a routine's report. One list, shared with the
+/// MCP server's, so that what a job is not offered and what it is not shown
+/// cannot drift apart, and a fifth private domain is kept from jobs the day it
+/// is added.
+const WITHHELD_FROM_JOBS: &[tools::Domain] = tools::PRIVATE_DOMAINS;
 
 /// What a [`ToolContext`] for a turn should withhold: [`WITHHELD_FROM_JOBS`]
 /// for a background job's own turn, nothing for any other.
@@ -8784,6 +8811,59 @@ mod tests {
         }
     }
 
+    /// The files tools say where a file came from in the same `"origin"` the
+    /// notes and entries use, and `assistant` there is a picture the assistant
+    /// made: listing the assistant's own pictures is not hearing a stranger,
+    /// so only the tools that return notes, entries and transcripts are
+    /// searched for one.
+    #[test]
+    fn a_file_the_assistant_made_does_not_taint_but_a_note_it_wrote_does() {
+        let picture = serde_json::json!({
+            "count": 1,
+            "files": [{ "id": "f", "name": "cat.png", "origin": "assistant" }],
+        });
+        let note = serde_json::json!({ "id": "n", "title": "Findings", "origin": "assistant" });
+        assert!(marks_saved_words(&picture, 0), "the premise: the same word is in the answer");
+        for tool in tools::catalog().iter().filter(|t| t.domain == tools::Domain::Files) {
+            assert!(!reads_back_saved_words(tool.name, Some(&picture)), "{}", tool.name);
+            // `read_file` is the one that arms by name: what is in a file is
+            // somebody's writing, whoever made the file.
+            if !names_strangers_words(tool.name) {
+                let thread = thread_where(tool.name, &picture);
+                assert!(!thread_heard_strangers(&thread), "{}", tool.name);
+            }
+        }
+        assert!(!reads_back_saved_words("find_files", Some(&picture)));
+        assert!(reads_back_saved_words("get_note", Some(&note)));
+        assert!(thread_heard_strangers(&thread_where("get_note", &note)));
+
+        // The tools that are searched are real reads, and the ones that mark
+        // their records.
+        for name in READS_ORIGIN_MARKED_RECORDS {
+            let tool = tools::find(name).unwrap_or_else(|| panic!("{name} is not a core tool"));
+            assert_eq!(tool.effect, Effect::Read, "{name}");
+            assert!(
+                matches!(
+                    tool.domain,
+                    tools::Domain::Notes | tools::Domain::Journals | tools::Domain::Meetings
+                ),
+                "{name}: {:?}",
+                tool.domain
+            );
+            assert!(reads_back_saved_words(name, Some(&note)), "{name}");
+        }
+        // Nothing else is: a record marked as the assistant's in the answer of
+        // a tool that is not one of them says something else by it.
+        for tool in tools::catalog().iter().filter(|t| t.effect == Effect::Read) {
+            if READS_ORIGIN_MARKED_RECORDS.contains(&tool.name)
+                || READS_BACK_WHAT_WAS_SAVED.contains(&tool.name)
+            {
+                continue;
+            }
+            assert!(!reads_back_saved_words(tool.name, Some(&note)), "{}", tool.name);
+        }
+    }
+
     fn assistant_message(conversation: ConversationId, calls: &[&str]) -> VaultMessage {
         VaultMessage::new(conversation, Role::Assistant, "").with_tool_calls(
             calls
@@ -9254,15 +9334,15 @@ mod tests {
     #[test]
     fn a_jobs_turn_withholds_exactly_the_domains_it_is_not_offered() {
         assert!(withheld_for(false).is_empty(), "nobody else is kept from anything");
-        assert_eq!(
-            withheld_for(true),
-            [
-                tools::Domain::Money,
-                tools::Domain::ScreenTime,
-                tools::Domain::Files,
-                tools::Domain::Health
-            ]
-        );
+        assert_eq!(withheld_for(true), tools::PRIVATE_DOMAINS);
+        for domain in [
+            tools::Domain::Money,
+            tools::Domain::ScreenTime,
+            tools::Domain::Files,
+            tools::Domain::Health,
+        ] {
+            assert!(withheld_for(true).contains(&domain), "{domain:?}");
+        }
         let job = JobTools { unattended: true, job: true, ..rail() };
         for tool in tools::catalog().iter().filter(|t| t.domain != tools::Domain::Jobs) {
             assert_eq!(

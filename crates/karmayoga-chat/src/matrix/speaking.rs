@@ -108,11 +108,13 @@ impl MatrixConnector {
     /// there is answered either, and the room a routine's result goes to is
     /// picked encrypted -- this is the last of three places that insist.)
     ///
-    /// Before anything goes into it the owner's devices are marked as the
-    /// trusted list says -- see `devices` -- so a device that has only just
-    /// appeared on their account is blacklisted before the room's key is
-    /// shared, not after. If that cannot be done nothing is written: the
-    /// alternative is a key shared on the strength of a guess.
+    /// Before anything goes into it the owner's devices are looked up and
+    /// marked as the trusted list says -- see `Trust::ready_to_send` -- so a
+    /// device that has only just appeared on their account is blacklisted
+    /// before the room's key is shared, not after. That is skipped while
+    /// nothing has changed, so a conversation is not a scan of the crypto store
+    /// per message. If a device that should be shut out could not be, nothing
+    /// is written: the alternative is a key shared on the strength of a guess.
     async fn encrypted_room(&self, chat: &ChatId) -> Result<Room, ChatError> {
         let room = self.joined_room(chat)?;
         if !rooms::is_encrypted(&room).await {
@@ -121,7 +123,7 @@ impl MatrixConnector {
                 chat.0
             )));
         }
-        self.trust.apply().await.map_err(|problem| {
+        self.trust.ready_to_send().await.map_err(|problem| {
             ChatError::Transient(format!(
                 "The bot could not check which of your devices it trusts, so it wrote nothing. \
                  {problem}"

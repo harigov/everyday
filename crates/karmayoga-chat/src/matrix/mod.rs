@@ -212,7 +212,8 @@ impl Connector for MatrixConnector {
     }
 
     fn devices(&self) -> Option<Arc<dyn ChatDevices>> {
-        Some(Arc::new(Devices(Arc::clone(&self.trust))))
+        let (trust, calls) = (Arc::clone(&self.trust), Arc::clone(&self.calls));
+        Some(Arc::new(Devices { trust, calls }))
     }
 
     async fn join_call(&self, chat: &ChatId, call: &CallId) -> Result<CallJoin, ChatError> {

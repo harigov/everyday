@@ -437,3 +437,102 @@ fn a_tracker_counting_screen_time_gives_up_no_days_to_a_caller_kept_from_it() {
     let health_only = ToolContext { withheld: &[Domain::Health], ..client(&vault) };
     assert!(trackers_in("tracker_summary", &health_only, "days").contains(&screen_id));
 }
+
+// ---- what the assistant wrote in a note, or in its own journal ---------------
+
+#[test]
+fn what_the_assistant_wrote_in_a_note_or_its_journal_is_left_out_for_an_mcp_client() {
+    // A research job's answer is a note, and `job_status` hands out its id:
+    // reading it with `get_note` would be `list_runs` by another road.
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let owner = ctx(&vault);
+    let made = run(
+        &owner,
+        "create_note",
+        json!({ "title": "Research answer", "body": "Metformin 500mg after meals." }),
+    );
+    let answer = made["id"].as_str().unwrap().to_string();
+    let mine = karmayoga_core::Note::written("Recipe", "Whisk the joists.");
+    vault.save_note(&mine, None).unwrap();
+    // Saved before origins were kept: no recorded origin, and the tag is all
+    // there is to tell it apart.
+    let mut legacy = karmayoga_core::Note::written("Old report", "Glucose was 6.1 last week.");
+    legacy.origin = None;
+    legacy.tags = vec!["research".into()];
+    vault.save_note(&legacy, None).unwrap();
+    run(
+        &owner,
+        "write_own_journal",
+        json!({ "date": "2026-09-07", "text": "Ask about the metformin dose." }),
+    );
+    let pages = run(&owner, "read_own_journal", json!({ "from": "2026-09-07" }));
+    let page = pages["pages"][0]["id"].as_str().unwrap().to_string();
+    assert!(pages["pages"][0]["text"].as_str().unwrap().contains("metformin"));
+
+    let mcp = client(&vault);
+    let withheld_of = |out: &Value| {
+        let note = out["withheld"].as_str().unwrap_or_else(|| panic!("nothing was said: {out}"));
+        assert!(note.contains("Money") && note.contains("Health"), "{note}");
+    };
+
+    // What it wrote, named and not read out: the id, title and origin stay.
+    for id in [answer.clone(), legacy.id.to_string()] {
+        let got = run(&mcp, "get_note", json!({ "note_id": id }));
+        assert_eq!(got["origin"], "assistant", "{got}");
+        assert!(got["title"].is_string() && got.get("body").is_none(), "{got}");
+        withheld_of(&got);
+    }
+    let got = run(&mcp, "get_note", json!({ "note_id": mine.id.to_string() }));
+    assert_eq!(got["body"], "Whisk the joists.", "the person's own note is read as ever");
+    assert!(got.get("withheld").is_none());
+
+    let listed = run(&mcp, "list_notes", json!({}));
+    let rows = listed["notes"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    for row in rows {
+        if row["title"] == "Recipe" {
+            assert_eq!(row["excerpt"], "Whisk the joists.", "{row}");
+        } else {
+            assert!(row.get("excerpt").is_none(), "{row}");
+            withheld_of(row);
+        }
+    }
+    assert!(!listed.to_string().contains("Metformin") && !listed.to_string().contains("6.1"));
+
+    // Nor is it found by what it says, which would read it a letter at a time.
+    for word in ["metformin", "glucose"] {
+        let found = run(&mcp, "search", json!({ "query": word }));
+        assert_eq!(found["count"], 0, "{word}: {found}");
+        withheld_of(&found);
+        let found = run(&owner, "search", json!({ "query": word }));
+        assert!(found["count"].as_u64().unwrap() >= 1, "the person finds it as ever: {found}");
+    }
+    let found = run(&mcp, "search", json!({ "query": "joists" }));
+    assert_eq!(found["count"], 1, "{found}");
+    assert_eq!(found["results"][0]["excerpt"].as_str().map(|e| e.contains("joists")), Some(true));
+
+    // Its own journal, page by page.
+    let read = run(&mcp, "read_own_journal", json!({ "from": "2026-09-07" }));
+    assert_eq!(read["count"], 1);
+    assert!(read["pages"][0].get("text").is_none(), "{read}");
+    withheld_of(&read);
+    let entry = run(&mcp, "get_entry", json!({ "entry_id": page }));
+    assert_eq!(entry["origin"], "assistant");
+    assert!(entry.get("body").is_none(), "{entry}");
+    withheld_of(&entry);
+
+    // A job's turn is withheld from the same domains and must still read the
+    // notes it made itself: the rule is the MCP caller's, not the domains'.
+    let job = ToolContext { withheld: &PRIVATE, ..ctx(&vault) };
+    let got = run(&job, "get_note", json!({ "note_id": answer }));
+    assert!(got["body"].as_str().unwrap().contains("Metformin"), "{got}");
+    let pages = run(&job, "read_own_journal", json!({ "from": "2026-09-07" }));
+    assert!(pages["pages"][0]["text"].is_string(), "{pages}");
+
+    // And a token that names every private domain reads it as the owner does.
+    let named =
+        ToolContext { caller: Some(Caller::Mcp { client: "device-1".into() }), ..ctx(&vault) };
+    let got = run(&named, "get_note", json!({ "note_id": answer }));
+    assert!(got["body"].as_str().unwrap().contains("Metformin"), "{got}");
+}

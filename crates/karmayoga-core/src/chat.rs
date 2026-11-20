@@ -124,7 +124,8 @@ impl ChatLink {
     /// one `stored` already has -- and only those.
     ///
     /// The list of devices the bot trusts is changed by one command, which
-    /// only this computer's own window may call (`set_chat_trusted_devices`).
+    /// only this computer may call -- its own window, or a program of the same
+    /// user over the local socket (`set_chat_trusted_devices`).
     /// A save carries a whole link, list included, from whoever sends it; if
     /// the list in it were believed, any client allowed to save a link could
     /// add its own device to it. So a save never takes the list from the
@@ -186,7 +187,8 @@ pub struct MatrixLink {
     /// it says, so only the list counts. Empty -- what a link saved before
     /// this existed has -- trusts no device at all.
     ///
-    /// Changed only by `set_chat_trusted_devices`; see
+    /// Changed only by `set_chat_trusted_devices`, which only this computer may
+    /// call; see
     /// [`ChatLink::inherit_trusted_devices`] for why a save never carries it.
     #[serde(default)]
     pub trusted_devices: Vec<String>,

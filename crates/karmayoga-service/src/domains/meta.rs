@@ -122,9 +122,9 @@ fn resolve_caller(ctx: &Ctx, claimed: Option<WireCaller>) -> CommandResult<Optio
 /// The domains whose records this caller may not see even through a tool of
 /// another domain -- what `ToolContext::withheld` is given.
 ///
-/// The four whose records are private enough that holding a scope for some
-/// other domain is not leave to see them: Money, Screen time, Files and
-/// Health. One is withheld when the connection does not hold its scope at
+/// The [private domains](tools::PRIVATE_DOMAINS) -- records so private that
+/// holding a scope for some other domain is not leave to see them: Money,
+/// Screen time, Files and Health today. One is withheld when the connection does not hold its scope at
 /// all, and -- for an MCP client, where a token is minted as `All` unless its
 /// owner narrows it and most were minted before those domains existed -- when
 /// it holds it only through `All` rather than naming it, the rule
@@ -136,16 +136,14 @@ fn resolve_caller(ctx: &Ctx, claimed: Option<WireCaller>) -> CommandResult<Optio
 /// application hold `All` and are not MCP.
 fn withheld_domains(ctx: &Ctx, caller: Option<&ToolCaller>) -> Vec<tools::Domain> {
     let mcp = matches!(caller, Some(ToolCaller::Mcp { .. }));
-    [
-        (tools::Domain::Money, Scope::Money),
-        (tools::Domain::ScreenTime, Scope::ScreenTime),
-        (tools::Domain::Files, Scope::Files),
-        (tools::Domain::Health, Scope::Health),
-    ]
-    .into_iter()
-    .filter(|(_, scope)| !ctx.holds(*scope) || (mcp && !ctx.names(*scope)))
-    .map(|(domain, _)| domain)
-    .collect()
+    tools::PRIVATE_DOMAINS
+        .iter()
+        .copied()
+        .filter(|domain| {
+            let scope = scope_of(*domain);
+            !ctx.holds(scope) || (mcp && !ctx.names(scope))
+        })
+        .collect()
 }
 
 /// The surface, and what version of it this build speaks.

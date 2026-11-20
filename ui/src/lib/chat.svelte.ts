@@ -168,8 +168,8 @@ class ChatState {
 
   /**
    * Trust exactly `devices` -- ids from `devices()` -- and no other device of
-   * the owner's. Only this computer's own window may: the service refuses
-   * anybody else, whose reason is `error`. What comes back is the link as it
+   * the owner's. Only this computer may -- its own window, or its local
+   * socket: the service refuses anybody else, whose reason is `error`. What comes back is the link as it
    * now stands, put into the list at once.
    */
   async setTrustedDevices(id: ChatLinkId, devices: string[]): Promise<SaveResult> {

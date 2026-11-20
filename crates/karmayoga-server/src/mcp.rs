@@ -88,8 +88,8 @@
 //! token minted before Health existed to wake up able to read. Its tools are
 //! offered only to a token that names `health`; the write-only
 //! `healthIngest` scope the phone's push is issued opens none of them.
-//! [`by_name`] is the one list of such domains, so a fifth is one line
-//! there.
+//! [`PRIVATE_DOMAINS`], which [`by_name`] reads, is the one list of such
+//! domains, so a fifth is one line there.
 //!
 //! # What makes the assistant act on its own is not offered at all
 //!
@@ -189,7 +189,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use futures::stream::Stream;
-use karmayoga_core::agent::tools::{Domain, Effect};
+use karmayoga_core::agent::tools::{Domain, Effect, PRIVATE_DOMAINS};
 use karmayoga_mcp::{HostError, Outcome, ToolDef};
 use karmayoga_service::{CommandError, CommandResult, Ctx, EventSink, Scope, Service};
 use serde::{Deserialize, Serialize};
@@ -554,15 +554,16 @@ impl karmayoga_mcp::Host for VaultHost {
 /// through [`Scope::All`]: what each is called in a refusal, and the scope
 /// it has to name. See the module doc's "Money, Screen time and Files need
 /// asking for by name".
+///
+/// Which domains those are is [`PRIVATE_DOMAINS`], the one list -- Money,
+/// Screen time, Files and Health, the last somebody's body, medicines and
+/// diagnoses -- that a job's turn and a tool's withheld text read as well, so
+/// a fifth is added there once. The scope is the one the command table gates
+/// that domain's tools behind, and the name the one a person would call it.
 fn by_name(domain: Domain) -> Option<(&'static str, Scope)> {
-    match domain {
-        Domain::Money => Some(("Money", Scope::Money)),
-        Domain::ScreenTime => Some(("Screen time", Scope::ScreenTime)),
-        Domain::Files => Some(("Files", Scope::Files)),
-        // Somebody's body, medicines and diagnoses: Money's reason, and more.
-        Domain::Health => Some(("Health", Scope::Health)),
-        _ => None,
-    }
+    PRIVATE_DOMAINS
+        .contains(&domain)
+        .then(|| (domain.label(), karmayoga_service::domains::meta::scope_of(domain)))
 }
 
 /// Is `tool` one an MCP client may neither be offered nor run, because it

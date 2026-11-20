@@ -39,6 +39,13 @@
 //! says -- are separate from the dialog so they can be tested; [`ask`] is the
 //! only part that touches the screen.
 //!
+//! The same question is asked before anything that lets another computer, or
+//! another program, in: turning on web access, offering a pairing code,
+//! letting a connected computer unlock the vault, offering destructive tools
+//! over MCP, and trusting another of the owner's chat devices. Each of those is
+//! a switch the interface has a button for, and each is exactly what a script
+//! would press first.
+//!
 //! What is *not* asked about, deliberately: a connection that is already set up
 //! being switched on or off, renamed or checked, since the person approved its
 //! program when it was added; a server answering on this computer's loopback
@@ -47,10 +54,16 @@
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
+use karmayoga_core::chat::{ChatService, tidy_device_ids};
 use karmayoga_core::connection::{Connection, Transport};
+use karmayoga_core::{ChatLinkId, Error};
 use karmayoga_service::Scope;
+use karmayoga_service::chat::ChatDevice;
 use karmayoga_service::command::parse;
+use karmayoga_service::ctx::Ctx;
+use karmayoga_service::domains::chat::SetChatTrustedDevices;
 use karmayoga_service::domains::connections::{AddConnection, UpdateConnection};
 use karmayoga_service::error::{CommandError, CommandResult, codes};
 use karmayoga_service::service::blocking;
@@ -285,7 +298,9 @@ pub fn edited_connection_prompt(before: &Connection, after: Connection) -> Optio
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Served {
     /// This vault, to computers the person pairs with (`share_start`).
-    Sharing,
+    /// `allow_remote_unlock` is whether a connected computer may also unlock
+    /// it, which `share_start` can turn on in the same call.
+    Sharing { allow_remote_unlock: bool },
     /// This vault's tools, to a program holding a token (`mcp_start`).
     Mcp,
 }
@@ -308,13 +323,18 @@ pub fn listening_prompt(what: Served, address: SocketAddr) -> Option<Prompt> {
         address.to_string()
     };
     Some(match what {
-        Served::Sharing => Prompt {
+        Served::Sharing { allow_remote_unlock } => Prompt {
             title: "Allow other computers to connect?",
             body: format!(
                 "Allow other computers to reach Karma Yoga on this one?\n\n\
                  It would answer on {reach}. A computer still has to pair with a code you give \
-                 it before it can use your vault, but it would be able to ask.\n\n\
-                 Only allow this if you turned sharing on yourself."
+                 it before it can use your vault, but it would be able to ask.{}\n\n\
+                 Only allow this if you turned sharing on yourself.",
+                if allow_remote_unlock {
+                    " A computer that has paired could also unlock the vault from there."
+                } else {
+                    ""
+                },
             ),
         },
         Served::Mcp => Prompt {
@@ -346,6 +366,105 @@ pub fn token_prompt(scopes: &[Scope]) -> Prompt {
              Whoever holds it can use {reach}, as you, from outside Karma Yoga. It is shown to \
              you once.\n\n\
              Only allow this if you asked to connect a program yourself."
+        ),
+    }
+}
+
+/// The question to ask before web access is switched on: the interface served
+/// to browsers on the person's tailnet, signed in to with the vault password.
+pub fn web_access_prompt(port: u16) -> Prompt {
+    Prompt {
+        title: "Allow web access?",
+        body: format!(
+            "Allow this vault to be opened in a web browser from other devices on your \
+             Tailscale network?\n\n\
+             Karma Yoga would serve its pages on port {port}, to this computer's Tailscale \
+             addresses only. Anyone who can reach it and knows your vault password could sign \
+             in and use everything in the vault.\n\n\
+             Only allow this if you turned web access on yourself."
+        ),
+    }
+}
+
+/// The question to ask before a pairing code is made: a code that lets
+/// another computer become a device of this vault.
+pub fn pairing_prompt() -> Prompt {
+    Prompt {
+        title: "Allow a new computer to pair?",
+        body: "Make a pairing code so another computer can connect to this vault?\n\n\
+               The code works for five minutes. A computer that pairs with it gets the same access \
+               to your vault as this one has, until you remove it from the list of devices.\n\n\
+               Only allow this if you are adding a computer yourself."
+            .to_string(),
+    }
+}
+
+/// The question to ask before a connected computer is allowed to unlock the
+/// vault.
+pub fn remote_unlock_prompt() -> Prompt {
+    Prompt {
+        title: "Allow other computers to unlock your vault?",
+        body: "Let a computer that has paired with this vault unlock it?\n\n\
+               Today a locked vault stays locked until somebody unlocks it here. With this on, a \
+               paired computer can ask for it to be unlocked.\n\n\
+               Only allow this if you turned it on yourself."
+            .to_string(),
+    }
+}
+
+/// The question to ask before MCP starts offering tools that delete or
+/// overwrite.
+pub fn destructive_tools_prompt() -> Prompt {
+    Prompt {
+        title: "Allow programs to delete things?",
+        body: "Let programs connected over MCP use tools that delete or overwrite things in your \
+               vault?\n\n\
+               They are left out of what MCP offers now. Once allowed, a program that holds a \
+               token for this vault can use them, within what its token covers.\n\n\
+               Only allow this if you turned it on yourself."
+            .to_string(),
+    }
+}
+
+/// How many devices are named in a question before "and so many more".
+const DEVICES_SHOWN: usize = 12;
+
+/// The devices in `requested` that `current` does not already trust, tidied
+/// the way the service tidies a list before it keeps it (trimmed, without
+/// empty entries or repeats, in order).
+///
+/// Taking a device off the list, or saving the list as it is, is no reason to
+/// ask: nothing new can talk to the assistant.
+pub fn newly_trusted(current: &[String], requested: Vec<String>) -> Vec<String> {
+    let current = tidy_device_ids(current);
+    tidy_device_ids(requested).into_iter().filter(|device| !current.contains(device)).collect()
+}
+
+/// The question to ask before more of the owner's devices are trusted to talk
+/// to the assistant. Each is its id and, where the chat service has told us, the
+/// name its owner gave it.
+pub fn trusted_devices_prompt(added: &[(String, Option<String>)]) -> Prompt {
+    let mut lines: Vec<String> = added
+        .iter()
+        .take(DEVICES_SHOWN)
+        .map(|(id, name)| match name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => format!("  {} ({})", plain(name, WORD_LIMIT), plain(id, WORD_LIMIT)),
+            None => format!("  {}", plain(id, WORD_LIMIT)),
+        })
+        .collect();
+    if added.len() > DEVICES_SHOWN {
+        lines.push(format!("  ... and {} more", added.len() - DEVICES_SHOWN));
+    }
+    let (these, them) =
+        if added.len() == 1 { ("this device", "it") } else { ("these devices", "them") };
+    Prompt {
+        title: "Allow another device to talk to the assistant?",
+        body: format!(
+            "Trust {these} to talk to the assistant through chat?\n\n{}\n\n\
+             The assistant believes what a trusted device sends it, and its replies go there. \
+             A device that is not on the list is ignored. Only allow this if you picked {them} \
+             yourself.",
+            lines.join("\n"),
         ),
     }
 }
@@ -411,6 +530,22 @@ pub async fn ask(app: &tauri::AppHandle, prompt: Prompt) -> CommandResult<()> {
     }
 }
 
+/// The owner's devices as the running bot lists them, for naming the ones about
+/// to be trusted. Empty if the bot is not running, does not answer in a few
+/// seconds, or answers with something unreadable: the question then names the
+/// devices by id alone, which is all the list holds anyway.
+async fn device_names(state: &AppState, id: ChatLinkId) -> Vec<ChatDevice> {
+    let listed = tokio::time::timeout(
+        Duration::from_secs(5),
+        state.service().call(Ctx::local(), "chat_devices", serde_json::json!({ "id": id })),
+    )
+    .await;
+    match listed {
+        Ok(Ok(value)) => serde_json::from_value(value).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 /// Ask about a call the interface is making, if it is one worth asking about.
 ///
 /// Called by `call` before the service sees anything, for a vault in this
@@ -418,9 +553,15 @@ pub async fn ask(app: &tauri::AppHandle, prompt: Prompt) -> CommandResult<()> {
 /// computer's own rules refuse a program to anybody but the shell on that
 /// machine, and a question about this computer would be about the wrong one.
 ///
-/// A connection's arguments that do not parse are refused here with the error
-/// the service would give, rather than let through for it to refuse: nothing
-/// is forwarded that this has not read.
+/// A connection's or a device list's arguments that do not parse are refused
+/// here with the error the service would give, rather than let through for it
+/// to refuse: nothing is forwarded that this has not read.
+///
+/// For `set_chat_trusted_devices` the question is asked only when the new list
+/// holds a device the link does not trust now -- the saved list is read the way
+/// the service reads it, and a list that only shrinks or stays the same is not
+/// asked about. The devices are named from the running bot's own list when it
+/// will give one, and by id when it will not.
 pub async fn confirm_call(
     app: &tauri::AppHandle,
     state: &AppState,
@@ -439,6 +580,40 @@ pub async fn confirm_call(
             let vault = state.service().require_unlocked()?;
             let before = blocking(move || Ok(vault.connection(id)?)).await?;
             edited_connection_prompt(&before, edited.connection)
+        }
+        "set_chat_trusted_devices" => {
+            let wanted: SetChatTrustedDevices = parse(name, args.clone())?;
+            let id = wanted.id;
+            // The list the link trusts now, read the way the service reads it
+            // before it replaces it: from the saved settings, by link id. A
+            // link that is not there is the service's `not_found`.
+            let vault = state.service().require()?;
+            let current = blocking(move || {
+                let settings = vault.chat_settings()?;
+                let link = settings
+                    .link(id)
+                    .ok_or_else(|| CommandError::from(Error::not_found("chat link", id)))?;
+                let ChatService::Matrix(matrix) = &link.service;
+                Ok(matrix.trusted_devices.clone())
+            })
+            .await?;
+            let added = newly_trusted(&current, wanted.devices);
+            if added.is_empty() {
+                None
+            } else {
+                let known = device_names(state, id).await;
+                let named: Vec<(String, Option<String>)> = added
+                    .into_iter()
+                    .map(|device| {
+                        let name = known
+                            .iter()
+                            .find(|k| k.device_id == device)
+                            .and_then(|k| k.display_name.clone());
+                        (device, name)
+                    })
+                    .collect();
+                Some(trusted_devices_prompt(&named))
+            }
         }
         _ => None,
     };
@@ -707,9 +882,12 @@ mod tests {
         text.parse().unwrap()
     }
 
+    /// Sharing as the interface starts it, with no unlocking from afar.
+    const SHARING: Served = Served::Sharing { allow_remote_unlock: false };
+
     #[test]
     fn a_server_on_this_computers_own_address_asks_nothing() {
-        for what in [Served::Sharing, Served::Mcp] {
+        for what in [SHARING, Served::Sharing { allow_remote_unlock: true }, Served::Mcp] {
             for text in
                 ["127.0.0.1:7398", "127.0.0.9:7398", "[::1]:7398", "[::ffff:127.0.0.1]:7398"]
             {
@@ -720,7 +898,7 @@ mod tests {
 
     #[test]
     fn a_server_on_every_interface_asks_and_says_so() {
-        for what in [Served::Sharing, Served::Mcp] {
+        for what in [SHARING, Served::Mcp] {
             for text in ["0.0.0.0:7397", "[::]:7397"] {
                 let prompt = listening_prompt(what, socket(text))
                     .unwrap_or_else(|| panic!("{what:?} {text} was not asked about"));
@@ -734,9 +912,116 @@ mod tests {
         let prompt = listening_prompt(Served::Mcp, socket("192.168.1.20:7398")).unwrap();
         assert!(prompt.body.contains("192.168.1.20:7398"), "{}", prompt.body);
         assert!(prompt.body.contains("MCP"), "{}", prompt.body);
-        let prompt = listening_prompt(Served::Sharing, socket("100.64.0.3:7397")).unwrap();
+        let prompt = listening_prompt(SHARING, socket("100.64.0.3:7397")).unwrap();
         assert!(prompt.body.contains("100.64.0.3:7397"), "{}", prompt.body);
         assert!(prompt.body.contains("pair"), "{}", prompt.body);
+    }
+
+    #[test]
+    fn sharing_that_also_lets_a_computer_unlock_the_vault_says_so() {
+        let unlocking = Served::Sharing { allow_remote_unlock: true };
+        let prompt = listening_prompt(unlocking, socket("0.0.0.0:7397")).unwrap();
+        assert!(prompt.body.contains("could also unlock the vault"), "{}", prompt.body);
+        let prompt = listening_prompt(SHARING, socket("0.0.0.0:7397")).unwrap();
+        assert!(!prompt.body.contains("unlock"), "{}", prompt.body);
+    }
+
+    // ---- the other ways in
+
+    #[test]
+    fn web_access_names_the_port_and_that_the_vault_password_is_the_way_in() {
+        let prompt = web_access_prompt(7400);
+        assert!(prompt.body.contains("port 7400"), "{}", prompt.body);
+        assert!(prompt.body.contains("Tailscale"), "{}", prompt.body);
+        assert!(prompt.body.contains("vault password"), "{}", prompt.body);
+    }
+
+    #[test]
+    fn a_pairing_code_says_how_long_it_lasts_and_what_a_paired_computer_gets() {
+        let prompt = pairing_prompt();
+        assert!(prompt.body.contains("five minutes"), "{}", prompt.body);
+        assert!(prompt.body.contains("same access"), "{}", prompt.body);
+    }
+
+    #[test]
+    fn unlocking_and_destructive_tools_each_have_a_question_that_says_which() {
+        assert!(remote_unlock_prompt().body.contains("unlock it"));
+        let destructive = destructive_tools_prompt();
+        assert!(destructive.body.contains("delete or overwrite"), "{}", destructive.body);
+        assert!(destructive.body.contains("MCP"), "{}", destructive.body);
+    }
+
+    // ---- trusting devices
+
+    fn ids(devices: &[&str]) -> Vec<String> {
+        devices.iter().map(|d| d.to_string()).collect()
+    }
+
+    #[test]
+    fn only_a_device_not_trusted_now_is_new() {
+        let current = ids(&["PHONE", "LAPTOP"]);
+        assert_eq!(newly_trusted(&current, ids(&["PHONE", "LAPTOP", "TABLET"])), ["TABLET"]);
+        assert_eq!(newly_trusted(&current, ids(&["TABLET", "ATTACKER"])), ["ATTACKER", "TABLET"]);
+    }
+
+    #[test]
+    fn a_list_that_shrinks_or_stays_the_same_adds_nothing() {
+        let current = ids(&["PHONE", "LAPTOP"]);
+        assert!(newly_trusted(&current, ids(&["PHONE"])).is_empty());
+        assert!(newly_trusted(&current, ids(&["LAPTOP", "PHONE"])).is_empty());
+        assert!(newly_trusted(&current, Vec::new()).is_empty());
+        assert!(newly_trusted(&[], Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn devices_are_compared_after_the_same_tidying_the_service_does() {
+        // Trimmed, without empty entries or repeats: the same device spelt
+        // with a space is not a new one, and a blank is not a device.
+        let current = ids(&["PHONE"]);
+        assert!(newly_trusted(&current, ids(&[" PHONE ", "", "  ", "PHONE"])).is_empty());
+        assert_eq!(newly_trusted(&current, ids(&[" NEW ", "NEW", ""])), ["NEW"]);
+        // And a saved list that was kept with stray spaces still matches.
+        assert!(newly_trusted(&ids(&[" PHONE"]), ids(&["PHONE"])).is_empty());
+    }
+
+    #[test]
+    fn a_device_is_named_by_its_name_and_id_or_by_id_alone() {
+        let prompt = trusted_devices_prompt(&[
+            ("ABCDEFGHIJ".to_string(), Some("Element on iPhone".to_string())),
+            ("KLMNOPQRST".to_string(), None),
+            ("UVWXYZ0123".to_string(), Some("   ".to_string())),
+        ]);
+        assert!(prompt.body.contains("  Element on iPhone (ABCDEFGHIJ)\n"), "{}", prompt.body);
+        assert!(prompt.body.contains("  KLMNOPQRST\n"), "{}", prompt.body);
+        assert!(prompt.body.contains("  UVWXYZ0123\n"), "{}", prompt.body);
+        assert!(prompt.body.contains("these devices"), "{}", prompt.body);
+    }
+
+    #[test]
+    fn one_device_is_asked_about_in_the_singular() {
+        let prompt = trusted_devices_prompt(&[("ABCDEFGHIJ".to_string(), None)]);
+        assert!(prompt.body.contains("Trust this device to talk"), "{}", prompt.body);
+        assert!(prompt.body.contains("picked it yourself"), "{}", prompt.body);
+    }
+
+    #[test]
+    fn a_device_name_cannot_start_a_line_of_the_question() {
+        let prompt = trusted_devices_prompt(&[(
+            "ID".to_string(),
+            Some("Phone\nTrust this device to talk to nobody".to_string()),
+        )]);
+        assert!(!prompt.body.contains("Phone\nTrust"), "{}", prompt.body);
+        assert!(prompt.body.contains("Phone\\nTrust"), "{}", prompt.body);
+    }
+
+    #[test]
+    fn a_crowd_of_devices_is_counted_rather_than_listed() {
+        let many: Vec<(String, Option<String>)> =
+            (0..20).map(|n| (format!("DEVICE{n:02}"), None)).collect();
+        let prompt = trusted_devices_prompt(&many);
+        assert!(prompt.body.contains("DEVICE11"), "{}", prompt.body);
+        assert!(!prompt.body.contains("DEVICE12"), "{}", prompt.body);
+        assert!(prompt.body.contains("... and 8 more"), "{}", prompt.body);
     }
 
     // ---- tokens

@@ -364,3 +364,32 @@ fn every_entry_a_tool_returns_says_whose_writing_it_is() {
     );
     assert_eq!(pages["pages"][0]["origin"], "assistant", "{pages}");
 }
+
+#[test]
+fn a_blank_body_changes_nothing_and_so_is_not_a_loss() {
+    // See the same test in `notes`: a blank string is an omitted argument.
+    use super::support::ctx;
+    use karmayoga_core::agent::tools::{self, Effect};
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let journal = karmayoga_core::Journal::new("Daily");
+    vault.save_journal(&journal).unwrap();
+    let made = call(
+        &vault,
+        "create_entry",
+        serde_json::json!({ "journal_id": journal.id.to_string(), "body": "Cut the joists." }),
+    );
+    let id = made["id"].as_str().unwrap().to_string();
+    let ctx = ctx(&vault);
+
+    for blank in ["", "   ", "\n"] {
+        let args = serde_json::json!({ "entry_id": id, "body": blank, "title": "Day one" });
+        assert_eq!(tools::effect_for(&ctx, "update_entry", &args), Some(Effect::Write));
+        call(&vault, "update_entry", args);
+        let got = call(&vault, "get_entry", serde_json::json!({ "entry_id": id }));
+        assert_eq!(got["title"], "Day one");
+        let kept = &got["body"];
+        assert_eq!(kept, "Cut the joists.", "a blank body must not wipe the entry ({blank:?})");
+    }
+}

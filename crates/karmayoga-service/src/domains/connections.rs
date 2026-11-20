@@ -11,7 +11,7 @@
 //! anything the person's account can. So a connection that runs a program
 //! may be made, pointed at another program (or other arguments, variables or
 //! directory), given values for the variables it names, or connected to
-//! only by the shell on this computer -- see [`is_local`]. What a phone may
+//! only by the shell on this computer -- see [`Ctx::is_local`]. What a phone may
 //! still do with one is what carries no command: switch it on or off, rename
 //! it, choose what its tools may do, remove it. An address on the internet
 //! is another matter and is open to every caller, as it always was.
@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command;
 use crate::connections::{HubError, hub};
-use crate::ctx::{Caller, Ctx};
+use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 
@@ -158,12 +158,6 @@ const PROGRAMS_ARE_LOCAL: &str = "a connection that runs a program can be set up
     started only from this computer's own window: from anywhere else it would be a way to run \
     anything on it";
 
-/// Whether this caller is the shell on the vault's own machine. The same
-/// question, and the same answer, as the Files app's folder picker asks.
-fn is_local(ctx: &Ctx) -> bool {
-    matches!(ctx.caller, Caller::Local | Caller::Window(_))
-}
-
 /// Whether `transport` is a program this computer would run.
 fn runs_a_program(transport: &Transport) -> bool {
     matches!(transport, Transport::Stdio { .. })
@@ -171,7 +165,7 @@ fn runs_a_program(transport: &Transport) -> bool {
 
 /// Refuse what only the desktop itself may do.
 fn require_local(ctx: &Ctx) -> CommandResult<()> {
-    if is_local(ctx) {
+    if ctx.is_local() {
         Ok(())
     } else {
         Err(CommandError::new(codes::FORBIDDEN, PROGRAMS_ARE_LOCAL))
@@ -339,7 +333,7 @@ async fn update_connection(
     let vault = svc.require_unlocked()?;
     let id = args.connection.id;
     let writing = Arc::clone(&vault);
-    let local = is_local(&ctx);
+    let local = ctx.is_local();
     blocking(move || {
         // `save_connection` adds what it does not know; an edit of one that
         // has been removed meanwhile is an error, not a resurrection.
@@ -408,7 +402,7 @@ async fn set_connection_secrets(
     let vault = svc.require_unlocked()?;
     let id = args.id;
     let writing = Arc::clone(&vault);
-    let local = is_local(&ctx);
+    let local = ctx.is_local();
     blocking(move || {
         let connection = writing.connection(id)?;
         // The values a program is started with are part of what it runs: a
@@ -649,6 +643,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ctx::Caller;
     use karmayoga_core::connection::OAuthGrant;
 
     fn http(headers: &[&str], auth: AuthMethod) -> Connection {
@@ -768,7 +763,7 @@ mod tests {
             (Caller::Assistant("run-1".into()), false),
         ] {
             let ctx = Ctx { caller: caller.clone(), ..Ctx::local() };
-            assert_eq!(is_local(&ctx), local, "{caller:?}");
+            assert_eq!(ctx.is_local(), local, "{caller:?}");
             assert_eq!(require_local(&ctx).is_ok(), local, "{caller:?}");
         }
         let stdio = Transport::Stdio { command: "x".into(), args: vec![], env: vec![], cwd: None };

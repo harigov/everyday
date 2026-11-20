@@ -1482,11 +1482,13 @@ impl Vault {
     /// Delete every decrypted copy of a sealed file and every staged sealed
     /// upload this vault has, however new. Answers how many went.
     ///
-    /// Called when the vault locks ([`Vault::lock`]). It needs no key and no
-    /// open store -- the folders are named by the vault's path -- so it works
-    /// on a vault that is already locked, and the copies cannot outlive the
-    /// key. Another program that has a copy open keeps reading it on unix; on
-    /// Windows such a file cannot be deleted, and waits for a sweep.
+    /// Called when the vault locks ([`Vault::lock`]), by the process that
+    /// holds the write lock: the folders are shared with whichever process
+    /// that is, so a read-only handle must not call it. It needs no key and
+    /// no open store -- the folders are named by the vault's path -- so it
+    /// works on a vault that is already locked, and the copies cannot outlive
+    /// the key. Another program that has a copy open keeps reading it on
+    /// unix; on Windows such a file cannot be deleted, and waits for a sweep.
     pub fn remove_plaintext_scratch(&self) -> u32 {
         disk::OpenCopies::for_vault(self.path()).remove_all()
             + disk::UploadStaging::for_vault(self.path()).remove_all()
