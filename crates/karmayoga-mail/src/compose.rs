@@ -1148,6 +1148,68 @@ mod tests {
         assert!(inlined.contains("<p>Hi</p>"));
     }
 
+    /// Regression for GHSA-jh54-c7gc-mvcc: css-inline up to 0.21.2 wrote an
+    /// element's `class` attribute back out without escaping the quote, so a
+    /// class an incoming message set to `a" onerror="…` ended its attribute
+    /// early and the rest became attributes (or, with a `>`, elements) of the
+    /// markup this crate sends. Quoted mail goes through `inline_css` with the
+    /// person's own text, so it is exactly the input to care about.
+    #[test]
+    fn inline_css_does_not_let_a_quoted_class_add_attributes_or_elements() {
+        use lol_html::{RewriteStrSettings, element, rewrite_str};
+
+        let hostile_attribute = r#"q" onerror="alert(1)"#;
+        let hostile_element = r#"q"><img src=x onerror=alert(1)>"#;
+        let html = format!(
+            "<html><head><style>.q {{ color: red; }}</style></head><body>\
+             <p>My reply.</p>\
+             <blockquote class='{hostile_attribute}'>quoted</blockquote>\
+             <div class='{hostile_element}'>also quoted</div></body></html>"
+        );
+
+        let inlined = inline_css(&html).expect("hostile markup still inlines");
+
+        // Read the output back as HTML, as a recipient's client would: every
+        // element, with the names of its attributes and its decoded class.
+        let seen = std::cell::RefCell::new(Vec::<(String, Vec<String>, Option<String>)>::new());
+        let settings =
+            RewriteStrSettings::new().append_element_content_handler(element!("*", |el| {
+                let names = el.attributes().iter().map(|a| a.name()).collect::<Vec<_>>();
+                seen.borrow_mut().push((el.tag_name(), names, el.get_attribute("class")));
+                Ok(())
+            }));
+        rewrite_str(&inlined, settings).expect("the output is parseable HTML");
+        let seen = seen.into_inner();
+
+        assert!(
+            !seen.iter().any(|(tag, ..)| tag == "img"),
+            "a quoted class grew an element: {inlined}"
+        );
+        for (tag, names, _) in &seen {
+            for name in names {
+                assert!(
+                    name == "class" || name == "style",
+                    "<{tag}> grew an `{name}` attribute: {inlined}"
+                );
+            }
+        }
+        // The class itself survives, as one attribute value with its quote
+        // written as a character reference. (`get_attribute` reads the
+        // attribute's source text, references and all.)
+        let class_of =
+            |tag: &str| seen.iter().find(|(t, ..)| t == tag).and_then(|(.., class)| class.clone());
+        assert_eq!(
+            class_of("blockquote").as_deref(),
+            Some("q&quot; onerror=&quot;alert(1)"),
+            "{inlined}"
+        );
+        assert_eq!(
+            class_of("div").as_deref(),
+            Some("q&quot;><img src=x onerror=alert(1)>"),
+            "{inlined}"
+        );
+    }
+
     #[test]
     fn line_spaced_sends_each_line_under_the_last_and_a_blank_line_a_line_tall() {
         assert_eq!(

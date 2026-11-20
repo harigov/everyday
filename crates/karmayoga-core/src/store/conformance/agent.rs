@@ -108,6 +108,7 @@ fn matrix_link(owner: &str) -> ChatLink {
             homeserver: "http://127.0.0.1:6167".into(),
             user_id: "@karmayoga:example.org".into(),
             owner: owner.into(),
+            trusted_devices: Vec::new(),
         }),
         fresh_after_minutes: 90,
         ..ChatLink::new_matrix()

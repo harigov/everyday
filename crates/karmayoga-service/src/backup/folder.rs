@@ -9,7 +9,7 @@ use bytes::Bytes;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::target::{TargetError, TargetErrorKind, TargetResult};
+use super::target::{TargetError, TargetErrorKind, TargetResult, object_limit};
 
 /// What a file being written is called until it is whole. Never listed.
 const PARTIAL: &str = ".partial-";
@@ -100,19 +100,44 @@ impl FolderTarget {
             .await
     }
 
+    /// The object called `name`, or `None` if there is no such file.
+    ///
+    /// A folder is somebody's disk or a share other computers write to, and
+    /// whatever is in it under a backup's name is read whole into memory
+    /// before anything has checked it. So a file larger than an object of
+    /// that kind can be -- [`object_limit`] -- is refused unread, and one
+    /// that grows past it between being measured and being read is cut off
+    /// there rather than followed.
     pub async fn get(&self, name: &str) -> TargetResult<Option<Bytes>> {
         let path = self.path(name)?;
         let root = self.root.clone();
-        blocking(move || match std::fs::read(&path) {
-            Ok(bytes) => Ok(Some(Bytes::from(bytes))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if root.is_dir() {
-                    Ok(None)
-                } else {
-                    Err(missing(&root))
+        let limit = object_limit(name);
+        blocking(move || {
+            let read = (|| -> std::io::Result<Option<Vec<u8>>> {
+                use std::io::Read;
+                let file = std::fs::File::open(&path)?;
+                let size = file.metadata()?.len();
+                if size > limit {
+                    return Ok(None);
                 }
+                let mut bytes = Vec::with_capacity(size as usize);
+                // One past the limit, to tell a file that is exactly as large
+                // as may be from one that goes on.
+                file.take(limit + 1).read_to_end(&mut bytes)?;
+                Ok((bytes.len() as u64 <= limit).then_some(bytes))
+            })();
+            match read {
+                Ok(Some(bytes)) => Ok(Some(Bytes::from(bytes))),
+                Ok(None) => Err(too_large(&path, limit)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if root.is_dir() {
+                        Ok(None)
+                    } else {
+                        Err(missing(&root))
+                    }
+                }
+                Err(e) => Err(io_error(&root, &path, e)),
             }
-            Err(e) => Err(io_error(&root, &path, e)),
         })
         .await
     }
@@ -175,6 +200,17 @@ fn missing(root: &Path) -> TargetError {
         TargetErrorKind::Missing,
         format!("{} is not there -- if it is on a disk, is the disk plugged in?", root.display()),
     )
+}
+
+/// A file under a backup's name that is bigger than any object a backup
+/// writes.
+fn too_large(path: &Path, limit: u64) -> TargetError {
+    TargetError::other(format!(
+        "{} is larger than any object a backup stores ({} MB), so it was not read; something \
+         other than Karma Yoga put it there",
+        path.display(),
+        limit / (1024 * 1024)
+    ))
 }
 
 fn io_error(root: &Path, path: &Path, e: std::io::Error) -> TargetError {

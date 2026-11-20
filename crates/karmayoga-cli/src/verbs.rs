@@ -552,6 +552,19 @@ fn collect(
 }
 
 pub(crate) fn passwd(vault: &Vault, supplied: Option<&str>) -> Result<()> {
+    // Said before anything is asked: a vault made without a password has none
+    // to change, and one cannot be added to it -- every record in it would
+    // have to be sealed again, which this version cannot do. The vault
+    // refuses too, and writes nothing; this is the friendlier answer, and it
+    // saves typing a password twice for nothing.
+    if !vault.status().encrypted {
+        return Err(Error::Invalid(
+            "this vault has no password, and one cannot be added to it. To have an encrypted \
+             vault, make a new one with `karmayoga init`, then bring everything across with \
+             `karmayoga export` here and `karmayoga import` there"
+                .into(),
+        ));
+    }
     let current = match supplied {
         Some(p) => p.to_string(),
         None => prompt_password("Current password: ")?,

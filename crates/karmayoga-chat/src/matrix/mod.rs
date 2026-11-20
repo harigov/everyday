@@ -10,6 +10,8 @@
 //!   session never meets a store it was not made with.
 //! - `identity`: cross-signing and the recovery key, so Element shows the
 //!   bot as verified.
+//! - `devices`: which of the owner's devices the bot trusts -- a hand-picked
+//!   list -- and making its encryption share keys with those and no others.
 //! - `listen` and `hearing`: the order things start in, the sync loop, and
 //!   the handlers that decide whose words reach the assistant.
 //! - `verification`: the owner verifying the bot by comparing emoji, the bot's
@@ -21,6 +23,7 @@
 //! - `rules` and `errors`: the decisions that need no network, so they
 //!   can be tested without a server.
 
+mod devices;
 mod errors;
 mod hearing;
 mod identity;
@@ -37,11 +40,13 @@ use crate::connector::{
     Setup, Shown,
 };
 use async_trait::async_trait;
+use devices::{Devices, Trust};
 use karmayoga_core::chat::ChatService;
-use karmayoga_service::chat::{ChatState, ChatVerifier};
+use karmayoga_service::chat::{ChatDevices, ChatState, ChatVerifier};
 use matrix_sdk::Client;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::store::StateStoreDataKey;
+use rules::TrustedDevices;
 use speaking::{Questions, TypingTask};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -72,6 +77,8 @@ pub struct MatrixConnector {
     verifying: Arc<Verifying>,
     /// The owner's calls.
     calls: Arc<rtc::Calls>,
+    /// Which of the owner's devices are trusted.
+    trust: Arc<Trust>,
 }
 
 impl MatrixConnector {
@@ -128,7 +135,18 @@ impl MatrixConnector {
             owner.clone(),
             Arc::clone(&setup.trust),
         ));
-        let calls = Arc::new(rtc::Calls::new(client.clone(), bot.clone(), owner.clone()));
+        let trust = Trust::new(
+            client.clone(),
+            owner.clone(),
+            TrustedDevices::new(&link.trusted_devices),
+            Arc::clone(&setup.untrusted),
+        );
+        let calls = Arc::new(rtc::Calls::new(
+            client.clone(),
+            bot.clone(),
+            owner.clone(),
+            Arc::clone(&trust),
+        ));
         Ok(Self {
             client,
             bot,
@@ -141,6 +159,7 @@ impl MatrixConnector {
             typing: Mutex::new(HashMap::new()),
             verifying,
             calls,
+            trust,
         })
     }
 }
@@ -190,6 +209,10 @@ impl Connector for MatrixConnector {
 
     fn verifier(&self) -> Option<Arc<dyn ChatVerifier>> {
         Some(Arc::new(Verifier(Arc::clone(&self.verifying))))
+    }
+
+    fn devices(&self) -> Option<Arc<dyn ChatDevices>> {
+        Some(Arc::new(Devices(Arc::clone(&self.trust))))
     }
 
     async fn join_call(&self, chat: &ChatId, call: &CallId) -> Result<CallJoin, ChatError> {

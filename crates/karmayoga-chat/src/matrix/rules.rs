@@ -1,6 +1,7 @@
 //! The decisions the Matrix connector makes that need no network: who may be
-//! heard, what the bot says about itself, and how this crate's identifiers
-//! and messages cross into Matrix's.
+//! heard -- the owner's id, from one of the devices the owner picked, over
+//! encryption -- what the bot says about itself, and how this crate's
+//! identifiers and messages cross into Matrix's.
 //!
 //! Kept apart, as plain functions over plain strings, because these are the
 //! rules that decide whose words reach the assistant and where its answers
@@ -9,9 +10,10 @@
 
 use crate::connector::{ChatError, ChatId, MessageRef};
 use jiff::Timestamp;
+use matrix_sdk::deserialized_responses::EncryptionInfo;
 use matrix_sdk::ruma::{EventId, MilliSecondsSinceUnixEpoch, OwnedRoomId, RoomId};
 use std::collections::BTreeSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Who can read what the bot writes in a room.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +65,149 @@ pub(crate) fn arrived_acceptably(room_is_encrypted: bool, arrived_encrypted: boo
     !room_is_encrypted || arrived_encrypted
 }
 
+/// The ids of the owner's devices the bot trusts: the list picked by hand in
+/// Settings → Chat, and nothing else.
+///
+/// Being cross-signed, or verified by comparing emoji, does not put a device
+/// here. The owner's id is not enough to be believed -- anybody who signs in
+/// to that account on a new device, or runs the homeserver, can write under
+/// it -- so what is believed is what a device the owner chose said, and what
+/// is given the bot's keys is those devices. Empty trusts no device, which is
+/// what a bot has until the owner has picked one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TrustedDevices(BTreeSet<String>);
+
+impl TrustedDevices {
+    /// The list `ids` make: each trimmed, the empty ones left out.
+    pub(crate) fn new<I, S>(ids: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self(
+            ids.into_iter()
+                .map(|id| id.as_ref().trim().to_owned())
+                .filter(|id| !id.is_empty())
+                .collect(),
+        )
+    }
+
+    /// Whether `device` is on the list. Exact: a device id is not a name to
+    /// be matched loosely.
+    pub(crate) fn contains(&self, device: &str) -> bool {
+        self.0.contains(device)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// How an event from the owner's account reached the bot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Arrival<'a> {
+    /// In plain text.
+    Plain,
+    /// Encrypted, and decrypted. `device` is the device that sent it, as far
+    /// as the encryption can say: `None` when it cannot name one.
+    Encrypted { device: Option<&'a str> },
+}
+
+/// How an event arrived, from what the SDK says of how it was decrypted: no
+/// [`EncryptionInfo`] means it was not.
+pub(crate) fn arrival_of(encryption: Option<&EncryptionInfo>) -> Arrival<'_> {
+    let Some(info) = encryption else {
+        return Arrival::Plain;
+    };
+    Arrival::Encrypted { device: info.sender_device.as_deref().map(|d| d.as_str()) }
+}
+
+/// What to make of an event that claims to be the owner's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Welcome {
+    /// Believe it: encrypted, from a device on the list.
+    Accepted,
+    /// It arrived in plain text in a room that is encrypted. See
+    /// [`arrived_acceptably`]: somebody is writing the owner's name on it.
+    Forged,
+    /// It arrived in plain text in a room that is not encrypted. The bot
+    /// answers nowhere that is not encrypted: there is no telling which of
+    /// the owner's devices wrote it, and the reply would be readable to the
+    /// server and to anybody it chose.
+    Unencrypted,
+    /// It arrived encrypted, from a device that is not on the list -- or
+    /// that the encryption cannot name, which is no better. Carries the
+    /// device when there is one, for Settings to say which it was.
+    Untrusted(Option<String>),
+}
+
+/// Decide whether an event that carries the owner's id is the owner's words.
+///
+/// The owner's id alone is not enough: see [`TrustedDevices`]. Typed words,
+/// pictures, files and voice notes count only when they arrived encrypted and
+/// the device that sent them is on `trusted`. Reactions are not decided here:
+/// they are not encrypted and carry no device, and answer a question the bot
+/// asked in a room only the two of them are in, which is how they have always
+/// been taken (see `hearing`).
+///
+/// An event that arrived encrypted is in an encrypted room whatever the room's
+/// cached state says, so it is `room_is_encrypted` that is overruled, never
+/// the other way round.
+pub(crate) fn judge_arrival(
+    room_is_encrypted: bool,
+    arrival: Arrival<'_>,
+    trusted: &TrustedDevices,
+) -> Welcome {
+    let Arrival::Encrypted { device } = arrival else {
+        return if arrived_acceptably(room_is_encrypted, false) {
+            Welcome::Unencrypted
+        } else {
+            Welcome::Forged
+        };
+    };
+    match device {
+        Some(device) if trusted.contains(device) => Welcome::Accepted,
+        Some(device) => Welcome::Untrusted(Some(device.to_owned())),
+        None => Welcome::Untrusted(None),
+    }
+}
+
+/// How often the same untrusted device is reported to Settings. It may write
+/// a message a second -- or be somebody trying -- and a pane redrawn and a
+/// notification considered at that rate would be noise.
+pub(crate) const REPORT_EVERY: Duration = Duration::from_secs(30);
+
+/// How many untrusted devices to remember having reported, at most.
+const REPORTED_REMEMBERED: usize = 32;
+
+/// Which untrusted devices were reported to Settings lately, so the same one
+/// is not reported again straight away. Plain data, so the rule is tested.
+#[derive(Debug, Default)]
+pub(crate) struct Reported {
+    /// Device (or the empty string for one that could not be named) and when
+    /// it was last reported.
+    last: Vec<(String, Instant)>,
+}
+
+impl Reported {
+    /// Whether `device` should be reported now, noting that it is if so.
+    pub(crate) fn should_report(&mut self, device: Option<&str>, now: Instant) -> bool {
+        let key = device.unwrap_or_default();
+        if let Some((_, at)) = self.last.iter_mut().find(|(d, _)| d == key) {
+            if now.saturating_duration_since(*at) < REPORT_EVERY {
+                return false;
+            }
+            *at = now;
+            return true;
+        }
+        if self.last.len() >= REPORTED_REMEMBERED {
+            self.last.remove(0);
+        }
+        self.last.push((key.to_owned(), now));
+        true
+    }
+}
+
 /// What the bot says when it makes a room for itself and the owner.
 ///
 /// `assistant_name` is what the person called their assistant; empty means it
@@ -95,6 +240,13 @@ pub(crate) fn online_detail(bot: &str, owner: &str, waiting: bool, note: Option<
 /// somewhere other people can read.
 pub(crate) fn not_private_notice(owner: &str) -> String {
     format!("I only answer in a private room with just {owner} and me.")
+}
+
+/// The sentence the bot sends, once per room, when the owner writes to it in
+/// a room that is not encrypted. About the room only: nothing private in it.
+pub(crate) fn not_encrypted_notice() -> &'static str {
+    "I only answer in encrypted rooms. Start a new encrypted chat with me, or turn encryption on \
+     for this room."
 }
 
 /// A Matrix room, as this crate names a chat.
@@ -253,6 +405,148 @@ mod tests {
         assert!(!arrived_acceptably(true, false));
         assert!(arrived_acceptably(false, false));
         assert!(arrived_acceptably(false, true));
+    }
+
+    fn trusted(ids: &[&str]) -> TrustedDevices {
+        TrustedDevices::new(ids)
+    }
+
+    #[test]
+    fn an_encrypted_message_from_a_trusted_device_is_the_owners() {
+        let list = trusted(&["PHONE", "LAPTOP"]);
+        for device in ["PHONE", "LAPTOP"] {
+            assert_eq!(
+                judge_arrival(true, Arrival::Encrypted { device: Some(device) }, &list),
+                Welcome::Accepted
+            );
+        }
+    }
+
+    #[test]
+    fn a_device_not_on_the_list_is_turned_away_however_it_is_signed() {
+        let list = trusted(&["PHONE"]);
+        // A device the owner's account has signed is not trusted for that.
+        assert_eq!(
+            judge_arrival(true, Arrival::Encrypted { device: Some("NEWLAPTOP") }, &list),
+            Welcome::Untrusted(Some("NEWLAPTOP".into()))
+        );
+        // Ids are compared exactly.
+        assert_eq!(
+            judge_arrival(true, Arrival::Encrypted { device: Some("phone") }, &list),
+            Welcome::Untrusted(Some("phone".into()))
+        );
+        // One the encryption cannot name cannot be on a list.
+        assert_eq!(
+            judge_arrival(true, Arrival::Encrypted { device: None }, &list),
+            Welcome::Untrusted(None)
+        );
+    }
+
+    #[test]
+    fn an_empty_list_trusts_nobody() {
+        let none = TrustedDevices::default();
+        assert!(none.is_empty());
+        for device in [Some("PHONE"), Some(""), None] {
+            let welcome = judge_arrival(true, Arrival::Encrypted { device }, &none);
+            assert!(matches!(welcome, Welcome::Untrusted(_)), "{device:?}: {welcome:?}");
+        }
+        // Blank entries are not a device that matches a blank id.
+        assert!(trusted(&["", "  "]).is_empty());
+        assert!(!trusted(&["", "  "]).contains(""));
+    }
+
+    #[test]
+    fn plain_text_is_forged_in_an_encrypted_room_and_unanswered_in_any_other() {
+        // Even from what would be a trusted device's id: plain text names none.
+        let list = trusted(&["PHONE"]);
+        assert_eq!(judge_arrival(true, Arrival::Plain, &list), Welcome::Forged);
+        assert_eq!(judge_arrival(false, Arrival::Plain, &list), Welcome::Unencrypted);
+        let none = TrustedDevices::default();
+        assert_eq!(judge_arrival(false, Arrival::Plain, &none), Welcome::Unencrypted);
+    }
+
+    #[test]
+    fn an_encrypted_arrival_in_a_room_not_yet_known_to_be_encrypted_is_judged_by_its_device() {
+        let list = trusted(&["PHONE"]);
+        assert_eq!(
+            judge_arrival(false, Arrival::Encrypted { device: Some("PHONE") }, &list),
+            Welcome::Accepted
+        );
+        assert_eq!(
+            judge_arrival(false, Arrival::Encrypted { device: Some("OTHER") }, &list),
+            Welcome::Untrusted(Some("OTHER".into()))
+        );
+    }
+
+    #[test]
+    fn an_arrival_names_the_device_its_encryption_names() {
+        use matrix_sdk::deserialized_responses::{AlgorithmInfo, VerificationState};
+        use matrix_sdk::ruma::{device_id, user_id};
+        let info = |device: Option<&matrix_sdk::ruma::DeviceId>| EncryptionInfo {
+            sender: user_id!("@me:example.org").to_owned(),
+            sender_device: device.map(ToOwned::to_owned),
+            forwarder: None,
+            algorithm_info: AlgorithmInfo::MegolmV1AesSha2 {
+                curve25519_key: String::new(),
+                sender_claimed_keys: Default::default(),
+                session_id: None,
+            },
+            verification_state: VerificationState::Verified,
+        };
+        assert_eq!(arrival_of(None), Arrival::Plain);
+        assert_eq!(
+            arrival_of(Some(&info(Some(device_id!("PHONE"))))),
+            Arrival::Encrypted { device: Some("PHONE") }
+        );
+        assert_eq!(arrival_of(Some(&info(None))), Arrival::Encrypted { device: None });
+
+        // A device the encryption says is verified is still not a trusted one.
+        let nobody = TrustedDevices::default();
+        let verified = info(Some(device_id!("PHONE")));
+        assert_eq!(
+            judge_arrival(true, arrival_of(Some(&verified)), &nobody),
+            Welcome::Untrusted(Some("PHONE".into()))
+        );
+    }
+
+    #[test]
+    fn the_list_is_trimmed_and_has_no_repeats() {
+        let list = trusted(&[" B ", "A", "B"]);
+        assert_eq!(list, trusted(&["B", "A"]));
+        assert!(list.contains("A") && list.contains("B") && !list.contains(" B "));
+    }
+
+    #[test]
+    fn the_same_untrusted_device_is_reported_once_in_a_while() {
+        let start = Instant::now();
+        let mut reported = Reported::default();
+        assert!(reported.should_report(Some("NEW"), start));
+        assert!(!reported.should_report(Some("NEW"), start + Duration::from_secs(5)));
+        // Another device is its own report.
+        assert!(reported.should_report(Some("OTHER"), start + Duration::from_secs(6)));
+        assert!(reported.should_report(None, start + Duration::from_secs(7)));
+        assert!(!reported.should_report(None, start + Duration::from_secs(8)));
+        // And again, once it has been quiet long enough.
+        let later = start + REPORT_EVERY;
+        assert!(reported.should_report(Some("NEW"), later));
+        assert!(!reported.should_report(Some("NEW"), later + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn only_so_many_reported_devices_are_remembered() {
+        let now = Instant::now();
+        let mut reported = Reported::default();
+        for n in 0..REPORTED_REMEMBERED * 2 {
+            assert!(reported.should_report(Some(&format!("D{n}")), now));
+        }
+        assert_eq!(reported.last.len(), REPORTED_REMEMBERED);
+    }
+
+    #[test]
+    fn what_the_bot_says_about_an_unencrypted_room_holds_nothing_private() {
+        let said = not_encrypted_notice();
+        assert!(said.contains("encrypted"), "{said}");
+        assert!(!said.contains('@') && !said.contains('!'), "{said}");
     }
 
     #[test]

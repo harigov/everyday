@@ -627,10 +627,18 @@ async fn import_apple_health_file(
         let path = vault.open_file_copy(file)?;
         let decrypted = entry.is_sealed().then(|| path.clone());
         let forget = |copy: &Option<PathBuf>| {
-            if let Some(copy) = copy
-                && let Err(e) = std::fs::remove_file(copy)
-            {
-                tracing::warn!(error = %e, "could not delete an export's decrypted copy");
+            let Some(copy) = copy else { return };
+            match std::fs::remove_file(copy) {
+                Ok(()) => {}
+                // Locking the vault deletes every decrypted copy there is
+                // (`Vault::lock`), and an import can outlast the lock.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(error = %e, "could not delete an export's decrypted copy"),
+            }
+            // The folder the copy was made in, one per file, is empty now. Not
+            // the shared one above it; and not an error if it is not empty.
+            if let Some(dir) = copy.parent() {
+                let _ = std::fs::remove_dir(dir);
             }
         };
         let finished: import::Finished = {

@@ -1274,6 +1274,7 @@ fn run(
             events.notify(
                 karmayoga_service::events::Notification::warning("Recording stopped")
                     .body(reason.clone())
+                    .domain(karmayoga_service::Scope::Meetings)
                     .for_user(),
             );
         }
@@ -1326,6 +1327,7 @@ fn run(
                         "Recording saved but not finished",
                     )
                     .body("It will be finished automatically once the vault is reachable again.")
+                    .domain(karmayoga_service::Scope::Meetings)
                     .for_user(),
                 );
             }

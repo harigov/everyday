@@ -481,6 +481,23 @@ impl TrackerSource {
         matches!(self, TrackerSource::Manual)
     }
 
+    /// Does this tracker's every value come out of the Health app?
+    ///
+    /// The question a reader answers before handing a tracker, its days or a
+    /// target's progress to a caller that has no business in Health: a
+    /// tracker is a Trackers record, and the figure on it is somebody's
+    /// heart rate.
+    pub fn reads_health(&self) -> bool {
+        matches!(self, TrackerSource::Health { .. })
+    }
+
+    /// Does this tracker's every value come out of Screen time? The same
+    /// question as [`TrackerSource::reads_health`], about which apps and
+    /// sites somebody spent their day on.
+    pub fn reads_screen_time(&self) -> bool {
+        matches!(self, TrackerSource::ScreenTime { .. })
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             TrackerSource::Manual => "manual",

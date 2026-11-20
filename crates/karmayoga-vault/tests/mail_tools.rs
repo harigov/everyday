@@ -153,6 +153,7 @@ fn ctx<'a>(vault: &'a Vault, caller: Option<Caller>, provider: Option<&str>) -> 
         unattended: false,
         follow_up: false,
         caller,
+        withheld: &[],
         mail_search: None,
         assistant_provider: provider.map(str::to_string),
         mail_rate_limit: None,

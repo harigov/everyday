@@ -266,3 +266,101 @@ fn the_assistant_keeps_its_own_journal_one_page_a_day_apart_from_theirs() {
     let kept = vault.journal(mine.id).unwrap();
     assert!(kept.assistant && kept.name == "Robin's notes");
 }
+
+#[test]
+fn replacing_the_text_of_an_entry_is_confirmed_like_a_deletion() {
+    // `update_entry` is a write, so it was never asked about -- and a body
+    // replaces what was there whole, with no undo. Only the calls that lose
+    // words are held; renaming, starring or re-filing is as free as ever.
+    use super::support::ctx;
+    use karmayoga_core::agent::tools::{self, Effect};
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let journal = karmayoga_core::Journal::new("Daily");
+    vault.save_journal(&journal).unwrap();
+    let made = call(
+        &vault,
+        "create_entry",
+        serde_json::json!({
+            "journal_id": journal.id.to_string(),
+            "title": "Deck, day one",
+            "body": "Cut the joists.\n\nRan out of screws.",
+        }),
+    );
+    let id = made["id"].as_str().unwrap().to_string();
+    let ctx = ctx(&vault);
+    let effect = |args: serde_json::Value| tools::effect_for(&ctx, "update_entry", &args);
+
+    let rewrite = serde_json::json!({ "entry_id": id, "body": "Nothing like it." });
+    assert_eq!(effect(rewrite.clone()), Some(Effect::Destructive));
+    for harmless in [
+        serde_json::json!({ "entry_id": id, "title": "Deck, day two" }),
+        serde_json::json!({ "entry_id": id, "starred": true, "tags": ["deck"] }),
+        // The same words back, with a new title: nothing is lost.
+        serde_json::json!({
+            "entry_id": id,
+            "body": "Cut the joists.\n\nRan out of screws.",
+            "title": "x",
+        }),
+        serde_json::json!({ "entry_id": id, "body": "   " }),
+    ] {
+        assert_eq!(effect(harmless.clone()), Some(Effect::Write), "{harmless}");
+    }
+
+    // The card has a subject: which entry, and how much of it goes.
+    let card = tools::describe(&ctx, "update_entry", &rewrite).expect("a subject to confirm");
+    assert!(card.contains("Deck, day one") && card.contains("replaced by 3 words"), "{card}");
+    assert!(!card.contains(&id), "named, not identified: {card}");
+}
+
+#[test]
+fn every_entry_a_tool_returns_says_whose_writing_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let journal = karmayoga_core::Journal::new("Daily");
+    vault.save_journal(&journal).unwrap();
+    let theirs = call(
+        &vault,
+        "create_entry",
+        serde_json::json!({
+            "journal_id": journal.id.to_string(),
+            "body": "Cut the joists.",
+            "date": "2026-09-07",
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(
+        &vault,
+        "write_own_journal",
+        serde_json::json!({ "date": "2026-09-07", "text": "Ask about the joists." }),
+    );
+    let own_journal = vault.assistant_journal().unwrap().expect("the page made one").id;
+
+    // Theirs: `own`, in a read of one, a list, and a search.
+    let got = call(&vault, "get_entry", serde_json::json!({ "entry_id": theirs }));
+    assert_eq!(got["origin"], "own");
+    let listed = call(&vault, "list_entries", serde_json::json!({}));
+    assert!(listed["entries"].as_array().unwrap().iter().all(|e| e["origin"] == "own"), "{listed}");
+    let found = call(&vault, "search", serde_json::json!({ "query": "joists" }));
+    let hits = found["results"].as_array().unwrap();
+    let hit = |own: bool| hits.iter().find(|h| h["yours"].is_boolean() == own).unwrap();
+    assert_eq!(hit(false)["origin"], "own", "{found}");
+
+    // The assistant's own journal: `assistant`, wherever it turns up.
+    assert_eq!(hit(true)["origin"], "assistant", "{found}");
+    let listed =
+        call(&vault, "list_entries", serde_json::json!({ "journal_id": own_journal.to_string() }));
+    assert_eq!(listed["entries"][0]["origin"], "assistant", "{listed}");
+    let entry_id = listed["entries"][0]["id"].as_str().unwrap().to_string();
+    let got = call(&vault, "get_entry", serde_json::json!({ "entry_id": entry_id }));
+    assert_eq!(got["origin"], "assistant");
+    let pages = call(
+        &vault,
+        "read_own_journal",
+        serde_json::json!({ "from": "2026-09-07", "to": "2026-09-07" }),
+    );
+    assert_eq!(pages["pages"][0]["origin"], "assistant", "{pages}");
+}

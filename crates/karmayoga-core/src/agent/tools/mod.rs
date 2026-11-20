@@ -100,6 +100,7 @@ macro_rules! tool {
             describe: $describe,
             build: $build,
             outward_when: None,
+            destructive_when: None,
         }
     };
 }
@@ -222,6 +223,30 @@ pub enum Domain {
 }
 
 impl Domain {
+    /// What a person calls this domain, for a sentence that says it was kept
+    /// from them.
+    pub fn label(self) -> &'static str {
+        match self {
+            Domain::Journals => "Journals",
+            Domain::Notes => "Notes",
+            Domain::Tasks => "Tasks",
+            Domain::Calendars => "Calendars",
+            Domain::Library => "Library",
+            Domain::Trackers => "Trackers",
+            Domain::Purpose => "Purpose",
+            Domain::Routines => "Routines",
+            Domain::Jobs => "Jobs",
+            Domain::Agent => "Assistant",
+            Domain::Mail => "Mail",
+            Domain::Meetings => "Meetings",
+            Domain::News => "Feed",
+            Domain::Money => "Money",
+            Domain::ScreenTime => "Screen time",
+            Domain::Files => "Files",
+            Domain::Health => "Health",
+        }
+    }
+
     /// Every domain there is, in no particular order. Exists so a test that
     /// means "every domain" can say so, rather than enumerating them by hand
     /// and silently going stale the day one is added.
@@ -491,6 +516,16 @@ pub struct Tool {
     /// that reach people, and the gates in chat and MCP read that rather
     /// than [`Tool::effect`]. `None` for every tool whose effect is fixed.
     outward_when: Option<fn(&ToolContext<'_>, &Args<'_>) -> bool>,
+    /// When a call to an otherwise [`Effect::Write`] tool loses something
+    /// that cannot be had back -- and so must be confirmed the way an
+    /// [`Effect::Destructive`] one is.
+    ///
+    /// The sibling of [`Tool::outward_when`], for a write whose cost depends
+    /// on its arguments: `update_note` that renames a note loses nothing,
+    /// the same call with a `body` replaces every word that was there, with
+    /// no undo. [`effect_for`] answers `Destructive` for exactly those calls.
+    /// `None` for every tool whose effect is fixed.
+    destructive_when: Option<fn(&ToolContext<'_>, &Args<'_>) -> bool>,
 }
 
 /// What a tool's builder produced, on its way to becoming a
@@ -582,6 +617,66 @@ pub fn is_mcp_device_id(id: &str) -> bool {
     id.starts_with(MCP_DEVICE_ID_PREFIX)
 }
 
+/// The tools an MCP client may not run: every one that makes the assistant
+/// act, or remember, on its own.
+///
+/// A token's scopes say which *records* its holder may reach, and Money,
+/// Screen time, Files and Health have to be named in it besides. A routine
+/// sidesteps all of that: it is a prompt the assistant runs later as the
+/// vault's owner, with every tool there is, and `list_runs` hands what it
+/// said back. A memory, a skill or a line of the profile is read into every
+/// conversation after it, and a note left in the assistant's own journal is
+/// read by the next run on that day -- so each is a way for an outside model
+/// to put words in the assistant's mouth, or to have the assistant fetch
+/// what the token was never given. A proposal answered is the person's own
+/// decision made for them.
+///
+/// So over MCP these are absent from the list and refused if called by name
+/// -- `karmayoga_server::mcp` does the first, [`dispatch`] the second for
+/// every other door a tool call comes through -- and the person sets them up
+/// in the app. A task for the assistant is the same thing in a different
+/// tool, and is refused by `tasks::refuse_handing_over` instead, since a
+/// task of the person's own is exactly what an MCP client is for.
+///
+/// `cancel_job` is deliberately not here: stopping work the person's own
+/// assistant is doing starts and changes nothing.
+pub const NOT_OVER_MCP: &[&str] = &[
+    // Standing work: making it, changing it, running it, removing it.
+    "create_routine",
+    "update_routine",
+    "delete_routine",
+    "run_routine",
+    // Background work.
+    "start_research",
+    // What it keeps and is told about the person.
+    "remember",
+    "confirm_memory",
+    "forget",
+    "update_profile",
+    "create_skill",
+    "update_skill",
+    "delete_skill",
+    // Its own notes to itself, which the next run reads as instructions.
+    "write_own_journal",
+    // The person's answer to the assistant's own work.
+    "accept_proposal",
+    "decline_proposal",
+];
+
+/// Whether `name` is one of [`NOT_OVER_MCP`].
+pub fn is_not_over_mcp(name: &str) -> bool {
+    NOT_OVER_MCP.contains(&name)
+}
+
+/// What an MCP client is told when it asks for one of [`NOT_OVER_MCP`]. One
+/// sentence, so it reads the same whichever layer refused.
+pub fn not_over_mcp_message(name: &str) -> String {
+    format!(
+        "{name} changes what the assistant does on its own or remembers, so it is set up in the \
+         app by the person, not over MCP. Ask them to do it there."
+    )
+}
+
 /// The type behind [`ToolContext::mail_rate_limit`], named so the field
 /// itself does not spell out a function pointer inline -- clippy's own
 /// `type_complexity` lint, and a reader's, agree that a closure type is
@@ -670,6 +765,15 @@ pub struct ToolContext<'a> {
     /// Who this call is being made on behalf of, if not the vault's owner
     /// acting directly. See [`Caller`].
     pub caller: Option<Caller>,
+    /// Domains whose records this caller may not see, even through a tool
+    /// of another domain that could reach them -- a tracker counting a
+    /// Health metric or a screen-time total, a routine's report, a
+    /// conversation. Empty for the vault's owner and the assistant in a
+    /// conversation; a job's turn withholds Money, Screen time, Files and
+    /// Health, and an MCP client every domain it must name and did not. A
+    /// tool that could hand over such a record checks
+    /// [`ToolContext::withholds`] and leaves it out.
+    pub withheld: &'a [Domain],
     /// Mail's search index, if this vault's mail storage opened cleanly this
     /// session -- `karmayoga_service::Service::mail_index`'s own view, handed
     /// down rather than reached for here, since the core has no notion of a
@@ -795,6 +899,7 @@ impl<'a> ToolContext<'a> {
             unattended: false,
             follow_up: false,
             caller: None,
+            withheld: &[],
             mail_search: None,
             assistant_provider: None,
             mail_rate_limit: None,
@@ -829,6 +934,31 @@ impl<'a> ToolContext<'a> {
     pub fn with_caller(mut self, caller: Caller) -> Self {
         self.caller = Some(caller);
         self
+    }
+
+    /// Domains this caller may not see. See [`ToolContext::withheld`].
+    pub fn with_withheld(mut self, withheld: &'a [Domain]) -> Self {
+        self.withheld = withheld;
+        self
+    }
+
+    /// Whether `domain`'s records are kept from this caller. See
+    /// [`ToolContext::withheld`].
+    pub fn withholds(&self, domain: Domain) -> bool {
+        self.withheld.contains(&domain)
+    }
+
+    /// The line a tool puts where it left out text because of
+    /// [`ToolContext::withheld`]: what was left out is the assistant's own
+    /// writing, which may quote any domain, and which of them this caller may
+    /// not see.
+    pub fn withheld_note(&self) -> String {
+        let names: Vec<&str> = self.withheld.iter().map(|d| d.label()).collect();
+        format!(
+            "left out: it was written by the assistant and may quote {}, which this \
+             connection may not see",
+            names.join(", ")
+        )
     }
 
     /// Mail's search index, already the `Option` every caller has it as --
@@ -1411,6 +1541,61 @@ pub(crate) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Whether a `body` argument would throw away words that are already there:
+/// the text it carries is not empty, what the record holds is not empty, and
+/// the two are not the same.
+///
+/// What `update_note` and `update_entry` ask before they are called a loss.
+/// Both take the whole body or none of it, so a call that sends one has no
+/// "add to" reading: what was there is gone, with no undo. The new text is
+/// folded through Markdown the way it will be stored before it is compared,
+/// so sending back what was already written -- to change the title and
+/// nothing else -- is not a replacement.
+fn replaces_text(held_markdown: &str, new: &str) -> bool {
+    let held = held_markdown.trim();
+    let new = new.trim();
+    if held.is_empty() || new.is_empty() {
+        return false;
+    }
+    crate::richtext::RichDoc::from_markdown(new).to_markdown().trim() != held
+}
+
+/// The subject of the confirmation card for a call that [`replaces_text`]:
+/// which record, and how much of it goes -- "the whole text, 340 words,
+/// replaced by 12" is a question a person can answer, "update 0192f8b2-..." is
+/// not.
+fn replacement_subject(title: &str, held_markdown: &str, new: Option<&str>) -> String {
+    let words = |text: &str| text.split_whitespace().count();
+    match new {
+        Some(new) => format!(
+            "{title} \u{2014} its whole text ({} words) replaced by {} words",
+            words(held_markdown),
+            words(new)
+        ),
+        None => title.to_string(),
+    }
+}
+
+/// `text` with every character nobody could see written out as `[U+XXXX]`,
+/// for a confirmation card that shows words about to be sent or kept.
+///
+/// What is sent has them taken out ([`dispatch`] strips every write), but a
+/// card that quietly leaves them out is not showing the person what the
+/// model sent. The same rendering `karmayoga_service::agent` gives the
+/// cards it draws itself.
+pub(crate) fn reveal_hidden(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if crate::hidden::is_hidden(c) {
+            let _ = write!(out, "[U+{:04X}]", c as u32);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// What a destructive call is about to act on, in the person's own words.
 ///
 /// The confirmation gate exists so somebody can catch a misreading, and it
@@ -1437,9 +1622,16 @@ pub fn describe(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Option<
 /// one. `None` when `name` is not a tool.
 pub fn effect_for(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Option<Effect> {
     let tool = find(name)?;
-    let reaches_people =
-        tool.outward_when.is_some_and(|reaches| reaches(ctx, &Args::new(tool.name, arguments)));
-    Some(if reaches_people { Effect::Outward } else { tool.effect })
+    let args = Args::new(tool.name, arguments);
+    let reaches_people = tool.outward_when.is_some_and(|reaches| reaches(ctx, &args));
+    let loses_something = tool.destructive_when.is_some_and(|loses| loses(ctx, &args));
+    Some(if reaches_people {
+        Effect::Outward
+    } else if loses_something {
+        Effect::Destructive
+    } else {
+        tool.effect
+    })
 }
 
 /// Whether any string anywhere in `value` holds a [hidden](crate::hidden)
@@ -1495,6 +1687,13 @@ pub fn dispatch(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Result<
 
     if !tool.domain.available(ctx.vault) {
         return Err(Error::Unsupported("this vault's backend does not store that"));
+    }
+    // The second of the two places [`NOT_OVER_MCP`] is enforced: the MCP
+    // server leaves these out of its list and refuses them by name, and this
+    // is what stops one reached through any other door -- `run_tool` with
+    // the claim of an MCP connection -- from running.
+    if matches!(ctx.caller, Some(Caller::Mcp { .. })) && is_not_over_mcp(tool.name) {
+        return Err(Error::Invalid(not_over_mcp_message(tool.name)));
     }
     if tool.effect.is_write() && !ctx.vault.is_writable() {
         return Err(Error::Invalid(
@@ -1823,6 +2022,74 @@ mod tests {
         }
     }
 
+    /// The sibling of the two above, for a write that is only sometimes a
+    /// loss. `update_note` that renames a note destroys nothing and is not
+    /// confirmed; the same call that replaces the text is, and a card with no
+    /// subject asks somebody to approve losing words they cannot identify.
+    #[test]
+    fn every_tool_that_can_lose_work_can_name_it() {
+        for tool in catalog() {
+            if tool.destructive_when.is_some() {
+                assert!(
+                    tool.describe.is_some(),
+                    "{} can destroy what is there and has no describe fn, so its \
+                     confirmation card would name nothing",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    /// Whatever starts the assistant's own work, or changes what it keeps
+    /// and is told, is kept from an MCP client. A tool added to those domains
+    /// next year fails this rather than shipping reachable.
+    #[test]
+    fn nothing_that_makes_the_assistant_act_or_remember_is_left_to_mcp() {
+        for name in NOT_OVER_MCP {
+            let tool = find(name).unwrap_or_else(|| panic!("{name} is not a tool"));
+            assert_ne!(tool.effect, Effect::Read, "{name} is a read, and an MCP client may read");
+        }
+        for tool in catalog() {
+            let assistants_own =
+                matches!(tool.domain, Domain::Routines | Domain::Jobs | Domain::Agent);
+            if assistants_own && tool.effect != Effect::Read && tool.name != "cancel_job" {
+                assert!(
+                    is_not_over_mcp(tool.name),
+                    "{} writes the assistant's own work or memory and an MCP client could run it",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_other_words_written_over_words_that_are_there_are_a_replacement() {
+        assert!(replaces_text("Cut the joists.", "Something else entirely"));
+        // The same words sent back, or an edit that only carries a title, is
+        // not a loss.
+        assert!(!replaces_text("Cut the joists.", "Cut the joists."));
+        assert!(!replaces_text("Cut the joists.", "  Cut the joists.\n"));
+        // Nothing there to lose, and nothing to write over it with.
+        assert!(!replaces_text("", "First words"));
+        assert!(!replaces_text("  \n", "First words"));
+        assert!(!replaces_text("Cut the joists.", "   "));
+    }
+
+    #[test]
+    fn a_replacement_card_names_the_record_and_how_much_of_it_goes() {
+        assert_eq!(
+            replacement_subject("Deck", "one two three", Some("four five")),
+            "Deck \u{2014} its whole text (3 words) replaced by 2 words"
+        );
+        assert_eq!(replacement_subject("Deck", "one two three", None), "Deck");
+    }
+
+    #[test]
+    fn a_hidden_character_on_a_card_is_written_out_and_a_joiner_is_left_alone() {
+        assert_eq!(reveal_hidden("a\u{200B}b\u{E0041}"), "a[U+200B]b[U+E0041]");
+        assert_eq!(reveal_hidden("plain \u{200D} joiner kept"), "plain \u{200D} joiner kept");
+    }
+
     /// Every domain has said which it is. The match in `sensitivity` is
     /// exhaustive, so this is really a check that the list below was updated
     /// when a variant was added -- which is the moment the decision is made.
@@ -2061,6 +2328,7 @@ mod tests {
             unattended: false,
             follow_up: false,
             caller: None,
+            withheld: &[],
             mail_search: None,
             assistant_provider: None,
             mail_rate_limit: None,

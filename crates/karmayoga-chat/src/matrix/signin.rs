@@ -31,6 +31,7 @@ use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::cross_process_lock::CrossProcessLockConfig;
 use matrix_sdk::encryption::EncryptionSettings;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
+use matrix_sdk_crypto::CollectStrategy;
 use std::path::Path;
 use std::time::Duration;
 
@@ -269,6 +270,21 @@ async fn build_client(setup: &Setup, link: &MatrixLink) -> Result<Client, ChatEr
             auto_enable_backups: true,
             ..Default::default()
         })
+        // Who is given the keys to read what the bot writes. The SDK's default,
+        // `AllDevices` ("share with all unblacklisted devices"), would hand
+        // them to any device that appears on the owner's account -- a stranger
+        // who signs in there, or a device the homeserver invents -- and the
+        // assistant writes mail, journal, health and money. `devices` marks
+        // each of the owner's devices that is on the hand-picked list
+        // `Verified` and every other `BlackListed`; this strategy shares only
+        // with devices that are trusted (locally verified, or cross-signed by
+        // an identity the bot has verified) and never with a blacklisted one
+        // (`withheld_code_for_device_for_only_trusted_devices_strategy` in
+        // matrix-sdk-crypto 0.19.1). Both strategies skip a blacklisted device;
+        // this one also skips a device not marked yet, so a device that has
+        // only just appeared is not given a key in the moment before the list
+        // is applied to it.
+        .with_room_key_recipient_strategy(CollectStrategy::OnlyTrustedDevices)
         // Nothing else opens this store, and the lock a second process would
         // need only gets in the way of a restart that begins before the last
         // client has finished dropping.

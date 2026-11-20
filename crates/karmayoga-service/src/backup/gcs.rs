@@ -34,9 +34,12 @@ use reqwest::{Method, StatusCode};
 use serde::Deserialize;
 
 use super::creds::{
-    self, Env, Folder, GoogleCredentials, GoogleOrigin, GooglePlan, MAX_ATTEMPTS, Reply, Verb,
+    self, Env, Folder, GoogleCredentials, GoogleOrigin, GooglePlan, MAX_ATTEMPTS, Reply, SendError,
+    Verb,
 };
-use super::target::{TargetError, TargetErrorKind, TargetResult};
+use super::target::{
+    MAX_LIST_PAGES, MAX_REPLY_BYTES, TargetError, TargetErrorKind, TargetResult, object_limit,
+};
 
 const API: &str = "https://storage.googleapis.com";
 
@@ -145,7 +148,7 @@ impl GcsTarget {
     pub async fn put(&self, name: &str, body: Bytes) -> TargetResult<()> {
         let key = self.folder.key(name)?;
         let url = upload_url(&self.config.bucket, &key);
-        match self.execute(Verb::Put, Method::POST, &url, Some(&body)).await? {
+        match self.execute(Verb::Put, Method::POST, &url, Some(&body), MAX_REPLY_BYTES).await? {
             Answer::Done(_) => Ok(()),
             Answer::NotFound(_) => Err(bucket_missing(&self.config.bucket)),
         }
@@ -155,7 +158,7 @@ impl GcsTarget {
     pub async fn get(&self, name: &str) -> TargetResult<Option<Bytes>> {
         let key = self.folder.key(name)?;
         let url = download_url(&self.config.bucket, &key);
-        match self.execute(Verb::Get, Method::GET, &url, None).await? {
+        match self.execute(Verb::Get, Method::GET, &url, None, object_limit(name)).await? {
             Answer::Done(reply) => Ok(Some(reply.body)),
             Answer::NotFound(error) if names_bucket(&error) => {
                 Err(bucket_missing(&self.config.bucket))
@@ -170,12 +173,18 @@ impl GcsTarget {
         let wanted = self.folder.list_prefix(prefix)?;
         let mut names = Vec::new();
         let mut page_token: Option<String> = None;
+        let mut pages = 0;
         loop {
+            pages += 1;
+            if pages > MAX_LIST_PAGES {
+                return Err(too_many_pages(&self.config.bucket));
+            }
             let url = list_url(&self.config.bucket, &wanted, page_token.as_deref());
-            let reply = match self.execute(Verb::List, Method::GET, &url, None).await? {
-                Answer::Done(reply) => reply,
-                Answer::NotFound(_) => return Err(bucket_missing(&self.config.bucket)),
-            };
+            let reply =
+                match self.execute(Verb::List, Method::GET, &url, None, MAX_REPLY_BYTES).await? {
+                    Answer::Done(reply) => reply,
+                    Answer::NotFound(_) => return Err(bucket_missing(&self.config.bucket)),
+                };
             let (keys, next) = parse_list_page(&reply.body).map_err(|why| {
                 TargetError::other(format!(
                     "Google answered a listing of bucket {} with something that could not be read: {why}",
@@ -201,7 +210,7 @@ impl GcsTarget {
     pub async fn delete(&self, name: &str) -> TargetResult<()> {
         let key = self.folder.key(name)?;
         let url = object_url(&self.config.bucket, &key);
-        match self.execute(Verb::Delete, Method::DELETE, &url, None).await? {
+        match self.execute(Verb::Delete, Method::DELETE, &url, None, MAX_REPLY_BYTES).await? {
             Answer::NotFound(error) if names_bucket(&error) => {
                 Err(bucket_missing(&self.config.bucket))
             }
@@ -219,12 +228,16 @@ impl GcsTarget {
     /// - A 404: handed back for the caller to read.
     /// - Anything else, and anything still failing: a [`TargetError`] -- see
     ///   [`refusal`].
+    ///
+    /// `limit` is the most of a successful answer that is read: see
+    /// [`creds::send`].
     async fn execute(
         &self,
         verb: Verb,
         method: Method,
         url: &str,
         body: Option<&Bytes>,
+        limit: u64,
     ) -> TargetResult<Answer> {
         let policy = creds::backoff();
         let mut failures = 0;
@@ -247,11 +260,11 @@ impl GcsTarget {
                 request =
                     request.header(CONTENT_TYPE, "application/octet-stream").body(body.clone());
             }
-            let reply = match creds::send(request).await {
+            let reply = match creds::send(request, limit).await {
                 Ok(reply) => reply,
                 Err(e) => {
                     failures += 1;
-                    if !creds::transient_transport(&e) || policy.gives_up_after(failures) {
+                    if !e.transient() || policy.gives_up_after(failures) {
                         return Err(unreachable(&self.config.bucket, verb, &e));
                     }
                     tracing::debug!(bucket = %self.config.bucket, failures, "a backup request got no answer; trying again");
@@ -388,11 +401,14 @@ impl GcsTarget {
             .post(token_uri)
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(form);
-        let reply = creds::send(request).await.map_err(|e| {
-            TargetError::new(
+        let reply = creds::send(request, MAX_REPLY_BYTES).await.map_err(|e| match e {
+            SendError::TooLarge { .. } => {
+                TargetError::other(format!("Google's sign-in service answered with {}", e.cause()))
+            }
+            SendError::Transport(_) => TargetError::new(
                 TargetErrorKind::Unreachable,
-                format!("could not reach Google's sign-in service: {}", creds::transport_cause(&e)),
-            )
+                format!("could not reach Google's sign-in service: {}", e.cause()),
+            ),
         })?;
         if reply.status.is_success() {
             let (value, lifetime) = parse_token(&reply.body).map_err(|why| {
@@ -593,15 +609,30 @@ fn bucket_missing(bucket: &str) -> TargetError {
     )
 }
 
-fn unreachable(bucket: &str, verb: Verb, e: &reqwest::Error) -> TargetError {
+/// A listing that would not end: see `s3::too_many_pages`.
+fn too_many_pages(bucket: &str) -> TargetError {
+    TargetError::other(format!(
+        "Google listed bucket {bucket} over more than {MAX_LIST_PAGES} pages, which is more \
+         than any backup holds, so the listing was not followed further"
+    ))
+}
+
+fn unreachable(bucket: &str, verb: Verb, e: &SendError) -> TargetError {
+    if matches!(e, SendError::TooLarge { .. }) {
+        return TargetError::other(format!(
+            "Google Cloud Storage answered a request to {} bucket {bucket} with {}",
+            verb.doing(),
+            e.cause()
+        ));
+    }
     // A request that could not even be built is no network's fault.
-    let kind = if e.is_builder() { TargetErrorKind::Other } else { TargetErrorKind::Unreachable };
+    let kind = if e.unreachable() { TargetErrorKind::Unreachable } else { TargetErrorKind::Other };
     TargetError::new(
         kind,
         format!(
             "could not reach Google Cloud Storage to {} bucket {bucket}: {}",
             verb.doing(),
-            creds::transport_cause(e)
+            e.cause()
         ),
     )
 }

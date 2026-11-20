@@ -1,7 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "writing",
-  "description": "Capabilities granted to writing help's popup and voice typing's pill, the two small windows that work over other applications. Narrower than the main window's: each listens for the shell's events and calls the shell's commands -- the rewrite itself is the same `call` the main window makes -- and needs nothing else. No dialogs, no opener, no notifications; a paste that fails is reported by the shell, not by the popup.",
-  "windows": ["writing", "voice-typing"],
-  "permissions": ["core:default"]
+  "description": "Capabilities granted to writing help's popup, the small window that works over other applications. Narrower than the main window's: it listens for the shell's events and calls only the four shell commands its page names (ui/src/writing/WritingPopup.svelte) -- plus `call`, which src/guard.rs limits in this window to the two service commands the popup runs (the rewrite itself and settling it). No dialogs, no opener, no notifications; a paste that fails is reported by the shell, not by the popup.",
+  "windows": [
+    "writing"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-call",
+    "allow-writing-selection",
+    "allow-writing-apply",
+    "allow-writing-dismiss",
+    "allow-writing-open-main"
+  ]
 }

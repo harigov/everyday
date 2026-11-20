@@ -13,6 +13,7 @@ mod support;
 use support::vault;
 
 use jiff::{SignedDuration, Timestamp};
+use karmayoga_core::files::disk::UploadStaging;
 use karmayoga_core::files::{
     ChangedFile, MovedFile, NewFile, RefKind, RefOwner, ScanChanges, StatusFilter,
 };
@@ -98,6 +99,24 @@ fn invalid<T: std::fmt::Debug>(result: karmayoga_core::Result<T>) -> String {
         Err(Error::Invalid(message)) => message,
         other => panic!("expected Invalid, got {other:?}"),
     }
+}
+
+/// The private place, outside the files folder, where a vault stages the
+/// uploads that will be sealed.
+fn staging(w: &World) -> UploadStaging {
+    UploadStaging::for_vault(w.vault.path())
+}
+
+/// How many things are directly inside `dir`; none if it is not there.
+fn count_in(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map(|read| read.count()).unwrap_or(0)
+}
+
+/// Make `path` look as if it was last touched `hours` ago.
+fn backdate(path: &Path, hours: u64) {
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(hours * 3600))
+        .unwrap();
 }
 
 fn path_of(f: &FileEntry) -> &str {
@@ -731,11 +750,92 @@ fn a_sealed_upload_is_sealed_from_its_staging_file() {
     let ticket = w.vault.begin_upload("v.bin", 6, &sealed(FileOrigin::Chat)).unwrap();
     w.vault.upload_chunk(&ticket.upload, 0, b"abc").unwrap();
     w.vault.upload_chunk(&ticket.upload, 3, b"def").unwrap();
+    // While it arrives it is the plaintext of a sealed file, so it is not in
+    // the files folder at all -- the folder may be synced -- but in a private
+    // place of the vault's own.
+    assert_eq!(count_in(&w.at(".karmayoga/uploads")), 0);
+    let staged = staging(&w).upload_path(&ticket.upload).unwrap();
+    assert!(!staged.starts_with(&w.folder), "{}", staged.display());
+    assert_eq!(std::fs::read(&staged).unwrap(), b"abcdef");
+
     let f = w.vault.finish_upload(&ticket.upload).unwrap();
     assert!(f.is_sealed());
     assert_eq!(w.vault.read_file_range(f.id, 0, 10).unwrap(), b"abcdef");
-    assert!(!w.at(".karmayoga/uploads").join(&ticket.upload).exists());
+    assert!(!staged.exists(), "the staging file goes once the file is sealed");
     assert!(w.listing().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn the_staging_of_a_sealed_upload_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let w = world();
+    let ticket = w.vault.begin_upload("v.bin", 3, &sealed(FileOrigin::Files)).unwrap();
+    w.vault.upload_chunk(&ticket.upload, 0, b"abc").unwrap();
+    let staged = staging(&w).upload_path(&ticket.upload).unwrap();
+    assert_eq!(mode(&staged), 0o600);
+    assert_eq!(mode(staged.parent().unwrap()), 0o700);
+}
+
+#[test]
+fn a_sealed_upload_needs_no_files_folder() {
+    // A vault whose files folder was never set up: nothing is staged there, so
+    // nothing needs it, and nothing sets it up.
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(&dir.path().join("vault"));
+    assert!(vault.files_settings().unwrap().folder.is_none());
+    let ticket = vault.begin_upload("scan.pdf", 6, &sealed(FileOrigin::Files)).unwrap();
+    vault.upload_chunk(&ticket.upload, 0, b"passpo").unwrap();
+    let f = vault.finish_upload(&ticket.upload).unwrap();
+    assert!(f.is_sealed());
+    assert_eq!(vault.read_file_range(f.id, 0, 10).unwrap(), b"passpo");
+    assert!(vault.files_settings().unwrap().folder.is_none());
+}
+
+#[test]
+fn whether_an_upload_is_sealed_is_settled_when_it_begins() {
+    let w = world();
+    let settings = |encrypted| FilesSettings {
+        folder: Some(w.folder.display().to_string()),
+        encrypted,
+        ..Default::default()
+    };
+    w.vault.save_files_settings(&settings(vec![FileOrigin::Chat])).unwrap();
+    // Begun while Chat's files are sealed, with no say of its own...
+    let ticket = w.vault.begin_upload("a.bin", 3, &opts(FileOrigin::Chat)).unwrap();
+    w.vault.upload_chunk(&ticket.upload, 0, b"abc").unwrap();
+    assert!(staging(&w).upload_path(&ticket.upload).is_ok());
+    // ...and the setting turned off before it is finished: the bytes were
+    // staged outside the folder, and the file is sealed as it was promised.
+    w.vault.save_files_settings(&settings(vec![])).unwrap();
+    let f = w.vault.finish_upload(&ticket.upload).unwrap();
+    assert!(f.is_sealed());
+    assert_eq!(w.vault.read_file_range(f.id, 0, 10).unwrap(), b"abc");
+    assert!(w.listing().is_empty());
+
+    // The other way round: begun plain, staged in the folder, placed there.
+    let ticket = w.vault.begin_upload("b.bin", 3, &opts(FileOrigin::Chat)).unwrap();
+    assert!(staging(&w).upload_path(&ticket.upload).is_err());
+    assert!(w.at(".karmayoga/uploads").join(&ticket.upload).exists());
+    w.vault.upload_chunk(&ticket.upload, 0, b"xyz").unwrap();
+    w.vault.save_files_settings(&settings(vec![FileOrigin::Chat])).unwrap();
+    let f = w.vault.finish_upload(&ticket.upload).unwrap();
+    assert!(!f.is_sealed());
+    assert_eq!(std::fs::read(w.at(path_of(&f))).unwrap(), b"xyz");
+    assert_eq!(w.listing(), vec![path_of(&f).to_string()]);
+}
+
+#[test]
+fn cancelling_an_upload_that_was_to_be_sealed_removes_its_staging() {
+    let w = world();
+    let ticket = w.vault.begin_upload("never.bin", 4, &sealed(FileOrigin::Files)).unwrap();
+    w.vault.upload_chunk(&ticket.upload, 0, b"ab").unwrap();
+    let staged = staging(&w).upload_path(&ticket.upload).unwrap();
+    w.vault.cancel_upload(&ticket.upload).unwrap();
+    assert!(!staged.exists());
+    assert!(matches!(w.vault.finish_upload(&ticket.upload), Err(Error::NotFound { .. })));
+    assert!(matches!(w.vault.upload_chunk(&ticket.upload, 2, b"cd"), Err(Error::NotFound { .. })));
 }
 
 #[test]
@@ -1618,6 +1718,71 @@ fn decrypted_copies_are_swept_when_stale_and_so_is_what_an_older_build_left_in_t
     std::thread::sleep(std::time::Duration::from_millis(20));
     assert_eq!(w.vault.sweep_open_copies(std::time::Duration::ZERO).unwrap(), 1);
     assert!(!copy.exists());
+}
+
+#[test]
+fn a_stale_sealed_upload_staging_is_swept_with_the_decrypted_copies() {
+    let w = world();
+    let (old, new) = (
+        w.vault.begin_upload("old.bin", 1, &sealed(FileOrigin::Files)).unwrap(),
+        w.vault.begin_upload("new.bin", 1, &sealed(FileOrigin::Files)).unwrap(),
+    );
+    for ticket in [&old, &new] {
+        w.vault.upload_chunk(&ticket.upload, 0, b"x").unwrap();
+    }
+    backdate(&staging(&w).upload_path(&old.upload).unwrap(), 2);
+
+    let hour = std::time::Duration::from_secs(3600);
+    assert_eq!(w.vault.sweep_open_copies(hour).unwrap(), 1);
+    assert!(staging(&w).upload_path(&old.upload).is_err());
+    assert!(staging(&w).upload_path(&new.upload).is_ok(), "one still arriving is not stale");
+}
+
+#[test]
+fn locking_deletes_every_decrypted_copy_and_staged_sealed_upload() {
+    let w = world();
+    let secret = w.vault.import_bytes(b"secret", "s.txt", &sealed(FileOrigin::Files)).unwrap();
+    let copy = w.vault.open_file_copy(secret.id).unwrap();
+    let ticket = w.vault.begin_upload("v.bin", 6, &sealed(FileOrigin::Files)).unwrap();
+    w.vault.upload_chunk(&ticket.upload, 0, b"abc").unwrap();
+    let staged = staging(&w).upload_path(&ticket.upload).unwrap();
+    assert!(copy.exists() && staged.exists());
+
+    w.vault.lock();
+
+    assert!(!copy.exists(), "a decrypted copy outlived the key");
+    assert!(!copy.parent().unwrap().exists(), "and the folder it was made in");
+    assert!(!staged.exists(), "a staged sealed upload outlived the key");
+    assert!(matches!(w.vault.upload_chunk(&ticket.upload, 3, b"def"), Err(Error::NotFound { .. })));
+    // Nothing else was touched: the sealed file is still there to be read.
+    w.vault.unlock(None).unwrap();
+    assert_eq!(w.vault.read_file_range(secret.id, 0, 10).unwrap(), b"secret");
+    // And a copy can be made again.
+    assert_eq!(std::fs::read(w.vault.open_file_copy(secret.id).unwrap()).unwrap(), b"secret");
+}
+
+#[test]
+fn plaintext_an_earlier_run_left_is_cleared_by_the_one_that_holds_the_vault() {
+    let w = world();
+    let secret = w.vault.import_bytes(b"secret", "s.txt", &sealed(FileOrigin::Files)).unwrap();
+    let copy = w.vault.open_file_copy(secret.id).unwrap();
+    let ticket = w.vault.begin_upload("v.bin", 3, &sealed(FileOrigin::Files)).unwrap();
+    w.vault.upload_chunk(&ticket.upload, 0, b"abc").unwrap();
+    let staged = staging(&w).upload_path(&ticket.upload).unwrap();
+    let hour = std::time::Duration::from_secs(3600);
+
+    // A second copy of the program beside this one cannot write, and what it
+    // finds is somebody else's live copies: it leaves them be.
+    let beside = karmayoga_vault::open(w.vault.path()).unwrap();
+    assert!(!beside.is_writable());
+    assert_eq!(beside.sweep_left_behind_plaintext(hour).unwrap(), 0);
+    assert!(copy.exists() && staged.exists());
+
+    // The one that holds the write lock has no live copies yet, so what is
+    // there, however new, is from a run that is gone.
+    assert_eq!(w.vault.sweep_left_behind_plaintext(hour).unwrap(), 2);
+    assert!(!copy.exists() && !staged.exists());
+    assert_eq!(w.vault.sweep_left_behind_plaintext(hour).unwrap(), 0);
 }
 
 // ---- bringing the old attachments in -----------------------------------------------

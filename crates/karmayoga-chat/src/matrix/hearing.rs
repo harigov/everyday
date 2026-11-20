@@ -7,6 +7,18 @@
 //! to you" would be confirming to anybody who found it that there is an
 //! assistant behind it.
 //!
+//! "The owner" is more than their Matrix ID, which anybody who signs in to
+//! that account on a new device, or runs the homeserver, can write under. A
+//! typed message, a picture, a file or a voice note is believed only when it
+//! arrived encrypted *and* the device that sent it is on the list the owner
+//! picked by hand (see `devices` and [`rules::judge_arrival`]); a message that
+//! arrived in plain text is believed nowhere, and a device that is not on the
+//! list gets no answer at all -- not even the explanations below -- only a note
+//! in Settings. Reactions are the exception, by the owner's choice: a
+//! reaction is not encrypted and names no device, so it is taken as it always
+//! was, as an answer to a question the bot asked, in a room only the two of
+//! them are in.
+//!
 //! Handlers run *inside* the SDK's sync, one event at a time, and the next
 //! sync does not start until they return. So they never wait on anything that
 //! could take long: sending to the relay can only block while the relay is
@@ -21,8 +33,9 @@
 //! it is about. The price is that the bot hears nothing else while a large
 //! file comes down, which is why [`MAX_FILE_BYTES`] is what it is.
 
+use super::devices::Trust;
 use super::rooms::kind_of;
-use super::rules::{self, RoomKind};
+use super::rules::{self, RoomKind, Welcome};
 use super::speaking::Questions;
 use crate::connector::{Choice, Document, Incoming, MAX_FILE_BYTES, Picture};
 use matrix_sdk::deserialized_responses::EncryptionInfo;
@@ -101,8 +114,14 @@ pub(super) struct Hearing {
     pub owner: OwnedUserId,
     pub inbox: mpsc::Sender<Incoming>,
     pub questions: Arc<Questions>,
-    /// Rooms the bot has already said it will not answer in.
+    /// Which of the owner's devices are believed.
+    trust: Arc<Trust>,
+    /// Rooms the bot has already said it will not answer in because they are
+    /// shared.
     warned: Mutex<HashSet<OwnedRoomId>>,
+    /// Rooms the bot has already said it will not answer in because they are
+    /// not encrypted.
+    warned_unencrypted: Mutex<HashSet<OwnedRoomId>>,
 }
 
 impl Hearing {
@@ -111,8 +130,17 @@ impl Hearing {
         owner: OwnedUserId,
         inbox: mpsc::Sender<Incoming>,
         questions: Arc<Questions>,
+        trust: Arc<Trust>,
     ) -> Self {
-        Self { bot, owner, inbox, questions, warned: Mutex::new(HashSet::new()) }
+        Self {
+            bot,
+            owner,
+            inbox,
+            questions,
+            trust,
+            warned: Mutex::new(HashSet::new()),
+            warned_unencrypted: Mutex::new(HashSet::new()),
+        }
     }
 
     /// Start hearing the owner's messages, reactions and unreadable messages.
@@ -125,7 +153,7 @@ impl Hearing {
                   room: Room,
                   encryption: Option<EncryptionInfo>| {
                 let hearing = Arc::clone(&hearing);
-                async move { hearing.heard_message(event, room, encryption.is_some()).await }
+                async move { hearing.heard_message(event, room, encryption).await }
             },
         );
 
@@ -167,7 +195,7 @@ impl Hearing {
         &self,
         event: OriginalSyncRoomMessageEvent,
         room: Room,
-        encrypted: bool,
+        encryption: Option<EncryptionInfo>,
     ) {
         if event.sender != self.owner {
             return;
@@ -175,9 +203,35 @@ impl Hearing {
         let Some(heard) = heard_of(&event.content) else {
             return;
         };
-        if !rules::arrived_acceptably(room.encryption_state().is_encrypted(), encrypted) {
-            tracing::warn!(room = %room.room_id(), "ignoring a message that is not encrypted in an encrypted room");
-            return;
+        // Before anything else is done for it -- a room looked at, a picture
+        // downloaded, a word said -- the message has to come from a device
+        // the owner picked. Anything else is the owner's name on somebody
+        // else's words, and gets no answer.
+        let welcome = rules::judge_arrival(
+            room.encryption_state().is_encrypted(),
+            rules::arrival_of(encryption.as_ref()),
+            &self.trust.trusted(),
+        );
+        match welcome {
+            Welcome::Accepted => {}
+            Welcome::Forged => {
+                tracing::warn!(room = %room.room_id(), "ignoring a message that is not encrypted in an encrypted room");
+                return;
+            }
+            Welcome::Unencrypted => {
+                tracing::warn!(room = %room.room_id(), "ignoring a message in a room that is not encrypted");
+                if self.is_private(&room).await {
+                    self.explain_unencrypted_once(&room).await;
+                } else {
+                    self.explain_once(&room).await;
+                }
+                return;
+            }
+            Welcome::Untrusted(_) => {
+                let device = encryption.as_ref().and_then(|info| info.sender_device.as_deref());
+                self.trust.note_untrusted(device).await;
+                return;
+            }
         }
         if !self.is_private(&room).await {
             self.explain_once(&room).await;
@@ -263,6 +317,20 @@ impl Hearing {
             at: rules::sent_at(event.origin_server_ts),
         })
         .await;
+    }
+
+    /// Tell the owner, the first time they write in a room that is not
+    /// encrypted, that the bot will not answer there. The words are about the
+    /// room and hold nothing private: they are sent in the open.
+    async fn explain_unencrypted_once(&self, room: &Room) {
+        let first = self.warned_unencrypted.lock().unwrap().insert(room.room_id().to_owned());
+        if !first {
+            return;
+        }
+        let notice = RoomMessageEventContent::notice_plain(rules::not_encrypted_notice());
+        if let Err(error) = room.send(notice).await {
+            tracing::debug!("couldn't say why the bot is silent in an unencrypted room: {error}");
+        }
     }
 
     /// Tell the owner, the first time they write somewhere other people can

@@ -14,11 +14,15 @@ pub mod connector;
 pub mod matrix;
 pub mod relay;
 
-use crate::connector::{ChatError, Connector, Report, SaveSecret, Setup, TrustReport};
+use crate::connector::{
+    ChatError, Connector, Report, SaveSecret, Setup, TrustReport, UntrustedReport,
+};
 use crate::matrix::MatrixConnector;
 use karmayoga_core::chat::{ChatLink, ChatSecret, ChatService};
 use karmayoga_core::{ChatLinkId, Vault};
-use karmayoga_service::chat::{ChatRunner, ChatState, ChatTrust, state_dir, store_passphrase};
+use karmayoga_service::chat::{
+    ChatRunner, ChatState, ChatTrust, ChatUntrustedDevice, state_dir, store_passphrase,
+};
 use karmayoga_service::service::Service;
 use karmayoga_service::supervisor::{Outcome, TaskFuture, TaskResult};
 use std::future::Future;
@@ -137,6 +141,7 @@ where
         store_passphrase: loaded.store_passphrase,
         report: report_through(&service, link_id),
         trust: trust_through(&service, link_id),
+        untrusted: untrusted_through(&service, link_id),
         assistant_name: loaded.assistant_name,
     };
 
@@ -155,6 +160,19 @@ where
     let verifier = connector.verifier();
     if let Some(verifier) = &verifier {
         service.open_chat_verifier(link_id, verifier.clone());
+    }
+    let devices = connector.devices();
+    if let Some(devices) = &devices {
+        service.open_chat_devices(link_id, devices.clone());
+        // The list may have been changed while the bot was signing in, after
+        // `load` read it and before anybody could reach the bot to tell it.
+        // A device taken off the list in that gap must not stay trusted, so
+        // what is saved now is what the bot is told.
+        if let Ok(saved) = trusted_devices(&vault, link_id).await
+            && let Err(e) = devices.trust(saved).await
+        {
+            tracing::warn!(error = %e.message, "couldn't apply the saved list of trusted devices");
+        }
     }
 
     // The relay gets a stop of its own. The supervisor's reaches it directly,
@@ -190,6 +208,9 @@ where
     let (heard, (), ()) = tokio::join!(listening, relaying, halting);
     if let Some(verifier) = &verifier {
         service.close_chat_verifier(link_id, verifier);
+    }
+    if let Some(devices) = &devices {
+        service.close_chat_devices(link_id, devices);
     }
 
     match heard {
@@ -291,6 +312,24 @@ async fn load(vault: &Arc<Vault>, link_id: ChatLinkId) -> karmayoga_service::Com
     .await
 }
 
+/// The ids of the owner's devices the link trusts, as saved right now.
+async fn trusted_devices(
+    vault: &Arc<Vault>,
+    link_id: ChatLinkId,
+) -> karmayoga_service::CommandResult<Vec<String>> {
+    let vault = vault.clone();
+    karmayoga_service::blocking(move || {
+        let settings = vault.chat_settings()?;
+        Ok(settings
+            .link(link_id)
+            .map(|link| match &link.service {
+                ChatService::Matrix(matrix) => matrix.trusted_devices.clone(),
+            })
+            .unwrap_or_default())
+    })
+    .await
+}
+
 /// The closure a connector saves its sign-in through.
 ///
 /// Called from async code but not awaited: one small write, rare (a sign-in,
@@ -308,6 +347,16 @@ fn save_secret_into(vault: &Arc<Vault>, link_id: ChatLinkId) -> SaveSecret {
 fn trust_through(service: &Arc<Service>, link_id: ChatLinkId) -> TrustReport {
     let service = service.clone();
     Arc::new(move |trust: ChatTrust| service.report_chat_trust(link_id, trust))
+}
+
+/// The closure a connector reports an untrusted device of the owner's
+/// through: what Settings → Chat says about a device that tried to talk and
+/// was ignored, and the notification that tells somebody who is not looking.
+fn untrusted_through(service: &Arc<Service>, link_id: ChatLinkId) -> UntrustedReport {
+    let service = service.clone();
+    Arc::new(move |device: ChatUntrustedDevice| {
+        service.report_untrusted_chat_device(link_id, device)
+    })
 }
 
 /// The closure a connector reports where it stands through: the service's

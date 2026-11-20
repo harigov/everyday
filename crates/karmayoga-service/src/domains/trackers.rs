@@ -6,14 +6,15 @@
 //! also where the one migration that cannot be a SQL step runs.
 
 use crate::command;
-use crate::ctx::Ctx;
-use crate::error::CommandResult;
+use crate::ctx::{Ctx, Scope};
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use karmayoga_core::model::{local_date_in, system_tz};
 use karmayoga_core::store::trackers::{ReadingQuery, TrackerDay};
-use karmayoga_core::tracker::{Reading, Tracker, TrackerKind};
+use karmayoga_core::tracker::{Reading, Tracker, TrackerKind, TrackerSource};
 use karmayoga_core::{EntryId, JournalId, ReadingId, TrackerId};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::Nothing;
@@ -78,6 +79,56 @@ pub struct ReadingRef {
     pub id: ReadingId,
 }
 
+// ---- trackers that count what a scope guards ---------------------------
+//
+// A tracker is a Trackers record, so the Trackers scope opens every one of
+// them -- but one whose source is the Health app is a day's heart rate, and
+// one whose source is Screen time is which sites somebody spent their day on.
+// A token narrowed to Trackers (or one that holds everything except those)
+// must not read either through here what it cannot read through `health` or
+// `screen_time`, nor make a tracker that would. Held to the scope of the
+// domain the figures come from, not to a rule of its own.
+
+/// Is a tracker counting `source` one `ctx` may not see: it reads Health and
+/// the caller does not hold [`Scope::Health`], or it reads Screen time and
+/// the caller does not hold [`Scope::ScreenTime`]?
+fn out_of_reach(ctx: &Ctx, source: &TrackerSource) -> bool {
+    (source.reads_health() && !ctx.holds(Scope::Health))
+        || (source.reads_screen_time() && !ctx.holds(Scope::ScreenTime))
+}
+
+/// The refusal for naming such a source, in the words every other command
+/// refuses a scope in.
+fn refuse_out_of_reach(ctx: &Ctx, source: &TrackerSource) -> CommandResult<()> {
+    if !out_of_reach(ctx, source) {
+        return Ok(());
+    }
+    let scope = if source.reads_health() { Scope::Health } else { Scope::ScreenTime };
+    Err(CommandError::new(
+        codes::FORBIDDEN,
+        format!("this connection is not allowed to reach {}", scope.as_str()),
+    ))
+}
+
+/// The ids of every stored tracker `ctx` may not see, for dropping the days
+/// and readings that name a tracker by its id alone. Empty -- and the
+/// trackers not listed at all -- for a caller that holds both scopes, which
+/// is every window and paired copy of this application.
+fn ids_out_of_reach(
+    ctx: &Ctx,
+    vault: &karmayoga_core::Vault,
+) -> karmayoga_core::Result<HashSet<TrackerId>> {
+    if ctx.holds(Scope::Health) && ctx.holds(Scope::ScreenTime) {
+        return Ok(HashSet::new());
+    }
+    Ok(vault
+        .trackers()?
+        .into_iter()
+        .filter(|t| out_of_reach(ctx, &t.source))
+        .map(|t| t.id)
+        .collect())
+}
+
 /// Mint a tracker, without saving it.
 ///
 /// The id, the timestamps and the defaults come from here for the same reason
@@ -101,11 +152,7 @@ async fn new_tracker(svc: Arc<Service>, _ctx: Ctx, args: NewTracker) -> CommandR
 /// work on the unlock path makes every unlock slower for a thing that happens
 /// once. It runs at most once per vault -- see
 /// `Vault::migrate_journal_trackers`, which is idempotent by construction.
-async fn list_trackers(
-    svc: Arc<Service>,
-    _ctx: Ctx,
-    _args: Nothing,
-) -> CommandResult<Vec<Tracker>> {
+async fn list_trackers(svc: Arc<Service>, ctx: Ctx, _args: Nothing) -> CommandResult<Vec<Tracker>> {
     let vault = svc.require()?;
     blocking(move || {
         if let Err(e) = vault.migrate_journal_trackers() {
@@ -114,12 +161,22 @@ async fn list_trackers(
             // with no chips rather than an error over the window.
             tracing::warn!(error = %e, "could not move the journals' trackers");
         }
-        Ok(vault.trackers()?)
+        Ok(vault.trackers()?.into_iter().filter(|t| !out_of_reach(&ctx, &t.source)).collect())
     })
     .await
 }
 
-async fn save_tracker(svc: Arc<Service>, _ctx: Ctx, args: SaveTracker) -> CommandResult<()> {
+/// Both sources are held to the scope: the one being saved, so a Health
+/// tracker cannot be made by a caller that cannot read Health, and the one
+/// already stored under this id, so a caller that cannot see a Health tracker
+/// cannot rewrite it -- into a manual one, say, to read its name and targets
+/// back -- either.
+async fn save_tracker(svc: Arc<Service>, ctx: Ctx, args: SaveTracker) -> CommandResult<()> {
+    refuse_out_of_reach(&ctx, &args.tracker.source)?;
+    let id = args.tracker.id;
+    if let Some(stored) = svc.on_vault(move |vault| Ok(vault.tracker(id).ok())).await? {
+        refuse_out_of_reach(&ctx, &stored.source)?;
+    }
     svc.on_vault(move |vault| vault.save_tracker(&args.tracker)).await
 }
 
@@ -129,21 +186,32 @@ async fn merge_trackers(svc: Arc<Service>, _ctx: Ctx, args: MergeTrackers) -> Co
     svc.on_vault(move |vault| vault.merge_trackers(args.from, args.into)).await
 }
 
-async fn list_readings(
-    svc: Arc<Service>,
-    _ctx: Ctx,
-    args: Readings,
-) -> CommandResult<Vec<Reading>> {
-    svc.on_vault(move |vault| vault.readings(&args.query)).await
+async fn list_readings(svc: Arc<Service>, ctx: Ctx, args: Readings) -> CommandResult<Vec<Reading>> {
+    svc.on_vault(move |vault| {
+        let hidden = ids_out_of_reach(&ctx, vault)?;
+        let mut readings = vault.readings(&args.query)?;
+        readings.retain(|r| !hidden.contains(&r.tracker_id));
+        Ok(readings)
+    })
+    .await
 }
 
 /// One row per tracker per day: the aggregate every chart is built from.
+///
+/// The days of a tracker `ctx` may not see are dropped from the answer rather
+/// than left out of the query, so a tracker since deleted keeps its days.
 async fn tracker_days(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: Readings,
 ) -> CommandResult<Vec<TrackerDay>> {
-    svc.on_vault(move |vault| vault.tracker_days(&args.query)).await
+    svc.on_vault(move |vault| {
+        let hidden = ids_out_of_reach(&ctx, vault)?;
+        let mut days = vault.tracker_days(&args.query)?;
+        days.retain(|d| !hidden.contains(&d.tracker_id));
+        Ok(days)
+    })
+    .await
 }
 
 /// Record one value, and decide what "when" means.
@@ -197,7 +265,11 @@ async fn delete_reading(svc: Arc<Service>, _ctx: Ctx, args: ReadingRef) -> Comma
 /// Delete a tracker along with every reading it ever made, returning how many
 /// went. Archiving is the non-destructive half and is a `save_tracker` with the
 /// flag set.
-async fn delete_tracker(svc: Arc<Service>, _ctx: Ctx, args: TrackerRef) -> CommandResult<u64> {
+async fn delete_tracker(svc: Arc<Service>, ctx: Ctx, args: TrackerRef) -> CommandResult<u64> {
+    let id = args.id;
+    if let Some(stored) = svc.on_vault(move |vault| Ok(vault.tracker(id).ok())).await? {
+        refuse_out_of_reach(&ctx, &stored.source)?;
+    }
     svc.on_vault(move |vault| vault.delete_tracker(args.id)).await
 }
 
@@ -279,3 +351,58 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: delete_tracker,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::Caller;
+    use karmayoga_core::health::{Metric, Stat};
+
+    fn holding(scopes: Vec<Scope>) -> Ctx {
+        Ctx { caller: Caller::Local, scopes, proved_at: None, request_id: None }
+    }
+
+    fn health() -> TrackerSource {
+        TrackerSource::Health { metric: Metric::Steps, stat: Stat::Auto }
+    }
+
+    fn screen() -> TrackerSource {
+        TrackerSource::ScreenTime { category: None, item: None }
+    }
+
+    #[test]
+    fn a_tracker_counting_health_or_screen_time_needs_the_scope_of_what_it_counts() {
+        let trackers_only = holding(vec![Scope::Trackers]);
+        assert!(out_of_reach(&trackers_only, &health()));
+        assert!(out_of_reach(&trackers_only, &screen()));
+        // Everything else a tracker can count is the Trackers scope's own.
+        for source in
+            [TrackerSource::Manual, TrackerSource::Time, TrackerSource::Finished { kind_id: None }]
+        {
+            assert!(!out_of_reach(&trackers_only, &source), "{source:?}");
+        }
+
+        let with_health = holding(vec![Scope::Trackers, Scope::Health]);
+        assert!(!out_of_reach(&with_health, &health()));
+        assert!(out_of_reach(&with_health, &screen()), "Health is not Screen time");
+
+        let with_screen = holding(vec![Scope::Trackers, Scope::ScreenTime]);
+        assert!(out_of_reach(&with_screen, &health()));
+        assert!(!out_of_reach(&with_screen, &screen()));
+
+        // `All` is the owner's window and every paired copy of it.
+        assert!(!out_of_reach(&Ctx::local(), &health()) && !out_of_reach(&Ctx::local(), &screen()));
+    }
+
+    #[test]
+    fn naming_a_source_out_of_reach_is_refused_as_every_other_scope_is() {
+        let trackers_only = holding(vec![Scope::Trackers]);
+        let err = refuse_out_of_reach(&trackers_only, &health()).unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN);
+        assert!(err.message.contains("health"), "{}", err.message);
+        let err = refuse_out_of_reach(&trackers_only, &screen()).unwrap_err();
+        assert!(err.message.contains("screentime"), "{}", err.message);
+        assert!(refuse_out_of_reach(&trackers_only, &TrackerSource::Manual).is_ok());
+        assert!(refuse_out_of_reach(&Ctx::local(), &health()).is_ok());
+    }
+}

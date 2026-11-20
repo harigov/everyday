@@ -160,16 +160,22 @@ fn current_conversation(ctx: &ToolContext<'_>) -> Option<ConversationId> {
 
 /// One `search_conversations` hit: enough to recognise the thread and decide
 /// whether to read the rest of it with `read_conversation`.
+///
+/// `withheld` leaves the title out, which is the assistant's own summary of
+/// what was said and so as free to quote a domain as the conversation is.
 fn conversation_hit_json(
     c: &Conversation,
     local_date: jiff::civil::Date,
     excerpts: &[String],
+    withheld: bool,
 ) -> Value {
     let mut v = json!({
         "id": c.id.to_string(),
-        "title": c.title,
         "date": local_date.to_string(),
     });
+    if !withheld {
+        v["title"] = json!(c.title);
+    }
     if !excerpts.is_empty() {
         v.as_object_mut().expect("built as an object").insert("excerpts".into(), json!(excerpts));
     }
@@ -190,6 +196,19 @@ fn run_search_conversations(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Va
     }
     let limit = args.limit() as usize;
     let exclude = current_conversation(ctx);
+
+    // What was said, by either of you, may be about anything -- the person's
+    // money, their health, their files -- and so may the title the thread
+    // was given. A caller that may not see one of those is not told which
+    // conversations mention a word either: matching on text is a way of
+    // reading it a letter at a time.
+    let withheld = !ctx.withheld.is_empty();
+    if withheld && query.is_some() {
+        return Err(args.bad(format!(
+            "searching what was said is not available to this connection: {}",
+            ctx.withheld_note()
+        )));
+    }
 
     let candidates = ctx.vault.conversations(&ConversationQuery::chats(CONVERSATION_SCAN_CAP))?;
 
@@ -215,13 +234,17 @@ fn run_search_conversations(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Va
             None => Vec::new(),
         };
 
-        hits.push(conversation_hit_json(&c, local_date, &excerpts));
+        hits.push(conversation_hit_json(&c, local_date, &excerpts, withheld));
         if hits.len() >= limit {
             break;
         }
     }
 
-    Ok(json!({ "count": hits.len(), "conversations": hits }))
+    let mut out = json!({ "count": hits.len(), "conversations": hits });
+    if withheld {
+        out["withheld"] = json!(ctx.withheld_note());
+    }
+    Ok(out)
 }
 
 /// The excerpts to show for one conversation: a window of text around each
@@ -322,6 +345,15 @@ fn ceil_char_boundary(s: &str, mut n: usize) -> usize {
 fn run_read_conversation(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let conversation: Conversation =
         load_by_id(args, "conversation_id", "conversation", |id| ctx.vault.conversation(id))?;
+    // Read first, so a thread that is not there is still said not to be; and
+    // then nothing of what is in it -- see `run_search_conversations`.
+    if !ctx.withheld.is_empty() {
+        return Ok(json!({
+            "id": conversation.id.to_string(),
+            "messages": [],
+            "withheld": ctx.withheld_note(),
+        }));
+    }
     let mut messages = ctx.vault.messages(conversation.id)?;
 
     // Messages come back oldest first; keeping only the latest `limit` means

@@ -12,6 +12,7 @@
 
 use super::MatrixConnector;
 use super::errors::classify;
+use super::rooms;
 use super::rules::{self, MAX_MARKDOWN_BYTES};
 use crate::connector::{ChatError, ChatId, MessageRef, Question, Shown};
 use matrix_sdk::Room;
@@ -99,6 +100,36 @@ impl MatrixConnector {
         }
     }
 
+    /// The joined room a chat names, if it is one the bot may write in: an
+    /// encrypted one. What the bot writes in a room that is not is readable
+    /// by the homeserver and by anybody it shows it to, and the assistant's
+    /// words are the owner's mail, journal, health and money. Nothing the bot
+    /// would say is worth that, so it says nothing there. (Nothing it hears
+    /// there is answered either, and the room a routine's result goes to is
+    /// picked encrypted -- this is the last of three places that insist.)
+    ///
+    /// Before anything goes into it the owner's devices are marked as the
+    /// trusted list says -- see `devices` -- so a device that has only just
+    /// appeared on their account is blacklisted before the room's key is
+    /// shared, not after. If that cannot be done nothing is written: the
+    /// alternative is a key shared on the strength of a guess.
+    async fn encrypted_room(&self, chat: &ChatId) -> Result<Room, ChatError> {
+        let room = self.joined_room(chat)?;
+        if !rooms::is_encrypted(&room).await {
+            return Err(ChatError::Transient(format!(
+                "The room {} is not encrypted, so the bot will not write in it.",
+                chat.0
+            )));
+        }
+        self.trust.apply().await.map_err(|problem| {
+            ChatError::Transient(format!(
+                "The bot could not check which of your devices it trusts, so it wrote nothing. \
+                 {problem}"
+            ))
+        })?;
+        Ok(room)
+    }
+
     /// Send `markdown` as one message, or as several if it is too long for
     /// one event, and say which event was sent last.
     async fn send_markdown(&self, room: &Room, markdown: &str) -> Result<OwnedEventId, ChatError> {
@@ -119,7 +150,7 @@ impl MatrixConnector {
         chat: &ChatId,
         markdown: &str,
     ) -> Result<MessageRef, ChatError> {
-        let room = self.joined_room(chat)?;
+        let room = self.encrypted_room(chat).await?;
         let event = self.send_markdown(&room, markdown).await?;
         Ok(rules::message_ref(&event))
     }
@@ -133,7 +164,7 @@ impl MatrixConnector {
         chat: &ChatId,
         picture: &Shown,
     ) -> Result<MessageRef, ChatError> {
-        let room = self.joined_room(chat)?;
+        let room = self.encrypted_room(chat).await?;
         let mime: mime::Mime = picture.mime.parse().unwrap_or(mime::IMAGE_PNG);
         let info = AttachmentInfo::Image(BaseImageInfo {
             width: picture.width.map(UInt::from),
@@ -166,7 +197,7 @@ impl MatrixConnector {
         chat: &ChatId,
         question: &Question,
     ) -> Result<MessageRef, ChatError> {
-        let room = self.joined_room(chat)?;
+        let room = self.encrypted_room(chat).await?;
         let event = self.send_markdown(&room, &question.markdown).await?;
         // Remembered before the first reaction goes out, so that nothing the
         // owner does can beat it.

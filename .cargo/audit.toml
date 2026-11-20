@@ -10,12 +10,4 @@ ignore = [
   # build may link only one SQLite. Goes when matrix-sdk moves to rusqlite
   # 0.41 (libsqlite3-sys 0.39).
   "RUSTSEC-2026-0459",
-  # zip 2.4.2 is only a build dependency of sherpa-onnx-sys, used at build
-  # time to unpack its own native library -- an archive CI and the release
-  # build check against a pinned SHA-256 (scripts/sherpa-archives.sh). All
-  # four are in `extract` on hostile archives. The app's own zip is 9.x.
-  "RUSTSEC-2026-0367",
-  "RUSTSEC-2026-0368",
-  "RUSTSEC-2026-0369",
-  "RUSTSEC-2026-0429",
 ]

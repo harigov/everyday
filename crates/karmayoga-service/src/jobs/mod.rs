@@ -50,6 +50,7 @@ pub mod research;
 pub mod task;
 
 use crate::agent::{AgentEvent, JobTurn, Sink, Turn, Turned};
+use crate::ctx::Scope;
 use crate::events::{Change, Kind, Level, Notification, Op};
 use crate::service::{Service, blocking};
 use jiff::Timestamp;
@@ -879,12 +880,14 @@ fn announce(service: &Arc<Service>, job: &Job) {
         // came from says what it was.
         JobStatus::Done => service.events().notify(
             Notification::new(Level::Info, format!("{} is ready", job.kind.label()))
+                .domain(Scope::Agent)
                 .for_user()
                 .key(key),
         ),
         JobStatus::Failed => service.events().notify(
             Notification::warning(format!("{} could not finish", job.kind.label()))
                 .body(job.reason.clone())
+                .domain(Scope::Agent)
                 .for_user()
                 .key(key),
         ),

@@ -93,7 +93,17 @@ mail-builder = { version = "=1.0.0", default-features = false }
 # never wants dialling out on a person's behalf anyway. See `compose.rs`'s
 # module docs for how remote loading is also switched off at the
 # `InlineOptions` level, independent of which features are compiled in.
-css-inline = { version = "=0.21.2", default-features = false }
+#
+# Pinned exactly, and not below 0.22.0: up to 0.21.2 the serializer wrote an
+# element's `class` attribute back out without escaping `"`, so a quoted
+# message whose class held `a" onerror="..."` injected attributes (or, with a
+# `>`, elements) into the reply or forward this crate sends
+# (GHSA-jh54-c7gc-mvcc). 0.25.0 is the newest release, 1.88 its MSRV against
+# this tree's 1.96; every release since the fix also moved to html5ever 0.40,
+# so there is no smaller step that keeps the old parser stack. The regression
+# test is `inline_css_does_not_let_a_quoted_class_add_attributes_or_elements`
+# in `compose.rs`.
+css-inline = { version = "=0.25.0", default-features = false }
 
 # The SMTP client `smtp.rs` sends through. See that module's docs for the
 # full reasoning behind each feature:

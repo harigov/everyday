@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 use super::{
-    Args, Tool, ToolContext, Window, day, decimal, describe_by_id, empty_schema, flag, limit_arg,
-    one_of, resolve_purpose, run_delete, schema, text,
+    Args, Domain, Tool, ToolContext, Window, day, decimal, describe_by_id, empty_schema, flag,
+    limit_arg, one_of, resolve_purpose, run_delete, schema, text,
 };
 use crate::error::{Error, Result};
 use crate::health::report::resolve_stat;
@@ -287,8 +287,47 @@ pub(super) static TOOLS: &[Tool] = &[
     ),
 ];
 
+/// Is this tracker one whose values come out of a domain `ctx`'s caller may
+/// not see?
+///
+/// A tracker is a Trackers record, but one sourced from the Health app is a
+/// day's heart rate or glucose, and one sourced from Screen time is which
+/// sites somebody spent their day on. A caller kept out of Health or Screen
+/// time (see [`ToolContext::withheld`]) must not get either by asking
+/// Trackers instead: such a tracker is left out of every read here, and
+/// cannot be made or changed.
+pub(super) fn is_out_of_reach(ctx: &ToolContext<'_>, tracker: &Tracker) -> bool {
+    (ctx.withholds(Domain::Health) && tracker.source.reads_health())
+        || (ctx.withholds(Domain::ScreenTime) && tracker.source.reads_screen_time())
+}
+
+/// The ids of every tracker [`is_out_of_reach`], for filtering days and
+/// readings that name a tracker by id and nothing else.
+fn ids_out_of_reach(ctx: &ToolContext<'_>) -> Result<std::collections::BTreeSet<TrackerId>> {
+    if ctx.withheld.is_empty() {
+        return Ok(Default::default());
+    }
+    Ok(ctx.vault.trackers()?.iter().filter(|t| is_out_of_reach(ctx, t)).map(|t| t.id).collect())
+}
+
+/// A tracker the caller named by id, answered as not there when it is one
+/// they may not see -- the same answer an id that names nothing gets, so
+/// asking tells a caller nothing about what the vault holds.
+fn reachable_tracker(ctx: &ToolContext<'_>, id: TrackerId) -> Result<Tracker> {
+    let tracker = ctx.vault.tracker(id)?;
+    if is_out_of_reach(ctx, &tracker) {
+        return Err(Error::NotFound { kind: "tracker", id: id.to_string() });
+    }
+    Ok(tracker)
+}
+
 fn run_list_trackers(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
-    let live: Vec<Tracker> = ctx.vault.trackers()?.into_iter().filter(|t| !t.archived).collect();
+    let live: Vec<Tracker> = ctx
+        .vault
+        .trackers()?
+        .into_iter()
+        .filter(|t| !t.archived && !is_out_of_reach(ctx, t))
+        .collect();
     let measured = ctx.vault.target_progress(&live, ctx.today)?;
     let rows: Vec<Value> = live
         .iter()
@@ -408,6 +447,7 @@ fn run_log_reading(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         .opt_f64("value")
         .ok_or_else(|| args.bad("`value` is required and must be a number"))?;
     let date = args.opt_date("date")?.unwrap_or(ctx.today);
+    reachable_tracker(ctx, tracker_id)?;
 
     let mut reading = Reading::on(tracker_id, date, value);
     reading.note = args.opt_str("note").unwrap_or_default().to_string();
@@ -536,10 +576,17 @@ fn run_tracker_summary(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> 
 
     let mut query = ReadingQuery::between(from, to);
     if let Some(id) = args.opt_id::<TrackerId>("tracker_id", "tracker")? {
+        reachable_tracker(ctx, id)?;
         query.tracker_ids = vec![id];
     }
 
-    let days = ctx.vault.tracker_days(&query)?;
+    // The days of a tracker counting something this caller may not see are
+    // dropped after the fact, not skipped in the query: a day names its
+    // tracker by id alone, and a tracker since deleted is still owed its
+    // days -- which a query naming only the trackers left would lose.
+    let hidden = ids_out_of_reach(ctx)?;
+    let mut days = ctx.vault.tracker_days(&query)?;
+    days.retain(|d| !hidden.contains(&d.tracker_id));
 
     // A day's one number depends on what the tracker *is*: doses sum, a
     // severity scale takes the worst of the day, a habit counts. Picking one
@@ -598,12 +645,27 @@ fn run_set_target(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         _ => None,
     };
 
+    // Before anything is looked up or made: a target on the Health app's
+    // steps or on a site's screen time is a tracker that reads them back,
+    // and a caller kept out of those is kept out of this too.
+    if let Some(measure) = args.opt_str("measure").map(|m| m.trim().to_lowercase()) {
+        if is_health(&measure) && ctx.withholds(Domain::Health) {
+            return Err(args
+                .bad("this connection may not see Health, so it cannot measure anything from it"));
+        }
+        if measure == "screen" && ctx.withholds(Domain::ScreenTime) {
+            return Err(args.bad(
+                "this connection may not see Screen time, so it cannot measure anything from it",
+            ));
+        }
+    }
+
     let mut tracker = match args.opt_id::<TrackerId>("tracker_id", "tracker")? {
         Some(id) => {
             if args.opt_str("measure").is_some() {
                 return Err(args.bad("pass `tracker_id` or `measure`, not both"));
             }
-            let mut t = ctx.vault.tracker(id)?;
+            let mut t = reachable_tracker(ctx, id)?;
             if purpose.is_some() {
                 t.purpose = purpose;
             }
@@ -1003,6 +1065,7 @@ fn run_list_readings(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     query.limit = Some(args.limit());
     query.timed_only = args.bool_or("timed_only", false);
     if let Some(id) = args.opt_id::<TrackerId>("tracker_id", "tracker")? {
+        reachable_tracker(ctx, id)?;
         query.tracker_ids = vec![id];
     }
 
@@ -1010,11 +1073,15 @@ fn run_list_readings(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // model can say "swimming" rather than a uuid.
     let names: BTreeMap<TrackerId, String> =
         ctx.vault.trackers()?.into_iter().map(|t| (t.id, t.name)).collect();
+    // Readings of a tracker this caller may not see: see `run_tracker_summary`
+    // for why they are dropped here and not asked for by id.
+    let hidden = ids_out_of_reach(ctx)?;
 
     let rows: Vec<Value> = ctx
         .vault
         .readings(&query)?
         .into_iter()
+        .filter(|r| !hidden.contains(&r.tracker_id))
         .map(|r| {
             let mut row = json!({
                 "id": r.id.to_string(),
@@ -1069,6 +1136,79 @@ mod tests {
             find_by_name(&[t], "Water").is_none(),
             "archiving rather than deleting frees the name up"
         );
+    }
+
+    // ---- what a caller kept out of a domain may not see -----------------------
+
+    fn health_tracker() -> Tracker {
+        let mut t = Tracker::new("Steps", TrackerKind::Amount);
+        t.source = TrackerSource::Health { metric: Metric::Steps, stat: Stat::Auto };
+        t
+    }
+
+    fn screen_tracker() -> Tracker {
+        let mut t = Tracker::new("Screen time: Social", TrackerKind::Amount);
+        t.source = TrackerSource::ScreenTime { category: None, item: None };
+        t
+    }
+
+    fn test_vault() -> (crate::vault::Vault, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let v = crate::vault::Vault::create(
+            dir.path(),
+            crate::vault::VaultConfig {
+                name: "Test".into(),
+                backend: "memory".into(),
+                password: None,
+                ..Default::default()
+            },
+            crate::testing::registry(),
+        )
+        .unwrap();
+        (v, dir)
+    }
+
+    #[test]
+    fn a_tracker_is_out_of_reach_only_of_a_caller_kept_from_the_domain_it_reads() {
+        let (v, _dir) = test_vault();
+        let today = date(2026, 9, 16);
+        let nothing = ToolContext::new(&v, today, "UTC");
+        let no_health = [Domain::Health];
+        let no_screen = [Domain::ScreenTime];
+        let without_health = ToolContext::new(&v, today, "UTC").with_withheld(&no_health);
+        let without_screen = ToolContext::new(&v, today, "UTC").with_withheld(&no_screen);
+        let manual = Tracker::new("Water", TrackerKind::Amount);
+        let mut time = Tracker::new("Time on Piano", TrackerKind::Amount);
+        time.source = TrackerSource::Time;
+
+        for t in [&manual, &time, &health_tracker(), &screen_tracker()] {
+            assert!(!is_out_of_reach(&nothing, t), "{}: the owner sees everything", t.name);
+        }
+        assert!(is_out_of_reach(&without_health, &health_tracker()));
+        assert!(!is_out_of_reach(&without_health, &screen_tracker()));
+        assert!(is_out_of_reach(&without_screen, &screen_tracker()));
+        assert!(!is_out_of_reach(&without_screen, &health_tracker()));
+        for t in [&manual, &time] {
+            let said = format!("{}: not read from a private domain", t.name);
+            assert!(!is_out_of_reach(&without_health, t), "{said}");
+            assert!(!is_out_of_reach(&without_screen, t), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_caller_kept_from_health_or_screen_time_cannot_ask_for_a_tracker_that_reads_them() {
+        let (v, _dir) = test_vault();
+        let today = date(2026, 9, 16);
+        let withheld = [Domain::Health, Domain::ScreenTime];
+        let ctx = ToolContext::new(&v, today, "UTC").with_withheld(&withheld);
+        for measure in ["health", "health:steps", " Health:Weight "] {
+            let value = json!({ "measure": measure, "per": "day", "min": 1 });
+            let err = run_set_target(&ctx, &Args::new("set_target", &value)).unwrap_err();
+            assert!(err.to_string().contains("Health"), "{measure}: {err}");
+        }
+        let value = json!({ "measure": "screen", "per": "day", "max": 60 });
+        let err = run_set_target(&ctx, &Args::new("set_target", &value)).unwrap_err();
+        assert!(err.to_string().contains("Screen time"), "{err}");
     }
 
     // ---- health measures ----------------------------------------------------

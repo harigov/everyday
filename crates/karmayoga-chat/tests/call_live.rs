@@ -496,10 +496,22 @@ async fn the_owner_calls_the_assistant_and_hears_its_answer() {
         homeserver: homeserver.clone(),
         user_id: bot.to_string(),
         owner: owner_id.to_string(),
+        trusted_devices: Vec::new(),
     });
     svc.call(Ctx::local(), "save_chat_link", json!({ "link": link, "password": bot_password }))
         .await
         .unwrap_or_else(|e| panic!("save_chat_link: {e}"));
+    // The bot answers calls, and gives its key, to a device the owner picked
+    // by hand and to no other: this is the owner picking the one it signed in
+    // on, before the bot is online.
+    let owner_device = owner.client.device_id().expect("the owner is signed in").to_string();
+    svc.call(
+        Ctx::local(),
+        "set_chat_trusted_devices",
+        json!({ "id": link.id, "devices": [owner_device] }),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("set_chat_trusted_devices: {e}"));
     wait_online(&svc, link.id).await;
 
     step("waiting for the greeting");
@@ -675,7 +687,8 @@ const PHONE_REPLY: &str =
 ///   `http://127.0.0.1:6167`.
 /// - `KARMAYOGA_TEST_PHONE_BOT`, `KARMAYOGA_TEST_PHONE_BOT_PASSWORD`: the
 ///   throwaway account.
-/// - `KARMAYOGA_TEST_PHONE_OWNER`: who will call.
+/// - `KARMAYOGA_TEST_PHONE_OWNER`: who will call. Every device the owner has
+///   when the bot is online is trusted, so sign the phone in first.
 /// - `KARMAYOGA_TEST_PHONE_MINUTES`: how long to wait (15).
 /// - `KARMAYOGA_TEST_PHONE_RING`: a token service URL, to ring the owner
 ///   rather than wait to be called. The bot cannot place calls yet, so a
@@ -705,13 +718,36 @@ async fn a_real_phone_calls_a_scratch_bot() {
     let endpoint = fake_model(PHONE_REPLY).await;
     let (svc, _dir) = assistant(&endpoint);
     let mut link = ChatLink::new_matrix();
-    link.service =
-        ChatService::Matrix(MatrixLink { homeserver, user_id: bot.clone(), owner: owner.clone() });
+    link.service = ChatService::Matrix(MatrixLink {
+        homeserver,
+        user_id: bot.clone(),
+        owner: owner.clone(),
+        trusted_devices: Vec::new(),
+    });
     let password = var("KARMAYOGA_TEST_PHONE_BOT_PASSWORD");
     svc.call(Ctx::local(), "save_chat_link", json!({ "link": link, "password": password.clone() }))
         .await
         .unwrap_or_else(|e| panic!("save_chat_link: {e}"));
     wait_online(&svc, link.id).await;
+    // The bot trusts only the devices its owner picked. The person holding the
+    // phone is not here to pick, so every device the scratch owner has is.
+    let devices: Vec<String> = serde_json::from_value::<Vec<Value>>(
+        svc.call(Ctx::local(), "chat_devices", json!({ "id": link.id }))
+            .await
+            .unwrap_or_else(|e| panic!("chat_devices: {e}")),
+    )
+    .unwrap()
+    .iter()
+    .map(|device| device["deviceId"].as_str().unwrap().to_owned())
+    .collect();
+    step(&format!("trusting {devices:?}"));
+    svc.call(
+        Ctx::local(),
+        "set_chat_trusted_devices",
+        json!({ "id": link.id, "devices": devices }),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("set_chat_trusted_devices: {e}"));
     step(&format!("{bot} is online; {owner} has to accept its invitation"));
     let ringing = std::env::var("KARMAYOGA_TEST_PHONE_RING").ok().map(|service| {
         let (homeserver, bot, owner) =

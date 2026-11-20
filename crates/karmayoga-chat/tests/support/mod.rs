@@ -447,6 +447,7 @@ pub fn matrix_link() -> ChatLink {
         homeserver: "http://127.0.0.1:6167".into(),
         user_id: "@bot:test".into(),
         owner: "@me:test".into(),
+        trusted_devices: Vec::new(),
     });
     link
 }

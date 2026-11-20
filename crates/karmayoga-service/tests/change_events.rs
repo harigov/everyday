@@ -1513,6 +1513,13 @@ async fn every_offline_write_announces_what_was_written_down() {
     chat_link["service"]["userId"] = json!("@karmayoga:example.org");
     chat_link["service"]["owner"] = json!("@owner:example.org");
     run(&svc, &h, "save_chat_link", json!({ "link": chat_link, "password": "bot-password" })).await;
+    run(
+        &svc,
+        &h,
+        "set_chat_trusted_devices",
+        json!({ "id": chat_link["id"], "devices": ["PHONE"] }),
+    )
+    .await;
     run(&svc, &h, "remove_chat_link", json!({ "id": chat_link["id"] })).await;
 
     run(&svc, &h, "set_quick_ask", json!({ "name": "todo.parse", "on": true })).await;

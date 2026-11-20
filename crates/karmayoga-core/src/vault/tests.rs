@@ -63,6 +63,7 @@ fn the_assistant_is_offered_only_the_tools_the_backend_can_serve() {
         unattended: false,
         follow_up: false,
         caller: None,
+        withheld: &[],
         mail_search: None,
         assistant_provider: None,
         mail_rate_limit: None,
@@ -508,6 +509,7 @@ fn a_chat_link_that_cannot_work_is_refused_before_it_is_stored() {
         homeserver: "http://127.0.0.1:6167".into(),
         user_id: "@me:example.org".into(),
         owner: "@me:example.org".into(),
+        trusted_devices: Vec::new(),
     });
     let err = v.save_chat_settings(&ChatSettings { links: vec![same.clone()] }).unwrap_err();
     assert_eq!(err.code(), "invalid", "got {err}");
@@ -518,6 +520,7 @@ fn a_chat_link_that_cannot_work_is_refused_before_it_is_stored() {
         homeserver: "http://127.0.0.1:6167".into(),
         user_id: "@karmayoga:example.org".into(),
         owner: "@me:example.org".into(),
+        trusted_devices: Vec::new(),
     });
     let err = v.save_chat_settings(&ChatSettings { links: vec![good.clone(), good] }).unwrap_err();
     assert_eq!(err.code(), "invalid", "got {err}");

@@ -102,12 +102,12 @@ app-deps:
 JOBS ?= 8
 
 build: $(UI_DIR)/node_modules app-deps ## Build the desktop app to run on this machine
-	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build --no-bundle
+	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build --no-bundle -- --locked
 	@echo
 	@echo "Built $(TARGET_DIR)/release/karmayoga-app"
 
 dist: $(UI_DIR)/node_modules app-deps ## Build the installers the way a release does (slow)
-	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build -- --profile dist
+	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build -- --profile dist --locked
 	@echo
 	@echo "Installers are under $(TARGET_DIR)/dist/bundle/"
 

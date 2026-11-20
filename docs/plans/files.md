@@ -85,10 +85,14 @@ files arrive.
   anywhere. A marker file (`.karmayoga/folder.json`) tells a folder that is
   there from an empty mount point: no marker where the catalog expects files
   means *unavailable*, never *empty*, and nothing — the reconciler, the trash
-  sweep, a backup — acts on it. No unencrypted copies outside the folder:
-  thumbnails are sealed blobs, the trash, uploads in progress and decrypted
-  copies opened in another program all live in `.karmayoga/` inside it
-  (which a fresh `.stignore` tells Syncthing to leave alone).
+  sweep, a backup — acts on it. Thumbnails are sealed blobs, and the trash
+  and plain uploads in progress live in `.karmayoga/` inside the folder
+  (which a fresh `.stignore` tells Syncthing to leave alone). What is
+  decrypted from a sealed file never touches the folder, which may be
+  synced: a copy opened in another program and a sealed upload in progress
+  live in owner-only directories under the cache directory
+  (`karmayoga-open-*`, `karmayoga-staging-*`), are deleted when the vault
+  locks, and are swept after an hour and at the next start.
 - **The folder is the truth for plain files.** A watcher (`notify`) and a
   pass every five minutes reconcile the catalog with the disk. A file that
   moved while nobody watched is recognised by its BLAKE3 hash and keeps its

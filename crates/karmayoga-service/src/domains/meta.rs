@@ -119,6 +119,35 @@ fn resolve_caller(ctx: &Ctx, claimed: Option<WireCaller>) -> CommandResult<Optio
     }
 }
 
+/// The domains whose records this caller may not see even through a tool of
+/// another domain -- what `ToolContext::withheld` is given.
+///
+/// The four whose records are private enough that holding a scope for some
+/// other domain is not leave to see them: Money, Screen time, Files and
+/// Health. One is withheld when the connection does not hold its scope at
+/// all, and -- for an MCP client, where a token is minted as `All` unless its
+/// owner narrows it and most were minted before those domains existed -- when
+/// it holds it only through `All` rather than naming it, the rule
+/// `karmayoga_server::mcp` keeps for those domains' own tools. The assistant's
+/// own writing and the trackers that count them can quote any of the four, so
+/// the tools that hand those over consult this list.
+///
+/// Empty for the vault's owner: the window, the CLI and a paired copy of this
+/// application hold `All` and are not MCP.
+fn withheld_domains(ctx: &Ctx, caller: Option<&ToolCaller>) -> Vec<tools::Domain> {
+    let mcp = matches!(caller, Some(ToolCaller::Mcp { .. }));
+    [
+        (tools::Domain::Money, Scope::Money),
+        (tools::Domain::ScreenTime, Scope::ScreenTime),
+        (tools::Domain::Files, Scope::Files),
+        (tools::Domain::Health, Scope::Health),
+    ]
+    .into_iter()
+    .filter(|(_, scope)| !ctx.holds(*scope) || (mcp && !ctx.names(*scope)))
+    .map(|(domain, _)| domain)
+    .collect()
+}
+
 /// The surface, and what version of it this build speaks.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -264,8 +293,13 @@ async fn list_tools(svc: Arc<Service>, ctx: Ctx, args: ListTools) -> CommandResu
         // Some(Mcp { .. })`, which needs no acknowledgement) -- never the
         // chat assistant, which is wired up entirely inside `agent.rs` and
         // never touches this command at all.
+        let mcp = matches!(caller, Some(ToolCaller::Mcp { .. }));
         Ok(tools::available_for(&vault, caller.as_ref(), None)
             .into_iter()
+            // Never offered to an MCP client, whatever its scopes: see
+            // `tools::NOT_OVER_MCP`. `karmayoga_server::mcp` filters the same
+            // list; this is for a caller that reaches `list_tools` another way.
+            .filter(|t| !(mcp && tools::is_not_over_mcp(t.name)))
             .filter_map(|t| {
                 // Mapped once and then both filtered on and recorded. Two
                 // calls would be two answers to one question, which is one
@@ -323,6 +357,10 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
     // itself, which has no `Ctx` of its own to read this from.
     let origin = ctx.caller.origin().map(str::to_string);
     let caller = resolve_caller(&ctx, args.caller.clone())?;
+    // Which domains this caller may not see through another's tool: held for
+    // both `ToolContext`s below, the one that judges the call's effect and the
+    // one that runs it.
+    let withheld = withheld_domains(&ctx, caller.as_ref());
     // Checked against what this vault offers rather than against the whole
     // catalogue, so a tool from a domain the backend cannot carry -- or one
     // no account permits this caller to use at all -- is not reachable by
@@ -349,10 +387,15 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
         let vault = vault.clone();
         let name = args.name.clone();
         let arguments = args.arguments.clone();
+        let withheld = withheld.clone();
+        let caller = caller.clone();
         blocking(move || {
             let tz = system_tz();
             let today = local_date_in(jiff::Timestamp::now(), &tz);
-            let ctx = tools::ToolContext::new(&vault, today, &tz);
+            let mut ctx = tools::ToolContext::new(&vault, today, &tz).with_withheld(&withheld);
+            if let Some(caller) = caller {
+                ctx = ctx.with_caller(caller);
+            }
             Ok(tools::effect_for(&ctx, &name, &arguments).unwrap_or(tool.effect))
         })
         .await?
@@ -443,7 +486,8 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
             .with_mail_rate_limit(&rate_limit)
             .with_after_mail_write(&after_mail_write)
             .with_invite_responder(&invite_responder)
-            .with_calendar_writer(&calendar_writer);
+            .with_calendar_writer(&calendar_writer)
+            .with_withheld(&withheld);
         if let Some(caller) = caller {
             ctx = ctx.with_caller(caller);
         }
@@ -567,6 +611,60 @@ mod tests {
         assert_eq!(title_of("create_task"), "Create task");
         assert_eq!(title_of("overview"), "Overview");
         assert_eq!(title_of("list_time_blocks"), "List time blocks");
+    }
+
+    fn token(scopes: Vec<Scope>) -> Ctx {
+        Ctx { caller: Caller::Device("mcp:test".into()), scopes, proved_at: None, request_id: None }
+    }
+
+    fn an_mcp_client() -> Option<ToolCaller> {
+        Some(ToolCaller::Mcp { client: "mcp:test".into() })
+    }
+
+    #[test]
+    fn the_owner_is_kept_from_nothing() {
+        assert_eq!(withheld_domains(&Ctx::local(), None), Vec::<tools::Domain>::new());
+    }
+
+    #[test]
+    fn an_mcp_client_is_kept_from_every_private_domain_its_token_does_not_name() {
+        use tools::Domain;
+        // `All` covers them for the owner's own devices and not for somebody
+        // else's model: a token minted before Money existed must not wake up
+        // reading what the assistant quotes of it.
+        let all = token(vec![Scope::All]);
+        assert_eq!(
+            withheld_domains(&all, an_mcp_client().as_ref()),
+            vec![Domain::Money, Domain::ScreenTime, Domain::Files, Domain::Health]
+        );
+        assert!(withheld_domains(&all, None).is_empty(), "the same token, not claiming to be MCP");
+
+        let money_and_health = token(vec![Scope::All, Scope::Money, Scope::Health]);
+        assert_eq!(
+            withheld_domains(&money_and_health, an_mcp_client().as_ref()),
+            vec![Domain::ScreenTime, Domain::Files]
+        );
+
+        let everything =
+            token(vec![Scope::All, Scope::Money, Scope::ScreenTime, Scope::Files, Scope::Health]);
+        assert!(withheld_domains(&everything, an_mcp_client().as_ref()).is_empty());
+    }
+
+    #[test]
+    fn a_caller_without_a_scope_is_kept_from_its_domain_even_when_not_mcp() {
+        use tools::Domain;
+        // A paired phone narrowed to Tasks, say: no claim to be MCP, and still
+        // not somebody who may read Health through the assistant's writing.
+        let tasks_only = Ctx { caller: Caller::Local, scopes: vec![Scope::Tasks], ..Ctx::local() };
+        assert_eq!(
+            withheld_domains(&tasks_only, None),
+            vec![Domain::Money, Domain::ScreenTime, Domain::Files, Domain::Health]
+        );
+        let with_health = Ctx { scopes: vec![Scope::Tasks, Scope::Health], ..tasks_only };
+        assert_eq!(
+            withheld_domains(&with_health, None),
+            vec![Domain::Money, Domain::ScreenTime, Domain::Files]
+        );
     }
 
     #[test]

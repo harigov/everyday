@@ -15,6 +15,7 @@ mod memory;
 mod money;
 mod news;
 mod notes;
+mod over_mcp;
 mod partial_patch;
 mod purpose;
 mod screentime;

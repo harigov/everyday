@@ -146,26 +146,31 @@ pub(super) static TOOLS: &[Tool] = &[
          something up \u{2014} not for a task, which is create_task.",
         run_create_entry
     ),
-    tool!(
-        "update_entry",
-        Write,
-        Journals,
-        schema(
-            vec![
-                ("entry_id", text("Id of the entry to change.")),
-                ("body", text("Replaces the whole body. Markdown. Omit to leave it alone.")),
-                ("title", text("Replaces the title. Omit to leave it alone.")),
-                ("date", day("Re-file under a different day.")),
-                ("tags", list("Replaces the tags entirely. Omit to leave them alone.")),
-                ("starred", flag("Star or unstar it.")),
-            ],
-            &["entry_id"]
-        ),
-        "Change an existing entry. Every field is optional and omitted fields are \
-         left alone \u{2014} but `body` and `tags` replace rather than append, so read \
-         the entry first if you mean to add to it.",
-        run_update_entry
-    ),
+    Tool {
+        destructive_when: Some(replaces_entry_text),
+        ..tool!(
+            "update_entry",
+            Write,
+            Journals,
+            schema(
+                vec![
+                    ("entry_id", text("Id of the entry to change.")),
+                    ("body", text("Replaces the whole body. Markdown. Omit to leave it alone.")),
+                    ("title", text("Replaces the title. Omit to leave it alone.")),
+                    ("date", day("Re-file under a different day.")),
+                    ("tags", list("Replaces the tags entirely. Omit to leave them alone.")),
+                    ("starred", flag("Star or unstar it.")),
+                ],
+                &["entry_id"]
+            ),
+            "Change an existing entry. Every field is optional and omitted fields are \
+             left alone \u{2014} but `body` and `tags` replace rather than append, so read \
+             the entry first if you mean to add to it. Replacing the text of an entry that \
+             has some is confirmed first, since there is no undo.",
+            run_update_entry,
+            Some(describe_update_entry)
+        )
+    },
     // ---- its own journal ----------------------------------------------------
     tool!(
         "write_own_journal",
@@ -240,6 +245,26 @@ fn describe_delete_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<Strin
     )
 }
 
+/// An `update_entry` that would replace words an entry already holds is a
+/// loss, and is confirmed like a deletion -- see [`Tool::destructive_when`]
+/// and [`super::replaces_text`]. One that renames, re-files or tags it, or
+/// writes the first text into an empty entry, loses nothing.
+fn replaces_entry_text(ctx: &ToolContext<'_>, args: &Args<'_>) -> bool {
+    let Some(body) = args.opt_str("body") else { return false };
+    let Ok(Some(id)) = args.opt_id::<EntryId>("entry_id", "entry") else { return false };
+    ctx.vault.entry(id).is_ok_and(|entry| super::replaces_text(&entry.body.to_markdown(), body))
+}
+
+fn describe_update_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
+    let id: EntryId = args.opt_id("entry_id", "entry").ok()??;
+    let entry = ctx.vault.entry(id).ok()?;
+    Some(super::replacement_subject(
+        &entry.display_title(),
+        &entry.body.to_markdown(),
+        args.opt_str("body"),
+    ))
+}
+
 /// The assistant's own journal's two tools, by name -- see
 /// `write_own_journal` above.
 pub const WRITE_OWN_JOURNAL: &str = "write_own_journal";
@@ -247,12 +272,22 @@ pub const READ_OWN_JOURNAL: &str = "read_own_journal";
 
 // ---- projections ----------------------------------------------------------
 
-fn entry_summary_json(e: &crate::model::EntrySummary) -> Value {
+/// Whose writing an entry in `journal` is: `"assistant"` for a page of the
+/// assistant's own journal (`own`), `"own"` for everything the person keeps.
+/// Every entry a tool hands back says so, in the same words a note's
+/// [`NoteOrigin`](crate::note::NoteOrigin) does, so a reader can tell what the
+/// assistant left itself from what the person wrote.
+fn entry_origin(journal: JournalId, own: Option<JournalId>) -> &'static str {
+    if Some(journal) == own { "assistant" } else { "own" }
+}
+
+fn entry_summary_json(e: &crate::model::EntrySummary, own: Option<JournalId>) -> Value {
     let mut v = json!({
         "id": e.id.to_string(),
         "date": e.local_date.to_string(),
         "title": e.title,
         "journal_id": e.journal_id.to_string(),
+        "origin": entry_origin(e.journal_id, own),
     });
     let m = v.as_object_mut().unwrap();
     if !e.tags.is_empty() {
@@ -264,10 +299,11 @@ fn entry_summary_json(e: &crate::model::EntrySummary) -> Value {
     v
 }
 
-fn entry_json(e: &Entry) -> Value {
+fn entry_json(e: &Entry, own: Option<JournalId>) -> Value {
     json!({
         "id": e.id.to_string(),
         "journal_id": e.journal_id.to_string(),
+        "origin": entry_origin(e.journal_id, own),
         "date": e.local_date.to_string(),
         "title": e.display_title(),
         // Markdown rather than the ProseMirror document. The model reads and
@@ -284,7 +320,11 @@ fn entry_json(e: &Entry) -> Value {
 /// The kind is not decoration: it tells the model which tool to reach for
 /// next. `get_entry` on a note id would fail, and a model that had no way to
 /// tell them apart would have to guess.
-fn search_hit_json(h: &crate::search::SearchHit, own: Option<JournalId>) -> Value {
+fn search_hit_json(
+    ctx: &ToolContext<'_>,
+    h: &crate::search::SearchHit,
+    own: Option<JournalId>,
+) -> Value {
     let mut out = json!({
         "title": h.title,
         "excerpt": h.snippet,
@@ -295,6 +335,7 @@ fn search_hit_json(h: &crate::search::SearchHit, own: Option<JournalId>) -> Valu
             map.insert("kind".into(), json!("entry"));
             map.insert("id".into(), json!(id.to_string()));
             map.insert("date".into(), json!(local_date.to_string()));
+            map.insert("origin".into(), json!(entry_origin(journal_id, own)));
             // A page of the assistant's own journal is its own note, not
             // their writing -- said, so it is not quoted back to them as such.
             if Some(journal_id) == own {
@@ -304,6 +345,16 @@ fn search_hit_json(h: &crate::search::SearchHit, own: Option<JournalId>) -> Valu
         Found::Note { id } => {
             map.insert("kind".into(), json!("note"));
             map.insert("id".into(), json!(id.to_string()));
+            // Read off the note itself: the index holds words, not who wrote
+            // them. A note that cannot be read back is called the assistant's,
+            // since saying "own" of something unchecked is the wrong way to
+            // be wrong.
+            let origin = ctx
+                .vault
+                .note(id)
+                .map(|n| n.origin())
+                .unwrap_or(crate::note::NoteOrigin::Assistant);
+            map.insert("origin".into(), json!(origin.as_str()));
         }
     }
     out
@@ -389,7 +440,7 @@ fn run_overview(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
         let trackers: Vec<Value> = vault
             .trackers()?
             .iter()
-            .filter(|t| !t.archived)
+            .filter(|t| !t.archived && !super::trackers::is_out_of_reach(ctx, t))
             .map(|t| json!({ "id": t.id.to_string(), "name": t.name }))
             .collect();
         m.insert("trackers".into(), json!(trackers));
@@ -466,7 +517,7 @@ fn run_search(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let own = ctx.vault.assistant_journal()?.map(|j| j.id);
     Ok(json!({
         "count": hits.len(),
-        "results": hits.iter().map(|h| search_hit_json(h, own)).collect::<Vec<_>>(),
+        "results": hits.iter().map(|h| search_hit_json(ctx, h, own)).collect::<Vec<_>>(),
     }))
 }
 
@@ -598,7 +649,12 @@ fn run_read_own_journal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value>
         "to": to.to_string(),
         "pages": pages
             .iter()
-            .map(|e| json!({ "id": e.id.to_string(), "date": e.local_date.to_string(), "text": e.body.to_markdown() }))
+            .map(|e| json!({
+                "id": e.id.to_string(),
+                "date": e.local_date.to_string(),
+                "origin": "assistant",
+                "text": e.body.to_markdown(),
+            }))
             .collect::<Vec<_>>(),
         // What these are, said where they are read: notes written on earlier
         // runs, some after reading other people's mail or pages -- so what
@@ -628,15 +684,17 @@ fn run_list_entries(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         limit: Some(args.limit()),
     };
     let rows = ctx.vault.entries(&query)?;
+    let own = ctx.vault.assistant_journal()?.map(|j| j.id);
     Ok(json!({
         "count": rows.len(),
-        "entries": rows.iter().map(entry_summary_json).collect::<Vec<_>>(),
+        "entries": rows.iter().map(|e| entry_summary_json(e, own)).collect::<Vec<_>>(),
     }))
 }
 
 fn run_get_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let entry: Entry = load_by_id(args, "entry_id", "entry", |id| ctx.vault.entry(id))?;
-    Ok(entry_json(&entry))
+    let own = ctx.vault.assistant_journal()?.map(|j| j.id);
+    Ok(entry_json(&entry, own))
 }
 
 fn run_create_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {

@@ -260,10 +260,10 @@ pub(super) fn write_header(root: &Path, header: &VaultHeader) -> Result<()> {
 /// key without rotating it, so the outgoing header is that same key wrapped
 /// under the old password: kept as the spare, it would let anyone who knew
 /// the old password and later got a copy of this directory unwrap the key the
-/// new password was meant to protect. Turning encryption on has the same
-/// shape -- the outgoing header is an unencrypted one, and recovering from it
-/// would reopen the vault with no cipher at all. The spare's job is a second
-/// copy of a *working* key, and the new header is the working one.
+/// new password was meant to protect. The spare's job is a second copy of a
+/// *working* key, and the new header is the working one. (Turning encryption
+/// on for a vault made without it is refused outright -- see
+/// `Vault::change_password` -- since nothing would re-seal what it holds.)
 ///
 /// The live file goes first: until it lands the old header is still the
 /// vault's, and its spare still matches it. `slot` -- the header held in
@@ -467,17 +467,17 @@ mod tests {
     }
 
     #[test]
-    fn a_vault_that_was_never_encrypted_still_opens_and_can_be_encrypted_later() {
+    fn a_vault_that_was_never_encrypted_still_opens_and_is_not_mistaken_for_a_downgrade() {
         let dir = tempfile::tempdir().unwrap();
         drop(Vault::create(dir.path(), config(None), registry()).unwrap());
         let v = Vault::open(dir.path(), registry()).unwrap();
         assert!(v.is_unlocked(), "an unencrypted vault opens by itself");
-        v.change_password(None, Some("pw")).unwrap();
+        // A password cannot be added to it (see `Vault::change_password`),
+        // so it stays what it was made as, and opens again the same way.
+        assert!(v.change_password(None, Some("pw")).is_err());
         drop(v);
-        // And the encrypted one it became is not mistaken for a downgrade.
         let again = Vault::open(dir.path(), registry()).unwrap();
-        assert!(!again.is_unlocked());
-        again.unlock(Some("pw")).unwrap();
+        assert!(again.is_unlocked());
     }
 
     #[test]

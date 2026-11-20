@@ -79,6 +79,7 @@ use karmayoga_core::meeting::{
 use karmayoga_core::store::meetings::RecordingQuery;
 use karmayoga_core::{Error, Vault};
 
+use crate::ctx::Scope;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::meeting::pipeline;
@@ -706,6 +707,7 @@ fn expire_failed(svc: &Arc<Service>, vault: &Vault) -> CommandResult<()> {
                     "A recording that could not be turned into a note will be deleted tomorrow",
                 )
                 .body(recording.title.clone())
+                .domain(Scope::Meetings)
                 .for_user()
                 .key(format!("meeting-expiry:{}", recording.id)),
             );

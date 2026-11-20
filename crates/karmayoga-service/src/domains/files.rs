@@ -534,8 +534,11 @@ async fn import_files(
             1 => "A file could not be added".to_string(),
             n => format!("{n} files could not be added"),
         };
-        svc.events()
-            .notify(Notification::warning(title).body(format!("{}{tail}.", listed.join("; "))));
+        svc.events().notify(
+            Notification::warning(title)
+                .body(format!("{}{tail}.", listed.join("; ")))
+                .domain(Scope::Files),
+        );
     }
     files::probe_later(&svc, &vault, imported.iter().map(|f| f.id).collect());
     Ok(imported)

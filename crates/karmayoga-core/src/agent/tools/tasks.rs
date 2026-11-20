@@ -31,6 +31,11 @@ const NOT_FOR_LATER: &str = "this turn may not give the assistant work for later
      what one of its tasks will do: only they can, in a conversation. Do it now with the tools \
      you have, or set a reminder on a task of theirs and say in your reply what is left.";
 
+/// What an MCP client is told for the same. See [`refuse_handing_over`].
+const NOT_FOR_MCP: &str = "an MCP client may not give the assistant work for later, or change what \
+     one of its tasks will do: that is set up in the app by the person. Make it a task of \
+     theirs, and say what is left for them to hand over.";
+
 pub(super) static TOOLS: &[Tool] = &[
     tool!(
         "list_projects",
@@ -679,8 +684,15 @@ fn reminder_from_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Option<j
 /// exactly right. Closing one -- done, or blocked -- is how its own job
 /// finishes it, and stays allowed; setting a reminder of *theirs* is a
 /// message to them and is left alone.
+///
+/// An MCP client is the same again: it is somebody else's model, and a task
+/// of the assistant's is a run as the person with every tool the token it
+/// holds was never given -- `create_routine` kept from it for the same
+/// reason (see [`super::NOT_OVER_MCP`]). Its own tasks for the person, and
+/// closing the assistant's, are what it is there for.
 fn refuse_handing_over(ctx: &ToolContext<'_>, before: Option<&Task>, after: &Task) -> Result<()> {
-    if !(ctx.unattended || ctx.follow_up) || after.assignee != Assignee::Assistant {
+    let over_mcp = matches!(ctx.caller, Some(super::Caller::Mcp { .. }));
+    if !(ctx.unattended || ctx.follow_up || over_mcp) || after.assignee != Assignee::Assistant {
         return Ok(());
     }
     let changed = match before {
@@ -693,7 +705,10 @@ fn refuse_handing_over(ctx: &ToolContext<'_>, before: Option<&Task>, after: &Tas
                 || (!before.status.is_open() && after.status.is_open())
         }
     };
-    if changed { Err(Error::Invalid(NOT_FOR_LATER.into())) } else { Ok(()) }
+    if !changed {
+        return Ok(());
+    }
+    Err(Error::Invalid(if over_mcp { NOT_FOR_MCP } else { NOT_FOR_LATER }.into()))
 }
 
 /// Add when the reminder goes, or when the assistant starts, to a write's

@@ -15,6 +15,7 @@
 //! notification and nowhere else -- the log is told how many and what went
 //! wrong, never which.
 
+use crate::ctx::Scope;
 use crate::events::{Level, Notification};
 use crate::service::{Service, blocking};
 use jiff::tz::TimeZone;
@@ -141,6 +142,7 @@ fn dose_notices(
         notices.push(
             Notification::new(Level::Info, format!("Time for {}", dose.name.trim()))
                 .body(format!("Due at {at}"))
+                .domain(Scope::Health)
                 .for_user()
                 .key(key),
         );
@@ -181,6 +183,7 @@ fn quiet_notices(
                      was locked when it tried.",
                     source.name.trim()
                 ))
+                .domain(Scope::Health)
                 .for_user()
                 .key(key),
         );

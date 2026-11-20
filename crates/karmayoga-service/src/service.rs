@@ -674,6 +674,9 @@ impl Service {
         // still mid-batch is a bug this ordering exists to make impossible
         // rather than a race to get right twice.
         self.close_mail();
+        // The decrypted copies of sealed files opened in other programs are
+        // gone too, but not by anything here: `Vault::lock`, which every path
+        // that reaches this has just called, deletes them.
         self.events().lock_state(true);
     }
 
@@ -867,6 +870,16 @@ impl Service {
     pub fn set(self: &Arc<Self>, vault: Vault) -> Arc<Vault> {
         let vault = Arc::new(vault);
         *self.vault.write().unwrap() = Some(vault.clone());
+        // Decrypted copies of sealed files, and staged sealed uploads, that a
+        // run which quit without locking (a crash, a kill, a power cut) left in
+        // the cache directory. Cleared here, as the vault is opened and
+        // whether or not it is ever unlocked this time: the files task's own
+        // sweep only runs unlocked, and an hour in. They are named by the
+        // vault's path, so no key is needed to find them. Best effort; the
+        // hourly sweep tries again.
+        if let Err(e) = vault.sweep_left_behind_plaintext(crate::files::task::STALE_PLAINTEXT) {
+            tracing::debug!(error = %e, "files: could not clear plaintext left from an earlier run");
+        }
         // An unencrypted vault -- and one an OS keychain unlocks moments
         // after this returns, see `karmayoga-app`'s `bootstrap` -- is usable
         // the instant it is set, before anything calls `Service::unlocked`
@@ -936,7 +949,9 @@ impl Service {
         let previous = self.vault.write().unwrap().take();
         if let Some(vault) = &previous {
             // Drop the key and the decrypted index now rather than whenever the
-            // last `Arc` happens to go.
+            // last `Arc` happens to go. This also deletes the decrypted copies
+            // of sealed files that other programs were given, and the staged
+            // sealed uploads: see `Vault::lock`.
             vault.lock();
         }
         drop(previous);

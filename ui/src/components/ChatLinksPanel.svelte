@@ -23,6 +23,14 @@
   // seconds instead -- from here, not from the store, so that closing the tab
   // stops it.
   //
+  // Which of your devices the bot believes is chosen here too. Your Matrix ID
+  // alone is not enough to be believed -- anybody who signs in to the account
+  // on a new device can write under it -- so the bot answers only an encrypted
+  // message from a device ticked in "Trusted devices", and only those devices
+  // can read what it says. A device that writes while not ticked is ignored,
+  // and the row says which, so a new phone is easy to find and trust. Only
+  // this computer's own window can change the list.
+  //
   // The poll is also how a verification shows up. When the owner verifies
   // the bot from Element, the bot has no screen to show its seven emoji on,
   // so they appear here under its row, with the answer buttons; see
@@ -34,6 +42,8 @@
     HOURS_INVALID,
     PASSWORD_NEEDED,
     canStartVerification,
+    chosenFrom,
+    deviceName,
     hoursToMinutes,
     linkTitle,
     minutesToHours,
@@ -43,6 +53,11 @@
     sentence,
     statusPill,
     tidyLink,
+    toggled,
+    trustChanged,
+    trustedHint,
+    trustedSummary,
+    untrustedNotice,
     validateLink,
     verificationOver,
     verificationShown,
@@ -53,7 +68,13 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { app } from '../lib/state.svelte'
-  import type { ChatLink, ChatLinkView, ChatVerification, VerificationAnswer } from '../lib/types'
+  import type {
+    ChatDevice,
+    ChatLink,
+    ChatLinkView,
+    ChatVerification,
+    VerificationAnswer,
+  } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
 
@@ -179,9 +200,67 @@
   const startVerifying = (view: ChatLinkView) =>
     verify(view, () => chat.startVerification(view.link.id))
 
+  // ── Trusted devices ──────────────────────────────────────────────────
+
+  /** The picker for one bot's trusted devices, while it is open. `devices` is
+   *  `null` while the bot is being asked for the owner's devices. */
+  interface Picking {
+    id: string
+    bot: string
+    owner: string
+    devices: ChatDevice[] | null
+    chosen: string[]
+    error: string | null
+    saving: boolean
+  }
+  let picking = $state<Picking | null>(null)
+
+  async function pick(view: ChatLinkView) {
+    const id = view.link.id
+    picking = {
+      id,
+      bot: view.link.service.userId,
+      owner: view.link.service.owner,
+      devices: null,
+      chosen: [],
+      error: null,
+      saving: false,
+    }
+    const result = await chat.devices(id)
+    // Closed, or another bot opened, while the bot was being asked.
+    if (picking?.id !== id) return
+    if ('error' in result) {
+      picking.error = sentence(result.error)
+      picking.devices = []
+      return
+    }
+    picking.devices = result.devices
+    picking.chosen = chosenFrom(result.devices)
+  }
+
+  async function saveTrusted() {
+    const p = picking
+    if (!p || p.devices === null || p.saving) return
+    p.saving = true
+    p.error = null
+    const result = await chat.setTrustedDevices(p.id, p.chosen)
+    if (picking?.id !== p.id) return
+    if (!result.ok) {
+      p.saving = false
+      p.error = sentence(result.error)
+      return
+    }
+    picking = null
+  }
+
   function rowMenu(view: ChatLinkView): MenuItem[] {
     return tidyMenu([
       { label: 'Edit…', icon: 'pencil', run: () => begin(view.link) },
+      {
+        label: 'Trusted devices…',
+        icon: 'check',
+        run: () => void pick(view),
+      },
       SEP,
       { label: 'Remove…', icon: 'trash', danger: true, run: () => (pendingRemove = view) },
     ])
@@ -198,8 +277,14 @@
   <p class="hint">
     Talk to the assistant from any device through your own Matrix server. It is a bot with an
     account of its own, and it answers only your Matrix ID, in a private encrypted room it invites
-    you to. There, <code>!new</code> starts a fresh conversation, <code>!stop</code> stops one that
-    is running, and <code>!help</code> lists the commands.
+    you to, and only to the devices you pick below. There, <code>!new</code> starts a fresh
+    conversation, <code>!stop</code> stops one that is running, and <code>!help</code> lists the commands.
+  </p>
+  <p class="hint">
+    Your Matrix ID alone is not enough: anybody who signs in to that account on a new device could
+    write under it. So the bot believes an encrypted message only from a device you tick under
+    <b>Trusted devices</b>, and only those devices can read what it says. Being verified or
+    cross-signed does not make a device trusted. Until you pick one, the bot answers nobody.
   </p>
   <p class="hint">
     It keeps working while this window is locked for being idle. Locking the vault by hand ({LOCK_SHORTCUT},
@@ -229,6 +314,15 @@
             <span class="detail">{pill.detail}</span>
           </button>
 
+          <button
+            class="tag trusted"
+            class:none={view.link.service.trustedDevices.length === 0}
+            title="Choose which of your devices the bot trusts"
+            onclick={() => void pick(view)}
+          >
+            {trustedSummary(view.link)}
+          </button>
+
           {#if view.ownerVerified === true}
             <span
               class="tag verified"
@@ -252,6 +346,21 @@
             <Icon name="chevron" size={13} />
           </button>
         </li>
+
+        {@const turnedAway = untrustedNotice(view)}
+        {@const needsPicking = trustedHint(view)}
+        {#if turnedAway || needsPicking}
+          <li class="turned-away" role="status">
+            <span class="detail">{turnedAway ?? needsPicking}</span>
+            <button
+              class="btn"
+              disabled={!writable || picking !== null || view.status.state !== 'online'}
+              onclick={() => pick(view)}
+            >
+              Trusted devices…
+            </button>
+          </li>
+        {/if}
 
         {@const v = verificationShown(view.verification, dismissed) ? view.verification : null}
         {#if v}
@@ -394,7 +503,10 @@
           spellcheck="false"
           bind:value={draft.service.owner}
         />
-        <p class="hint">The only account it will answer. Anyone else is ignored.</p>
+        <p class="hint">
+          The only account it will answer, and only from the devices you trust. Anyone else is
+          ignored.
+        </p>
       </div>
 
       <div class="block">
@@ -440,6 +552,75 @@
         </button>
       </div>
     </form>
+  </section>
+{/if}
+
+{#if picking}
+  <section class="card">
+    <span class="eyebrow">Trusted devices for {picking.bot}</span>
+    <p class="hint">
+      The bot answers only messages sent, encrypted, from the devices ticked here, and only those
+      devices can read its replies. Every other device signed in to {picking.owner} is ignored, however
+      it is verified. Choose the ones you use to talk to it.
+    </p>
+
+    {#if picking.devices === null}
+      <p class="hint">Asking {picking.bot} for your devices…</p>
+    {:else if picking.devices.length === 0 && picking.error === null}
+      <p class="hint">
+        {picking.owner} has no devices the bot knows of. Sign in to a chat app with that account, then
+        open this again.
+      </p>
+    {:else}
+      <ul class="devices">
+        {#each picking.devices as device (device.deviceId)}
+          <li>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={picking.chosen.includes(device.deviceId)}
+                disabled={picking.saving || !writable}
+                onchange={(e) => {
+                  if (picking)
+                    picking.chosen = toggled(
+                      picking.chosen,
+                      device.deviceId,
+                      e.currentTarget.checked,
+                    )
+                }}
+              />
+              <span>
+                <b>{deviceName(device)}</b>
+                <small>
+                  {device.deviceId}{device.crossSigned
+                    ? ' · signed by your account'
+                    : ' · not signed by your account'}
+                </small>
+              </span>
+            </label>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if picking.error}<p class="error" role="alert">{picking.error}</p>{/if}
+
+    <div class="sheet-row">
+      <span class="spacer"></span>
+      <button type="button" class="btn" onclick={() => (picking = null)}>Cancel</button>
+      <button
+        type="button"
+        class="btn btn-primary"
+        disabled={picking.saving ||
+          !writable ||
+          picking.devices === null ||
+          picking.devices.length === 0 ||
+          !trustChanged(picking.devices, picking.chosen)}
+        onclick={saveTrusted}
+      >
+        {picking.saving ? 'Saving…' : 'Save'}
+      </button>
+    </div>
   </section>
 {/if}
 
@@ -643,6 +824,39 @@
   .verify-offer .error {
     flex-basis: 100%;
     margin: 0;
+  }
+
+  /* "2 trusted devices": the way into the picker. Neutral when there are some;
+     in the warning tone when there are none, because then the bot answers
+     nobody. */
+  .trusted {
+    flex: none;
+    cursor: pointer;
+  }
+  .trusted.none {
+    border-color: color-mix(in oklab, var(--danger) 25%, transparent);
+    background: color-mix(in oklab, var(--danger) 8%, transparent);
+    color: var(--danger);
+  }
+
+  /* A device that wrote without being trusted, or no trusted device at all:
+     a line under the bot's row with the way to fix it. */
+  .turned-away {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    padding: 0 var(--sp-2) var(--sp-2);
+  }
+
+  .devices {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
   .more {

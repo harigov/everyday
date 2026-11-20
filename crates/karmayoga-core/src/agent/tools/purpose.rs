@@ -244,7 +244,14 @@ fn run_list_goals(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
             .vault
             .trackers()?
             .into_iter()
-            .filter(|t| !t.archived && matches!(t.purpose, Some(Purpose::Goal { .. })))
+            .filter(|t| {
+                !t.archived
+                    && matches!(t.purpose, Some(Purpose::Goal { .. }))
+                    // A goal measured by Health steps or by a site's screen
+                    // time says how the person is doing in Health or Screen
+                    // time; a caller kept from those is not told.
+                    && !super::trackers::is_out_of_reach(ctx, t)
+            })
             .collect();
         ctx.vault.target_progress(&filed, ctx.today)?
     } else {

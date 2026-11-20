@@ -15,7 +15,7 @@ import { errorMessage, isLocked } from './errors'
 import { app, handle } from './state.svelte'
 import { latest } from './store/latest'
 import { guardedRefresh } from './store/refresh'
-import type { ChatLink, ChatLinkId, ChatLinkView, VerificationAnswer } from './types'
+import type { ChatDevice, ChatLink, ChatLinkId, ChatLinkView, VerificationAnswer } from './types'
 
 /** How a save turned out. The panel shows `error` beside the form itself,
  *  not as the window-wide banner every other store's failure becomes: the
@@ -148,6 +148,40 @@ class ChatState {
     } catch (e) {
       if (isLocked(e)) await handle(e)
       return errorMessage(e)
+    }
+  }
+
+  /**
+   * The owner's devices as the running bot sees them, each with whether it is
+   * trusted. `error` says why not -- the bot is not running here, the server
+   * could not be asked -- for the picker to show where the list would be
+   * rather than as a banner.
+   */
+  async devices(id: ChatLinkId): Promise<{ devices: ChatDevice[] } | { error: string }> {
+    try {
+      return { devices: await api.chatDevices(id) }
+    } catch (e) {
+      if (isLocked(e)) await handle(e)
+      return { error: errorMessage(e) }
+    }
+  }
+
+  /**
+   * Trust exactly `devices` -- ids from `devices()` -- and no other device of
+   * the owner's. Only this computer's own window may: the service refuses
+   * anybody else, whose reason is `error`. What comes back is the link as it
+   * now stands, put into the list at once.
+   */
+  async setTrustedDevices(id: ChatLinkId, devices: string[]): Promise<SaveResult> {
+    this.#generation.next()
+    try {
+      const view = await api.setChatTrustedDevices(id, $state.snapshot(devices))
+      this.#generation.next()
+      this.list = this.list.map((v) => (v.link.id === view.link.id ? view : v))
+      return { ok: true, view }
+    } catch (e) {
+      if (isLocked(e)) await handle(e)
+      return { ok: false, error: errorMessage(e) }
     }
   }
 

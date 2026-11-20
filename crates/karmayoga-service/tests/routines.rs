@@ -1392,6 +1392,7 @@ fn a_chat_link(svc: &Arc<Service>) -> karmayoga_core::ChatLinkId {
         homeserver: "http://127.0.0.1:6167".into(),
         user_id: "@bot:test".into(),
         owner: "@me:test".into(),
+        trusted_devices: Vec::new(),
     });
     let id = link.id;
     svc.get()

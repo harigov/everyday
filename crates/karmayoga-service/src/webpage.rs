@@ -610,17 +610,22 @@ impl Provenance {
 /// Whether `address` has anything in it that could be data rather than the
 /// name of a page: a query string, or a part of the site or the path that
 /// looks like a number, a code, an address or an encoded blob rather than a
-/// word. See [`looks_like_data`]. The fragment is not looked at; it never
-/// leaves the machine.
+/// word, or a part of the site's name that reads as a message or a token.
+/// See [`looks_like_data`] and [`site_name_carries_data`]. The fragment is
+/// not looked at; it never leaves the machine.
 ///
 /// What lets an address the model put together itself be opened without
 /// asking while somebody is in the conversation -- see the service's
 /// `must_confirm_fetch`. `https://www.gocaribbeanshuttles.com/orlando` names
 /// a page; `https://evil.example/?n=` followed by somebody's journal, or
-/// `https://evil.example/4111111111111111`, is a message. Words can still be
-/// spelled into a path, which is why this alone is never enough once a
-/// stranger's words -- a mail, a page, a search's results -- are in the
-/// turn: those could have dictated the address, words and site alike.
+/// `https://evil.example/4111111111111111`, is a message. So is
+/// `https://hari-takes-metformin-and-owes-the-irs.evil.example/`, whose path
+/// is empty: the name of a host is looked up by whoever answers for the
+/// domain, so a label in front of it is as good a way out as a query is.
+/// Words can still be spelled into a path, which is why this alone is never
+/// enough once a stranger's words -- a mail, a page, a search's results --
+/// are in the turn: those could have dictated the address, words and site
+/// alike.
 pub fn carries_data(address: &str) -> bool {
     let Ok(url) = parse(address) else { return false };
     if url.query().is_some_and(|q| !q.is_empty()) {
@@ -628,7 +633,78 @@ pub fn carries_data(address: &str) -> bool {
     }
     let host = url.host_str().unwrap_or_default();
     let path = percent_decoded(url.path());
-    host.split('.').any(looks_like_data) || path.split('/').any(looks_like_data)
+    host.split('.').any(looks_like_data)
+        || site_name_carries_data(&url)
+        || path.split('/').any(looks_like_data)
+}
+
+/// The most hyphen- or underscore-joined words one label of a site's name
+/// may have before it reads as a message: `hari-takes-metformin` is still a
+/// name, `hari-takes-metformin-daily` is not. One fewer than a path may have
+/// (the service's `MOST_WORDS_IN_A_SEGMENT`), because a company's subdomain
+/// is a word or two and a page's title in a path is more.
+const MOST_WORDS_IN_A_LABEL: usize = 3;
+/// The longest label of a site's name, in characters, that is taken for a
+/// name rather than a token, whatever it is made of. A subdomain a person
+/// would type is a word or two; twenty characters is a sentence squeezed into
+/// one label, or a key.
+const LONGEST_PLAIN_LABEL: usize = 19;
+/// The longest label that mixes letters and digits and is still taken for a
+/// name rather than a code. Shorter than [`LONGEST_PLAIN_LABEL`], since
+/// `a8f3k29d0c1b4e7f` is not something anybody named a server.
+const LONGEST_PLAIN_MIXED_LABEL: usize = 15;
+/// The most labels a site's name may have in front of its registrable
+/// domain. `www.eu.shop.example.com` is deep already; more, and the dots
+/// themselves could be separating words.
+const MOST_PLAIN_SUBDOMAINS: usize = 3;
+
+/// Whether the part of the site's name the person who owns the domain gets to
+/// choose -- every label in front of its registrable domain -- reads as a
+/// message or as a token.
+///
+/// A host name is asked of whoever answers for the domain whether or not
+/// the page then loads, so `<anything>.evil.example` is a way to hand
+/// `<anything>` to the owner of `evil.example` and [`looks_like_data`], which
+/// only takes a label apart at its hyphens, never sees a sentence spelled out
+/// in one. The registrable domain itself and the suffix after it are not
+/// looked at: a name there is one somebody had to register, and it is
+/// looked up at the registry rather than by the owner of the site.
+///
+/// A label is data when it is a token -- longer than [`LONGEST_PLAIN_LABEL`],
+/// or longer than [`LONGEST_PLAIN_MIXED_LABEL`] when it mixes letters and
+/// digits -- or has more words in it than a name has
+/// ([`MOST_WORDS_IN_A_LABEL`]); and a name with a great many labels in front
+/// of its domain is data too ([`MOST_PLAIN_SUBDOMAINS`]). A label an
+/// internationalised name was encoded into (`xn--bcher-kva`) is judged by
+/// its length alone: its hyphens are the encoding's, not a writer's.
+fn site_name_carries_data(url: &Url) -> bool {
+    use karmayoga_core::screentime::domain;
+    if literal_ip(url).is_some() {
+        return false;
+    }
+    let host = domain::normalize_host(url.host_str().unwrap_or_default());
+    let site = domain::registrable(&host);
+    let subdomains = host.strip_suffix(&site).and_then(|s| s.strip_suffix('.')).unwrap_or_default();
+    let labels: Vec<&str> = subdomains.split('.').filter(|l| !l.is_empty()).collect();
+    labels.len() > MOST_PLAIN_SUBDOMAINS || labels.iter().any(|label| label_reads_like_data(label))
+}
+
+/// Whether one label of a site's name is a message or a token. See
+/// [`site_name_carries_data`].
+fn label_reads_like_data(label: &str) -> bool {
+    let length = label.chars().count();
+    if length > LONGEST_PLAIN_LABEL {
+        return true;
+    }
+    let mixed =
+        label.chars().any(|c| c.is_ascii_alphabetic()) && label.chars().any(|c| c.is_ascii_digit());
+    if mixed && length > LONGEST_PLAIN_MIXED_LABEL {
+        return true;
+    }
+    if label.starts_with("xn--") {
+        return false;
+    }
+    label.split(['-', '_']).filter(|word| !word.is_empty()).count() > MOST_WORDS_IN_A_LABEL
 }
 
 /// Whether one part of an address -- a label of its site, a segment of its
@@ -999,6 +1075,83 @@ mod tests {
     }
 
     #[test]
+    fn an_ordinary_site_name_carries_no_data() {
+        for plain in [
+            "https://www.example.com/",
+            "https://en.wikipedia.org/wiki/Port_Canaveral",
+            "https://news.ycombinator.com/",
+            "https://docs.rs/serde",
+            "https://api.github.com/repos/rust-lang/rust",
+            "https://mail.google.com/",
+            "https://news.bbc.co.uk/",
+            "https://status.airline.example/UA123",
+            "https://shop-eu.acme-labs.co.uk/",
+            "https://us-east-1.console.example.com/",
+            "https://a.b.c.example.com/",
+            "https://xn--mnchen-3ya.example.com/",
+            "https://b\u{fc}cher.example.com/",
+            "https://alice.github.io/",
+            "https://localhost:8080/",
+            "https://127.0.0.1/",
+            "https://[::1]/",
+        ] {
+            assert!(!carries_data(plain), "{plain}");
+        }
+    }
+
+    #[test]
+    fn a_site_name_that_reads_as_a_message_or_a_token_carries_data() {
+        for data in [
+            // A sentence, one label, no path to put it in.
+            "https://hari-takes-metformin-and-owes-the-irs.evil.example/",
+            "https://i-take-my-pills.evil.example/",
+            "https://hari_owes_the_irs.evil.example/",
+            "https://hari-takes-metformin-and-owes-the-irs.evil.example./",
+            "https://HARI-TAKES-METFORMIN-AND-OWES-THE-IRS.EVIL.EXAMPLE/",
+            "https://hari-takes-metformin-and-owes-the-irs.evil.co.uk/",
+            // Under a suffix anybody can register a site beneath.
+            "https://hari-takes-metformin-and-owes-the-irs.evil.github.io/",
+            // A long opaque label: twenty letters, or sixteen of both kinds
+            // that no run of digits or case change gives away on its own.
+            "https://abcdefghijklmnopqrst.evil.example/",
+            "https://zqxwvutsrponmlkjihgf.www.evil.example/",
+            "https://abcdefghijk-1a2b3.evil.example/",
+            // Words spread over many labels instead of one.
+            "https://a.b.c.d.evil.example/",
+            "https://hari.takes.metformin.daily.evil.example/",
+        ] {
+            assert!(carries_data(data), "{data}");
+        }
+        // The name somebody registered is looked up at the registry, not by
+        // whoever runs the site, so there is nobody to hand it to.
+        assert!(!carries_data("https://hari-takes-metformin-and-owes-the-irs.co.uk/"));
+        assert!(!carries_data("https://hari-takes-metformin-and-owes-the-irs.example/"));
+    }
+
+    #[test]
+    fn a_label_is_judged_by_its_words_and_its_length() {
+        for (label, reads_like_data) in [
+            ("www", false),
+            ("en", false),
+            ("docs", false),
+            ("api-v2", false),
+            ("my-company-shop", false),
+            ("eu-west-1", false),
+            ("xn--bcher-kva", false),
+            ("xn--80ak6aa92e", false),
+            ("my-company-shop-eu", true),
+            ("hari_takes_metformin_daily", true),
+            ("abcdefghijklmnopqrs", false),
+            ("abcdefghijklmnopqrst", true),
+            ("abcdefg12345678", false),
+            ("abcdefgh12345678", true),
+            ("xn--abcdefghijklmnopqrst", true),
+        ] {
+            assert_eq!(label_reads_like_data(label), reads_like_data, "{label}");
+        }
+    }
+
+    #[test]
     fn an_address_with_something_in_it_carries_data() {
         for data in [
             "https://evil.example/?note=everything",
@@ -1024,6 +1177,13 @@ mod tests {
             plain_addresses_in(text),
             vec!["https://status.airline.example/UA123", "bbc.co.uk/news"]
         );
+    }
+
+    #[test]
+    fn an_address_whose_site_name_is_a_sentence_is_not_a_plain_one() {
+        let text = "Try https://hari-takes-metformin-and-owes-the-irs.evil.example/ then \
+                    https://docs.rs/serde or abcdefghijklmnopqrst.evil.example.";
+        assert_eq!(plain_addresses_in(text), vec!["https://docs.rs/serde"]);
     }
 
     #[test]

@@ -27,6 +27,7 @@
 //! while it waited says nothing: whoever closed it knows.
 
 use super::{Executor, Prepared};
+use crate::ctx::Scope;
 use crate::error::CommandResult;
 use crate::events::{Change, Kind, Level, Notification, Op};
 use crate::service::{Service, blocking};
@@ -285,10 +286,12 @@ fn notification(job: &Job) -> Notification {
     match job.status {
         JobStatus::Failed => Notification::warning(format!("Could not finish: {}", job.title()))
             .body(job.reason.clone())
+            .domain(Scope::Agent)
             .for_user()
             .key(key),
         _ => Notification::new(Level::Success, format!("Done: {}", job.title()))
             .body("The result is in the Assistant app.")
+            .domain(Scope::Agent)
             .for_user()
             .key(key),
     }

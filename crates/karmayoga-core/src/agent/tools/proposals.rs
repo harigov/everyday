@@ -259,17 +259,27 @@ fn outcome_json(outcome: &Outcome) -> Option<Value> {
 /// The compact row [`run_list_proposals`] shows for one proposal: enough to
 /// say what it is, why it is there and whether it still needs an answer,
 /// without the full record [`run_get_proposal`] carries.
+///
+/// A caller with something [withheld](ToolContext::withheld) is told that a
+/// proposal exists and what kind of change it is, and not its caption or why:
+/// both are the assistant's own words about what it noticed, and it noticed
+/// across every domain.
 fn proposal_summary(ctx: &ToolContext<'_>, p: &Proposal) -> Value {
+    let withheld = !ctx.withheld.is_empty();
     let mut v = json!({
         "id": p.id.to_string(),
         "kind": p.kind.as_str(),
-        "caption": p.caption,
         "does": does(&p.payload),
         "made_at": p.made_at.to_string(),
     });
     let map = v.as_object_mut().expect("built as an object");
-    if !p.why.trim().is_empty() {
-        map.insert("why".into(), json!(p.why));
+    if withheld {
+        map.insert("withheld".into(), json!(ctx.withheld_note()));
+    } else {
+        map.insert("caption".into(), json!(p.caption));
+        if !p.why.trim().is_empty() {
+            map.insert("why".into(), json!(p.why));
+        }
     }
     if let Some(label) = made_by_label(ctx, p.made_by) {
         map.insert("made_by".into(), json!(label));
@@ -309,7 +319,11 @@ fn run_get_proposal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut v = proposal_summary(ctx, &p);
     let map = v.as_object_mut().expect("built as an object");
     map.insert("expires_at".into(), json!(p.expires_at.to_string()));
-    map.insert("payload".into(), payload_json(&p.payload)?);
+    // The whole record it would save: the heart of what was left out of the
+    // summary above, so it is left out too.
+    if ctx.withheld.is_empty() {
+        map.insert("payload".into(), payload_json(&p.payload)?);
+    }
     Ok(v)
 }
 

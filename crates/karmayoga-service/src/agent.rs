@@ -1116,6 +1116,23 @@ const ACCEPT_PROPOSAL: &str = "accept_proposal";
 /// [`reads_strangers_words`].
 const SEARCH_CONVERSATIONS: &str = "search_conversations";
 const READ_CONVERSATION: &str = "read_conversation";
+/// Whether a call's `assignee` names the assistant, read the way the task
+/// tools read it: trimmed and lower-cased, then taken as the [`Assignee`] it
+/// spells -- so `"Assistant"` and `" assistant "` are the assistant here as
+/// they are there. The gate used to compare the raw text, and a model that
+/// capitalised it gave the assistant a task, to be done on its own with every
+/// tool, without the question the gate asks about that.
+///
+/// [`Assignee`]: karmayoga_core::Assignee
+fn assigned_to_assistant(arguments: &Value) -> bool {
+    arguments
+        .get("assignee")
+        .and_then(Value::as_str)
+        .map(|raw| Value::String(raw.trim().to_lowercase()))
+        .and_then(|spelled| serde_json::from_value::<karmayoga_core::Assignee>(spelled).ok())
+        == Some(karmayoga_core::Assignee::Assistant)
+}
+
 /// The tools in [`tools::Domain::Jobs`], which are in the core catalogue like
 /// any other and are named here because this file offers them on terms of its
 /// own (see [`JobTools`]), wakes the worker after the first, and gives all
@@ -1612,7 +1629,7 @@ impl ConfirmGate {
     /// [`AgentHook::on_tool_result`]'s body.
     async fn tool_result(&self, event: ToolResultEvent<'_>) -> ToolResultAction {
         let ok = event.raw_result.is_success();
-        let summary = match event.raw_result.error() {
+        let mut summary = match event.raw_result.error() {
             Some(e) => e.to_string(),
             None => summarise(event.tool_name, event.raw_result.output()),
         };
@@ -1661,7 +1678,26 @@ impl ConfirmGate {
             // And so do a summary of somebody's mail and the name of what is
             // read aloud: both are written from what a stranger wrote.
             let is_mail_retold = matches!(event.tool_name, SUMMARIZE_THREAD | READ_ALOUD);
-            if is_mail_read || is_filled_item || is_own_page || is_connection_read || is_mail_retold
+            // And so does anything the vault holds that the assistant or the
+            // meeting pipeline wrote: a transcript, a research note, a
+            // routine's report, a page of the assistant's own journal, what
+            // a job or a proposal says. Those were written from strangers'
+            // mail, pages and calls and are read back as the vault's own, so
+            // the taint has to follow them out of the place they were saved
+            // -- see `reads_back_saved_words`.
+            let is_saved_words =
+                reads_back_saved_words(event.tool_name, event.raw_result.output().as_json());
+            // The line kept in the thread says so, since it is all the thread
+            // keeps of the answer -- see `thread_heard_strangers`.
+            if is_saved_words {
+                summary = marked_as_saved_words(&summary);
+            }
+            if is_mail_read
+                || is_filled_item
+                || is_own_page
+                || is_connection_read
+                || is_mail_retold
+                || is_saved_words
             {
                 self.mail_read_this_turn.store(true, Ordering::Release);
             }
@@ -2048,8 +2084,7 @@ impl ConfirmGate {
         let said = |key: &str| {
             arguments.get(key).and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty())
         };
-        let to_assistant =
-            || arguments.get("assignee").and_then(Value::as_str) == Some("assistant");
+        let to_assistant = || assigned_to_assistant(arguments);
         match name {
             REMEMBER => !self.unattended,
             CONFIRM_MEMORY | UPDATE_PROFILE | CREATE_SKILL | UPDATE_SKILL | CREATE_ROUTINE
@@ -2081,7 +2116,7 @@ impl ConfirmGate {
     /// the person agrees to is what is saved -- nothing shortened, and any
     /// character nobody could see made visible ([`reveal_hidden`]).
     fn keep_subject(&self, name: &str, arguments: &Value) -> String {
-        let to_assistant = arguments.get("assignee").and_then(Value::as_str) == Some("assistant");
+        let to_assistant = assigned_to_assistant(arguments);
         let head = match name {
             REMEMBER => "a memory, read at the start of every conversation",
             CONFIRM_MEMORY => "a noticed memory, made a standing instruction",
@@ -2176,8 +2211,9 @@ impl ConfirmGate {
     /// alone, like [`Self::describe`]: the gate must answer without a
     /// network round trip.
     fn effect_of(&self, name: &str, arguments: &Value) -> Option<Effect> {
-        let ctx =
-            ToolContext::new(&self.vault, self.today, &self.tz).with_unattended(self.unattended);
+        let ctx = ToolContext::new(&self.vault, self.today, &self.tz)
+            .with_unattended(self.unattended)
+            .with_withheld(withheld_for(self.job));
         tools::effect_for(&ctx, name, arguments)
     }
 
@@ -2194,8 +2230,9 @@ impl ConfirmGate {
         // `unattended` is needed here, the same way it is not needed by
         // `every_destructive_tool_can_name_what_it_would_delete` in the
         // core's own tests.
-        let ctx =
-            ToolContext::new(&self.vault, self.today, &self.tz).with_unattended(self.unattended);
+        let ctx = ToolContext::new(&self.vault, self.today, &self.tz)
+            .with_unattended(self.unattended)
+            .with_withheld(withheld_for(self.job));
         tools::describe(&ctx, name, arguments).unwrap_or_default()
     }
 
@@ -2219,6 +2256,7 @@ impl ConfirmGate {
         let ctx = ToolContext::new(&self.vault, self.today, &self.tz)
             .with_conversation(self.conversation)
             .with_unattended(self.unattended)
+            .with_withheld(withheld_for(self.job))
             .with_caller(ToolCaller::Assistant { conversation: self.conversation })
             .with_assistant_provider(self.assistant_provider.clone());
         tools::propose_call(&ctx, name, arguments, source)
@@ -2441,12 +2479,87 @@ fn reads_strangers_words(name: &str) -> bool {
     })
 }
 
+/// The tools whose answer is words that earlier runs, jobs and dreams wrote
+/// down -- a job's summary, a routine's report, a proposal's caption and
+/// record -- and that were written from whatever those read, a stranger's
+/// mail or page included. They arm the taint whenever they return anything
+/// ([`reads_back_saved_words`]), whoever wrote what they return.
+const READS_BACK_WHAT_WAS_SAVED: [&str; 4] =
+    [JOB_STATUS, "list_runs", "get_proposal", "list_proposals"];
+
+/// What is added to the one line a thread keeps of a call whose answer armed
+/// the taint through [`reads_back_saved_words`] -- a note a meeting wrote, a
+/// job's report. A saved thread keeps the name of each call and that line, not
+/// the answer itself, so this is how a later turn knows which reads of notes
+/// and entries heard a stranger and which only read the person's own: see
+/// [`thread_heard_strangers`].
+const SAVED_WORDS_MARK: &str = "[words saved by the assistant or a meeting]";
+
+/// `summary`, the line a card and a thread keep of a call, said to be of words
+/// somebody saved -- see [`SAVED_WORDS_MARK`].
+fn marked_as_saved_words(summary: &str) -> String {
+    format!("{summary} {SAVED_WORDS_MARK}").trim().to_string()
+}
+
+/// The deepest a tool's result is searched for a record marked as written by
+/// the assistant or a meeting -- see [`marks_saved_words`]. A list of notes
+/// or entries is two or three levels down at most; this is generous, and
+/// bounds the walk over a result that is not what was expected.
+const MOST_NESTED_ORIGIN_SEARCH: usize = 8;
+
+/// Whether `result`, as a tool returned it, has a record in it -- at any
+/// depth up to [`MOST_NESTED_ORIGIN_SEARCH`] -- whose `"origin"` says the
+/// assistant or a meeting wrote it, and not the person.
+///
+/// A note or a journal entry says so in every object the tools return, so a
+/// list, a search that finds some and a single record all answer the same way,
+/// whatever they are nested in.
+fn marks_saved_words(result: &Value, depth: usize) -> bool {
+    match result {
+        Value::Object(fields) => {
+            fields.get("origin").and_then(Value::as_str).is_some_and(|o| {
+                o.eq_ignore_ascii_case("assistant") || o.eq_ignore_ascii_case("meeting")
+            }) || (depth < MOST_NESTED_ORIGIN_SEARCH
+                && fields.values().any(|value| marks_saved_words(value, depth + 1)))
+        }
+        Value::Array(items) => {
+            depth < MOST_NESTED_ORIGIN_SEARCH
+                && items.iter().any(|item| marks_saved_words(item, depth + 1))
+        }
+        _ => false,
+    }
+}
+
+/// Whether a successful call to `name` that answered `result` has handed the
+/// model words an earlier run, job, dream or meeting saved: the taint's
+/// counterpart to [`reads_strangers_words`] for what is in the vault rather
+/// than in the world.
+///
+/// What a meeting transcribed, what a research job wrote up from the web,
+/// what a routine reported after reading the person's mail, a page of the
+/// assistant's own journal -- each is somebody's words once removed, and each
+/// is read back through an ordinary tool of the vault that
+/// [`reads_strangers_words`] has no reason to name. So the result is
+/// searched instead: any record in it marked as the assistant's or a
+/// meeting's arms the taint, and [`READS_BACK_WHAT_WAS_SAVED`] always does
+/// when it returned something (`count` is how a list says so; a single
+/// record has none). `result` is `None` for an answer that was not JSON,
+/// which for those tools is treated as having returned something.
+fn reads_back_saved_words(name: &str, result: Option<&Value>) -> bool {
+    let returned_something =
+        result.is_none_or(|json| json.get("count").and_then(Value::as_u64).is_none_or(|n| n > 0));
+    (READS_BACK_WHAT_WAS_SAVED.contains(&name) && returned_something)
+        || result.is_some_and(|json| marks_saved_words(json, 0))
+}
+
 /// Whether a call by this name, in an earlier turn of the conversation, put
 /// a stranger's words into the model's context: anything
 /// [`reads_strangers_words`], a page or a search, the browser, a connected
-/// service, or the assistant's own journal -- the same sources the turn's
-/// own taint is armed by (see `ConfirmGate::tool_result`), by name alone,
-/// because that is all a saved thread keeps of a call.
+/// service, or the assistant's own journal -- the same sources the turn's own
+/// taint is armed by (see `ConfirmGate::tool_result`), by name alone. What
+/// earlier runs saved is not here: whether a read of it heard a stranger
+/// depends on what came back, which [`thread_heard_strangers`] reads from the
+/// line kept of the call ([`SAVED_WORDS_MARK`]).
 fn names_strangers_words(name: &str) -> bool {
     reads_strangers_words(name)
         || matches!(
@@ -2470,20 +2583,31 @@ fn names_strangers_words(name: &str) -> bool {
 /// read in one message and acted on in the next -- "now remember that" --
 /// was asked of nobody. The thread keeps the name of every call each turn
 /// made and whether it failed (a failed call read nothing), which is enough
-/// to say. It also keeps the first prompt of a run that was handed an
-/// invitation (see [`UNTRUSTED_OPEN`]), so a person answering a routine's
-/// message from their phone carries on in a thread that heard a stranger.
+/// to say for most of them. For a read of something the assistant or a
+/// meeting saved -- notes, journal entries, a job's report -- the name is not
+/// enough, because the person's own notes come back through the same tools;
+/// the thread keeps only a line about each answer, not the answer, so the
+/// turn put [`SAVED_WORDS_MARK`] on that line when what came back was not the
+/// person's own, and a call counts here when its result line carries it. It
+/// also keeps the first prompt of a run that was handed an invitation (see
+/// [`UNTRUSTED_OPEN`]), so a person answering a routine's message from their
+/// phone carries on in a thread that heard a stranger.
 fn thread_heard_strangers(thread: &[VaultMessage]) -> bool {
     let failed: HashSet<&str> = thread
         .iter()
         .filter(|m| m.role == Role::Tool && m.failed)
         .filter_map(|m| m.tool_call_id.as_deref())
         .collect();
+    let of_saved_words: HashSet<&str> = thread
+        .iter()
+        .filter(|m| m.role == Role::Tool && !m.failed && m.content.contains(SAVED_WORDS_MARK))
+        .filter_map(|m| m.tool_call_id.as_deref())
+        .collect();
     thread.iter().any(|m| match m.role {
-        Role::Assistant => m
-            .tool_calls
-            .iter()
-            .any(|call| !failed.contains(call.id.as_str()) && names_strangers_words(&call.name)),
+        Role::Assistant => m.tool_calls.iter().any(|call| {
+            !failed.contains(call.id.as_str())
+                && (names_strangers_words(&call.name) || of_saved_words.contains(call.id.as_str()))
+        }),
         Role::User => m.content.contains(UNTRUSTED_OPEN),
         _ => false,
     })
@@ -2684,6 +2808,23 @@ struct JobTools {
     drafting: bool,
 }
 
+/// The domains a background job's turn is kept from: Money, Screen time,
+/// Files and Health. A job is not offered their tools (see
+/// [`JobTools::offers`]), and every [`ToolContext`] built for a job's turn
+/// withholds them too ([`ToolContext::withheld`]), because leaving the tools
+/// out stops a job calling them and does nothing about the others that can
+/// reach the same records -- a tracker that counts a blood-glucose reading, a
+/// goal that tallies a day's browsing, a routine's report. One list, so that
+/// what a job is not offered and what it is not shown cannot drift apart.
+const WITHHELD_FROM_JOBS: &[tools::Domain] =
+    &[tools::Domain::Money, tools::Domain::ScreenTime, tools::Domain::Files, tools::Domain::Health];
+
+/// What a [`ToolContext`] for a turn should withhold: [`WITHHELD_FROM_JOBS`]
+/// for a background job's own turn, nothing for any other.
+fn withheld_for(job: bool) -> &'static [tools::Domain] {
+    if job { WITHHELD_FROM_JOBS } else { &[] }
+}
+
 impl JobTools {
     /// Whether `tool` is offered to this turn. Anything outside the jobs
     /// domain always is: this decides nothing else.
@@ -2709,15 +2850,7 @@ impl JobTools {
         // Health for both reasons at once too: a diagnosis or a medication
         // list is worth nothing to a question about the web and is the most
         // damaging thing a page could have put into a search address.
-        if self.job
-            && matches!(
-                tool.domain,
-                tools::Domain::Money
-                    | tools::Domain::ScreenTime
-                    | tools::Domain::Files
-                    | tools::Domain::Health
-            )
-        {
+        if self.job && WITHHELD_FROM_JOBS.contains(&tool.domain) {
             return false;
         }
         if tool.domain != tools::Domain::Jobs {
@@ -4200,6 +4333,7 @@ fn readable(
         .to_zoned(jiff::tz::TimeZone::get(zone).unwrap_or(jiff::tz::TimeZone::UTC))
         .date();
     let ctx = ToolContext::new(vault, today, zone)
+        .with_withheld(withheld_for(meta.job))
         .with_caller(ToolCaller::Assistant { conversation: meta.conversation })
         .with_assistant_provider(provider.to_string());
     tools::readable_thread(&ctx, id, tool).map_err(|e| ToolExecutionError::other(e.to_string()))
@@ -4623,6 +4757,7 @@ async fn run_tool(
             .with_conversation(meta.conversation)
             .with_unattended(meta.unattended)
             .with_follow_up(meta.follow_up)
+            .with_withheld(withheld_for(meta.job))
             .with_caller(ToolCaller::Assistant { conversation: meta.conversation })
             .with_mail_search(mail_index.as_deref())
             .with_assistant_provider(assistant_provider)
@@ -5231,6 +5366,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         (None, Some(screen)) => {
             let zone = zone_name(&settings);
             let ctx = ToolContext::new(&vault, settings.now().date(), &zone)
+                .with_withheld(withheld_for(job.is_some()))
                 .with_caller(ToolCaller::Assistant { conversation })
                 .with_assistant_provider(access.acknowledgement.clone());
             Some(karmayoga_core::agent::onscreen::describe(&ctx, &screen))
@@ -8369,6 +8505,97 @@ mod tests {
         ));
     }
 
+    /// The task tools trim and lower-case `assignee` before they read it, so
+    /// a model that writes "Assistant" has given the assistant a task all the
+    /// same, and the gate has to ask about that exactly as it does about
+    /// "assistant" -- on the call and on the card.
+    #[test]
+    fn the_keep_gate_reads_an_assignee_the_way_the_task_tools_do() {
+        let (vault, _dir) = test_vault();
+        let gate = test_gate(vault, ConversationId::new());
+        gate.mail_read_this_turn.store(true, Ordering::Release);
+        let id = karmayoga_core::TaskId::new().to_string();
+        for spelled in ["assistant", "Assistant", "ASSISTANT", "  assistant\n"] {
+            let create = serde_json::json!({ "title": "t", "assignee": spelled });
+            let update = serde_json::json!({ "task_id": id, "assignee": spelled });
+            assert_eq!(gate.confirmation(CREATE_TASK, &create), Some("keep"), "{spelled:?}");
+            assert_eq!(gate.confirmation(UPDATE_TASK, &update), Some("keep"), "{spelled:?}");
+            for (name, arguments) in [(CREATE_TASK, &create), (UPDATE_TASK, &update)] {
+                let said = gate.keep_subject(name, arguments);
+                assert!(said.starts_with("a task for the assistant to do on its own"), "{said}");
+            }
+        }
+        for spelled in ["owner", "Owner", "somebody else", ""] {
+            let create = serde_json::json!({ "title": "t", "assignee": spelled });
+            assert_eq!(gate.confirmation(CREATE_TASK, &create), None, "{spelled:?}");
+            let said = gate.keep_subject(CREATE_TASK, &create);
+            assert!(said.starts_with("a task with a reminder"), "{said}");
+        }
+        for not_a_name in [serde_json::json!({}), serde_json::json!({ "assignee": 1 })] {
+            assert!(!assigned_to_assistant(&not_a_name), "{not_a_name}");
+        }
+    }
+
+    // ---- every gate decides from the call's own effect ----------------------
+
+    /// `update_note` is a write until it carries a `body` for a note that
+    /// already holds words, which replaces every one with no way back -- see
+    /// `tools::Tool::destructive_when`. Every gate in this file asks the core
+    /// ([`tools::effect_for`], through `ConfirmGate::effect_of`) rather than
+    /// reading the tool's listed effect, so that call is confirmed at the
+    /// desk and in a chat, and refused when nobody is there, while a rename
+    /// goes straight through.
+    #[test]
+    fn a_call_that_replaces_a_notes_body_is_held_as_destructive_by_every_gate() {
+        let (vault, _dir) = test_vault();
+        let mut note = karmayoga_core::Note::new("Plans");
+        note.body = karmayoga_core::richtext::RichDoc::from_markdown("The words already here.");
+        vault.save_note(&note, None).unwrap();
+        let replace = serde_json::json!({ "note_id": note.id.to_string(), "body": "new words" });
+        let rename = serde_json::json!({ "note_id": note.id.to_string(), "title": "Plans, v2" });
+        assert_eq!(
+            tools::find("update_note").map(|t| t.effect),
+            Some(Effect::Write),
+            "the premise: listed as an ordinary write"
+        );
+
+        let desk = test_gate(vault.clone(), ConversationId::new());
+        assert_eq!(desk.confirmation("update_note", &replace), Some("destructive"));
+        assert_eq!(desk.confirmation("update_note", &rename), None, "nothing is lost");
+
+        // A chat turn asks whatever the desk's setting says.
+        let chat = ConfirmGate {
+            enabled: confirms_destructive(false, true, false),
+            ..test_gate(vault.clone(), ConversationId::new())
+        };
+        assert_eq!(chat.confirmation("update_note", &replace), Some("destructive"));
+
+        // A scheduled run and a job with nobody to ask are refused, in their
+        // own words, and the note is as it was.
+        let routine = ConfirmGate {
+            unattended: true,
+            watched: false,
+            ..test_gate(vault.clone(), ConversationId::new())
+        };
+        let (job, _events) = job_gate(vault.clone(), ConversationId::new());
+        for (gate, who) in [(&routine, "scheduled run"), (&job, "background job")] {
+            let kind = gate.confirmation("update_note", &replace);
+            assert_eq!(kind, Some("destructive"), "{who}");
+            assert_eq!(gate.confirmation("update_note", &rename), None, "{who}");
+            let action = gate.decline_unattended(
+                kind.unwrap(),
+                "call-1".into(),
+                "update_note".into(),
+                &replace,
+                tools::find("update_note").is_some_and(tools::Tool::can_propose),
+            );
+            assert!(
+                matches!(&action, ToolCallAction::Skip(reason) if reason.contains(who)),
+                "{who}: {action:?}"
+            );
+        }
+    }
+
     // ---- where a stranger's words come from, and how long they last ----------
 
     /// An invitation, a transcript and an earlier conversation are all
@@ -8395,6 +8622,165 @@ mod tests {
         }
         for meeting in tools::catalog().iter().filter(|t| t.domain == tools::Domain::Meetings) {
             assert_eq!(reads_strangers_words(meeting.name), meeting.effect == Effect::Read);
+        }
+    }
+
+    /// A note a meeting wrote, a research note, a page of the assistant's own
+    /// journal: the tools mark each record with its `origin`, and one the
+    /// assistant or a meeting wrote arms the taint wherever in the answer it
+    /// is -- a single record, a list, a search that found some among others.
+    #[test]
+    fn a_record_the_assistant_or_a_meeting_wrote_arms_the_taint_wherever_it_sits() {
+        let own = serde_json::json!({ "id": "a", "title": "Groceries", "origin": "own" });
+        let assistant = serde_json::json!({ "id": "b", "title": "Notes", "origin": "assistant" });
+        let meeting = serde_json::json!({ "id": "c", "title": "Standup", "origin": "meeting" });
+        for (what, result, marked) in [
+            ("a note of their own", own.clone(), false),
+            ("a note the assistant wrote", assistant.clone(), true),
+            ("a note a meeting wrote", meeting.clone(), true),
+            ("an upper-case spelling", serde_json::json!({ "origin": "Assistant" }), true),
+            ("a list of their own", serde_json::json!({ "count": 1, "notes": [own] }), false),
+            (
+                "a list with one of the assistant's",
+                serde_json::json!({ "count": 2, "notes": [own, assistant] }),
+                true,
+            ),
+            (
+                "an entry in the assistant's journal, deep in a search",
+                serde_json::json!({ "found": { "journals": [{ "entries": [assistant] }] } }),
+                true,
+            ),
+            ("a list that came back empty", serde_json::json!({ "count": 0, "notes": [] }), false),
+            (
+                "a memory's own idea of origin",
+                serde_json::json!({ "memories": [{ "origin": "inferred" }, { "origin": "told" }] }),
+                false,
+            ),
+            ("the word in a note", serde_json::json!({ "body": "origin: assistant" }), false),
+            ("an origin that is not text", serde_json::json!({ "origin": ["assistant"] }), false),
+            ("an answer that is only text", serde_json::json!("assistant"), false),
+        ] {
+            assert_eq!(marks_saved_words(&result, 0), marked, "{what}");
+        }
+    }
+
+    /// The search is bounded: as deep as a list of records ever sits, and no
+    /// deeper, so an answer nobody expected cannot run it away.
+    #[test]
+    fn the_search_for_a_marked_record_is_bounded_in_depth() {
+        let nested = |levels: usize| {
+            let mut value = serde_json::json!({ "origin": "assistant" });
+            for _ in 0..levels {
+                value = serde_json::json!({ "inside": [value] });
+            }
+            value
+        };
+        // Each level is an object and an array, which count one each.
+        assert!(marks_saved_words(&nested(1), 0));
+        assert!(marks_saved_words(&nested(MOST_NESTED_ORIGIN_SEARCH / 2), 0));
+        assert!(!marks_saved_words(&nested(MOST_NESTED_ORIGIN_SEARCH), 0));
+        assert!(!marks_saved_words(&nested(200), 0), "and a very deep one is not walked");
+    }
+
+    /// A conversation in which `name` was called and answered `result`, the way
+    /// a turn leaves it: the call on the assistant's message, and its result
+    /// as the one line [`summarise`] makes of it -- marked, as `tool_result`
+    /// marks it, when the answer armed the taint for saved words.
+    fn thread_where(name: &str, result: &Value) -> Vec<VaultMessage> {
+        let conversation = ConversationId::new();
+        let asked = VaultMessage::user(conversation, "what did it say?");
+        let call = assistant_message(conversation, &[name]);
+        let output = ToolOutput::json(result.clone());
+        let line = summarise(name, &output);
+        let line = if reads_back_saved_words(name, output.as_json()) {
+            marked_as_saved_words(&line)
+        } else {
+            line
+        };
+        let answer = VaultMessage::tool_result(conversation, &call.tool_calls[0], Ok(line), None);
+        vec![asked, call, answer]
+    }
+
+    /// What a job, a routine's run or a proposal says is written from what
+    /// they read, which may have been a stranger's: reading it back arms the
+    /// taint whenever anything came back, whoever it names as the author --
+    /// and the thread says so, so the next turn starts tainted.
+    #[test]
+    fn what_a_job_a_routine_or_a_proposal_said_arms_the_taint_when_it_returns_anything() {
+        assert_eq!(
+            READS_BACK_WHAT_WAS_SAVED,
+            ["job_status", "list_runs", "get_proposal", "list_proposals"]
+        );
+        for name in READS_BACK_WHAT_WAS_SAVED {
+            let tool = tools::find(name).unwrap_or_else(|| panic!("{name} is not a core tool"));
+            assert_eq!(tool.effect, Effect::Read, "{name}");
+            let listed = |count: u64| serde_json::json!({ "count": count });
+            assert!(reads_back_saved_words(name, Some(&listed(3))), "{name}");
+            assert!(!reads_back_saved_words(name, Some(&listed(0))), "{name}: nothing came back");
+            // One job or one proposal is a record, and has no count.
+            let one = serde_json::json!({ "id": "x", "status": "done" });
+            assert!(reads_back_saved_words(name, Some(&one)), "{name}");
+            assert!(reads_back_saved_words(name, None), "{name}: not JSON, but it answered");
+            // A thread that called it and got something carries the taint on;
+            // one that found nothing there has nothing to carry.
+            assert!(thread_heard_strangers(&thread_where(name, &listed(3))), "{name}");
+            assert!(!thread_heard_strangers(&thread_where(name, &listed(0))), "{name}");
+            assert!(thread_heard_strangers(&thread_where(name, &one)), "{name}");
+        }
+        for name in ["list_tasks", "get_task", "cancel_job", "accept_proposal", "create_note"] {
+            let busy = serde_json::json!({ "count": 3, "id": "x" });
+            assert!(!reads_back_saved_words(name, Some(&busy)), "{name}");
+            assert!(!thread_heard_strangers(&thread_where(name, &busy)), "{name}");
+        }
+    }
+
+    /// A note or an entry is read through the same tools whoever wrote it, so
+    /// the thread's taint follows what came back: a note a meeting or the
+    /// assistant wrote carries it into the next turn, the person's own does
+    /// not. A saved thread keeps only a line about the answer, which the turn
+    /// marks (see [`SAVED_WORDS_MARK`]).
+    #[test]
+    fn a_thread_is_tainted_by_a_note_a_meeting_wrote_and_not_by_one_of_their_own() {
+        let note = |origin: &str| serde_json::json!({ "id": "n", "title": "Standup", "origin": origin, "body": "..." });
+        let entry = |origin: &str| serde_json::json!({ "id": "e", "origin": origin });
+        for (name, result, tainted) in [
+            ("get_note", note("own"), false),
+            ("get_note", note("meeting"), true),
+            ("get_note", note("assistant"), true),
+            ("get_entry", entry("own"), false),
+            ("get_entry", entry("assistant"), true),
+            (
+                "list_notes",
+                serde_json::json!({ "count": 2, "notes": [note("own"), note("own")] }),
+                false,
+            ),
+            (
+                "list_notes",
+                serde_json::json!({ "count": 2, "notes": [note("own"), note("meeting")] }),
+                true,
+            ),
+            (
+                "list_entries",
+                serde_json::json!({ "count": 1, "entries": [entry("assistant")] }),
+                true,
+            ),
+            ("search", serde_json::json!({ "count": 0, "results": [] }), false),
+        ] {
+            let thread = thread_where(name, &result);
+            assert_eq!(thread_heard_strangers(&thread), tainted, "{name}: {result}");
+        }
+
+        // A result that failed read nothing, marked or not.
+        let mut thread = thread_where("get_note", &note("meeting"));
+        thread[2].failed = true;
+        assert!(!thread_heard_strangers(&thread));
+        // And the mark belongs to its own call: another call's does not count.
+        let mut thread = thread_where("get_note", &note("meeting"));
+        thread[2].tool_call_id = Some("another-call".into());
+        assert!(!thread_heard_strangers(&thread));
+        // The reads are not tainted by name any more -- only by what they returned.
+        for name in ["list_notes", "get_note", "list_entries", "get_entry", "search"] {
+            assert!(!names_strangers_words(name), "{name}");
         }
     }
 
@@ -8512,6 +8898,33 @@ mod tests {
         assert_eq!(gate.confirmation(READ_WEB_PAGE, &sentence), Some("fetch"));
         let page = serde_json::json!({ "url": "https://www.gocaribbeanshuttles.com/orlando" });
         assert_eq!(gate.confirmation(READ_WEB_PAGE, &page), None);
+    }
+
+    /// A message can ride in the site's name as well as the path: whoever
+    /// answers for `evil.example` is asked for every name beneath it, and a
+    /// path of `/` says nothing. The gate asks about those, and about a long
+    /// opaque label, and not about the ordinary hosts a model composes.
+    #[test]
+    fn a_page_whose_site_name_is_a_sentence_or_a_token_asks() {
+        let (vault, _dir) = test_vault();
+        let gate = test_gate(vault, ConversationId::new());
+        for address in [
+            "https://hari-takes-metformin-and-owes-the-irs.evil.example/",
+            "https://abcdefghijklmnopqrst.evil.example/",
+        ] {
+            assert!(carries_data(address), "{address}");
+            let call = serde_json::json!({ "url": address });
+            assert_eq!(gate.confirmation(READ_WEB_PAGE, &call), Some("fetch"), "{address}");
+        }
+        for address in [
+            "https://en.wikipedia.org/wiki/Port_Canaveral",
+            "https://news.ycombinator.com/",
+            "https://docs.rs/serde",
+            "https://api.github.com/repos/rust-lang/rust",
+        ] {
+            let call = serde_json::json!({ "url": address });
+            assert_eq!(gate.confirmation(READ_WEB_PAGE, &call), None, "{address}");
+        }
     }
 
     // ---- what a run says to the person ---------------------------------------
@@ -8834,6 +9247,36 @@ mod tests {
         );
         let routine = JobTools { unattended: true, ..rail() };
         assert!(files.iter().all(|t| routine.offers(t)), "a routine's run is offered them");
+    }
+
+    /// What a job is not offered and what its tools are not allowed to show
+    /// it are one list: the four domains, for a job's turn and no other.
+    #[test]
+    fn a_jobs_turn_withholds_exactly_the_domains_it_is_not_offered() {
+        assert!(withheld_for(false).is_empty(), "nobody else is kept from anything");
+        assert_eq!(
+            withheld_for(true),
+            [
+                tools::Domain::Money,
+                tools::Domain::ScreenTime,
+                tools::Domain::Files,
+                tools::Domain::Health
+            ]
+        );
+        let job = JobTools { unattended: true, job: true, ..rail() };
+        for tool in tools::catalog().iter().filter(|t| t.domain != tools::Domain::Jobs) {
+            assert_eq!(
+                job.offers(tool),
+                !withheld_for(true).contains(&tool.domain),
+                "{} is offered exactly when its domain is not withheld",
+                tool.name
+            );
+        }
+        let (vault, _dir) = test_vault();
+        let ctx = ToolContext::new(&vault, jiff::civil::date(2026, 11, 20), "UTC")
+            .with_withheld(withheld_for(true));
+        assert!(ctx.withholds(tools::Domain::Health) && ctx.withholds(tools::Domain::Money));
+        assert!(!ctx.withholds(tools::Domain::Notes));
     }
 
     /// With the assistant shut out of the person's files, a model is still

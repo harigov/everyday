@@ -39,6 +39,7 @@ use karmayoga_core::Vault;
 use karmayoga_core::account::Account;
 use karmayoga_core::id::{AccountId, CalendarId};
 
+use crate::ctx::Scope;
 use crate::events::{Level, Notification};
 use crate::service::Service;
 
@@ -219,6 +220,7 @@ pub fn sign_in_needed(svc: &Service, vault: &Vault, account_id: AccountId) {
                 "{} until you do. Sign in from Settings \u{2192} Accounts.",
                 what_stopped(&account)
             ))
+            .domain(Scope::Accounts)
             .for_user()
             .key(key(account_id, "sign-in")),
     );
@@ -251,6 +253,7 @@ pub fn mail_failed(
                 lasted / 60,
                 short(reason)
             ))
+            .domain(Scope::Mail)
             .for_user()
             .key(key(account_id, "mail")),
     );
@@ -272,6 +275,7 @@ pub fn mail_synced(svc: &Service, vault: &Vault, account_id: AccountId) {
             Level::Success,
             format!("Mail from {} is syncing again", account.address),
         )
+        .domain(Scope::Mail)
         .for_user()
         .key(key(account_id, "mail")),
     );

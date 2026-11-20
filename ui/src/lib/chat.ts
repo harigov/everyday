@@ -6,12 +6,15 @@
 // password is still needed; turning the stored "quiet for this many minutes"
 // into the hours the form asks for and back; and the few words the rest of
 // the interface uses for a link (its name in a list, the tooltip on the
-// assistant history's "Matrix" marker); and what to show of the owner
-// verifying the bot, whose half of the emoji only this window can show.
+// assistant history's "Matrix" marker); what to show of the owner
+// verifying the bot, whose half of the emoji only this window can show; and
+// the owner's devices the bot trusts -- a hand-picked list, which is what
+// the bot believes, not the Matrix ID alone.
 //
 // Everything that touches the network lives in `chat.svelte.ts` instead.
 
 import type {
+  ChatDevice,
   ChatLink,
   ChatLinkView,
   ChatState,
@@ -303,6 +306,71 @@ function capital(text: string): string {
 export function canStartVerification(view: ChatLinkView): boolean {
   if (view.status.state !== 'online' || view.ownerVerified !== false) return false
   return !view.verification || verificationOver(view.verification)
+}
+
+// ── The owner's trusted devices ──────────────────────────────────────────
+//
+// The owner's Matrix ID is not enough to be believed: anybody who signs in to
+// that account on a new device, and the homeserver itself, can write under
+// it. So the bot answers only an encrypted message sent from a device picked
+// here by hand, and only those devices can read its replies. Being verified,
+// or cross-signed, does not make a device trusted -- only this list does. The
+// list is `MatrixLink.trustedDevices`; see `karmayoga_core::chat`.
+
+/** A device as a person would name it: the name its owner gave it, or its id. */
+export function deviceName(device: { deviceId: string; displayName: string | null }): string {
+  const name = device.displayName?.trim()
+  return name ? name : device.deviceId
+}
+
+/** How many devices the link trusts, in a few words for the row. */
+export function trustedSummary(link: ChatLink): string {
+  const n = link.service.trustedDevices.length
+  if (n === 0) return 'No trusted devices'
+  return n === 1 ? '1 trusted device' : `${n} trusted devices`
+}
+
+/**
+ * What to say about the trusted list under a bot's row, or `null` when
+ * there is nothing to add. A link with no trusted device answers nobody and
+ * cannot be read by anybody, which is what an existing link has until its
+ * owner picks, so it says so and where to pick.
+ */
+export function trustedHint(view: ChatLinkView): string | null {
+  if (view.link.service.trustedDevices.length > 0) return null
+  return 'No device is trusted yet, so the bot ignores everything and sends nothing anyone can read. Choose which of your devices it should trust.'
+}
+
+/**
+ * The sentence about a device of the owner's that wrote to the bot without
+ * being trusted and was ignored, or `null` when none has. The bot names the
+ * device and nothing of what it wrote.
+ */
+export function untrustedNotice(view: ChatLinkView): string | null {
+  const device = view.untrustedDevice
+  if (!device || view.link.service.trustedDevices.includes(device.deviceId)) return null
+  return `Your device "${deviceName(device)}" wrote to the assistant but is not trusted yet.`
+}
+
+/** The ids ticked in `chosen`, with `id` ticked or unticked. Order is kept,
+ *  and an id is never in twice. */
+export function toggled(chosen: readonly string[], id: string, on: boolean): string[] {
+  const without = chosen.filter((c) => c !== id)
+  return on ? [...without, id] : without
+}
+
+/** The devices to start the picker from: what the link already trusts, that
+ *  the owner still has. A trusted id the owner no longer has is dropped on the
+ *  next save, which is what removing a device from their account should do. */
+export function chosenFrom(devices: readonly ChatDevice[]): string[] {
+  return devices.filter((d) => d.trusted).map((d) => d.deviceId)
+}
+
+/** Whether `chosen` is not what is trusted now, so there is something to save. */
+export function trustChanged(devices: readonly ChatDevice[], chosen: readonly string[]): boolean {
+  const now = chosenFrom(devices).sort()
+  const next = [...chosen].sort()
+  return now.length !== next.length || now.some((id, i) => id !== next[i])
 }
 
 // ── Naming a link ────────────────────────────────────────────────────────

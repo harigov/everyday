@@ -71,6 +71,7 @@ use karmayoga_mail::outbox::{
 };
 use karmayoga_mail::session::{MailError, MailSession};
 
+use crate::ctx::Scope;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Notification};
 use crate::service::{Service, blocking};
@@ -886,6 +887,7 @@ async fn revert_queued_send(
         svc.events().notify(
             Notification::warning(format!("Not sent: {}", subject_or_none(&subject)))
                 .body(format!("{error}. It is back in Drafts."))
+                .domain(Scope::Mail)
                 .for_user()
                 .key(format!("mail-send:{id}")),
         );
@@ -959,6 +961,7 @@ async fn note_send_retry(svc: &Arc<Service>, vault: &Arc<karmayoga_core::Vault>,
         svc.events().notify(
             Notification::warning(format!("Not sent yet: {}", subject_or_none(&draft.subject)))
                 .body(format!("{error}. It will be tried again."))
+                .domain(Scope::Mail)
                 .for_user()
                 .key(format!("mail-send:{id}")),
         );

@@ -2680,6 +2680,19 @@ export const api = {
   /** Have a link's bot ask its owner to verify it; their chat app shows the
    *  request. Rejects when the bot is not running here. */
   startChatVerification: (id: ChatLinkId) => call('startChatVerification', { id }),
+  /**
+   * The owner's devices as a link's running bot sees them, each with whether
+   * it is trusted. Rejects when the bot is not running here.
+   */
+  chatDevices: (id: ChatLinkId) => call('chatDevices', { id }),
+  /**
+   * Choose, by hand, which of the owner's devices the bot trusts: exactly
+   * `devices`, replacing the list. It believes an encrypted message only from
+   * one of them and gives its keys to no other, and it takes effect at once.
+   * Rejects with `forbidden` from anywhere but this computer's own window.
+   */
+  setChatTrustedDevices: (id: ChatLinkId, devices: string[]) =>
+    call('setChatTrustedDevices', { id, devices }),
 }
 
 /**

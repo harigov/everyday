@@ -45,11 +45,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # Pinned alongside the `tauri` crate in Cargo.lock -- the CLI and the crate
-  # have to agree on their minor version or the build refuses to start.
-  TAURI_CLI: "@tauri-apps/cli@2.11.4"
-
 # One release run at a time per ref. Not cancel-in-progress: interrupting a
 # run halfway through uploading assets is worse than waiting for it.
 concurrency:
@@ -240,13 +235,29 @@ jobs:
           echo "SHERPA_ONNX_ARCHIVE_DIR=$dir" >> "$GITHUB_ENV"
 
       # The prebuilt CLI from npm; `cargo install tauri-cli` would compile it
-      # from source on every runner for the same result. Run through `npx`
-      # rather than installed with `npm -g`, because the global npm bin
-      # directory is not reliably on PATH inside Git Bash on the Windows
-      # runner. This step also warms the npx cache and fails loudly here,
-      # rather than 20 minutes into a build, if the download is broken.
+      # from source on every runner for the same result. It is a devDependency
+      # of ui/, pinned to an exact version in package.json, and `npm ci` above
+      # installed it from package-lock.json, which records the integrity hash
+      # of the CLI and of each platform binary behind it -- the build never
+      # fetches a CLI by name from the registry. Keep it on the same minor as
+      # the `tauri` crate in Cargo.lock, or the build refuses to start.
+      # Run through `npm exec` rather than a global install, because the
+      # global npm bin directory is not reliably on PATH inside Git Bash on
+      # the Windows runner. `--prefix` finds ui/'s copy from the directory the
+      # build runs in, and `--no` makes a missing one an error rather than an
+      # install. This step fails loudly here, rather than 20 minutes into a
+      # build, if the CLI did not install.
       - name: Check Tauri CLI
-        run: npx --yes "$TAURI_CLI" --version
+        run: npm --prefix ui exec --no -- tauri --version
+
+      # The AppImage bundler would download AppRun, linuxdeploy and three
+      # plugin scripts itself, with no checksum, several from URLs whose
+      # content changes in place (`master`, `continuous`), and run them. It
+      # skips whatever is already in its cache directory, so fill that with
+      # files checked against the SHA-256s pinned in the script.
+      - name: Fetch and check the AppImage tools
+        if: matrix.name == 'linux'
+        run: scripts/appimage-tools.sh "${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
 
       - name: Build bundles
         working-directory: crates/karmayoga-app
@@ -270,8 +281,12 @@ jobs:
           # target/dist. Two words, not `--profile=dist`: only that spelling
           # stops the CLI adding a `--release` of its own, which cargo
           # refuses alongside a `--profile`.
-          args+=(-- --profile dist)
-          npx --yes "$TAURI_CLI" "${args[@]}"
+          # `--locked` so the build fails, rather than quietly resolving
+          # something else, if Cargo.lock does not match the manifests.
+          args+=(-- --profile dist --locked)
+          # Run from crates/karmayoga-app, where tauri.conf.json is, so the
+          # CLI comes from ui/'s install by `--prefix` rather than by path.
+          npm --prefix ../../ui exec --no -- tauri "${args[@]}"
 
       # Nothing is signed or notarised: there are no Apple or Authenticode
       # certificates in this repository, and adding them means paid developer
@@ -313,6 +328,13 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      # For the attestation step below and nothing else: the OIDC token it
+      # signs with, and the right to store the result. They are on this job
+      # and not the build jobs because this one runs none of the repository's
+      # build scripts or dependencies -- it only handles finished files -- so
+      # nothing a build compiles can mint an attestation.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -339,6 +361,20 @@ jobs:
           mv ../SHA256SUMS.txt .
           cat SHA256SUMS.txt
 
+      # A signed statement, kept by GitHub, that these exact files (the
+      # checksum list included) were produced by this workflow run of this
+      # repository at this commit. It is made before anything is uploaded, so
+      # a failure here publishes nothing. Anyone can check a download with
+      #
+      #   gh attestation verify <file> --repo harigov/everyday
+      #
+      # which is stronger than SHA256SUMS.txt: that file sits beside the
+      # installers, so whoever could replace one could replace the other.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -357,10 +393,26 @@ jobs:
           Verify a download against `SHA256SUMS.txt` before installing it.
           EOF
           )
+          notes+=$'\n\n'"Each file also carries a GitHub build attestation, which shows it was built by this repository's release workflow: \`gh attestation verify <file> --repo $GH_REPO\`."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "$TAG exists; replacing its assets"
-            gh release upload "$TAG" dist/* --clobber
+            echo "$TAG exists; adding assets to it"
+            # An asset already on a release is never replaced: people and the
+            # attestations made for them refer to those exact bytes. `gh
+            # release upload` refuses a name that is taken (that is what
+            # leaving out `--clobber` means), but this says which, and why,
+            # before it uploads any of them.
+            existing=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+            clash=0
+            for f in dist/*; do
+              name=${f#dist/}
+              if grep -Fxq -- "$name" <<<"$existing"; then
+                echo "::error::$TAG already has an asset named $name; it is not replaced. Delete it on the release page if you mean to, or release under another tag." >&2
+                clash=1
+              fi
+            done
+            [ "$clash" = 0 ] || exit 1
+            gh release upload "$TAG" dist/*
           else
             flags=(--title "Karma Yoga $VERSION" --target "$GITHUB_SHA"
                    --notes "$notes" --generate-notes)

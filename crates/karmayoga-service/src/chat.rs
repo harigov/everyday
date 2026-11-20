@@ -38,6 +38,22 @@
 //! and the pane answers through `answer_chat_verification`. Only the owner's
 //! requests are ever taken up; that is the connector's to enforce.
 //!
+//! # Which of the owner's devices the bot trusts
+//!
+//! The owner's Matrix ID is not enough to be believed: anybody who signs in
+//! to that account on a new device, and the homeserver itself, can send
+//! events under it. So a link carries a hand-picked list of the owner's
+//! device ids ([`karmayoga_core::chat::MatrixLink::trusted_devices`]), and
+//! only an encrypted message sent from one of them is answered. A running
+//! bot registers a [`ChatDevices`], through which Settings → Chat lists the
+//! owner's devices as the bot sees them and hands it a changed list at once;
+//! it also reports, through [`Service::report_untrusted_chat_device`], the
+//! device that last tried to talk without being on the list, so the pane can
+//! say so and a desktop notification can be raised, once per device. Only
+//! this computer's own window may change the list -- a device that could add
+//! itself would make the list worth nothing -- and that is enforced by the
+//! command (`domains::chat`).
+//!
 //! The supervisor keeps a task's factory after the task stops (that is how a
 //! lock and an unlock bring it back), and has no way to forget one. A link
 //! that was switched off or removed therefore still has a factory on file,
@@ -48,7 +64,7 @@
 
 use crate::agent::{ConfirmAnswer, Reach, Sink, Turn, Turned};
 use crate::error::CommandResult;
-use crate::events::{Change, Kind, Op};
+use crate::events::{Change, Kind, Notification, Op};
 use crate::service::Service;
 use crate::supervisor::{TaskFuture, TaskState};
 use futures::future::BoxFuture;
@@ -59,7 +75,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 
 /// The half of chat that lives in `karmayoga-chat`.
@@ -212,6 +228,60 @@ pub trait ChatVerifier: Send + Sync + 'static {
     fn start(&self) -> BoxFuture<'static, CommandResult<()>>;
 }
 
+/// A running link's view of the owner's devices, and the way to change which
+/// of them it trusts.
+///
+/// Registered by the link's task while its connector is signed in, beside
+/// [`ChatVerifier`]: both are the bot's own knowledge, which only the running
+/// bot has.
+pub trait ChatDevices: Send + Sync + 'static {
+    /// The owner's devices as the bot sees them now, asking the server for
+    /// the current list first. `Err` says why that could not be done, in
+    /// words for the settings pane.
+    fn list(&self) -> BoxFuture<'static, CommandResult<Vec<ChatDevice>>>;
+
+    /// Trust exactly `devices` from now on, and no other device of the
+    /// owner's. Takes effect at once, without the bot restarting; the caller
+    /// has saved the list already, so a bot that is not running picks it up
+    /// from there when it starts.
+    fn trust(&self, devices: Vec<String>) -> BoxFuture<'static, CommandResult<()>>;
+}
+
+/// One of the owner's devices, as the settings pane lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDevice {
+    pub device_id: String,
+    /// The name its owner gave it ("Element on iPhone"), if it has one.
+    pub display_name: Option<String>,
+    /// Whether the owner's account has signed it. Shown, because it is what
+    /// other chat apps show -- and not what decides anything here: only the
+    /// list does.
+    pub cross_signed: bool,
+    /// Whether the bot trusts it: it is on the list.
+    pub trusted: bool,
+}
+
+/// An owner's device that wrote to the bot while not on the list, and was
+/// ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatUntrustedDevice {
+    pub device_id: String,
+    pub display_name: Option<String>,
+    /// When it last tried.
+    pub at: Timestamp,
+}
+
+impl ChatUntrustedDevice {
+    /// The device as a person would name it: "Element on iPhone", or its id
+    /// when it has no name.
+    pub fn label(&self) -> &str {
+        let name = self.display_name.as_deref().map(str::trim).unwrap_or_default();
+        if name.is_empty() { &self.device_id } else { name }
+    }
+}
+
 /// What the person said about the emoji.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -328,6 +398,13 @@ pub struct ChatHub {
     pub(crate) trust: RwLock<HashMap<ChatLinkId, ChatTrust>>,
     /// The verifier each running link has registered.
     pub(crate) verifiers: RwLock<HashMap<ChatLinkId, Arc<dyn ChatVerifier>>>,
+    /// The device view each running link has registered.
+    pub(crate) devices: RwLock<HashMap<ChatLinkId, Arc<dyn ChatDevices>>>,
+    /// The device of a link's owner that last wrote without being trusted.
+    pub(crate) untrusted: RwLock<HashMap<ChatLinkId, ChatUntrustedDevice>>,
+    /// The notice keys already raised this session, one per link and device:
+    /// a device that keeps trying is not a notification each time.
+    pub(crate) untrusted_told: Mutex<HashSet<String>>,
 }
 
 impl Service {
@@ -488,10 +565,72 @@ impl Service {
         self.chat.verifiers.read().unwrap().get(&link).cloned()
     }
 
+    /// Make `devices` the way to see and change the owner's trusted devices
+    /// for `link`, until [`Service::close_chat_devices`].
+    pub fn open_chat_devices(&self, link: ChatLinkId, devices: Arc<dyn ChatDevices>) {
+        self.chat.devices.write().unwrap().insert(link, devices);
+    }
+
+    /// Withdraw `devices`, if it is still the one registered for `link`.
+    pub fn close_chat_devices(&self, link: ChatLinkId, devices: &Arc<dyn ChatDevices>) {
+        let mut open = self.chat.devices.write().unwrap();
+        if open.get(&link).is_some_and(|open| Arc::ptr_eq(open, devices)) {
+            open.remove(&link);
+        }
+    }
+
+    /// The owner's devices through `link`'s running bot, if it is running
+    /// here.
+    pub fn chat_devices(&self, link: ChatLinkId) -> Option<Arc<dyn ChatDevices>> {
+        self.chat.devices.read().unwrap().get(&link).cloned()
+    }
+
+    /// Record that `device`, one of `link`'s owner's, wrote to the bot and
+    /// was ignored for not being trusted; tell any open settings pane, and --
+    /// the first time this session for this device -- raise a notification,
+    /// so somebody who is not looking at Settings still finds out why the
+    /// assistant is not answering.
+    ///
+    /// The notification says which device and nothing of what it wrote.
+    pub fn report_untrusted_chat_device(&self, link: ChatLinkId, device: ChatUntrustedDevice) {
+        let key = format!("chat-untrusted:{link}:{}", device.device_id);
+        let first = self.chat.untrusted_told.lock().unwrap().insert(key.clone());
+        let label = device.label().to_owned();
+        self.chat.untrusted.write().unwrap().insert(link, device);
+        self.chat_link_changed(link);
+        if first {
+            self.events().notify(
+                Notification::warning(format!("\"{label}\" is not trusted by the assistant yet"))
+                    .body(
+                        "A device of yours wrote to the assistant over Matrix and was ignored. \
+                         Pick the devices it should trust in Settings \u{2192} Chat.",
+                    )
+                    .for_user()
+                    .key(key),
+            );
+        }
+    }
+
+    /// What `link`'s bot last said about an untrusted device of the owner's
+    /// trying to talk to it.
+    pub fn chat_untrusted_device(&self, link: ChatLinkId) -> Option<ChatUntrustedDevice> {
+        self.chat.untrusted.read().unwrap().get(&link).cloned()
+    }
+
+    /// A trusted list was saved for `link`: whichever device it names is no
+    /// longer one that was turned away, so the pane stops saying so.
+    pub(crate) fn settle_untrusted_chat_device(&self, link: ChatLinkId, trusted: &[String]) {
+        let mut untrusted = self.chat.untrusted.write().unwrap();
+        if untrusted.get(&link).is_some_and(|d| trusted.contains(&d.device_id)) {
+            untrusted.remove(&link);
+        }
+    }
+
     /// Forget what `link` last reported -- once the link itself is gone.
     pub(crate) fn forget_chat_status(&self, link: ChatLinkId) {
         self.chat.status.write().unwrap().remove(&link);
         self.chat.trust.write().unwrap().remove(&link);
+        self.chat.untrusted.write().unwrap().remove(&link);
     }
 
     /// One turn that arrived through a chat link: the rail's
@@ -972,6 +1111,18 @@ mod tests {
             at(1_000),
         );
         assert_eq!(s.state, ChatState::Connecting, "a stale `off` is not true of a running task");
+    }
+
+    #[test]
+    fn an_untrusted_device_is_named_by_its_name_or_else_its_id() {
+        let device = |name: Option<&str>| ChatUntrustedDevice {
+            device_id: "KQZVMBXTHE".into(),
+            display_name: name.map(str::to_owned),
+            at: at(1_000),
+        };
+        assert_eq!(device(Some("  Element on iPhone ")).label(), "Element on iPhone");
+        assert_eq!(device(Some("  ")).label(), "KQZVMBXTHE");
+        assert_eq!(device(None).label(), "KQZVMBXTHE");
     }
 
     #[test]

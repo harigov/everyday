@@ -36,6 +36,7 @@
 //! [`ReminderSettings::assistants`]: karmayoga_core::ReminderSettings::assistants
 
 use crate::chat::{ChatOutlet, FromRun};
+use crate::ctx::Scope;
 use crate::events::{Change, Kind, Level, Notification, Op};
 use crate::service::{Service, blocking};
 use jiff::{SignedDuration, Timestamp};
@@ -207,6 +208,7 @@ async fn send(service: &Arc<Service>, vault: &Arc<Vault>, reminder: Reminder, no
     }
     if desktop {
         let mut notice = Notification::new(Level::Info, reminder.task.title.trim())
+            .domain(Scope::Tasks)
             .for_user()
             .key(format!("reminder:{}", reminder.task.id));
         if !detail.is_empty() {

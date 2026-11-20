@@ -48,6 +48,7 @@
 
 use super::SyncReport;
 use super::plaid::{Host, MUTATION_DURING_PAGINATION, Plaid, PlaidError};
+use crate::ctx::Scope;
 use crate::error::{CommandResult, codes};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::service::{Service, blocking};
@@ -685,6 +686,7 @@ fn notice_key(id: BankLinkId) -> String {
 /// who may have Money closed; one raised by somebody pressing "Sync now" is
 /// for the window they are looking at.
 fn notify(svc: &Service, background: bool, notice: Notification) {
+    let notice = notice.domain(Scope::Money);
     svc.events().notify(if background { notice.for_user() } else { notice });
 }
 

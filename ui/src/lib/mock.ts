@@ -143,6 +143,7 @@ import { DIGEST_MARKER, ordinal } from './dream'
 import { noteOrigin } from './note-list'
 import type { Draft, ImproveMode, MailCategory } from './types'
 import type {
+  ChatDevice,
   ChatLink,
   ChatLinkView,
   ChatState,
@@ -2871,6 +2872,14 @@ const accountPasswords = new Map<string, string>([['acct-fastmail', 'hunter2-dem
 // session exists.
 
 const chatLinks: ChatLinkView[] = []
+
+/** The mock owner's devices, as a running bot would list them. The third is
+ *  signed in but not signed by the account, the kind a stranger would add. */
+const MOCK_OWNER_DEVICES: Omit<ChatDevice, 'trusted'>[] = [
+  { deviceId: 'KQZVMBXTHE', displayName: 'Element on iPhone', crossSigned: true },
+  { deviceId: 'RWNPCLDYAF', displayName: 'Element Desktop', crossSigned: true },
+  { deviceId: 'TGUJSOHXIB', displayName: null, crossSigned: false },
+]
 /** Ids of the links the next `chat_links` will move from connecting to online. */
 const chatSettling = new Set<string>()
 
@@ -2887,6 +2896,15 @@ function settleChatLinks() {
     view.hasPassword = false
     view.ownerVerified = false
     view.status = chatStatus('online', `Signed in as ${m.userId}. Talking to ${m.owner}.`)
+    // The first device to write while none is trusted is the one the pane
+    // says was turned away.
+    if (m.trustedDevices.length === 0) {
+      view.untrustedDevice = {
+        deviceId: MOCK_OWNER_DEVICES[0]!.deviceId,
+        displayName: MOCK_OWNER_DEVICES[0]!.displayName,
+        at: new Date().toISOString(),
+      }
+    }
   }
 }
 
@@ -7699,7 +7717,7 @@ export const mockInvoke = async <T>(
       const link: ChatLink = {
         id: `chat-${nextId++}`,
         enabled: true,
-        service: { kind: 'matrix', homeserver: '', userId: '', owner: '' },
+        service: { kind: 'matrix', homeserver: '', userId: '', owner: '', trustedDevices: [] },
         freshAfterMinutes: 360,
         createdAt: now,
         updatedAt: now,
@@ -7720,8 +7738,19 @@ export const mockInvoke = async <T>(
       const before = at >= 0 ? chatLinks[at] : undefined
       // A bot on a different server or account starts again from nothing.
       const kept = before !== undefined && sameAccount(before.link, link)
+      // The list of trusted devices is never the form's to say: a save keeps
+      // the stored one while the owner is the same person on the same server.
+      const sameOwner =
+        before !== undefined &&
+        before.link.service.owner === link.service.owner &&
+        before.link.service.homeserver.replace(/\/+$/, '') ===
+          link.service.homeserver.replace(/\/+$/, '')
       const saved: ChatLink = {
         ...link,
+        service: {
+          ...link.service,
+          trustedDevices: sameOwner ? [...before.link.service.trustedDevices] : [],
+        },
         createdAt: before?.link.createdAt ?? link.createdAt,
         updatedAt: new Date().toISOString(),
       }
@@ -7748,6 +7777,7 @@ export const mockInvoke = async <T>(
         // A restarted bot has not looked yet, and is in no verification.
         ownerVerified: null,
         verification: null,
+        untrustedDevice: null,
       }
       if (at >= 0) chatLinks[at] = view
       else chatLinks.push(view)
@@ -7803,6 +7833,41 @@ export const mockInvoke = async <T>(
               decimals: null,
             }
       return undefined as T
+    }
+
+    case 'chat_devices': {
+      requireUnlocked()
+      const view = chatLinks.find((v) => v.link.id === str(args.id))
+      if (!view || view.status.state !== 'online') {
+        throw new VaultError(
+          'conflict',
+          'The bot is not running here, so it cannot list your devices. Switch it on and wait until it is online.',
+        )
+      }
+      const trusted = view.link.service.trustedDevices
+      return MOCK_OWNER_DEVICES.map((d) => ({
+        ...d,
+        trusted: trusted.includes(d.deviceId),
+      })) as T
+    }
+
+    case 'set_chat_trusted_devices': {
+      requireUnlocked()
+      const view = chatLinks.find((v) => v.link.id === str(args.id))
+      if (!view) throw new VaultError('notFound', 'no such chat link')
+      const devices = [...new Set((args.devices as string[]).map((d) => d.trim()))]
+        .filter((d) => d !== '')
+        .sort()
+      view.link = {
+        ...view.link,
+        service: { ...view.link.service, trustedDevices: devices },
+        updatedAt: new Date().toISOString(),
+      }
+      // A device that was turned away and is now trusted is no longer news.
+      if (view.untrustedDevice && devices.includes(view.untrustedDevice.deviceId)) {
+        view.untrustedDevice = null
+      }
+      return structuredClone(view) as T
     }
 
     case 'remove_chat_link': {

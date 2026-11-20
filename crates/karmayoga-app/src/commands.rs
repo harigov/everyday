@@ -399,6 +399,14 @@ pub async fn open_vault(state: State<'_, AppState>, path: PathBuf) -> CommandRes
 /// Stamped with the window it came from -- see `windows::ctx_for` -- so a
 /// write made in a window of one app reaches the main window's lists, and
 /// the other way round.
+///
+/// Two checks come before the service sees anything, both in `guard` and both
+/// for the case that script in a window is not the interface. A window that
+/// is not the main window or an app window runs only the service commands its
+/// own page uses. And a connection that would run a program on this computer
+/// -- added, or changed to run a different one -- is put to the person in a
+/// dialog of the platform's own, which no script can click, before the
+/// service is asked to make it.
 #[tauri::command]
 pub async fn call(
     webview: tauri::Webview,
@@ -407,9 +415,17 @@ pub async fn call(
     args: Option<Value>,
     request_id: Option<String>,
 ) -> CommandResult<Value> {
+    crate::guard::check_window_call(webview.label(), &name)?;
+    let args = args.unwrap_or(Value::Null);
+    // Only for a vault in this process. A call for one on another computer is
+    // forwarded, and that computer refuses a program to anybody but its own
+    // shell; see `guard::confirm_call`.
+    if !state.is_remote() {
+        crate::guard::confirm_call(webview.app_handle(), &state, &name, &args).await?;
+    }
     let session = state.session().as_session();
     let ctx = crate::windows::ctx_for(webview.label()).with_request_id(request_id);
-    session.call(ctx, &name, args.unwrap_or(Value::Null)).await
+    session.call(ctx, &name, args).await
 }
 
 // ---- looking at another computer's vault --------------------------------
@@ -671,8 +687,13 @@ pub async fn set_remote_unlock(
 }
 
 /// Start answering other machines.
+///
+/// On an address another computer could reach -- which is the default, every
+/// interface -- the person is asked first, in a dialog of the platform's own;
+/// see `guard`. Sharing on this computer's loopback address alone is not.
 #[tauri::command]
 pub async fn share_start(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     port: Option<u16>,
     address: Option<String>,
@@ -705,6 +726,11 @@ pub async fn share_start(
     };
     config.listen = std::net::SocketAddr::new(ip, port);
 
+    if let Some(prompt) =
+        crate::guard::listening_prompt(crate::guard::Served::Sharing, config.listen)
+    {
+        crate::guard::ask(&app, prompt).await?;
+    }
     let status = state.sharing().start(state.service(), config, state.registry()?).await?;
     state.recompose_events();
     Ok(status)
@@ -756,8 +782,12 @@ pub async fn mcp_status(state: State<'_, AppState>) -> CommandResult<crate::mcp:
 }
 
 /// Start answering `POST /mcp`.
+///
+/// Loopback unless the interface names another address, and another address
+/// is asked about first, in a dialog of the platform's own; see `guard`.
 #[tauri::command]
 pub async fn mcp_start(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     port: Option<u16>,
     address: Option<String>,
@@ -787,6 +817,9 @@ pub async fn mcp_start(
     };
     config.listen = std::net::SocketAddr::new(ip, port);
 
+    if let Some(prompt) = crate::guard::listening_prompt(crate::guard::Served::Mcp, config.listen) {
+        crate::guard::ask(&app, prompt).await?;
+    }
     let status = state.mcp().start(state.service(), config, state.registry()?).await?;
     state.recompose_events();
     Ok(status)
@@ -874,15 +907,20 @@ pub async fn mcp_set_destructive(
 /// panel offers checkboxes to narrow it, and `Registry::issue` itself is
 /// what refuses an empty list rather than silently widening it back to
 /// `All` -- see that function's own doc.
+///
+/// A token is a key to the vault that works from any program that holds it,
+/// so the person is asked first, in a dialog of the platform's own that
+/// script in a window cannot click; see `guard`. Declined, nothing is made.
 #[tauri::command]
 pub async fn mcp_issue_token(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     scopes: Option<Vec<karmayoga_service::Scope>>,
 ) -> CommandResult<String> {
+    let scopes = scopes.unwrap_or_else(|| vec![karmayoga_service::Scope::All]);
+    crate::guard::ask(&app, crate::guard::token_prompt(&scopes)).await?;
     let registry = state.registry()?;
-    state
-        .mcp()
-        .issue_token(&registry, scopes.unwrap_or_else(|| vec![karmayoga_service::Scope::All]))
+    state.mcp().issue_token(&registry, scopes)
 }
 
 // ---- the OS-wide hotkey -------------------------------------------------

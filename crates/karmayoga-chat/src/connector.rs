@@ -3,9 +3,10 @@
 //! A connector is one signed-in bot account on one service. It owns
 //! everything specific to that service -- the protocol, the encryption,
 //! which rooms or chats exist -- and above all it owns *who is trusted*:
-//! only messages from the link's owner, in a chat where nobody else can read
-//! the reply, ever reach [`Incoming`]. Everything after that is the same for
-//! every service and lives in [`crate::relay`].
+//! only messages from the link's owner -- from a device the owner picked, and
+//! in a chat where nobody else can read the reply -- ever reach [`Incoming`].
+//! Everything after that is the same for every service and lives in
+//! [`crate::relay`].
 //!
 //! Deliberately small. Matrix is the only service today, and the trait is
 //! what the relay needs from it, not a guess at what a future service might
@@ -15,7 +16,9 @@
 use async_trait::async_trait;
 use jiff::Timestamp;
 use karmayoga_core::chat::{ChatLink, ChatSecret};
-use karmayoga_service::chat::{ChatState, ChatTrust, ChatVerifier};
+use karmayoga_service::chat::{
+    ChatDevices, ChatState, ChatTrust, ChatUntrustedDevice, ChatVerifier,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
@@ -336,6 +339,12 @@ pub type Report = Arc<dyn Fn(ChatState, String) + Send + Sync>;
 /// are verified. Each call replaces the last.
 pub type TrustReport = Arc<dyn Fn(ChatTrust) + Send + Sync>;
 
+/// Tells the settings pane that a device of the owner's which is not on the
+/// trusted list wrote to the bot and was ignored. Called each time one does,
+/// so the connector keeps it to a trickle; the service raises a notification
+/// only the first time for each device.
+pub type UntrustedReport = Arc<dyn Fn(ChatUntrustedDevice) + Send + Sync>;
+
 /// Everything a connector starts from.
 pub struct Setup {
     pub link: ChatLink,
@@ -351,6 +360,8 @@ pub struct Setup {
     pub store_passphrase: String,
     pub report: Report,
     pub trust: TrustReport,
+    /// Where an owner's device that is not trusted is reported.
+    pub untrusted: UntrustedReport,
     /// What the person named their assistant, for the greeting. Empty means
     /// it has no name: "the assistant".
     pub assistant_name: String,
@@ -405,6 +416,13 @@ pub trait Connector: Send + Sync + 'static {
     /// has interactive verification. Only works while [`Connector::listen`]
     /// runs: that is when the owner's requests are heard.
     fn verifier(&self) -> Option<Arc<dyn ChatVerifier>> {
+        None
+    }
+
+    /// How Settings lists the owner's devices and chooses which of them the
+    /// bot trusts, for a service that has devices. Only a signed-in
+    /// connector has one.
+    fn devices(&self) -> Option<Arc<dyn ChatDevices>> {
         None
     }
 
