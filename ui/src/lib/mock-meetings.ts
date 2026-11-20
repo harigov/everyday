@@ -255,6 +255,26 @@ const speechModels: (LocalModelInfo & { installed: boolean })[] = [
     progress: null,
     error: null,
   },
+  {
+    id: 'qwen3Asr17b',
+    name: 'Qwen3-ASR 1.7B',
+    description: 'The most accurate here, best with accents such as Indian English.',
+    languages: 'English, Chinese, Hindi and 27 other languages',
+    bytes: 2_520_744_288,
+    installed: false,
+    progress: null,
+    error: null,
+  },
+  {
+    id: 'qwen3Asr06b',
+    name: 'Qwen3-ASR 0.6B',
+    description: 'A smaller Qwen3-ASR: about a third of the size and quicker, and less accurate.',
+    languages: 'English, Chinese, Hindi and 27 other languages',
+    bytes: 1_019_141_728,
+    installed: false,
+    progress: null,
+    error: null,
+  },
   // The decision models share the catalogue, as in `local::files`; listed by
   // `decision_models`, not `speech_models`.
   {
@@ -350,6 +370,9 @@ export function mockDeleteSpeechModel(id: string): void {
 
 export async function mockBenchmarkSpeechModel(id: string): Promise<ModelBenchmark> {
   await new Promise((r) => setTimeout(r, 600))
+  if (id.startsWith('qwen3Asr')) {
+    return { realtimeFactor: id === 'qwen3Asr17b' ? 18 : 31, gpu: 'NVIDIA GeForce RTX 3070' }
+  }
   const factor = id === 'parakeetV3' ? 4.2 : id === 'whisperTurbo' ? 1.1 : 2.5
   return { realtimeFactor: factor }
 }

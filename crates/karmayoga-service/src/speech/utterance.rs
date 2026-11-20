@@ -155,7 +155,7 @@ impl LocalUtterances {
         let language = self.language.clone();
         let heard = samples.to_vec();
         let text = crate::service::blocking(move || {
-            Ok(recogniser.transcribe(&heard, language.as_deref()).text)
+            Ok(recogniser.transcribe(&heard, language.as_deref())?.text)
         })
         .await?;
         let segment = RawSegment {

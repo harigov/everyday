@@ -4963,7 +4963,7 @@ export interface VoiceSample {
 }
 
 /** The recognisers that run on this computer -- `karmayoga_core::speech::LocalModel`. */
-export type LocalModel = 'parakeetV3' | 'whisperTurbo'
+export type LocalModel = 'parakeetV3' | 'whisperTurbo' | 'qwen3Asr17b' | 'qwen3Asr06b'
 
 /** Who turns speech into text -- `karmayoga_core::speech::TranscriberConfig`. */
 export type TranscriberConfig =
@@ -5092,6 +5092,8 @@ export interface LocalModelInfo {
 export interface ModelBenchmark {
   /** Seconds of audio transcribed per second of work. */
   realtimeFactor: number
+  /** The graphics cards it ran on; absent on the processor. */
+  gpu?: string | null
 }
 
 /** Live state of the shell's capture, for the recording pill. */

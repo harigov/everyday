@@ -159,7 +159,7 @@ async fn real_models_hear_what_was_actually_said() {
         let samples = read_wav(&fixtures.join("amy1_16k.wav"));
         let duration_seconds = samples.len() as f64 / f64::from(SAMPLE_RATE);
         let started = Instant::now();
-        let heard = recogniser.transcribe(&samples, Some("en"));
+        let heard = recogniser.transcribe(&samples, Some("en")).unwrap();
         let rtf = duration_seconds / started.elapsed().as_secs_f64();
         eprintln!("{}: {rtf:.1}x realtime -- {:?}", model.as_str(), heard.text);
 

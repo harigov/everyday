@@ -280,6 +280,41 @@ button that opens Models.
   from before has its transcriber, language and own key moved into the
   models once, at unlock (`Vault::carry_over_speech`).
 
+## Qwen3-ASR (Nov 2026)
+
+Parakeet trails Whisper on Indian-accented English, and Whisper large-v3
+loops on it. In a 2026 comparison on Common Voice's Indian accent
+(arXiv 2604.21276), Qwen3-ASR 1.7B had 7.8% WER, canary-qwen-2.5b 7.2%,
+Qwen3-ASR 0.6B 11.1%, whisper-medium 13.2% and whisper-large-v3 19.0%. So
+both Qwen3-ASR sizes are local recognisers now, beside Parakeet and Whisper.
+
+- They are audio language models: an encoder llama.cpp calls a multimodal
+  projector (`mtmd`) feeding a Qwen3 that writes what it heard. They run
+  through `local::llama`, not sherpa-onnx, so only a build with both
+  `speech` and `decisions` has them -- the desktop app, not the server,
+  whose speech card does not offer them.
+- llama.cpp's `mtmd` is built standalone, without `common`, so the regex
+  clash with sherpa-onnx (`local::llama`'s doc) does not come back.
+- Graphics cards as for a decision model: on the card when both files and a
+  window's working memory fit, the processor otherwise, and a processor copy
+  for a clip that finds no room after all.
+- A turn longer than 30 s is cut at its quietest 100 ms in the last 5 s
+  before the limit, as Qwen's toolkit cuts long audio. Settings' language,
+  when it is one of Qwen's thirty, is put in the prompt
+  (`language English<asr_text>`); otherwise Qwen detects it.
+- No timestamps. Nothing here needed Parakeet's: a turn's start and end come
+  from the voice detector.
+- "Check speed" writes three tokens a second, measured on real speech.
+  Writing past where the model would stop makes it repeat itself until it
+  is cut off, which was timing a whole budget of repeats.
+
+Measured on the Phonon voice, all words right for every model. On an
+RTX 3070, the 1.7B ran 20-36x real time. On an i7-12700F processor alone,
+the 1.7B ran 1.3-2.7x, the 0.6B 4.4-6.3x and Parakeet 15-21x. On that 8 GB
+card the 1.7B does not fit beside a decision model the app already holds
+there (about 2 GB), and then it goes to the processor. Not yet measured on
+Indian-accented speech here.
+
 The app already knows when a call is about to start, who was invited, and
 how to write a note, and it already has a model it trusts to write one. What
 it cannot do is hear. This plan gives it ears for the length of a call: it
@@ -375,6 +410,8 @@ per-vault. Each download is pinned by URL and SHA-256 in code.
 - **Local recogniser** (phase 4, the person picks one):
   - *Parakeet TDT 0.6B v3*, int8: English and the major European languages, several times faster than real time on a laptop CPU.
   - *Whisper large-v3-turbo*: any language, slower.
+  - *Qwen3-ASR 1.7B* and *0.6B*, 8-bit, through llama.cpp: thirty languages,
+    and the best open model at accented English. See "Qwen3-ASR (Nov 2026)".
 
 ## The shape of it
 

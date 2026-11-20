@@ -14,6 +14,7 @@
 //!   live        a stream -> words as they come narrate   sentences -> audio, in order
 //!   transcribe  chunks of a recording -> words
 //!   local       the models on this computer    tempo     audio faster or slower, same pitch
+//!   qwen        Qwen3-ASR, which local runs through llama.cpp
 //!
 //!   pcm, wav    sample and file conversions everything shares
 //!   resample    one rate to another, for devices and calls
@@ -32,6 +33,7 @@ pub mod live;
 pub mod local;
 pub mod narrate;
 pub mod pcm;
+pub mod qwen;
 pub mod resample;
 pub mod synth;
 pub mod tempo;

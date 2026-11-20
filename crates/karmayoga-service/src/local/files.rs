@@ -12,12 +12,14 @@
 //!
 //! **Speech**, per `docs/plans/meeting-notes.md`'s "The libraries" and
 //! "Models": [`SPEECH_KIT_ID`] (Silero VAD, pyannote `segmentation-3.0`, and
-//! a small English speaker-embedding model -- shared by both recognisers and
-//! needed from phase 2 on) and the two local recognisers named by
-//! [`LocalModel`]. Two of the three are `.tar.bz2` archives holding files
+//! a small English speaker-embedding model -- shared by every recogniser and
+//! needed from phase 2 on) and the local recognisers named by
+//! [`LocalModel`]. Parakeet and Whisper are `.tar.bz2` archives holding files
 //! this application does not want (Python export scripts, a licence file,
 //! test WAVs); [`Source::Archive`] downloads the whole archive, checks *its*
 //! hash, and extracts only the named members, each checked again on its own.
+//! The two Qwen3-ASR recognisers are two GGUF files each, run by llama.cpp
+//! as the decision models are.
 //!
 //! **Decision**, per `docs/plans/mail-sorting.md`: the three
 //! [`LocalDecisionModel`]s, each one GGUF file from llama.cpp's own
@@ -87,6 +89,8 @@ pub fn local_model_id(model: LocalModel) -> &'static str {
     match model {
         LocalModel::ParakeetV3 => "parakeetV3",
         LocalModel::WhisperTurbo => "whisperTurbo",
+        LocalModel::Qwen3Asr17b => "qwen3Asr17b",
+        LocalModel::Qwen3Asr06b => "qwen3Asr06b",
     }
 }
 
@@ -691,13 +695,63 @@ const Z_IMAGE_TURBO_Q4_SOURCES: &[Source] = &[
 /// What a decision model's one file is called inside its directory.
 const DECISION_MODEL_FILE: &str = "model.gguf";
 
+/// What a Qwen3-ASR recogniser's two files are called inside its
+/// directory: the language model, and the audio encoder llama.cpp calls a
+/// multimodal projector.
+const QWEN_MODEL_FILE: &str = "model.gguf";
+const QWEN_MMPROJ_FILE: &str = "mmproj.gguf";
+
+/// The Qwen3-ASR recognisers, from llama.cpp's own conversions
+/// (`ggml-org/Qwen3-ASR-*-GGUF` on Hugging Face) of Qwen's Apache-2.0
+/// weights, at the revision each repository had on the day they were
+/// pinned. The SHA-256 is Hugging Face's LFS object id, checked against a
+/// download. Both halves are 8-bit, the smallest llama.cpp publishes; the
+/// language model is where the size goes.
+const QWEN3_ASR_17B_SOURCES: &[Source] = &[
+    Source::File {
+        url: "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/36a678687ba7d07a74ca70ccb0e36902e005fb80/Qwen3-ASR-1.7B-Q8_0.gguf",
+        file: ModelFile {
+            dest: QWEN_MODEL_FILE,
+            sha256: "58e22d0532d4eacaf034cfac17a6fed159f37c41390c710186783be439d1fc57",
+            bytes: 2_165_034_944,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF/resolve/36a678687ba7d07a74ca70ccb0e36902e005fb80/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+        file: ModelFile {
+            dest: QWEN_MMPROJ_FILE,
+            sha256: "46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d",
+            bytes: 355_709_344,
+        },
+    },
+];
+
+const QWEN3_ASR_06B_SOURCES: &[Source] = &[
+    Source::File {
+        url: "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/928ab958557df9aa2ef1c93e0e83c7ad0933fae2/Qwen3-ASR-0.6B-Q8_0.gguf",
+        file: ModelFile {
+            dest: QWEN_MODEL_FILE,
+            sha256: "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
+            bytes: 804_749_248,
+        },
+    },
+    Source::File {
+        url: "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/928ab958557df9aa2ef1c93e0e83c7ad0933fae2/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+        file: ModelFile {
+            dest: QWEN_MMPROJ_FILE,
+            sha256: "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
+            bytes: 214_392_480,
+        },
+    },
+];
+
 /// Every downloadable model, in the order the settings panes list them.
-pub static CATALOGUE: [ModelSpec; 10] = [
+pub static CATALOGUE: [ModelSpec; 12] = [
     ModelSpec {
         id: SPEECH_KIT_ID,
         kind: ModelKind::Speech,
         name: "Speech kit",
-        description: "Voice detection, speaker segmentation and speaker embeddings. Needed by both recognisers below, and downloaded once for either.",
+        description: "Voice detection, speaker segmentation and speaker embeddings. Needed by every recogniser below, and downloaded once for all of them.",
         languages: "Any",
         sources: SPEECH_KIT_SOURCES,
     },
@@ -716,6 +770,22 @@ pub static CATALOGUE: [ModelSpec; 10] = [
         description: "Slower than Parakeet, and heavier, but understands far more languages.",
         languages: "Any language Whisper supports",
         sources: WHISPER_TURBO_SOURCES,
+    },
+    ModelSpec {
+        id: "qwen3Asr17b",
+        kind: ModelKind::Speech,
+        name: "Qwen3-ASR 1.7B",
+        description: "The most accurate here, best with accents such as Indian English. Quick on a graphics card, slower than Parakeet without one.",
+        languages: "English, Chinese, Hindi and 27 other languages",
+        sources: QWEN3_ASR_17B_SOURCES,
+    },
+    ModelSpec {
+        id: "qwen3Asr06b",
+        kind: ModelKind::Speech,
+        name: "Qwen3-ASR 0.6B",
+        description: "A smaller Qwen3-ASR: about a third of the size and quicker, and less accurate.",
+        languages: "English, Chinese, Hindi and 27 other languages",
+        sources: QWEN3_ASR_06B_SOURCES,
     },
     ModelSpec {
         id: "d3Lite",
@@ -1431,12 +1501,28 @@ pub fn sd_cli_archive() -> Option<EngineArchive> {
     Some(EngineArchive { path: spec.dir().join(SD_CLI_ARCHIVE), sha256: file.sha256 })
 }
 
-/// Where a recogniser's files are, once [`installed`]. The two local
-/// recognisers are different model families -- a transducer and Whisper --
-/// so they are pointed at differently; see `speech::local::Recogniser`.
+/// Where a recogniser's files are, once [`installed`]. The local
+/// recognisers are different model families -- a transducer, Whisper, and
+/// an audio language model -- so they are pointed at differently; see
+/// `speech::local::Recogniser`.
 pub enum RecogniserPaths {
-    Transducer { encoder: PathBuf, decoder: PathBuf, joiner: PathBuf, tokens: PathBuf },
-    Whisper { encoder: PathBuf, decoder: PathBuf, tokens: PathBuf },
+    Transducer {
+        encoder: PathBuf,
+        decoder: PathBuf,
+        joiner: PathBuf,
+        tokens: PathBuf,
+    },
+    Whisper {
+        encoder: PathBuf,
+        decoder: PathBuf,
+        tokens: PathBuf,
+    },
+    /// A GGUF language model and the audio encoder that feeds it, for
+    /// llama.cpp.
+    Llama {
+        model: PathBuf,
+        mmproj: PathBuf,
+    },
 }
 
 pub fn recogniser_paths(model: LocalModel) -> Option<RecogniserPaths> {
@@ -1456,6 +1542,10 @@ pub fn recogniser_paths(model: LocalModel) -> Option<RecogniserPaths> {
             encoder: dir.join("turbo-encoder.int8.onnx"),
             decoder: dir.join("turbo-decoder.int8.onnx"),
             tokens: dir.join("turbo-tokens.txt"),
+        },
+        LocalModel::Qwen3Asr17b | LocalModel::Qwen3Asr06b => RecogniserPaths::Llama {
+            model: dir.join(QWEN_MODEL_FILE),
+            mmproj: dir.join(QWEN_MMPROJ_FILE),
         },
     })
 }
@@ -1507,7 +1597,12 @@ mod tests {
         }
         assert_eq!(local_model_id(LocalModel::ParakeetV3), "parakeetV3");
         assert_eq!(local_model_id(LocalModel::WhisperTurbo), "whisperTurbo");
-        for model in [LocalModel::ParakeetV3, LocalModel::WhisperTurbo] {
+        for model in [
+            LocalModel::ParakeetV3,
+            LocalModel::WhisperTurbo,
+            LocalModel::Qwen3Asr17b,
+            LocalModel::Qwen3Asr06b,
+        ] {
             assert!(
                 spec(local_model_id(model)).is_some(),
                 "{} has no catalogue entry",

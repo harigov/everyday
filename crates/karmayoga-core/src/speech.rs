@@ -60,6 +60,16 @@ pub enum LocalModel {
     ParakeetV3,
     /// Whisper large-v3-turbo: any language, slower.
     WhisperTurbo,
+    /// Qwen3-ASR 1.7B, 8-bit, through llama.cpp: thirty languages and
+    /// English as it is spoken around the world -- in testing, the best open
+    /// model at Indian-accented English. Quick on a graphics card, slower
+    /// than Parakeet on the processor.
+    #[serde(rename = "qwen3Asr17b")]
+    Qwen3Asr17b,
+    /// Qwen3-ASR 0.6B, 8-bit: the same languages, less accurate, about a
+    /// third of the size.
+    #[serde(rename = "qwen3Asr06b")]
+    Qwen3Asr06b,
 }
 
 impl LocalModel {
@@ -67,7 +77,16 @@ impl LocalModel {
         match self {
             LocalModel::ParakeetV3 => "parakeet-tdt-0.6b-v3",
             LocalModel::WhisperTurbo => "whisper-large-v3-turbo",
+            LocalModel::Qwen3Asr17b => "qwen3-asr-1.7b",
+            LocalModel::Qwen3Asr06b => "qwen3-asr-0.6b",
         }
+    }
+
+    /// Whether it runs through llama.cpp rather than sherpa-onnx: a build
+    /// needs both the `speech` and `decisions` features of
+    /// `karmayoga-service` to run it.
+    pub fn on_llama(&self) -> bool {
+        matches!(self, LocalModel::Qwen3Asr17b | LocalModel::Qwen3Asr06b)
     }
 }
 
@@ -563,6 +582,22 @@ mod tests {
         .unwrap();
         assert_eq!(sparse.language, None);
         assert_eq!(sparse.transcriber.local_model(), Some(LocalModel::ParakeetV3));
+    }
+
+    /// The ids the interface and `local::files` name the recognisers by.
+    #[test]
+    fn local_recognisers_travel_by_their_catalogue_ids() {
+        for (model, id) in [
+            (LocalModel::ParakeetV3, "parakeetV3"),
+            (LocalModel::WhisperTurbo, "whisperTurbo"),
+            (LocalModel::Qwen3Asr17b, "qwen3Asr17b"),
+            (LocalModel::Qwen3Asr06b, "qwen3Asr06b"),
+        ] {
+            assert_eq!(serde_json::to_value(model).unwrap(), id);
+            assert_eq!(serde_json::from_value::<LocalModel>(id.into()).unwrap(), model);
+        }
+        assert!(LocalModel::Qwen3Asr17b.on_llama() && LocalModel::Qwen3Asr06b.on_llama());
+        assert!(!LocalModel::ParakeetV3.on_llama() && !LocalModel::WhisperTurbo.on_llama());
     }
 
     #[test]

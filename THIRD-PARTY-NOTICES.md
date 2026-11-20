@@ -70,6 +70,7 @@ Reproduced below in full:
   61. xn-gemm — © 2021 sarah, https://github.com/gradium-ai/gemm
   62. tokenizers — © Hugging Face, https://github.com/huggingface/tokenizers
   63. resvg (with usvg, tiny-skia and fontdb) — © 2017 the Resvg Authors, https://github.com/linebender/resvg
+  64. Qwen3-ASR 1.7B and 0.6B (models) — © Alibaba Cloud, https://huggingface.co/Qwen/Qwen3-ASR-1.7B
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -4067,3 +4068,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## 64. Qwen3-ASR 1.7B and 0.6B (models)
+
+Two of the local recognisers `karmayoga_core::speech::LocalModel` offers are
+Alibaba Cloud's Qwen3-ASR 1.7B and 0.6B (https://huggingface.co/Qwen/Qwen3-ASR-1.7B,
+`Qwen3-ASR-0.6B`), as llama.cpp's own 8-bit GGUF conversions
+(`ggml-org/Qwen3-ASR-*-GGUF`), each a language model and its audio encoder.
+They are not part of this application: they are downloaded on request and
+pinned by SHA-256 in `local::files`, and run by llama.cpp (entry 46).
+Apache-2.0 licensed; see entry 32 above for the licence text. Used as
+published.

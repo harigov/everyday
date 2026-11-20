@@ -15,7 +15,8 @@ authors.workspace = true
 # docs/plans/meeting-notes.md and docs/plans/voice.md.
 speech = ["dep:sherpa-onnx", "dep:ptts", "dep:xn"]
 # Local decision models: a downloaded GGUF run through llama.cpp, for sorting
-# mail on this computer instead of at a provider. Links a native library
+# mail on this computer instead of at a provider. With `speech` as well, also
+# the Qwen3-ASR recognisers, which llama.cpp runs too. Links a native library
 # built from source with CMake. On in the desktop app only -- not in the
 # server, a default workspace member, so a plain `cargo test` never builds
 # llama.cpp. See docs/plans/mail-sorting.md.
@@ -262,7 +263,10 @@ xn = { version = "=0.2.14", optional = true }
 # instead (`GGML_AVX2=ON` and friends) measured no faster for these models,
 # and would stop the app on a processor without AVX2. Runtime dispatch
 # (`dynamic-backends`) needs ggml as shared libraries beside the binary.
-llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false }
+# `mtmd` is llama.cpp's library for models that hear or see, for the
+# Qwen3-ASR recognisers (`speech::qwen`). It is built on its own, without
+# `common`, and llama.cpp refuses to build it linked to `common`.
+llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false, features = ["mtmd"] }
 # A decision model's GGUF carries its prompt as a Jinja template (its
 # `systemone` chat template). Rendering that template, rather than a copy of
 # it written out in Rust, keeps the prompt exactly what the model was
@@ -285,7 +289,7 @@ libc = "0.2"
 
 # On Apple Silicon, llama.cpp runs a decision model on the GPU through Metal.
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
-llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false, features = ["metal"] }
+llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false, features = ["metal", "mtmd"] }
 
 # On Linux, through Vulkan, on any graphics card with a Vulkan driver --
 # NVIDIA, AMD or Intel, separate or built in -- and on the processor where
@@ -298,7 +302,7 @@ llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = fal
 # `glslc`). The app then links the Vulkan loader, `libvulkan.so.1`, which
 # its packages depend on. It adds about 45 MB of compiled shaders.
 [target.'cfg(target_os = "linux")'.dependencies]
-llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false, features = ["vulkan"] }
+llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false, features = ["vulkan", "mtmd"] }
 
 [dev-dependencies]
 base64 = "0.22"

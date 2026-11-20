@@ -1,6 +1,8 @@
-//! The few parts of llama.cpp a decision model needs, called straight
-//! through `llama-cpp-sys-2`: load a GGUF, read its metadata, tokenize, and
-//! read the logits at the last token of one prompt. Feature `decisions`.
+//! The few parts of llama.cpp a decision model and a Qwen3-ASR recogniser
+//! need, called straight through `llama-cpp-sys-2`: load a GGUF, read its
+//! metadata, tokenize, read the logits at the last token of one prompt, and
+//! -- with `speech` as well -- hear a clip through `mtmd` and write what the
+//! model answers. Feature `decisions`.
 //!
 //! # Graphics cards
 //!
@@ -226,19 +228,189 @@ impl Model {
     /// and micro-batch all `size`, since a prompt read both ways has to go
     /// through in one -- using `threads` threads.
     pub fn context(&self, size: u32, threads: i32) -> Result<Context<'_>, String> {
+        self.context_batched(size, size, threads)
+    }
+
+    /// A context of `size` tokens read `batch` at a time, for a prompt read
+    /// one way only -- a model that writes an answer after it -- which can
+    /// go through in pieces.
+    pub fn context_batched(
+        &self,
+        size: u32,
+        batch: u32,
+        threads: i32,
+    ) -> Result<Context<'_>, String> {
+        let batch = batch.clamp(1, size.max(1));
         // SAFETY: llama.cpp's own defaults, with the sizes and threads set.
         let ptr = unsafe {
             let mut params = sys::llama_context_default_params();
             params.n_ctx = size;
-            params.n_batch = size;
-            params.n_ubatch = size;
+            params.n_batch = batch;
+            params.n_ubatch = batch;
             params.n_seq_max = 1;
             params.n_threads = threads;
             params.n_threads_batch = threads;
             sys::llama_init_from_model(self.0.as_ptr(), params)
         };
         let ptr = NonNull::new(ptr).ok_or("llama.cpp could not make room for the prompt")?;
-        Ok(Context { ptr, size: size as usize, model: PhantomData })
+        Ok(Context { ptr, size: size as usize, batch: batch as usize, model: PhantomData })
+    }
+
+    /// `token` as the text it stands for. Special tokens come out empty.
+    fn piece(&self, token: i32) -> Vec<u8> {
+        let mut buf = vec![0u8; 64];
+        for _ in 0..2 {
+            // SAFETY: a live vocabulary and a buffer of its own length.
+            let n = unsafe {
+                sys::llama_token_to_piece(
+                    self.vocab(),
+                    token,
+                    buf.as_mut_ptr().cast(),
+                    buf.len() as i32,
+                    0,
+                    false,
+                )
+            };
+            if n >= 0 {
+                buf.truncate(n as usize);
+                return buf;
+            }
+            buf.resize(n.unsigned_abs() as usize, 0);
+        }
+        Vec::new()
+    }
+
+    /// Whether `token` ends what the model writes.
+    fn ends(&self, token: i32) -> bool {
+        // SAFETY: a live vocabulary.
+        unsafe { sys::llama_vocab_is_eog(self.vocab(), token) }
+    }
+}
+
+/// llama.cpp's encoder for what a model hears (its multimodal projector,
+/// `mtmd`), loaded beside the [`Model`] it feeds. Feature `speech` as well
+/// as `decisions`: only a recogniser asks for one.
+#[cfg(feature = "speech")]
+pub struct Hearing(NonNull<sys::mtmd_context>);
+
+// SAFETY: as `Model` -- the encoder's weights are not changed after it
+// loads. Encoding a clip is not safe from two threads at once; whoever
+// holds one runs one clip at a time (`speech::qwen`).
+#[cfg(feature = "speech")]
+unsafe impl Send for Hearing {}
+#[cfg(feature = "speech")]
+unsafe impl Sync for Hearing {}
+
+#[cfg(feature = "speech")]
+impl Drop for Hearing {
+    fn drop(&mut self) {
+        // SAFETY: made by `load`, freed once, here.
+        unsafe { sys::mtmd_free(self.0.as_ptr()) }
+    }
+}
+
+#[cfg(feature = "speech")]
+impl Hearing {
+    /// Load the encoder at `path` for `model`, on the [`gpus`] or off them
+    /// as `model` was. Refuses one that cannot hear. `model` must outlive
+    /// it: whoever holds both drops this first.
+    pub fn load(path: &Path, model: &Model, on_gpu: bool, threads: i32) -> Result<Self, String> {
+        init();
+        let path = path.to_str().ok_or("the encoder's path is not text")?;
+        let path = CString::new(path).map_err(|e| e.to_string())?;
+        // SAFETY: a valid C string, a live model, and mtmd's own default
+        // parameters with the placement and threads set.
+        let ptr = unsafe {
+            sys::mtmd_log_set(Some(log), std::ptr::null_mut());
+            sys::mtmd_helper_log_set(Some(log), std::ptr::null_mut());
+            let mut params = sys::mtmd_context_params_default();
+            params.use_gpu = on_gpu;
+            params.print_timings = false;
+            params.n_threads = threads;
+            params.warmup = false;
+            sys::mtmd_init_from_file(path.as_ptr(), model.0.as_ptr(), params)
+        };
+        let hearing =
+            NonNull::new(ptr).map(Self).ok_or("llama.cpp could not load the audio encoder")?;
+        // SAFETY: a live context.
+        if !unsafe { sys::mtmd_support_audio(hearing.0.as_ptr()) } {
+            return Err("the encoder does not take audio".into());
+        }
+        Ok(hearing)
+    }
+
+    /// The rate, in samples a second, the audio it is given must be at.
+    pub fn sample_rate(&self) -> u32 {
+        // SAFETY: a live context.
+        u32::try_from(unsafe { sys::mtmd_get_audio_sample_rate(self.0.as_ptr()) }).unwrap_or(0)
+    }
+
+    /// The text that stands for the clip in a prompt, where it goes.
+    pub fn marker() -> &'static str {
+        // SAFETY: a static, NUL-terminated string mtmd owns.
+        unsafe { CStr::from_ptr(sys::mtmd_default_marker()) }.to_str().unwrap_or("<__media__>")
+    }
+
+    /// `prompt`, its [`Self::marker`] read as `audio` (mono samples in
+    /// -1..1 at [`Self::sample_rate`]), as llama.cpp's pieces, and how many
+    /// positions they take in a context.
+    pub fn tokenize(&self, prompt: &str, audio: &[f32]) -> Result<Heard, String> {
+        if audio.len() < 2 {
+            // mtmd asserts -- aborting the process -- on an empty clip.
+            return Err("there is no audio to hear".into());
+        }
+        let text = CString::new(prompt).map_err(|e| e.to_string())?;
+        // SAFETY: the bitmap copies `audio`; the chunks are freed by `Heard`
+        // and the bitmap here, once each. The prompt is a valid C string of
+        // the length given, read with special tokens on: it is ours, and
+        // spells `<|im_start|>` and the like on purpose.
+        unsafe {
+            let bitmap = sys::mtmd_bitmap_init_from_audio(audio.len(), audio.as_ptr());
+            let bitmap = NonNull::new(bitmap).ok_or("llama.cpp could not take the audio")?;
+            let chunks = NonNull::new(sys::mtmd_input_chunks_init());
+            let Some(chunks) = chunks else {
+                sys::mtmd_bitmap_free(bitmap.as_ptr());
+                return Err("llama.cpp could not make room for the prompt".into());
+            };
+            let heard = Heard(chunks);
+            let input = sys::mtmd_input_text {
+                text: text.as_ptr(),
+                text_len: prompt.len(),
+                add_special: false,
+                parse_special: true,
+            };
+            let bitmaps = [bitmap.as_ptr() as *const sys::mtmd_bitmap];
+            let result =
+                sys::mtmd_tokenize(self.0.as_ptr(), heard.0.as_ptr(), &input, bitmaps.as_ptr(), 1);
+            sys::mtmd_bitmap_free(bitmap.as_ptr());
+            match result {
+                0 => Ok(heard),
+                1 => Err("the prompt has no place for the audio".into()),
+                n => Err(format!("llama.cpp could not read the audio ({n})")),
+            }
+        }
+    }
+}
+
+/// A prompt with a clip in it, read into llama.cpp's pieces by
+/// [`Hearing::tokenize`].
+#[cfg(feature = "speech")]
+pub struct Heard(NonNull<sys::mtmd_input_chunks>);
+
+#[cfg(feature = "speech")]
+impl Drop for Heard {
+    fn drop(&mut self) {
+        // SAFETY: made by `Hearing::tokenize`, freed once, here.
+        unsafe { sys::mtmd_input_chunks_free(self.0.as_ptr()) }
+    }
+}
+
+#[cfg(feature = "speech")]
+impl Heard {
+    /// How many positions it takes in a context.
+    pub fn positions(&self) -> usize {
+        // SAFETY: live chunks.
+        unsafe { sys::mtmd_helper_get_n_pos(self.0.as_ptr()) }.max(0) as usize
     }
 }
 
@@ -262,6 +434,8 @@ fn read_string(call: impl Fn(*mut c_char, usize) -> i32) -> Option<String> {
 pub struct Context<'m> {
     ptr: NonNull<sys::llama_context>,
     size: usize,
+    /// How many tokens go through in one piece.
+    batch: usize,
     model: PhantomData<&'m Model>,
 }
 
@@ -309,4 +483,102 @@ impl Context<'_> {
             Ok(std::slice::from_raw_parts(logits, n_vocab))
         }
     }
+    /// Read `heard` -- a prompt with a clip in it -- and write what the
+    /// model answers after it, the likeliest token each time, until it ends
+    /// or has written `max_tokens`. Refuses a prompt and answer that would
+    /// not fit the context, which llama.cpp would otherwise abort over.
+    ///
+    /// `at_least` tokens are written whether the model would end sooner or
+    /// not, the likeliest token that does not end it standing in -- for
+    /// timing a model on audio it has nothing to say about.
+    #[cfg(feature = "speech")]
+    pub fn write_after(
+        &mut self,
+        model: &Model,
+        hearing: &Hearing,
+        heard: &Heard,
+        max_tokens: usize,
+        at_least: usize,
+    ) -> Result<String, String> {
+        let positions = heard.positions();
+        if positions + max_tokens > self.size {
+            return Err(format!(
+                "{positions} positions and {max_tokens} more do not fit a context of {}",
+                self.size
+            ));
+        }
+        let mut past: sys::llama_pos = 0;
+        // SAFETY: live contexts, chunks made by `hearing` for this model,
+        // and a batch size above zero (`context_batched` clamps it).
+        let read = unsafe {
+            sys::mtmd_helper_eval_chunks(
+                hearing.0.as_ptr(),
+                self.ptr.as_ptr(),
+                heard.0.as_ptr(),
+                0,
+                0,
+                self.batch as i32,
+                true,
+                &mut past,
+            )
+        };
+        if read != 0 {
+            return Err(format!("llama.cpp could not hear the audio ({read})"));
+        }
+        let n_vocab = model.n_vocab();
+        let mut written = Vec::new();
+        for n in 0..max_tokens {
+            // SAFETY: the logits of the last token decoded, one per
+            // vocabulary entry, read before the next decode.
+            let logits = unsafe {
+                let logits = sys::llama_get_logits_ith(self.ptr.as_ptr(), -1);
+                if logits.is_null() {
+                    return Err("llama.cpp gave no answer".into());
+                }
+                std::slice::from_raw_parts(logits, n_vocab)
+            };
+            let mut token = argmax(logits);
+            if model.ends(token) {
+                if n >= at_least {
+                    break;
+                }
+                let mut others = logits.to_vec();
+                while model.ends(token) {
+                    others[token as usize] = f32::NEG_INFINITY;
+                    token = argmax(&others);
+                }
+            }
+            written.extend(model.piece(token));
+            // SAFETY: a batch of one token at the next position, its logits
+            // asked for, freed after.
+            unsafe {
+                let mut batch = sys::llama_batch_init(1, 0, 1);
+                *batch.token = token;
+                *batch.pos = past;
+                *batch.n_seq_id = 1;
+                **batch.seq_id = 0;
+                *batch.logits = 1;
+                batch.n_tokens = 1;
+                let result = sys::llama_decode(self.ptr.as_ptr(), batch);
+                sys::llama_batch_free(batch);
+                if result != 0 {
+                    return Err(format!("llama.cpp could not go on ({result})"));
+                }
+            }
+            past += 1;
+        }
+        Ok(String::from_utf8_lossy(&written).into_owned())
+    }
+}
+
+/// The index of the largest of `values`; the first, when several tie.
+#[cfg(feature = "speech")]
+fn argmax(values: &[f32]) -> i32 {
+    let mut best = 0;
+    for (i, v) in values.iter().enumerate() {
+        if *v > values[best] {
+            best = i;
+        }
+    }
+    best as i32
 }

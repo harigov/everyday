@@ -87,6 +87,9 @@ pub(crate) fn info(spec: &models::ModelSpec) -> LocalModelInfo {
 #[serde(rename_all = "camelCase")]
 pub struct ModelBenchmark {
     pub realtime_factor: f64,
+    /// The graphics cards it ran on, by name; absent on the processor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -105,11 +108,15 @@ fn speech_id(id: &str) -> CommandResult<&str> {
 }
 
 fn parse_local_model(id: &str) -> CommandResult<LocalModel> {
-    match id {
-        "parakeetV3" => Ok(LocalModel::ParakeetV3),
-        "whisperTurbo" => Ok(LocalModel::WhisperTurbo),
-        _ => Err(CommandError::new(codes::INVALID, format!("{id} is not a local recogniser"))),
-    }
+    [
+        LocalModel::ParakeetV3,
+        LocalModel::WhisperTurbo,
+        LocalModel::Qwen3Asr17b,
+        LocalModel::Qwen3Asr06b,
+    ]
+    .into_iter()
+    .find(|m| models::local_model_id(*m) == id)
+    .ok_or_else(|| CommandError::new(codes::INVALID, format!("{id} is not a local recogniser")))
 }
 
 async fn speech_models(
@@ -157,22 +164,24 @@ async fn benchmark_speech_model(
     // pass costs the same whether the audio is speech or not -- it is a
     // fixed amount of arithmetic over a fixed number of frames -- so this
     // measures real inference throughput without needing a bundled sample
-    // clip, and the same seed gives the same number run to run.
+    // clip, and the same seed gives the same number run to run. Qwen's time
+    // goes mostly on writing what it heard, so `transcribe_timed` has it
+    // write as much as ten seconds of talking would need.
     const SECONDS: u64 = 10;
     let n = (SECONDS * u64::from(SAMPLE_RATE)) as usize;
     let samples: Vec<i16> =
         (0..n).map(|i| ((i.wrapping_mul(2_654_435_761) % 2000) as i16) - 1000).collect();
 
-    let elapsed = crate::service::blocking(move || {
+    let (elapsed, gpu) = crate::service::blocking(move || {
         let started = std::time::Instant::now();
-        let _ = recogniser.transcribe(&samples, None);
-        Ok(started.elapsed())
+        recogniser.transcribe_timed(&samples)?;
+        Ok((started.elapsed(), recogniser.gpu().map(str::to_string)))
     })
     .await?;
 
     let realtime_factor =
         if elapsed.as_secs_f64() > 0.0 { SECONDS as f64 / elapsed.as_secs_f64() } else { 0.0 };
-    Ok(ModelBenchmark { realtime_factor })
+    Ok(ModelBenchmark { realtime_factor, gpu })
 }
 
 #[cfg(not(feature = "speech"))]

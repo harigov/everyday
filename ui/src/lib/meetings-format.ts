@@ -52,8 +52,8 @@ export function formatTimer(ms: number): string {
  * A benchmark's realtime factor, said the way the settings pane promises:
  * "about 3.2× real time on this computer".
  */
-export function formatRealtimeFactor(factor: number): string {
-  return `about ${factor.toFixed(1)}× real time on this computer`
+export function formatRealtimeFactor(factor: number, gpu?: string | null): string {
+  return `about ${factor.toFixed(1)}× real time on ${gpu ?? 'this computer'}`
 }
 
 /** Below this, the settings pane suggests a remote transcriber instead. */
@@ -94,11 +94,29 @@ export function speakerNameStyle(how: Attribution): 'plain' | 'guessed' | 'unkno
 /**
  * The recognisers that run on this computer, as the speech card in Settings →
  * Models lists them and as a sentence names them -- `LocalModel` in
- * `crates/karmayoga-core/src/speech.rs`.
+ * `crates/karmayoga-core/src/speech.rs`. `llama` ones run through llama.cpp,
+ * which only a copy that can run a decision model has.
  */
-export const LOCAL_RECOGNISERS: { id: LocalModel; name: string; blurb: string }[] = [
+export const LOCAL_RECOGNISERS: {
+  id: LocalModel
+  name: string
+  blurb: string
+  llama?: boolean
+}[] = [
   { id: 'parakeetV3', name: 'Parakeet TDT v3', blurb: 'English & European languages, faster' },
   { id: 'whisperTurbo', name: 'Whisper large-v3 turbo', blurb: 'Any language, slower' },
+  {
+    id: 'qwen3Asr17b',
+    name: 'Qwen3-ASR 1.7B',
+    blurb: 'Most accurate, best with accents like Indian English; quick on a graphics card',
+    llama: true,
+  },
+  {
+    id: 'qwen3Asr06b',
+    name: 'Qwen3-ASR 0.6B',
+    blurb: 'Smaller and quicker Qwen3-ASR, less accurate',
+    llama: true,
+  },
 ]
 
 /**

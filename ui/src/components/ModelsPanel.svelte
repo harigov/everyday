@@ -386,7 +386,7 @@
       const slow = isTooSlow(b.realtimeFactor)
         ? ' — a provider will be faster on this machine.'
         : ''
-      speechTimed = { ...speechTimed, [id]: formatRealtimeFactor(b.realtimeFactor) + slow }
+      speechTimed = { ...speechTimed, [id]: formatRealtimeFactor(b.realtimeFactor, b.gpu) + slow }
     } catch (e) {
       speechTimed = { ...speechTimed, [id]: e instanceof Error ? e.message : String(e) }
     } finally {
@@ -1087,7 +1087,7 @@
               This copy of Karma Yoga cannot run a recogniser itself. Choose a provider above.
             </p>
           {/if}
-          {#each LOCAL_RECOGNISERS as m (m.id)}
+          {#each LOCAL_RECOGNISERS.filter((m) => !m.llama || models.localDecisions || t.model === m.id) as m (m.id)}
             {@const info = speechInfo(m.id)}
             <label class="model-row pick">
               <input

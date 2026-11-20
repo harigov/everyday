@@ -69,7 +69,7 @@ impl LocalTranscriber {
             let recogniser = recogniser.clone();
             let language = language.clone();
             let text = blocking(move || {
-                Ok(recogniser.transcribe(&turn_samples, language.as_deref()).text)
+                Ok(recogniser.transcribe(&turn_samples, language.as_deref())?.text)
             })
             .await?;
             let text = text.trim().to_string();
