@@ -4,7 +4,10 @@
 //! job is really picked up and carried to an end, that the note it writes in
 //! is there before the model is asked anything, that a job a dead process
 //! left is taken back rather than left spinning, and that a job somebody
-//! cancels is never run, or stops, and stays cancelled.
+//! cancels is never run, or stops, and stays cancelled. That a project is run
+//! and comes back as research does, that the loop runs two jobs at once and
+//! no more, that a watch is never run by the worker and a sleeping one is left
+//! alone.
 //!
 //! The model is the one `tests/routines.rs` uses: a `TcpListener` on loopback
 //! speaking the Chat Completions shape, so no key, no network and no bill.
@@ -12,7 +15,10 @@
 //! serves.
 
 use karmayoga_core::job::MAX_ATTEMPTS;
-use karmayoga_core::{ConversationQuery, Job, JobKind, JobOutput, JobStatus, MessageRole, Note};
+use karmayoga_core::{
+    Conversation, ConversationQuery, Job, JobKind, JobOutput, JobStatus, Message, MessageRole,
+    Note, Probe,
+};
 use karmayoga_service::Service;
 use karmayoga_service::events::{Change, EventSink, Kind, Notification, Op, Reach};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -545,7 +551,7 @@ async fn nothing_runs_while_the_vault_is_locked() {
 }
 
 #[tokio::test]
-async fn the_oldest_queued_job_runs_first_and_only_one_runs_at_a_time() {
+async fn a_pass_runs_the_oldest_queued_job_and_leaves_the_next_for_the_next_pass() {
     let model = fake_model(says("Looked into it.")).await;
     let (svc, _dir) = service(&model.endpoint);
     let vault = svc.get().unwrap();
@@ -588,4 +594,230 @@ async fn the_loop_runs_a_job_when_woken_and_stops_when_asked() {
         .await
         .expect("the worker stops when asked")
         .unwrap();
+}
+
+// ---- projects ------------------------------------------------------------------
+
+const GOAL: &str = "Plan a week in Lisbon";
+
+/// A project, queued the way the tool queues one.
+fn queue_project(svc: &Arc<Service>, asked_in: Option<karmayoga_core::ConversationId>) -> Job {
+    svc.get()
+        .unwrap()
+        .queue_job(
+            JobKind::Project {
+                goal: GOAL.to_string(),
+                brief: "Two adults, the second week of May, no car.".to_string(),
+            },
+            asked_in,
+        )
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_queued_project_runs_to_done_in_a_note_of_its_own_and_is_announced() {
+    let model = fake_model(says("Three days are drafted; the hotel is yours to pick.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+    let queued = queue_project(&svc, None);
+
+    karmayoga_service::jobs::pass(&svc).await;
+
+    let vault = svc.get().unwrap();
+    let job = vault.job(queued.id).unwrap();
+    assert_eq!(job.status, JobStatus::Done, "{job:?}");
+    assert_eq!(job.summary, "Three days are drafted; the hotel is yours to pick.");
+    assert_eq!(job.attempts, 1);
+    assert_eq!(svc.running_job(), None);
+
+    // Its deliverable: a note made up front, titled after the goal and tagged
+    // as a project's, which holds what it said since it never wrote in it.
+    let note_id = job.note_id().expect("the note is in the outputs");
+    let note = vault.note(note_id).unwrap();
+    assert_eq!(note.title, GOAL);
+    assert_eq!(note.tags, vec!["project".to_string()]);
+    let body = note.body.plain_text();
+    assert!(body.contains("Three days are drafted"), "{body}");
+    assert!(!body.contains("Working on it"), "the placeholder is gone: {body}");
+
+    // What it was told: the goal, the brief, where to write, and how to work.
+    let transcript = vault.conversation(job.conversation_id.expect("a transcript")).unwrap();
+    assert_eq!(transcript.job_id, Some(job.id));
+    let first = &vault.messages(transcript.id).unwrap()[0];
+    assert_eq!(first.role, MessageRole::User);
+    let note_text = note_id.to_string();
+    let wanted = [GOAL, "second week of May", note_text.as_str(), "update_plan", "report_progress"];
+    for needle in wanted {
+        assert!(first.content.contains(needle), "should say {needle:?}: {}", first.content);
+    }
+
+    // Announced as research is, with the kind in the title and no body.
+    let notices = events.notices.lock().unwrap();
+    let ready: Vec<_> = notices.iter().filter(|n| n.title == "Project is ready").collect();
+    assert_eq!(ready.len(), 1, "once: {notices:?}");
+    assert_eq!(ready[0].body, None);
+    assert_eq!(ready[0].key.as_deref(), Some(format!("job:{}", job.id).as_str()));
+}
+
+#[tokio::test]
+async fn a_finished_project_comes_back_to_the_conversation_that_asked() {
+    let model = fake_model(says("All drafted.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let thread = Conversation::new();
+    vault.save_conversation(&thread).unwrap();
+    vault.save_message(&Message::user(thread.id, "Can you plan a week in Lisbon?")).unwrap();
+    let queued = queue_project(&svc, Some(thread.id));
+
+    karmayoga_service::jobs::pass(&svc).await;
+
+    // Had by a task the pass spawns, so it is waited for.
+    eventually("the project to be answered", || vault.job(queued.id).unwrap().answered).await;
+    let lines: Vec<String> = vault
+        .messages(thread.id)
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.role == MessageRole::System)
+        .map(|m| m.content)
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with(&format!("Project finished: «{GOAL}»")), "{}", lines[0]);
+    let note = vault.job(queued.id).unwrap().note_id().unwrap();
+    assert!(lines[0].contains(&note.to_string()), "it is pointed at the note: {}", lines[0]);
+    let last = vault.messages(thread.id).unwrap().pop().unwrap();
+    assert_eq!((last.role, last.content.as_str()), (MessageRole::Assistant, "All drafted."));
+}
+
+#[tokio::test]
+async fn a_project_that_fails_tells_the_conversation_that_asked_as_a_project() {
+    let model = fake_model(says("should never be said")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let mut settings = vault.agent_settings().unwrap();
+    settings.enabled = false;
+    vault.save_agent_settings(&settings).unwrap();
+    let thread = Conversation::new();
+    vault.save_conversation(&thread).unwrap();
+    let queued = queue_project(&svc, Some(thread.id));
+
+    karmayoga_service::jobs::pass(&svc).await;
+
+    let said =
+        || vault.messages(thread.id).unwrap().into_iter().find(|m| m.role == MessageRole::System);
+    eventually("the thread to be told", || said().is_some()).await;
+    let line = said().unwrap().content;
+    assert!(line.starts_with(&format!("The project «{GOAL}» could not finish")), "{line}");
+    eventually("the job to be marked told", || vault.job(queued.id).unwrap().answered).await;
+    assert_eq!(model.asked.load(Ordering::SeqCst), 0, "no model is asked to say it");
+}
+
+// ---- watches -------------------------------------------------------------------
+
+fn a_watch(what: &str) -> Job {
+    let probe = Probe::Assistant { how: "Check the build".to_string() };
+    Job::watch(what, probe, Default::default(), None, jiff::Timestamp::now())
+}
+
+#[tokio::test]
+async fn a_watch_found_in_the_queue_is_put_to_sleep_and_one_asleep_is_left_alone() {
+    let model = fake_model(says("should never be said")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+    let vault = svc.get().unwrap();
+
+    // Put in the queue by hand, which nothing does on purpose.
+    let mut queued = a_watch("CI on pull request 412");
+    queued.status = JobStatus::Queued;
+    queued.wake_at = None;
+    queued.created_at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
+    vault.save_job(&queued).unwrap();
+    // Asleep until later, as the watch loop leaves one between looks.
+    let mut asleep = a_watch("Parcel 1Z999");
+    asleep.sleep_until(jiff::Timestamp::now() + jiff::SignedDuration::from_mins(10));
+    vault.save_job(&asleep).unwrap();
+
+    karmayoga_service::jobs::pass(&svc).await;
+
+    let put_to_sleep = vault.job(queued.id).unwrap();
+    assert_eq!(put_to_sleep.status, JobStatus::Waiting, "{put_to_sleep:?}");
+    assert!(put_to_sleep.wake_at.is_some_and(|at| at <= jiff::Timestamp::now()), "due now");
+    assert_eq!(put_to_sleep.attempts, 0, "it was never run");
+    assert_eq!(vault.job(asleep.id).unwrap(), asleep, "the sweep leaves a sleeping job alone");
+    assert_eq!(model.asked.load(Ordering::SeqCst), 0, "and no model was asked about either");
+    assert!(vault.notes(&Default::default()).unwrap().is_empty(), "nothing was set up for them");
+    assert!(events.notices.lock().unwrap().is_empty(), "the worker says nothing about a watch");
+    let key = queued.id.to_string();
+    assert!(has_change(&events, Kind::Job, Op::Updated, Some(&key)), "open cards are told");
+}
+
+// ---- more than one at a time -----------------------------------------------------
+
+#[tokio::test]
+async fn the_loop_runs_two_jobs_at_once_no_more_and_starts_the_next_when_one_ends() {
+    // The model never answers, so every job it starts is running until it is
+    // stopped. Oldest first: "first", "second", then "third".
+    let model = fake_model(Script::Hangs).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let now = jiff::Timestamp::now();
+    let mut jobs = Vec::new();
+    for (i, question) in ["first", "second", "third"].into_iter().enumerate() {
+        let mut job = Job::research(question, "", None);
+        job.created_at = now - jiff::SignedDuration::from_mins(30 - i as i64);
+        vault.save_job(&job).unwrap();
+        jobs.push(job);
+    }
+    let [first, second, third] = [jobs[0].id, jobs[1].id, jobs[2].id];
+    let status = |id| vault.job(id).unwrap().status;
+    let running = |id| {
+        let job = vault.job(id).unwrap();
+        job.status == JobStatus::Running && job.conversation_id.is_some()
+    };
+
+    let (stop, listen) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(karmayoga_service::jobs::run(svc.clone(), listen));
+    svc.wake_jobs();
+
+    eventually("the two oldest jobs to be running together", || running(first) && running(second))
+        .await;
+    // Give it every chance to start the third, and to take a running job for a
+    // dead one: another wake is another pass, sweep and all.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    svc.wake_jobs();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(status(third), JobStatus::Queued, "only two at a time");
+    assert_eq!(vault.job(third).unwrap().attempts, 0);
+    for id in [first, second] {
+        let job = vault.job(id).unwrap();
+        assert_eq!(
+            (job.status, job.attempts),
+            (JobStatus::Running, 1),
+            "swept or restarted: {job:?}"
+        );
+        assert!(svc.is_running_job(id), "and this process knows it is carrying it");
+    }
+    assert!(!svc.is_running_job(third));
+
+    // One ending makes room, and the third is started without waiting for the
+    // fallback.
+    vault.cancel_job(first, "they changed their mind").unwrap();
+    eventually("the third to take the place", || running(third)).await;
+    assert_eq!(status(first), JobStatus::Cancelled);
+    assert!(running(second), "the other one went on");
+
+    // Stopping asks every job in hand to end, and waits for all of them. What
+    // they had begun is put back in the queue, not failed or lost.
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(30), worker)
+        .await
+        .expect("the worker stops with both jobs in hand")
+        .unwrap();
+    assert_eq!(svc.running_job(), None, "nothing is left claimed");
+    for id in [second, third] {
+        let job = vault.job(id).unwrap();
+        assert_eq!(job.status, JobStatus::Queued, "{job:?}");
+        assert_eq!(job.attempts, 1);
+    }
 }

@@ -1,16 +1,22 @@
 //! The worker that runs the assistant's background jobs.
 //!
-//! See `docs/plans/jobs.md`. One loop, beside the routine scheduler rather
-//! than inside it, so a twenty-minute research cannot make the seven o'clock
-//! brief late. Woken by [`Service::wake_jobs`] when a job is queued, and on
-//! its own now and then in case a wake was missed.
+//! See `docs/plans/jobs.md` and `docs/plans/watches.md`. One loop, beside the
+//! routine scheduler rather than inside it, so a twenty-minute research
+//! cannot make the seven o'clock brief late. Woken by [`Service::wake_jobs`]
+//! when a job is queued, and on its own now and then in case a wake was
+//! missed. Beside it runs the watch loop ([`watch`]), which carries out the
+//! jobs that sleep between looks; this one is for the jobs that are one long
+//! turn each -- research, a project, one of the assistant's own tasks.
 //!
 //! # Rules it keeps
 //!
-//! **One at a time.** The oldest queued job runs to its end before the next
-//! is looked at. It runs alongside the rail and the scheduler, as a routine
-//! already does, but not alongside another job: two long model turns at once
-//! would double the bill for no one's benefit.
+//! **Two at a time.** Up to [`MAX_AT_ONCE`] queued jobs run at once, oldest
+//! first, each as a task of its own, so a project that will take an hour does
+//! not hold up the research somebody asked for a minute ago. Not more: every
+//! turn is a model's attention and a bill, and two is what a person can follow.
+//! They run alongside the rail and the scheduler, as a routine already does.
+//! [`pass`], which tests drive, still runs the oldest queued job to its end
+//! and returns.
 //!
 //! **Nothing while locked.** A locked vault has no key and a read-only one
 //! cannot be written to, and a job writes constantly. Whatever the lock
@@ -20,38 +26,56 @@
 //! **A row that says `Running` and is not ours is somebody else's corpse.**
 //! The app was quit, the machine slept, the vault was switched. The sweep at
 //! the top of every pass puts such a job back in the queue, or fails it if it
-//! has been started too often already. Our own is told apart by
-//! [`Service::running_job`], not by how old it looks.
+//! has been started too often already. Our own are told apart by
+//! [`Service::is_running_job`], not by how old they look -- and there may be
+//! several, so the sweep asks of each. It leaves a job that is
+//! [`Waiting`](karmayoga_core::JobStatus::Waiting) alone: that is a watch
+//! asleep between looks, which is not running and not in need of anything.
+//! A watch somebody queued by hand is put to sleep, due now, for the watch
+//! loop to pick up; this worker never runs one.
 //!
 //! **A turn is never dropped from a `select!`.** The same rule the scheduler
 //! keeps: a turn cancelled half way would leave a row saying `Running` with
 //! nothing to finish it. Stopping, cancelling and timing out all ask the turn
 //! to end and wait for it, except the timeout, which is a deliberate drop and
-//! is recorded as one.
+//! is recorded as one. When the worker is told to stop, every job in hand is
+//! asked to end, and the worker waits for all of them.
 //!
 //! **Coming back is off the worker's path.** A job that ends owes the
 //! conversation that asked: an answer if it is done (`answer::answer`), a line
 //! saying so if it failed (`answer::report_failure`, no model). Both are
 //! spawned rather than awaited, because the first waits for the thread to go
 //! quiet, and both are offered again on every pass for any job that still
-//! owes, so one a crash skipped is caught.
+//! owes, so one a crash skipped is caught. A watch owes nothing: it said what
+//! it had to as it went.
+//!
+//! **What a job says while it works is sent on.** A project's own turn can
+//! write a short update onto its record (`report_progress`). The save tick
+//! reads the record, sends each update not yet sent through
+//! [`Service::deliver_update`] -- off the turn's path, since delivering waits on
+//! a chat -- and marks it delivered, once more when the job settles so that
+//! nothing said in the last seconds is lost.
 //!
 //! # What is shared and what is research
 //!
 //! Everything here is generic: the queue, the sweep, the record's life from
-//! `Running` to an end, progress, cancelling, the transcript, the
+//! `Running` to an end, progress, updates, cancelling, the transcript, the
 //! notification. What changes with the kind of job is an [`Executor`]: what to
-//! set up before the turn (research makes its note), the first message, the
-//! budget, and what to check when the turn is done. [`research`] is the only
-//! one; the browser the plan describes would be a second.
+//! set up before the turn (research and projects make their note), the first
+//! message, the budget, who the job may ask, and what to check when the turn
+//! is done. [`research`], [`project`] and [`task`] are the ones that run here;
+//! the browser the plan describes would be another.
 
 pub mod answer;
+pub mod project;
 pub mod research;
 pub mod task;
+pub mod watch;
 
-use crate::agent::{AgentEvent, JobTurn, Sink, Turn, Turned};
+use crate::agent::{AgentEvent, Asker, JobTurn, Reach, Sink, Turn, Turned};
 use crate::ctx::Scope;
 use crate::events::{Change, Kind, Level, Notification, Op};
+use crate::reach::Update;
 use crate::service::{Service, blocking};
 use jiff::Timestamp;
 use karmayoga_core::{
@@ -60,7 +84,13 @@ use karmayoga_core::{
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio::sync::watch as signal;
+use tokio::task::JoinSet;
+
+/// How many queued jobs run at once. Two: a long project does not hold up a
+/// question's research, and nobody has more than two model turns of
+/// background work going on that they could follow.
+pub const MAX_AT_ONCE: usize = 2;
 
 /// How long the loop waits for a wake before looking anyway.
 ///
@@ -86,6 +116,11 @@ const SAVE_EVERY: Duration = Duration::from_secs(3);
 /// from reading every job there ever was.
 const OWED_FOR_DAYS: i64 = 7;
 
+/// Longest the words saying who an update is from -- the job's title -- may
+/// run to. A project's goal can be a paragraph; a chat's lead line and a
+/// notification's title cannot.
+const FROM_CHARS: usize = 100;
+
 /// Why a job found `Running` with nobody carrying it out went back to the
 /// queue.
 const INTERRUPTED: &str = "the app stopped while it was running";
@@ -95,8 +130,14 @@ const INTERRUPTED: &str = "the app stopped while it was running";
 pub struct JobRuntime {
     /// Rung by [`Service::wake_jobs`]; the loop waits on it between passes.
     pub(crate) wake: tokio::sync::Notify,
-    /// The job being worked on right now, if any.
-    pub(crate) running: Mutex<Option<JobId>>,
+    /// Rung by [`Service::wake_jobs`] too: the watch loop ([`watch::run`])
+    /// waits on it between passes, so a watch just started or told to look
+    /// now is not left for the fallback.
+    pub(crate) wake_watches: tokio::sync::Notify,
+    /// The jobs this process is carrying out right now -- a job's turn, or a
+    /// watch's look -- each held by a [`Working`]. What the sweep tells a
+    /// job of ours from one a dead process left.
+    pub(crate) running: Mutex<HashSet<JobId>>,
     /// The jobs a task is coming back to a conversation for right now, so
     /// that the next pass does not start a second. `answer` keeps its own
     /// claim and its own pause after a failure; this only keeps the worker
@@ -116,15 +157,26 @@ impl JobRuntime {
 }
 
 impl Service {
-    /// Tell the worker there may be a job to pick up. Cheap, and harmless
-    /// when there is none.
+    /// Tell the worker there may be a job to pick up, and the watch loop
+    /// there may be a watch to look at. Cheap, and harmless when there is
+    /// none.
     pub fn wake_jobs(&self) {
         self.jobs.wake.notify_one();
+        self.jobs.wake_watches.notify_one();
     }
 
-    /// The job the worker is on right now, if any.
+    /// A job this process is carrying out right now, if any. With several
+    /// under way -- two of the worker's, or one and a watch's look -- the one
+    /// with the lowest id, which is the one asked for first, not necessarily
+    /// the first claimed: for a test that runs one at a time, and a log line.
+    /// To ask about a particular job, see [`Service::is_running_job`].
     pub fn running_job(&self) -> Option<JobId> {
-        *self.jobs.running.lock().unwrap()
+        self.jobs.running.lock().unwrap().iter().min().copied()
+    }
+
+    /// Whether this process is carrying out `job` right now.
+    pub fn is_running_job(&self, job: JobId) -> bool {
+        self.jobs.running.lock().unwrap().contains(&job)
     }
 }
 
@@ -169,6 +221,16 @@ pub(crate) trait Executor: Send + Sync {
     fn ended(&self, _vault: &Vault, _job: &Job) -> Vec<Change> {
         Vec::new()
     }
+
+    /// Who the job's turn may ask while it works, if anybody: the person, in
+    /// their chat. With one, a call that would otherwise be refused is put to
+    /// them, and the turn is offered `ask_owner`. Nobody, by default: a job
+    /// asks nobody unless its kind says it may -- research and tasks are
+    /// written to carry on without, and a question nobody could answer would
+    /// only stall them. See [`project::Project`].
+    fn asker(&self, _service: &Arc<Service>, _job: &Job) -> Option<Arc<dyn Asker>> {
+        None
+    }
 }
 
 /// What [`Executor::prepare`] hands back.
@@ -184,67 +246,110 @@ fn executor_for(kind: &JobKind) -> &'static dyn Executor {
     match kind {
         JobKind::Research { .. } => &research::Research,
         JobKind::Task { .. } => &task::TaskJob,
+        JobKind::Project { .. } => &project::Project,
+        // A watch is never queued for the worker: the watch loop carries it
+        // out, a look at a time. This is only reached by a job somebody put
+        // in the queue by hand, and the act turn's settings are as fitting as
+        // any for it. See `watch`.
+        JobKind::Watch { .. } => &watch::WatchAct,
     }
 }
 
 /// Run the worker until `stop` says otherwise. Spawned once beside the
 /// scheduler, on the runtime the rest of the process uses.
-pub async fn run(service: Arc<Service>, mut stop: watch::Receiver<bool>) {
+pub async fn run(service: Arc<Service>, stop: signal::Receiver<bool>) {
+    // The watch loop beside the worker, on the same stop signal, so neither
+    // shell has to know there are two.
+    let watches = self::watch::run(service.clone(), stop.clone());
+    tokio::join!(work(service, stop), watches);
+}
+
+/// The worker's own loop: everything [`run`] did before there were watches.
+async fn work(service: Arc<Service>, mut stop: signal::Receiver<bool>) {
     tracing::info!("the assistant's job worker is awake");
-    loop {
+    let mut hands = Hands::default();
+    'working: loop {
         if *stop.borrow() {
             break;
         }
+        hands.reap();
         // Deliberately *not* inside the `select!` below, for the reason the
-        // scheduler gives: a pass cancelled half way would drop a live model
-        // turn. Stopping is asked of the turn instead -- see `execute` -- and
-        // this waits for it to end.
-        let worked = pass_with(&service, Some(stop.clone())).await;
-        if *stop.borrow() {
-            break;
-        }
-        // A job that ran to its end may have left another behind it, and
-        // there is no reason to make it wait for the fallback.
-        if worked {
-            continue;
-        }
-        tokio::select! {
-            _ = service.jobs.wake.notified() => {}
-            _ = tokio::time::sleep(FALLBACK) => {}
-            _ = stop.changed() => break,
+        // scheduler gives: a turn cancelled half way would be a live model
+        // turn dropped. The turns run on tasks of their own, which are only
+        // ever waited for. Stopping is asked of each turn instead -- see
+        // `execute` -- and this waits for them to end, below.
+        take_on(&service, &stop, &mut hands).await;
+        // Until there is something to do about: a wake, the fallback, or a
+        // job ending -- which frees a place, and may have left another job
+        // behind it that has no reason to wait for the fallback. A job that
+        // went back to the queue is not an end: looking again at once would
+        // only pick it up to be interrupted in the same way.
+        loop {
+            tokio::select! {
+                _ = service.jobs.wake.notified() => break,
+                _ = tokio::time::sleep(FALLBACK) => break,
+                reached_an_end = hands.ended(), if !hands.is_empty() => {
+                    if reached_an_end {
+                        break;
+                    }
+                }
+                _ = stop.changed() => break 'working,
+            }
         }
     }
+    // Every job in hand heard the same signal and is ending its turn. Wait for
+    // them: a turn is never left half done, and a row left `Running` would
+    // only be a corpse for the next start to sweep.
+    hands.finish().await;
     tracing::info!("the assistant's job worker has stopped");
 }
 
 /// One pass: sweep what a dead process left, answer what is owed, and run
-/// the oldest queued job to its end. Public so a test can drive it.
+/// the oldest queued job to its end. Public so a test can drive it. The
+/// worker's own loop is [`work`], which takes on up to [`MAX_AT_ONCE`] jobs
+/// rather than one.
 pub async fn pass(service: &Arc<Service>) {
-    pass_with(service, None).await;
+    let Some((vault, stock)) = survey(service).await else { return };
+    let oldest = pick(stock.queued, 1, |id| service.is_running_job(id)).pop();
+    if let Some(job) = oldest {
+        execute(service, &vault, job, None).await;
+    }
 }
 
-/// [`pass`], with the loop's stop signal when it has one. Returns whether a
-/// job ran to an end, which is what tells [`run`] to look again at once.
-/// A job put back in the queue is not an end: looking again immediately
-/// would only pick it up to be interrupted in the same way.
-async fn pass_with(service: &Arc<Service>, stop: Option<watch::Receiver<bool>>) -> bool {
-    let Some(vault) = service.get() else { return false };
+/// A pass of the worker's loop: look at the vault, and start as many of the
+/// queued jobs as there are places for.
+async fn take_on(service: &Arc<Service>, stop: &signal::Receiver<bool>, hands: &mut Hands) {
+    let Some((vault, stock)) = survey(service).await else { return };
+    let free = hands.free();
+    let chosen = pick(stock.queued, free, |id| hands.holds(id) || service.is_running_job(id));
+    for job in chosen {
+        hands.start(service, &vault, job, stop.clone());
+    }
+}
+
+/// The first half of every pass, whoever runs it: sweep what a dead process
+/// left, put right what was queued by mistake, and offer every job that owes
+/// its conversation a word. What it found, for the caller to run from. `None`
+/// when nothing may run: no vault, a locked or read-only one, or one that
+/// keeps no jobs.
+async fn survey(service: &Arc<Service>) -> Option<(Arc<Vault>, Stock)> {
+    let vault = service.get()?;
     // Nothing while locked, and nothing in a second copy of the application
     // that holds no write claim. Not even the sweep: it writes.
     if !vault.is_unlocked() || !vault.is_writable() || !vault.supports_jobs() {
-        return false;
+        return None;
     }
 
-    let mine = service.running_job();
     let now = service.now();
     let stock = blocking({
         let vault = vault.clone();
-        move || Ok(take_stock(&vault, mine, now))
+        let service = service.clone();
+        move || Ok(take_stock(&vault, &|id: JobId| service.is_running_job(id), now))
     })
     .await;
-    let Ok(stock) = stock else { return false };
+    let Ok(mut stock) = stock else { return None };
 
-    for change in stock.changes {
+    for change in std::mem::take(&mut stock.changes) {
         service.events().changed(change);
     }
     for job in &stock.swept {
@@ -262,13 +367,105 @@ async fn pass_with(service: &Arc<Service>, stop: Option<watch::Receiver<bool>>) 
     for job in &stock.owed {
         spawn_come_back(service, &vault, job);
     }
+    if !stock.slept.is_empty() {
+        for job in &stock.slept {
+            tracing::info!(job = %job.id, "a watch was queued; put to sleep for the watch loop");
+            service.events().changed(job_change(job.id));
+        }
+        service.jobs.wake_watches.notify_one();
+    }
+    Some((vault, stock))
+}
 
-    // Oldest first: `JobQuery::apply` sorts newest first, which is right for
-    // a list and wrong for a queue.
-    let Some(job) = stock.queued.into_iter().min_by_key(|job| job.created_at) else {
-        return false;
-    };
-    execute(service, &vault, job, stop).await
+/// Of the queued jobs, the ones to run now: oldest first, none that is
+/// `claimed` already (by a task of ours that has not got as far as saying so,
+/// or by anything else), no more than `free`. A watch is never one: the
+/// watch loop carries those out.
+///
+/// Oldest first because [`JobQuery::apply`] sorts newest first, which is right
+/// for a list and wrong for a queue.
+fn pick(mut queued: Vec<Job>, free: usize, claimed: impl Fn(JobId) -> bool) -> Vec<Job> {
+    queued.sort_by_key(|job| job.created_at);
+    queued.into_iter().filter(|job| !job.kind.is_stepped() && !claimed(job.id)).take(free).collect()
+}
+
+/// The jobs the worker's loop has in hand: each on a task of its own, so that
+/// a project an hour long does not make the job behind it wait.
+#[derive(Default)]
+struct Hands {
+    /// The tasks, each carrying one job to an end. What is waited on.
+    tasks: JoinSet<bool>,
+    /// The jobs they are carrying, from the moment one is chosen -- before its
+    /// task has run a line, so the next pass cannot choose it again. Each task
+    /// holds a [`Place`] that gives its job back, even if it panics.
+    jobs: Arc<Mutex<HashSet<JobId>>>,
+}
+
+/// One job's place among the [`Hands`], given back when dropped.
+struct Place(Arc<Mutex<HashSet<JobId>>>, JobId);
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().remove(&self.1);
+    }
+}
+
+impl Hands {
+    /// How many more jobs may be started.
+    fn free(&self) -> usize {
+        MAX_AT_ONCE.saturating_sub(self.jobs.lock().unwrap().len())
+    }
+
+    /// Whether `job` is one of them.
+    fn holds(&self, job: JobId) -> bool {
+        self.jobs.lock().unwrap().contains(&job)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
+    /// Start carrying `job` to an end, on a task of its own.
+    fn start(
+        &mut self,
+        service: &Arc<Service>,
+        vault: &Arc<Vault>,
+        job: Job,
+        stop: signal::Receiver<bool>,
+    ) {
+        self.jobs.lock().unwrap().insert(job.id);
+        let place = Place(self.jobs.clone(), job.id);
+        let (service, vault) = (service.clone(), vault.clone());
+        self.tasks.spawn(async move {
+            let _place = place;
+            execute(&service, &vault, job, Some(stop)).await
+        });
+    }
+
+    /// Wait for one of them to end: whether it reached an end, as opposed to
+    /// going back in the queue. Cancel-safe, so it may be a `select!` arm.
+    async fn ended(&mut self) -> bool {
+        match self.tasks.join_next().await {
+            Some(Ok(reached_an_end)) => reached_an_end,
+            Some(Err(e)) => {
+                // Its claim and its place are given back as it unwinds, and the
+                // row it left `Running` is the next sweep's.
+                tracing::error!(error = %e, "a job's task failed");
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Collect the tasks that have ended already, so that they do not pile up.
+    fn reap(&mut self) {
+        while self.tasks.try_join_next().is_some() {}
+    }
+
+    /// Wait for every one of them.
+    async fn finish(&mut self) {
+        while self.tasks.join_next().await.is_some() {}
+    }
 }
 
 /// What a pass found in the vault.
@@ -282,6 +479,9 @@ struct Stock {
     /// Finished jobs whose conversation has not been come back to: an
     /// answer for a job that is done, the news for one that failed.
     owed: Vec<Job>,
+    /// Watches found in the queue and put to sleep, due now: the watch loop's
+    /// to carry out.
+    slept: Vec<Job>,
     /// What the sweep's failures moved -- a task of the assistant's going
     /// back to do -- for open windows.
     changes: Vec<Change>,
@@ -290,27 +490,42 @@ struct Stock {
 /// The sweep, and the two lists a pass works from. One trip to the blocking
 /// pool: nothing in it awaits anything.
 ///
-/// `mine` is the job this process is carrying out, if any. The worker only
-/// ever sweeps between jobs, so it is `None` there; it is passed because the
-/// rule is "not this process's", not "not the worker's", and a test or a
-/// second caller must not have it taken from under them.
-fn take_stock(vault: &Vault, mine: Option<JobId>, now: Timestamp) -> Stock {
+/// `claimed` says whether this process is carrying a job out. The worker has
+/// two at a time, and the watch loop looks at others, so "the job being run"
+/// is not one id but a set, and the question is asked of each row as it is
+/// met: a job is claimed before its row says `Running`, so asking after the
+/// row is read cannot take a live job for a dead one.
+fn take_stock(vault: &Vault, claimed: &dyn Fn(JobId) -> bool, now: Timestamp) -> Stock {
     let mut stock = Stock::default();
+    // Not `Waiting`: a watch asleep between looks is not running, and whatever
+    // it is waiting for is not the sweep's to hurry.
     for mut job in vault.jobs(&JobQuery::unfinished()).unwrap_or_default() {
         match job.status {
-            JobStatus::Running if Some(job.id) != mine => {
-                let requeued = job.interrupted(INTERRUPTED);
+            JobStatus::Running if !claimed(job.id) => {
+                job.interrupted(INTERRUPTED);
                 if vault.save_job(&job).is_err() {
                     continue;
                 }
-                if requeued {
-                    stock.queued.push(job.clone());
-                } else {
+                match job.status {
+                    JobStatus::Queued => stock.queued.push(job.clone()),
                     // Failed for good: over, like any other ending, so what
                     // moves with its end moves now.
-                    stock.changes.extend(executor_for(&job.kind).ended(vault, &job));
+                    status if status.is_finished() => {
+                        stock.changes.extend(executor_for(&job.kind).ended(vault, &job));
+                    }
+                    // A job that runs in steps, put back to sleep.
+                    _ => {}
                 }
                 stock.swept.push(job);
+            }
+            // Never run by this worker: the watch loop carries a watch out, a
+            // look at a time. One that was queued by hand is put to sleep, due
+            // now, which is where its own loop will look for it.
+            JobStatus::Queued if job.kind.is_stepped() => {
+                job.sleep_until(now);
+                if vault.save_job(&job).is_ok() {
+                    stock.slept.push(job);
+                }
             }
             JobStatus::Queued => stock.queued.push(job),
             _ => {}
@@ -338,10 +553,16 @@ fn owes_the_conversation(job: &Job) -> bool {
     if task::is_task(job) {
         return matches!(job.status, JobStatus::Done | JobStatus::Failed) && !job.answered;
     }
+    // A watch said what it had to as it went, its end included: the watch
+    // loop reports its own, and there is no follow-up to have. Research and a
+    // project are alike: an answer, or the news.
+    if job.kind.is_stepped() {
+        return false;
+    }
     match job.status {
         JobStatus::Done => job.owes_answer(),
         JobStatus::Failed => job.asked_in.is_some() && !job.answered,
-        JobStatus::Queued | JobStatus::Running | JobStatus::Cancelled => false,
+        JobStatus::Queued | JobStatus::Running | JobStatus::Waiting | JobStatus::Cancelled => false,
     }
 }
 
@@ -386,18 +607,19 @@ fn spawn_come_back(service: &Arc<Service>, vault: &Arc<Vault>, job: &Job) {
 /// the job this process is carrying out from one a dead process left.
 /// Released on drop for the reason [`Service::claim_run`]'s guard is: on the
 /// error path somebody forgets, a job would sit "running" until a restart.
-struct Working<'a>(&'a Service);
+pub(crate) struct Working<'a>(&'a Service, JobId);
 
 impl<'a> Working<'a> {
-    fn start(service: &'a Service, id: JobId) -> Self {
-        *service.jobs.running.lock().unwrap() = Some(id);
-        Self(service)
+    /// Claim `id` for this process. `None` when it is claimed already -- a
+    /// watch's look still under way when the next pass comes round.
+    pub(crate) fn start(service: &'a Service, id: JobId) -> Option<Self> {
+        service.jobs.running.lock().unwrap().insert(id).then(|| Self(service, id))
     }
 }
 
 impl Drop for Working<'_> {
     fn drop(&mut self) {
-        *self.0.jobs.running.lock().unwrap() = None;
+        self.0.jobs.running.lock().unwrap().remove(&self.1);
     }
 }
 
@@ -435,14 +657,14 @@ async fn execute(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
     queued: Job,
-    stop: Option<watch::Receiver<bool>>,
+    stop: Option<signal::Receiver<bool>>,
 ) -> bool {
     let id = queued.id;
     let executor = executor_for(&queued.kind);
 
     // Taken before the row says `Running`, so there is no moment when it does
     // and nothing claims it.
-    let _working = Working::start(service, id);
+    let Some(_working) = Working::start(service, id) else { return false };
 
     // From the record rather than the copy the pass listed: somebody may have
     // cancelled it in between, and that must not be started over.
@@ -542,10 +764,14 @@ async fn execute(
         voice_approves: false,
         job: Some(JobTurn { id, question: job.title(), context: executor.context() }),
         follow_up: None,
+        about_job: None,
         max_steps: Some(executor.max_steps()),
         tier: None,
-        // A job asks nobody: it is refused what it would need somebody for.
-        reach: crate::agent::Reach::default(),
+        // Most jobs ask nobody: they are refused what they would need somebody
+        // for. A project may ask the person in their chat, when one is
+        // running. What a job's final reply is sent to is not said here: its
+        // answer comes back through the follow-up, not the reply.
+        reach: Reach { asker: executor.asker(service, &job), sent_to: Vec::new() },
     };
 
     let turn = tokio::time::timeout(executor.timeout(), crate::agent::run_turn(turn));
@@ -555,6 +781,10 @@ async fn execute(
     let mut cancel_tick = ticker(WATCH_EVERY);
     let mut save_tick = ticker(SAVE_EVERY);
     let mut closing = false;
+    // Updates the job has written for the person, being sent on a task of
+    // their own: delivering waits on a chat, and the turn is not polled while
+    // this loop waits.
+    let mut sending: Option<tokio::task::JoinHandle<()>> = None;
 
     // The turn runs inside this loop rather than beside it, so the watching
     // happens while the turn is not being polled. A read of one row and a
@@ -574,6 +804,12 @@ async fn execute(
             }
             _ = save_tick.tick() => {
                 save_progress(service, vault, id, &live).await;
+                if sending.as_ref().is_none_or(|sent| sent.is_finished()) {
+                    sending = Some(tokio::spawn({
+                        let (service, vault) = (service.clone(), vault.clone());
+                        async move { send_updates(&service, &vault, id).await }
+                    }));
+                }
             }
             _ = &mut shutdown, if !closing => {
                 // The worker is being stopped. Ask the turn to end, and wait
@@ -583,6 +819,17 @@ async fn execute(
             }
         }
     };
+
+    // What it said in its last seconds is sent before the job is settled, so
+    // that the thread reads the update and then the answer, not the other way
+    // round. Not when the worker is stopping: the job goes back in the queue,
+    // and what it has still to say is said when it runs again.
+    if let Some(sent) = sending {
+        let _ = sent.await;
+    }
+    if !closing {
+        send_updates(service, vault, id).await;
+    }
 
     let steps = live.lock().unwrap().steps;
     let ended = match done {
@@ -641,7 +888,7 @@ fn ticker(every: Duration) -> tokio::time::Interval {
 /// with no signal to give, a test driving [`pass`], never stops it; and a
 /// sender that has gone away without saying so is "never", not "now", as it
 /// is for a turn's own stop switch.
-async fn closing_down(stop: Option<watch::Receiver<bool>>) {
+async fn closing_down(stop: Option<signal::Receiver<bool>>) {
     let Some(mut stop) = stop else { return std::future::pending::<()>().await };
     if stop.wait_for(|stop| *stop).await.is_err() {
         std::future::pending::<()>().await;
@@ -720,6 +967,115 @@ fn amend(vault: &Vault, id: JobId, change: impl FnOnce(&mut Job)) -> karmayoga_c
     change(&mut job);
     vault.save_job(&job)?;
     Ok(true)
+}
+
+/// Something a job wrote for the person that has been sent: what, when it
+/// was written, and where it went. What marks a [`JobUpdate`] delivered.
+///
+/// [`JobUpdate`]: karmayoga_core::job::JobUpdate
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Sent {
+    at: Timestamp,
+    text: String,
+    to: Vec<String>,
+}
+
+/// What a job has written for the person and not had sent on yet, oldest
+/// first: when each was written and what it says.
+fn unsent(job: &Job) -> Vec<(Timestamp, String)> {
+    job.undelivered().map(|update| (update.at, update.text.clone())).collect()
+}
+
+/// Mark as delivered the updates in `sent`, matched by when they were written
+/// and what they say -- the job may have been changed since they were read,
+/// and an update written meanwhile must stay to be sent. Each one only once:
+/// an update already delivered is not delivered again, whatever it says.
+/// Whether anything changed.
+fn mark_sent(job: &mut Job, sent: &[Sent]) -> bool {
+    let mut changed = false;
+    for one in sent {
+        let found = job
+            .updates
+            .iter_mut()
+            .find(|update| !update.delivered && update.at == one.at && update.text == one.text);
+        if let Some(update) = found {
+            update.delivered = true;
+            update.sent_to = one.to.clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Send on what a job has written for the person, and mark it sent.
+///
+/// A project's own turn writes an update onto its record with
+/// `report_progress`; this is what makes it reach anybody. Each goes through
+/// [`Service::deliver_update`], which decides where -- the thread, the chat, a
+/// voice session -- and is marked delivered only if somewhere took it: one
+/// nothing could take is left to be sent at the next tick, or the next time
+/// the job runs. The record is read again before it is written, for the
+/// reason [`amend`] gives, so a cancellation is not undone; and the record is
+/// all that changes, so what is written meanwhile is not lost.
+///
+/// Not for a job somebody has cancelled: whoever did that has stopped
+/// listening. Never inside the blocking pool: delivering waits on a chat.
+async fn send_updates(service: &Arc<Service>, vault: &Arc<Vault>, id: JobId) {
+    let read = blocking({
+        let vault = vault.clone();
+        move || {
+            Ok(vault.job(id).ok().filter(|job| job.status != JobStatus::Cancelled).map(|job| {
+                let from = format!("{}: {}", job.kind.label(), short(&job.title(), FROM_CHARS));
+                (unsent(&job), from, job.asked_in)
+            }))
+        }
+    })
+    .await;
+    let Ok(Some((waiting, from, conversation))) = read else { return };
+
+    let mut sent = Vec::new();
+    for (at, text) in waiting {
+        // Written after reading strangers' pages, and said aloud: without the
+        // characters nobody can see.
+        let said = karmayoga_core::hidden::strip_hidden(&text).trim().to_string();
+        if said.is_empty() {
+            // Nothing to say, so nothing to send; marked so that it is not
+            // looked at every three seconds.
+            sent.push(Sent { at, text, to: Vec::new() });
+            continue;
+        }
+        let delivered = service
+            .deliver_update(Update {
+                job: Some(id),
+                from: from.clone(),
+                text: said,
+                conversation,
+                call_me: false,
+            })
+            .await;
+        if delivered.reached() {
+            sent.push(Sent { at, text, to: delivered.sent_to });
+        }
+    }
+    if sent.is_empty() {
+        return;
+    }
+
+    let saved = blocking({
+        let vault = vault.clone();
+        move || {
+            let mut job = vault.job(id)?;
+            if !mark_sent(&mut job, &sent) {
+                return Ok(false);
+            }
+            vault.save_job(&job)?;
+            Ok(true)
+        }
+    })
+    .await;
+    if matches!(saved, Ok(true)) {
+        service.events().changed(job_change(id));
+    }
 }
 
 /// What came of settling a job.
@@ -867,9 +1223,12 @@ fn job_change(id: JobId) -> Change {
 ///
 /// One of the assistant's own tasks says nothing here: it says what it came
 /// to where the person chose instead, as what the job owes -- see
-/// [`task::deliver`].
+/// [`task::deliver`]. A watch says nothing here either: the watch loop tells
+/// the person when it ends. A project is announced as research is: "Project is
+/// ready".
 fn announce(service: &Arc<Service>, job: &Job) {
-    if task::is_task(job) {
+    // Nor does a watch, which tells the person what it has to as it goes.
+    if task::is_task(job) || job.kind.is_stepped() {
         return;
     }
     let key = format!("job:{}", job.id);
@@ -891,7 +1250,7 @@ fn announce(service: &Arc<Service>, job: &Job) {
                 .for_user()
                 .key(key),
         ),
-        JobStatus::Queued | JobStatus::Running | JobStatus::Cancelled => {}
+        JobStatus::Queued | JobStatus::Running | JobStatus::Waiting | JobStatus::Cancelled => {}
     }
 }
 
@@ -950,6 +1309,11 @@ fn progress_line(name: &str, arguments: &serde_json::Value) -> String {
         "list_tasks" | "get_task" | "list_projects" => "Checking tasks".to_string(),
         "list_stories" | "read_story" | "list_news_sources" => "Reading the Feed".to_string(),
         "list_meeting_notes" | "get_transcript" => "Looking through meeting notes".to_string(),
+        "start_watch" => "Starting a watch".to_string(),
+        "start_project" => "Starting a project".to_string(),
+        "update_job" => "Changing how a job works".to_string(),
+        "report_progress" => "Sending an update".to_string(),
+        "ask_owner" => "Asking you in your chat".to_string(),
         "find_connection_tools" => "Looking through connected services' tools".to_string(),
         "use_connection_tool" => match (text("tool"), text("connection")) {
             (Some(tool), Some(connection)) => {
@@ -1015,6 +1379,15 @@ mod tests {
     }
 
     #[test]
+    fn the_tools_of_watches_and_projects_have_a_line_too() {
+        assert_eq!(progress_line("start_watch", &json!({})), "Starting a watch");
+        assert_eq!(progress_line("start_project", &json!({})), "Starting a project");
+        assert_eq!(progress_line("update_job", &json!({})), "Changing how a job works");
+        assert_eq!(progress_line("report_progress", &json!({ "text": "x" })), "Sending an update");
+        assert_eq!(progress_line("ask_owner", &json!({})), "Asking you in your chat");
+    }
+
+    #[test]
     fn a_tool_started_counts_a_step_and_is_news_once() {
         let mut live = Live::default();
         assert_eq!(live.take(), None, "nothing has happened");
@@ -1069,5 +1442,183 @@ mod tests {
         nobody.begin();
         nobody.fail("the endpoint refused");
         assert!(!owes_the_conversation(&nobody), "started from the app: no thread to tell");
+    }
+
+    #[test]
+    fn a_project_owes_its_conversation_as_research_does() {
+        let asked = Some(ConversationId::new());
+        let mut project = Job::project("Plan a week in Lisbon", "", asked);
+        project.begin();
+        assert!(!owes_the_conversation(&project), "running: nothing yet");
+
+        let mut done = project.clone();
+        done.finish("Planned.");
+        assert!(owes_the_conversation(&done), "an answer");
+        done.answered = true;
+        assert!(!owes_the_conversation(&done), "had it");
+
+        let mut failed = project.clone();
+        failed.fail("the endpoint refused");
+        assert!(owes_the_conversation(&failed), "the news");
+
+        let mut cancelled = project;
+        cancelled.cancel("they changed their mind").unwrap();
+        assert!(!owes_the_conversation(&cancelled), "whoever cancelled it knows");
+    }
+
+    #[test]
+    fn a_watch_never_owes_its_conversation_anything() {
+        let asked = Some(ConversationId::new());
+        let probe = karmayoga_core::Probe::Assistant { how: "Check the inbox".into() };
+        let mut watch =
+            Job::watch("CI on PR 412", probe, Default::default(), asked, Timestamp::now());
+        for status in JobStatus::ALL {
+            watch.status = status;
+            assert!(!owes_the_conversation(&watch), "a watch in {status:?} owes nothing");
+        }
+    }
+
+    // ---- which jobs run ---------------------------------------------------------
+
+    fn research_at(minutes_ago: i64, question: &str) -> Job {
+        let mut job = Job::research(question, "", None);
+        job.created_at = Timestamp::now() - jiff::SignedDuration::from_mins(minutes_ago);
+        job
+    }
+
+    fn questions(jobs: &[Job]) -> Vec<String> {
+        jobs.iter().map(Job::title).collect()
+    }
+
+    #[test]
+    fn the_oldest_jobs_run_first_and_no_more_than_there_is_room_for() {
+        let queued =
+            vec![research_at(1, "newest"), research_at(30, "oldest"), research_at(10, "middle")];
+        let chosen = pick(queued.clone(), MAX_AT_ONCE, |_| false);
+        assert_eq!(questions(&chosen), ["oldest", "middle"]);
+        assert_eq!(MAX_AT_ONCE, 2, "two at a time is the rule the module documents");
+
+        assert_eq!(questions(&pick(queued.clone(), 1, |_| false)), ["oldest"]);
+        assert!(pick(queued, 0, |_| false).is_empty(), "no room, none chosen");
+    }
+
+    #[test]
+    fn a_job_somebody_has_claimed_is_not_chosen_again_and_does_not_use_a_place() {
+        let (a, b, c) = (research_at(30, "a"), research_at(20, "b"), research_at(10, "c"));
+        let held = a.id;
+        let chosen = pick(vec![a, b, c], MAX_AT_ONCE, |id| id == held);
+        assert_eq!(questions(&chosen), ["b", "c"], "the claimed one makes way for the next");
+    }
+
+    #[test]
+    fn a_watch_is_never_chosen_to_run_here() {
+        let probe = karmayoga_core::Probe::Assistant { how: "Check the inbox".into() };
+        let mut watch = Job::watch("a watch", probe, Default::default(), None, Timestamp::now());
+        watch.status = JobStatus::Queued;
+        watch.created_at = Timestamp::now() - jiff::SignedDuration::from_hours(1);
+        let chosen = pick(vec![watch, research_at(1, "research")], MAX_AT_ONCE, |_| false);
+        assert_eq!(questions(&chosen), ["research"]);
+    }
+
+    #[test]
+    fn places_are_given_back_so_a_finished_job_makes_room() {
+        let hands = Hands::default();
+        assert_eq!(hands.free(), MAX_AT_ONCE);
+        let (first, second) = (JobId::new(), JobId::new());
+        hands.jobs.lock().unwrap().insert(first);
+        let place = Place(hands.jobs.clone(), first);
+        hands.jobs.lock().unwrap().insert(second);
+        assert_eq!(hands.free(), 0);
+        assert!(hands.holds(first) && hands.holds(second));
+
+        drop(place);
+        assert_eq!(hands.free(), 1, "a place is given back when its job's task is done");
+        assert!(!hands.holds(first) && hands.holds(second));
+    }
+
+    // ---- what a job says while it runs -------------------------------------------
+
+    fn project_saying(updates: &[(&str, bool)]) -> (Job, Vec<Timestamp>) {
+        let mut job = Job::project("Plan a week in Lisbon", "", Some(ConversationId::new()));
+        job.begin();
+        let start: Timestamp = "2026-11-20T09:00:00Z".parse().unwrap();
+        let mut times = Vec::new();
+        for (i, (text, delivered)) in updates.iter().enumerate() {
+            let at = start + jiff::SignedDuration::from_mins(i as i64 * 10);
+            job.add_update(*text, at, *delivered);
+            times.push(at);
+        }
+        (job, times)
+    }
+
+    fn sent_to(at: Timestamp, text: &str, to: &[&str]) -> Sent {
+        Sent { at, text: text.into(), to: to.iter().map(|w| w.to_string()).collect() }
+    }
+
+    #[test]
+    fn only_what_was_not_sent_is_still_to_send_oldest_first() {
+        let (job, times) = project_saying(&[
+            ("Flights found.", true),
+            ("Hotels shortlisted.", false),
+            ("Itinerary drafted.", false),
+        ]);
+        assert_eq!(
+            unsent(&job),
+            vec![
+                (times[1], "Hotels shortlisted.".to_string()),
+                (times[2], "Itinerary drafted.".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sent_update_is_marked_delivered_with_where_it_went() {
+        let (mut job, times) =
+            project_saying(&[("Hotels shortlisted.", false), ("Itinerary drafted.", false)]);
+        let sent = [sent_to(times[0], "Hotels shortlisted.", &["thread", "chat"])];
+
+        assert!(mark_sent(&mut job, &sent));
+        assert!(job.updates[0].delivered);
+        assert_eq!(job.updates[0].sent_to, ["thread", "chat"]);
+        assert!(!job.updates[1].delivered, "the one that was not sent is still to send");
+        assert_eq!(unsent(&job).len(), 1);
+        assert_eq!(job.last_update().map(|u| u.text.as_str()), Some("Hotels shortlisted."));
+    }
+
+    #[test]
+    fn an_update_written_while_another_was_being_sent_is_left_to_be_sent() {
+        let (mut job, times) = project_saying(&[("Hotels shortlisted.", false)]);
+        // What was read, sent, and is now being marked...
+        let sent = [sent_to(times[0], "Hotels shortlisted.", &["chat"])];
+        // ...while the job, on the record, has since written another.
+        let later = times[0] + jiff::SignedDuration::from_mins(5);
+        job.add_update("Itinerary drafted.", later, false);
+
+        assert!(mark_sent(&mut job, &sent));
+        assert_eq!(unsent(&job).len(), 1);
+        assert_eq!(unsent(&job)[0].1, "Itinerary drafted.");
+    }
+
+    #[test]
+    fn an_update_is_marked_once_and_one_that_is_not_there_changes_nothing() {
+        let (mut job, times) = project_saying(&[("Hotels shortlisted.", false)]);
+        let sent = [sent_to(times[0], "Hotels shortlisted.", &["chat"])];
+        assert!(mark_sent(&mut job, &sent));
+        let marked = job.clone();
+
+        assert!(!mark_sent(&mut job, &sent), "already delivered: nothing to do");
+        assert_eq!(job, marked);
+
+        let stranger = [sent_to(times[0], "Something else.", &["chat"])];
+        assert!(!mark_sent(&mut job, &stranger), "matched by what it says as well as when");
+        assert_eq!(job, marked);
+    }
+
+    #[test]
+    fn two_updates_with_the_same_words_at_different_times_are_two_updates() {
+        let (mut job, times) = project_saying(&[("Still going.", false), ("Still going.", false)]);
+        let sent = [sent_to(times[1], "Still going.", &["chat"])];
+        assert!(mark_sent(&mut job, &sent));
+        assert!(!job.updates[0].delivered && job.updates[1].delivered);
     }
 }

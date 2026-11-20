@@ -37,6 +37,14 @@
 //! started and their answer is routed exactly as an answer to the
 //! assistant's own question is.
 //!
+//! **A background job's update does not.** A post that names a job and no
+//! conversation -- a watch saying its build has finished -- is sent the moment
+//! it is made, from [`RelayOutlet`] straight to the owner's private chat, not
+//! queued on its worker: an update that waited for an hour-long call to end
+//! would be no update. The relay remembers which job each such message came
+//! from ([`Posts`]), so that when the owner answers it with a reply -- Matrix's
+//! own, on that message -- the turn it starts is told which job it is about.
+//!
 //! **Calls go through the same workers.** A call the owner makes to the
 //! assistant is delivered as [`Incoming::Called`] and queued on its chat's
 //! worker as one more piece of work, so a chat never has a call and a typed turn
@@ -72,13 +80,15 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use jiff::{SignedDuration, Timestamp};
 use karmayoga_core::chat::{ChatLink, Via};
-use karmayoga_core::{ChatLinkId, Conversation, ConversationId, ConversationQuery, FileId, Vault};
+use karmayoga_core::{
+    ChatLinkId, Conversation, ConversationId, ConversationQuery, FileId, JobId, Vault,
+};
 use karmayoga_service::agent::{AgentEvent, ConfirmAnswer, Pending, Sink, Turned};
-use karmayoga_service::chat::{CallDelivered, ChatOutlet, FromRun, escape_markdown};
+use karmayoga_service::chat::{CallDelivered, ChatOutlet, ChatTurnInput, FromRun, escape_markdown};
 use karmayoga_service::error::CommandResult;
 use karmayoga_service::service::Service;
 use karmayoga_service::voice::{VoiceEvent, VoiceInput, VoiceLink};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
@@ -228,8 +238,13 @@ pub async fn run_with_calls(
 ) {
     tracing::info!(service = link.service.label(), "a chat relay is up");
     let (outbound_tx, mut outbound) = mpsc::unbounded_channel();
-    let outlet: Arc<dyn ChatOutlet> =
-        Arc::new(RelayOutlet { connector: connector.clone(), outbound: outbound_tx });
+    let posts = JobPosts::default();
+    let outlet: Arc<dyn ChatOutlet> = Arc::new(RelayOutlet {
+        connector: connector.clone(),
+        outbound: outbound_tx,
+        posts: posts.clone(),
+        stop: stop.clone(),
+    });
     let _open = OpenOutlet::new(service.clone(), link.id, outlet);
     let context = Arc::new(Context {
         service,
@@ -240,6 +255,7 @@ pub async fn run_with_calls(
         stop: stop.clone(),
         calls,
         line: Mutex::new(Line::default()),
+        posts,
     });
     let mut chats = Chats::new(context);
 
@@ -316,11 +332,21 @@ pub(crate) enum RoutineJob {
     },
 }
 
+/// What the owner is told when a message for their private chat has nowhere
+/// to go yet.
+const NOT_JOINED: &str = "the owner has not joined the bot's private room yet";
+
 /// [`ChatOutlet`] over a running relay: finds the owner's private chat, and
-/// hands the job to the dispatcher, which queues it on that chat's worker.
+/// hands the job to the dispatcher, which queues it on that chat's worker --
+/// except a background job's update, which it sends itself, at once.
 struct RelayOutlet {
     connector: Arc<dyn Connector>,
     outbound: mpsc::UnboundedSender<(ChatId, RoutineJob)>,
+    /// Which job each message sent for one came from, shared with the relay's
+    /// own sending: a reply to any of them is looked up in the same list.
+    posts: JobPosts,
+    /// The relay's own stop, for the one thing this sends without a worker.
+    stop: watch::Receiver<bool>,
 }
 
 impl RelayOutlet {
@@ -331,15 +357,139 @@ impl RelayOutlet {
         outbound: mpsc::UnboundedSender<(ChatId, RoutineJob)>,
         job: RoutineJob,
     ) -> Result<(), String> {
-        let chat =
-            connector.home().await.ok_or("the owner has not joined the bot's private room yet")?;
+        let chat = connector.home().await.ok_or(NOT_JOINED)?;
         outbound.send((chat, job)).map_err(|_| "the chat link has stopped".to_string())
+    }
+
+    /// Send a background job's update to the owner's private chat now, and
+    /// remember which job it was from.
+    ///
+    /// The update is not queued, because a chat's worker is one thing at a
+    /// time: behind a turn the owner started it waits for the reply, and
+    /// behind a call it waits for the hang-up -- and the watch that said the
+    /// build had failed was most useful an hour ago. So it goes out from here,
+    /// beside whatever the worker is doing, and nothing about the chat's
+    /// conversation changes: it is not a reply to anything, and the chat does
+    /// not carry on from it. What the owner types next is still a message in
+    /// the conversation they were in -- unless they reply to this one, which
+    /// [`Posts`] is for.
+    ///
+    /// Refused once the relay is stopping, as everything is: the vault may be
+    /// locking, and the one thing a worker does when it is stopped is send
+    /// nothing more.
+    async fn post_at_once(
+        connector: Arc<dyn Connector>,
+        posts: JobPosts,
+        stop: watch::Receiver<bool>,
+        job: JobId,
+        markdown: String,
+    ) -> Result<(), String> {
+        if *stop.borrow() {
+            return Err("the chat link is stopping".to_string());
+        }
+        let chat = connector.home().await.ok_or(NOT_JOINED)?;
+        let sent = connector.send(&chat, &markdown).await.map_err(|e| e.to_string())?;
+        posts.record(sent, job);
+        Ok(())
+    }
+}
+
+/// The job a post is an update from, when it is to be sent at once rather
+/// than in turn: it names a job, and no conversation to carry on in.
+///
+/// A job's *answer* names its conversation, which the owner's reply then
+/// carries on, so it takes the worker's turn like a routine's result does. An
+/// update has no conversation of its own to give -- a watch's looks are not a
+/// thread the owner talks in -- and is not worth waiting for.
+pub(crate) fn immediate(from: &FromRun) -> Option<JobId> {
+    match (from.conversation, from.job) {
+        (None, Some(job)) => Some(job),
+        _ => None,
+    }
+}
+
+/// How many messages the relay remembers the job of: enough for several days
+/// of a busy watch, and a few kilobytes -- a reply to something older is
+/// answered like any other message, which is the safe direction to be wrong in.
+const POSTS_REMEMBERED: usize = 500;
+
+/// Which background job each message this side sent came from, for the last
+/// [`POSTS_REMEMBERED`] of them, oldest forgotten first.
+///
+/// Matrix names a reply by the event it answers, and nothing else says which
+/// of the owner's jobs that was, so the relay writes down what it sent.
+/// Only messages that came from a job are here: a reply to anything else is
+/// not about one.
+#[derive(Debug)]
+pub(crate) struct Posts {
+    /// In the order they were recorded, to know which to forget.
+    order: VecDeque<MessageRef>,
+    jobs: HashMap<MessageRef, JobId>,
+    limit: usize,
+}
+
+impl Default for Posts {
+    fn default() -> Self {
+        Self::remembering(POSTS_REMEMBERED)
+    }
+}
+
+impl Posts {
+    /// A list that forgets the oldest once it holds `limit`.
+    pub(crate) fn remembering(limit: usize) -> Self {
+        Self { order: VecDeque::new(), jobs: HashMap::new(), limit: limit.max(1) }
+    }
+
+    /// Remember that `message` came from `job`. A message named twice is
+    /// kept once, with the later word, and does not use up a second place.
+    pub(crate) fn record(&mut self, message: MessageRef, job: JobId) {
+        if self.jobs.insert(message.clone(), job).is_none() {
+            self.order.push_back(message);
+        }
+        while self.order.len() > self.limit {
+            if let Some(oldest) = self.order.pop_front() {
+                self.jobs.remove(&oldest);
+            }
+        }
+    }
+
+    /// The job `message` came from, if it is one of the remembered.
+    pub(crate) fn job_of(&self, message: &MessageRef) -> Option<JobId> {
+        self.jobs.get(message).copied()
+    }
+
+    /// The job a message the owner sent as a reply to `reply_to` is about:
+    /// the one the message it answers came from. `None` for a message that
+    /// is not a reply, and for a reply to anything else this side sent --
+    /// its own answers, its questions, a routine's result.
+    pub(crate) fn about(&self, reply_to: Option<&MessageRef>) -> Option<JobId> {
+        self.job_of(reply_to?)
+    }
+}
+
+/// The relay's [`Posts`], shared by what sends (the outlet, the workers) and
+/// what reads (the workers). Locked for a line at a time, never across an
+/// `.await`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JobPosts(Arc<Mutex<Posts>>);
+
+impl JobPosts {
+    pub(crate) fn record(&self, message: MessageRef, job: JobId) {
+        self.0.lock().unwrap().record(message, job);
+    }
+
+    pub(crate) fn about(&self, reply_to: Option<&MessageRef>) -> Option<JobId> {
+        self.0.lock().unwrap().about(reply_to)
     }
 }
 
 impl ChatOutlet for RelayOutlet {
     fn post(&self, from: FromRun, markdown: String) -> BoxFuture<'static, Result<(), String>> {
         let (connector, outbound) = (self.connector.clone(), self.outbound.clone());
+        if let Some(job) = immediate(&from) {
+            let (posts, stop) = (self.posts.clone(), self.stop.clone());
+            return Box::pin(Self::post_at_once(connector, posts, stop, job, markdown));
+        }
         Box::pin(async move {
             let (done, sent) = oneshot::channel();
             Self::queue(connector, outbound, RoutineJob::Post { from, markdown, done }).await?;
@@ -446,6 +596,9 @@ struct Context {
     /// Which call has the relay's one line. Locked for a line at a time, and
     /// only ever after a chat's `Shared`, never before.
     line: Mutex<Line>,
+    /// Which background job each message sent for one came from: written when
+    /// one is sent, read when the owner replies. See [`Posts`].
+    posts: JobPosts,
 }
 
 impl Context {
@@ -729,14 +882,18 @@ impl Chats {
     /// the moment they hung up.
     fn routine(&mut self, chat: ChatId, job: RoutineJob) {
         match job {
-            RoutineJob::Call { markdown, delivered, .. }
+            RoutineJob::Call { from, markdown, delivered, .. }
                 if self.context.line.lock().unwrap().is_busy(Timestamp::now()) =>
             {
                 // Sent beside the call rather than queued behind it, and
                 // without taking the chat's conversation over from the call.
                 let connector = self.context.connector.clone();
+                let posts = self.context.posts.clone();
                 tokio::spawn(async move {
                     let sent = connector.send(&chat, &instead(BUSY_INSTEAD, &markdown)).await;
+                    if let (Ok(message), Some(job)) = (&sent, from.job) {
+                        posts.record(message.clone(), job);
+                    }
                     let _ = delivered.send(
                         sent.map(|_| CallDelivered::Messaged { why: BUSY_WHY.into() })
                             .map_err(|e| e.to_string()),
@@ -1077,8 +1234,10 @@ pub(crate) fn parse_command(text: &str) -> Option<Command> {
 /// Something for a chat's worker to do, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Work {
-    /// Run this as a turn.
-    Say(String),
+    /// Run this as a turn. `reply_to` is the message of the relay's own the
+    /// owner sent it as a reply to, when they did: if that was a background
+    /// job's update, the turn is about that job.
+    Say { text: String, reply_to: Option<MessageRef> },
     /// A picture, and what was written with it. Held by the worker until
     /// what is said next, when nothing was -- see [`PICTURE_WAIT`] -- and
     /// otherwise run as a turn at once, with anything already held.
@@ -1094,6 +1253,13 @@ pub(crate) enum Work {
     /// dispatcher so that a chat's replies come out in the order its messages
     /// came in.
     Reply(String),
+}
+
+impl Work {
+    /// Words that are not a reply to anything.
+    pub(crate) fn say(text: impl Into<String>) -> Self {
+        Work::Say { text: text.into(), reply_to: None }
+    }
 }
 
 /// What the dispatcher does with one thing the owner did.
@@ -1172,7 +1338,7 @@ pub(crate) fn route(
             let work = Work::Hand { document, caption: caption.trim().to_string() };
             route_sent(work, at, asked, now, stale_after)
         }
-        Incoming::Said { text, at, .. } => {
+        Incoming::Said { text, at, reply_to, .. } => {
             let text = text.trim();
             if text.is_empty() {
                 return Route::Ignore;
@@ -1187,7 +1353,7 @@ pub(crate) fn route(
             let work = match command {
                 Some(Command::New) => Work::New,
                 Some(Command::Help) => Work::Help,
-                _ => Work::Say(text.to_string()),
+                _ => Work::Say { text: text.to_string(), reply_to },
             };
             match asked {
                 Asked::Nothing => Route::Queue(work),
@@ -1198,7 +1364,7 @@ pub(crate) fn route(
                 // Anything they write answers a free question -- except a
                 // command, which is them doing something else.
                 Asked::Open => match work {
-                    Work::Say(text) => Route::AnswerText(text),
+                    Work::Say { text, .. } => Route::AnswerText(text),
                     other => Route::DeclineThen(other),
                 },
             }
@@ -1374,7 +1540,7 @@ async fn worker(
             match tokio::time::timeout(context.timing.picture_wait, work.recv()).await {
                 Ok(next) => next,
                 // Nothing more came: what was sent is the whole message.
-                Err(_) => Some(Job::Owner(Work::Say(String::new()))),
+                Err(_) => Some(Job::Owner(Work::say(""))),
             }
         };
         let Some(item) = next else { break };
@@ -1399,7 +1565,7 @@ async fn worker(
             // first, on their own, so they are answered in the order they
             // were sent.
             Gathered::First(sent, item) => {
-                let alone = Job::Owner(Work::Say(String::new()));
+                let alone = Job::Owner(Work::say(""));
                 run_caught(&context, &chat, &shared, &mut memory, alone, sent).await;
                 (item, Vec::new())
             }
@@ -1441,9 +1607,9 @@ fn gather(held: &mut Vec<Sent>, item: Job) -> Gathered {
         Job::Owner(Work::Hand { document, caption }) => {
             hold_or_run(held, Sent::Document(document), caption)
         }
-        Job::Owner(Work::Say(text)) => {
-            Gathered::Run(Job::Owner(Work::Say(text)), std::mem::take(held))
-        }
+        // Whatever words come take what is held with them, and the message
+        // they replied to, if any, goes on with them.
+        Job::Owner(say @ Work::Say { .. }) => Gathered::Run(Job::Owner(say), std::mem::take(held)),
         other if held.is_empty() => Gathered::Run(other, Vec::new()),
         other => Gathered::First(std::mem::take(held), other),
     }
@@ -1457,7 +1623,7 @@ fn hold_or_run(held: &mut Vec<Sent>, sent: Sent, caption: String) -> Gathered {
     if caption.is_empty() {
         Gathered::Hold
     } else {
-        Gathered::Run(Job::Owner(Work::Say(caption)), std::mem::take(held))
+        Gathered::Run(Job::Owner(Work::say(caption)), std::mem::take(held))
     }
 }
 
@@ -1531,14 +1697,21 @@ async fn do_work(
             let name = context.assistant_name().await;
             context.tell(chat, &help_text(&name)).await;
         }
-        Work::Say(text) => converse(context, chat, shared, memory, text, sent).await,
+        Work::Say { text, reply_to } => {
+            // Looked up now, when the turn is about to run, and not when the
+            // message arrived: the update it answers was recorded as soon as
+            // the server named it, which is long before the owner's reply
+            // could reach the front of the queue.
+            let about = context.posts.about(reply_to.as_ref());
+            converse(context, chat, shared, memory, text, sent, about).await
+        }
         Work::Show { picture, caption } => {
             let sent = sent.into_iter().chain([Sent::Picture(picture)]).collect();
-            converse(context, chat, shared, memory, caption, sent).await
+            converse(context, chat, shared, memory, caption, sent, None).await
         }
         Work::Hand { document, caption } => {
             let sent = sent.into_iter().chain([Sent::Document(document)]).collect();
-            converse(context, chat, shared, memory, caption, sent).await
+            converse(context, chat, shared, memory, caption, sent, None).await
         }
     }
 }
@@ -1609,6 +1782,12 @@ async fn for_routine(
 /// The steps are the design's "A turn": typing on; the turn itself, with its
 /// events read as it goes so a question can be put to the owner while the
 /// turn waits; typing off; one message.
+///
+/// `about_job` is the background job the message is a reply to an update of,
+/// when it is one. It changes what the turn is told and nothing else: the
+/// conversation is the chat's own, chosen as for any message, because a
+/// reply to a watch's update is the owner talking to their assistant, and
+/// what they say next belongs with what they said before.
 async fn converse(
     context: &Context,
     chat: &ChatId,
@@ -1616,6 +1795,7 @@ async fn converse(
     memory: &mut Memory,
     text: String,
     sent: Vec<Sent>,
+    about_job: Option<JobId>,
 ) {
     // Claimed before anything slow, so a `!stop` that lands while the
     // conversation is being looked for finds something to stop.
@@ -1667,14 +1847,8 @@ async fn converse(
             Sent::Document(document) => documents.push((document.bytes, document.filename)),
         }
     }
-    let mut turn = Box::pin(context.service.chat_turn_with_files(
-        via,
-        conversation,
-        text,
-        pictures,
-        documents,
-        sink,
-    ));
+    let input = ChatTurnInput { via, conversation, prompt: text, pictures, documents, about_job };
+    let mut turn = Box::pin(context.service.chat_turn_input(input, sink));
     let result = loop {
         tokio::select! {
             biased;
@@ -2145,7 +2319,8 @@ struct Opening {
 pub const RING_FOR: Duration = Duration::from_secs(50);
 
 /// A run's message to the owner, and the chat carried on in the run's
-/// conversation from then, as a reply to it would be.
+/// conversation from then, as a reply to it would be. A message from a
+/// background job is remembered as that job's, so a reply to it is about it.
 async fn post_for_run(
     context: &Context,
     chat: &ChatId,
@@ -2153,7 +2328,10 @@ async fn post_for_run(
     from: &FromRun,
     markdown: &str,
 ) -> Result<(), String> {
-    context.connector.send(chat, markdown).await.map_err(|e| e.to_string())?;
+    let sent = context.connector.send(chat, markdown).await.map_err(|e| e.to_string())?;
+    if let Some(job) = from.job {
+        context.posts.record(sent, job);
+    }
     if let Some(conversation) = from.conversation {
         memory.adopt(conversation);
         context.adopt_conversation(chat, conversation).await;
@@ -2807,11 +2985,11 @@ mod tests {
     }
 
     fn said(text: &str) -> Incoming {
-        Incoming::Said { chat: chat(), text: text.into(), at: now() }
+        Incoming::Said { chat: chat(), text: text.into(), at: now(), reply_to: None }
     }
 
     fn said_at(text: &str, at: Timestamp) -> Incoming {
-        Incoming::Said { chat: chat(), text: text.into(), at }
+        Incoming::Said { chat: chat(), text: text.into(), at, reply_to: None }
     }
 
     fn chose(question: &str, choice: Choice) -> Incoming {
@@ -2887,8 +3065,8 @@ mod tests {
         let mut held = Vec::new();
         assert!(matches!(gather(&mut held, show("one.jpg", "")), Gathered::Hold));
         assert!(matches!(gather(&mut held, show("two.jpg", "")), Gathered::Hold));
-        match gather(&mut held, owner(Work::Say("which is ripe?".into()))) {
-            Gathered::Run(Job::Owner(Work::Say(text)), pictures) => {
+        match gather(&mut held, owner(Work::say("which is ripe?"))) {
+            Gathered::Run(Job::Owner(Work::Say { text, .. }), pictures) => {
                 assert_eq!(text, "which is ripe?");
                 assert_eq!(names(&pictures), ["one.jpg", "two.jpg"]);
             }
@@ -2901,7 +3079,7 @@ mod tests {
     fn a_captioned_picture_goes_at_once_with_any_held_before_it() {
         let mut held = vec![Sent::Picture(picture("one.jpg"))];
         match gather(&mut held, show("two.jpg", "compare these")) {
-            Gathered::Run(Job::Owner(Work::Say(text)), pictures) => {
+            Gathered::Run(Job::Owner(Work::Say { text, .. }), pictures) => {
                 assert_eq!(text, "compare these");
                 assert_eq!(names(&pictures), ["one.jpg", "two.jpg"], "in the order sent");
             }
@@ -2981,7 +3159,7 @@ mod tests {
         assert!(matches!(gather(&mut held, show("one.jpg", "")), Gathered::Hold));
         assert!(matches!(gather(&mut held, hand("two.pdf", "")), Gathered::Hold));
         match gather(&mut held, hand("three.mov", "compare these")) {
-            Gathered::Run(Job::Owner(Work::Say(text)), sent) => {
+            Gathered::Run(Job::Owner(Work::Say { text, .. }), sent) => {
                 assert_eq!(text, "compare these");
                 assert_eq!(names(&sent), ["one.jpg", "two.pdf", "three.mov"]);
                 assert!(matches!(sent[1], Sent::Document(_)), "a file stays a file");
@@ -3015,7 +3193,7 @@ mod tests {
     fn plain_text_is_queued_as_a_turn() {
         assert_eq!(
             routed(&said("  what's on today? "), Asked::Nothing),
-            Route::Queue(Work::Say("what's on today?".into()))
+            Route::Queue(Work::say("what's on today?"))
         );
     }
 
@@ -3030,7 +3208,7 @@ mod tests {
     fn an_unknown_bang_word_is_ordinary_text() {
         assert_eq!(
             routed(&said("!remind me at five"), Asked::Nothing),
-            Route::Queue(Work::Say("!remind me at five".into()))
+            Route::Queue(Work::say("!remind me at five"))
         );
     }
 
@@ -3082,7 +3260,7 @@ mod tests {
 
     #[test]
     fn yes_with_nothing_waiting_is_just_a_message() {
-        assert_eq!(routed(&said("yes"), Asked::Nothing), Route::Queue(Work::Say("yes".into())));
+        assert_eq!(routed(&said("yes"), Asked::Nothing), Route::Queue(Work::say("yes")));
     }
 
     #[test]
@@ -3090,7 +3268,7 @@ mod tests {
         let question = MessageRef("$q".into());
         assert_eq!(
             routed(&said("actually, what's on tomorrow?"), Asked::Sent(&question)),
-            Route::DeclineThen(Work::Say("actually, what's on tomorrow?".into()))
+            Route::DeclineThen(Work::say("actually, what's on tomorrow?"))
         );
         assert_eq!(routed(&said("!new"), Asked::Sent(&question)), Route::DeclineThen(Work::New));
     }
@@ -3121,6 +3299,176 @@ mod tests {
             routed(&item, Asked::Nothing),
             Route::Queue(Work::Reply(UNREADABLE_REPLY.to_string()))
         );
+    }
+
+    // ---- replies to a job's update ----
+
+    fn replying(text: &str, to: &str) -> Incoming {
+        Incoming::Said {
+            chat: chat(),
+            text: text.into(),
+            at: now(),
+            reply_to: Some(MessageRef(to.into())),
+        }
+    }
+
+    fn message(name: &str) -> MessageRef {
+        MessageRef(name.into())
+    }
+
+    #[test]
+    fn a_reply_carries_the_message_it_answers_into_the_turn_it_becomes() {
+        assert_eq!(
+            routed(&replying("  only tell me if it fails ", "$update"), Asked::Nothing),
+            Route::Queue(Work::Say {
+                text: "only tell me if it fails".into(),
+                reply_to: Some(message("$update")),
+            })
+        );
+        // Not a reply: nothing to carry.
+        assert_eq!(
+            routed(&said("only tell me if it fails"), Asked::Nothing),
+            Route::Queue(Work::say("only tell me if it fails"))
+        );
+    }
+
+    #[test]
+    fn a_command_sent_as_a_reply_is_still_only_the_command() {
+        assert_eq!(routed(&replying("!new", "$update"), Asked::Nothing), Route::Queue(Work::New));
+        assert_eq!(routed(&replying("!stop", "$update"), Asked::Nothing), Route::Stop);
+    }
+
+    #[test]
+    fn a_reply_is_routed_to_a_waiting_question_as_any_words_are() {
+        let question = message("$q");
+        assert_eq!(
+            routed(&replying("yes", "$update"), Asked::Sent(&question)),
+            Route::Answer(Choice::Yes)
+        );
+        assert_eq!(
+            routed(&replying("Friday works", "$update"), Asked::Open),
+            Route::AnswerText("Friday works".into())
+        );
+        assert_eq!(
+            routed(&replying("what is the build doing?", "$update"), Asked::Sent(&question)),
+            Route::DeclineThen(Work::Say {
+                text: "what is the build doing?".into(),
+                reply_to: Some(message("$update")),
+            })
+        );
+    }
+
+    #[test]
+    fn a_reply_to_an_old_update_is_not_run_either() {
+        let item = Incoming::Said {
+            chat: chat(),
+            text: "stop watching".into(),
+            at: ago(13),
+            reply_to: Some(message("$update")),
+        };
+        assert!(matches!(routed(&item, Asked::Nothing), Route::Queue(Work::Reply(_))));
+    }
+
+    #[test]
+    fn words_that_wait_for_a_picture_keep_the_message_they_answer() {
+        let mut held = vec![Sent::Picture(picture("one.jpg"))];
+        let reply =
+            Work::Say { text: "is this the failure?".into(), reply_to: Some(message("$u")) };
+        match gather(&mut held, owner(reply.clone())) {
+            Gathered::Run(Job::Owner(run), sent) => {
+                assert_eq!(run, reply, "the reply is not lost on the way");
+                assert_eq!(names(&sent), ["one.jpg"]);
+            }
+            _ => panic!("the words take the picture with them"),
+        }
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn a_reply_is_about_the_job_whose_update_it_answers() {
+        let (watch, project) = (JobId::new(), JobId::new());
+        let mut posts = Posts::default();
+        posts.record(message("$watch-update"), watch);
+        posts.record(message("$project-answer"), project);
+
+        assert_eq!(posts.about(Some(&message("$watch-update"))), Some(watch));
+        assert_eq!(posts.about(Some(&message("$project-answer"))), Some(project));
+        assert_eq!(posts.job_of(&message("$watch-update")), Some(watch));
+    }
+
+    #[test]
+    fn a_reply_to_anything_else_is_about_no_job() {
+        let mut posts = Posts::default();
+        posts.record(message("$update"), JobId::new());
+
+        assert_eq!(posts.about(Some(&message("$an-answer"))), None, "not sent for a job");
+        assert_eq!(posts.about(Some(&message("$"))), None);
+        assert_eq!(posts.about(None), None, "not a reply at all");
+        assert_eq!(Posts::default().about(Some(&message("$update"))), None, "nothing remembered");
+    }
+
+    #[test]
+    fn the_oldest_posts_are_forgotten_first() {
+        let mut posts = Posts::remembering(3);
+        let jobs: Vec<JobId> = (0..5).map(|_| JobId::new()).collect();
+        for (n, job) in jobs.iter().enumerate() {
+            posts.record(message(&format!("$m{n}")), *job);
+        }
+
+        assert_eq!(posts.about(Some(&message("$m0"))), None);
+        assert_eq!(posts.about(Some(&message("$m1"))), None);
+        for (n, job) in jobs.iter().enumerate().skip(2) {
+            assert_eq!(posts.about(Some(&message(&format!("$m{n}")))), Some(*job), "$m{n}");
+        }
+        assert_eq!(posts.order.len(), 3);
+        assert_eq!(posts.jobs.len(), 3, "what is forgotten is gone from the lookup too");
+    }
+
+    #[test]
+    fn a_message_named_twice_takes_one_place_and_the_later_word() {
+        let mut posts = Posts::remembering(2);
+        let (first, second) = (JobId::new(), JobId::new());
+        posts.record(message("$a"), first);
+        posts.record(message("$a"), second);
+        posts.record(message("$b"), first);
+
+        assert_eq!(posts.about(Some(&message("$a"))), Some(second));
+        assert_eq!(posts.about(Some(&message("$b"))), Some(first));
+    }
+
+    #[test]
+    fn a_list_that_may_hold_nothing_still_holds_the_latest() {
+        let mut posts = Posts::remembering(0);
+        let job = JobId::new();
+        posts.record(message("$a"), job);
+        assert_eq!(posts.about(Some(&message("$a"))), Some(job));
+    }
+
+    #[test]
+    fn the_shared_list_is_one_list() {
+        let (outlet, workers) = (JobPosts::default(), JobPosts::default());
+        let job = JobId::new();
+        let also = outlet.clone();
+        also.record(message("$update"), job);
+        assert_eq!(outlet.about(Some(&message("$update"))), Some(job), "a clone shares it");
+        assert_eq!(workers.about(Some(&message("$update"))), None, "a new one does not");
+    }
+
+    fn from(conversation: Option<ConversationId>, job: Option<JobId>) -> FromRun {
+        FromRun { routine: "Watch: CI".into(), conversation, job }
+    }
+
+    #[test]
+    fn only_a_post_from_a_job_with_no_conversation_is_sent_at_once() {
+        let job = JobId::new();
+        assert_eq!(immediate(&from(None, Some(job))), Some(job), "a watch's update");
+        assert_eq!(
+            immediate(&from(Some(ConversationId::new()), Some(job))),
+            None,
+            "a job's answer carries on its own conversation, in turn"
+        );
+        assert_eq!(immediate(&from(Some(ConversationId::new()), None)), None, "a routine's result");
+        assert_eq!(immediate(&from(None, None)), None, "a run whose transcript was lost");
     }
 
     // ---- staleness ----

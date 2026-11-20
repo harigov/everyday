@@ -10,6 +10,10 @@
 //! it found where the person can read it, and a job started again after a
 //! restart has something to go on from. The note is in the job's outputs the
 //! moment it exists, not when the job ends.
+//!
+//! Making that note, and putting the model's words in it when it never wrote
+//! there, are `working_note` and `salvage`: shared with projects, which
+//! keep a note the same way under their own title, tag and placeholder.
 
 use super::{Executor, Prepared};
 use crate::events::{Change, Kind, Op};
@@ -74,43 +78,8 @@ impl Executor for Research {
     fn prepare(&self, vault: &Vault, job: &mut Job) -> karmayoga_core::Result<Prepared> {
         // Owned, because the outputs below are changed while it is still read.
         let question = ask(job).0.to_string();
-        let mut changes = Vec::new();
-
-        // The note the last attempt made, if there is one and it is still
-        // there. A note somebody has since deleted is forgotten, and a new
-        // one made, rather than a job that writes into nothing.
-        let note_id = match job.note_id() {
-            Some(id) => match vault.note(id) {
-                Ok(note) => Some(note.id),
-                Err(Error::NotFound { .. }) => {
-                    job.outputs.retain(|output| output != &JobOutput::Note { note_id: id });
-                    None
-                }
-                Err(e) => return Err(e),
-            },
-            None => None,
-        };
-        let note_id = match note_id {
-            Some(id) => id,
-            None => {
-                let mut note = Note::written_by(
-                    NoteOrigin::Assistant,
-                    note_title(&question),
-                    &placeholder(&question),
-                );
-                note.tags = vec![TAG.to_string()];
-                vault.save_note(&note, None)?;
-                job.add_note(note.id);
-                changes.push(Change {
-                    kind: Kind::Note,
-                    op: Op::Created,
-                    id: Some(note.id.to_string()),
-                    ids: Vec::new(),
-                    origin: Some("assistant".to_string()),
-                });
-                note.id
-            }
-        };
+        let (note_id, changes) =
+            working_note(vault, job, &note_title(&question), TAG, &placeholder(&question))?;
         Ok(Prepared { prompt: prompt(job, note_id), changes })
     }
 
@@ -120,60 +89,131 @@ impl Executor for Research {
         job: &Job,
         reply: &str,
     ) -> karmayoga_core::Result<Vec<Change>> {
-        let Some(id) = job.note_id() else { return Ok(Vec::new()) };
-        let mut note = match vault.note(id) {
-            Ok(note) => note,
-            Err(Error::NotFound { .. }) => {
-                return Err(Error::Invalid(
-                    "the note it was writing in was deleted while it worked".into(),
-                ));
-            }
-            Err(e) => return Err(e),
-        };
-
-        // A note the model went on writing in is the work, and is left alone.
         let (question, _) = ask(job);
-        let waiting = RichDoc::from_markdown(&placeholder(question)).plain_text();
-        if note.body.plain_text().trim() != waiting.trim() {
-            return Ok(Vec::new());
-        }
-
-        // It never wrote anything up. What it said as it worked -- every step's
-        // prose, not only the last word -- is then the only place what it
-        // found is written down, and the conversation that asked is answered
-        // from the note, so it goes there rather than being lost. Better than
-        // a job that is "done" over a placeholder.
-        let reply = reply.trim();
-        if reply.is_empty() {
-            return Err(Error::Invalid("it finished without writing anything up".into()));
-        }
-        note.body = RichDoc::from_markdown(&format!(
-            "*It did not write its findings into this note; this is what it said as it worked.*\n\n\
-             {reply}"
-        ));
-        note.updated_at = jiff::Timestamp::now();
-        vault.overwrite_note(&note)?;
-        Ok(vec![Change {
-            kind: Kind::Note,
-            op: Op::Updated,
-            id: Some(note.id.to_string()),
-            ids: Vec::new(),
-            origin: Some("assistant".to_string()),
-        }])
+        salvage(
+            vault,
+            job,
+            reply,
+            &placeholder(question),
+            "It did not write its findings into this note; this is what it said as it worked.",
+        )
     }
 }
 
-/// The question and the brief of a research job.
-fn ask(job: &Job) -> (&str, &str) {
+/// The note a job writes into: the one the last attempt made, if it is still
+/// there, and otherwise a new one called `title`, tagged `tag` and holding
+/// `placeholder` until the model writes something better. Recorded in the
+/// job's outputs at once -- the job is the caller's to save -- and returned
+/// with the changes that tell open windows about it.
+///
+/// Shared by research and projects, which differ in the words and the tag and
+/// in nothing else. A note somebody has since deleted is forgotten, and a new
+/// one made, rather than a job that writes into nothing.
+pub(super) fn working_note(
+    vault: &Vault,
+    job: &mut Job,
+    title: &str,
+    tag: &str,
+    placeholder: &str,
+) -> karmayoga_core::Result<(NoteId, Vec<Change>)> {
+    let mut changes = Vec::new();
+    let existing = match job.note_id() {
+        Some(id) => match vault.note(id) {
+            Ok(note) => Some(note.id),
+            Err(Error::NotFound { .. }) => {
+                job.outputs.retain(|output| output != &JobOutput::Note { note_id: id });
+                None
+            }
+            Err(e) => return Err(e),
+        },
+        None => None,
+    };
+    let note_id = match existing {
+        Some(id) => id,
+        None => {
+            let mut note = Note::written_by(NoteOrigin::Assistant, title, placeholder);
+            note.tags = vec![tag.to_string()];
+            vault.save_note(&note, None)?;
+            job.add_note(note.id);
+            changes.push(Change {
+                kind: Kind::Note,
+                op: Op::Created,
+                id: Some(note.id.to_string()),
+                ids: Vec::new(),
+                origin: Some("assistant".to_string()),
+            });
+            note.id
+        }
+    };
+    Ok((note_id, changes))
+}
+
+/// The turn is over: if the model never wrote in the note it was given, what
+/// it said as it worked goes there instead, under `caption`, so that a job is
+/// never "done" over a placeholder. `placeholder` is what the note held when
+/// it was made.
+///
+/// A note the model went on writing in is the work, and is left alone. A reply
+/// with nothing in it fails the job, and so does a note deleted while it
+/// worked.
+pub(super) fn salvage(
+    vault: &Vault,
+    job: &Job,
+    reply: &str,
+    placeholder: &str,
+    caption: &str,
+) -> karmayoga_core::Result<Vec<Change>> {
+    let Some(id) = job.note_id() else { return Ok(Vec::new()) };
+    let mut note = match vault.note(id) {
+        Ok(note) => note,
+        Err(Error::NotFound { .. }) => {
+            return Err(Error::Invalid(
+                "the note it was writing in was deleted while it worked".into(),
+            ));
+        }
+        Err(e) => return Err(e),
+    };
+
+    let waiting = RichDoc::from_markdown(placeholder).plain_text();
+    if note.body.plain_text().trim() != waiting.trim() {
+        return Ok(Vec::new());
+    }
+
+    // It never wrote anything up. What it said as it worked -- every step's
+    // prose, not only the last word -- is then the only place what it
+    // found is written down, and the conversation that asked is answered
+    // from the note, so it goes there rather than being lost. Better than
+    // a job that is "done" over a placeholder.
+    let reply = reply.trim();
+    if reply.is_empty() {
+        return Err(Error::Invalid("it finished without writing anything up".into()));
+    }
+    note.body = RichDoc::from_markdown(&format!("*{caption}*\n\n{reply}"));
+    note.updated_at = jiff::Timestamp::now();
+    vault.overwrite_note(&note)?;
+    Ok(vec![Change {
+        kind: Kind::Note,
+        op: Op::Updated,
+        id: Some(note.id.to_string()),
+        ids: Vec::new(),
+        origin: Some("assistant".to_string()),
+    }])
+}
+
+/// The question and the brief of a research job, or a project's goal and
+/// brief.
+pub(super) fn ask(job: &Job) -> (&str, &str) {
     match &job.kind {
         JobKind::Research { question, brief } => (question.as_str(), brief.as_str()),
         JobKind::Task { title, .. } => (title.as_str(), ""),
+        JobKind::Watch { what, .. } => (what.as_str(), ""),
+        JobKind::Project { goal, brief } => (goal.as_str(), brief.as_str()),
     }
 }
 
 /// What its note is called until the model gives it a better name: the
 /// question, cut to the length a thread title is.
-fn note_title(question: &str) -> String {
+pub(super) fn note_title(question: &str) -> String {
     let title = Conversation::title_from(question);
     if title.is_empty() { "Research".to_string() } else { title }
 }

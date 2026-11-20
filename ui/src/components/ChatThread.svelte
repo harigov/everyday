@@ -163,29 +163,48 @@
   // says nothing about the thing the person is waiting on. Once the job is
   // known the card is replaced by the job itself, which moves as it works and
   // can be cancelled. Until it is known the plain card stands, so a thread
-  // never has a call with nothing drawn for it.
+  // never has a call with nothing drawn for it. `start_watch` and
+  // `start_project` are the same: a watch's card says when it next looks.
   //
   // The call and the job are tied by the id the call's result names, when it
-  // names one, and otherwise by the question: the job is the newest one this
+  // names one, and otherwise by the words: the job is the newest one this
   // conversation asked with those words. Asking the same thing twice is two
   // calls and two jobs, so each call takes the newest job not already taken,
   // newest call first.
 
-  const RESEARCH = 'start_research'
+  /** The calls that start a job: the kind each makes, and the argument that says what it is for. */
+  const STARTERS: Record<string, { type: Job['kind']['type']; field: string }> = {
+    start_research: { type: 'research', field: 'question' },
+    start_watch: { type: 'watch', field: 'what' },
+    start_project: { type: 'project', field: 'goal' },
+  }
 
-  /** The question a `start_research` call was made with. */
-  function questionOf(args: unknown): string {
+  const startsJob = (name: string) => Object.hasOwn(STARTERS, name)
+
+  /** The words a job-starting call was made with. */
+  function wordsOf(name: string, args: unknown): string {
     if (typeof args !== 'object' || args === null) return ''
-    const q = (args as { question?: unknown }).question
-    return typeof q === 'string' ? q.trim() : ''
+    const words = (args as Record<string, unknown>)[STARTERS[name]?.field ?? '']
+    return typeof words === 'string' ? words.trim() : ''
   }
 
-  /** Whether a job is research on exactly this question. */
-  function asks(job: Job, question: string): boolean {
-    return job.kind.type === 'research' && job.kind.question.trim() === question
+  /** Whether a job is of the kind this call starts, and about exactly these words. */
+  function asks(job: Job, name: string, words: string): boolean {
+    const kind = job.kind
+    if (kind.type !== STARTERS[name]?.type) return false
+    switch (kind.type) {
+      case 'research':
+        return kind.question.trim() === words
+      case 'watch':
+        return kind.what.trim() === words
+      case 'project':
+        return kind.goal.trim() === words
+      default:
+        return false
+    }
   }
 
-  /** Each finished `start_research` call on screen, by call id, with its job. */
+  /** Each finished job-starting call on screen, by call id, with its job. */
   const startedJobs = $derived.by(() => {
     const found = new Map<string, Job>()
     const conversation = agent.conversationId
@@ -194,7 +213,7 @@
     if (mine.length === 0) return found
     const calls = agent.turns
       .flatMap((t) => t.cards)
-      .filter((c) => c.name === RESEARCH && c.state === 'done')
+      .filter((c) => startsJob(c.name) && c.state === 'done')
       .reverse()
     const taken = new Set<string>()
     for (const card of calls) {
@@ -206,8 +225,8 @@
     }
     for (const card of calls) {
       if (found.has(card.callId)) continue
-      const question = questionOf(card.arguments)
-      const job = mine.find((j) => !taken.has(j.id) && asks(j, question))
+      const words = wordsOf(card.name, card.arguments)
+      const job = mine.find((j) => !taken.has(j.id) && asks(j, card.name, words))
       if (job) {
         taken.add(job.id)
         found.set(card.callId, job)
@@ -216,10 +235,10 @@
     return found
   })
 
-  const hasResearch = $derived(agent.turns.some((t) => t.cards.some((c) => c.name === RESEARCH)))
+  const hasResearch = $derived(agent.turns.some((t) => t.cards.some((c) => startsJob(c.name))))
   const researchDone = $derived(
     agent.turns.reduce(
-      (n, t) => n + t.cards.filter((c) => c.name === RESEARCH && c.state === 'done').length,
+      (n, t) => n + t.cards.filter((c) => startsJob(c.name) && c.state === 'done').length,
       0,
     ),
   )

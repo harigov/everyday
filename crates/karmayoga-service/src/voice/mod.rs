@@ -116,6 +116,19 @@ pub enum VoiceInput {
     /// the conversation already, or need not be -- so the person can talk
     /// over it, and what they say is the first turn.
     Say(String),
+    /// An update from background work -- a watch, a project -- to be said at
+    /// the session's next chance: once nobody is talking, nothing of the
+    /// session's own is playing or about to, no turn is running and no
+    /// question is waiting, and a beat after the last thing played. Never
+    /// over the person and never over a reply.
+    ///
+    /// Muting does not hold it: muting stops the listening, and the session's
+    /// own speech goes on. It does wait, rather than being dropped, while the
+    /// conversation is ending (the goodbye is the last word). Several waiting
+    /// are said together, led by "An update:", and past a few the rest are
+    /// counted ("And 2 more."). Talked over, it is cut like any speech and not
+    /// said again. Not a turn. See [`crate::reach`].
+    Update(String),
     /// End the session.
     Stop,
 }

@@ -144,8 +144,8 @@ pub use account::{
     EndpointSecurity, Identity, Permission as MailPermission, Preset as AccountPreset, Services,
 };
 pub use agent::{
-    AgentSettings, Conversation, Memory, MemoryOrigin, Message, Role as MessageRole, Skill,
-    ToolCall,
+    AgentSettings, Conversation, Memory, MemoryOrigin, Message, QuietHours, Role as MessageRole,
+    Skill, ToolCall,
 };
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
@@ -166,7 +166,7 @@ pub use id::{
     ScreenSpanId, SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, TxnId,
     VoiceprintId, WorkoutId, WritingId,
 };
-pub use job::{Job, JobKind, JobOutput, JobStatus};
+pub use job::{Job, JobKind, JobOutput, JobRules, JobStatus, JobUpdate, Observed, Probe};
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
     LogEntry, LogEvent, Progress, Verbs,

@@ -110,6 +110,27 @@ pub fn tool_phrase(tool: &str) -> &'static str {
     }
 }
 
+/// What leads updates from background work -- a watch, a project -- when
+/// they are said in the session's own voice: it says they are updates, so
+/// that "the build passed" is not taken for the end of the reply before it.
+/// `count` is how many are being said together.
+pub fn update_lead(count: usize) -> &'static str {
+    match count {
+        0 | 1 => "An update:",
+        2 => "A couple of updates:",
+        _ => "A few updates:",
+    }
+}
+
+/// What is said after the updates that were read out, when there were more
+/// than a few: how many were not, so that none is dropped without a word.
+pub fn more_updates(count: usize) -> String {
+    match count {
+        1 => "And one more.".to_string(),
+        n => format!("And {n} more."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +209,25 @@ mod tests {
         ] {
             assert!(!is_stop_word(no), "{no}");
         }
+    }
+
+    // ---- updates ------------------------------------------------------------
+
+    #[test]
+    fn updates_are_led_by_how_many_there_are() {
+        assert_eq!(update_lead(1), "An update:");
+        assert_eq!(update_lead(2), "A couple of updates:");
+        assert_eq!(update_lead(3), "A few updates:");
+        assert_eq!(update_lead(8), "A few updates:");
+        // Nothing to say never gets here, but is not nonsense if it does.
+        assert_eq!(update_lead(0), "An update:");
+    }
+
+    #[test]
+    fn updates_left_unread_are_counted() {
+        assert_eq!(more_updates(1), "And one more.");
+        assert_eq!(more_updates(2), "And 2 more.");
+        assert_eq!(more_updates(12), "And 12 more.");
     }
 
     // ---- tool phrases -----------------------------------------------------

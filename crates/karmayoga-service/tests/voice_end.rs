@@ -239,6 +239,7 @@ async fn a_typed_turn_is_not_offered_it() {
         reach: Reach::default(),
         job: None,
         follow_up: None,
+        about_job: None,
         max_steps: None,
         tier: None,
     })

@@ -72,7 +72,10 @@ impl Held {
             VoiceInput::Screen(screen) => self.screen = Some(screen),
             VoiceInput::Stop => self.stop = true,
             // The desktop never asks the session to say something of its own.
-            VoiceInput::Audio(_) | VoiceInput::Played { .. } | VoiceInput::Say(_) => {}
+            VoiceInput::Audio(_)
+            | VoiceInput::Played { .. }
+            | VoiceInput::Say(_)
+            | VoiceInput::Update(_) => {}
         }
     }
 

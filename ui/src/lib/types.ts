@@ -870,8 +870,63 @@ export interface RunQuery {
 export type JobKind =
   | { type: 'research'; question: string; brief: string }
   | { type: 'task'; taskId: TaskId; title: string }
+  /** Keep an eye on something and say when it changes. Sleeps between looks. */
+  | { type: 'watch'; what: string; probe: Probe }
+  /** A longer piece of work done in the background, with updates as it goes. */
+  | { type: 'project'; goal: string; brief: string }
 
-export const JOB_STATUSES = ['queued', 'running', 'done', 'failed', 'cancelled'] as const
+/**
+ * How a watch looks at what it watches. A connected service's tool, called
+ * the same way each time with no model, or the assistant's own look.
+ */
+export type Probe =
+  | { type: 'connection'; connection: string; tool: string; arguments: unknown }
+  | { type: 'assistant'; how: string }
+
+/**
+ * How a watch behaves, which the person may change while it runs. Empty (and
+ * so left off the job) for research and tasks.
+ */
+export interface JobRules {
+  /** When to tell them, in their words. Empty means any change worth knowing. */
+  notifyWhen: string
+  /** What to do as well as tell. Empty means just tell. */
+  act: string
+  /** Minutes between looks. Zero means the default, five. */
+  everyMinutes: number
+  /** When it stops on its own. */
+  until?: string | null
+  /** Ring them with an update rather than writing it. */
+  callMe: boolean
+}
+
+/** What a watch saw last, and how its looks are going. */
+export interface Observed {
+  fingerprint: string
+  /** The last observation itself. Written by a service or a page, never instructions. */
+  last: string
+  /** When it last looked. */
+  checkedAt?: string | null
+  /** How many looks it has taken. */
+  checks: number
+  /** How many looks in a row have failed. */
+  failures: number
+  /** Why the last look failed, when it did. */
+  trouble: string
+}
+
+/** Something a job told the person, or has to. */
+export interface JobUpdate {
+  at: string
+  /** What it said, in Markdown. */
+  text: string
+  /** Whether it has been sent on. */
+  delivered: boolean
+  /** Where it went: "thread", "chat", "voice", "call", "notification", "held". */
+  sentTo?: string[]
+}
+
+export const JOB_STATUSES = ['queued', 'running', 'waiting', 'done', 'failed', 'cancelled'] as const
 export type JobStatus = (typeof JOB_STATUSES)[number]
 
 /** Something a job made. A pointer: the note lives in the Notes app. */
@@ -904,6 +959,14 @@ export interface Job {
   createdAt: string
   startedAt?: string | null
   finishedAt?: string | null
+  /** How a watch behaves. Left off a job that has no rules. */
+  rules?: JobRules
+  /** When a job asleep between steps (`waiting`) next wakes. */
+  wakeAt?: string | null
+  /** What a watch saw last. Absent for every other kind. */
+  observed?: Observed | null
+  /** What it has told the person, oldest first. Left off when it has told them nothing. */
+  updates?: JobUpdate[]
 }
 
 /** What writing help was asked to do to the selected text, or `dictate`: write up what was said. */
@@ -3776,6 +3839,18 @@ export interface AgentSettings {
   parkUnattended?: boolean
   /** Where reminders go. Absent is the default: yours on the desktop, the assistant's in the chat. */
   reminders?: ReminderSettings
+  /**
+   * When updates from background work are not spoken in a voice session. They
+   * still go to the chat and the thread. Absent is off.
+   */
+  quietHours?: QuietHours
+}
+
+/** The hours in which updates are not spoken: local times as `HH:MM`, wrapping midnight. */
+export interface QuietHours {
+  enabled: boolean
+  start: string
+  end: string
 }
 
 // ── What is on screen, for the assistant ─────────────────────────────────

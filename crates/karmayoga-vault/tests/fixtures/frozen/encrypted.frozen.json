@@ -84,6 +84,11 @@
         "parkUnattended": false,
         "proposals": {},
         "quickAsks": {},
+        "quietHours": {
+          "enabled": false,
+          "end": "07:00",
+          "start": "22:00"
+        },
         "remember": true,
         "reminders": {
           "assistants": "chat",

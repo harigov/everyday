@@ -14,12 +14,116 @@
 // in Settings cannot disagree about where a job stands.
 
 import { api } from './api'
+import { daysBetween, formatMinutes, friendlyDate, plural, timeOfDay } from './format'
 import { app, handle, isLocked } from './state.svelte'
+import { isoDate } from './time'
 import { VaultError } from './types'
-import type { ConversationId, Job, JobId } from './types'
+import type { ConversationId, Job, JobId, JobKind, JobUpdate } from './types'
 
 /** How many jobs the list holds. A log, not a database. */
 const PAGE = 100
+
+// ── What a card says about a job that keeps going ────────────────────────
+//
+// Pure, and apart from the store below, so the words a watch's card is made
+// of -- "Next look in 3 min", "Until 6:40 PM" -- are checked without drawing
+// one. Every function that reads the clock takes it as an argument.
+
+/** How often a watch looks when its rules say nothing. `DEFAULT_EVERY_MINUTES` in the core. */
+export const DEFAULT_EVERY_MINUTES = 5
+
+/**
+ * Whether a job is still going: queued, running, or asleep between steps. The
+ * opposite of finished. A watch spends nearly all its life `waiting`, and
+ * everything keyed on "queued or running" has to count it.
+ */
+export function isLive(job: Pick<Job, 'status'>): boolean {
+  return job.status === 'queued' || job.status === 'running' || job.status === 'waiting'
+}
+
+/** Whether a job is a watch: one that looks, sleeps and looks again. */
+export function isWatch(job: Pick<Job, 'kind'>): boolean {
+  return job.kind.type === 'watch'
+}
+
+/** A job's kind narrowed to a watch, or `null`. */
+export function watchOf(job: Pick<Job, 'kind'>): Extract<JobKind, { type: 'watch' }> | null {
+  return job.kind.type === 'watch' ? job.kind : null
+}
+
+/**
+ * Whether a watch is looking at this moment: its time has come and it has
+ * not yet written down what it saw. A fresh watch is due at once.
+ */
+export function isLookingNow(job: Job, now = Date.now()): boolean {
+  if (job.status === 'running') return true
+  if (job.status !== 'waiting') return false
+  const wake = job.wakeAt ? Date.parse(job.wakeAt) : NaN
+  return !Number.isNaN(wake) && wake <= now
+}
+
+/** "Next look in 3 min", "Next look in 1h 30m", or "Looking now" once it is due. */
+export function nextLookText(wakeAt: string | null | undefined, now = Date.now()): string {
+  const wake = wakeAt ? Date.parse(wakeAt) : NaN
+  if (Number.isNaN(wake)) return 'Waiting for its next look'
+  const ms = wake - now
+  if (ms <= 0) return 'Looking now'
+  if (ms < 60_000) return 'Next look in under a minute'
+  const minutes = Math.round(ms / 60_000)
+  return `Next look in ${minutes < 60 ? `${minutes} min` : formatMinutes(minutes)}`
+}
+
+/** "5 min", "2 hours": how far apart looks are, for "Looks every 5 min". */
+export function everyText(minutes: number | undefined): string {
+  const n = minutes && minutes > 0 ? minutes : DEFAULT_EVERY_MINUTES
+  if (n < 60) return `${n} min`
+  return n % 60 === 0 ? plural(n / 60, 'hour') : formatMinutes(n)
+}
+
+/** "Until 6:40 PM" today, "Until tomorrow 6:40 PM", or the date and the time. */
+export function untilText(iso: string | null | undefined, now = new Date()): string {
+  const at = iso ? new Date(iso) : null
+  if (!at || Number.isNaN(at.getTime())) return ''
+  const time = timeOfDay(at)
+  const ahead = -daysBetween(at, now)
+  if (ahead === 0) return `Until ${time}`
+  if (ahead === 1) return `Until tomorrow ${time}`
+  return `Until ${friendlyDate(isoDate(at), now)}, ${time}`
+}
+
+/** What a watch has been told to tell them, as a card says it. */
+export function notifyText(notifyWhen: string | undefined): string {
+  return notifyWhen?.trim() || 'any change worth knowing'
+}
+
+/** Why the last look failed, in a line: "The last 2 looks failed: no answer". */
+export function troubleText(failures: number, trouble: string): string {
+  const lead = failures === 1 ? 'The last look failed' : `The last ${failures} looks failed`
+  return trouble.trim() ? `${lead}: ${trouble.trim()}` : lead
+}
+
+/** Where an update went, for the card: "Sent to your chat and the thread". */
+export function sentToText(update: Pick<JobUpdate, 'delivered' | 'sentTo'>): string {
+  if (!update.delivered) return 'Not sent yet'
+  const labels: Record<string, string> = {
+    thread: 'the thread',
+    chat: 'your chat',
+    voice: 'the voice session',
+    call: 'a call',
+    notification: 'a notification',
+  }
+  const places = (update.sentTo ?? []).filter((p) => p !== 'held').map((p) => labels[p] ?? p)
+  const parts: string[] = []
+  if (places.length > 0) {
+    const list =
+      places.length === 1
+        ? places[0]!
+        : `${places.slice(0, -1).join(', ')} and ${places[places.length - 1]}`
+    parts.push(`Sent to ${list}`)
+  }
+  if (update.sentTo?.includes('held')) parts.push('To be spoken when quiet hours end')
+  return parts.join(' · ')
+}
 
 class JobsState {
   /** The most recent jobs, newest first. */
@@ -52,9 +156,16 @@ class JobsState {
     return app.supportsJobs
   }
 
-  /** Jobs that are queued or running. */
+  /** Jobs that are still going: queued, running, or a watch asleep between looks. */
   get active(): Job[] {
-    return this.jobs.filter((j) => j.status === 'queued' || j.status === 'running')
+    return this.jobs.filter(isLive)
+  }
+
+  /** Watches that have not ended, soonest to look first. */
+  get watching(): Job[] {
+    return this.jobs
+      .filter((j) => isWatch(j) && isLive(j))
+      .sort((a, b) => (a.wakeAt ?? '').localeCompare(b.wakeAt ?? ''))
   }
 
   /** One job by id, from what is loaded. */
@@ -139,7 +250,7 @@ class JobsState {
     }
   }
 
-  /** Stop a queued or running job. Whatever it wrote is kept. */
+  /** Stop a job that is still going -- a watch stops looking. Whatever it wrote is kept. */
   async cancel(id: JobId): Promise<void> {
     try {
       this.#put(await api.cancelJob(id))

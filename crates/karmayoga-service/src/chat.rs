@@ -110,6 +110,20 @@ pub fn escape_markdown(text: &str) -> String {
     out
 }
 
+/// One message from the owner's chat, as [`Service::chat_turn_input`] runs it.
+pub struct ChatTurnInput {
+    pub via: Via,
+    pub conversation: ConversationId,
+    pub prompt: String,
+    /// Pictures sent with it, each with its name.
+    pub pictures: Vec<(Vec<u8>, String)>,
+    /// Files sent with it that are not pictures, each with its name.
+    pub documents: Vec<(Vec<u8>, String)>,
+    /// The background job the message is a reply to, when the owner replied
+    /// to one of its updates. See [`crate::agent::Turn::about_job`].
+    pub about_job: Option<karmayoga_core::JobId>,
+}
+
 /// The routine run a message to the owner comes from -- or the background job,
 /// whose finished answer is sent to the chat it was asked in the same way.
 ///
@@ -121,8 +135,14 @@ pub fn escape_markdown(text: &str) -> String {
 pub struct FromRun {
     pub routine: String,
     /// The run's transcript. `None` only for a run whose transcript could
-    /// not be saved, which then has nothing for a reply to carry on.
+    /// not be saved, which then has nothing for a reply to carry on -- and
+    /// for a background job's update, which is sent at once rather than in
+    /// turn with the chat (see [`ChatOutlet::post`]) and carries on nowhere:
+    /// a reply to it is routed by [`FromRun::job`] instead.
     pub conversation: Option<ConversationId>,
+    /// The background job the message is from, if it is one's: a reply to
+    /// it is then a turn about that job ([`crate::agent::Turn::about_job`]).
+    pub job: Option<karmayoga_core::JobId>,
 }
 
 /// A running link's way to the owner, for whatever is not a reply to them.
@@ -135,6 +155,12 @@ pub trait ChatOutlet: Send + Sync + 'static {
     /// Send `markdown` to the owner. `Err` says why it could not go -- the
     /// owner has not joined the bot's room yet, the server refused -- in
     /// words for the run log.
+    ///
+    /// A post that names no conversation (`from.conversation` is `None`)
+    /// and names a job -- a background job's update -- is sent at once, not
+    /// queued behind a turn or a call the chat is having: an update that
+    /// waited for the end of an hour-long call would be no update. A reply
+    /// to it is a turn about that job.
     fn post(&self, from: FromRun, markdown: String) -> BoxFuture<'static, Result<(), String>>;
 
     /// Put a tool call to the owner -- the same `kind`, `subject` and
@@ -687,6 +713,21 @@ impl Service {
         documents: Vec<(Vec<u8>, String)>,
         sink: Sink,
     ) -> CommandResult<Turned> {
+        let input =
+            ChatTurnInput { via, conversation, prompt, pictures, documents, about_job: None };
+        self.chat_turn_input(input, sink).await
+    }
+
+    /// [`Service::chat_turn_with_files`], with everything a chat can say about
+    /// the message in one place -- including which background job it is about,
+    /// when the owner sent it as a reply to one of the job's updates. See
+    /// [`ChatTurnInput`].
+    pub async fn chat_turn_input(
+        self: &Arc<Self>,
+        input: ChatTurnInput,
+        sink: Sink,
+    ) -> CommandResult<Turned> {
+        let ChatTurnInput { via, conversation, prompt, pictures, documents, about_job } = input;
         let vault = self.require()?;
         if pictures.len() > crate::pictures::MAX_PER_MESSAGE {
             return Err(crate::error::CommandError::new(
@@ -758,6 +799,7 @@ impl Service {
             reach: Reach::default(),
             job: None,
             follow_up: None,
+            about_job,
             max_steps: None,
             tier: None,
         })

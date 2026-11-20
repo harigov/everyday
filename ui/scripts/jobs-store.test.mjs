@@ -8,9 +8,10 @@
 // the note, the reload that must not be undone by an older one.
 //
 // Written against the mock's seed (a finished job asked from a conversation
-// and a failed one started by hand), and against its script, which is sped
-// up with `mockJobsTempo` so that a whole job takes under a second. Every
-// job started here is finished or cancelled before the file ends, so
+// and a failed one started by hand, a project still running, a watch asleep
+// between looks and one that has stopped), and against its script, which is
+// sped up with `mockJobsTempo` so that a whole job takes under a second.
+// Every job started here is finished or cancelled before the file ends, so
 // nothing is left to run behind the next assertion.
 
 import assert from 'node:assert/strict'
@@ -36,7 +37,7 @@ stubBrowser({
 })
 
 const {
-  modules: [jobsModule, stateModule, apiModule, mockJobs],
+  modules: [jobsModule, stateModule, apiModule, mockJobs, formatModule, timeModule],
   close,
 } = await load(
   [
@@ -44,10 +45,23 @@ const {
     '/src/lib/state.svelte.ts',
     '/src/lib/api.ts',
     '/src/lib/mock-jobs.ts',
+    '/src/lib/format.ts',
+    '/src/lib/time.ts',
   ],
   { svelte: true },
 )
-const { jobs } = jobsModule
+const {
+  jobs,
+  isLive,
+  isWatch,
+  isLookingNow,
+  nextLookText,
+  everyText,
+  untilText,
+  notifyText,
+  troubleText,
+  sentToText,
+} = jobsModule
 const { app } = stateModule
 const { api, onChange } = apiModule
 const { mockJobsTempo, mockStartResearch } = mockJobs
@@ -69,6 +83,12 @@ async function until(what, condition) {
 
 const ids = (list) => list.map((j) => j.id)
 
+// The seeded jobs that are still going: a project that is running and a watch
+// asleep between looks. Neither belongs to a script, so what a check about the
+// jobs it *started* wants is the live ones minus these.
+const SEEDED_LIVE = ['job-3', 'job-4']
+const live = () => ids(jobs.active).filter((id) => !SEEDED_LIVE.includes(id))
+
 // What the router would hear, to check the script says what it is doing.
 const changes = []
 onChange((change) => changes.push(change))
@@ -87,15 +107,19 @@ await first
 assert.equal(jobs.loading, false, 'loading settles back to false once the load lands')
 assert.deepEqual(
   ids(jobs.jobs),
-  ['job-1', 'job-2'],
-  'the mock has a finished job and a failed one, newest first',
+  ['job-3', 'job-4', 'job-1', 'job-5', 'job-2'],
+  'the mock has a running project, a watch asleep, a finished job, a stopped watch and a failed one',
 )
 assert.equal(jobs.unseen, 1, 'only the finished one has not been looked at')
 assert.equal(jobs.byId('job-1')?.status, 'done')
 assert.equal(jobs.byId('job-2')?.status, 'failed')
 assert.match(jobs.byId('job-2').reason, /503/, 'a failed job says why')
 assert.equal(jobs.byId('nowhere'), undefined)
-assert.deepEqual(jobs.active, [], 'nothing is queued or running')
+assert.deepEqual(
+  ids(jobs.active),
+  SEEDED_LIVE,
+  'the project is running and the watch is asleep, which is still going',
+)
 
 // ── forConversation ──────────────────────────────────────────────────
 
@@ -113,13 +137,17 @@ assert.deepEqual(jobs.forConversation(''), [], 'a job started by hand belongs to
 const hidden = await api.startResearch('Only the count should hear about this')
 await jobs.refreshCount()
 assert.equal(jobs.unseen, 2, 'the count moved')
-assert.equal(jobs.jobs.length, 2, 'and the list did not')
+assert.equal(jobs.jobs.length, 5, 'and the list did not')
 await api.cancelJob(hidden.id)
 
 // ── refresh ──────────────────────────────────────────────────────────
 
 await jobs.refresh()
-assert.deepEqual(ids(jobs.jobs), [hidden.id, 'job-1', 'job-2'], 'newest first')
+assert.deepEqual(
+  ids(jobs.jobs),
+  [hidden.id, 'job-3', 'job-4', 'job-1', 'job-5', 'job-2'],
+  'newest first',
+)
 assert.equal(jobs.byId(hidden.id).status, 'cancelled')
 assert.equal(jobs.unseen, 2)
 
@@ -140,7 +168,7 @@ assert.equal(jobs.unseen, 2)
   const newer = jobs.refresh()
   await Promise.all([older, newer])
   api.jobs = real
-  assert.equal(jobs.jobs.length, 3, 'the stale answer is dropped')
+  assert.equal(jobs.jobs.length, 6, 'the stale answer is dropped')
 }
 
 // ── startResearch ────────────────────────────────────────────────────
@@ -149,7 +177,7 @@ assert.equal(jobs.unseen, 2)
 mockJobsTempo(0.02)
 
 assert.equal(await jobs.startResearch('   '), null, 'an empty question starts nothing')
-assert.equal(jobs.jobs.length, 3)
+assert.equal(jobs.jobs.length, 6)
 
 const started = await jobs.startResearch('  What suits a small boat?  ', 'c-ask-1')
 assert.ok(started, 'it answers with the job')
@@ -158,7 +186,7 @@ assert.equal(started.kind.question, 'What suits a small boat?', 'trimmed')
 assert.equal(started.askedIn, 'c-ask-1')
 assert.equal(jobs.jobs[0].id, started.id, 'it goes to the top of the list at once')
 assert.deepEqual(ids(jobs.forConversation('c-ask-1')), [started.id])
-assert.deepEqual(ids(jobs.active), [started.id])
+assert.deepEqual(live(), [started.id])
 
 // It runs to its end by itself, and says what it is doing on the way.
 await until('the job starts', () => ['running', 'done'].includes(jobs.byId(started.id)?.status))
@@ -175,7 +203,7 @@ assert.equal(done.progress, 'Wrote up 3 sources')
 assert.equal(done.seen, false, 'finishing is news again')
 assert.equal(done.attempts, 1)
 assert.ok(done.startedAt && done.finishedAt)
-assert.deepEqual(jobs.active, [], 'a finished job is not active')
+assert.deepEqual(live(), [], 'a finished job is not active')
 
 // The note, which is where the findings are.
 const output = done.outputs[0]
@@ -232,7 +260,7 @@ assert.deepEqual(ids(jobs.forConversation('c-order')), [waiting.id, running.id],
 await until('the first starts', () => (jobs.byId(running.id)?.steps ?? 0) >= 1)
 assert.equal(jobs.byId(running.id).status, 'running')
 assert.equal(jobs.byId(waiting.id).status, 'queued', 'one job at a time: the second waits')
-assert.deepEqual(new Set(ids(jobs.active)), new Set([running.id, waiting.id]))
+assert.deepEqual(new Set(live()), new Set([running.id, waiting.id]))
 
 await jobs.cancel(running.id)
 const stopped = jobs.byId(running.id)
@@ -251,7 +279,7 @@ assert.equal(jobs.byId(running.id).status, 'cancelled')
 
 await jobs.cancel(waiting.id)
 assert.equal(jobs.byId(waiting.id).status, 'cancelled')
-assert.deepEqual(jobs.active, [])
+assert.deepEqual(live(), [])
 
 // Cancelling what is already over is the person's mistake, said once.
 app.error = null
@@ -259,6 +287,134 @@ await jobs.cancel(waiting.id)
 assert.match(app.error ?? '', /already cancelled/, 'refused, and reported')
 assert.equal(jobs.byId(waiting.id).status, 'cancelled', 'and nothing changed')
 app.error = null
+
+// ── watches and projects ─────────────────────────────────────────────
+
+// What still counts as going. A watch spends nearly all its life asleep, and
+// anything keyed on "queued or running" would have called it over.
+for (const [status, going] of [
+  ['queued', true],
+  ['running', true],
+  ['waiting', true],
+  ['done', false],
+  ['failed', false],
+  ['cancelled', false],
+]) {
+  assert.equal(isLive({ status }), going, `${status} is ${going ? '' : 'not '}live`)
+}
+
+const project = jobs.byId('job-3')
+assert.equal(project.kind.type, 'project')
+assert.equal(project.status, 'running')
+assert.equal(project.updates.length, 1, 'a project says what it has told them so far')
+assert.equal(project.updates[0].delivered, true)
+assert.deepEqual(project.updates[0].sentTo, ['thread', 'chat'])
+assert.equal(project.rules, undefined, 'a project has no rules, and the record leaves them off')
+
+const watch = jobs.byId('job-4')
+assert.equal(watch.kind.type, 'watch')
+assert.equal(watch.kind.probe.type, 'connection')
+assert.equal(watch.kind.probe.connection, 'GitHub')
+assert.equal(watch.status, 'waiting')
+assert.equal(isWatch(watch), true)
+assert.equal(isWatch(project), false)
+assert.equal(isWatch(jobs.byId('job-1')), false)
+assert.equal(watch.rules.notifyWhen, 'whenever a run finishes or fails')
+assert.ok(Date.parse(watch.rules.until) > Date.now(), 'it stops in the future')
+assert.ok(Date.parse(watch.wakeAt) > Date.now(), 'and next looks soon')
+assert.equal(isLookingNow(watch), false)
+assert.equal(isLookingNow(watch, Date.parse(watch.wakeAt) + 1), true, 'due is looking')
+assert.equal(watch.observed.checks, 14)
+assert.equal(watch.updates.length, 2)
+assert.ok(
+  Date.parse(watch.updates[0].at) < Date.parse(watch.updates[1].at),
+  'oldest first, so the last is the newest',
+)
+
+const ended = jobs.byId('job-5')
+assert.equal(ended.kind.probe.type, 'assistant')
+assert.equal(ended.status, 'done')
+assert.equal(ended.answered, true, 'a watch said what it had to as it went: nothing is owed')
+assert.equal(isLive(ended), false)
+
+// Only the ones still looking, soonest first.
+assert.deepEqual(ids(jobs.watching), ['job-4'], 'a watch that has stopped is not watching')
+
+// A watch asleep past its time has looked again by the time it is read.
+{
+  const realNow = Date.now
+  const before = await api.job('job-4')
+  Date.now = () => realNow() + 4 * 60_000
+  const after = await api.job('job-4')
+  Date.now = realNow
+  assert.equal(after.observed.checks, before.observed.checks + 1, 'one look was missed')
+  assert.ok(Date.parse(after.wakeAt) > Date.parse(before.wakeAt), 'and the next is later')
+  assert.equal(after.status, 'waiting', 'it is still asleep')
+}
+
+// The words a watch's card is made of.
+{
+  const at = Date.parse('2026-11-20T12:00:00Z')
+  assert.equal(nextLookText('2026-11-20T12:03:00Z', at), 'Next look in 3 min')
+  assert.equal(nextLookText('2026-11-20T12:00:20Z', at), 'Next look in under a minute')
+  assert.equal(nextLookText('2026-11-20T11:59:00Z', at), 'Looking now', 'past is looking')
+  assert.equal(nextLookText('2026-11-20T13:30:00Z', at), 'Next look in 1h 30m')
+  assert.equal(nextLookText(null, at), 'Waiting for its next look')
+
+  assert.equal(everyText(5), '5 min')
+  assert.equal(everyText(0), '5 min', 'zero is the default')
+  assert.equal(everyText(undefined), '5 min')
+  assert.equal(everyText(60), '1 hour')
+  assert.equal(everyText(120), '2 hours')
+  assert.equal(everyText(90), '1h 30m')
+
+  // The app's own clock and date words, so the test holds in any locale:
+  // what is checked is which day is said, not how this machine writes 18:40.
+  const clock = (d) => formatModule.timeOfDay(d)
+  const noon = new Date(2026, 10, 20, 12, 0)
+  const evening = new Date(2026, 10, 20, 18, 40)
+  const tomorrow = new Date(2026, 10, 21, 7, 5)
+  const later = new Date(2026, 10, 25, 9, 30)
+  assert.equal(untilText(evening.toISOString(), noon), `Until ${clock(evening)}`)
+  assert.equal(untilText(tomorrow.toISOString(), noon), `Until tomorrow ${clock(tomorrow)}`)
+  const day = formatModule.friendlyDate(timeModule.isoDate(later), noon)
+  assert.equal(untilText(later.toISOString(), noon), `Until ${day}, ${clock(later)}`)
+  assert.equal(untilText(null, noon), '', 'no end, nothing to say')
+  assert.equal(untilText('not a time', noon), '')
+
+  assert.equal(notifyText('when it finishes or fails'), 'when it finishes or fails')
+  assert.equal(notifyText('  '), 'any change worth knowing', 'nothing said is any change')
+  assert.equal(notifyText(undefined), 'any change worth knowing')
+  assert.equal(troubleText(1, ''), 'The last look failed')
+  assert.equal(
+    troubleText(3, 'no answer from GitHub'),
+    'The last 3 looks failed: no answer from GitHub',
+  )
+
+  assert.equal(sentToText({ delivered: false }), 'Not sent yet')
+  assert.equal(sentToText({ delivered: true, sentTo: ['chat'] }), 'Sent to your chat')
+  assert.equal(
+    sentToText({ delivered: true, sentTo: ['thread', 'chat', 'voice'] }),
+    'Sent to the thread, your chat and the voice session',
+  )
+  assert.equal(
+    sentToText({ delivered: true, sentTo: ['thread', 'held'] }),
+    'Sent to the thread · To be spoken when quiet hours end',
+  )
+  assert.equal(sentToText({ delivered: true }), '', 'sent nowhere in particular says nothing')
+}
+
+// Stopping a watch: it stops looking, and the card is over.
+await jobs.cancel('job-4')
+{
+  const ended = jobs.byId('job-4')
+  assert.equal(ended.status, 'cancelled')
+  assert.equal(ended.reason, 'cancelled by you')
+  assert.ok(!ended.wakeAt, 'asleep no longer')
+  assert.equal(ended.updates.length, 2, 'what it told them stays')
+  assert.equal(isLive(ended), false)
+  assert.deepEqual(ids(jobs.watching), [], 'nothing is watching now')
+}
 
 // ── markSeen ─────────────────────────────────────────────────────────
 

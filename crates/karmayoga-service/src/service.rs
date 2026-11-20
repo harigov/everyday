@@ -165,6 +165,9 @@ pub struct Service {
     pub(crate) chat: crate::chat::ChatHub,
     /// The background-job worker's session state. See [`crate::jobs`].
     pub(crate) jobs: crate::jobs::JobRuntime,
+    /// Where background updates go: the open voice sessions, and what is
+    /// held for them during quiet hours. See [`crate::reach`].
+    pub(crate) reach: crate::reach::ReachState,
     /// Money's session state: bank sign-ins in flight and one sync lock per
     /// link. See [`crate::money::MoneyRuntime`].
     pub(crate) money: crate::money::MoneyRuntime,
@@ -208,6 +211,7 @@ impl Service {
             meetings: MeetingRuntime::default(),
             chat: crate::chat::ChatHub::default(),
             jobs: crate::jobs::JobRuntime::default(),
+            reach: crate::reach::ReachState::default(),
             money: crate::money::MoneyRuntime::default(),
             weather_cache: WeatherCache::new(),
             listen_briefings: std::sync::Mutex::default(),
@@ -1463,6 +1467,7 @@ impl Service {
             reach: crate::agent::Reach::default(),
             job: None,
             follow_up: None,
+            about_job: None,
             max_steps: None,
             tier: None,
         })

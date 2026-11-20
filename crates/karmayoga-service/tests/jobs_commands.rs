@@ -143,6 +143,28 @@ fn failed(vault: &Vault, asked_in: Option<ConversationId>, note: Option<&Note>) 
     job
 }
 
+/// A watch asleep between looks, as the tool that starts one leaves it.
+fn watching(vault: &Vault, asked_in: Option<ConversationId>) -> Job {
+    let probe = karmayoga_core::Probe::Assistant { how: "Check the build".into() };
+    let job = Job::watch("CI on PR 412", probe, Default::default(), asked_in, Timestamp::now());
+    vault.save_job(&job).unwrap();
+    job
+}
+
+const GOAL: &str = "Plan a week in Lisbon";
+
+/// A project that finished, with the note it wrote if `note` is given.
+fn finished_project(vault: &Vault, asked_in: Option<ConversationId>, note: Option<&Note>) -> Job {
+    let mut job = Job::project(GOAL, "Two adults, May.", asked_in);
+    job.begin();
+    if let Some(note) = note {
+        job.add_note(note.id);
+    }
+    job.finish("Three days drafted.");
+    vault.save_job(&job).unwrap();
+    job
+}
+
 fn write_up(vault: &Vault) -> Note {
     let note = Note::written("Heat pumps for old houses", "Air-to-water suits solid walls.");
     vault.save_note(&note, None).unwrap();
@@ -413,6 +435,79 @@ async fn a_running_job_is_cancelled_before_it_is_deleted() {
     assert!(vault.job(job.id).is_err());
 }
 
+#[tokio::test]
+async fn a_watch_asleep_between_looks_can_be_cancelled_and_says_who() {
+    let (svc, vault, events, _dir) = service();
+    let watch = watching(&vault, None);
+    assert_eq!(status_of(&vault, watch.id), "waiting");
+
+    let cancelled = call(&svc, "cancel_job", json!({ "id": watch.id.to_string() })).await;
+
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["reason"], "cancelled by you");
+    assert_eq!(status_of(&vault, watch.id), "cancelled");
+    let changes = events.take();
+    assert_eq!((changes[0].kind, changes[0].op), (Kind::Job, Op::Updated));
+}
+
+#[tokio::test]
+async fn a_watch_asleep_between_looks_can_be_deleted_without_cancelling_it_first() {
+    let (svc, vault, events, _dir) = service();
+    let transcript = Conversation::for_job(JobId::new(), "CI on PR 412");
+    vault.save_conversation(&transcript).unwrap();
+    let mut watch = watching(&vault, None);
+    watch.conversation_id = Some(transcript.id);
+    vault.save_job(&watch).unwrap();
+
+    call(&svc, "delete_job", json!({ "id": watch.id.to_string() })).await;
+
+    assert!(vault.job(watch.id).is_err(), "gone");
+    assert!(vault.conversation(transcript.id).is_err(), "and its transcript with it");
+    let changes = events.take();
+    let deleted = changes.iter().find(|c| c.kind == Kind::Job).expect("a job change");
+    assert_eq!(deleted.op, Op::Deleted);
+}
+
+#[tokio::test]
+async fn a_watch_is_not_answered_and_the_refusal_says_why() {
+    let (svc, vault, events, _dir) = service();
+    let asking = conversation(&vault);
+    let watch = watching(&vault, Some(asking.id));
+    // Even one that ended: what it had to say it said as it went.
+    let mut ended = watching(&vault, Some(asking.id));
+    ended.finish("I've stopped watching: the 8 hours are up.");
+    vault.save_job(&ended).unwrap();
+
+    for job in [&watch, &ended] {
+        let e = fails(&svc, "answer_job", json!({ "id": job.id.to_string() })).await;
+        assert_eq!(e.code, "invalid");
+        assert!(e.message.contains("watch"), "{}", e.message);
+    }
+    assert!(system_lines(&vault, asking.id).is_empty(), "nothing was said in the thread");
+    assert!(events.take().is_empty(), "a refusal announces nothing");
+}
+
+#[tokio::test]
+async fn a_watch_that_ended_owes_the_conversation_nothing() {
+    // An endpoint nothing listens on: any attempt to ask the model would fail.
+    let (svc, vault, events, _dir) = service_with_model("http://127.0.0.1:1/v1");
+    let asking = conversation(&vault);
+    let mut done = watching(&vault, Some(asking.id));
+    done.finish("I've stopped watching: it merged.");
+    vault.save_job(&done).unwrap();
+    let mut failed = watching(&vault, Some(asking.id));
+    failed.fail("the connection stopped answering");
+    vault.save_job(&failed).unwrap();
+
+    for job in [&done, &failed] {
+        answer::answer(&svc, &vault, job.id).await.unwrap();
+        answer::report_failure(&svc, &vault, job.id).await.unwrap();
+        assert!(!vault.job(job.id).unwrap().answered, "left as it was");
+    }
+    assert!(system_lines(&vault, asking.id).is_empty());
+    assert!(events.take().is_empty());
+}
+
 // ---- answering again ---------------------------------------------------------------
 
 #[tokio::test]
@@ -508,6 +603,78 @@ async fn a_finished_job_is_answered_in_the_conversation_that_asked_and_marked_so
     assert_eq!(job_change.origin.as_deref(), Some("assistant"));
 }
 
+#[tokio::test]
+async fn a_finished_project_is_answered_in_the_conversation_that_asked_as_a_project() {
+    let model = fake_model("Three days are drafted; you pick the hotel.").await;
+    let (svc, vault, _events, _dir) = service_with_model(&model.endpoint);
+    let asking = conversation(&vault);
+    let note = write_up(&vault);
+    let job = finished_project(&vault, Some(asking.id), Some(&note));
+
+    answer::answer(&svc, &vault, job.id).await.unwrap();
+
+    let lines = system_lines(&vault, asking.id);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with(&format!("Project finished: «{GOAL}»")), "{}", lines[0]);
+    let located = "The result is in the note «Heat pumps for old houses»";
+    assert!(lines[0].contains(located), "{}", lines[0]);
+    assert!(lines[0].contains(&note.id.to_string()), "{}", lines[0]);
+    assert!(lines[0].contains("how it went"), "not asked to answer a question: {}", lines[0]);
+    let last = vault.messages(asking.id).unwrap().pop().unwrap();
+    assert_eq!(last.role, MessageRole::Assistant);
+    assert_eq!(last.content, "Three days are drafted; you pick the hotel.");
+    assert!(vault.job(job.id).unwrap().answered);
+}
+
+#[tokio::test]
+async fn a_projects_answer_for_a_chat_names_the_job_so_a_reply_is_about_it() {
+    let model = fake_model("Three days are drafted.").await;
+    let (svc, vault, _events, _dir) = service_with_model(&model.endpoint);
+    let link = ChatLinkId::new();
+    let outlet = Arc::new(Posts::default());
+    svc.open_chat_outlet(link, outlet.clone());
+    let asking = chat_conversation(&vault, link, "!room:test");
+    let job = finished_project(&vault, Some(asking.id), None);
+
+    answer::answer(&svc, &vault, job.id).await.unwrap();
+
+    let sent = outlet.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].1, "Three days are drafted.");
+    assert_eq!(
+        sent[0].0,
+        FromRun { routine: "Project".into(), conversation: Some(asking.id), job: Some(job.id) }
+    );
+}
+
+#[tokio::test]
+async fn a_failed_project_tells_the_conversation_that_asked_as_a_project() {
+    let (svc, vault, _events, _dir) = service();
+    let link = ChatLinkId::new();
+    let outlet = Arc::new(Posts::default());
+    svc.open_chat_outlet(link, outlet.clone());
+    let asking = chat_conversation(&vault, link, "!room:test");
+    let mut job = Job::project(GOAL, "", Some(asking.id));
+    job.begin();
+    job.fail("it was still going after 90 minutes and was stopped");
+    vault.save_job(&job).unwrap();
+
+    answer::report_failure(&svc, &vault, job.id).await.unwrap();
+
+    let lines = system_lines(&vault, asking.id);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        lines[0],
+        format!(
+            "The project «{GOAL}» could not finish: it was still going after 90 minutes and \
+             was stopped."
+        )
+    );
+    let sent = outlet.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0.job, Some(job.id), "a reply to the news is about the job");
+}
+
 /// A chat link's outlet, as a running relay registers one: writes down what
 /// it is asked to send and to confirm, and answers a confirmation as told.
 struct Posts {
@@ -586,7 +753,7 @@ async fn a_follow_up_in_a_chat_puts_a_delete_to_the_owner_there_and_does_it_on_y
     assert_eq!(confirms[0].2, "Book the dentist");
     assert_eq!(
         confirms[0].0,
-        FromRun { routine: "Research".into(), conversation: Some(asking.id) }
+        FromRun { routine: "Research".into(), conversation: Some(asking.id), job: Some(job.id) }
     );
     assert!(vault.task(task.id).is_err(), "asked, answered yes, and done");
     assert_eq!(outlet.sent().len(), 1, "and the answer still goes as one message");
@@ -629,8 +796,12 @@ async fn an_answer_for_a_chat_is_sent_to_that_chat_once() {
     assert_eq!(sent.len(), 1, "one complete message, not a stream of them");
     assert_eq!(sent[0].1, "Air-to-water units suit it best.");
     // Naming the asking thread is what has the relay carry on in it when the
-    // owner replies, so a follow-up question has the research behind it.
-    assert_eq!(sent[0].0, FromRun { routine: "Research".into(), conversation: Some(asking.id) });
+    // owner replies, so a follow-up question has the research behind it; and
+    // naming the job is what makes that reply a turn about it.
+    assert_eq!(
+        sent[0].0,
+        FromRun { routine: "Research".into(), conversation: Some(asking.id), job: Some(job.id) }
+    );
     assert!(vault.job(job.id).unwrap().answered);
 }
 

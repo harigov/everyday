@@ -254,8 +254,10 @@ pub enum HangUp {
 /// What the owner did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
-    /// They wrote something.
-    Said { chat: ChatId, text: String, at: Timestamp },
+    /// They wrote something. `reply_to` is the message of this side's they
+    /// sent it as a reply to, when they did -- which is how a reply to a
+    /// background job's update is known to be about that job.
+    Said { chat: ChatId, text: String, at: Timestamp, reply_to: Option<MessageRef> },
     /// They sent a picture, with `caption` -- what they wrote with it, or
     /// nothing. One picture each: a service that sends several at once
     /// sends them as several messages, and the relay gathers them up with

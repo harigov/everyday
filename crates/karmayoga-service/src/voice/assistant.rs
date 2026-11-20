@@ -78,6 +78,7 @@ impl VoiceAssistant for ServiceAssistant {
                 reach: Reach::default(),
                 job: None,
                 follow_up: None,
+                about_job: None,
                 max_steps: None,
                 tier: None,
             })
@@ -193,7 +194,7 @@ impl Service {
         // opened.
         let synthesiser = self.speech_synthesiser().await?;
         let live = self.live_transcription(Tuning::CONVERSATION).await?;
-        Ok(session::spawn(VoiceParts {
+        let link = session::spawn(VoiceParts {
             live,
             synthesiser,
             needs_a_click: if via.is_some() {
@@ -201,7 +202,14 @@ impl Service {
             } else {
                 super::confirm::NEEDS_A_CLICK
             },
-            assistant: Arc::new(ServiceAssistant { service: self.clone(), conversation, via }),
-        }))
+            assistant: Arc::new(ServiceAssistant {
+                service: self.clone(),
+                conversation,
+                via: via.clone(),
+            }),
+        });
+        // So background updates can be said in it. See `crate::reach`.
+        self.register_voice(conversation, via, link.input.clone());
+        Ok(link)
     }
 }

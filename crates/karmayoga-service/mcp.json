@@ -115,7 +115,7 @@
         "additionalProperties": false,
         "properties": {
           "id": {
-            "description": "Id of the job to stop, from job_status or start_research.",
+            "description": "Id of the job to stop, from job_status, start_research, start_project or start_watch.",
             "type": "string"
           },
           "reason": {
@@ -1939,7 +1939,7 @@
         "additionalProperties": false,
         "properties": {
           "id": {
-            "description": "Id of one job, from start_research or an earlier job_status. Omit for the most recent jobs.",
+            "description": "Id of one job, from start_research, start_project, start_watch or an earlier job_status. Omit for the most recent jobs.",
             "type": "string"
           },
           "limit": {
@@ -3681,6 +3681,27 @@
       "title": "Remember"
     },
     {
+      "domain": "jobs",
+      "effect": "write",
+      "name": "report_progress",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "description": "One or two plain sentences, as you would say them aloud: what is done and what comes next. No headings or lists.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Report progress"
+    },
+    {
       "domain": "mail",
       "effect": "outward",
       "name": "respond_to_invite",
@@ -4239,6 +4260,32 @@
     {
       "domain": "jobs",
       "effect": "write",
+      "name": "start_project",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "brief": {
+            "description": "What the project should know that it will not otherwise: who it is for and why, what they want or have ruled out, constraints such as dates, a budget and who else is involved, and what shape of result would help. Nothing else about this conversation reaches the project, so say it here. If there is truly nothing to add, say so in a few words.",
+            "type": "string"
+          },
+          "goal": {
+            "description": "What to get done, in their words where you have them: \"plan a week in Lisbon in late March\". One piece of work: the brief is where the context goes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "goal",
+          "brief"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Start project"
+    },
+    {
+      "domain": "jobs",
+      "effect": "write",
       "name": "start_research",
       "parameters": {
         "additionalProperties": false,
@@ -4261,6 +4308,65 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Start research"
+    },
+    {
+      "domain": "jobs",
+      "effect": "write",
+      "name": "start_watch",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "act": {
+            "description": "Something to do as well as tell, when there is something to tell: \"read the failing step's log and say why\". Leave out to only tell them. It runs with nobody there to confirm, so it cannot send or delete anything.",
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "description": "The tool's arguments, the same at every look. Leave out for a tool that takes none.",
+            "type": "object"
+          },
+          "call_me": {
+            "description": "Ring them with an update rather than only writing it, when they are not already talking to you. Only when they asked to be called.",
+            "type": "boolean"
+          },
+          "connection": {
+            "description": "The connection's name, as find_connection_tools gives it. Send with `tool`; or send `how` instead.",
+            "type": "string"
+          },
+          "every_minutes": {
+            "description": "Minutes between looks. Defaults to 5. A connection tool may look as often as every minute; a `how` look no more often than every 15. At most 1440.",
+            "type": "integer"
+          },
+          "hours": {
+            "description": "How long to keep watching, in hours. Defaults to 8; at most 168, a week. Set it when they say how long, working a time such as \"until tomorrow evening\" out from the clock in your instructions.",
+            "type": "integer"
+          },
+          "how": {
+            "description": "Only when no connection tool fits: how to look, in a sentence or two, with your own tools — \"Check my inbox for a reply from Sam about the lease\". Each look is then a model turn, so it looks at most every 15 minutes. Leave out when you give a connection and a tool.",
+            "type": "string"
+          },
+          "notify_when": {
+            "description": "When they want to hear about it, in their words: \"when it finishes or fails\", \"if the price drops below $200\", \"whenever Sam replies\". Always send this. Send an empty string for any change worth knowing.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The tool's name on that connection, as find_connection_tools gives it. It is called the same way at every look, so it must only read.",
+            "type": "string"
+          },
+          "what": {
+            "description": "What is being watched, in a few words, as you would say it back to them: \"CI on pull request 412\", \"the Lisbon flight price\". It is the card's title and what every update is about.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "what",
+          "notify_when"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Start watch"
     },
     {
       "domain": "purpose",
@@ -4769,6 +4875,51 @@
       "scope": "library",
       "sensitivity": "ordinary",
       "title": "Update item"
+    },
+    {
+      "domain": "jobs",
+      "effect": "write",
+      "name": "update_job",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "act": {
+            "description": "What to do as well as tell. An empty string stops anything extra. Leave out to keep what it was.",
+            "type": "string"
+          },
+          "call_me": {
+            "description": "true to ring them with an update when they are not already talking to you; false to stop ringing.",
+            "type": "boolean"
+          },
+          "every_minutes": {
+            "description": "How often to look, in minutes. The same limits as when it started.",
+            "type": "integer"
+          },
+          "hours": {
+            "description": "Keep going this many hours from now, 1 to 168: to carry on past the end it had, or to end sooner.",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Id of the job to change, from the jobs listed in your turn note, job_status or start_watch.",
+            "type": "string"
+          },
+          "look_now": {
+            "description": "true to look straight away rather than at the next look.",
+            "type": "boolean"
+          },
+          "notify_when": {
+            "description": "When they want to hear about it from now on, in their words: \"only if it fails\". An empty string goes back to any change worth knowing. Leave out to keep what it was.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Update job"
     },
     {
       "domain": "notes",

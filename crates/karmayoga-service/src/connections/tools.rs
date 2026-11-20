@@ -395,6 +395,151 @@ async fn call(vault: &Arc<Vault>, unattended: bool, arguments: &Value) -> Result
     Ok(answer)
 }
 
+// ── a watch's look ───────────────────────────────────────────────────────
+
+/// How much of a service's own error a failed look carries: it ends up on a
+/// card, and in a message to the person.
+const PROBE_ERROR_CHARS: usize = 400;
+
+/// Call one tool of a connected service for a watch, with nobody there: what
+/// `crate::jobs::watch` does for a [`Probe::Connection`], once per look.
+/// Returns what the service answered as one string -- its text, then its
+/// structured answer as compact JSON when it sent one that says more -- for
+/// the watch to fingerprint and compare with the last.
+///
+/// Stricter than [`call`], because nobody can be asked and nothing is
+/// reviewing what the service says. The connection must be switched on *and*
+/// allowed for background work, and the tool's policy -- the person's choice,
+/// or the tool's own hints, as [`judge`] decides it for an unattended call --
+/// must be Allow. A tool that would ask is refused with what to change,
+/// never run: a watch looks every few minutes for hours, and a tool that
+/// writes would do it every time. A tool the cache has not heard of is listed
+/// afresh once, as [`call`] does, and then judged like any other.
+///
+/// The call is made once, and is never made again after a dropped connection
+/// (`Hub::call` retries only a refused token), because a drop may come after
+/// the server acted. The watch's next look is the retry.
+///
+/// An error is a sentence for the card: why the look could not be taken. A
+/// service that answered `isError` is one, with its own words clipped.
+///
+/// [`Probe::Connection`]: karmayoga_core::Probe
+pub async fn probe(
+    vault: &Arc<Vault>,
+    connection: &str,
+    tool: &str,
+    arguments: &Value,
+) -> Result<String, String> {
+    let named = connection.trim();
+    let tool_name = tool.trim();
+    if named.is_empty() || tool_name.is_empty() {
+        return Err("a watch on a connection needs the connection's name and the tool's".into());
+    }
+    let tool_arguments = match arguments {
+        Value::Null => json!({}),
+        given @ Value::Object(_) => given.clone(),
+        _ => return Err("a watch's tool arguments must be an object, {} for none".into()),
+    };
+
+    let settings = read(vault, |v| v.connection_settings()).await?;
+    let Some(connection) = settings.find(named) else {
+        let among: Vec<&Connection> =
+            settings.connections.iter().filter(|c| allowed(c, true)).collect();
+        return Err(unknown_connection(named, &among));
+    };
+    if !connection.enabled {
+        return Err(format!("{} is switched off in {WHERE}.", connection.name));
+    }
+    if !allowed(connection, true) {
+        return Err(format!(
+            "{} is not allowed for scheduled runs and background jobs, which a watch is. It can \
+             be, in {WHERE}.",
+            connection.name
+        ));
+    }
+
+    let id = connection.id;
+    let states = read(vault, |v| v.connection_states()).await?;
+    let mut state = states.of(id);
+    let mut tried = None;
+    if !state.tools.iter().any(|t| t.name == tool_name) {
+        match super::hub().refresh(vault, id).await {
+            Ok(fresh) => state = fresh,
+            Err(e) => tried = Some(e),
+        }
+    }
+    let Some(remote) = state.tools.iter().find(|t| t.name == tool_name) else {
+        if let Some(e) = tried {
+            return Err(failed(&connection.name, &e));
+        }
+        return Err(format!(
+            "{} has no tool called \u{201c}{tool_name}\u{201d}. A watch needs one the service \
+             lists.",
+            connection.name
+        ));
+    };
+
+    // The same rule the gate applies, for an unattended turn that has heard
+    // no strangers -- so what a watch may run is exactly what a routine may
+    // run without asking -- and read again from the vault, since the person
+    // may have changed the tool's policy since the watch was made.
+    let asked = json!({
+        "connection": connection.name,
+        "tool": remote.name,
+        "arguments": tool_arguments,
+    });
+    match read(vault, move |v| Ok(judge(v, &asked, true, false))).await? {
+        Judgement::Run => {}
+        Judgement::Ask { .. } => {
+            return Err(format!(
+                "{tool_name} on {} would ask the person first, and nobody is there to answer a \
+                 watch. Set it to Allow in {WHERE}, or have the assistant look instead.",
+                connection.name
+            ));
+        }
+        Judgement::Refuse(_) => {
+            return Err(format!("{tool_name} on {} is switched off in {WHERE}.", connection.name));
+        }
+    }
+
+    let name = connection.name.clone();
+    let result = super::hub()
+        .call(vault, id, &remote.name, tool_arguments)
+        .await
+        .map_err(|e| failed(&name, &e))?;
+    if result.is_error {
+        return Err(format!(
+            "{name}: {tool_name} reported an error: {}",
+            clip_to(&result.text, PROBE_ERROR_CHARS)
+        ));
+    }
+    Ok(observation(&result.text, result.structured.as_ref()))
+}
+
+/// What one look at a tool came to: the text, then the structured answer as
+/// compact JSON when the server sent one -- cut at [`STRUCTURED_CHARS`] and
+/// said to be, because a watch compares looks and half a document would
+/// change on every cut. Left out when the text already is that JSON, which
+/// many servers send twice.
+fn observation(text: &str, structured: Option<&Value>) -> String {
+    let text = text.trim();
+    let mut seen = text.to_string();
+    let Some(structured) = structured else { return seen };
+    let repeats = serde_json::from_str::<Value>(text).is_ok_and(|parsed| &parsed == structured);
+    if repeats {
+        return seen;
+    }
+    let json = serde_json::to_string(structured).unwrap_or_default();
+    if json.is_empty() {
+        return seen;
+    }
+    if !seen.is_empty() {
+        seen.push_str("\n\n");
+    }
+    seen.push_str(&clip_to(&json, STRUCTURED_CHARS));
+    seen
+}
+
 /// `schema` as it is to be shown, and whether it was shown whole: one past
 /// [`SCHEMA_CHARS`] is an empty object schema instead.
 fn schema_within_cap(schema: &Value) -> (Value, bool) {
@@ -839,6 +984,59 @@ mod tests {
         // Not for a routine: refused before anything is connected.
         let e = call(&vault, true, &used("Linear", "list_issues", json!({}))).await.unwrap_err();
         assert!(e.contains("scheduled runs"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_watch_is_refused_what_it_may_not_run_before_anything_is_connected() {
+        let (vault, _dir) = vault();
+        let vault = Arc::new(vault);
+        let c = linear(&vault, true, false);
+        let none = json!({});
+
+        // A connection the person has not allowed for background work.
+        let e = probe(&vault, "Linear", "list_issues", &none).await.unwrap_err();
+        assert!(e.contains("background"), "{e}");
+
+        let mut open = vault.connection(c.id).unwrap();
+        open.unattended = true;
+        vault.save_connection(open).unwrap();
+
+        // A tool that would ask the person first: nobody is there to answer.
+        let e = probe(&vault, "linear", "create_issue", &none).await.unwrap_err();
+        assert!(e.contains("would ask") && e.contains("Allow"), "{e}");
+        // One the person switched off.
+        let e = probe(&vault, "Linear", "delete_issue", &none).await.unwrap_err();
+        assert!(e.contains("switched off"), "{e}");
+        // Arguments that are not an object, and names that are not there.
+        let e = probe(&vault, "Linear", "list_issues", &json!("x")).await.unwrap_err();
+        assert!(e.contains("must be an object"), "{e}");
+        let e = probe(&vault, "Slack", "x", &none).await.unwrap_err();
+        assert!(e.contains("no connection called") && e.contains("Linear"), "{e}");
+        assert!(probe(&vault, " ", "x", &none).await.is_err());
+
+        let mut off = vault.connection(c.id).unwrap();
+        off.enabled = false;
+        vault.save_connection(off).unwrap();
+        let e = probe(&vault, "Linear", "list_issues", &none).await.unwrap_err();
+        assert!(e.contains("switched off"), "{e}");
+    }
+
+    #[test]
+    fn a_look_is_the_text_then_the_structured_answer_unless_it_says_the_same() {
+        assert_eq!(observation("  3 open  ", None), "3 open");
+        let data = json!({ "open": 3 });
+        assert_eq!(observation("3 open", Some(&data)), "3 open\n\n{\"open\":3}");
+        assert_eq!(observation("", Some(&data)), "{\"open\":3}");
+        // The same JSON as the text, laid out for reading, is not sent twice.
+        let pretty = "{\n  \"open\": 3\n}";
+        assert_eq!(observation(pretty, Some(&data)), pretty);
+
+        // Cut, and said to be, rather than half a document.
+        let long = json!({ "rows": "x".repeat(STRUCTURED_CHARS) });
+        let seen = observation("rows", Some(&long));
+        assert!(seen.starts_with("rows\n\n{"), "{}", &seen[..20]);
+        assert!(seen.ends_with('\u{2026}'));
+        assert_eq!(seen.chars().count(), "rows\n\n".len() + STRUCTURED_CHARS + 1);
     }
 
     #[test]
