@@ -20,13 +20,14 @@
 
 use std::sync::Arc;
 
-use karmayoga_core::id::{AccountId, MailMessageId, ThreadId};
+use karmayoga_core::id::{AccountId, DraftId, MailMessageId, ThreadId};
 use karmayoga_core::mail::{MailWriting, VoiceLearning};
 use serde::{Deserialize, Serialize};
 
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::CommandResult;
+use crate::mailcheck::DraftCheckReport;
 use crate::mailvoicelearn::VoiceLearningView;
 use crate::mailwrite::{ImproveMode, ReplySuggestion, WrittenText};
 use crate::service::{Service, blocking};
@@ -224,6 +225,25 @@ async fn learn_from_replies(
     Ok(VoiceLearningView::from(&learning))
 }
 
+// ---- checks before sending ---------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckDraftArgs {
+    pub id: DraftId,
+}
+
+/// The checks Settings → Mail writing lists, put to a model about a draft as
+/// stored -- `crate::mailcheck::check_draft`. Asked by compose when Send is
+/// pressed; what it says only ever warns.
+async fn check_draft(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: CheckDraftArgs,
+) -> CommandResult<DraftCheckReport> {
+    crate::mailcheck::check_draft(&svc, args.id).await
+}
+
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "voice_learning", scope: Mail, effect: Read,
@@ -254,6 +274,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SaveMailWriting, returns: "MailWriting",
         signature: &[("writing", "MailWriting", true)],
         run: save_mail_writing,
+    },
+    command! {
+        name: "check_draft", scope: Mail, effect: Read,
+        args: CheckDraftArgs, returns: "DraftCheckReport",
+        signature: &[("id", "DraftId", true)],
+        run: check_draft,
     },
     command! {
         name: "needs_reply", scope: Mail, effect: Read,

@@ -50,6 +50,34 @@ impl Vault {
         self.with_agent(|a| a.put_settings(settings))
     }
 
+    /// Add `site` to the websites the assistant may open without asking --
+    /// see [`crate::agent::sites`] -- and answer with the settings as stored.
+    /// `site` may be an address or a host; it is stored as the host
+    /// [`sites::normalize_site`](crate::agent::sites::normalize_site) names.
+    /// Already there (or covered by a site already there) is not an error.
+    pub fn trust_site(&self, site: &str) -> Result<AgentSettings> {
+        let site = crate::agent::sites::normalize_site(site)?;
+        let mut settings = self.agent_settings()?;
+        if !crate::agent::sites::covers(&settings.safe_sites, &site) {
+            settings.safe_sites.push(site);
+            self.save_agent_settings(&settings)?;
+        }
+        self.agent_settings()
+    }
+
+    /// Take `site` off the websites the assistant may open without asking,
+    /// and answer with the settings as stored. Not there is not an error.
+    pub fn untrust_site(&self, site: &str) -> Result<AgentSettings> {
+        let site = crate::agent::sites::normalize_site(site)?;
+        let mut settings = self.agent_settings()?;
+        let before = settings.safe_sites.len();
+        settings.safe_sites.retain(|s| s != &site);
+        if settings.safe_sites.len() != before {
+            self.save_agent_settings(&settings)?;
+        }
+        self.agent_settings()
+    }
+
     /// The settings and the model a turn runs on, for the one kind of caller
     /// that needs both: an assistant turn about to be taken.
     ///

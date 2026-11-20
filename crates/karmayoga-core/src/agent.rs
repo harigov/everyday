@@ -79,6 +79,7 @@
 //! crowding out the others.
 
 pub mod onscreen;
+pub mod sites;
 pub mod tools;
 
 use crate::error::{Error, Result};
@@ -270,6 +271,19 @@ pub struct AgentSettings {
     /// there to have meant it.
     #[serde(default = "confirm_web_default")]
     pub confirm_web: bool,
+    /// Websites the person has said may be opened without asking -- see
+    /// [`sites`]. Each covers the names under it. An address on one opens
+    /// without the question [`confirm_web`](Self::confirm_web) would put,
+    /// except one that carries what could be data once a stranger's words
+    /// are in the turn, or with nobody watching: see `must_confirm_fetch` in
+    /// `karmayoga_service::agent`.
+    ///
+    /// Changed only by `trust_site` and `untrust_site` (and by "always allow"
+    /// on a question, which is `trust_site`): `save_agent_settings` keeps
+    /// whatever is stored, so a settings pane opened before a site was added
+    /// cannot take it away again by saving.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub safe_sites: Vec<String>,
     /// How many model turns one request may take before the loop gives up.
     ///
     /// A ceiling rather than a target. Its job is to bound a model that has
@@ -347,6 +361,7 @@ impl Default for AgentSettings {
             instructions: String::new(),
             confirm_destructive: true,
             confirm_web: true,
+            safe_sites: Vec::new(),
             max_steps: DEFAULT_MAX_STEPS,
             remember: true,
             timezone: None,
@@ -406,6 +421,7 @@ impl AgentSettings {
         if let Some(companion) = &self.companion {
             companion.validate()?;
         }
+        sites::validate(&self.safe_sites)?;
         // "Soul" rather than the field name, because this sentence is shown
         // verbatim under the box it is about, and the box is labelled Soul.
         // The routine's own identical-looking limit still says

@@ -826,6 +826,7 @@ mod tests {
                 subject: "Book the dentist".into(),
                 arguments: serde_json::Value::Null,
                 kind: "destructive".into(),
+                site: None,
                 can_park: true,
             },
         }

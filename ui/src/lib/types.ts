@@ -2265,6 +2265,40 @@ export interface MailWriting {
   /** Whether writing help learns from the replies they send. On unless
    *  switched off; absent reads as on. */
   learn?: boolean
+  /** What every message is checked for when Send is pressed. Absent when
+   *  empty. At most 12, each one line under 200 characters. */
+  sendChecks?: SendCheck[]
+}
+
+/** One check before sending -- `karmayoga_core::mail::SendCheck`. */
+export interface SendCheck {
+  /** What the message should be: "The tone is friendly". */
+  text: string
+  /** Off keeps it in the list without running it. Absent reads as on. */
+  on?: boolean
+}
+
+/** Which model ran the checks before sending. */
+export type CheckModel = 'decision' | 'small'
+
+/** One check before sending, as it came back --
+ *  `karmayoga_service::mailcheck::DraftCheckResult`. */
+export interface DraftCheckResult {
+  check: string
+  passed: boolean
+  /** What to change, when the model said (the Small model does). */
+  note?: string | null
+}
+
+/** What `checkDraft` answers -- `karmayoga_service::mailcheck::DraftCheckReport`.
+ *  Empty `results` and no `skipped`: nothing to check, send at once. */
+export interface DraftCheckReport {
+  /** One per check switched on, in Settings' order. */
+  results: DraftCheckResult[]
+  /** Why the checks did not run, as a sentence, when they did not. Warn with
+   *  it, and still let the message go. */
+  skipped?: string | null
+  model?: CheckModel | null
 }
 
 /** What writing help has learned from the replies they sent --
@@ -3730,6 +3764,13 @@ export interface AgentSettings {
    * A routine or a background job still stops either way.
    */
   confirmWeb?: boolean
+  /**
+   * Websites the assistant may open without asking -- hosts such as
+   * `wikipedia.org`, each covering the names under it. Changed only with
+   * `trustSite` / `untrustSite`: `saveAgentSettings` keeps whatever is stored.
+   * Absent when empty.
+   */
+  safeSites?: string[]
   /** Model turns one request may take before the loop gives up. */
   maxSteps: number
   /** Whether the assistant may write memories. */
@@ -4440,6 +4481,12 @@ export type AgentEvent =
        * which has none. See `docs/plans/dreaming.md`'s Phase 5.
        */
       canPark: boolean
+      /**
+       * The website "Always allow" would add to the safe websites, set only
+       * on a `'fetch'` whose address is not on one already. Answered with
+       * `confirmToolCall(callId, true, false, true)`.
+       */
+      site?: string | null
     }
   | { type: 'finished'; messageId: MessageId }
   | { type: 'failed'; message: string }

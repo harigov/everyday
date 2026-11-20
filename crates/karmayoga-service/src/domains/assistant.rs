@@ -71,6 +71,17 @@ pub struct Confirm {
     /// Phase 5 and `karmayoga_service::agent::ConfirmAnswer`.
     #[serde(default)]
     pub later: bool,
+    /// Yes, and always allow the question's website -- see
+    /// `ConfirmAnswer::TrustSite`. Defaulted for the same reason as `later`.
+    #[serde(default)]
+    pub always: bool,
+}
+
+/// A website for `trust_site` or `untrust_site`: an address or a host.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiteArg {
+    pub site: String,
 }
 
 #[derive(Deserialize)]
@@ -174,7 +185,12 @@ async fn save_agent_settings(
     let settings = blocking(move || {
         let previous = vault.agent_settings()?;
         let dreaming_before = previous.dreaming;
-        vault.save_agent_settings(&args.settings)?;
+        // The safe websites are `trust_site`'s and `untrust_site`'s to change:
+        // a pane opened before "always allow" added one would otherwise take
+        // it away again by saving what it had.
+        let mut settings = args.settings.clone();
+        settings.safe_sites = previous.safe_sites.clone();
+        vault.save_agent_settings(&settings)?;
 
         // The dream routines. `set_dreaming` is idempotent, so it is only
         // worth calling when something might actually change: the switch
@@ -269,12 +285,29 @@ async fn delete_conversation(
 async fn confirm_tool_call(svc: Arc<Service>, _ctx: Ctx, args: Confirm) -> CommandResult<bool> {
     let answer = if args.later {
         crate::agent::ConfirmAnswer::Later
+    } else if args.always {
+        crate::agent::ConfirmAnswer::TrustSite
     } else if args.approved {
         crate::agent::ConfirmAnswer::Confirm
     } else {
         crate::agent::ConfirmAnswer::Decline
     };
     Ok(svc.pending().answer(&args.call_id, answer))
+}
+
+/// Let the assistant open pages on `site` without asking -- see
+/// `karmayoga_core::agent::sites` -- and answer with the settings as stored.
+async fn trust_site(svc: Arc<Service>, _ctx: Ctx, args: SiteArg) -> CommandResult<AgentSettings> {
+    svc.on_vault(move |vault| vault.trust_site(&args.site)).await
+}
+
+/// Take `site` off the websites the assistant may open without asking.
+async fn untrust_site(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SiteArg,
+) -> CommandResult<AgentSettings> {
+    svc.on_vault(move |vault| vault.untrust_site(&args.site)).await
 }
 
 /// Stop whatever the assistant is doing on a conversation.
@@ -451,6 +484,20 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: save_agent_settings,
     },
     command! {
+        name: "trust_site", scope: Agent, effect: Write,
+        change: Settings / Updated,
+        args: SiteArg, returns: "AgentSettings",
+        signature: &[("site", "string", true)],
+        run: trust_site,
+    },
+    command! {
+        name: "untrust_site", scope: Agent, effect: Write,
+        change: Settings / Updated,
+        args: SiteArg, returns: "AgentSettings",
+        signature: &[("site", "string", true)],
+        run: untrust_site,
+    },
+    command! {
         name: "list_conversations", scope: Agent, effect: Read,
         args: Conversations, returns: "ConversationSummary[]",
         signature: &[("limit", "number | null", false), ("includeRuns", "boolean", false)],
@@ -502,6 +549,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("callId", "string", true),
             ("approved", "boolean", true),
             ("later", "boolean", false),
+            ("always", "boolean", false),
         ],
         run: confirm_tool_call,
     },

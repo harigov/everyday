@@ -137,18 +137,20 @@ pub trait ChatOutlet: Send + Sync + 'static {
     /// words for the run log.
     fn post(&self, from: FromRun, markdown: String) -> BoxFuture<'static, Result<(), String>>;
 
-    /// Put a tool call to the owner -- the same `kind`, `subject` and
-    /// `can_park` a chat turn's own confirmation carries -- and wait for
-    /// their answer. Never yes unless they said so: silence past the relay's
-    /// timeout comes back as later where that is on offer and no otherwise,
-    /// and a question that could not be put at all -- no room yet, the
-    /// relay stopping -- as no.
+    /// Put a tool call to the owner -- the same `kind`, `subject`,
+    /// `can_park` and `site` a chat turn's own confirmation carries -- and
+    /// wait for their answer. Never yes unless they said so: silence past the
+    /// relay's timeout comes back as later where that is on offer and no
+    /// otherwise, and a question that could not be put at all -- no room
+    /// yet, the relay stopping -- as no. `site`, when given, is offered as
+    /// "always allow" ([`ConfirmAnswer::TrustSite`]).
     fn confirm(
         &self,
         from: FromRun,
         kind: String,
         subject: String,
         can_park: bool,
+        site: Option<String>,
     ) -> BoxFuture<'static, ConfirmAnswer>;
 
     /// Ask the owner a question in the model's own words, offering `choices`

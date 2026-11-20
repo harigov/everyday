@@ -324,6 +324,14 @@ pub enum AgentEvent {
         /// `'static` field cannot be produced from bytes that live only as
         /// long as the line they arrived on.
         kind: String,
+        /// The website "always allow" would add to
+        /// [`AgentSettings::safe_sites`](karmayoga_core::agent::AgentSettings::safe_sites),
+        /// as [`karmayoga_core::agent::sites::site_of`] names it -- set only
+        /// on a `"fetch"` whose address is not on a safe site already. The
+        /// card offers "Always allow {site}" beside yes and no when it is
+        /// set, answered with [`ConfirmAnswer::TrustSite`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<String>,
         /// Whether the card may offer "later" beside confirm and decline --
         /// [`karmayoga_core::agent::tools::Tool::can_propose`], plus
         /// `send_draft`, which already has a builder of its own. `false` for
@@ -359,6 +367,11 @@ pub enum ConfirmAnswer {
     Confirm,
     Decline,
     Later,
+    /// Yes, and add the question's site to the websites the assistant may
+    /// open without asking -- "always allow this website". Offered only on a
+    /// question that carries a site ([`AgentEvent::ConfirmationRequired`]'s
+    /// `site`); given to one that does not, it is read as [`Self::Confirm`].
+    TrustSite,
 }
 
 /// Somebody a scheduled run can put a question to while it works.
@@ -371,11 +384,15 @@ pub enum ConfirmAnswer {
 pub trait Asker: Send + Sync + 'static {
     /// A tool call that needs their say. See [`AgentEvent::ConfirmationRequired`]
     /// for what `kind`, `subject` and `can_park` mean.
+    /// `site` is the website "always allow" would add, as
+    /// [`AgentEvent::ConfirmationRequired`]'s own `site`; `None` offers no
+    /// such answer.
     fn confirm(
         &self,
         kind: &str,
         subject: &str,
         can_park: bool,
+        site: Option<&str>,
     ) -> futures::future::BoxFuture<'static, ConfirmAnswer>;
 
     /// A question in the model's words. `None` when no answer came.
@@ -1332,7 +1349,7 @@ impl ConfirmGate {
         let kind = if kinds.contains(&"outward") { "outward" } else { "destructive" };
         let subject = together_subject(kind, &asked);
         let answer = match &self.asker {
-            Some(asker) => asker.confirm(kind, &subject, false).await,
+            Some(asker) => asker.confirm(kind, &subject, false, None).await,
             None => {
                 let call_id = format!("together-{}", MessageId::new());
                 let waiter = self.pending.register(&call_id);
@@ -1343,6 +1360,7 @@ impl ConfirmGate {
                     subject,
                     arguments: serde_json::json!({ "count": asked.len() }),
                     kind: kind.to_string(),
+                    site: None,
                     can_park: false,
                 });
                 // A dropped sender is a cancelled turn: nothing was agreed to.
@@ -1452,7 +1470,7 @@ impl ConfirmGate {
         let answer = match &self.asker {
             // A scheduled run's person is somewhere else: the question goes to
             // them there, and comes back answered one way or another.
-            Some(asker) => Some(asker.confirm(kind, &subject, can_park).await),
+            Some(asker) => Some(asker.confirm(kind, &subject, can_park, None).await),
             None => {
                 let waiter = self.pending.register(&call_id);
                 self.issued.lock().unwrap().push(call_id.clone());
@@ -1462,6 +1480,7 @@ impl ConfirmGate {
                     subject,
                     arguments: arguments.clone(),
                     kind: kind.to_string(),
+                    site: None,
                     can_park,
                 });
                 // A dropped sender means the turn was cancelled or the window
@@ -1470,7 +1489,6 @@ impl ConfirmGate {
                 waiter.await.ok()
             }
         };
-
         match answer {
             Some(ConfirmAnswer::Confirm)
                 if shown.as_ref().is_some_and(|shown| {
@@ -1489,6 +1507,12 @@ impl ConfirmGate {
                 )
             }
             Some(ConfirmAnswer::Confirm) => {
+                (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
+                ToolCallAction::Run
+            }
+            // CONTRACT PLACEHOLDER: "always allow" is a yes until the gate
+            // saves the site (agent S1 replaces this arm).
+            Some(ConfirmAnswer::TrustSite) => {
                 (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
                 ToolCallAction::Run
             }
@@ -6771,6 +6795,7 @@ mod tests {
             _kind: &str,
             _subject: &str,
             _can_park: bool,
+            _site: Option<&str>,
         ) -> futures::future::BoxFuture<'static, ConfirmAnswer> {
             Box::pin(async { ConfirmAnswer::Decline })
         }

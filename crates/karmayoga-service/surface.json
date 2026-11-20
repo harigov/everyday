@@ -1141,6 +1141,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "DraftId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "check_draft",
+      "orScope": null,
+      "returns": "DraftCheckReport",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "AccountId"
         }
       ],
@@ -1278,6 +1295,11 @@
         },
         {
           "name": "later",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "always",
           "required": false,
           "type": "boolean"
         }
@@ -10246,6 +10268,26 @@
     {
       "args": [
         {
+          "name": "site",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "trust_site",
+      "orScope": null,
+      "returns": "AgentSettings",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "draftId",
           "required": true,
           "type": "DraftId"
@@ -10395,6 +10437,26 @@
       "orScope": null,
       "returns": "Op[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "site",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "untrust_site",
+      "orScope": null,
+      "returns": "AgentSettings",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

@@ -73,6 +73,7 @@ import type {
   Dose,
   DoseId,
   Draft,
+  DraftCheckReport,
   DraftId,
   DueDose,
   EditableEvent,
@@ -460,6 +461,7 @@ export interface Commands {
   checkBackupDestination: { args: { destination: Destination }; result: DestinationCheck }
   checkBankLink: { args: { session: string }; result: LinkCheck }
   checkConnection: { args: { id: ConnectionId }; result: ConnectionView }
+  checkDraft: { args: { id: DraftId }; result: DraftCheckReport }
   checkSending: { args: { id: AccountId }; result: void }
   clearBackupKeys: { args: Record<string, never>; result: BackupView }
   clearHealthKeys: { args: Record<string, never>; result: void }
@@ -468,7 +470,10 @@ export interface Commands {
   collectGarbage: { args: Record<string, never>; result: number }
   conditionReport: { args: { id: ConditionId; date: string; tz: string }; result: ConditionReport }
   conditionTemplates: { args: Record<string, never>; result: TemplateInfo[] }
-  confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
+  confirmToolCall: {
+    args: { callId: string; approved: boolean; later?: boolean; always?: boolean }
+    result: boolean
+  }
   connections: { args: Record<string, never>; result: ConnectionsView }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
   createEvent: { args: { calendarId: CalendarId; draft: EventDraft }; result: CalendarEvent | null }
@@ -1146,6 +1151,7 @@ export interface Commands {
   trash: { args: { threads: ThreadId[] }; result: Op[] }
   trashFiles: { args: { ids: string[] }; result: FileEntry[] }
   trashFolder: { args: { path: string }; result: number }
+  trustSite: { args: { site: string }; result: AgentSettings }
   undoSend: { args: { draftId: DraftId }; result: Draft }
   unlabel: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   unlock: { args: { password: string }; result: VaultStatus }
@@ -1155,6 +1161,7 @@ export interface Commands {
   unsnooze: { args: { threads: ThreadId[] }; result: void }
   unstackFiles: { args: { ids: string[] }; result: void }
   unstar: { args: { threads: ThreadId[] }; result: Op[] }
+  untrustSite: { args: { site: string }; result: AgentSettings }
   updateConnection: { args: { connection: McpConnection }; result: ConnectionView }
   updateEvent: { args: { id: EventId; draft: EventDraft; scope?: EventScope }; result: void }
   updateFiles: { args: { ids: string[]; update: FileUpdate }; result: FileEntry[] }
@@ -1225,6 +1232,7 @@ export const COMMAND_NAMES = {
   checkBackupDestination: 'check_backup_destination',
   checkBankLink: 'check_bank_link',
   checkConnection: 'check_connection',
+  checkDraft: 'check_draft',
   checkSending: 'check_sending',
   clearBackupKeys: 'clear_backup_keys',
   clearHealthKeys: 'clear_health_keys',
@@ -1685,6 +1693,7 @@ export const COMMAND_NAMES = {
   trash: 'trash',
   trashFiles: 'trash_files',
   trashFolder: 'trash_folder',
+  trustSite: 'trust_site',
   undoSend: 'undo_send',
   unlabel: 'unlabel',
   unlock: 'unlock',
@@ -1694,6 +1703,7 @@ export const COMMAND_NAMES = {
   unsnooze: 'unsnooze',
   unstackFiles: 'unstack_files',
   unstar: 'unstar',
+  untrustSite: 'untrust_site',
   updateConnection: 'update_connection',
   updateEvent: 'update_event',
   updateFiles: 'update_files',
@@ -1774,6 +1784,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'check_backup_destination',
   'check_bank_link',
   'check_connection',
+  'check_draft',
   'check_sending',
   'clear_backup_keys',
   'clear_health_keys',
@@ -2233,6 +2244,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'trash',
   'trash_files',
   'trash_folder',
+  'trust_site',
   'undo_send',
   'unlabel',
   'unlock',
@@ -2242,6 +2254,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'unsnooze',
   'unstack_files',
   'unstar',
+  'untrust_site',
   'update_connection',
   'update_event',
   'update_files',
@@ -2549,12 +2562,14 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'trash',
   'trash_files',
   'trash_folder',
+  'trust_site',
   'undo_send',
   'unlabel',
   'unlock',
   'unsnooze',
   'unstack_files',
   'unstar',
+  'untrust_site',
   'update_connection',
   'update_event',
   'update_files',
@@ -2811,11 +2826,13 @@ export const CHANGE_KINDS = {
   trash: 'thread',
   trash_files: 'file',
   trash_folder: 'file',
+  trust_site: 'settings',
   undo_send: 'draft',
   unlabel: 'thread',
   unsnooze: 'thread',
   unstack_files: 'file',
   unstar: 'thread',
+  untrust_site: 'settings',
   update_connection: 'settings',
   update_event: 'event',
   update_files: 'file',

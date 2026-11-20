@@ -753,6 +753,7 @@ async fn a_routines_approval_is_asked_in_the_room_and_a_tap_answers_it() {
         "destructive".into(),
         "Book the dentist".into(),
         true,
+        None,
     ));
     let (question, reference) = h.connector.wait_for_question().await;
     assert!(
@@ -1658,6 +1659,7 @@ mod calls {
                 subject: subject.into(),
                 arguments: serde_json::Value::Null,
                 kind: "destructive".into(),
+                site: None,
                 can_park: false,
             },
         }

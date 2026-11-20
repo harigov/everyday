@@ -1626,6 +1626,7 @@ mod tests {
                     subject: subject.to_string(),
                     arguments: serde_json::json!({}),
                     kind: kind.to_string(),
+                    site: None,
                     can_park: false,
                 },
             ],

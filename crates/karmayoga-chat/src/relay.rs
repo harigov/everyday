@@ -293,6 +293,8 @@ pub(crate) enum RoutineJob {
         kind: String,
         subject: String,
         can_park: bool,
+        /// The website "always allow" would add, when that is on offer.
+        site: Option<String>,
         answer: oneshot::Sender<ConfirmAnswer>,
     },
     Ask {
@@ -353,11 +355,12 @@ impl ChatOutlet for RelayOutlet {
         kind: String,
         subject: String,
         can_park: bool,
+        site: Option<String>,
     ) -> BoxFuture<'static, ConfirmAnswer> {
         let (connector, outbound) = (self.connector.clone(), self.outbound.clone());
         Box::pin(async move {
             let (answer, answered) = oneshot::channel();
-            let job = RoutineJob::Confirm { from, kind, subject, can_park, answer };
+            let job = RoutineJob::Confirm { from, kind, subject, can_park, site, answer };
             if let Err(why) = Self::queue(connector, outbound, job).await {
                 tracing::info!(%why, "a routine's question could not be put to the chat");
                 return ConfirmAnswer::Decline;
@@ -860,6 +863,7 @@ impl Answer {
                     Choice::Yes => "yes",
                     Choice::No => "no",
                     Choice::Later => "later",
+                    Choice::Always => "always",
                 };
                 let _ = tx.send(Some(word.to_string()));
             }
@@ -1563,7 +1567,7 @@ async fn for_routine(
         RoutineJob::Post { from, markdown, done } => {
             let _ = done.send(post_for_run(context, chat, memory, &from, &markdown).await);
         }
-        RoutineJob::Confirm { from, kind, subject, can_park, answer } => {
+        RoutineJob::Confirm { from, kind, subject, can_park, site: _, answer } => {
             running(&from);
             let given = ask(
                 context,
@@ -2767,6 +2771,8 @@ pub(crate) fn answer_for(choice: Choice, can_park: bool) -> ConfirmAnswer {
         Choice::No => ConfirmAnswer::Decline,
         Choice::Later if can_park => ConfirmAnswer::Later,
         Choice::Later => ConfirmAnswer::Decline,
+        // Not offered yet: read as the yes it includes.
+        Choice::Always => ConfirmAnswer::Confirm,
     }
 }
 

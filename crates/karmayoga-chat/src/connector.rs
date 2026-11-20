@@ -37,6 +37,9 @@ pub enum Choice {
     Yes,
     No,
     Later,
+    /// Yes, and always allow this website -- offered only on a question about
+    /// opening a page that names a site.
+    Always,
 }
 
 impl Choice {
@@ -46,6 +49,7 @@ impl Choice {
             Choice::Yes => "✅",
             Choice::No => "❌",
             Choice::Later => "⏰",
+            Choice::Always => "🌐",
         }
     }
 
