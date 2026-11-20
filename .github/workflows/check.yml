@@ -121,19 +121,22 @@ jobs:
       - name: Formatting
         run: cargo fmt --all -- --check
 
+      # `--locked` on everything that builds: a push whose Cargo.lock does not
+      # match its manifests fails here, instead of passing against versions
+      # nobody reviewed and shipping something else.
       - name: Clippy
         run: |
           set -euo pipefail
-          cargo clippy --all-targets -- -D warnings
-          cargo clippy -p karmayoga-app --all-targets -- -D warnings
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked -p karmayoga-app --all-targets -- -D warnings
 
       - name: Tests
         env:
           KARMAYOGA_TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/karmayoga_test
         run: |
           set -euo pipefail
-          cargo test
-          cargo test -p karmayoga-app
+          cargo test --locked
+          cargo test --locked -p karmayoga-app
 
   rust-speech:
     name: Rust (local models)
@@ -223,12 +226,12 @@ jobs:
       - name: Clippy
         env:
           SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
-        run: cargo clippy -p karmayoga-service --all-targets --features speech,decisions -- -D warnings
+        run: cargo clippy --locked -p karmayoga-service --all-targets --features speech,decisions -- -D warnings
 
       - name: Tests
         env:
           SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
-        run: cargo test -p karmayoga-service --features speech,decisions
+        run: cargo test --locked -p karmayoga-service --features speech,decisions
 
   ui:
     name: Interface

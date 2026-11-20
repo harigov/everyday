@@ -5,11 +5,25 @@
 //! one is and [`crate::chat`] for the task each one runs as. Four commands
 //! are the whole of how a person manages them: list, mint a blank, save,
 //! remove. Two more answer for a running bot when its owner verifies it,
-//! since the bot has no screen to compare emoji on. All six sit in the
+//! since the bot has no screen to compare emoji on. Two more are about which
+//! of the owner's devices the bot trusts: one lists them as the running bot
+//! sees them, one saves the hand-picked list. All eight sit in the
 //! `Agent` scope beside `save_agent_settings`, because letting somebody
 //! reach the assistant from a phone is the same decision as letting it
 //! exist, and a client that may not change the assistant's settings has no
 //! business adding a way in.
+//!
+//! # The list of trusted devices is this computer's alone
+//!
+//! The bot believes an encrypted message only from a device on that list, so
+//! whoever can add a device to it can talk to the assistant and read its
+//! replies. `set_chat_trusted_devices` therefore refuses every caller but this
+//! computer's own: the desktop's window, or a program of the same user over the
+//! local socket ([`require_local`]) -- which is how a headless `karmayoga
+//! serve` has its list chosen at all. A paired device, a web session and the
+//! assistant are refused. `save_chat_link` -- which any client with the `Agent`
+//! scope may call -- never takes the list from the link it is given: it keeps
+//! the stored one ([`ChatLink::inherit_trusted_devices`]).
 //!
 //! # What a client is told, and what it is not
 //!
@@ -31,15 +45,15 @@
 
 use super::Nothing;
 use crate::chat::{
-    ChatStatus, ChatVerification, ChatVerifier, VerificationAnswer, reconcile, restart_link,
-    state_dir, task_key,
+    ChatDevice, ChatStatus, ChatUntrustedDevice, ChatVerification, ChatVerifier,
+    VerificationAnswer, reconcile, restart_link, state_dir, task_key,
 };
 use crate::command;
-use crate::ctx::Ctx;
+use crate::ctx::{Caller, Ctx};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use jiff::Timestamp;
-use karmayoga_core::chat::{ChatLink, ChatSecret};
+use karmayoga_core::chat::{ChatLink, ChatSecret, ChatService, tidy_device_ids};
 use karmayoga_core::{ChatLinkId, Error, Vault};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -70,6 +84,10 @@ pub struct ChatLinkView {
     /// The verification the bot is in, or was last in this run. Settings
     /// shows its emoji and takes the answer.
     pub verification: Option<ChatVerification>,
+    /// The owner's device that last wrote to the bot without being on the
+    /// trusted list, and was ignored. `None` when none has, or since it was
+    /// trusted.
+    pub untrusted_device: Option<ChatUntrustedDevice>,
 }
 
 #[derive(Deserialize)]
@@ -87,6 +105,15 @@ pub struct SaveChatLink {
 #[serde(rename_all = "camelCase")]
 pub struct ChatLinkRef {
     pub id: ChatLinkId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetChatTrustedDevices {
+    pub id: ChatLinkId,
+    /// Every device id of the owner's the bot should trust, replacing what
+    /// was trusted before. Any other device of theirs is not.
+    pub devices: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -125,8 +152,27 @@ fn view(svc: &Service, link: ChatLink, secret: &ChatSecret, writable: bool) -> C
         has_password: secret.password.as_deref().is_some_and(|p| !p.is_empty()),
         owner_verified: trust.owner_verified,
         verification: trust.verification,
+        untrusted_device: svc.chat_untrusted_device(link.id),
         link,
     }
+}
+
+/// Why a caller that is not on this computer may not choose which devices the
+/// bot trusts.
+const TRUST_IS_LOCAL: &str = "which devices the assistant trusts can be chosen only from this \
+    computer: its own window, or a program of yours running on it over the local socket. A device \
+    that could add itself to the list would make the list worth nothing";
+
+/// Whether this caller is on the vault's own machine: the desktop's window, or
+/// a process of the same user the operating system vouched for over the local
+/// socket. A paired device or a web session is not, however it signed in.
+fn is_local(ctx: &Ctx) -> bool {
+    matches!(ctx.caller, Caller::Local | Caller::Window(_) | Caller::Socket)
+}
+
+/// Refuse what only this computer itself may do.
+fn require_local(ctx: &Ctx) -> CommandResult<()> {
+    if is_local(ctx) { Ok(()) } else { Err(CommandError::new(codes::FORBIDDEN, TRUST_IS_LOCAL)) }
 }
 
 /// Delete a link's local files, and say nothing if there were none -- a link
@@ -162,6 +208,9 @@ fn save_link(
     // the vault's to say, and when it last changed is now.
     link.created_at = stored.map_or(now, |old| old.created_at);
     link.updated_at = now;
+    // Nor is the list of trusted devices the client's to say. Any client
+    // allowed to save a link could otherwise add its own device to it.
+    link.inherit_trusted_devices(stored);
 
     let mut settings = vault.chat_settings()?;
     match settings.links.iter_mut().find(|l| l.id == link.id) {
@@ -278,6 +327,35 @@ async fn remove_chat_link(svc: Arc<Service>, _ctx: Ctx, args: ChatLinkRef) -> Co
     Ok(())
 }
 
+/// The blocking half of `set_chat_trusted_devices`: write the list into the
+/// link, and return the link as it now stands with its secret.
+fn save_trusted_devices(
+    vault: &Vault,
+    id: ChatLinkId,
+    devices: Vec<String>,
+    now: Timestamp,
+) -> CommandResult<(ChatLink, ChatSecret)> {
+    let mut settings = vault.chat_settings()?;
+    let link = settings
+        .links
+        .iter_mut()
+        .find(|l| l.id == id)
+        .ok_or_else(|| CommandError::from(Error::not_found("chat link", id)))?;
+    let ChatService::Matrix(matrix) = &mut link.service;
+    matrix.trusted_devices = devices;
+    link.updated_at = now;
+    let link = link.clone();
+    settings.validate()?;
+    vault.save_chat_settings(&settings)?;
+    Ok((link, vault.chat_secret(id)?))
+}
+
+/// The ids of the devices a link trusts, as the saved link names them.
+fn trusted_of(link: &ChatLink) -> &[String] {
+    let ChatService::Matrix(matrix) = &link.service;
+    &matrix.trusted_devices
+}
+
 /// The verifier of a link that is running here, or why there is none.
 fn verifier(svc: &Service, id: ChatLinkId) -> CommandResult<Arc<dyn ChatVerifier>> {
     svc.chat_verifier(id).ok_or_else(|| {
@@ -306,6 +384,61 @@ async fn start_chat_verification(
     args: ChatLinkRef,
 ) -> CommandResult<()> {
     verifier(&svc, args.id)?.start().await
+}
+
+/// The owner's devices as the running bot sees them, each with whether it is
+/// trusted.
+async fn chat_devices(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: ChatLinkRef,
+) -> CommandResult<Vec<ChatDevice>> {
+    let Some(devices) = svc.chat_devices(args.id) else {
+        return Err(CommandError::new(
+            codes::CONFLICT,
+            "The bot is not running here, so it cannot list your devices. Switch it on and wait \
+             until it is online.",
+        ));
+    };
+    devices.list().await
+}
+
+/// Choose, by hand, which of the owner's devices the bot trusts; the bot
+/// changes at once.
+///
+/// This computer only -- its own window or its local socket
+/// ([`require_local`]). Saved first, so the
+/// choice is kept whether or not the bot is running: one that is not picks it
+/// up when it starts, and one that is has the new list applied without
+/// restarting. If applying it fails -- the encryption store would not take it
+/// -- the bot is restarted, which applies the saved list from scratch.
+async fn set_chat_trusted_devices(
+    svc: Arc<Service>,
+    ctx: Ctx,
+    args: SetChatTrustedDevices,
+) -> CommandResult<ChatLinkView> {
+    require_local(&ctx)?;
+    let vault = svc.require()?;
+    let id = args.id;
+    let devices = tidy_device_ids(args.devices);
+    let now = svc.now();
+    let writable = vault.is_writable();
+    let (link, secret) = {
+        let vault = vault.clone();
+        let devices = devices.clone();
+        blocking(move || save_trusted_devices(&vault, id, devices, now)).await?
+    };
+    svc.settle_untrusted_chat_device(id, trusted_of(&link));
+    if let Some(running) = svc.chat_devices(id)
+        && let Err(e) = running.trust(devices).await
+    {
+        tracing::warn!(
+            error = %e.message,
+            "the running bot could not take the new device list; restarting it"
+        );
+        restart_link(&svc, &vault, id).await;
+    }
+    Ok(view(&svc, link, &secret, writable))
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[
@@ -354,4 +487,160 @@ pub static COMMANDS: &[crate::command::Command] = &[
         signature: &[("id", "ChatLinkId", true)],
         run: start_chat_verification,
     },
+    command! {
+        name: "chat_devices", scope: Agent, effect: Read,
+        args: ChatLinkRef, returns: "ChatDevice[]",
+        signature: &[("id", "ChatLinkId", true)],
+        run: chat_devices,
+    },
+    // Writes the vault (the link's list), and says so; refuses every caller
+    // that is not on this computer. See [`require_local`].
+    command! {
+        name: "set_chat_trusted_devices", scope: Agent, effect: Write,
+        change: Settings / Updated,
+        args: SetChatTrustedDevices, returns: "ChatLinkView",
+        signature: &[("id", "ChatLinkId", true), ("devices", "string[]", true)],
+        run: set_chat_trusted_devices,
+    },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_this_computer_may_choose_the_trusted_devices() {
+        for (caller, local) in [
+            (Caller::Local, true),
+            (Caller::Window("window:app-chat".into()), true),
+            // The same user's own process, over the local socket: how a
+            // headless `karmayoga serve` has its list chosen.
+            (Caller::Socket, true),
+            (Caller::Device("phone".into()), false),
+            (Caller::Assistant("run-1".into()), false),
+        ] {
+            let ctx = Ctx { caller: caller.clone(), ..Ctx::local() };
+            assert_eq!(is_local(&ctx), local, "{caller:?}");
+            let refused = require_local(&ctx);
+            assert_eq!(refused.is_ok(), local, "{caller:?}");
+            if let Err(e) = refused {
+                assert_eq!(e.code, codes::FORBIDDEN);
+            }
+        }
+    }
+
+    /// A service around a vault in a temporary directory, with one link saved
+    /// by the desktop for an owner who has not picked a device yet.
+    async fn a_service_with_a_link() -> (Arc<Service>, tempfile::TempDir, ChatLinkId) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = karmayoga_core::VaultConfig {
+            name: "Test".into(),
+            backend: "sqlite".into(),
+            settings: Default::default(),
+            password: None,
+            kdf: karmayoga_core::crypto::KdfParams::insecure_fast(),
+            auto_lock_seconds: 900,
+            forget_key_seconds: 0,
+        };
+        let vault = karmayoga_vault::create(dir.path(), config).unwrap();
+        let svc = Arc::new(Service::new());
+        svc.set(vault);
+        let mut link = ChatLink::new_matrix();
+        let ChatService::Matrix(matrix) = &mut link.service;
+        matrix.homeserver = "http://127.0.0.1:6167".into();
+        matrix.user_id = "@karmayoga:example.org".into();
+        matrix.owner = "@owner:example.org".into();
+        let id = link.id;
+        let saving = serde_json::json!({ "link": link, "password": "x" });
+        svc.call(Ctx::local(), "save_chat_link", saving).await.unwrap();
+        (svc, dir, id)
+    }
+
+    fn stored_devices(svc: &Service, id: ChatLinkId) -> Vec<String> {
+        let link = svc.get().unwrap().chat_settings().unwrap().link(id).cloned().unwrap();
+        trusted_of(&link).to_vec()
+    }
+
+    #[tokio::test]
+    async fn this_computer_picks_the_trusted_devices_and_nobody_else_can() {
+        let (svc, _dir, id) = a_service_with_a_link().await;
+        let pick = |devices: &[&str]| serde_json::json!({ "id": id, "devices": devices });
+
+        // A paired device (a web session is one too) and the assistant itself
+        // are refused, and the list is as it was.
+        for caller in [Caller::Device("phone".into()), Caller::Assistant("run-1".into())] {
+            let ctx = Ctx { caller: caller.clone(), ..Ctx::local() };
+            let e = svc
+                .call(ctx, "set_chat_trusted_devices", pick(&["INTRUDER"]))
+                .await
+                .expect_err("a caller that is not on this computer picked a device");
+            assert_eq!(e.code, codes::FORBIDDEN, "{caller:?}");
+            assert!(stored_devices(&svc, id).is_empty(), "{caller:?}");
+        }
+
+        // This computer can, from the desktop's window or over the local
+        // socket. Saved tidy, and with the bot not running that is all it does.
+        let untidy = pick(&[" PHONE ", "LAPTOP", "PHONE", ""]);
+        svc.call(Ctx::local(), "set_chat_trusted_devices", untidy).await.unwrap();
+        assert_eq!(stored_devices(&svc, id), ["LAPTOP", "PHONE"]);
+        let view = svc
+            .call(Ctx::window("app-chat"), "set_chat_trusted_devices", pick(&["PHONE"]))
+            .await
+            .unwrap();
+        assert_eq!(view["link"]["service"]["trustedDevices"], serde_json::json!(["PHONE"]));
+        let over_the_socket = Ctx { caller: Caller::Socket, ..Ctx::local() };
+        svc.call(over_the_socket, "set_chat_trusted_devices", pick(&["LAPTOP"])).await.unwrap();
+        assert_eq!(stored_devices(&svc, id), ["LAPTOP"]);
+    }
+
+    #[tokio::test]
+    async fn saving_a_link_never_takes_the_list_from_the_client() {
+        let (svc, _dir, id) = a_service_with_a_link().await;
+        svc.call(
+            Ctx::local(),
+            "set_chat_trusted_devices",
+            serde_json::json!({ "id": id, "devices": ["PHONE"] }),
+        )
+        .await
+        .unwrap();
+
+        // A client that may save a link -- but not pick devices -- sends one
+        // with a device of its own, as a form might send the whole link.
+        let mut link = svc.get().unwrap().chat_settings().unwrap().link(id).cloned().unwrap();
+        let ChatService::Matrix(matrix) = &mut link.service;
+        matrix.trusted_devices = vec!["PHONE".into(), "INTRUDER".into()];
+        let sneaky = Ctx { caller: Caller::Device("phone".into()), ..Ctx::local() };
+        svc.call(sneaky.clone(), "save_chat_link", serde_json::json!({ "link": link }))
+            .await
+            .unwrap();
+        assert_eq!(stored_devices(&svc, id), ["PHONE"]);
+
+        // Pointing the link at somebody else's account drops the list: those
+        // device ids were the old owner's.
+        let ChatService::Matrix(matrix) = &mut link.service;
+        matrix.owner = "@thief:example.org".into();
+        matrix.trusted_devices = vec!["INTRUDER".into()];
+        svc.call(sneaky, "save_chat_link", serde_json::json!({ "link": link })).await.unwrap();
+        assert!(stored_devices(&svc, id).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_devices_cannot_be_listed_while_the_bot_is_not_running() {
+        let (svc, _dir, id) = a_service_with_a_link().await;
+        let e = svc
+            .call(Ctx::local(), "chat_devices", serde_json::json!({ "id": id }))
+            .await
+            .expect_err("nothing is running");
+        assert_eq!(e.code, codes::CONFLICT);
+        assert!(e.message.contains("not running"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_list_is_read_back_from_the_link_that_holds_it() {
+        let mut link = ChatLink::new_matrix();
+        assert!(trusted_of(&link).is_empty());
+        let ChatService::Matrix(matrix) = &mut link.service;
+        matrix.trusted_devices = vec!["PHONE".into()];
+        assert_eq!(trusted_of(&link), ["PHONE"]);
+    }
+}

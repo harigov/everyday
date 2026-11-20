@@ -5,6 +5,7 @@ use karmayoga_core::meeting::{Recording, Stage, Transcript};
 use karmayoga_core::speech::SpeechConfig;
 use karmayoga_core::{Note, NoteOrigin, RecordingId, TranscriptId, Vault};
 
+use crate::ctx::Scope;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::service::blocking;
@@ -572,6 +573,7 @@ pub(crate) async fn summarise_and_write_from(
 
     events.notify(
         Notification::new(crate::events::Level::Info, format!("Notes from {meeting} are ready"))
+            .domain(Scope::Meetings)
             .for_user()
             .key(format!("meeting:{id}")),
     );

@@ -288,7 +288,13 @@ async fn a_job_started_again_goes_on_in_the_note_and_the_transcript_it_left() {
     // nothing alive is carrying out, with a note and a transcript already made.
     let (svc, _dir) = service("http://127.0.0.1:1/v1");
     let vault = svc.get().unwrap();
-    let mut note = Note::written("Which e-bike for hills?", "So far: the Bosch motor.");
+    // The note the job opened the first time round: the assistant's own, so
+    // rewriting it whole is not a loss a job would have to be refused.
+    let mut note = Note::written_by(
+        karmayoga_core::note::NoteOrigin::Assistant,
+        "Which e-bike for hills?",
+        "So far: the Bosch motor.",
+    );
     note.tags = vec!["research".to_string()];
     vault.save_note(&note, None).unwrap();
 

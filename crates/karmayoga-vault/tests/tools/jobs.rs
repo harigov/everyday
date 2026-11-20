@@ -124,22 +124,33 @@ fn the_question_is_tidied_and_a_brief_may_be_left_out() {
 }
 
 #[test]
-fn research_started_from_a_script_or_an_mcp_client_has_nowhere_to_come_back_to() {
+fn research_started_from_a_script_has_nowhere_to_come_back_to() {
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
     let args = json!({ "question": "Which e-bike?", "brief": "For hills." });
 
-    // The vault's owner acting directly, and an external agent: neither is
-    // sitting in a thread that could be answered.
+    // The vault's owner acting directly is not sitting in a thread that
+    // could be answered.
+    let out = run(&ctx(&vault), "start_research", args);
+    let note = out["note"].as_str().unwrap();
+    assert!(note.contains("Assistant app"), "it should say where to look instead: {note}");
+    assert!(!note.contains("come back to this conversation"), "{note}");
+    assert_eq!(vault.job(id_of(&out)).unwrap().asked_in, None);
+}
+
+#[test]
+fn an_mcp_client_cannot_start_research_at_all() {
+    // A job runs as the person with every tool the assistant has, and its
+    // answer is a note any token that reads notes can open -- so it is the
+    // routine bypass again. See `tools::NOT_OVER_MCP`.
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
     let client = Caller::Mcp { client: "device-1".into() };
     let mcp = ToolContext { caller: Some(client), ..ctx(&vault) };
-    for ctx in [ctx(&vault), mcp] {
-        let out = run(&ctx, "start_research", args.clone());
-        let note = out["note"].as_str().unwrap();
-        assert!(note.contains("Assistant app"), "it should say where to look instead: {note}");
-        assert!(!note.contains("come back to this conversation"), "{note}");
-        assert_eq!(vault.job(id_of(&out)).unwrap().asked_in, None);
-    }
+
+    let said = refused(&mcp, "start_research", json!({ "question": "Which e-bike?", "brief": "" }));
+    assert!(said.contains("MCP"), "it should say why: {said}");
+    assert!(every_job(&vault).is_empty(), "nothing was queued");
 }
 
 #[test]

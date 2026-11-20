@@ -46,6 +46,7 @@
 //! still reaches somebody who is not looking at the window; a client with no
 //! shell just shows the banner.
 
+use crate::ctx::Scope;
 use jiff::Timestamp;
 use karmayoga_core::id::{CalendarId, EventId};
 use karmayoga_core::record::RecordKind;
@@ -98,11 +99,22 @@ pub struct Notification {
     /// fault replaces its own message rather than stacking a second copy.
     #[serde(default)]
     pub key: Option<String>,
+    /// The part of the vault this notice talks about: the scope a client
+    /// has to hold to be told it. `None` for a notice nobody classified, and
+    /// that is delivered to a client holding [`Scope::All`] only -- see
+    /// [`Notification::domain`].
+    ///
+    /// Not on the wire. It decides who is *sent* the notice, and a client
+    /// that receives one has already been judged to be allowed it; keeping
+    /// it off the JSON also keeps `ShellNotification` in the interface
+    /// exactly what it was.
+    #[serde(skip)]
+    pub domain: Option<Scope>,
 }
 
 impl Notification {
     pub fn new(level: Level, title: impl Into<String>) -> Self {
-        Self { level, reach: Reach::App, title: title.into(), body: None, key: None }
+        Self { level, reach: Reach::App, title: title.into(), body: None, key: None, domain: None }
     }
 
     pub fn warning(title: impl Into<String>) -> Self {
@@ -123,6 +135,21 @@ impl Notification {
 
     pub fn key(mut self, key: impl Into<String>) -> Self {
         self.key = Some(key.into());
+        self
+    }
+
+    /// Say which part of the vault this notice is about, so that a paired
+    /// device or a browser is sent it only if it may read that part.
+    ///
+    /// A notice's title and body are written from the vault's contents -- a
+    /// sender and the first words of a message, a medicine, a meeting and
+    /// where to join it -- so one sent to every stream would hand a client
+    /// that holds only `Tasks` the mail it was never given. A notice that is
+    /// never classified reaches clients holding [`Scope::All`] and nobody
+    /// else, which is why forgetting to call this loses a banner on a
+    /// narrow device and never leaks anything.
+    pub fn domain(mut self, domain: Scope) -> Self {
+        self.domain = Some(domain);
         self
     }
 }
@@ -266,6 +293,66 @@ pub enum Kind {
     /// the variant has to exist before the first task does, and the first
     /// task is mail's, not phase 0's.
     BackgroundTask,
+}
+
+impl Kind {
+    /// The scope a client must hold to be told about a change of this kind,
+    /// or `None` for a kind no single scope covers.
+    ///
+    /// A change names no content -- a kind, an operation, perhaps an id --
+    /// but "a transaction was written" and "a dose was taken" are still
+    /// things a token that may read neither has no business learning, and an
+    /// id is something to ask for by. The answer is the scope of the
+    /// commands that raise the kind, from the command table.
+    ///
+    /// `Settings` and `BackgroundTask` are `None`: the first is raised under
+    /// a dozen different scopes, the second is a supervisor task's status
+    /// (a mailbox's sync, a bank link's) that no client other than a whole
+    /// copy of the application draws. A `None` kind reaches only a client
+    /// holding [`Scope::All`]. An exhaustive match with no wildcard, so a
+    /// kind added without an answer here does not compile.
+    pub fn scope(self) -> Option<Scope> {
+        match self {
+            Kind::Journal | Kind::Entry => Some(Scope::Journals),
+            Kind::Note => Some(Scope::Notes),
+            Kind::Template => Some(Scope::Templates),
+            Kind::Project | Kind::Task | Kind::Block => Some(Scope::Tasks),
+            Kind::Calendar | Kind::Event => Some(Scope::Calendars),
+            Kind::Shelf | Kind::Item | Kind::Log => Some(Scope::Library),
+            Kind::Tracker | Kind::Reading => Some(Scope::Trackers),
+            Kind::Role | Kind::Goal => Some(Scope::Purpose),
+            Kind::Account => Some(Scope::Accounts),
+            Kind::Mailbox | Kind::Thread | Kind::Draft => Some(Scope::Mail),
+            Kind::Conversation
+            | Kind::Routine
+            | Kind::RoutineRun
+            | Kind::Job
+            | Kind::Proposal
+            | Kind::Memory
+            | Kind::Skill => Some(Scope::Agent),
+            Kind::Recording | Kind::Transcript | Kind::Voiceprint => Some(Scope::Meetings),
+            Kind::NewsSource | Kind::Story => Some(Scope::News),
+            Kind::BankLink
+            | Kind::BankAccount
+            | Kind::Txn
+            | Kind::MoneyCategory
+            | Kind::MoneyRule => Some(Scope::Money),
+            Kind::ScreenApp | Kind::ScreenCategory | Kind::ScreenSpan => Some(Scope::ScreenTime),
+            Kind::File | Kind::Album => Some(Scope::Files),
+            Kind::HealthSource
+            | Kind::Workout
+            | Kind::Medication
+            | Kind::Dose
+            | Kind::Condition
+            | Kind::LabResult
+            | Kind::HealthDocument
+            | Kind::Allergy
+            | Kind::Food
+            | Kind::Meal
+            | Kind::HealthSample => Some(Scope::Health),
+            Kind::Settings | Kind::BackgroundTask => None,
+        }
+    }
 }
 
 /// [`Kind`] is coarser than [`RecordKind`] on the mail side (a mail message

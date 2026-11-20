@@ -1224,14 +1224,95 @@ pub struct Reply {
     pub body: Bytes,
 }
 
-/// Send a request and read all of its answer. Objects are at most about a
-/// megabyte, so reading one whole is the simple thing and the right one.
-pub async fn send(request: reqwest::RequestBuilder) -> Result<Reply, reqwest::Error> {
-    let response = request.send().await?;
+/// The most of a refusal's explanation that is kept: enough for the XML or JSON
+/// that names what was wrong, and no more than that of a service that goes on.
+const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024;
+
+/// Why [`send`] came back without a whole answer.
+#[derive(Debug)]
+pub enum SendError {
+    /// No answer, or one that stopped partway: see [`transport_cause`].
+    Transport(reqwest::Error),
+    /// The answer was longer than `limit` bytes, which no answer to this
+    /// request can be. Reading stopped there.
+    TooLarge { limit: u64 },
+}
+
+impl SendError {
+    /// Did nothing answer, rather than something answering wrongly? Only
+    /// that is the network's fault, and only that is worth asking again.
+    pub fn unreachable(&self) -> bool {
+        matches!(self, Self::Transport(e) if !e.is_builder())
+    }
+
+    /// Worth trying again: a request that could not be built, and an answer
+    /// that is too long for what was asked, will be the same next time.
+    pub fn transient(&self) -> bool {
+        matches!(self, Self::Transport(e) if transient_transport(e))
+    }
+
+    /// Why, in the innermost words available, with any address taken out.
+    /// For [`SendError::TooLarge`] it finishes "answered with ...", for a
+    /// [`SendError::Transport`] it finishes "could not reach ...: ".
+    pub fn cause(&self) -> String {
+        match self {
+            Self::Transport(e) => transport_cause(e),
+            Self::TooLarge { limit } => format!(
+                "more than {}, more than any answer a backup stores, so none of it was kept",
+                megabytes(*limit)
+            ),
+        }
+    }
+}
+
+/// `bytes` as "8 MB", for a message.
+fn megabytes(bytes: u64) -> String {
+    format!("{} MB", bytes.div_ceil(1024 * 1024))
+}
+
+/// Send a request and read all of its answer, up to `limit` bytes of it.
+///
+/// What is read is held in memory whole, and whatever is on the other end of
+/// the connection -- a bucket anyone with its keys can write into, a mistyped
+/// address that is somebody else's service -- decides how much of it there is.
+/// So it is read as it arrives and abandoned the moment it passes `limit`, an
+/// answer that says in advance that it will is refused without reading any of
+/// it, and one of either kind is an error that says so rather than a shorter
+/// object that opens with the wrong key and is reported as that.
+///
+/// `limit` is for an answer that succeeded. One that did not carries only an
+/// explanation, and what is kept of it is what fits in [`MAX_ERROR_BODY_BYTES`]
+/// -- cut short, not refused, because its status is what says what happened
+/// and a service that is failing at length should still be told apart from
+/// one that is not there.
+///
+/// Counted after the transport has decoded it, which is why the client is
+/// built to ask for nothing compressed (`target::http_client`) and the count
+/// would bound a decoder that was left on all the same.
+pub async fn send(request: reqwest::RequestBuilder, limit: u64) -> Result<Reply, SendError> {
+    let mut response = request.send().await.map_err(SendError::Transport)?;
     let status = response.status();
     let headers = response.headers().clone();
-    let body = response.bytes().await?;
-    Ok(Reply { status, headers, body })
+    let refuse_overlong = status.is_success();
+    let limit = if refuse_overlong { limit } else { MAX_ERROR_BODY_BYTES };
+    if refuse_overlong && response.content_length().is_some_and(|declared| declared > limit) {
+        return Err(SendError::TooLarge { limit });
+    }
+    let mut body: Vec<u8> = Vec::with_capacity(
+        response.content_length().map_or(0, |declared| declared.min(limit)).try_into().unwrap_or(0),
+    );
+    while let Some(piece) = response.chunk().await.map_err(SendError::Transport)? {
+        let room = limit.saturating_sub(body.len() as u64);
+        if piece.len() as u64 > room {
+            if refuse_overlong {
+                return Err(SendError::TooLarge { limit });
+            }
+            body.extend_from_slice(&piece[..room as usize]);
+            break;
+        }
+        body.extend_from_slice(&piece);
+    }
+    Ok(Reply { status, headers, body: Bytes::from(body) })
 }
 
 /// How many times a request is made before its failure is reported, counting

@@ -114,13 +114,60 @@ fn placing() -> MutexGuard<'static, ()> {
 struct PendingUpload {
     name: String,
     size: u64,
+    /// With `encrypted` settled when the upload began ([`Vault::begin_upload`]),
+    /// so what the settings say by the time it finishes cannot move the
+    /// bytes from where they were staged.
     opts: ImportOptions,
     begun: Instant,
 }
 
+impl PendingUpload {
+    /// Will the upload be sealed, so that it is staged outside the folder?
+    fn sealed(&self) -> bool {
+        self.opts.encrypted == Some(true)
+    }
+}
+
+/// Where an upload's bytes wait while they arrive and until they are placed
+/// or sealed. Which it is follows from what the upload will become, and is
+/// decided once, when it begins.
+enum UploadArea {
+    /// A plain upload: in the files folder's internal folder, where the file
+    /// is going to be in the clear anyway.
+    Folder(Folder),
+    /// A sealed one: in a private folder of this vault's in the cache
+    /// directory, never in the files folder, which a sync tool may be
+    /// reading ([`disk::UploadStaging`]).
+    Private(disk::UploadStaging),
+}
+
+impl UploadArea {
+    fn begin(&self, upload: &str) -> Result<u64> {
+        match self {
+            UploadArea::Folder(folder) => folder.begin_upload(upload),
+            UploadArea::Private(staging) => staging.begin_upload(upload),
+        }
+    }
+
+    fn append(&self, upload: &str, offset: u64, bytes: &[u8]) -> Result<u64> {
+        match self {
+            UploadArea::Folder(folder) => folder.append_upload(upload, offset, bytes),
+            UploadArea::Private(staging) => staging.append_upload(upload, offset, bytes),
+        }
+    }
+
+    fn cancel(&self, upload: &str) -> Result<()> {
+        match self {
+            UploadArea::Folder(folder) => folder.cancel_upload(upload),
+            UploadArea::Private(staging) => staging.cancel_upload(upload),
+        }
+    }
+}
+
 /// Uploads in progress, by ticket. In memory only: an upload does not
-/// survive a restart, and its staging file is swept by the folder's own
-/// sweep.
+/// survive a restart, and its staging file is swept by the files task's
+/// hourly sweep (the folder's own for a plain upload,
+/// [`Vault::sweep_open_copies`] for a sealed one).
 fn uploads() -> MutexGuard<'static, HashMap<String, PendingUpload>> {
     static UPLOADS: OnceLock<Mutex<HashMap<String, PendingUpload>>> = OnceLock::new();
     UPLOADS.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -138,7 +185,9 @@ fn new_token() -> String {
 enum Source<'a> {
     Path(&'a Path),
     Bytes(&'a [u8]),
-    /// A finished upload's staging file, in the folder's internal folder.
+    /// A finished upload's staging file: in the folder's internal folder if
+    /// the file is to be plain, in the private place outside it if sealed
+    /// ([`UploadArea`]).
     Upload(&'a str),
 }
 
@@ -703,8 +752,15 @@ impl Vault {
 
     /// Start an upload of `size` bytes called `name`. The ticket names it in
     /// [`Vault::upload_chunk`], [`Vault::finish_upload`] and
-    /// [`Vault::cancel_upload`]. Staged inside the folder's internal folder
-    /// whether the file will be plain or sealed.
+    /// [`Vault::cancel_upload`].
+    ///
+    /// Whether the file will be sealed is settled here, from the options and
+    /// the settings as they are now, and decides where the bytes are staged:
+    /// a plain file's in the folder's internal folder, a sealed one's in a
+    /// private place outside the files folder ([`disk::UploadStaging`]),
+    /// because until it is finished a sealed upload is the plaintext of a file
+    /// the person chose to keep encrypted, and the folder may be synced.
+    /// A sealed upload therefore needs no files folder at all.
     pub fn begin_upload(
         &self,
         name: &str,
@@ -716,19 +772,25 @@ impl Vault {
         if let Some(dir) = &opts.dir {
             disk::validate_rel(dir)?;
         }
-        let folder = self.usable_folder()?;
+        let sealed = self.is_sealed(opts)?;
+        let area = self.upload_area(sealed)?;
         let upload = new_token();
-        let received = folder.begin_upload(&upload)?;
+        let received = area.begin(&upload)?;
         let mut pending = uploads();
         pending.retain(|_, p| p.begun.elapsed().as_secs() < UPLOAD_LIFETIME_SECS);
         if pending.len() >= MAX_UPLOADS {
             drop(pending);
-            let _ = folder.cancel_upload(&upload);
+            let _ = area.cancel(&upload);
             return Err(Error::Invalid("too many uploads are in progress".into()));
         }
         pending.insert(
             upload.clone(),
-            PendingUpload { name, size, opts: opts.clone(), begun: Instant::now() },
+            PendingUpload {
+                name,
+                size,
+                opts: ImportOptions { encrypted: Some(sealed), ..opts.clone() },
+                begun: Instant::now(),
+            },
         );
         Ok(UploadTicket { upload, received })
     }
@@ -736,16 +798,16 @@ impl Vault {
     /// Append a chunk at `offset`. Answers the bytes received so far.
     pub fn upload_chunk(&self, upload: &str, offset: u64, bytes: &[u8]) -> Result<u64> {
         self.writable()?;
-        let size = uploads()
+        let (size, sealed) = uploads()
             .get(upload)
-            .map(|p| p.size)
+            .map(|p| (p.size, p.sealed()))
             .ok_or_else(|| Error::not_found("upload", upload))?;
         if offset.checked_add(bytes.len() as u64).is_none_or(|end| end > size) {
             return Err(Error::Invalid(format!(
                 "that chunk runs past the {size} bytes this upload was begun with"
             )));
         }
-        self.usable_folder()?.append_upload(upload, offset, bytes)
+        self.upload_area(sealed)?.append(upload, offset, bytes)
     }
 
     /// Place (or seal) a complete upload and catalog it. Refuses one whose
@@ -756,7 +818,7 @@ impl Vault {
             uploads().get(upload).cloned().ok_or_else(|| Error::not_found("upload", upload))?;
         // Begun again, an upload answers what it has: the one way to learn
         // the staging file's length without reaching into it.
-        let received = self.usable_folder()?.begin_upload(upload)?;
+        let received = self.upload_area(pending.sealed())?.begin(upload)?;
         if received != pending.size {
             return Err(Error::Invalid(format!(
                 "received {received} of the {} bytes this upload was begun with",
@@ -771,11 +833,35 @@ impl Vault {
     pub fn cancel_upload(&self, upload: &str) -> Result<()> {
         self.writable()?;
         uploads().remove(upload);
-        // Whatever the ticket was, the staging file under that name goes. A
-        // folder that is not there has nothing staged.
+        // Whatever the ticket was, the staging file under that name goes,
+        // from wherever it was kept: the ticket may be one this run never
+        // heard of. A folder that is not there has nothing staged.
+        disk::UploadStaging::for_vault(self.path()).cancel_upload(upload)?;
         match self.files_folder()? {
             Some(folder) if folder.root().is_dir() => folder.cancel_upload(upload),
             _ => Ok(()),
+        }
+    }
+
+    /// Will a file added with `opts` be sealed in the vault rather than
+    /// written to the folder? What the options say, and the settings for the
+    /// file's origin when they say nothing.
+    fn is_sealed(&self, opts: &ImportOptions) -> Result<bool> {
+        Ok(match opts.encrypted {
+            Some(sealed) => sealed,
+            None => self.files_settings()?.encrypted.contains(&opts.origin),
+        })
+    }
+
+    /// The place an upload's bytes are staged: private and outside the files
+    /// folder for one that will be sealed, the folder's own for one that will
+    /// not -- which is then the folder that is usable, or an error saying why
+    /// not.
+    fn upload_area(&self, sealed: bool) -> Result<UploadArea> {
+        if sealed {
+            Ok(UploadArea::Private(disk::UploadStaging::for_vault(self.path())))
+        } else {
+            Ok(UploadArea::Folder(self.usable_folder()?))
         }
     }
 
@@ -1374,18 +1460,58 @@ impl Vault {
         Ok(target)
     }
 
-    /// Delete decrypted copies of sealed files that have been lying about
-    /// for longer than `older_than`, wherever this build or an older one
-    /// kept them: in the private folder outside the files folder, and in the
-    /// files folder's own `open` folder, which an older build used and which
-    /// is emptied completely, since nothing legitimate is kept there now.
-    /// Answers how many copies went.
+    /// Delete what has been lying about for longer than `older_than` of the
+    /// plaintext this vault keeps outside the files folder, and the old
+    /// build's leftovers: decrypted copies of sealed files, and the staging
+    /// files of sealed uploads nobody finished (both in private folders in the
+    /// cache directory), and the files folder's own `open` folder, which an
+    /// older build used for copies and which is emptied completely, since
+    /// nothing legitimate is kept there now. Answers how many things went.
+    ///
+    /// This vault's own only; [`Vault::sweep_left_behind_plaintext`] looks
+    /// wider.
     pub fn sweep_open_copies(&self, older_than: std::time::Duration) -> Result<u32> {
         let mut swept = disk::OpenCopies::for_vault(self.path()).sweep(older_than)?;
+        swept += disk::UploadStaging::for_vault(self.path()).sweep(older_than)?;
         if let Ok(Some(folder)) = self.files_folder() {
             swept += folder.sweep_open(std::time::Duration::ZERO).unwrap_or(0);
         }
         Ok(swept)
+    }
+
+    /// Delete every decrypted copy of a sealed file and every staged sealed
+    /// upload this vault has, however new. Answers how many went.
+    ///
+    /// Called when the vault locks ([`Vault::lock`]), by the process that
+    /// holds the write lock: the folders are shared with whichever process
+    /// that is, so a read-only handle must not call it. It needs no key and
+    /// no open store -- the folders are named by the vault's path -- so it
+    /// works on a vault that is already locked, and the copies cannot outlive
+    /// the key. Another program that has a copy open keeps reading it on
+    /// unix; on Windows such a file cannot be deleted, and waits for a sweep.
+    pub fn remove_plaintext_scratch(&self) -> u32 {
+        disk::OpenCopies::for_vault(self.path()).remove_all()
+            + disk::UploadStaging::for_vault(self.path()).remove_all()
+    }
+
+    /// Clear out the plaintext a run that is gone left behind, as the vault is
+    /// opened -- before it is unlocked, which a sweep that needs the catalog
+    /// cannot wait for. Answers how many things went.
+    ///
+    /// Where this process holds the vault's write lock, nobody else has it, so
+    /// every decrypted copy and staged upload of it is a leftover of a run that
+    /// quit or crashed without locking, and all of them go. Wherever it does
+    /// not -- a second window or `karmayoga list` beside the real one, whose
+    /// copies are live -- nothing of this vault's is touched. And either way
+    /// the whole cache directory is swept of what is older than `older_than`
+    /// ([`disk::sweep_scratch_everywhere`]), which is how the leftovers of a
+    /// vault that has since moved or been deleted are found.
+    pub fn sweep_left_behind_plaintext(&self, older_than: std::time::Duration) -> Result<u32> {
+        let mut swept = 0;
+        if self.is_writable() {
+            swept += self.remove_plaintext_scratch();
+        }
+        Ok(swept + disk::sweep_scratch_everywhere(self.path(), older_than)?)
     }
 
     // ---- albums ----------------------------------------------------------
@@ -1939,54 +2065,50 @@ impl Vault {
     fn add(&self, source: Source<'_>, name: &str, opts: &ImportOptions) -> Result<FileEntry> {
         self.writable()?;
         let name = validate_file_name(opts.name.as_deref().unwrap_or(name))?;
-        let settings = self.files_settings()?;
-        let sealed = opts.encrypted.unwrap_or_else(|| settings.encrypted.contains(&opts.origin));
+        let sealed = self.is_sealed(opts)?;
         let now = Timestamp::now();
         let today = now.to_zoned(TimeZone::system()).date();
-        // A sealed file never touches the folder -- unless it is an upload,
-        // which was staged there.
-        let folder = if sealed && !matches!(source, Source::Upload(_)) {
-            None
-        } else {
-            Some(self.usable_folder()?)
+        // A sealed file never touches the folder, not even as an upload: that
+        // was staged in a private place of its own (see `UploadArea`).
+        let folder = if sealed { None } else { Some(self.usable_folder()?) };
+        let staging = disk::UploadStaging::for_vault(self.path());
+        let staged = |token: &str| match &folder {
+            Some(folder) => folder.upload_path(token),
+            None => staging.upload_path(token),
         };
-        let head = match (&source, &folder) {
-            (Source::Path(path), _) => read_head(path)?,
-            (Source::Bytes(bytes), _) => bytes[..bytes.len().min(HEAD_LEN as usize)].to_vec(),
-            (Source::Upload(token), Some(folder)) => read_head(&folder.upload_path(token)?)?,
-            (Source::Upload(_), None) => Vec::new(),
+        let head = match &source {
+            Source::Path(path) => read_head(path)?,
+            Source::Bytes(bytes) => bytes[..bytes.len().min(HEAD_LEN as usize)].to_vec(),
+            Source::Upload(token) => read_head(&staged(token)?)?,
         };
         let mime = disk::guess_mime(&name, &head);
         let mut entry = new_entry(FileId::new(), opts.origin, &name, mime, now);
 
         if sealed {
-            let (blob, size, hash) = match (&source, &folder) {
-                (Source::Path(path), _) => {
+            let (blob, size, hash) = match &source {
+                Source::Path(path) => {
                     let blob = self.read(|u| u.store.put_blob_file(path))?;
                     let (size, hash) = hash_file(path)?;
                     (blob, size, hash)
                 }
-                (Source::Bytes(bytes), _) => {
+                Source::Bytes(bytes) => {
                     let blob = self.read(|u| u.store.put_blob(bytes))?;
                     let (size, hash) = disk::hash_reader(*bytes)?;
                     (blob, size, hash)
                 }
-                (Source::Upload(token), Some(folder)) => {
-                    let staged = folder.upload_path(token)?;
-                    let blob = self.read(|u| u.store.put_blob_file(&staged))?;
-                    let (size, hash) = hash_file(&staged)?;
+                Source::Upload(token) => {
+                    let path = staged(token)?;
+                    let blob = self.read(|u| u.store.put_blob_file(&path))?;
+                    let (size, hash) = hash_file(&path)?;
                     (blob, size, hash)
-                }
-                (Source::Upload(_), None) => {
-                    return Err(Error::Invalid("an upload needs the files folder".into()));
                 }
             };
             entry.storage = FileStorage::Sealed { blob };
             entry.size = size;
             entry.hash = hash;
             self.with_files(|s| s.put_file(&entry))?;
-            if let (Source::Upload(token), Some(folder)) = (&source, &folder) {
-                let _ = folder.cancel_upload(token);
+            if let Source::Upload(token) = &source {
+                let _ = staging.cancel_upload(token);
             }
         } else {
             let folder = folder.ok_or_else(|| Error::Invalid("no files folder".into()))?;

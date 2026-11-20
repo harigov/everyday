@@ -28,7 +28,11 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 static OPENING: AtomicBool = AtomicBool::new(false);
 
 /// The card's window. One for the process; hidden while there is nothing to say.
-const LABEL: &str = "recording-notice";
+///
+/// Crate-visible because `guard` names it: the window's capability
+/// (`capabilities/recording.json`) and the list of what it may `call` are both
+/// keyed by this label, and a test holds the three together.
+pub(crate) const LABEL: &str = "recording-notice";
 
 /// The card's size where it is a window of its own, in logical pixels.
 const WIDTH: f64 = 360.0;

@@ -38,6 +38,7 @@
 
 use crate::agent::{AgentEvent, Asker, ConfirmAnswer, Reach, Turn, fenced_as_untrusted};
 use crate::chat::{ChatOutlet, FromRun};
+use crate::ctx::Scope;
 use crate::events::{Change, Kind, Notification, Op};
 use crate::service::{Service, blocking};
 use jiff::Timestamp;
@@ -1455,6 +1456,7 @@ fn announce(service: &Arc<Service>, routine: &Routine, run: &RoutineRun) {
             };
             service.events().notify(
                 Notification::new(crate::events::Level::Info, format!("{} is ready", routine.name))
+                    .domain(Scope::Agent)
                     .for_user()
                     .key(key),
             );
@@ -1463,6 +1465,7 @@ fn announce(service: &Arc<Service>, routine: &Routine, run: &RoutineRun) {
             service.events().notify(
                 Notification::warning(format!("{} could not run", routine.name))
                     .body(run.reason.clone())
+                    .domain(Scope::Agent)
                     .for_user()
                     .key(routine_key),
             );

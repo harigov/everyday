@@ -30,6 +30,7 @@
 
 use super::fetch::{self, FetchError, Fetched};
 use super::{Incoming, RefreshReport, extract, hn, newsletters, parse, sanitize};
+use crate::ctx::Scope;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::http;
@@ -833,6 +834,7 @@ fn pause_notice(source: &NewsSource) -> Notification {
 /// is for the window they are looking at.
 fn notify(svc: &Arc<Service>, source: &NewsSource, background: bool, notice: Notification) {
     tracing::info!(source = %source.id, "raising a notification for a source");
+    let notice = notice.domain(Scope::News);
     svc.events().notify(if background { notice.for_user() } else { notice });
 }
 

@@ -12,6 +12,7 @@ fn link() -> ChatLink {
             homeserver: "http://127.0.0.1:6167".into(),
             user_id: "@karmayoga:example.org".into(),
             owner: "@me:example.org".into(),
+            trusted_devices: Vec::new(),
         }),
         ..ChatLink::new_matrix()
     }

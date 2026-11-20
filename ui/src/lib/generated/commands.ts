@@ -45,6 +45,7 @@ import type {
   CalendarInfo,
   CashFlowMonth,
   CategoryCount,
+  ChatDevice,
   ChatLink,
   ChatLinkId,
   ChatLinkView,
@@ -454,6 +455,7 @@ export interface Commands {
   cancelVoiceModelDownload: { args: { id: string }; result: void }
   categoryCounts: { args: { mailbox: MailboxId }; result: CategoryCount[] }
   changePassword: { args: { current: string; next: string }; result: void }
+  chatDevices: { args: { id: ChatLinkId }; result: ChatDevice[] }
   chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
   checkBackupDestination: { args: { destination: Destination }; result: DestinationCheck }
   checkBankLink: { args: { session: string }; result: LinkCheck }
@@ -1066,6 +1068,7 @@ export interface Commands {
   }
   setAutoLock: { args: { seconds: number }; result: void }
   setBackupKeys: { args: { accessKeyId: string; secretAccessKey: string }; result: BackupView }
+  setChatTrustedDevices: { args: { id: ChatLinkId; devices: string[] }; result: ChatLinkView }
   setConnectionSecrets: {
     args: {
       id: ConnectionId
@@ -1217,6 +1220,7 @@ export const COMMAND_NAMES = {
   cancelVoiceModelDownload: 'cancel_voice_model_download',
   categoryCounts: 'category_counts',
   changePassword: 'change_password',
+  chatDevices: 'chat_devices',
   chatLinks: 'chat_links',
   checkBackupDestination: 'check_backup_destination',
   checkBankLink: 'check_bank_link',
@@ -1627,6 +1631,7 @@ export const COMMAND_NAMES = {
   setAgentAccess: 'set_agent_access',
   setAutoLock: 'set_auto_lock',
   setBackupKeys: 'set_backup_keys',
+  setChatTrustedDevices: 'set_chat_trusted_devices',
   setConnectionSecrets: 'set_connection_secrets',
   setConnectionToolPolicy: 'set_connection_tool_policy',
   setDefaultCalendar: 'set_default_calendar',
@@ -1764,6 +1769,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_voice_model_download',
   'category_counts',
   'change_password',
+  'chat_devices',
   'chat_links',
   'check_backup_destination',
   'check_bank_link',
@@ -2173,6 +2179,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_agent_access',
   'set_auto_lock',
   'set_backup_keys',
+  'set_chat_trusted_devices',
   'set_connection_secrets',
   'set_connection_tool_policy',
   'set_default_calendar',
@@ -2502,6 +2509,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_agent_access',
   'set_auto_lock',
   'set_backup_keys',
+  'set_chat_trusted_devices',
   'set_connection_secrets',
   'set_connection_tool_policy',
   'set_default_calendar',
@@ -2771,6 +2779,7 @@ export const CHANGE_KINDS = {
   set_agent_access: 'account',
   set_auto_lock: 'settings',
   set_backup_keys: 'settings',
+  set_chat_trusted_devices: 'settings',
   set_connection_secrets: 'settings',
   set_connection_tool_policy: 'settings',
   set_default_calendar: 'calendar',

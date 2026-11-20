@@ -87,27 +87,31 @@ pub(super) static TOOLS: &[Tool] = &[
         None,
         Some(build_create_note)
     ),
-    tool!(
-        "update_note",
-        Write,
-        Notes,
-        schema(
-            vec![
-                ("note_id", text("Id of the note to change.")),
-                ("body", text("Replaces the whole body. Markdown. Omit to leave it alone.")),
-                ("title", text("Replaces the title. Omit to leave it alone.")),
-                ("tags", list("Replaces the tags entirely. Omit to leave them alone.")),
-                ("pinned", flag("Pin or unpin it.")),
-            ],
-            &["note_id"]
-        ),
-        "Change an existing note. Every field is optional and omitted fields are left \
-         alone \u{2014} but `body` and `tags` replace rather than append, so read the note \
-         first if you mean to add to it.",
-        run_update_note,
-        None,
-        Some(build_update_note)
-    ),
+    Tool {
+        destructive_when: Some(replaces_note_text),
+        ..tool!(
+            "update_note",
+            Write,
+            Notes,
+            schema(
+                vec![
+                    ("note_id", text("Id of the note to change.")),
+                    ("body", text("Replaces the whole body. Markdown. Omit to leave it alone.")),
+                    ("title", text("Replaces the title. Omit to leave it alone.")),
+                    ("tags", list("Replaces the tags entirely. Omit to leave them alone.")),
+                    ("pinned", flag("Pin or unpin it.")),
+                ],
+                &["note_id"]
+            ),
+            "Change an existing note. Every field is optional and omitted fields are left \
+             alone \u{2014} but `body` and `tags` replace rather than append, so read the note \
+             first if you mean to add to it. Replacing the text of a note that has some is \
+             confirmed first, since there is no undo.",
+            run_update_note,
+            Some(describe_update_note),
+            Some(build_update_note)
+        )
+    },
     tool!(
         "delete_note",
         Destructive,
@@ -131,15 +135,66 @@ fn describe_delete_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String
     )
 }
 
-fn note_json(n: &NoteSummary) -> Value {
-    json!({
+/// An `update_note` that would replace words a note already holds is a loss,
+/// and is confirmed like a deletion -- see [`Tool::destructive_when`] and
+/// [`super::replaces_text`].
+///
+/// Except in a note the assistant wrote itself. A research job writes its
+/// answer into the note it opened, and a job started again after the app
+/// closed under it rewrites that note whole with what it has now: a job
+/// refuses anything destructive, so counting that as a loss would leave every
+/// interrupted job unable to finish. What this guards is the person's own
+/// words, and a meeting's, which nobody could write again.
+///
+/// Only a note whose recorded [`Note::origin`] field says so is the
+/// assistant's here, never [`Note::origin()`]'s reading of its tags: a note
+/// saved before origins were kept has none, is guessed at from a `research`
+/// tag, and a tag is a plain write -- a model could tag the person's note,
+/// then overwrite it unasked.
+fn replaces_note_text(ctx: &ToolContext<'_>, args: &Args<'_>) -> bool {
+    let Some(body) = args.opt_str("body") else { return false };
+    let Ok(Some(id)) = args.opt_id::<NoteId>("note_id", "note") else { return false };
+    ctx.vault.note(id).is_ok_and(|note| {
+        note.origin != Some(NoteOrigin::Assistant)
+            && super::replaces_text(&note.body.to_markdown(), body)
+    })
+}
+
+fn describe_update_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
+    let id: NoteId = args.opt_id("note_id", "note").ok()??;
+    let note = ctx.vault.note(id).ok()?;
+    Some(super::replacement_subject(
+        &note.display_title(),
+        &note.body.to_markdown(),
+        args.opt_str("body"),
+    ))
+}
+
+/// Whether the words of a note are left out for this caller: it is one the
+/// assistant wrote, and the caller is one that may not see what the
+/// assistant could have quoted in it. See
+/// [`ToolContext::hides_assistants_writing`]. Read from the guessed origin,
+/// which is the cautious one: a note tagged like the assistant's is hidden
+/// even if a person happened to write it.
+fn hides_words_of(ctx: &ToolContext<'_>, origin: NoteOrigin) -> bool {
+    origin == NoteOrigin::Assistant && ctx.hides_assistants_writing()
+}
+
+fn note_json(ctx: &ToolContext<'_>, n: &NoteSummary) -> Value {
+    let mut out = json!({
+        "origin": n.origin().as_str(),
         "id": n.id.to_string(),
         "title": n.title,
-        "excerpt": n.excerpt,
         "tags": n.tags,
         "pinned": n.pinned,
         "updated": n.updated_at.to_string(),
-    })
+    });
+    if hides_words_of(ctx, n.origin()) {
+        out["withheld"] = json!(ctx.withheld_note());
+    } else {
+        out["excerpt"] = json!(n.excerpt);
+    }
+    out
 }
 
 fn run_list_notes(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -153,24 +208,32 @@ fn run_list_notes(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let notes = ctx.vault.notes(&query)?;
     Ok(json!({
         "count": notes.len(),
-        "notes": notes.iter().map(note_json).collect::<Vec<_>>(),
+        "notes": notes.iter().map(|n| note_json(ctx, n)).collect::<Vec<_>>(),
     }))
 }
 
 fn run_get_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let n: Note = load_by_id(args, "note_id", "note", |id| ctx.vault.note(id))?;
-    Ok(json!({
+    let mut out = json!({
         "id": n.id.to_string(),
+        // Who started it, so a note the assistant or a recording wrote is not
+        // taken for the person's own words.
+        "origin": n.origin().as_str(),
         "title": n.display_title(),
         "tags": n.tags,
         "pinned": n.pinned,
         "created": n.created_at.to_string(),
         "updated": n.updated_at.to_string(),
+    });
+    if hides_words_of(ctx, n.origin()) {
+        out["withheld"] = json!(ctx.withheld_note());
+    } else {
         // Markdown rather than the ProseMirror document, for the reason
         // `get_entry` gives: the model reads and writes prose, and the
         // editor's own tree is not its business.
-        "body": n.body.to_markdown(),
-    }))
+        out["body"] = json!(n.body.to_markdown());
+    }
+    Ok(out)
 }
 
 fn run_list_templates(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {

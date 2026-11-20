@@ -1120,3 +1120,263 @@ fn what_a_restore_writes_for_the_vault_and_the_settings_is_private() {
         assert_eq!(mode(&into.join("store")), 0o700);
     });
 }
+
+// ── What a destination may hand back ────────────────────────────────────────
+//
+// A destination is somebody else's disk or bucket. Everything read from one is
+// held in memory before it has been opened with the vault's key, so what is in
+// it must not be able to decide how much memory that is.
+
+mod hostile_destinations {
+    use std::sync::Mutex;
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{HeaderMap, StatusCode, header};
+    use axum::routing::get;
+    use bytes::Bytes;
+    use karmayoga_core::backup::{S3Credentials, S3Keys};
+
+    use super::*;
+    use crate::backup::creds::{self, SendError};
+    use crate::backup::target::{
+        MAX_CHUNK_BYTES, MAX_LIST_PAGES, MAX_OBJECT_BYTES, MAX_REPLY_BYTES, object_limit,
+    };
+
+    const MIB: usize = 1024 * 1024;
+
+    /// Serve `app` on a free local port, and say where.
+    async fn serve(app: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// What a test binary has to do before it builds a client; the
+    /// application's own startup does it otherwise.
+    fn provider() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    /// `mebibytes` of zeros, gzipped: a few dozen kilobytes that inflate to a
+    /// size the tests can check was never reached.
+    fn gzip_of_zeros(mebibytes: usize) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let zeros = vec![0u8; MIB];
+        for _ in 0..mebibytes {
+            encoder.write_all(&zeros).unwrap();
+        }
+        encoder.finish().unwrap()
+    }
+
+    /// A body of `mebibytes` one-mebibyte pieces, made as it is sent and with
+    /// no length declared, so that only counting what arrives can stop it.
+    fn endless(mebibytes: usize) -> Body {
+        Body::from_stream(futures::stream::iter(
+            (0..mebibytes).map(|_| Ok::<_, std::convert::Infallible>(Bytes::from(vec![7u8; MIB]))),
+        ))
+    }
+
+    fn s3_at(base: &str) -> Target {
+        provider();
+        Target::open(
+            &Destination::S3 {
+                bucket: "bucket".into(),
+                prefix: String::new(),
+                region: None,
+                endpoint: Some(base.to_string()),
+                profile: None,
+                credentials: S3Credentials::Stored,
+            },
+            Some(S3Keys { access_key_id: "AKID".into(), secret_access_key: "secret".into() }),
+        )
+        .unwrap()
+    }
+
+    fn client() -> reqwest::Client {
+        provider();
+        reqwest::Client::new()
+    }
+
+    #[test]
+    fn a_chunk_is_held_to_a_smaller_size_than_a_manifest_and_both_exceed_what_is_written() {
+        assert_eq!(object_limit("chunks/ab/abcdef"), MAX_CHUNK_BYTES);
+        assert_eq!(object_limit("snapshots/2026-11-14T030000Z.snapshot"), MAX_OBJECT_BYTES);
+        assert_eq!(object_limit("karmayoga-backup.json"), MAX_OBJECT_BYTES);
+        // What a backup writes: a megabyte cut of a file, and the seal's few
+        // dozen bytes on top.
+        const {
+            assert!(crate::backup::run::FILE_CHUNK as u64 + 1024 < MAX_CHUNK_BYTES);
+            assert!(MAX_CHUNK_BYTES < MAX_OBJECT_BYTES);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answer_is_read_up_to_its_limit_and_no_further() {
+        let app = Router::new()
+            .route("/exact", get(|| async { vec![1u8; MIB] }))
+            .route("/over", get(|| async { vec![1u8; MIB + 1] }))
+            .route("/endless", get(|| async { endless(300) }));
+        let base = serve(app).await;
+        let http = client();
+        let limit = MIB as u64;
+
+        let exact = creds::send(http.get(format!("{base}/exact")), limit).await.unwrap();
+        assert_eq!(exact.body.len(), MIB, "an answer exactly as long as may be is read whole");
+
+        // Declared too long in advance: refused without reading any of it.
+        let over = creds::send(http.get(format!("{base}/over")), limit).await.err().unwrap();
+        assert!(matches!(over, SendError::TooLarge { limit: l } if l == limit), "{over:?}");
+        assert!(!over.transient() && !over.unreachable(), "asking again would not help");
+
+        // No length declared: counted as it arrives, and dropped at the limit
+        // rather than after three hundred megabytes.
+        let endless = creds::send(http.get(format!("{base}/endless")), limit).await.err().unwrap();
+        assert!(matches!(endless, SendError::TooLarge { .. }), "{endless:?}");
+        assert!(endless.cause().contains("more than 1 MB"), "{}", endless.cause());
+    }
+
+    #[tokio::test]
+    async fn a_refusal_is_kept_short_rather_than_refused() {
+        let app = Router::new().route(
+            "/refused",
+            get(|| async { (StatusCode::SERVICE_UNAVAILABLE, vec![b'x'; 2 * MIB]) }),
+        );
+        let base = serve(app).await;
+        let reply =
+            creds::send(client().get(format!("{base}/refused")), MAX_REPLY_BYTES).await.unwrap();
+        assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE, "what happened is still said");
+        assert_eq!(reply.body.len(), 64 * 1024, "and the explanation is cut");
+    }
+
+    /// The decoder is the reason a few kilobytes can become a hundred
+    /// gigabytes, so the client asks for nothing compressed and, if a server
+    /// sends it anyway, does not inflate it -- and the cap holds for a client
+    /// that does.
+    #[tokio::test]
+    async fn a_gzip_bomb_is_neither_asked_for_nor_inflated() {
+        let bomb = gzip_of_zeros(40);
+        assert!(bomb.len() < MIB, "{} bytes", bomb.len());
+        let asked: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+        // Answers to any address: the bucket's own, and `/bomb` for the plain client.
+        let app = Router::new().route(
+            "/{*path}",
+            get({
+                let (asked, bomb) = (asked.clone(), bomb.clone());
+                move |headers: HeaderMap| {
+                    let (asked, bomb) = (asked.clone(), bomb.clone());
+                    async move {
+                        let said = headers
+                            .get(header::ACCEPT_ENCODING)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        asked.lock().unwrap().push(said);
+                        ([(header::CONTENT_ENCODING, "gzip")], bomb)
+                    }
+                }
+            }),
+        );
+        let base = serve(app).await;
+        let url = format!("{base}/bomb");
+
+        // The client a backup uses, whole: through a destination's `get`.
+        let target = s3_at(&base);
+        let got = target.get("chunks/ab/abcdef").await.unwrap().unwrap();
+        assert_eq!(&got[..], &bomb[..], "the bytes as sent, not what they inflate to");
+        assert!(
+            asked
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|said| said.as_deref().is_none_or(|v| !v.contains("gzip"))),
+            "a backup asks for no compression: {:?}",
+            asked.lock().unwrap()
+        );
+
+        // A client that does inflate is stopped by the count, at the size the
+        // object may be and not at forty mebibytes.
+        let inflating = reqwest::Client::builder().gzip(true).build().unwrap();
+        let stopped = creds::send(inflating.get(&url), MAX_CHUNK_BYTES).await;
+        assert!(matches!(stopped, Err(SendError::TooLarge { .. })), "inflated past the limit");
+    }
+
+    #[tokio::test]
+    async fn a_bucket_cannot_make_a_chunk_larger_than_a_chunk_can_be() {
+        let app = Router::new().route(
+            "/bucket/{*key}",
+            // One byte more than a chunk may be, for whatever is asked for: for
+            // a manifest, that is well within what one may be.
+            get(|| async { vec![3u8; MAX_CHUNK_BYTES as usize + 1] }),
+        );
+        let target = s3_at(&serve(app).await);
+
+        let chunk = target.get("chunks/ab/abcdef").await.unwrap_err();
+        assert_eq!(chunk.kind, TargetErrorKind::Other, "{chunk}");
+        assert!(chunk.message.contains("more than 16 MB"), "{chunk}");
+        assert!(chunk.message.contains("bucket"), "{chunk}");
+
+        let manifest = target.get("snapshots/2026-11-14T030000Z.snapshot").await.unwrap().unwrap();
+        assert_eq!(manifest.len(), MAX_CHUNK_BYTES as usize + 1);
+    }
+
+    #[tokio::test]
+    async fn a_listing_that_never_ends_is_given_up_on() {
+        let pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/bucket",
+            get({
+                let pages = pages.clone();
+                move || {
+                    let page = pages.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    // A different token every time, so that "the same page
+                    // twice" never catches it.
+                    async move {
+                        format!(
+                            "<ListBucketResult><IsTruncated>true</IsTruncated>\
+                             <NextContinuationToken>page-{page}</NextContinuationToken>\
+                             <Contents><Key>chunks/ab/{page:064x}</Key></Contents>\
+                             </ListBucketResult>"
+                        )
+                    }
+                }
+            }),
+        );
+        let target = s3_at(&serve(app).await);
+        let error = target.list("chunks/").await.unwrap_err();
+        assert!(error.message.contains(&MAX_LIST_PAGES.to_string()), "{error}");
+        assert!(error.message.contains("not followed further"), "{error}");
+        assert_eq!(
+            pages.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_LIST_PAGES,
+            "it stops at the cap, and does not ask once more"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_in_a_folder_destination_is_not_read_past_its_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = Target::folder(dir.path());
+        std::fs::create_dir_all(dir.path().join("chunks/ab")).unwrap();
+        let chunk = dir.path().join("chunks/ab/abcdef");
+
+        // Exactly as large as may be: read.
+        std::fs::File::create(&chunk).unwrap().set_len(MAX_CHUNK_BYTES).unwrap();
+        assert_eq!(
+            target.get("chunks/ab/abcdef").await.unwrap().unwrap().len() as u64,
+            MAX_CHUNK_BYTES
+        );
+
+        // One byte more: refused, unread, and said.
+        std::fs::File::create(&chunk).unwrap().set_len(MAX_CHUNK_BYTES + 1).unwrap();
+        let refused = target.get("chunks/ab/abcdef").await.unwrap_err();
+        assert_eq!(refused.kind, TargetErrorKind::Other);
+        assert!(refused.message.contains("larger than any object a backup stores"), "{refused}");
+
+        // Not there at all is still `None`, not an error.
+        assert!(target.get("chunks/ab/nothing").await.unwrap().is_none());
+    }
+}

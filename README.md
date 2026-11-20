@@ -3212,6 +3212,13 @@ it builds. `make dist` is what `.github/workflows/release.yml` runs: the
 `dist` profile, with LTO and one codegen unit per crate, and every installer
 the platform makes. It takes several times as long.
 
+To check a downloaded release: `sha256sum -c SHA256SUMS.txt --ignore-missing`
+confirms the bytes match the list published beside them, and
+`gh attestation verify <file> --repo harigov/everyday` confirms GitHub's
+signed record that this repository's release workflow built that exact file.
+The second is the one that means something if the release page itself were
+tampered with, since the checksum list sits next to the installers.
+
 ### Test it
 
 ```sh

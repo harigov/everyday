@@ -3,6 +3,10 @@
 //!
 //! The order is most of the design:
 //!
+//! 0. **The owner's devices are marked.** Before anything is synced, and again
+//!    when the first sync has told the bot what devices the owner has, each is
+//!    marked trusted or blacklisted as the hand-picked list says (see
+//!    `devices`), and a watch keeps them so while the sync runs.
 //! 1. **Invitations first.** The handler that accepts the owner's invitations
 //!    is up before anything is synced, so one waiting on the server is joined
 //!    in the very first sync.
@@ -93,6 +97,7 @@ impl MatrixConnector {
             self.owner.clone(),
             inbox.clone(),
             Arc::clone(&self.questions),
+            Arc::clone(&self.trust),
         ));
         let invitations = Arc::new(Invitations::new(self.owner.clone()));
 
@@ -105,6 +110,13 @@ impl MatrixConnector {
             watch_owner_joining(client, &standing, &self.owner),
         ];
         invitations.accept_waiting(client).await;
+
+        // Subscribed before the first sync, so no device it brings falls
+        // between; dropped, and so stopped, when this function ends.
+        let _watching = self.trust.watch().await;
+        if let Err(problem) = self.trust.apply().await {
+            tracing::warn!("{problem}");
+        }
 
         // Verification requests are heard from the same moment as messages,
         // so one left over in a backlog is not taken up either.
@@ -131,13 +143,24 @@ impl MatrixConnector {
             guards.extend(self.verifying.listen(client));
         }
         invitations.settled(INVITATIONS_PATIENCE).await;
+        // The first sync is what tells the bot of devices the owner signed in
+        // on while it was off.
+        if let Err(problem) = self.trust.apply().await {
+            tracing::warn!("{problem}");
+        }
 
         // 3. A room for the owner.
         let counterpart = tokio::select! {
             biased;
             () = stopped(&mut stop) => return Ok(()),
             () = inbox.closed() => return Ok(()),
-            counterpart = rooms::ensure(client, &self.bot, &self.owner, &self.assistant_name) => counterpart?,
+            counterpart = rooms::ensure(
+                client,
+                &self.bot,
+                &self.owner,
+                &self.assistant_name,
+                self.trust.trusts_anybody(),
+            ) => counterpart?,
         };
         standing.waiting.store(!counterpart.owner_joined, Ordering::SeqCst);
 

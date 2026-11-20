@@ -16,7 +16,7 @@
 
 use crate::accountcal::{self, RemoteCalendar};
 use crate::command;
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::Notification;
 use crate::feeds;
@@ -644,6 +644,7 @@ fn tell_stopped(svc: &Service, vault: &Vault, stopped: &DueCalendar) {
                 "{whose} events may be out of date, so a meeting moved since may still be \
                  reminded at its old time. Open the calendar for details."
             ))
+            .domain(Scope::Calendars)
             .for_user()
             .key(key),
     );

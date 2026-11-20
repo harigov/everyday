@@ -33,12 +33,19 @@
 //!
 //! - **Memberships** are state events, which Matrix cannot encrypt end to
 //!   end, so one is believed on who sent it and where: the owner, under a
-//!   state key that is theirs, in a room nobody else is in. The homeserver
-//!   vouches for the sender of a state event as it does for every event.
+//!   state key that is theirs, in an encrypted room nobody else is in. The
+//!   homeserver vouches for the sender of a state event as it does for every
+//!   event -- and says nothing of the *device*, which a state key only
+//!   claims. So the device a membership names must be one of the owner's
+//!   trusted devices (see `devices`), and what really makes a call the
+//!   trusted device's is the next point.
 //! - **Keys** are believed only if they arrived Olm-encrypted, from the owner,
-//!   for the device that encrypted them. FluffyChat also takes them in plain
-//!   text; the bot does not, since a plain to-device message is only as
-//!   honest as the servers that carried it.
+//!   from a trusted device of theirs, for the device that encrypted them.
+//!   FluffyChat also takes them in plain text; the bot does not, since a plain
+//!   to-device message is only as honest as the servers that carried it.
+//!   And the bot's own key goes only to a trusted device ([`Calls::send_key`]),
+//!   so nothing the assistant says on a call can be heard by a device that
+//!   merely shares the owner's account.
 //! - **Audio**: the media server carries everyone in the LiveKit room, and
 //!   the media layer listens only to `CallJoin::caller`, the owner's calling
 //!   device.
@@ -68,9 +75,10 @@
 //! the way in, handing them over with the `EncryptionInfo` that tells the two
 //! kinds apart.
 
+use super::devices::Trust;
 use super::errors::classify;
-use super::rooms::kind_of;
-use super::rules::{self, RoomKind};
+use super::rooms::{self, kind_of};
+use super::rules::{self, RoomKind, TrustedDevices};
 use crate::connector::{CallId, CallJoin, CallKey, ChatError, ChatId, HangUp, Incoming};
 use base64::Engine as _;
 use base64::alphabet;
@@ -264,6 +272,18 @@ impl Remembered {
         self.calls.iter().find(|(id, _)| id == call).map(|(_, known)| known)
     }
 
+    /// Forget every call whose caller's device is not on `trusted`, joined or
+    /// not, and hand them back: the owner took that device off the list, so
+    /// nothing it has going is to carry on, and nothing it rings is to be
+    /// answered.
+    fn drop_untrusted(&mut self, trusted: &TrustedDevices) -> Vec<(CallId, Known)> {
+        let all = std::mem::take(&mut self.calls);
+        let (kept, dropped) =
+            all.into_iter().partition(|(_, known)| trusted.contains(&known.device));
+        self.calls = kept;
+        dropped
+    }
+
     fn forget(&mut self, call: &CallId) -> Option<Known> {
         let at = self.calls.iter().position(|(id, _)| id == call)?;
         Some(self.calls.remove(at).1)
@@ -432,12 +452,31 @@ pub(super) struct Calls {
     client: Client,
     bot: OwnedUserId,
     owner: OwnedUserId,
+    /// Which of the owner's devices are trusted: the only ones a call is
+    /// answered for, and the only ones the bot's key is sent to.
+    trust: Arc<Trust>,
+    /// Where the relay hears of a call ending, while the bot is listening.
+    /// Weak: the relay's own end of the channel is what keeps it open, and
+    /// the connector's `listen` must be able to close it by dropping its own.
+    inbox: Mutex<Option<mpsc::WeakSender<Incoming>>>,
     state: Mutex<State>,
 }
 
 impl Calls {
-    pub(super) fn new(client: Client, bot: OwnedUserId, owner: OwnedUserId) -> Self {
-        Self { client, bot, owner, state: Mutex::new(State::default()) }
+    pub(super) fn new(
+        client: Client,
+        bot: OwnedUserId,
+        owner: OwnedUserId,
+        trust: Arc<Trust>,
+    ) -> Self {
+        Self {
+            client,
+            bot,
+            owner,
+            trust,
+            inbox: Mutex::new(None),
+            state: Mutex::new(State::default()),
+        }
     }
 
     /// Start hearing the owner's calls: their devices' memberships, and the
@@ -452,6 +491,7 @@ impl Calls {
         // reach the handler, but taken raw: the content is read by hand (see
         // `StateParts`). A state event is handed to this kind of handler
         // whether it came in a sync's state or in its timeline.
+        *self.inbox.lock().unwrap() = Some(inbox.downgrade());
         let calls = Arc::clone(self);
         let tx = inbox.clone();
         let memberships = client.add_event_handler(
@@ -495,6 +535,13 @@ impl Calls {
         kind_of(room, &self.bot, &self.owner).await == Some(RoomKind::Private)
     }
 
+    /// Whether `room` is somewhere the bot answers: private, and encrypted.
+    /// A call in a room that is not encrypted is let go, as the chat there is
+    /// -- the assistant writes nowhere that is not (see `speaking`).
+    async fn is_answerable(&self, room: &Room) -> bool {
+        self.is_private(room).await && rooms::is_encrypted(room).await
+    }
+
     async fn heard_membership(
         self: &Arc<Self>,
         event: Raw<SyncStateEvent<CallMemberEventContent>>,
@@ -529,14 +576,21 @@ impl Calls {
         now_ms: i64,
         inbox: &mpsc::Sender<Incoming>,
     ) {
-        if !self.is_private(&room).await {
-            tracing::debug!(room = %room.room_id(), "ignoring a call in a room that is not private");
+        if !self.is_answerable(&room).await {
+            tracing::debug!(room = %room.room_id(), "ignoring a call in a room that is not private and encrypted");
             return;
         }
         let Some(device) = device_of(&membership, &parts.state_key, &self.owner) else {
             tracing::debug!("ignoring a call membership that names no device");
             return;
         };
+        // Only a call from a device the owner picked is answered. Said to
+        // Settings like a message from one: the owner ringing from a new
+        // phone is the likeliest way to find out it has to be trusted first.
+        if !self.trust.is_trusted(&device) {
+            self.trust.note_untrusted(Some(<&DeviceId>::from(device.as_str()))).await;
+            return;
+        }
         let call = call_id(room.room_id(), &device);
         let known = Known {
             room: room.room_id().to_owned(),
@@ -586,6 +640,37 @@ impl Calls {
             Heard::Again(None) | Heard::Repeat => {}
             Heard::Stale => {
                 tracing::debug!(call = %call.0, "not ringing for a call that began too long ago");
+            }
+        }
+    }
+
+    /// The list of trusted devices changed: end every call whose caller's
+    /// device is no longer on it.
+    ///
+    /// The relay is told the call ended, so it stops listening and speaking,
+    /// and the bot's membership is emptied, as when the owner hangs up. A call
+    /// the bot had not joined is let go the same way, so the relay stops
+    /// waiting to answer it. Nothing the device sends after this is believed:
+    /// its membership and its keys are turned away like any untrusted
+    /// device's.
+    pub(super) async fn end_untrusted(&self) {
+        let ended = self.state.lock().unwrap().calls.drop_untrusted(&self.trust.trusted());
+        let inbox = self.inbox.lock().unwrap().as_ref().and_then(mpsc::WeakSender::upgrade);
+        for (call, known) in ended {
+            tracing::info!(call = %call.0, "ending a call from a device that is no longer trusted");
+            if let Some(inbox) = &inbox {
+                let ended = Incoming::CallEnded {
+                    chat: rules::chat_id(&known.room),
+                    call: call.clone(),
+                    at: Timestamp::now(),
+                };
+                Self::deliver(inbox, ended).await;
+            }
+            let Some(joined) = known.joined else { continue };
+            if let Some(room) = self.joined_room(&known.room)
+                && let Err(error) = self.leave(&room, &joined.state_key).await
+            {
+                tracing::warn!(call = %call.0, "couldn't leave a call from a device no longer trusted: {error}");
             }
         }
     }
@@ -665,11 +750,19 @@ impl Calls {
             }
         };
         let olm = encryption.as_ref().map(|info| (&*info.sender, info.sender_device.as_deref()));
-        if !keys_trusted(&self.owner, &parts.sender, olm, &received.device) {
-            tracing::warn!(
-                "ignoring call keys that were not Olm-encrypted by the owner's own device"
-            );
-            return;
+        match judge_keys(&self.owner, &parts.sender, olm, &received.device, &self.trust.trusted()) {
+            KeysVerdict::Believed => {}
+            KeysVerdict::Refused => {
+                tracing::warn!(
+                    "ignoring call keys that were not Olm-encrypted by the owner's own device"
+                );
+                return;
+            }
+            KeysVerdict::UntrustedDevice => {
+                tracing::warn!("ignoring call keys from a device of the owner's not trusted");
+                self.trust.note_untrusted(olm.and_then(|(_, device)| device)).await;
+                return;
+            }
         }
         let call = call_id(&received.room, &received.device);
         let chat = rules::chat_id(&received.room);
@@ -683,11 +776,11 @@ impl Calls {
         // Not heard of yet: keys can outrun the membership they belong to.
         // Held, but only for a room the owner could be calling the bot from.
         let private = match self.joined_room(&received.room) {
-            Some(room) => self.is_private(&room).await,
+            Some(room) => self.is_answerable(&room).await,
             None => false,
         };
         if !private {
-            tracing::debug!(room = %received.room, "ignoring call keys for a room that is not private");
+            tracing::debug!(room = %received.room, "ignoring call keys for a room that is not private and encrypted");
             return;
         }
         let now_ms = now_ms();
@@ -714,9 +807,11 @@ impl Calls {
         let Some(room) = self.joined_room(&room_id) else {
             return Err(ChatError::Transient("The bot is no longer in that room.".into()));
         };
-        if !self.is_private(&room).await {
+        if !self.is_answerable(&room).await {
             return Err(ChatError::Transient(
-                "The room is not one only the owner is in, so the bot won't call there.".into(),
+                "The room is not an encrypted one only the owner is in, so the bot won't call \
+                 there."
+                    .into(),
             ));
         }
         let Some(device) = self.client.device_id().map(ToOwned::to_owned) else {
@@ -767,9 +862,19 @@ impl Calls {
         };
         // Joining lets whoever is in the call hear the assistant. The room
         // was private when the call came; it may not be now.
-        if !self.is_private(&room).await {
+        if !self.is_answerable(&room).await {
             return Err(ChatError::Transient(
-                "The room is no longer one only the owner is in, so the call was not joined."
+                "The room is no longer an encrypted one only the owner is in, so the call was \
+                 not joined."
+                    .into(),
+            ));
+        }
+        // The call was heard from a trusted device, but the list may have
+        // changed in the seconds it has been ringing.
+        if !self.trust.is_trusted(&known.device) {
+            return Err(ChatError::Transient(
+                "The device calling is not one of the devices the assistant trusts, so the call \
+                 was not joined."
                     .into(),
             ));
         }
@@ -901,7 +1006,8 @@ impl Calls {
     }
 
     /// Send the owner's `their_device` the bot's `key` for the call in
-    /// `room`, Olm-encrypted.
+    /// `room`, Olm-encrypted -- if it is a device the owner trusts, and to no
+    /// other: whoever holds this key hears everything the assistant says.
     async fn send_key(
         &self,
         room: &RoomId,
@@ -909,6 +1015,12 @@ impl Calls {
         own_device: &DeviceId,
         key: &[u8],
     ) -> Result<(), ChatError> {
+        if !self.trust.is_trusted(their_device) {
+            return Err(ChatError::Transient(format!(
+                "The owner's device {their_device} is not one the assistant trusts, so it won't \
+                 be sent the call's key."
+            )));
+        }
         let device = OwnedDeviceId::from(their_device);
         if !self.knows_device(&device).await? {
             return Err(ChatError::Transient(format!(
@@ -927,7 +1039,10 @@ impl Calls {
         // takes is not re-exported by matrix-sdk, and this sends to the very
         // same place with the one that keeps unverified devices
         // (`CollectStrategy::AllDevices`). The owner's phone may well be
-        // unverified, and it is the device that must hear.
+        // unverified, and it is the device that must hear. That strategy
+        // skips a blacklisted device, which every device off the list is
+        // (see `devices`); the check above is what makes the list, and not
+        // the store, decide.
         let failures = self
             .client
             .send_encrypted_to_device(&ToDeviceEventType::from(KEYS_TYPE), recipients, content)
@@ -1275,22 +1390,51 @@ fn keys_of(content: &Value, sender: &UserId) -> Result<ReceivedKeys, &'static st
     Ok(ReceivedKeys { room, device, keys })
 }
 
+/// What to make of call keys, from how they arrived.
+#[derive(Debug, PartialEq, Eq)]
+enum KeysVerdict {
+    /// Believe them: Olm-encrypted, by the owner, from a trusted device, for
+    /// that very device.
+    Believed,
+    /// Not the owner's, or not encrypted, or for another device than the one
+    /// that sent them.
+    Refused,
+    /// The owner's, but from a device that is not on the trusted list -- or
+    /// one the encryption cannot name, which is no better.
+    UntrustedDevice,
+}
+
 /// Whether keys may be believed given how they arrived: Olm-encrypted --
 /// `olm` is the sender the encryption vouches for and its device, `None`
-/// for a plain message -- by the owner, from the device they say they are
-/// for (when the bot knows which device that was).
-fn keys_trusted(
+/// for a plain message -- by the owner, from a device on the `trusted` list,
+/// for the device they say they are for.
+///
+/// The device must be named: a message whose device the encryption cannot
+/// name cannot be on a list, and is no longer taken on the owner's word.
+fn judge_keys(
     owner: &UserId,
     sender: &str,
     olm: Option<(&UserId, Option<&DeviceId>)>,
     claimed_device: &str,
-) -> bool {
+    trusted: &TrustedDevices,
+) -> KeysVerdict {
     let Some((olm_sender, olm_device)) = olm else {
-        return false;
+        return KeysVerdict::Refused;
     };
-    sender == owner.as_str()
-        && olm_sender == owner
-        && olm_device.is_none_or(|device| device.as_str() == claimed_device)
+    if sender != owner.as_str() || olm_sender != owner {
+        return KeysVerdict::Refused;
+    }
+    let Some(olm_device) = olm_device else {
+        return KeysVerdict::UntrustedDevice;
+    };
+    if olm_device.as_str() != claimed_device {
+        return KeysVerdict::Refused;
+    }
+    if trusted.contains(claimed_device) {
+        KeysVerdict::Believed
+    } else {
+        KeysVerdict::UntrustedDevice
+    }
 }
 
 /// A fresh key for the bot's own audio.
@@ -1727,20 +1871,58 @@ mod tests {
     }
 
     #[test]
-    fn only_keys_olm_encrypted_by_the_owners_own_device_are_believed() {
+    fn only_keys_olm_encrypted_by_a_trusted_device_of_the_owner_are_believed() {
         let owner = user_id!("@me:home.example");
         let stranger = user_id!("@other:home.example");
         let phone = device_id!("PHONE");
+        let trusted = TrustedDevices::new(["PHONE"]);
+        let judge =
+            |sender: &str, olm, claimed: &str| judge_keys(owner, sender, olm, claimed, &trusted);
         // Plain text, even from the owner: refused, unlike FluffyChat.
-        assert!(!keys_trusted(owner, owner.as_str(), None, "PHONE"));
-        assert!(keys_trusted(owner, owner.as_str(), Some((owner, Some(phone))), "PHONE"));
-        // A device the bot could not name is taken on the owner's word.
-        assert!(keys_trusted(owner, owner.as_str(), Some((owner, None)), "PHONE"));
+        assert_eq!(judge(owner.as_str(), None, "PHONE"), KeysVerdict::Refused);
+        assert_eq!(
+            judge(owner.as_str(), Some((owner, Some(phone))), "PHONE"),
+            KeysVerdict::Believed
+        );
         // Keys for one device, encrypted by another.
-        assert!(!keys_trusted(owner, owner.as_str(), Some((owner, Some(phone))), "LAPTOP"));
+        assert_eq!(
+            judge(owner.as_str(), Some((owner, Some(phone))), "LAPTOP"),
+            KeysVerdict::Refused
+        );
         // Encrypted by somebody else.
-        assert!(!keys_trusted(owner, owner.as_str(), Some((stranger, Some(phone))), "PHONE"));
-        assert!(!keys_trusted(owner, stranger.as_str(), Some((owner, Some(phone))), "PHONE"));
+        assert_eq!(
+            judge(owner.as_str(), Some((stranger, Some(phone))), "PHONE"),
+            KeysVerdict::Refused
+        );
+        assert_eq!(
+            judge(stranger.as_str(), Some((owner, Some(phone))), "PHONE"),
+            KeysVerdict::Refused
+        );
+    }
+
+    #[test]
+    fn keys_from_a_device_not_on_the_list_are_not_believed_however_they_arrived() {
+        let owner = user_id!("@me:home.example");
+        let laptop = device_id!("LAPTOP");
+        let trusted = TrustedDevices::new(["PHONE"]);
+        // Olm-encrypted by the owner's own, perfectly real, device.
+        assert_eq!(
+            judge_keys(owner, owner.as_str(), Some((owner, Some(laptop))), "LAPTOP", &trusted),
+            KeysVerdict::UntrustedDevice
+        );
+        // A device the encryption cannot name is no longer taken on the
+        // owner's word: it cannot be on a list.
+        assert_eq!(
+            judge_keys(owner, owner.as_str(), Some((owner, None)), "PHONE", &trusted),
+            KeysVerdict::UntrustedDevice
+        );
+        // And with nothing on the list, nothing is believed.
+        let nobody = TrustedDevices::default();
+        let from_phone = Some((owner, Some(device_id!("PHONE"))));
+        assert_eq!(
+            judge_keys(owner, owner.as_str(), from_phone, "PHONE", &nobody),
+            KeysVerdict::UntrustedDevice
+        );
     }
 
     #[test]
@@ -1921,6 +2103,33 @@ mod tests {
         }
         assert!(calls.get(&id("running")).unwrap().joined.is_some());
         assert_eq!(calls.calls.len(), CALLS_REMEMBERED);
+    }
+
+    #[test]
+    fn taking_a_device_off_the_list_ends_its_calls_and_leaves_the_others() {
+        let mut calls = Remembered::default();
+        calls.heard(id("phone"), known("PHONE", NOW, NOW + 1_000_000), NOW);
+        calls.heard(id("laptop"), known("LAPTOP", NOW, NOW + 1_000_000), NOW);
+        calls.heard(id("tablet"), known("TABLET", NOW, NOW + 1_000_000), NOW);
+        calls.mark_joined(&id("phone"), joined());
+        calls.mark_joined(&id("laptop"), joined());
+
+        // Both PHONE (joined) and TABLET (ringing) come off; LAPTOP stays.
+        let dropped = calls.drop_untrusted(&TrustedDevices::new(["LAPTOP"]));
+        let mut names: Vec<_> = dropped.iter().map(|(call, _)| call.0.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["phone", "tablet"]);
+        assert!(dropped.iter().any(|(_, k)| k.device == "PHONE" && k.joined.is_some()));
+        assert!(calls.get(&id("phone")).is_none() && calls.get(&id("tablet")).is_none());
+        assert!(calls.get(&id("laptop")).unwrap().joined.is_some());
+
+        // With nothing trusted, nothing is left.
+        let dropped = calls.drop_untrusted(&TrustedDevices::default());
+        assert_eq!(dropped.len(), 1);
+        assert!(calls.calls.is_empty());
+        // And a list that still has them all changes nothing.
+        calls.heard(id("again"), known("PHONE", NOW, NOW + 1_000_000), NOW);
+        assert!(calls.drop_untrusted(&TrustedDevices::new(["PHONE"])).is_empty());
     }
 
     #[test]

@@ -55,9 +55,11 @@ use reqwest::{Method, StatusCode};
 use sha2::{Digest, Sha256};
 
 use super::creds::{
-    self, AwsCredentials, AwsPlan, AwsSource, Env, Folder, MAX_ATTEMPTS, Reply, Verb,
+    self, AwsCredentials, AwsPlan, AwsSource, Env, Folder, MAX_ATTEMPTS, Reply, SendError, Verb,
 };
-use super::target::{TargetError, TargetErrorKind, TargetResult};
+use super::target::{
+    MAX_LIST_PAGES, MAX_REPLY_BYTES, TargetError, TargetErrorKind, TargetResult, object_limit,
+};
 
 /// SHA-256 of nothing: the payload hash of every request without a body.
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -145,6 +147,8 @@ struct Call<'a> {
     /// Query parameters, not yet encoded.
     query: Vec<(&'static str, String)>,
     body: Bytes,
+    /// The most of a successful answer that is read: see [`creds::send`].
+    limit: u64,
 }
 
 /// What a request came to, short of a failure.
@@ -182,6 +186,7 @@ impl S3Target {
             key: Some(key.as_str()),
             query: Vec::new(),
             body,
+            limit: MAX_REPLY_BYTES,
         };
         match self.execute(&call).await? {
             Answer::Done(_) => Ok(()),
@@ -198,6 +203,7 @@ impl S3Target {
             key: Some(key.as_str()),
             query: Vec::new(),
             body: Bytes::new(),
+            limit: object_limit(name),
         };
         match self.execute(&call).await? {
             Answer::Done(reply) => Ok(Some(reply.body)),
@@ -212,7 +218,12 @@ impl S3Target {
         let mut names = Vec::new();
         let mut token: Option<String> = None;
         let mut after: Option<String> = None;
+        let mut pages = 0;
         loop {
+            pages += 1;
+            if pages > MAX_LIST_PAGES {
+                return Err(too_many_pages(&self.config.bucket, &self.who));
+            }
             let mut query = vec![("list-type", "2".to_string())];
             if !wanted.is_empty() {
                 query.push(("prefix", wanted.clone()));
@@ -228,6 +239,7 @@ impl S3Target {
                 key: None,
                 query,
                 body: Bytes::new(),
+                limit: MAX_REPLY_BYTES,
             };
             let reply = match self.execute(&call).await? {
                 Answer::Done(reply) => reply,
@@ -281,6 +293,7 @@ impl S3Target {
             key: Some(key.as_str()),
             query: Vec::new(),
             body: Bytes::new(),
+            limit: MAX_REPLY_BYTES,
         };
         self.execute(&call).await.map(|_| ())
     }
@@ -339,11 +352,11 @@ impl S3Target {
                     .header(CONTENT_TYPE, "application/octet-stream")
                     .body(call.body.clone());
             }
-            let reply = match creds::send(request).await {
+            let reply = match creds::send(request, call.limit).await {
                 Ok(reply) => reply,
                 Err(e) => {
                     failures += 1;
-                    if !creds::transient_transport(&e) || policy.gives_up_after(failures) {
+                    if !e.transient() || policy.gives_up_after(failures) {
                         return Err(unreachable(&ctx, call.verb, &e));
                     }
                     tracing::debug!(bucket = %self.config.bucket, failures, "a backup request got no answer; trying again");
@@ -922,9 +935,29 @@ fn missing(ctx: &Context<'_>) -> TargetError {
     )
 }
 
-fn unreachable(ctx: &Context<'_>, verb: Verb, e: &reqwest::Error) -> TargetError {
+/// A listing that would not end. Every page is a request, and every name it
+/// lists is held until the last page is in; a service that names a next page
+/// for ever -- different each time, so that the same-page check never sees it
+/// -- would be followed until the computer ran out of memory.
+fn too_many_pages(bucket: &str, who: &str) -> TargetError {
+    TargetError::other(format!(
+        "{who} listed bucket {bucket} over more than {MAX_LIST_PAGES} pages, which is more \
+         than any backup holds, so the listing was not followed further"
+    ))
+}
+
+fn unreachable(ctx: &Context<'_>, verb: Verb, e: &SendError) -> TargetError {
+    if matches!(e, SendError::TooLarge { .. }) {
+        return TargetError::other(format!(
+            "{} answered a request to {} bucket {} with {}",
+            ctx.who,
+            verb.doing(),
+            ctx.bucket,
+            e.cause()
+        ));
+    }
     // A request that could not even be built is no network's fault.
-    let kind = if e.is_builder() { TargetErrorKind::Other } else { TargetErrorKind::Unreachable };
+    let kind = if e.unreachable() { TargetErrorKind::Unreachable } else { TargetErrorKind::Other };
     TargetError::new(
         kind,
         format!(
@@ -932,7 +965,7 @@ fn unreachable(ctx: &Context<'_>, verb: Verb, e: &reqwest::Error) -> TargetError
             ctx.who,
             verb.doing(),
             ctx.bucket,
-            creds::transport_cause(e)
+            e.cause()
         ),
     )
 }

@@ -54,7 +54,8 @@ const IGNORE_NOTE: &str = "// Karma Yoga keeps its trash and uploads in progress
 /// Files being written, before they are linked into place.
 const TMP: &str = "tmp";
 const TRASH: &str = "trash";
-/// Uploads in progress, one staging file each.
+/// Plain uploads in progress, one staging file each. A sealed upload is not
+/// staged here: see [`UploadStaging`].
 const UPLOADS: &str = "uploads";
 /// Where decrypted copies of sealed files used to be kept, opened in another
 /// program. They are kept outside the folder now ([`OpenCopies`]); the name
@@ -188,12 +189,12 @@ impl Folder {
         fs::create_dir_all(&self.root).map_err(|e| Error::io(&self.root, e))?;
         let internal = self.root.join(INTERNAL_DIR);
         // Owner-only, for what is in them: an upload on its way to being
-        // sealed is plaintext, and for as long as it is being received it
-        // sits here under a name nobody chose. The folder is often on a disk
-        // other accounts can read, and `.stignore` keeps the sync tool out,
-        // not the people at the keyboard. An internal folder that is already
-        // there is tightened too: they are ours, unlike the files folder
-        // around them.
+        // placed is a file that nobody has named yet, and for as long as it
+        // is being received it sits here under a name nobody chose. The
+        // folder is often on a disk other accounts can read, and `.stignore`
+        // keeps the sync tool out, not the people at the keyboard. An
+        // internal folder that is already there is tightened too: they are
+        // ours, unlike the files folder around them.
         for dir in [TMP, TRASH, UPLOADS] {
             let dir = internal.join(dir);
             private_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
@@ -212,10 +213,11 @@ impl Folder {
     /// whole when there is none, and the one line added to the end of one
     /// that lacks it, everything already in it left as it was.
     ///
-    /// Not optional, even in somebody else's file. `INTERNAL_DIR` holds
-    /// plaintext that must never leave this computer -- an upload on its way
-    /// to being sealed (decrypted copies of sealed files are not here at all:
-    /// see [`OpenCopies`]; `.stignore` reaches Syncthing only) -- and a
+    /// Not optional, even in somebody else's file. `INTERNAL_DIR` holds what
+    /// must never leave this computer -- uploads half received, the trash
+    /// (decrypted copies of sealed files, and the staging of an upload that
+    /// is to be sealed, are not here at all: see [`OpenCopies`] and
+    /// [`UploadStaging`]; `.stignore` reaches Syncthing only) -- and a
     /// folder already shared with Syncthing would otherwise copy it to every
     /// device the person shares the folder with. Run on every set-up and on
     /// every pass of the reconciler, so a `.stignore` written or replaced
@@ -413,47 +415,14 @@ impl Folder {
         if let Some(dir) = path.parent() {
             private_dir_all(dir).map_err(|e| Error::io(dir, e))?;
         }
-        let file = private_options()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| Error::io(&path, e))?;
-        Ok(file.metadata().map_err(|e| Error::io(&path, e))?.len())
+        begin_staged(&path)
     }
 
     /// Append `bytes` at `offset`, which must be exactly the bytes received
     /// so far (a repeated chunk at an earlier offset is accepted and
     /// ignored, so a retried request is harmless). Answers the new total.
     pub fn append_upload(&self, upload: &str, offset: u64, bytes: &[u8]) -> Result<u64> {
-        // The length is read and the chunk written as one step: a retried
-        // chunk arriving while the first copy is still being written would
-        // otherwise see the same length, and be appended twice -- an upload
-        // longer than it was begun with, which finishing then refuses.
-        // Appends to every upload take turns; a chunk is a few megabytes.
-        static APPENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _turn = APPENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let path = self.upload_file(upload)?;
-        let mut file = match OpenOptions::new().append(true).open(&path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                return Err(Error::not_found("upload", upload));
-            }
-            Err(e) => return Err(Error::io(&path, e)),
-        };
-        let len = file.metadata().map_err(|e| Error::io(&path, e))?.len();
-        let size = bytes.len() as u64;
-        if offset == len {
-            file.write_all(bytes).map_err(|e| Error::io(&path, e))?;
-            return Ok(len + size);
-        }
-        if offset.checked_add(size).is_some_and(|end| end <= len) {
-            // The client never saw the answer and sent it again.
-            return Ok(len);
-        }
-        Err(Error::Invalid(format!(
-            "this chunk starts at byte {offset}, but {len} bytes have arrived: \
-             the next chunk must start at byte {len}"
-        )))
+        append_staged(&self.upload_file(upload)?, upload, offset, bytes)
     }
 
     /// Move a finished upload to `dest`, hashing it. `dest` must be free.
@@ -499,13 +468,7 @@ impl Folder {
 
     /// Where an upload's bytes are kept, once its token has been checked.
     fn upload_file(&self, upload: &str) -> Result<PathBuf> {
-        let ok = (1..=64).contains(&upload.len())
-            && upload.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-        if !ok {
-            return Err(Error::Invalid(
-                "an upload is named by 1 to 64 letters, digits, - or _".into(),
-            ));
-        }
+        check_upload_token(upload)?;
         self.internal(&[UPLOADS, upload])
     }
 
@@ -815,6 +778,13 @@ impl Folder {
 /// While a test binary runs the folder is made inside the vault's own
 /// directory instead, which a test removes with the rest of its files; a
 /// test must not leave decrypted copies in the real cache directory.
+///
+/// A copy does not outlive the key. The vault deletes every one when it
+/// locks ([`OpenCopies::remove_all`], called by `Vault::lock`), the files
+/// task sweeps the ones that are left after an hour, and a vault opened by
+/// the one process that can write to it clears whatever a run that is gone
+/// left behind -- all of it findable without the key, since the folder is
+/// named by the vault's path.
 #[derive(Debug, Clone)]
 pub struct OpenCopies {
     root: PathBuf,
@@ -836,17 +806,31 @@ fn cache_dir() -> Option<PathBuf> {
 /// What the folder of decrypted copies is called, before the vault's key.
 const OPEN_COPIES_PREFIX: &str = "karmayoga-open-";
 
+/// What the folder of sealed uploads' staging files is called, before the
+/// vault's key ([`UploadStaging`]).
+const STAGING_PREFIX: &str = "karmayoga-staging-";
+
+/// The folder the private places of [`OpenCopies`] and [`UploadStaging`] are
+/// made in: the user's cache directory, or while a test binary runs the
+/// vault's own directory, which a test removes with the rest of its files.
+fn scratch_base(vault: &Path) -> PathBuf {
+    if crate::fsutil::under_test() {
+        vault.to_path_buf()
+    } else {
+        cache_dir().unwrap_or_else(std::env::temp_dir)
+    }
+}
+
 impl OpenCopies {
     /// The place for the vault at `vault`. Nothing is created until a copy
     /// is asked for.
+    ///
+    /// Named by the vault's *path*, which is known the moment the vault is
+    /// opened and needs no key, so a locked vault -- or one that has not been
+    /// unlocked yet this run -- can still find, and delete, its own copies.
     pub fn for_vault(vault: &Path) -> Self {
-        let base = if crate::fsutil::under_test() {
-            vault.to_path_buf()
-        } else {
-            cache_dir().unwrap_or_else(std::env::temp_dir)
-        };
         let key = crate::fsutil::stable_path_name(vault);
-        Self { root: base.join(format!("{OPEN_COPIES_PREFIX}{key}")) }
+        Self { root: scratch_base(vault).join(format!("{OPEN_COPIES_PREFIX}{key}")) }
     }
 
     /// The place at `root`, for a test that wants to look inside.
@@ -860,32 +844,7 @@ impl OpenCopies {
 
     /// Make the place if it is not there, and be sure it is ours alone.
     fn ensure(&self) -> Result<()> {
-        crate::fsutil::create_private_dir(&self.root)?;
-        let meta = fs::symlink_metadata(&self.root).map_err(|e| Error::io(&self.root, e))?;
-        if !meta.is_dir() {
-            return Err(Error::Invalid(format!(
-                "{} is not a folder, so decrypted copies cannot be kept there",
-                self.root.display()
-            )));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if meta.permissions().mode() & 0o077 != 0 {
-                // Ours to tighten, or the change is refused and so is the
-                // folder: one that somebody else owns is not trusted.
-                let _ = fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700));
-                let again =
-                    fs::symlink_metadata(&self.root).map_err(|e| Error::io(&self.root, e))?;
-                if again.permissions().mode() & 0o077 != 0 {
-                    return Err(Error::Invalid(format!(
-                        "{} can be read by other people, so decrypted copies cannot be kept there",
-                        self.root.display()
-                    )));
-                }
-            }
-        }
-        Ok(())
+        ensure_private_root(&self.root, "decrypted copies")
     }
 
     /// A private, empty folder for a decrypted copy of the sealed file `id`:
@@ -911,6 +870,264 @@ impl OpenCopies {
     pub fn sweep(&self, older_than: Duration) -> Result<u32> {
         sweep_dir(&self.root, older_than, |meta| !meta.file_type().is_symlink())
     }
+
+    /// Delete every copy, however new. Answers how many went.
+    ///
+    /// For the vault locking, closing, or opening with nobody else holding
+    /// it. Another program that has a copy open keeps reading it on unix, and
+    /// loses only the name; on Windows a file somebody has open cannot be
+    /// deleted, so that copy stays until a later sweep finds it unused.
+    pub fn remove_all(&self) -> u32 {
+        remove_contents(&self.root)
+    }
+}
+
+/// Where the bytes of an upload that will be *sealed* wait while they arrive:
+/// a private folder of this vault's own, outside the files folder, made and
+/// kept exactly as [`OpenCopies`]' is, one `0600` file per upload token.
+///
+/// Not the files folder's `INTERNAL_DIR/uploads`, where plain uploads wait. A
+/// plain upload ends up in that folder in the clear, so staging it there
+/// gives nothing away; a sealed one is a passport or a lab report that is
+/// never meant to be there at all, and the folder may be one a sync tool
+/// reads (see [`OpenCopies`]). Until it is finished, the upload is the
+/// plaintext of a sealed file, and a client that begins one and walks away,
+/// or a crash in the middle, would leave that in the folder for as long as a
+/// sweep takes to come round.
+#[derive(Debug, Clone)]
+pub struct UploadStaging {
+    root: PathBuf,
+}
+
+impl UploadStaging {
+    /// The place for the vault at `vault`, named by its path as
+    /// [`OpenCopies::for_vault`]'s is. Nothing is created until an upload
+    /// is begun.
+    pub fn for_vault(vault: &Path) -> Self {
+        let key = crate::fsutil::stable_path_name(vault);
+        Self { root: scratch_base(vault).join(format!("{STAGING_PREFIX}{key}")) }
+    }
+
+    /// The place at `root`, for a test that wants to look inside.
+    pub fn at(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Start (or find again) an upload's staging file. Answers the bytes
+    /// already received. See [`Folder::begin_upload`] for the token.
+    pub fn begin_upload(&self, upload: &str) -> Result<u64> {
+        let path = self.file(upload)?;
+        ensure_private_root(&self.root, "sealed uploads in progress")?;
+        begin_staged(&path)
+    }
+
+    /// Append `bytes` at `offset`; see [`Folder::append_upload`].
+    pub fn append_upload(&self, upload: &str, offset: u64, bytes: &[u8]) -> Result<u64> {
+        append_staged(&self.file(upload)?, upload, offset, bytes)
+    }
+
+    /// The staging file of an upload, for a caller that seals it.
+    pub fn upload_path(&self, upload: &str) -> Result<PathBuf> {
+        let path = self.file(upload)?;
+        match path.symlink_metadata() {
+            Ok(_) => Ok(path),
+            Err(e) if e.kind() == ErrorKind::NotFound => Err(Error::not_found("upload", upload)),
+            Err(e) => Err(Error::io(&path, e)),
+        }
+    }
+
+    pub fn cancel_upload(&self, upload: &str) -> Result<()> {
+        let path = self.file(upload)?;
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::io(&path, e)),
+        }
+    }
+
+    /// Delete staging files untouched for longer than `older_than`, by
+    /// modification time, so an upload still receiving chunks is not swept.
+    /// Answers how many.
+    pub fn sweep(&self, older_than: Duration) -> Result<u32> {
+        sweep_dir(&self.root, older_than, |meta| !meta.file_type().is_symlink())
+    }
+
+    /// Delete every staging file, however new. Answers how many went.
+    pub fn remove_all(&self) -> u32 {
+        remove_contents(&self.root)
+    }
+
+    fn file(&self, upload: &str) -> Result<PathBuf> {
+        check_upload_token(upload)?;
+        Ok(self.root.join(upload))
+    }
+}
+
+/// Delete what is older than `older_than` from *every* private folder of
+/// plaintext this program keeps in the cache directory -- decrypted copies
+/// ([`OpenCopies`]) and staged sealed uploads ([`UploadStaging`]) -- and not
+/// only the one that belongs to `vault`. Answers how many things went.
+///
+/// A vault's own folders are named by a hash of its path, and a vault that was
+/// moved, renamed or deleted has folders nothing will ever name again; a crash
+/// leaves them too, and the hourly sweep only looks at the vault that is open.
+/// This finds them by their prefix. A folder is looked into only if it is a
+/// real folder (not a link) that is owner-only, which is what this program
+/// makes: one that somebody else made is either unreadable to us or too open
+/// to be ours, and is left alone. What is in a folder is judged by age as it
+/// always is, so a copy that another vault open in another process made a
+/// moment ago is not pulled from under it.
+pub fn sweep_scratch_everywhere(vault: &Path, older_than: Duration) -> Result<u32> {
+    let base = scratch_base(vault);
+    let read = match fs::read_dir(&base) {
+        Ok(read) => read,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(Error::io(&base, e)),
+    };
+    let mut swept = 0;
+    for entry in read.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(OPEN_COPIES_PREFIX) && !name.starts_with(STAGING_PREFIX) {
+            continue;
+        }
+        // `DirEntry::metadata` does not follow a link, so a link is not a folder.
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() || !owner_only(&meta) {
+            continue;
+        }
+        swept += sweep_dir(&entry.path(), older_than, |meta| !meta.file_type().is_symlink())
+            .unwrap_or(0);
+    }
+    Ok(swept)
+}
+
+/// Make the private folder `root` if it is not there, and be sure it is ours
+/// alone: a link, or something that is not a folder, or a folder others can
+/// read and that cannot be tightened, is refused. `what` is what is kept
+/// there, for the error.
+fn ensure_private_root(root: &Path, what: &str) -> Result<()> {
+    crate::fsutil::create_private_dir(root)?;
+    let meta = fs::symlink_metadata(root).map_err(|e| Error::io(root, e))?;
+    if !meta.is_dir() {
+        return Err(Error::Invalid(format!(
+            "{} is not a folder, so {what} cannot be kept there",
+            root.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            // Ours to tighten, or the change is refused and so is the
+            // folder: one that somebody else owns is not trusted.
+            let _ = fs::set_permissions(root, fs::Permissions::from_mode(0o700));
+            let again = fs::symlink_metadata(root).map_err(|e| Error::io(root, e))?;
+            if again.permissions().mode() & 0o077 != 0 {
+                return Err(Error::Invalid(format!(
+                    "{} can be read by other people, so {what} cannot be kept there",
+                    root.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Is the folder with this metadata closed to everyone but its owner? Always
+/// so where there are no modes to ask.
+fn owner_only(meta: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o077 == 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        true
+    }
+}
+
+/// Delete everything directly inside `root`, a link as the link and not what
+/// it points at, and leave `root` itself, so a folder that was made owner-only
+/// stays so. Answers how many things went. What cannot be deleted (a file
+/// somebody has open on Windows) is logged and left for a later sweep; a
+/// `root` that is not there has nothing in it.
+fn remove_contents(root: &Path) -> u32 {
+    let Ok(read) = fs::read_dir(root) else { return 0 };
+    let mut removed = 0;
+    for entry in read.flatten() {
+        let path = entry.path();
+        // `DirEntry::file_type` does not follow a link either.
+        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        let gone = if is_dir { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+        match gone {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            // Not the path: its last part is the name of somebody's file.
+            Err(e) => tracing::warn!(error = %e, "could not delete a decrypted file"),
+        }
+    }
+    removed
+}
+
+/// Is `upload` a token a staging file can be named by?
+fn check_upload_token(upload: &str) -> Result<()> {
+    let ok = (1..=64).contains(&upload.len())
+        && upload.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Invalid("an upload is named by 1 to 64 letters, digits, - or _".into()))
+    }
+}
+
+/// Make an upload's staging file at `path`, owner-only, if it is not there.
+/// Answers the bytes it already holds. The folder must be there already.
+fn begin_staged(path: &Path) -> Result<u64> {
+    let file =
+        private_options().create(true).append(true).open(path).map_err(|e| Error::io(path, e))?;
+    Ok(file.metadata().map_err(|e| Error::io(path, e))?.len())
+}
+
+/// Append `bytes` at `offset` to the staging file at `path`, which must be
+/// exactly the bytes received so far (a repeated chunk at an earlier offset
+/// is accepted and ignored, so a retried request is harmless). Answers the
+/// new total. `upload` is the token, for the error that names it.
+fn append_staged(path: &Path, upload: &str, offset: u64, bytes: &[u8]) -> Result<u64> {
+    // The length is read and the chunk written as one step: a retried
+    // chunk arriving while the first copy is still being written would
+    // otherwise see the same length, and be appended twice -- an upload
+    // longer than it was begun with, which finishing then refuses.
+    // Appends to every upload take turns; a chunk is a few megabytes.
+    static APPENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _turn = APPENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = match OpenOptions::new().append(true).open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err(Error::not_found("upload", upload));
+        }
+        Err(e) => return Err(Error::io(path, e)),
+    };
+    let len = file.metadata().map_err(|e| Error::io(path, e))?.len();
+    let size = bytes.len() as u64;
+    if offset == len {
+        file.write_all(bytes).map_err(|e| Error::io(path, e))?;
+        return Ok(len + size);
+    }
+    if offset.checked_add(size).is_some_and(|end| end <= len) {
+        // The client never saw the answer and sent it again.
+        return Ok(len);
+    }
+    Err(Error::Invalid(format!(
+        "this chunk starts at byte {offset}, but {len} bytes have arrived: \
+         the next chunk must start at byte {len}"
+    )))
 }
 
 /// `path` and any parents it lacks, the folders made owner-only on unix.
@@ -2547,6 +2764,163 @@ mod tests {
     fn sweeping_a_place_that_is_not_there_sweeps_nothing() {
         let (_tmp, copies) = copies();
         assert_eq!(copies.sweep(Duration::ZERO).unwrap(), 0);
+    }
+
+    #[test]
+    fn every_decrypted_copy_goes_at_once_however_new_and_the_place_stays() {
+        let (tmp, copies) = copies();
+        for name in ["a.jpg", "b.jpg"] {
+            let dir = copies.dir(FileId::new()).unwrap();
+            fs::write(dir.join(name), b"decrypted").unwrap();
+        }
+        // A link in the place is removed as the link: what it points at is
+        // not ours.
+        #[cfg(unix)]
+        {
+            let elsewhere = tmp.path().join("elsewhere");
+            fs::create_dir_all(&elsewhere).unwrap();
+            fs::write(elsewhere.join("mine.txt"), b"keep").unwrap();
+            std::os::unix::fs::symlink(&elsewhere, copies.root().join("link")).unwrap();
+        }
+        let before = fs::read_dir(copies.root()).unwrap().count();
+
+        assert_eq!(copies.remove_all() as usize, before);
+        assert_eq!(fs::read_dir(copies.root()).unwrap().count(), 0);
+        #[cfg(unix)]
+        assert_eq!(fs::read(tmp.path().join("elsewhere/mine.txt")).unwrap(), b"keep");
+        // Still a place that can be used, and a place that is not there has
+        // nothing to remove.
+        copies.dir(FileId::new()).unwrap();
+        assert_eq!(OpenCopies::at(tmp.path().join("never")).remove_all(), 0);
+    }
+
+    #[test]
+    fn a_sealed_uploads_staging_is_outside_the_files_folder_and_takes_chunks_like_the_folders() {
+        let (tmp, folder) = folder();
+        let staging = UploadStaging::for_vault(&tmp.path().join("vault"));
+        assert!(!staging.root().starts_with(folder.root()));
+        // Not the real cache directory under test, as for the copies.
+        assert!(staging.root().starts_with(tmp.path().join("vault")));
+        assert_ne!(staging.root(), OpenCopies::for_vault(&tmp.path().join("vault")).root());
+
+        assert!(staging.upload_path("abc").is_err());
+        assert_eq!(staging.begin_upload("abc").unwrap(), 0);
+        assert_eq!(staging.append_upload("abc", 0, b"0123").unwrap(), 4);
+        // A retried chunk is harmless; a gap is refused.
+        assert_eq!(staging.append_upload("abc", 0, b"0123").unwrap(), 4);
+        assert!(matches!(staging.append_upload("abc", 6, b"67"), Err(Error::Invalid(_))));
+        assert_eq!(staging.append_upload("abc", 4, b"45").unwrap(), 6);
+        // Begun again, it answers what it has.
+        assert_eq!(staging.begin_upload("abc").unwrap(), 6);
+        assert_eq!(fs::read(staging.upload_path("abc").unwrap()).unwrap(), b"012345");
+        assert!(matches!(staging.append_upload("nope", 0, b"x"), Err(Error::NotFound { .. })));
+        // Nothing of it is in the files folder.
+        let uploads = folder.root().join(INTERNAL_DIR).join(UPLOADS);
+        assert_eq!(fs::read_dir(uploads).unwrap().count(), 0);
+
+        // Names are checked as the folder's are.
+        let too_long = "x".repeat(65);
+        for bad in ["", "a/b", "..", "a b", too_long.as_str()] {
+            assert!(staging.begin_upload(bad).is_err(), "{bad:?}");
+        }
+
+        staging.cancel_upload("abc").unwrap();
+        assert!(staging.upload_path("abc").is_err());
+        staging.cancel_upload("abc").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sealed_uploads_staging_is_owner_only_and_refuses_a_link_for_its_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = UploadStaging::at(tmp.path().join("cache").join("karmayoga-staging-test"));
+        staging.begin_upload("abc").unwrap();
+        assert_eq!(mode(staging.root()), 0o700);
+        assert_eq!(mode(&staging.upload_path("abc").unwrap()), 0o600);
+
+        let linked = UploadStaging::at(tmp.path().join("cache").join("karmayoga-staging-link"));
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, linked.root()).unwrap();
+        assert!(linked.begin_upload("abc").is_err());
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn old_staging_files_are_swept_and_every_one_goes_when_asked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = UploadStaging::at(tmp.path().join("karmayoga-staging-test"));
+        for token in ["old", "new", "newer"] {
+            staging.begin_upload(token).unwrap();
+            staging.append_upload(token, 0, b"abc").unwrap();
+        }
+        backdate(&staging.upload_path("old").unwrap(), 3);
+
+        let day = Duration::from_secs(86_400);
+        assert_eq!(staging.sweep(day).unwrap(), 1);
+        assert!(staging.upload_path("old").is_err());
+        assert!(staging.upload_path("new").is_ok());
+        assert_eq!(staging.sweep(day).unwrap(), 0);
+
+        assert_eq!(staging.remove_all(), 2);
+        assert!(staging.upload_path("new").is_err());
+        // A place that is not there has nothing to sweep.
+        assert_eq!(UploadStaging::at(tmp.path().join("never")).sweep(day).unwrap(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plaintext_left_by_vaults_that_are_gone_is_swept_by_age_and_only_from_places_that_are_ours() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        // Under test the places are made in the vault's own directory.
+        let vault = tmp.path().join("vault");
+        let make = |name: &str, mode: u32| {
+            let dir = vault.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            dir
+        };
+        // Another vault's copies: one old, one new.
+        let other = make("karmayoga-open-0123456789abcdef", 0o700);
+        let (old_copy, new_copy) = (other.join("id-old"), other.join("id-new"));
+        for dir in [&old_copy, &new_copy] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("passport.pdf"), b"decrypted").unwrap();
+        }
+        backdate(&old_copy.join("passport.pdf"), 1);
+        backdate(&old_copy, 1);
+        // Another vault's staged upload, old.
+        let staged = make("karmayoga-staging-0123456789abcdef", 0o700);
+        fs::write(staged.join("token"), b"half").unwrap();
+        backdate(&staged.join("token"), 1);
+        // Not ours: too open, no prefix, or a link to somewhere else.
+        let open = make("karmayoga-open-wide", 0o755);
+        fs::write(open.join("x"), b"x").unwrap();
+        backdate(&open.join("x"), 3);
+        let plain = make("Documents", 0o700);
+        fs::write(plain.join("x"), b"x").unwrap();
+        backdate(&plain.join("x"), 3);
+        let target = tmp.path().join("target");
+        fs::create_dir_all(target.join("id")).unwrap();
+        fs::write(target.join("id").join("x"), b"x").unwrap();
+        backdate(&target.join("id").join("x"), 3);
+        backdate(&target.join("id"), 3);
+        std::os::unix::fs::symlink(&target, vault.join("karmayoga-open-link")).unwrap();
+
+        let hour = Duration::from_secs(3600);
+        assert_eq!(sweep_scratch_everywhere(&vault, hour).unwrap(), 2);
+        assert!(!old_copy.exists());
+        assert!(new_copy.join("passport.pdf").exists());
+        assert!(!staged.join("token").exists());
+        assert!(open.join("x").exists(), "a folder others can read is not trusted");
+        assert!(plain.join("x").exists());
+        assert!(target.join("id").join("x").exists(), "a link is not followed");
+        assert_eq!(sweep_scratch_everywhere(&vault, hour).unwrap(), 0);
+        // Nowhere to look is nothing to sweep.
+        assert_eq!(sweep_scratch_everywhere(&tmp.path().join("absent"), hour).unwrap(), 0);
     }
 
     #[test]

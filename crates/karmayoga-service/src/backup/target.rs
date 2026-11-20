@@ -12,6 +12,16 @@
 //! `snapshots/2026-11-14T030512Z.snapshot` -- whatever the platform. A target
 //! that keeps them under a prefix of its own adds it on the way out and takes
 //! it off on the way back in; the backup never sees it.
+//!
+//! # What a destination may hand back
+//!
+//! A destination is somebody else's disk or bucket, and what is in it is only
+//! trusted once it has been opened with the vault's key -- which is after it has
+//! been read, whole, into memory. So nothing is read past the size an object of
+//! its kind can be: [`MAX_CHUNK_BYTES`], [`MAX_OBJECT_BYTES`], [`MAX_REPLY_BYTES`]
+//! and, for a listing, [`MAX_LIST_PAGES`]. A destination that answers with more is
+//! refused with an error that says so; it is never partly read and carried on
+//! with, and never inflated -- see [`http_client`].
 
 use bytes::Bytes;
 use karmayoga_core::backup::{Destination, S3Credentials, S3Keys};
@@ -21,6 +31,34 @@ use std::time::Duration;
 use super::folder::FolderTarget;
 use super::gcs::{GcsConfig, GcsTarget};
 use super::s3::{S3Config, S3Target};
+
+/// The most a sealed chunk can be. A backup cuts a file every
+/// `run::FILE_CHUNK` bytes -- a megabyte -- and the
+/// seal adds a few dozen; sixteen times that is headroom for a build that
+/// cuts larger (each file's `chunk_size` is in its manifest), and small enough
+/// that the two dozen chunks a restore reads at once cannot come to a gigabyte.
+pub const MAX_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The most any other object can be: a manifest, which is JSON compressed and
+/// sealed and comes to a few megabytes for a vault of two hundred thousand
+/// files, the marker, the header, the lock. Sixty-four megabytes is more than
+/// a million files, and one is read at a time.
+pub const MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The most a reply that is not an object can be: a page of a listing, a
+/// sign-in service's token, a refusal's explanation. A thousand keys is a few
+/// hundred kilobytes of XML or JSON.
+pub const MAX_REPLY_BYTES: u64 = 8 * 1024 * 1024;
+
+/// How many pages of a listing are followed. A page is a thousand objects, so
+/// this is five million: five terabytes of one-megabyte chunks, far past a
+/// vault, and a service that has not stopped by then is not going to.
+pub const MAX_LIST_PAGES: usize = 5_000;
+
+/// The most the object called `name` can be.
+pub fn object_limit(name: &str) -> u64 {
+    if name.starts_with("chunks/") { MAX_CHUNK_BYTES } else { MAX_OBJECT_BYTES }
+}
 
 /// Why a request to a destination failed, in the four ways that call for
 /// different words to the person reading them.
@@ -190,6 +228,16 @@ impl Target {
 /// Generous timeouts, because a megabyte up a slow connection is not quick,
 /// and a pool deep enough for [`Target::parallelism`] requests at once.
 ///
+/// Nothing is decompressed. reqwest, built with its `gzip` feature, asks for
+/// compressed answers and inflates them as they are read -- before anything has
+/// been checked, and to any size. An object in the bucket that is a few
+/// kilobytes of gzip and a hundred gigabytes inflated would be filled into
+/// memory until the application was killed, on every backup, for as long as it
+/// stayed there. Objects are sealed, and sealing does not compress, so
+/// asking for none is free; `no_gzip` and its three siblings exist whether or
+/// not their feature is on, so a dependency turning one on cannot turn this
+/// back. The size caps in `creds::send` hold regardless.
+///
 /// Redirects are not followed. A signed request sent on to another host
 /// arrives without its signature -- reqwest drops `Authorization` across
 /// hosts -- and comes back as a refusal that names the wrong cause; S3's 307
@@ -198,6 +246,10 @@ impl Target {
 fn http_client() -> TargetResult<reqwest::Client> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_gzip()
+        .no_brotli()
+        .no_zstd()
+        .no_deflate()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(300))
         .pool_max_idle_per_host(32)

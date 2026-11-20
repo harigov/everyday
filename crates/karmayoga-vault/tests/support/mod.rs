@@ -48,6 +48,7 @@ pub fn ctx(vault: &Vault) -> ToolContext<'_> {
         unattended: false,
         follow_up: false,
         caller: None,
+        withheld: &[],
         mail_search: None,
         assistant_provider: None,
         mail_rate_limit: None,

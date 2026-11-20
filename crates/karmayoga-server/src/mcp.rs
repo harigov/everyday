@@ -88,8 +88,30 @@
 //! token minted before Health existed to wake up able to read. Its tools are
 //! offered only to a token that names `health`; the write-only
 //! `healthIngest` scope the phone's push is issued opens none of them.
-//! [`by_name`] is the one list of such domains, so a fifth is one line
-//! there.
+//! [`PRIVATE_DOMAINS`], which [`by_name`] reads, is the one list of such
+//! domains, so a fifth is one line there.
+//!
+//! # What makes the assistant act on its own is not offered at all
+//!
+//! The scopes above say which *records* a token reaches. They say nothing
+//! about the assistant itself, and it is the one thing in this vault that
+//! reaches all of them: a routine is a prompt the assistant runs later as the
+//! vault's owner with every tool, and `list_runs` gives back what it said. A
+//! token with the Assistant scope that could write one -- or start a research
+//! job, or `remember` something, or save a skill, or leave a note in the
+//! assistant's own journal, or accept a proposal -- would have a way round
+//! every rule in the section above, and a way to put words in the assistant's
+//! mouth that it repeats to the person afterwards.
+//!
+//! So [`kept_for_the_app`] names them -- the list is
+//! [`karmayoga_core::agent::tools::NOT_OVER_MCP`], kept beside the tools so
+//! that `tools::dispatch` can refuse the same ones for any other door -- and
+//! they are absent from `tools/list` and refused by name in `tools/call`,
+//! with an answer that says to set it up in the app. Reading what they made
+//! is still allowed: `list_routines`, `list_memories`, `list_proposals`. What
+//! a routine run, a job, a conversation or a proposal *said* is left out for
+//! a token that has not named every domain the assistant could have quoted --
+//! see `ToolContext::withheld`.
 //!
 //! # Outward tools over MCP
 //!
@@ -167,7 +189,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use futures::stream::Stream;
-use karmayoga_core::agent::tools::{Domain, Effect};
+use karmayoga_core::agent::tools::{Domain, Effect, PRIVATE_DOMAINS};
 use karmayoga_mcp::{HostError, Outcome, ToolDef};
 use karmayoga_service::{CommandError, CommandResult, Ctx, EventSink, Scope, Service};
 use serde::{Deserialize, Serialize};
@@ -422,6 +444,10 @@ impl karmayoga_mcp::Host for VaultHost {
                 // through the files: there is no conversation here for a
                 // file to have been handed in.
                 .filter(|t| files_open || !is_file_tool(&t.name))
+                // Nothing that makes the assistant act or remember on its
+                // own -- see the module doc's "What makes the assistant act
+                // on its own is not offered at all".
+                .filter(|t| !kept_for_the_app(&t.name))
                 .map(|t| ToolDef {
                     name: t.name,
                     title: t.title,
@@ -459,6 +485,15 @@ impl karmayoga_mcp::Host for VaultHost {
                          given the {} scope",
                         scope.as_str()
                     ),
+                });
+            }
+            // Every filter `tools()` applies is applied here too, and this
+            // is the one a model asks around most: a tool that is not in the
+            // list is exactly the one it will try by name.
+            if kept_for_the_app(&name) {
+                return Err(HostError {
+                    code: "forbidden".to_string(),
+                    message: karmayoga_core::agent::tools::not_over_mcp_message(&name),
                 });
             }
             // The person's switch for letting the assistant look through
@@ -519,15 +554,25 @@ impl karmayoga_mcp::Host for VaultHost {
 /// through [`Scope::All`]: what each is called in a refusal, and the scope
 /// it has to name. See the module doc's "Money, Screen time and Files need
 /// asking for by name".
+///
+/// Which domains those are is [`PRIVATE_DOMAINS`], the one list -- Money,
+/// Screen time, Files and Health, the last somebody's body, medicines and
+/// diagnoses -- that a job's turn and a tool's withheld text read as well, so
+/// a fifth is added there once. The scope is the one the command table gates
+/// that domain's tools behind, and the name the one a person would call it.
 fn by_name(domain: Domain) -> Option<(&'static str, Scope)> {
-    match domain {
-        Domain::Money => Some(("Money", Scope::Money)),
-        Domain::ScreenTime => Some(("Screen time", Scope::ScreenTime)),
-        Domain::Files => Some(("Files", Scope::Files)),
-        // Somebody's body, medicines and diagnoses: Money's reason, and more.
-        Domain::Health => Some(("Health", Scope::Health)),
-        _ => None,
-    }
+    PRIVATE_DOMAINS
+        .contains(&domain)
+        .then(|| (domain.label(), karmayoga_service::domains::meta::scope_of(domain)))
+}
+
+/// Is `tool` one an MCP client may neither be offered nor run, because it
+/// makes the assistant act or remember on its own? See the module doc's "What
+/// makes the assistant act on its own is not offered at all", and
+/// [`karmayoga_core::agent::tools::NOT_OVER_MCP`] for the list and the
+/// reasons.
+fn kept_for_the_app(tool: &str) -> bool {
+    karmayoga_core::agent::tools::is_not_over_mcp(tool)
 }
 
 /// Whether the person has let the assistant look through their files: the
@@ -920,6 +965,46 @@ mod tests {
             .find(|t| t.domain == domain)
             .unwrap_or_else(|| panic!("no {domain:?} tool to test with"))
             .name
+    }
+
+    /// Whatever starts the assistant's own work, or changes what it keeps and
+    /// is told, is neither listed nor callable over MCP -- a token that holds
+    /// the Assistant scope included. See the module doc's "What makes the
+    /// assistant act on its own is not offered at all".
+    #[test]
+    fn nothing_that_makes_the_assistant_act_on_its_own_is_offered_to_a_client() {
+        for name in [
+            "create_routine",
+            "update_routine",
+            "run_routine",
+            "start_research",
+            "remember",
+            "confirm_memory",
+            "update_profile",
+            "create_skill",
+            "update_skill",
+            "delete_skill",
+            "write_own_journal",
+            "accept_proposal",
+        ] {
+            assert!(kept_for_the_app(name), "{name} must not be reachable over MCP");
+            let refusal = karmayoga_core::agent::tools::not_over_mcp_message(name);
+            assert!(refusal.contains(name) && refusal.contains("in the app"), "{refusal}");
+        }
+        // What an MCP client is for stays: reading what the assistant made,
+        // and its own tasks, notes and entries for the person.
+        for name in [
+            "list_routines",
+            "list_runs",
+            "list_memories",
+            "list_proposals",
+            "job_status",
+            "create_task",
+            "create_note",
+            "create_entry",
+        ] {
+            assert!(!kept_for_the_app(name), "{name} is an ordinary tool");
+        }
     }
 
     /// `All` reaches every domain but the three that have to be named, and

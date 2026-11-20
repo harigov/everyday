@@ -8,6 +8,10 @@
 //! point is a library: Tauri builds iOS and Android targets from `run()` rather
 //! than from `main`.
 
+// Only tests: the ones that keep `build.rs`, `invoke_handler` and the capability
+// files in step. See the module's own doc.
+#[cfg(test)]
+mod acl;
 mod audio;
 mod badge;
 pub mod capture;
@@ -19,6 +23,7 @@ mod fanout;
 mod files;
 #[cfg(target_os = "linux")]
 mod gnome;
+mod guard;
 mod health;
 mod hotkey;
 mod legacy;

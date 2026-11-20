@@ -589,6 +589,7 @@ async fn a_read_only_copy_of_the_vault_runs_nothing() {
                 homeserver: "http://127.0.0.1:6167".into(),
                 user_id: "@karmayoga:example.org".into(),
                 owner: "@owner:example.org".into(),
+                trusted_devices: Vec::new(),
             });
         link
     };

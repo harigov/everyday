@@ -24,7 +24,8 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use karmayoga_core::account::{
-    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, Preset, Provider,
+    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, AuthMethod, Preset,
+    Provider,
 };
 use karmayoga_core::id::AccountId;
 use serde::{Deserialize, Serialize};
@@ -161,12 +162,16 @@ async fn get_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandR
 /// progress was started under the old one: without the nudge, shortening an
 /// hourly interval to a minute would still sit out the rest of the hour
 /// before the new setting did anything at all.
-async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> CommandResult<()> {
+///
+/// Where an existing account's credential is sent is not a thing a paired
+/// device or a browser session may change -- see [`retargets_credential`].
+async fn save_account(svc: Arc<Service>, ctx: Ctx, args: SaveAccount) -> CommandResult<()> {
     let vault = svc.require()?;
     let mut account = args.account;
     let account_id = account.id;
     let mail_on = account.services.mail;
     let now = svc.now();
+    let local = ctx.is_local();
     let (signatures_changed, reconnect) = blocking({
         let vault = vault.clone();
         move || {
@@ -178,6 +183,9 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
                 *username = username.trim().to_string();
             }
             let stored = vault.account(account_id).ok();
+            if !local && stored.as_ref().is_some_and(|old| retargets_credential(old, &account)) {
+                return Err(CommandError::new(codes::FORBIDDEN, SERVERS_ARE_LOCAL));
+            }
             check_servers(&account, stored.as_ref())?;
             account.check_signatures(stored.as_ref())?;
             let changed =
@@ -222,6 +230,45 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
         crate::mailsync::wiring::stop_account_task(&svc, account_id).await;
     }
     Ok(())
+}
+
+const SERVERS_ARE_LOCAL: &str = "the servers an account signs in to can be changed only from \
+    the computer that holds the vault: from anywhere else the stored password or sign-in \
+    would be sent to whatever address was typed. Change it there";
+
+/// The address a sign-in is begun at and exchanged with, for an OAuth
+/// account; nothing for a password one, which has no such address.
+fn oauth_endpoints(auth: &AuthMethod) -> Option<(&str, &str)> {
+    match auth {
+        AuthMethod::OAuth { auth_url, token_url, .. } => Some((auth_url, token_url)),
+        AuthMethod::Password { .. } => None,
+    }
+}
+
+/// Does saving `new` over `old` change where `old`'s stored credential is
+/// sent?
+///
+/// The sealed password or refresh token is sent by the sync task to whatever
+/// the record says: the IMAP and SMTP host and port, the CalDAV address, and
+/// -- for an OAuth account -- the token endpoint its refresh token is
+/// presented at. `Scope::Accounts` is held by every paired device and every
+/// web-access session, and `save_account` takes the whole record, so without
+/// this a device that was only ever meant to tick a switch could point an
+/// account at a server of its own, wait for the next sync, and be handed the
+/// credential -- one that outlives revoking the device, because it is the
+/// mailbox's and not the device's.
+///
+/// Only a change to an account that exists counts. A new account has no
+/// credential yet; it is the person at the keyboard typing one in. And only
+/// where the credential goes: the sync interval, the signature, the
+/// switches and a changed client id do not move it.
+fn retargets_credential(old: &Account, new: &Account) -> bool {
+    old.imap.host != new.imap.host
+        || old.imap.port != new.imap.port
+        || old.smtp.host != new.smtp.host
+        || old.smtp.port != new.smtp.port
+        || old.caldav != new.caldav
+        || oauth_endpoints(&old.auth) != oauth_endpoints(&new.auth)
 }
 
 /// A server this save changes needs a host and a port. `save_account` trims
@@ -529,3 +576,170 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: set_agent_access,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::Caller;
+    use crate::ctx::Scope;
+    use karmayoga_core::account::Endpoint;
+    use serde_json::json;
+
+    fn password_account() -> Account {
+        let mut account = Account::new(Provider::Custom, "me@example.com");
+        account.imap = Endpoint::tls("imap.example.com", 993);
+        account.smtp = Endpoint::tls("smtp.example.com", 465);
+        account.caldav = Some("https://dav.example.com/".into());
+        account.services.mail = false;
+        account
+    }
+
+    fn oauth_account() -> Account {
+        let mut account = password_account();
+        account.auth = AuthMethod::OAuth {
+            client_id: "client".into(),
+            auth_url: "https://accounts.example.com/auth".into(),
+            token_url: "https://accounts.example.com/token".into(),
+            scopes: vec!["mail".into()],
+        };
+        account
+    }
+
+    #[test]
+    fn what_moves_a_credential_is_the_servers_and_not_the_settings() {
+        let old = oauth_account();
+
+        let mut same = old.clone();
+        same.sync_minutes = Some(5);
+        same.signature_html = "<p>Thanks</p>".into();
+        same.display_name = "Me".into();
+        same.services.mail = true;
+        same.imap.security = karmayoga_core::account::EndpointSecurity::StartTls;
+        if let AuthMethod::OAuth { client_id, scopes, .. } = &mut same.auth {
+            *client_id = "another client".into();
+            scopes.push("calendar".into());
+        }
+        assert!(!retargets_credential(&old, &same));
+
+        type Edit = fn(&mut Account);
+        let moves: [(&str, Edit); 7] = [
+            ("imap host", |a| a.imap.host = "imap.evil.example".into()),
+            ("imap port", |a| a.imap.port = 143),
+            ("smtp host", |a| a.smtp.host = "smtp.evil.example".into()),
+            ("smtp port", |a| a.smtp.port = 25),
+            ("caldav address", |a| a.caldav = Some("https://evil.example/".into())),
+            ("caldav removed", |a| a.caldav = None),
+            ("token endpoint", |a| {
+                if let AuthMethod::OAuth { token_url, .. } = &mut a.auth {
+                    *token_url = "https://evil.example/token".into();
+                }
+            }),
+        ];
+        for (what, edit) in moves {
+            let mut moved = old.clone();
+            edit(&mut moved);
+            assert!(retargets_credential(&old, &moved), "{what}");
+        }
+
+        let mut auth_url = old.clone();
+        if let AuthMethod::OAuth { auth_url: url, .. } = &mut auth_url.auth {
+            *url = "https://evil.example/auth".into();
+        }
+        assert!(retargets_credential(&old, &auth_url), "auth endpoint");
+
+        // A password account made into an OAuth one names a token endpoint
+        // where it had none, and the other way round drops one.
+        let password = password_account();
+        let mut oauth = password.clone();
+        oauth.auth = oauth_account().auth;
+        assert!(retargets_credential(&password, &oauth));
+        assert!(retargets_credential(&oauth, &password));
+    }
+
+    fn device() -> Ctx {
+        Ctx {
+            caller: Caller::Device("phone".into()),
+            scopes: vec![Scope::Accounts],
+            proved_at: None,
+            request_id: None,
+        }
+    }
+
+    fn service() -> (Arc<Service>, Arc<karmayoga_core::Vault>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let vault =
+            karmayoga_vault::create(dir.path(), karmayoga_core::VaultConfig::default()).unwrap();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        (svc, vault, dir)
+    }
+
+    async fn save(svc: &Arc<Service>, ctx: Ctx, account: &Account) -> CommandResult<()> {
+        svc.call(ctx, "save_account", json!({ "account": account })).await.map(|_| ())
+    }
+
+    /// The whole command, from each kind of caller: a device or a browser
+    /// session that edits only settings is saved; the same one pointing the
+    /// account at a server of its own is refused and the record is as it
+    /// was; the window on the vault's own computer may.
+    #[tokio::test]
+    async fn only_the_computer_holding_the_vault_may_point_an_account_at_another_server() {
+        let (svc, vault, _dir) = service();
+        let account = password_account();
+        vault.save_account(&account).unwrap();
+        vault
+            .save_account_secret(
+                account.id,
+                &AccountSecret { password: Some("hunter2".into()), ..Default::default() },
+            )
+            .unwrap();
+
+        let mut tidied = account.clone();
+        tidied.sync_minutes = Some(30);
+        save(&svc, device(), &tidied).await.unwrap();
+        assert_eq!(vault.account(account.id).unwrap().sync_minutes, Some(30));
+
+        let web = Ctx {
+            caller: Caller::Device("web:session".into()),
+            scopes: vec![Scope::All],
+            proved_at: None,
+            request_id: None,
+        };
+        type Edit = fn(&mut Account);
+        let attacks: [(&str, Edit); 3] = [
+            ("imap", |a| a.imap.host = "imap.evil.example".into()),
+            ("smtp", |a| a.smtp.port = 25),
+            ("caldav", |a| a.caldav = Some("https://evil.example/".into())),
+        ];
+        for (what, edit) in attacks {
+            for caller in [device(), web.clone(), Ctx { caller: Caller::Socket, ..Ctx::local() }] {
+                let mut moved = tidied.clone();
+                edit(&mut moved);
+                let refused = save(&svc, caller.clone(), &moved).await.unwrap_err();
+                assert_eq!(refused.code, codes::FORBIDDEN, "{what} from {:?}", caller.caller);
+                assert!(refused.message.contains("computer that holds the vault"), "{refused}");
+                let kept = vault.account(account.id).unwrap();
+                assert_eq!(
+                    (&kept.imap, &kept.smtp, &kept.caldav),
+                    (&tidied.imap, &tidied.smtp, &tidied.caldav),
+                    "{what} was saved"
+                );
+            }
+        }
+
+        let mut moved = tidied.clone();
+        moved.imap.host = "imap.new-host.example".into();
+        for caller in [Ctx::local(), Ctx::window("app-mail")] {
+            save(&svc, caller, &moved).await.unwrap();
+        }
+        assert_eq!(vault.account(account.id).unwrap().imap.host, "imap.new-host.example");
+    }
+
+    #[tokio::test]
+    async fn a_device_may_add_an_account_it_gives_the_servers_for() {
+        let (svc, vault, _dir) = service();
+        let account = password_account();
+        save(&svc, device(), &account).await.unwrap();
+        assert_eq!(vault.account(account.id).unwrap().imap.host, "imap.example.com");
+    }
+}

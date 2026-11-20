@@ -621,7 +621,12 @@ fn run_list_runs(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         ..Default::default()
     };
     let runs = ctx.vault.runs(&query)?;
-    Ok(json!({
+    // What a run said is the assistant's own writing, run as the person with
+    // every tool there is: it may quote their money, their body, their files.
+    // A caller that may not see one of those gets that a run happened, when
+    // and how it ended, and nothing of what it said.
+    let withheld = !ctx.withheld.is_empty();
+    let mut out = json!({
         "count": runs.len(),
         "runs": runs
             .iter()
@@ -633,14 +638,18 @@ fn run_list_runs(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
                     "outcome": r.outcome.as_str(),
                 });
                 let map = out.as_object_mut().expect("built as an object");
-                if !r.summary.trim().is_empty() {
+                if !withheld && !r.summary.trim().is_empty() {
                     map.insert("said".into(), json!(r.summary));
                 }
-                if !r.reason.trim().is_empty() {
+                if !withheld && !r.reason.trim().is_empty() {
                     map.insert("reason".into(), json!(r.reason));
                 }
                 out
             })
             .collect::<Vec<_>>(),
-    }))
+    });
+    if withheld {
+        out["withheld"] = json!(ctx.withheld_note());
+    }
+    Ok(out)
 }

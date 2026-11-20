@@ -404,7 +404,12 @@ async fn events(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Respo
         );
     }
     let ended = state.sessions.ended(&session.id);
-    state.broadcaster.stream_until(origin_of(&session.id, &headers), ended).into_response()
+    // A browser's session holds everything, as `crate::routes::web_session`
+    // says; its stream is filtered by that and so hears all there is.
+    state
+        .broadcaster
+        .stream_until(origin_of(&session.id, &headers), vec![Scope::All], ended)
+        .into_response()
 }
 
 // ---- the interface's own files -------------------------------------------------

@@ -620,6 +620,40 @@ fn write_only(ctx: &Ctx) -> bool {
         && ctx.scopes.iter().all(|s| matches!(s, Scope::Heartbeats | Scope::HealthIngest))
 }
 
+/// Turn a write-only caller away from a route that only reads.
+fn refuse_write_only(ctx: &Ctx) -> Result<(), Failure> {
+    if write_only(ctx) {
+        return Err(CommandError::new(
+            karmayoga_service::error::codes::FORBIDDEN,
+            "this token cannot read",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// What `Cache-Control` a response carrying decrypted vault bytes is sent
+/// with, given the one `desktop` would use.
+///
+/// A browser reached over the network or through web access keeps what it is
+/// told it may, in a cache on its own disk that outlives the session, the
+/// pairing and the vault's lock. A passport scan or a lab report opened on a
+/// borrowed laptop would stay there for the year the blob and file routes
+/// used to allow, readable by whoever sat down next. So for those two
+/// transports nothing the vault decrypted is kept: `no-store`, and no
+/// `max-age` or `immutable` beside it, because that is what lets a browser
+/// answer without asking again.
+///
+/// The local socket is the same user's own process -- the command line, not
+/// a browser -- and keeps what the route would have said. The desktop's own
+/// `karmayoga://` handler does not come through here at all.
+fn vault_cache_control(transport: Transport, desktop: &'static str) -> &'static str {
+    match transport {
+        Transport::Network | Transport::Web => "no-store",
+        Transport::Socket => desktop,
+    }
+}
+
 /// Serve part of an attachment, honouring `Range`.
 ///
 /// The same arithmetic the desktop's `karmayoga://` handler uses, from the same
@@ -636,13 +670,7 @@ async fn get_blob(
     // -- reads nothing, and the blob store holds every sealed file and what
     // a connector sent for a clinical document as well as pictures. It is
     // the token most likely to leak.
-    if write_only(&ctx) {
-        return Err(CommandError::new(
-            karmayoga_service::error::codes::FORBIDDEN,
-            "this token cannot read",
-        )
-        .into());
-    }
+    refuse_write_only(&ctx)?;
     let id = BlobId::parse(&id).map_err(|_| CommandError::new("invalid", "not a blob address"))?;
 
     let total = server.service.blob_len(id)?;
@@ -657,8 +685,12 @@ async fn get_blob(
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, bytes.len().to_string())
         // Blobs are content-addressed, so the bytes behind a URL can never
-        // change and a client may cache them for ever.
-        .header(header::CACHE_CONTROL, "private, max-age=31536000, immutable");
+        // change and a client on this machine may cache them for ever -- but
+        // see `vault_cache_control` for why one that is a browser may not.
+        .header(
+            header::CACHE_CONTROL,
+            vault_cache_control(transport, "private, max-age=31536000, immutable"),
+        );
     response = if plan.partial {
         response
             .status(StatusCode::PARTIAL_CONTENT)
@@ -729,7 +761,10 @@ async fn get_mail_part(
 
     let vault = server.service.require()?;
     let served = karmayoga_service::mailview::part(&vault, message_id, &identifier)?;
-    mail_bytes_response(served, "private, max-age=31536000, immutable")
+    mail_bytes_response(
+        served,
+        vault_cache_control(transport, "private, max-age=31536000, immutable"),
+    )
 }
 
 /// `/v1/mail/img/{message_id}/{token}` -- the shape
@@ -1033,7 +1068,7 @@ async fn get_file(
         .header(header::CONTENT_TYPE, file_content_type(&mime))
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, bytes.len().to_string())
-        .header(header::CACHE_CONTROL, file_cache_control(current))
+        .header(header::CACHE_CONTROL, vault_cache_control(transport, file_cache_control(current)))
         .header("x-content-type-options", "nosniff")
         .header(header::CONTENT_SECURITY_POLICY, FILE_DOCUMENT_POLICY);
     response = if plan.partial {
@@ -1096,14 +1131,24 @@ async fn upload_file_chunk(
 /// One stream per connected client. A client is told about writes it did not
 /// make -- the origin is compared here rather than in the interface, so a
 /// window never reloads under its own cursor.
+///
+/// And only about what it may read. A new-mail notice carries a sender, a
+/// subject and the first words of the message; a reminder names a medicine; a
+/// meeting offer carries a join link. A token that holds only
+/// [`Scope::Heartbeats`] or [`Scope::HealthIngest`] is documented as one that
+/// "can read nothing", and sits in a browser profile or an app on a phone, so
+/// it is refused the stream outright -- the same refusal [`get_blob`] gives it
+/// -- and any other token's stream is filtered by its scopes (see
+/// `crate::sse::is_for`).
 async fn events(
     State((server, transport)): Ctxt,
     headers: HeaderMap,
 ) -> Answer<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>> + use<>>> {
     check_protocol(&headers)?;
     let ctx = authenticate(&server, transport, &headers)?;
+    refuse_write_only(&ctx)?;
     let me = ctx.caller.origin().unwrap_or("").to_string();
-    Ok(server.broadcaster.stream(me))
+    Ok(server.broadcaster.stream(me, ctx.scopes))
 }
 
 // ---- the parts every route shares ----------------------------------------
@@ -1851,6 +1896,66 @@ mod refusal_tests {
         let (status, answer) = post(app, "/v1/files/upload/abc?offset=0", Some(&token), body).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{answer}");
     }
+
+    async fn open_events(
+        server: &Arc<Server>,
+        transport: Transport,
+        token: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .uri("/v1/events")
+            .header("x-karmayoga-protocol", PROTOCOL.to_string());
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let response = router(server.clone(), transport)
+            .oneshot(request.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        if status == StatusCode::OK {
+            // An open stream has no end to read to.
+            return (status, Value::Null);
+        }
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// A browser extension's heartbeats token and a phone's health-push token
+    /// are documented as ones that can read nothing, and the event stream is
+    /// where a new-mail notice, a dose reminder and a meeting's join link are
+    /// said. Neither may open it; a token that can read something may.
+    #[tokio::test]
+    async fn a_write_only_token_cannot_open_the_event_stream() {
+        let (server, _dir) = server(true);
+        for scopes in [
+            vec![Scope::Heartbeats],
+            vec![Scope::HealthIngest],
+            vec![Scope::Heartbeats, Scope::HealthIngest],
+        ] {
+            let (token, _) = server.registry.issue("Collector", scopes.clone(), false).unwrap();
+            let (status, answer) = open_events(&server, Transport::Network, Some(&token)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{scopes:?}: {answer}");
+            assert_eq!(answer["code"], "forbidden", "{scopes:?}");
+        }
+
+        let (none, _) = open_events(&server, Transport::Network, None).await;
+        assert_eq!(none, StatusCode::UNAUTHORIZED);
+
+        // Write-only *and* something readable is not write-only: it asked for
+        // the stream with a scope that may hear part of it.
+        let (mixed, _) = server
+            .registry
+            .issue("Phone", vec![Scope::HealthIngest, Scope::Health], false)
+            .unwrap();
+        let (status, _) = open_events(&server, Transport::Network, Some(&mixed)).await;
+        assert_eq!(status, StatusCode::OK);
+        let (all, _) = server.registry.issue("Laptop", vec![Scope::All], false).unwrap();
+        let (status, _) = open_events(&server, Transport::Network, Some(&all)).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = open_events(&server, Transport::Socket, None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
 }
 
 /// What a file is answered with, apart from where its bytes come from -- which
@@ -1939,5 +2044,73 @@ mod file_route_tests {
                 .unwrap();
             assert_eq!(response.status(), want);
         }
+    }
+}
+
+/// What a browser is told it may keep of the vault's decrypted bytes.
+#[cfg(test)]
+mod cache_route_tests {
+    use super::*;
+    use karmayoga_core::VaultConfig;
+    use tower::ServiceExt;
+
+    #[test]
+    fn a_browser_is_never_told_to_keep_what_the_vault_decrypted() {
+        for desktop in
+            ["private, max-age=31536000, immutable", "private, max-age=31536000", "no-cache"]
+        {
+            for transport in [Transport::Network, Transport::Web] {
+                assert_eq!(vault_cache_control(transport, desktop), "no-store", "{desktop}");
+            }
+            // The local socket is the owner's own process, not a browser.
+            assert_eq!(vault_cache_control(Transport::Socket, desktop), desktop);
+        }
+    }
+
+    /// The header on the wire, from a real blob, on each transport that can
+    /// answer one without a browser session: a paired device over the
+    /// network says `no-store` with nothing beside it; the socket keeps its
+    /// year.
+    #[tokio::test]
+    async fn a_blob_over_the_network_is_not_kept_and_over_the_socket_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = karmayoga_vault::create(dir.path(), VaultConfig::default()).unwrap();
+        let service = Arc::new(Service::new());
+        service.set(vault);
+        let id = service.put_blob(&Ctx::local(), b"a passport scan".to_vec()).await.unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(Registry::open(config_dir.path().join("devices.json")).unwrap());
+        let (token, _) = registry.issue("Laptop", vec![Scope::All], false).unwrap();
+        let server = Server::new(
+            service,
+            registry,
+            Arc::new(Broadcaster::new()),
+            "Test".into(),
+            String::new(),
+            false,
+        );
+
+        let ask = |transport: Transport, token: Option<String>| {
+            let app = router(server.clone(), transport);
+            let uri = format!("/v1/blob/{id}");
+            async move {
+                let mut request = Request::builder()
+                    .uri(uri)
+                    .header("x-karmayoga-protocol", PROTOCOL.to_string());
+                if let Some(token) = token {
+                    request = request.header("authorization", format!("Bearer {token}"));
+                }
+                app.oneshot(request.body(axum::body::Body::empty()).unwrap()).await.unwrap()
+            }
+        };
+
+        let network = ask(Transport::Network, Some(token)).await;
+        assert_eq!(network.status(), StatusCode::OK);
+        assert_eq!(network.headers()[header::CACHE_CONTROL], "no-store");
+
+        let socket = ask(Transport::Socket, None).await;
+        assert_eq!(socket.status(), StatusCode::OK);
+        assert_eq!(socket.headers()[header::CACHE_CONTROL], "private, max-age=31536000, immutable");
     }
 }

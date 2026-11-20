@@ -70,9 +70,16 @@ const MOST_QUIET: Duration = Duration::from_secs(30);
 /// stale uploads and decrypted copies are swept.
 const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(60 * 60);
 
-/// How old an upload nobody finished, or a decrypted copy handed to another
-/// program, must be before it is swept.
-const STALE: Duration = Duration::from_secs(24 * 60 * 60);
+/// How old a plain upload nobody finished must be before it is swept.
+const STALE_UPLOADS: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How old a decrypted copy of a sealed file handed to another program, or the
+/// staging of a sealed upload nobody finished, must be before it is swept.
+/// An hour, where an upload may wait a day: these are plaintext of files the
+/// person chose to keep encrypted, they are also deleted when the vault locks,
+/// and a copy is made afresh each time a file is opened. Also what
+/// [`Service::set`] clears from the cache directory when a vault is opened.
+pub(crate) const STALE_PLAINTEXT: Duration = Duration::from_secs(60 * 60);
 
 /// How many files a pass hashes and writes before it announces what it has
 /// and goes on. See the module docs.
@@ -534,12 +541,14 @@ fn sweep(svc: &Arc<Service>, vault: &Arc<Vault>) {
         }
         Err(e) => tracing::debug!(error = %e, "files: could not empty the trash"),
     }
-    // Decrypted copies of sealed files are not in the folder (they are under
-    // the user's cache directory, so a sync tool never sees them), and they are
-    // swept whether or not the folder is there: a drive that is unplugged is
-    // no reason to leave a passport lying decrypted. This also clears what
-    // an older build left in the folder's own `open` folder.
-    if let Err(e) = vault.sweep_open_copies(STALE) {
+    // Decrypted copies of sealed files, and the staging of sealed uploads, are
+    // not in the folder (they are under the user's cache directory, so a sync
+    // tool never sees them), and they are swept whether or not the folder is
+    // there: a drive that is unplugged is no reason to leave a passport lying
+    // decrypted. This also clears what an older build left in the folder's
+    // own `open` folder. Locking the vault deletes them all at once; this is
+    // for the ones that outlive a vault that stays unlocked.
+    if let Err(e) = vault.sweep_open_copies(STALE_PLAINTEXT) {
         tracing::debug!(error = %e, "files: could not sweep decrypted copies");
     }
     let Ok(Some(folder)) = vault.files_folder() else { return };
@@ -547,7 +556,7 @@ fn sweep(svc: &Arc<Service>, vault: &Arc<Vault>) {
     if !matches!(vault.folder_state(), Ok(state) if state.is_available()) {
         return;
     }
-    if let Err(e) = folder.sweep_uploads(STALE) {
+    if let Err(e) = folder.sweep_uploads(STALE_UPLOADS) {
         tracing::debug!(error = %e, "files: could not sweep stale uploads");
     }
 }
@@ -556,7 +565,8 @@ fn sweep(svc: &Arc<Service>, vault: &Arc<Vault>) {
 mod tests {
     use super::*;
     use karmayoga_core::VaultConfig;
-    use karmayoga_core::files::{FileFilter, FileQuery, StatusFilter};
+    use karmayoga_core::files::disk::UploadStaging;
+    use karmayoga_core::files::{FileFilter, FileOrigin, FileQuery, ImportOptions, StatusFilter};
     use tokio::time::Instant;
 
     fn open(home: &Path) -> (Arc<Service>, Arc<Vault>) {
@@ -565,6 +575,11 @@ mod tests {
         let svc = Arc::new(Service::new());
         let vault = svc.set(vault);
         (svc, vault)
+    }
+
+    /// Options for a file kept sealed in the vault.
+    fn sealed() -> ImportOptions {
+        ImportOptions { encrypted: Some(true), ..ImportOptions::new(FileOrigin::Files) }
     }
 
     fn rows(vault: &Vault) -> Vec<IndexRow> {
@@ -682,5 +697,49 @@ mod tests {
         assert_eq!(after_wake(later, start), start + MOST_QUIET);
         let much_later = start + Duration::from_secs(55);
         assert_eq!(after_wake(much_later, start), start + MOST_QUIET);
+    }
+
+    #[tokio::test]
+    async fn locking_the_service_and_closing_it_delete_the_decrypted_copies() {
+        let home = tempfile::tempdir().unwrap();
+        let (svc, vault) = open(home.path());
+        let passport = vault.import_bytes(b"passport", "passport.pdf", &sealed()).unwrap();
+
+        // The lock screen's and the idle timer's way: the vault drops its key
+        // and the service is told. The copy handed to another program goes
+        // with the key, not an hour later when a sweep next runs.
+        let copy = vault.open_file_copy(passport.id).unwrap();
+        assert_eq!(std::fs::read(&copy).unwrap(), b"passport");
+        vault.lock();
+        svc.locked().await;
+        assert!(!copy.exists(), "a decrypted copy outlived the lock");
+
+        // Closing the vault to open another, or quitting.
+        vault.unlock(None).unwrap();
+        let copy = vault.open_file_copy(passport.id).unwrap();
+        svc.close().await;
+        assert!(!copy.exists(), "a decrypted copy outlived the close");
+    }
+
+    #[test]
+    fn opening_a_vault_clears_the_plaintext_a_run_that_is_gone_left() {
+        let home = tempfile::tempdir().unwrap();
+        let (copy, staging) = {
+            // A run that quit without locking: everything dropped, the write
+            // lock released, nothing deleted.
+            let (_svc, vault) = open(home.path());
+            let passport = vault.import_bytes(b"passport", "passport.pdf", &sealed()).unwrap();
+            let ticket = vault.begin_upload("scan.bin", 3, &sealed()).unwrap();
+            vault.upload_chunk(&ticket.upload, 0, b"abc").unwrap();
+            (vault.open_file_copy(passport.id).unwrap(), UploadStaging::for_vault(vault.path()))
+        };
+        assert!(copy.exists());
+        assert_eq!(std::fs::read_dir(staging.root()).unwrap().count(), 1);
+
+        // The next run, before anything is unlocked or swept.
+        let svc = Arc::new(Service::new());
+        svc.set(karmayoga_vault::open(home.path()).unwrap());
+        assert!(!copy.exists(), "a decrypted copy survived the next start");
+        assert_eq!(std::fs::read_dir(staging.root()).unwrap().count(), 0);
     }
 }

@@ -94,6 +94,7 @@ impl ChatLink {
                 homeserver: String::new(),
                 user_id: String::new(),
                 owner: String::new(),
+                trusted_devices: Vec::new(),
             }),
             fresh_after_minutes: DEFAULT_FRESH_AFTER_MINUTES,
             created_at: now,
@@ -117,6 +118,30 @@ impl ChatLink {
                     && a.user_id == b.user_id
             }
         }
+    }
+
+    /// Give this link, which a form is saving, the trusted devices the saved
+    /// one `stored` already has -- and only those.
+    ///
+    /// The list of devices the bot trusts is changed by one command, which
+    /// only this computer may call -- its own window, or a program of the same
+    /// user over the local socket (`set_chat_trusted_devices`).
+    /// A save carries a whole link, list included, from whoever sends it; if
+    /// the list in it were believed, any client allowed to save a link could
+    /// add its own device to it. So a save never takes the list from the
+    /// link it is handed: it keeps what was stored, and starts empty for a
+    /// link not stored yet. The list also stays only while it is still about
+    /// the same person -- see [`MatrixLink::same_owner`] -- because device ids
+    /// belong to an account: those of the old owner mean nothing for a new
+    /// one, and carrying them over would hand a stranger's device the trust.
+    pub fn inherit_trusted_devices(&mut self, stored: Option<&ChatLink>) {
+        let ChatService::Matrix(mine) = &mut self.service;
+        mine.trusted_devices = match stored {
+            Some(ChatLink { service: ChatService::Matrix(old), .. }) if old.same_owner(mine) => {
+                old.trusted_devices.clone()
+            }
+            _ => Vec::new(),
+        };
     }
 }
 
@@ -153,9 +178,56 @@ pub struct MatrixLink {
     /// The one person it answers: `@someone:example.org`. Anybody else's
     /// messages and invitations are ignored, whatever room they arrive in.
     pub owner: String,
+    /// The ids of the owner's devices the bot trusts, picked by hand in
+    /// Settings → Chat. Only an encrypted message sent from one of these is
+    /// answered, and only these are given the keys to read the replies.
+    /// Being cross-signed, or verified by comparing emoji, does not put a
+    /// device here: a person who signs in to the owner's account on a new
+    /// device must not thereby be able to talk to the assistant and read what
+    /// it says, so only the list counts. Empty -- what a link saved before
+    /// this existed has -- trusts no device at all.
+    ///
+    /// Changed only by `set_chat_trusted_devices`, which only this computer may
+    /// call; see
+    /// [`ChatLink::inherit_trusted_devices`] for why a save never carries it.
+    #[serde(default)]
+    pub trusted_devices: Vec<String>,
+}
+
+/// The most devices a link may trust. Nobody has more than a handful signed
+/// in; the cap only keeps a record from growing without limit.
+pub const MAX_TRUSTED_DEVICES: usize = 100;
+
+/// The longest device id taken. Matrix leaves it to the server; the ones in
+/// use are ten letters.
+const MAX_DEVICE_ID_BYTES: usize = 128;
+
+/// A device list as it is kept: each id trimmed, the empty ones dropped, in
+/// order and without repeats, so the same choice is always the same record.
+pub fn tidy_device_ids<I, S>(ids: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut tidy: Vec<String> = ids
+        .into_iter()
+        .map(|id| id.as_ref().trim().to_owned())
+        .filter(|id| !id.is_empty())
+        .collect();
+    tidy.sort();
+    tidy.dedup();
+    tidy
 }
 
 impl MatrixLink {
+    /// Whether `other` names the same owner on the same server -- and so
+    /// whether a list of the owner's device ids written for this link still
+    /// means what it says for that one.
+    pub fn same_owner(&self, other: &MatrixLink) -> bool {
+        self.homeserver.trim_end_matches('/') == other.homeserver.trim_end_matches('/')
+            && self.owner == other.owner
+    }
+
     pub fn validate(&self) -> Result<()> {
         let home = self.homeserver.trim();
         let rest = home
@@ -191,6 +263,19 @@ impl MatrixLink {
         valid_user_id(&self.owner, "your Matrix ID")?;
         if self.user_id == self.owner {
             return Err(Error::Invalid("the bot needs an account of its own, not yours".into()));
+        }
+        if self.trusted_devices.len() > MAX_TRUSTED_DEVICES {
+            return Err(Error::Invalid(format!(
+                "at most {MAX_TRUSTED_DEVICES} devices can be trusted"
+            )));
+        }
+        for device in &self.trusted_devices {
+            if device.is_empty()
+                || device.len() > MAX_DEVICE_ID_BYTES
+                || device.contains(|c: char| c.is_whitespace() || c.is_control())
+            {
+                return Err(Error::Invalid(format!("\"{device}\" is not a device id")));
+            }
         }
         Ok(())
     }
@@ -335,7 +420,12 @@ mod tests {
     use super::*;
 
     fn matrix(home: &str, user: &str, owner: &str) -> MatrixLink {
-        MatrixLink { homeserver: home.into(), user_id: user.into(), owner: owner.into() }
+        MatrixLink {
+            homeserver: home.into(),
+            user_id: user.into(),
+            owner: owner.into(),
+            trusted_devices: Vec::new(),
+        }
     }
 
     #[test]
@@ -413,6 +503,73 @@ mod tests {
         assert!(a.same_account(&b));
         b.service = ChatService::Matrix(matrix("https://h", "@bot2:h", "@me:h"));
         assert!(!a.same_account(&b));
+    }
+
+    #[test]
+    fn a_link_saved_before_trusted_devices_existed_trusts_none() {
+        // Exactly what an older vault holds: no `trustedDevices` at all.
+        let old = serde_json::json!({
+            "kind": "matrix",
+            "homeserver": "http://127.0.0.1:6167",
+            "userId": "@bot:h",
+            "owner": "@me:h",
+        });
+        let ChatService::Matrix(link) = serde_json::from_value::<ChatService>(old).unwrap();
+        assert!(link.trusted_devices.is_empty());
+        assert!(link.validate().is_ok());
+    }
+
+    #[test]
+    fn device_ids_are_kept_tidy_and_checked() {
+        assert_eq!(tidy_device_ids([" B ", "A", "", "B", "  "]), ["A", "B"]);
+
+        let mut link = matrix("https://h", "@bot:h", "@me:h");
+        link.trusted_devices = vec!["ABCDEFGHIJ".into(), "KLMNOPQRST".into()];
+        assert!(link.validate().is_ok());
+        for bad in ["", "two words", "tab\there", &"x".repeat(129)] {
+            link.trusted_devices = vec![bad.to_owned()];
+            assert!(link.validate().is_err(), "{bad:?}");
+        }
+        link.trusted_devices = (0..=MAX_TRUSTED_DEVICES).map(|n| format!("DEVICE{n}")).collect();
+        assert!(link.validate().is_err());
+    }
+
+    fn trusting(owner: &str, home: &str, devices: &[&str]) -> ChatLink {
+        let mut link = ChatLink::new_matrix();
+        let mut matrix = matrix(home, "@bot:h", owner);
+        matrix.trusted_devices = devices.iter().map(|d| (*d).to_owned()).collect();
+        link.service = ChatService::Matrix(matrix);
+        link
+    }
+
+    fn trusted_of(link: &ChatLink) -> &[String] {
+        let ChatService::Matrix(m) = &link.service;
+        &m.trusted_devices
+    }
+
+    #[test]
+    fn a_save_keeps_the_stored_list_and_never_takes_one_from_the_form() {
+        let stored = trusting("@me:h", "https://h", &["PHONE"]);
+        // A form -- or a client that is not the desktop -- offering its own.
+        let mut saved = trusting("@me:h", "https://h/", &["PHONE", "INTRUDER"]);
+        saved.inherit_trusted_devices(Some(&stored));
+        assert_eq!(trusted_of(&saved), ["PHONE"]);
+
+        let mut first_save = trusting("@me:h", "https://h", &["INTRUDER"]);
+        first_save.inherit_trusted_devices(None);
+        assert!(trusted_of(&first_save).is_empty(), "a new link trusts nothing");
+    }
+
+    #[test]
+    fn the_list_is_dropped_when_the_owner_or_the_server_changes() {
+        let stored = trusting("@me:h", "https://h", &["PHONE"]);
+        let mut other_owner = trusting("@you:h", "https://h", &["PHONE"]);
+        other_owner.inherit_trusted_devices(Some(&stored));
+        assert!(trusted_of(&other_owner).is_empty());
+
+        let mut other_server = trusting("@me:h", "https://elsewhere", &["PHONE"]);
+        other_server.inherit_trusted_devices(Some(&stored));
+        assert!(trusted_of(&other_server).is_empty());
     }
 
     #[test]

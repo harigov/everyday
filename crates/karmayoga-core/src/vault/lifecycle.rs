@@ -218,32 +218,69 @@ impl Vault {
         Ok(())
     }
 
-    /// Lock the vault: close the backend, drop the index, zeroize the key.
+    /// Lock the vault: close the backend, drop the index, zeroize the key,
+    /// and -- where this process holds the vault's write lock -- delete the
+    /// decrypted copies of sealed files and the staged sealed uploads this
+    /// vault keeps in the cache directory.
+    ///
+    /// The copies go here, in the one place every way of locking passes
+    /// through -- the lock screen, the idle timer, the service closing the
+    /// vault to open another, and the window closing on the way out, which
+    /// locks the vault itself and never reaches the service's `close` --
+    /// because a locked vault is a promise that nothing readable is left,
+    /// and a passport scan that stays on disk in the clear after the key is
+    /// gone breaks it. They would otherwise wait for the hourly sweep, which
+    /// only runs while the vault is unlocked.
+    ///
+    /// Only the process that holds the write lock deletes them. The folders
+    /// are named by the vault's path, so a read-only handle -- `karmayoga
+    /// serve`, or a second window that fell back to reading -- shares them
+    /// with the process that can write, and locking *its* handle must not pull
+    /// a viewer's file, or a phone's upload half way through, from under that
+    /// one. What a read-only process opened for itself is left for the sweeps
+    /// (the hourly one, and the next start by a process that can write).
     pub fn lock(&self) {
         // Take the state out and drop it outside the lock so that a slow
         // backend shutdown does not hold every reader.
         let previous = self.state_write().take();
+        if self.is_writable() {
+            self.remove_plaintext_scratch();
+        }
         drop(previous); // SecretKey zeroizes here; SearchIndex frees plaintext
     }
 
-    /// Change the password, or add/remove encryption entirely.
+    /// Change the password of an encrypted vault.
     ///
     /// Only the *wrapped data key* is rewritten, so this is instant even for
     /// a vault with tens of thousands of entries.
+    ///
+    /// A vault made without a password is refused, before anything is read or
+    /// written. Its records are on disk unsealed, so adding a password would
+    /// mean sealing every one of them (and every blob, and the search
+    /// index's cache) under a new data key. Minting the key and marking the
+    /// header encrypted without doing that -- which is what this once did --
+    /// leaves a vault whose own records no longer read, with the old
+    /// plaintext still on disk.
     pub fn change_password(&self, current: Option<&str>, new: Option<&str>) -> Result<()> {
         self.writable()?;
         let header = self.header_read().clone();
+        if !header.is_encrypted() {
+            return Err(Error::Invalid(
+                "this vault has no password, and one cannot be added to it: every record in it \
+                 would have to be sealed again, which this version cannot do. Export what it \
+                 holds and import it into a new vault made with a password"
+                    .into(),
+            ));
+        }
 
         // Verify the current password by unwrapping, whether or not the
         // vault happens to be unlocked already.
-        let dek = if header.is_encrypted() {
+        let dek = {
             let current = current.ok_or(Error::BadPassword)?;
             let kdf = header.kdf.ok_or_else(|| Error::Invalid("missing KDF params".into()))?;
             let salt = from_hex(header.salt.as_deref().unwrap_or_default())?;
             let kek = derive_key(current, &salt, kdf)?;
             unwrap_key(&kek, &from_hex(header.wrapped_key.as_deref().unwrap_or_default())?)?
-        } else {
-            SecretKey::random()
         };
 
         let mut next = header.clone();
@@ -256,11 +293,10 @@ impl Vault {
                 next.kdf = Some(kdf);
                 next.salt = Some(to_hex(&salt));
                 next.wrapped_key = Some(to_hex(&wrap_key(&kek, &dek)?));
-                // The data key survives a password change on an encrypted
-                // vault, so the existing check value stays true. Going from
-                // *unencrypted* to encrypted mints a fresh key above, and
-                // that one needs a check value of its own.
-                if !header.is_encrypted() || next.key_check.is_none() {
+                // The data key survives a password change, so the existing
+                // check value stays true. A vault old enough to have none
+                // gets one now.
+                if next.key_check.is_none() {
                     next.key_check = Some(seal_key_check(&dek)?);
                 }
             }
@@ -588,15 +624,41 @@ mod tests {
     }
 
     #[test]
-    fn turning_encryption_on_leaves_no_unencrypted_spare() {
+    fn a_vault_with_no_password_is_refused_a_new_one_and_left_exactly_as_it_was() {
         let dir = tempfile::tempdir().unwrap();
-        let v = Vault::create(dir.path(), cfg(None), registry()).unwrap();
+        let reg = registry();
+        let v = Vault::create(dir.path(), cfg(None), reg.clone()).unwrap();
+        v.save_journal(&crate::model::Journal::new("Daily")).unwrap();
+        // A setting changed first, so there is a spare header to compare too.
         v.set_auto_lock(60).unwrap();
-        v.change_password(None, Some("pw")).unwrap();
+        let on_disk = |root: &Path| -> Vec<(&'static str, Option<Vec<u8>>)> {
+            [HEADER_FILENAME, HEADER_BACKUP_FILENAME]
+                .into_iter()
+                .map(|name| (name, std::fs::read(root.join(name)).ok()))
+                .collect()
+        };
+        let before = on_disk(dir.path());
+        assert!(before[0].1.is_some(), "the live header is on disk");
 
-        for (name, header) in &headers_on_disk(dir.path()) {
-            assert!(header.is_encrypted(), "{name} is still an unencrypted header");
-            assert!(unwraps_with(header, "pw"), "{name} does not open with the password");
+        // Whatever is asked of it: with a current password it has not got, or
+        // with none.
+        for current in [None, Some("anything")] {
+            let err = v.change_password(current, Some("a new password")).unwrap_err();
+            assert_eq!(err.code(), "invalid");
+            assert!(err.to_string().contains("no password"), "{err}");
         }
+
+        assert_eq!(on_disk(dir.path()), before, "a refused change wrote a header");
+        let header = v.header();
+        assert!(!header.is_encrypted());
+        assert!(
+            header.salt.is_none() && header.wrapped_key.is_none() && header.key_check.is_none()
+        );
+        // Its own records still read, and it still opens with no password.
+        assert_eq!(v.journals().unwrap()[0].name, "Daily");
+        drop(v);
+        let again = Vault::open(dir.path(), reg).unwrap();
+        assert!(again.is_unlocked(), "a vault with no password opens by itself");
+        assert!(!again.status().encrypted);
     }
 }

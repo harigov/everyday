@@ -229,6 +229,7 @@ fn run_list_meeting_notes(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Valu
         // here that a stranger chose the words of.
         notes.push(json!({
             "note_id": note_id.to_string(),
+            "origin": note.origin().as_str(),
             "start": r.started_at.to_string(),
             "end": r.ended_at.map(|t| t.to_string()),
             "untrusted_text": {
@@ -288,6 +289,9 @@ fn run_get_transcript(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 
     Ok(json!({
         "note_id": note_id.to_string(),
+        // What was said on a call, by whoever was on it: a meeting's, whether
+        // or not the note it hangs from was started as one.
+        "origin": crate::note::NoteOrigin::Meeting.as_str(),
         "untrusted_text": {
             "note_title": heard(&note.display_title()),
             "lines": page.iter().map(|seg| heard(&transcript.line(seg))).collect::<Vec<_>>(),

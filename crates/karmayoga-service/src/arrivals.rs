@@ -71,6 +71,7 @@ use karmayoga_core::mail::{Category, MailboxRole};
 use karmayoga_core::store::calendars::EventQuery;
 use karmayoga_core::{Result as CoreResult, Vault};
 
+use crate::ctx::Scope;
 use crate::events::{Level, Notification};
 use crate::mailai::excerpt;
 use crate::service::Service;
@@ -341,6 +342,7 @@ pub fn new_mail_notice(account_id: &str, mail: &[NewMail], total: usize) -> Opti
         [one] if total == 1 => Some(
             Notification::new(Level::Info, sender_or(one))
                 .body(subject_and_snippet(one))
+                .domain(Scope::Mail)
                 .for_user()
                 .key(format!("mail:{}", one.message_id)),
         ),
@@ -354,6 +356,7 @@ pub fn new_mail_notice(account_id: &str, mail: &[NewMail], total: usize) -> Opti
             Some(
                 Notification::new(Level::Info, format!("{total} new emails"))
                     .body(preview)
+                    .domain(Scope::Mail)
                     .for_user()
                     .key(format!("mail-new:{account_id}:{}", many[0].message_id)),
             )
@@ -480,6 +483,7 @@ pub fn fresh_notices(
     vec![
         Notification::new(Level::Info, format!("{} new events on {name}", events.len()))
             .body(listed)
+            .domain(Scope::Calendars)
             .for_user()
             .key(format!("calendar-new:{calendar_id}")),
     ]
@@ -493,6 +497,7 @@ fn one_fresh(calendar_id: &str, calendar_name: &str, event: &FreshEvent) -> Noti
     };
     Notification::new(Level::Info, event_title(event))
         .body(body)
+        .domain(Scope::Calendars)
         .for_user()
         .key(format!("event-new:{calendar_id}:{}", event.uid))
 }
@@ -671,6 +676,7 @@ pub fn reminder_notice(event: &ReminderEvent, now: Timestamp, zone: &TimeZone) -
     let title = if title.is_empty() { "Calendar event".to_string() } else { excerpt(title, 80) };
     Notification::new(Level::Info, title)
         .body(body)
+        .domain(Scope::Calendars)
         .for_user()
         .key(format!("event-soon:{}:{}", event.calendar_id, event.uid))
 }
@@ -695,6 +701,7 @@ pub fn reminders_notice(due: &[DueReminder], now: Timestamp, zone: &TimeZone) ->
     }
     Notification::new(Level::Info, format!("{} events coming up", due.len()))
         .body(body)
+        .domain(Scope::Calendars)
         .for_user()
         .key("event-soon:several")
 }

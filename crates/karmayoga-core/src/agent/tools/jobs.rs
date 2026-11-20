@@ -253,26 +253,38 @@ fn job_started(action: &str, job: &Job) -> Result<Value> {
     Ok(out)
 }
 
+/// What a job is called to a caller that may not see what it found out: the
+/// kind of work and nothing else, since the question is the assistant's own
+/// wording of what the person asked, and it may name anything.
+fn withheld_title(job: &Job) -> String {
+    format!("a {} job", job.kind.label().to_lowercase())
+}
+
 /// One job, for a list or for a single answer. `detail` adds what is too
 /// much for a list of ten: the brief, and what the job said for itself.
-fn job_json(job: &Job, detail: bool) -> Value {
+///
+/// `withheld` is [`ToolContext::withheld`] being non-empty: a job runs with
+/// every tool the assistant has, so its question, its progress line, why it
+/// stopped and its answer may quote a domain this caller was not given. They
+/// are left out for one that was not, and the reply says so.
+fn job_json(job: &Job, detail: bool, withheld: bool) -> Value {
     let mut out = json!({
         "id": job.id.to_string(),
         "kind": job.kind.as_str(),
-        "title": job.title(),
+        "title": if withheld { withheld_title(job) } else { job.title() },
         "status": job.status.as_str(),
         "steps": job.steps,
         "answered": job.answered,
         "created": job.created_at.to_string(),
     });
     let map = out.as_object_mut().expect("built as an object");
-    if !job.progress.trim().is_empty() {
+    if !withheld && !job.progress.trim().is_empty() {
         map.insert("progress".into(), json!(job.progress));
     }
     if let Some(note) = job.note_id() {
         map.insert("note_id".into(), json!(note.to_string()));
     }
-    if !job.reason.trim().is_empty() {
+    if !withheld && !job.reason.trim().is_empty() {
         map.insert("reason".into(), json!(job.reason));
     }
     if let Some(started) = job.started_at {
@@ -283,7 +295,7 @@ fn job_json(job: &Job, detail: bool) -> Value {
     }
     if detail {
         match &job.kind {
-            JobKind::Research { brief, .. } if !brief.trim().is_empty() => {
+            JobKind::Research { brief, .. } if !withheld && !brief.trim().is_empty() => {
                 map.insert("brief".into(), json!(brief));
             }
             JobKind::Research { .. } => {}
@@ -293,7 +305,7 @@ fn job_json(job: &Job, detail: bool) -> Value {
         }
         // What the job's own model wrote at the end, from pages strangers
         // wrote: kept apart from the facts above, the way a story's words are.
-        if !job.summary.trim().is_empty() {
+        if !withheld && !job.summary.trim().is_empty() {
             map.insert("untrusted_text".into(), json!({ "summary": job.summary }));
         }
     }
@@ -301,16 +313,25 @@ fn job_json(job: &Job, detail: bool) -> Value {
 }
 
 fn run_job_status(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let withheld = !ctx.withheld.is_empty();
     if let Some(id) = args.opt_id::<JobId>("id", "job")? {
         let job = ctx.vault.job(id).map_err(missing(id))?;
-        return Ok(job_json(&job, true));
+        let mut out = job_json(&job, true, withheld);
+        if withheld {
+            out["withheld"] = json!(ctx.withheld_note());
+        }
+        return Ok(out);
     }
     let limit = args.opt_u32("limit").unwrap_or(RECENT_JOBS).clamp(1, MAX_RECENT_JOBS);
     let jobs = ctx.vault.jobs(&JobQuery { limit: Some(limit), ..Default::default() })?;
-    Ok(json!({
+    let mut out = json!({
         "count": jobs.len(),
-        "jobs": jobs.iter().map(|j| job_json(j, false)).collect::<Vec<_>>(),
-    }))
+        "jobs": jobs.iter().map(|j| job_json(j, false, withheld)).collect::<Vec<_>>(),
+    });
+    if withheld {
+        out["withheld"] = json!(ctx.withheld_note());
+    }
+    Ok(out)
 }
 
 fn run_cancel_job(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -319,7 +340,7 @@ fn run_cancel_job(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let was_running = ctx.vault.job(id).map_err(missing(id))?.status == JobStatus::Running;
     let job = ctx.vault.cancel_job(id, reason)?;
 
-    let title = job.title();
+    let title = if ctx.withheld.is_empty() { job.title() } else { withheld_title(&job) };
     let mut out = done("cancelled", job.kind.as_str(), &short(&title), job.id.to_string())?;
     out["status"] = json!(job.status.as_str());
     out["question"] = json!(title);

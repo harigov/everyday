@@ -105,8 +105,41 @@ machine, reachable from their devices over Tailscale. Matrix is first.
   to reach other networks later (mautrix bridges bring Telegram, Signal and
   WhatsApp into Matrix rooms), with one caveat: bridged senders cannot be
   checked the way a Matrix user can.
-- **It answers one Matrix ID, and nobody else.** The person chose this over
-  also requiring verified devices. Encrypted rooms are supported, not required.
+- **It answers one Matrix ID, from the devices the owner picked by hand, and
+  nobody else.** The owner's Matrix ID alone is not enough to be believed:
+  anybody who signs in to that account on a new device can write under it, and
+  so can the homeserver. So the link keeps a hand-picked list of the owner's
+  device ids (`MatrixLink::trusted_devices`, chosen in Settings → Chat), and a
+  typed message, picture, file or voice note counts only if it arrived
+  **encrypted** and the device that sent it (`EncryptionInfo::sender_device`)
+  is on the list. A device that is cross-signed or was verified by comparing
+  emoji is **not** trusted for that: only the list counts. Anything else under
+  the owner's ID is ignored and not delivered to the relay, and a device that
+  wrote without being trusted is shown in Settings (and raises one
+  notification per device) so it is easy to find and add. An empty list — what
+  a link saved before this has — trusts no device: the bot answers nobody and
+  nothing it writes can be read.
+  - **The same list decides who can read the replies.** Each of the owner's
+    devices is marked `LocalTrust::Verified` if listed and `BlackListed` if not
+    (on start, when the list changes and when the owner's device list does),
+    and the client shares room keys with
+    `CollectStrategy::OnlyTrustedDevices`, which never shares with a blacklisted
+    device and also withholds from one not marked yet.
+  - **Calls follow it.** A call is answered, and its encryption keys accepted
+    (Olm-encrypted, by a trusted device), only from a trusted device, and the
+    bot's own key goes to trusted devices only.
+  - **✅/❌/⏰ reactions still answer a question, for everything, exactly as
+    before.** The owner knows a reaction is not encrypted and names no device,
+    and accepts that.
+  - **The bot does not answer, or write, in an unencrypted room.** An owner
+    message there gets one notice per room (about the room, nothing private);
+    routine results go only to an encrypted private room.
+  - **Only this computer can change the list** — its own window, or a
+    program of the same user over the local socket, which is how a headless
+    `karmayoga serve` gets one (`set_chat_trusted_devices` refuses a paired
+    device, a web session and the assistant) — and
+    `save_chat_link` never takes the list from the link it is given: a device
+    that could add itself would make the list worth nothing.
 - **One complete reply per turn.** While the assistant works, the bot shows
   that it is typing. Then it sends one Markdown message. Editing a message
   as text arrives would put only the first fragment in the phone's
@@ -189,12 +222,19 @@ A save always restarts that link's task, so new settings take effect at once.
 | `remove_chat_link` | Destructive, `Settings/Updated` | `{ id: ChatLinkId }` → `void` |
 | `answer_chat_verification` | Write | `{ id, flow: string, answer: 'match' \| 'mismatch' \| 'cancel' }` → `void` |
 | `start_chat_verification` | Write | `{ id: ChatLinkId }` → `void` |
+| `chat_devices` | Read | `{ id: ChatLinkId }` → `ChatDevice[]` (the owner's devices as the running bot sees them; `conflict` if it is not running) |
+| `set_chat_trusted_devices` | Write, `Settings/Updated`, this computer only (window or local socket) | `{ id: ChatLinkId, devices: string[] }` → `ChatLinkView` |
 
-`ChatLinkView` is `{ link, status: ChatStatus, signedIn: boolean, hasPassword: boolean, ownerVerified: boolean | null, verification: ChatVerification | null }`.
+`ChatLinkView` is `{ link, status: ChatStatus, signedIn: boolean, hasPassword: boolean, ownerVerified: boolean | null, verification: ChatVerification | null, untrustedDevice: ChatUntrustedDevice | null }`.
+`ChatDevice` is `{ deviceId, displayName, crossSigned, trusted }` and `ChatUntrustedDevice` is `{ deviceId, displayName, at }`.
 `ChatStatus` is `{ state: 'off' | 'connecting' | 'online' | 'needsSignIn' | 'failing', detail, since }`.
 
 **`save_chat_link`**:
 - Upserts by id, keeping the stored `createdAt` and stamping `updatedAt`.
+- It never takes `trustedDevices` from the link it is given: it keeps the
+  stored list (empty for a new link), and drops it if the owner or the server
+  changed (`ChatLink::inherit_trusted_devices`). Only `set_chat_trusted_devices`
+  changes the list.
 - If the account changed (`ChatLink::same_account` is false), it drops the
   session, the recovery key and the link's state directory: the bot is now a
   different account.
@@ -367,6 +407,8 @@ two people do in Element.
 
 **Who it answers.** A message reaches `Incoming` only if all of these hold:
 - its sender is `link.owner`;
+- it arrived encrypted, from a device in `link.service.trustedDevices` (see
+  "It answers one Matrix ID…" above; reactions are the one exception);
 - the room's joined members are exactly the bot and the owner (anything wider
   would show replies to others; the bot ignores such rooms and says so once);
 - it is not the bot's own message.

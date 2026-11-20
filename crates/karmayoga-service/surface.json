@@ -1055,6 +1055,23 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ChatLinkId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "chat_devices",
+      "orScope": null,
+      "returns": "ChatDevice[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -9071,6 +9088,31 @@
       "orScope": null,
       "returns": "BackupView",
       "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ChatLinkId"
+        },
+        {
+          "name": "devices",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_chat_trusted_devices",
+      "orScope": null,
+      "returns": "ChatLinkView",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

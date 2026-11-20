@@ -4074,6 +4074,10 @@ export interface MatrixLink {
   /** The one person it answers. Anybody else's messages and invitations are
    *  ignored, whatever room they arrive in. */
   owner: string
+  /** The owner's devices the bot believes, by device id, chosen in Settings
+   *  on this computer. A message from any other device of the owner's is
+   *  ignored; reactions are still taken as answers. */
+  trustedDevices: string[]
 }
 
 export const CHAT_STATES = ['off', 'connecting', 'online', 'needsSignIn', 'failing'] as const
@@ -4107,6 +4111,29 @@ export interface ChatLinkView {
   ownerVerified: boolean | null
   /** The verification the bot is in, or the last one this run. */
   verification: ChatVerification | null
+  /** The owner's device that last wrote to the bot without being trusted,
+   *  and was ignored. `null` when none has. */
+  untrustedDevice: ChatUntrustedDevice | null
+}
+
+/** One of the owner's Matrix devices, as Settings → Chat lists it. */
+export interface ChatDevice {
+  deviceId: string
+  /** The name its owner gave it ("Element on iPhone"), if any. */
+  displayName: string | null
+  /** Whether the owner's account has signed it. Shown, not decisive: only
+   *  the trusted list decides. */
+  crossSigned: boolean
+  /** On the trusted list. */
+  trusted: boolean
+}
+
+/** An owner's device that wrote to the bot while not trusted. */
+export interface ChatUntrustedDevice {
+  deviceId: string
+  displayName: string | null
+  /** When it last tried. */
+  at: string
 }
 
 export const VERIFICATION_STAGES = [

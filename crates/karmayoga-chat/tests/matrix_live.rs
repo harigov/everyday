@@ -1020,11 +1020,24 @@ async fn an_owner_talks_to_the_assistant_over_encrypted_matrix_and_a_stranger_do
         homeserver: homeserver.clone(),
         user_id: bot.to_string(),
         owner: owner_id.to_string(),
+        trusted_devices: Vec::new(),
     });
     rig.svc
         .call(Ctx::local(), "save_chat_link", json!({ "link": link, "password": bot_password }))
         .await
         .unwrap_or_else(|e| panic!("save_chat_link: {e}"));
+    // The bot believes only the devices the owner picked by hand, and gives
+    // its keys to no other: this is the owner picking the one it signed in on.
+    // Before the bot is online, so that its greeting has somebody to read it.
+    let owner_device = owner.client.device_id().expect("the owner is signed in").to_string();
+    rig.svc
+        .call(
+            Ctx::local(),
+            "set_chat_trusted_devices",
+            json!({ "id": link.id, "devices": [owner_device] }),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("set_chat_trusted_devices: {e}"));
     wait_online(&rig.svc, link.id).await;
     eprintln!("matrix_live: bot online: {}", rig.svc.chat_status(link.id).detail);
 
