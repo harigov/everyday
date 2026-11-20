@@ -274,10 +274,22 @@ audioadapter-buffers = "4"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# On Apple Silicon, llama.cpp runs a decision model on the GPU through Metal
-# -- the one GPU backend this build carries.
+# On Apple Silicon, llama.cpp runs a decision model on the GPU through Metal.
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false, features = ["metal"] }
+
+# On Linux, through Vulkan, on any graphics card with a Vulkan driver --
+# NVIDIA, AMD or Intel, separate or built in -- and on the processor where
+# there is none or it has no room (`local::decide`). On an RTX 3070 a
+# message took a hundredth of the processor's time; see
+# docs/plans/mail-sorting.md. The build needs the Vulkan headers,
+# SPIRV-Headers and the `glslc` shader compiler, from the distribution
+# (`scripts/setup-linux.sh`) or from a Vulkan SDK named by `VULKAN_SDK`
+# (`scripts/vulkan-sdk.sh`, which is what a release uses: Ubuntu 22.04 has no
+# `glslc`). The app then links the Vulkan loader, `libvulkan.so.1`, which
+# its packages depend on. It adds about 45 MB of compiled shaders.
+[target.'cfg(target_os = "linux")'.dependencies]
+llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false, features = ["vulkan"] }
 
 [dev-dependencies]
 base64 = "0.22"

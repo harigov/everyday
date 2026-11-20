@@ -40,8 +40,10 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     # The `-p karmayoga-app` steps build llama.cpp from source, for the
-    # desktop app's local decision models (`decisions`).
-    timeout-minutes: 40
+    # desktop app's local decision models (`decisions`) -- with its Vulkan
+    # backend, whose shaders add minutes to a build `target/`'s cache has
+    # not seen.
+    timeout-minutes: 50
 
     # A throwaway Postgres, so the storage conformance suite runs against
     # *both* SQL dialects rather than only the one that needs no server. The
@@ -85,7 +87,9 @@ jobs:
       # run at build time to generate their own bindings against those
       # headers -- ubuntu-latest ships the `clang` binary already, but not
       # reliably the `libclang` dev headers `bindgen` actually links against,
-      # so this is asked for explicitly rather than assumed.
+      # so this is asked for explicitly rather than assumed. The Vulkan
+      # headers, SPIRV-Headers and `glslc` are for llama.cpp's Vulkan
+      # backend: see `crates/karmayoga-service/Cargo.toml`.
       - name: Build dependencies
         run: |
           set -euo pipefail
@@ -100,7 +104,8 @@ jobs:
             libpipewire-0.3-dev \
             libasound2-dev \
             libspa-0.2-dev \
-            libclang-dev
+            libclang-dev \
+            libvulkan-dev glslc spirv-headers
 
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -160,12 +165,14 @@ jobs:
           rustc --version
 
       # No webview here, but `karmayoga-vault` stores keys through `keyring`,
-      # whose Secret Service backend links libdbus.
+      # whose Secret Service backend links libdbus; and llama.cpp is built
+      # with Vulkan, as in `rust` above.
       - name: Build dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config \
+            libvulkan-dev glslc spirv-headers
 
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:

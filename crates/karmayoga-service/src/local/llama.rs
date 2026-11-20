@@ -2,6 +2,13 @@
 //! through `llama-cpp-sys-2`: load a GGUF, read its metadata, tokenize, and
 //! read the logits at the last token of one prompt. Feature `decisions`.
 //!
+//! # Graphics cards
+//!
+//! A build with a GPU backend -- Metal on Apple Silicon, Vulkan on Linux --
+//! lists the cards it can drive in [`gpus`], and [`Model::load`] puts a
+//! model's layers on them or keeps it off them entirely. Which, and what to
+//! do when a card runs out of room, is `local::decide`'s business.
+//!
 //! # Why not `llama-cpp-2`
 //!
 //! The safe bindings switch on the sys crate's `common` feature whatever
@@ -63,6 +70,50 @@ unsafe extern "C" fn log(level: sys::ggml_log_level, text: *const c_char, _: *mu
     }
 }
 
+/// A graphics card llama.cpp can put a model on.
+#[derive(Debug, Clone)]
+pub struct Gpu {
+    /// What it calls itself: "NVIDIA GeForce RTX 3070".
+    pub name: String,
+    /// Bytes of its memory nothing is using yet, this process or another.
+    pub free: u64,
+}
+
+/// The cards a model goes on when [`Model::load`] is asked to use them:
+/// every separate card, or the built-in ones where there is none, as
+/// llama.cpp picks them. Empty in a build without a GPU backend, and on a
+/// computer without a card it can drive.
+pub fn gpus() -> Vec<Gpu> {
+    init();
+    let (mut cards, mut built_in) = (Vec::new(), Vec::new());
+    // SAFETY: llama.cpp's own device list, read after `init`. Its devices
+    // live as long as the process, and the description is a NUL-terminated
+    // string they own.
+    unsafe {
+        for i in 0..sys::ggml_backend_dev_count() {
+            let dev = sys::ggml_backend_dev_get(i);
+            if dev.is_null() {
+                continue;
+            }
+            let list = match sys::ggml_backend_dev_type(dev) {
+                sys::GGML_BACKEND_DEVICE_TYPE_GPU => &mut cards,
+                sys::GGML_BACKEND_DEVICE_TYPE_IGPU => &mut built_in,
+                _ => continue,
+            };
+            let (mut free, mut total) = (0usize, 0usize);
+            sys::ggml_backend_dev_memory(dev, &mut free, &mut total);
+            let name = sys::ggml_backend_dev_description(dev);
+            let name = if name.is_null() {
+                "a graphics card".to_string()
+            } else {
+                CStr::from_ptr(name).to_string_lossy().trim().to_string()
+            };
+            list.push(Gpu { name, free: free as u64 });
+        }
+    }
+    if cards.is_empty() { built_in } else { cards }
+}
+
 /// A loaded GGUF.
 pub struct Model(NonNull<sys::llama_model>);
 
@@ -78,15 +129,26 @@ impl Drop for Model {
 }
 
 impl Model {
-    /// Load `path`, memory-mapped, every layer on the GPU where this build
-    /// has one (Metal on Apple Silicon) -- llama.cpp's own defaults.
-    pub fn load(path: &Path) -> Result<Self, String> {
+    /// Load `path`, memory-mapped. With `on_gpu`, every layer goes on the
+    /// [`gpus`] -- llama.cpp's own default. Without, the model has no card
+    /// at all, not just no layers on one: llama.cpp would otherwise still
+    /// send a long prompt's multiplications over to a card it can see, which
+    /// needs the room on it that a model is kept off it for.
+    pub fn load(path: &Path, on_gpu: bool) -> Result<Self, String> {
         init();
         let path = path.to_str().ok_or("the model's path is not text")?;
         let path = CString::new(path).map_err(|e| e.to_string())?;
-        // SAFETY: a valid C string and llama.cpp's own default parameters.
+        // SAFETY: a valid C string and llama.cpp's own default parameters,
+        // with the placement set.
         let ptr = unsafe {
-            sys::llama_model_load_from_file(path.as_ptr(), sys::llama_model_default_params())
+            let mut params = sys::llama_model_default_params();
+            if !on_gpu {
+                params.n_gpu_layers = 0;
+                // One device, and "main_gpu" none of them: no devices.
+                params.split_mode = sys::LLAMA_SPLIT_MODE_NONE;
+                params.main_gpu = -1;
+            }
+            sys::llama_model_load_from_file(path.as_ptr(), params)
         };
         NonNull::new(ptr).map(Self).ok_or_else(|| "llama.cpp could not load it".into())
     }

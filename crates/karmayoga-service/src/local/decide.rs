@@ -55,6 +55,26 @@
 //! llama.cpp contexts from one model at the same moment is not safe (making
 //! one can write to the model). Each model answers one question at a time,
 //! in the order asked.
+//!
+//! # On a graphics card
+//!
+//! Where this build has a GPU backend and the computer a card it can drive
+//! (`llama::gpus`), a model whose file fits in the card's free memory is
+//! loaded onto it. It stays there if llama.cpp can then set aside room to
+//! read a 1,024-token prompt beside it, more than a message and its
+//! categories usually come to. Otherwise, or when the load fails, it goes
+//! on the processor. That room is tried for real rather than estimated:
+//! for these models it grows by about a megabyte a token (d3-nano needed
+//! 1.0 GB for 1,024 tokens, 2.2 GB for 2,048), and the file overstates what
+//! goes on the card, since the vocabulary stays in main memory. On a card,
+//! d3-nano read a 512-token prompt in about a tenth of a second; the
+//! processor took about ten.
+//!
+//! Other programs use the card too, so a model there can still meet a
+//! prompt with no room left for it, or one longer than the room it was
+//! tried with. That prompt is read on the processor, from a second copy of
+//! the model loaded the first time one is needed and kept as long as the
+//! model is. The next prompt tries the card again.
 
 use karmayoga_core::llm::LocalDecisionModel;
 use serde_json::{Value, json};
@@ -328,6 +348,9 @@ pub struct DecisionBenchmark {
     /// How long loading took, when it had to.
     pub load_ms: Option<u64>,
     pub ms_per_message: u64,
+    /// The graphics card it ran on, by name -- `None` when it ran on the
+    /// processor.
+    pub gpu: Option<String>,
 }
 
 #[cfg(not(feature = "decisions"))]
@@ -340,6 +363,7 @@ fn unsupported() -> CommandError {
 
 #[cfg(feature = "decisions")]
 mod run {
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -352,7 +376,7 @@ mod run {
     use crate::decision::{Choice, ChoiceOption};
     use crate::error::{CommandError, CommandResult, codes};
     use crate::local::files;
-    use crate::local::llama::Model;
+    use crate::local::llama::{self, Model};
     use crate::local::resident::Resident;
 
     /// The only decision type this build reads: vLLM Semantic Router's
@@ -363,6 +387,10 @@ mod run {
     /// Prompts are batched in multiples of this, so a context's buffers are
     /// sized to the prompt without a new size for every token count.
     const BATCH_STEP: usize = 256;
+    /// The prompt, in tokens, a model on a graphics card has to have room
+    /// to read beside itself there, or it goes on the processor -- see this
+    /// module's doc.
+    const ROOM_ON_GPU: u32 = 1024;
     /// Threads given to one decision at most. Sorting mail is background
     /// work; half the machine, up to this, leaves the rest of it for the
     /// person using it.
@@ -376,14 +404,20 @@ mod run {
     /// One decision model, loaded.
     struct Decider {
         which: LocalDecisionModel,
+        path: PathBuf,
         model: Model,
+        /// The graphics cards `model` is on, by name; `None` when it is on
+        /// the processor.
+        gpu: Option<String>,
         template: String,
         /// The token and the text of each option's code, in order.
         labels: Vec<(i32, String)>,
         /// `choice`, `choice.3_5`, ... as the GGUF names them.
         temperatures: Vec<(String, f32)>,
-        /// Held while a question is being answered: one at a time.
-        busy: Mutex<()>,
+        /// Held while a question is being answered: one at a time. Inside
+        /// is the model's copy on the processor, for a model on a card once
+        /// a prompt has found no room there -- see this module's doc.
+        busy: Mutex<Option<Model>>,
     }
 
     static DECIDERS: Resident<LocalDecisionModel, Decider> = Resident::new("decision model");
@@ -440,7 +474,7 @@ mod run {
         state: &str,
         options: &[ChoiceOption],
     ) -> CommandResult<Choice> {
-        let (choice, took) = decider(which)?.choose(instructions, state, options)?;
+        let (choice, took, _) = decider(which)?.choose(instructions, state, options)?;
         super::record_pace(which, took);
         Ok(choice)
     }
@@ -453,11 +487,15 @@ mod run {
         let samples = super::samples::messages();
         let options = super::samples::categories();
         let mut took = Duration::ZERO;
+        let mut on_gpu = true;
         for state in &samples {
-            took += decider.choose(super::samples::INSTRUCTIONS, state, &options)?.1;
+            let (_, t, gpu) = decider.choose(super::samples::INSTRUCTIONS, state, &options)?;
+            took += t;
+            on_gpu &= gpu;
         }
         let ms_per_message = (took.as_millis() / samples.len() as u128) as u64;
-        Ok(DecisionBenchmark { load_ms, ms_per_message })
+        let gpu = decider.gpu.clone().filter(|_| on_gpu);
+        Ok(DecisionBenchmark { load_ms, ms_per_message, gpu })
     }
 
     fn failed(what: &str, e: impl std::fmt::Display) -> CommandError {
@@ -475,8 +513,7 @@ mod run {
                     ),
                 )
             })?;
-            let model = Model::load(&path)
-                .map_err(|e| failed(&format!("{} would not load", which.name()), e))?;
+            let (model, gpu) = load_placed(which, &path)?;
 
             let arch = model
                 .meta("general.architecture")
@@ -511,7 +548,16 @@ mod run {
                 .take(MAX_OPTIONS)
                 .collect();
 
-            Ok(Self { which, model, template, labels, temperatures, busy: Mutex::new(()) })
+            Ok(Self {
+                which,
+                path,
+                model,
+                gpu,
+                template,
+                labels,
+                temperatures,
+                busy: Mutex::new(None),
+            })
         }
 
         fn temperature(&self, options: usize) -> f32 {
@@ -521,14 +567,15 @@ mod run {
                 .unwrap_or(1.0)
         }
 
-        /// The answer, and how long the model itself took over it -- any
-        /// wait for an earlier question to finish left out.
+        /// The answer, how long the model itself took over it -- any wait
+        /// for an earlier question, or to load a copy on the processor, left
+        /// out -- and whether it was read on a graphics card.
         fn choose(
             &self,
             instructions: &str,
             state: &str,
             options: &[ChoiceOption],
-        ) -> CommandResult<(Choice, Duration)> {
+        ) -> CommandResult<(Choice, Duration, bool)> {
             let labels = &self.labels[..options.len().min(self.labels.len())];
             let codes: Vec<String> = labels.iter().map(|(_, code)| code.clone()).collect();
             let prompt = render_prompt(&self.template, instructions, state, options, &codes)?;
@@ -552,27 +599,59 @@ mod run {
                 ));
             }
 
-            let _busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+            let mut processor = self.busy.lock().unwrap_or_else(|e| e.into_inner());
             let started = Instant::now();
             // Read both ways, the prompt must be one batch, and the batch
             // must hold it -- llama.cpp aborts the process otherwise. A
-            // context made for each question, sized to it: 15-30 ms on a
-            // laptop's processor, against seconds of reading the prompt.
+            // context made for each question, sized to it: 15-60 ms, against
+            // a tenth of a second (a card) to seconds (a processor) of
+            // reading the prompt.
             let size = (tokens.len().div_ceil(BATCH_STEP) * BATCH_STEP) as u32;
-            let mut context = self
-                .model
-                .context(size, threads())
-                .map_err(|e| failed("could not make room for the decision model", e))?;
-            let ready = started.elapsed();
+            let mut loading = Duration::ZERO;
+            let mut on_gpu = self.gpu.is_some();
+            let mut context = match self.model.context(size, threads()) {
+                Ok(context) => context,
+                Err(e) if on_gpu => {
+                    // No room on the card for this prompt now: read it on
+                    // the processor -- see this module's doc.
+                    on_gpu = false;
+                    let model = match processor.take() {
+                        Some(model) => model,
+                        None => {
+                            tracing::info!(
+                                model = self.which.name(),
+                                tokens = tokens.len(),
+                                "no room on {} for a prompt ({e}); loading a copy on the \
+                                 processor",
+                                self.gpu.as_deref().unwrap_or_default()
+                            );
+                            let loaded = Instant::now();
+                            let model = Model::load(&self.path, false).map_err(|e| {
+                                failed(&format!("{} would not load", self.which.name()), e)
+                            })?;
+                            loading = loaded.elapsed();
+                            model
+                        }
+                    };
+                    processor
+                        .insert(model)
+                        .context(size, threads())
+                        .map_err(|e| failed("could not make room for the decision model", e))?
+                }
+                Err(e) => return Err(failed("could not make room for the decision model", e)),
+            };
+            let ready = started.elapsed() - loading;
             let n_vocab = self.model.n_vocab();
             let logits = context
                 .last_logits(&tokens, n_vocab)
                 .map_err(|e| failed("the decision model failed", e))?;
+            let took = started.elapsed() - loading;
             tracing::debug!(
                 model = self.which.name(),
                 tokens = tokens.len(),
+                on_gpu,
                 setup_ms = ready.as_millis() as u64,
-                decode_ms = (started.elapsed() - ready).as_millis() as u64,
+                decode_ms = (took - ready).as_millis() as u64,
                 "asked a local decision model"
             );
             let scores: Vec<f32> = labels
@@ -587,8 +666,54 @@ mod run {
                 .collect();
             let choice =
                 choice_of(options, &probabilities(&scores, self.temperature(options.len())))?;
-            Ok((choice, started.elapsed()))
+            Ok((choice, took, on_gpu))
         }
+    }
+
+    /// Load `which` from `path` onto the graphics cards when it fits there
+    /// with room to read a prompt, and on the processor otherwise. Answers
+    /// the model and, when it went on cards, their names.
+    fn load_placed(
+        which: LocalDecisionModel,
+        path: &std::path::Path,
+    ) -> CommandResult<(Model, Option<String>)> {
+        let would_not = |e| failed(&format!("{} would not load", which.name()), e);
+        let gpus = llama::gpus();
+        if !gpus.is_empty() {
+            let names = gpus.iter().map(|g| g.name.as_str()).collect::<Vec<_>>().join(" and ");
+            let free: u64 = gpus.iter().map(|g| g.free).sum();
+            // A file that cannot be measured is taken to be too big.
+            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
+            if free < bytes {
+                tracing::info!(
+                    model = which.name(),
+                    free_mb = free >> 20,
+                    file_mb = bytes >> 20,
+                    "no room on {names}; loading on the processor"
+                );
+            } else {
+                match Model::load(path, true) {
+                    Ok(model) => match model.context(ROOM_ON_GPU, threads()).map(drop) {
+                        Ok(()) => {
+                            tracing::info!(model = which.name(), "loaded on {names}");
+                            return Ok((model, Some(names)));
+                        }
+                        Err(e) => tracing::info!(
+                            model = which.name(),
+                            "no room on {names} to read a prompt beside it ({e}); loading on \
+                             the processor instead"
+                        ),
+                    },
+                    Err(e) => tracing::warn!(
+                        model = which.name(),
+                        "{e} on {names}; loading on the processor instead"
+                    ),
+                }
+            }
+        }
+        let model = Model::load(path, false).map_err(would_not)?;
+        tracing::info!(model = which.name(), "loaded on the processor");
+        Ok((model, None))
     }
 }
 

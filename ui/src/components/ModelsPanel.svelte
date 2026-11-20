@@ -229,9 +229,14 @@
     try {
       const b = await models.benchmarkLocal(id)
       const seconds = b.msPerMessage / 1000
+      // A model on a graphics card takes a tenth of a second or so.
+      const time =
+        seconds < 1
+          ? `${Math.max(10, Math.round(b.msPerMessage / 10) * 10)} ms`
+          : `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`
       timed = {
         ...timed,
-        [id]: `About ${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s a message on this computer.`,
+        [id]: `About ${time} a message on ${b.gpu ?? "this computer's processor"}.`,
       }
     } catch (e) {
       timed = { ...timed, [id]: e instanceof Error ? e.message : String(e) }
