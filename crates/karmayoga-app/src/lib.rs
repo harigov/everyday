@@ -11,6 +11,7 @@
 mod audio;
 mod badge;
 pub mod capture;
+mod clipboard;
 mod commands;
 mod dictation;
 mod events;
@@ -301,6 +302,10 @@ pub fn run() {
             // A notification the interface has decided should leave the
             // window. See `notice.rs` for why the plugin does not post it.
             notice::post_notification,
+            // The picture on the system clipboard, for a paste WebKitGTK does
+            // not hand the page. Raw bytes out, like `put_blob`'s raw bytes
+            // in. See `clipboard.rs`.
+            clipboard::clipboard_image,
             // The OS-wide key to the palette.
             commands::hotkey_status,
             commands::set_hotkey,

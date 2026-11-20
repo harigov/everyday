@@ -84,6 +84,13 @@ pub(crate) struct MailRuntime {
     /// account -- see [`crate::mailfollowup::SkipNote`]. Replaced on every
     /// full look, so it never holds more than the window.
     follow_up_skips: Mutex<HashMap<AccountId, HashMap<ThreadId, crate::mailfollowup::SkipNote>>>,
+    /// What the follow-up pass has done for each account since the app
+    /// started -- see [`crate::mailfollowup::Tally`] -- for Settings → Mail
+    /// sorting to say whether it ever looked, and what it found. Session
+    /// state, on the terms of the other follow-up state here; unlike the
+    /// skip notes, cleared by [`MailRuntime::on_lock`], since its counts are
+    /// about one vault's accounts.
+    follow_up_tallies: Mutex<HashMap<AccountId, crate::mailfollowup::Tally>>,
     /// Held across every read-change-write of the learned voice
     /// (`karmayoga_core::mail::VoiceLearning`): `suggest_replies` adds what it
     /// offered while a learning pass may be replacing the notes, and neither
@@ -193,6 +200,7 @@ impl MailRuntime {
             sort_full_looks: Mutex::new(HashMap::new()),
             follow_up_full_looks: Mutex::new(HashMap::new()),
             follow_up_skips: Mutex::new(HashMap::new()),
+            follow_up_tallies: Mutex::new(HashMap::new()),
             voice_learning: Mutex::new(()),
             voice_learn_looked: Mutex::new(None),
             summary_cache: Mutex::new(HashMap::new()),
@@ -541,6 +549,20 @@ impl MailRuntime {
         self.follow_up_skips.lock().unwrap().insert(account, skips);
     }
 
+    /// What the follow-up pass has done for `account` this session; nothing
+    /// yet is the default tally.
+    pub(crate) fn follow_up_tally(&self, account: AccountId) -> crate::mailfollowup::Tally {
+        self.follow_up_tallies.lock().unwrap().get(&account).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn set_follow_up_tally(
+        &self,
+        account: AccountId,
+        tally: crate::mailfollowup::Tally,
+    ) {
+        self.follow_up_tallies.lock().unwrap().insert(account, tally);
+    }
+
     pub(crate) fn voice_learn_looked(&self) -> Option<Timestamp> {
         *self.voice_learn_looked.lock().unwrap()
     }
@@ -611,6 +633,11 @@ impl MailRuntime {
         self.sort_full_looks.lock().unwrap().clear();
     }
 
+    /// What the follow-up pass did is about this vault's accounts.
+    fn forget_follow_up_tallies(&self) {
+        self.follow_up_tallies.lock().unwrap().clear();
+    }
+
     /// A profile, suggestions and whether a thread wants a reply are all read
     /// from this vault's mail, so none may outlive it being open.
     fn forget_writing_caches(&self) {
@@ -635,6 +662,7 @@ impl MailRuntime {
         self.forget_autodraft_cursor();
         self.forget_priority_cursor();
         self.forget_older_sorts();
+        self.forget_follow_up_tallies();
         self.forget_writing_caches();
     }
 }

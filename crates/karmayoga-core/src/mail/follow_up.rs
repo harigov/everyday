@@ -2,7 +2,8 @@
 //! shown at the top of the Inbox the way Superhuman shows them.
 //!
 //! Two kinds, both decided by the decision model that sorts mail (see
-//! [`crate::mail::sorting`]) and both kept only for recent mail -- the last
+//! [`crate::mail::sorting`]), or by the Small model while no decision model
+//! is switched on, and both kept only for recent mail -- the last
 //! [`FollowUpSettings::window_days`]:
 //!
 //! - [`FollowUpKind::Reply`]: the newest message in a thread is somebody
@@ -52,7 +53,7 @@ pub const DEFAULT_NUDGE_AFTER_DAYS: u32 = 3;
 pub struct FollowUpSettings {
     /// Whether the pass runs at all. On from the start: it asks the same
     /// model about the same mail, under the same switch, as sorting does --
-    /// and asks nothing while no decision model is switched on.
+    /// the decision model, or the Small model while there is none.
     #[serde(default = "yes")]
     pub on: bool,
     /// How many days back a thread is looked at.

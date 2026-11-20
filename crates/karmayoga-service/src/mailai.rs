@@ -200,7 +200,8 @@ pub async fn categorize_tick(service: &Arc<Service>) {
     match vault.decision_access() {
         Ok(decision) => {
             crate::mailsort::sort_tick(service, &vault, &accounts, &decision).await;
-            crate::mailfollowup::follow_up_tick(service, &vault, &accounts, &decision).await;
+            let judge = crate::mailfollowup::Judge::Decision(decision);
+            crate::mailfollowup::follow_up_tick(service, &vault, &accounts, &judge).await;
             return;
         }
         Err(e) => {
@@ -221,20 +222,27 @@ pub async fn categorize_tick(service: &Arc<Service>) {
     // account checked against *its* acknowledgement: the endpoints the
     // requests below are actually sent to, not an earlier read of them.
     let Ok(small) = vault.mail_ai_credentials(ModelTier::Small) else { return };
-    for account in accounts.into_iter().filter(|a| a.services.mail) {
-        if mail_ai_allowed(&account, &small.acknowledgement, MailAiFeature::Categorize).is_err() {
+    for account in accounts.iter().filter(|a| a.services.mail) {
+        if mail_ai_allowed(account, &small.acknowledgement, MailAiFeature::Categorize).is_err() {
             continue;
         }
-        if let Err(e) = categorize_account(service, &vault, &account, &small).await {
+        if let Err(e) = categorize_account(service, &vault, account, &small).await {
             tracing::warn!(error = %e, account = %account.id, "mail categorisation failed");
         }
         // Priority is a categorisation too -- see `prioritize_account`'s
         // own docs -- so it runs under the exact gate just checked above,
         // with no switch or acknowledgement check of its own.
-        if let Err(e) = prioritize_account(service, &vault, &account, &small).await {
+        if let Err(e) = prioritize_account(service, &vault, account, &small).await {
             tracing::warn!(error = %e, account = %account.id, "mail prioritisation failed");
         }
     }
+    // Follow-ups on the same model, under the same gate, after the pass that
+    // files what the rules left under Other -- the Small model is all that
+    // reads this mail when no decision model is switched on, and without this
+    // nothing would ever look for what is waiting on the person. Not reached
+    // while a decision model is switched on but unusable: that returned above.
+    let judge = crate::mailfollowup::Judge::Small(small);
+    crate::mailfollowup::follow_up_tick(service, &vault, &accounts, &judge).await;
 }
 
 /// One [`categorize_account`] candidate: enough of a thread's newest

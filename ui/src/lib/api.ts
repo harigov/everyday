@@ -906,6 +906,35 @@ export const api = {
     invoke<void>('post_notification', { title, body, key }),
 
   /**
+   * The picture on the system clipboard, as the bytes of the file it was
+   * offered as -- PNG, JPEG, WebP or GIF, told apart by `sniffPicture` in
+   * `clipboard-picture.ts` -- or `null` when there is none. That is the
+   * answer on every desktop but Linux's, in a browser, and in mock mode,
+   * because everywhere else a pasted picture reaches the page as a file. By name, not through `call`: WebKitGTK gives
+   * a paste of a screenshot no files at all, and this is the shell reading
+   * the clipboard on the page's behalf. Asked only after a paste that looked
+   * like a picture (`clipboard-picture.ts`). See
+   * `crates/karmayoga-app/src/clipboard.rs`.
+   *
+   * The shell answers raw bytes, which arrive as an `ArrayBuffer`; the array
+   * of numbers is the slow path `put_blob` also keeps for a webview that
+   * blocks Tauri's custom protocol. Rejects, as every command does, when
+   * there was a picture and it could not be had -- too large, or its owner
+   * would not hand it over.
+   */
+  clipboardImage: async (): Promise<Uint8Array | null> => {
+    const raw = await invoke<ArrayBuffer | Uint8Array | number[] | null>('clipboard_image')
+    if (!raw) return null
+    const bytes =
+      raw instanceof Uint8Array
+        ? raw
+        : Array.isArray(raw)
+          ? Uint8Array.from(raw)
+          : new Uint8Array(raw)
+    return bytes.length > 0 ? bytes : null
+  },
+
+  /**
    * Whether the desktop granted the key that raises the palette.
    *
    * False is an ordinary answer, not an error: Wayland has no protocol for an

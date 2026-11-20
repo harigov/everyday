@@ -69,6 +69,11 @@ const {
   nudgeRecipients,
   followUpSettingsProblems,
   FOLLOW_UP_DEFAULTS,
+  agoLabel,
+  followUpModelLine,
+  followUpAccountLine,
+  followUpHint,
+  followUpStall,
 } = mailLib
 
 function person(name, email) {
@@ -1363,6 +1368,136 @@ assert.equal(followUpScope(null), null)
     followUpSettingsProblems({ windowDays: 90, nudgeAfterDays: 70 }).nudgeAfterDays,
     null,
     'not judged against a look-back that is wrong itself',
+  )
+}
+
+// Whether follow-ups are running: what Settings → Mail sorting and the Inbox's
+// notice say about the pass that finds them.
+{
+  const now = new Date('2026-09-14T10:00:00')
+  const ago = (minutes) => new Date(now.getTime() - minutes * 60_000).toISOString()
+
+  // How long ago, from the `now` it is given.
+  assert.equal(agoLabel(ago(0), now), 'just now')
+  assert.equal(agoLabel(new Date(now.getTime() - 30_000).toISOString(), now), 'just now')
+  assert.equal(agoLabel(ago(-2), now), 'just now', 'a little ahead of this clock: still just now')
+  assert.equal(agoLabel(ago(1), now), '1 min ago')
+  assert.equal(agoLabel(ago(3), now), '3 min ago')
+  assert.equal(agoLabel(ago(59), now), '59 min ago')
+  assert.equal(agoLabel(ago(60), now), '1 hour ago')
+  assert.equal(agoLabel(ago(150), now), '2 hours ago')
+  assert.equal(agoLabel(ago(24 * 60), now), '1 day ago')
+  assert.equal(agoLabel(ago(3 * 24 * 60 + 5), now), '3 days ago')
+
+  // Which model decides.
+  assert.equal(followUpModelLine('small'), 'Follow-ups are decided on the Small model.')
+  assert.equal(followUpModelLine('decision'), 'Follow-ups are decided on the decision model.')
+  assert.equal(
+    followUpModelLine('decision', 'd3-mini on this computer'),
+    'Follow-ups are decided on the decision model (d3-mini on this computer).',
+  )
+  assert.equal(followUpModelLine(null), null, 'none to ask: followUpHint says so')
+
+  // One account's line.
+  const account = (extra = {}) => ({
+    accountId: 'acct-google',
+    blocked: null,
+    lookedAt: ago(3),
+    fullLookAt: ago(3),
+    asked: 9,
+    found: 2,
+    marked: 41,
+    waitingForSorting: 5,
+    waitingForTurn: 0,
+    error: null,
+    ...extra,
+  })
+  const none = { asked: 0, found: 0, marked: 0, waitingForSorting: 0, waitingForTurn: 0 }
+  assert.equal(
+    followUpAccountLine(account(), now),
+    'Looked 3 min ago · 9 asked · 2 to follow up · 41 set aside by the rules · 5 waiting for sorting',
+  )
+  assert.equal(
+    followUpAccountLine(account({ found: 0, waitingForSorting: 0 }), now),
+    'Looked 3 min ago · 9 asked · 41 set aside by the rules',
+    'a count of nothing is left out',
+  )
+  assert.equal(
+    followUpAccountLine(account({ ...none, waitingForSorting: 12 }), now),
+    'Looked 3 min ago · 12 waiting for sorting',
+  )
+  assert.equal(
+    followUpAccountLine(account({ waitingForTurn: 12 }), now),
+    'Looked 3 min ago · 9 asked · 2 to follow up · 41 set aside by the rules · 5 waiting for sorting · 12 waiting their turn',
+    'threads left for a later look come last',
+  )
+  assert.equal(
+    followUpAccountLine(account({ ...none, waitingForTurn: 12 }), now),
+    'Looked 3 min ago · 12 waiting their turn',
+    'something waiting its turn is not nothing to ask about',
+  )
+  assert.equal(
+    followUpAccountLine(account(none), now),
+    'Looked 3 min ago · nothing to ask about',
+    'looked, and there was nothing: said, not left hanging after the time',
+  )
+  assert.equal(
+    followUpAccountLine(account({ ...none, lookedAt: null, fullLookAt: null }), now),
+    'Not looked at yet',
+  )
+
+  // Why no model can be asked, for the pane.
+  const noModel =
+    'No model can read mail for follow-ups: switch on a decision model or the Small model in Settings → Models.'
+  assert.equal(followUpHint({ blocked: noModel }, true), noModel)
+  assert.equal(followUpHint({ blocked: noModel }, false), null, 'switched off: the switch says so')
+  assert.equal(followUpHint({ blocked: null }, true), null)
+  assert.equal(followUpHint(null, true), null, 'not read yet')
+
+  // Whether the Inbox on screen has a reason to say there are none.
+  const held = (accountId, why) => account({ ...none, accountId, blocked: why, lookedAt: null })
+  const running = { blocked: null, accounts: [account()] }
+  assert.equal(followUpStall(running, true), null, 'running, with mail found or not')
+  assert.equal(
+    followUpStall({ blocked: null, accounts: [account(none)] }, true),
+    null,
+    'running and finding nothing is no reason',
+  )
+  assert.equal(followUpStall({ blocked: noModel, accounts: [account()] }, true), noModel)
+  assert.equal(followUpStall({ blocked: noModel, accounts: [] }, false), null, 'switched off')
+  assert.equal(followUpStall(null, true), null, 'not read yet')
+  assert.equal(
+    followUpStall({ blocked: null, accounts: [] }, true),
+    null,
+    'no mail account at all: nothing to say here',
+  )
+
+  const mixed = {
+    blocked: null,
+    accounts: [
+      account({ accountId: 'acct-google' }),
+      held('acct-work', 'work@example.com is off.'),
+    ],
+  }
+  assert.equal(followUpStall(mixed, true), null, 'All inboxes: one account running has them')
+  assert.equal(followUpStall(mixed, true, 'acct-google'), null)
+  assert.equal(
+    followUpStall(mixed, true, 'acct-work'),
+    'work@example.com is off.',
+    "an account held back: its own Inbox has none, whatever the other's",
+  )
+  assert.equal(followUpStall(mixed, true, 'acct-gone'), null, 'an account the status lacks')
+
+  const oneHeld = { blocked: null, accounts: [held('acct-work', 'work@example.com is off.')] }
+  assert.equal(followUpStall(oneHeld, true), 'work@example.com is off.', 'its own sentence')
+  const allHeld = {
+    blocked: null,
+    accounts: [held('acct-google', 'one is off.'), held('acct-work', 'two is off.')],
+  }
+  assert.match(
+    followUpStall(allHeld, true),
+    /^No mail account is ready for follow-ups\./,
+    'all of them held back, for reasons of their own: one sentence for All inboxes',
   )
 }
 

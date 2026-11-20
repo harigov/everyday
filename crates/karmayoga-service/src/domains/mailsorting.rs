@@ -7,6 +7,7 @@
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
+use crate::mailfollowup::FollowUpStatus;
 use crate::mailsort::OlderSortView;
 use crate::service::{Service, blocking};
 use jiff::SignedDuration;
@@ -30,6 +31,10 @@ pub struct MailSortingView {
     pub decision_model: Option<String>,
     /// Asked-for sorts of older mail still running.
     pub older: Vec<OlderSortView>,
+    /// Whether follow-ups can run, on which model, and what the pass has done
+    /// for each account since the app started -- so that an Inbox with no
+    /// list at its top can say whether nothing is waiting or nothing looked.
+    pub follow_ups: FollowUpStatus,
 }
 
 fn view(svc: &Service, vault: &Vault) -> karmayoga_core::Result<MailSortingView> {
@@ -48,7 +53,8 @@ fn view(svc: &Service, vault: &Vault) -> karmayoga_core::Result<MailSortingView>
     let mut older: Vec<OlderSortView> =
         svc.mail_older_sorts().iter().map(|(a, s)| OlderSortView::of(*a, s)).collect();
     older.sort_by_key(|o| o.account_id.to_string());
-    Ok(MailSortingView { sorting, decision_model, older })
+    let follow_ups = crate::mailfollowup::status(svc, vault, &sorting)?;
+    Ok(MailSortingView { sorting, decision_model, older, follow_ups })
 }
 
 async fn mail_sorting(

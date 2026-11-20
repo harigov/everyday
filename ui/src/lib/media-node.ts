@@ -14,6 +14,7 @@
 // the other.
 
 import { Node, mergeAttributes } from '@tiptap/core'
+import { NodeSelection, TextSelection } from '@tiptap/pm/state'
 import { fileUrl, mediaUrl } from './api'
 import type { FileId, MediaKind } from './types'
 
@@ -80,10 +81,34 @@ export const Media = Node.create<MediaOptions>({
 
   addCommands() {
     return {
+      // Inserted with the caret left on the line after it, not on the node.
+      // ProseMirror selects an atom block it has just put in, and a selected
+      // picture is what the next insertion replaces -- so pasting a second
+      // screenshot threw the first away, and a drop of several photographs
+      // kept only the last.
       insertMedia:
         (attrs) =>
         ({ commands }) =>
-          commands.insertContent({ type: this.name, attrs }),
+          commands.insertContent({ type: this.name, attrs }) &&
+          commands.command(({ tr, dispatch }) => {
+            const picked = tr.selection
+            if (!(picked instanceof NodeSelection) || picked.node.type.name !== this.name) {
+              return true
+            }
+            const after = picked.to
+            const next = TextSelection.findFrom(tr.doc.resolve(after), 1, true)
+            if (dispatch) {
+              if (next) {
+                tr.setSelection(next)
+              } else {
+                // The picture ended the document: give the caret a line to
+                // stand on below it.
+                tr.insert(after, tr.doc.type.schema.nodes.paragraph!.create())
+                tr.setSelection(TextSelection.create(tr.doc, after + 1))
+              }
+            }
+            return true
+          }),
     }
   },
 

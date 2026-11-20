@@ -192,6 +192,9 @@ const SHELL: Record<string, (args: Record<string, unknown>) => unknown> = {
   set_tray_meeting: () => undefined,
   ready_to_close: () => undefined,
   show_in_main: () => undefined,
+  // A browser hands a pasted picture over as a file, so there is never one
+  // for the shell to read off the clipboard on the page's behalf.
+  clipboard_image: () => null,
   post_notification: ({ title, body }) => {
     // The browser's own notifications, where this page has been allowed
     // them; otherwise the in-window banner that raised this is enough.

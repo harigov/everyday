@@ -82,6 +82,23 @@ export function sliceToMarkdown(content: PMNode[], openStart: number, openEnd: n
   return blocks(content)
 }
 
+/**
+ * A whole page as Markdown, for the button that copies it.
+ *
+ * The title is the page's first line, as a heading, because it is kept
+ * apart from the body -- `richtext.rs` exports the body alone -- and a page
+ * pasted without it would not say what it was. A title is one line whatever
+ * was pasted into its field, and a blank one is no heading at all rather
+ * than a bare `#`. What follows is the body exactly as a select-all copy
+ * writes it.
+ */
+export function documentToMarkdown(title: string, content: PMNode[]): string {
+  const heading = title.replace(/\s+/g, ' ').trim()
+  const body = sliceToMarkdown(content, 0, 0)
+  if (!heading) return body
+  return body ? `# ${heading}\n\n${body}` : `# ${heading}`
+}
+
 // ── Blocks ───────────────────────────────────────────────────────────────
 
 /**

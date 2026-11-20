@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
   import type { Editor } from '@tiptap/core'
   import Icon from './Icon.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import type { IconName } from '../lib/icons'
   import { menu } from '../lib/menu.svelte'
+  import { notify } from '../lib/notify.svelte'
   import { templates } from '../lib/templates.svelte'
   import type { Template, TemplateUse } from '../lib/types'
 
@@ -11,6 +13,7 @@
     editor,
     templateFor,
     oninsert,
+    markdown,
   }: {
     editor: Editor | null
     /**
@@ -20,6 +23,13 @@
      */
     templateFor?: TemplateUse
     oninsert?: (template: Template) => void
+    /**
+     * Offer "Copy as Markdown", with the page as the caller writes it. Asked
+     * for at the press rather than handed over ready-made, so what lands on
+     * the clipboard is the page as it is now, not as it was last render --
+     * and the caller owns the title, which is not in the editor.
+     */
+    markdown?: () => string
   } = $props()
 
   $effect(() => {
@@ -70,7 +80,9 @@
   }
 
   // Tooltips should quote the key the reader actually presses.
-  const MOD = /mac/i.test(navigator.platform ?? '') ? '⌘' : 'Ctrl+'
+  const MAC = /mac/i.test(navigator.platform ?? '')
+  const MOD = MAC ? '⌘' : 'Ctrl+'
+  const SHIFT = MAC ? '⇧' : 'Shift+'
 
   type Tool = {
     label: string
@@ -78,7 +90,12 @@
     run: () => void
     on?: () => boolean
     keys?: string
+    /** The shortcut is the modifier *and* Shift: Strikethrough's is Mod+Shift+S. */
+    shift?: boolean
   }
+
+  const tip = (tool: Tool) =>
+    tool.keys ? `${tool.label}  ${MOD}${tool.shift ? SHIFT : ''}${tool.keys}` : tool.label
 
   /** Ordered groups; the gaps between them are the only separators. */
   const groups = (): Tool[][] => {
@@ -106,6 +123,14 @@
           keys: 'U',
           run: () => c().toggleUnderline().run(),
           on: () => active('underline'),
+        },
+        {
+          label: 'Strikethrough',
+          icon: 'strike',
+          keys: 'S',
+          shift: true,
+          run: () => c().toggleStrike().run(),
+          on: () => active('strike'),
         },
         {
           label: 'Highlight',
@@ -162,6 +187,40 @@
     ]
   }
 
+  // ── Copy as Markdown ───────────────────────────────────────────────────
+
+  /** Whether the button is showing its tick, for a moment after a copy. */
+  let copied = $state(false)
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * Put the page on the clipboard as Markdown, and show that it went.
+   *
+   * The tick is the only answer a success gets -- a toast for something the
+   * reader just did and can see would be noise -- but a clipboard the webview
+   * refuses is a copy that silently did nothing, so that one is said aloud.
+   * Not in a dialog: it is a failed convenience, and nothing is lost.
+   */
+  async function copyMarkdown() {
+    if (!markdown) return
+    try {
+      await navigator.clipboard.writeText(markdown())
+      copied = true
+      if (copiedTimer) clearTimeout(copiedTimer)
+      copiedTimer = setTimeout(() => {
+        copiedTimer = null
+        copied = false
+      }, 1500)
+    } catch {
+      notify.warn('Could not copy to the clipboard', {
+        body: 'Select the text and copy it by hand; that copies Markdown too.',
+      })
+    }
+  }
+  onDestroy(() => {
+    if (copiedTimer) clearTimeout(copiedTimer)
+  })
+
   // ── The link sheet ─────────────────────────────────────────────────────
   //
   // Not `window.prompt`. A native JavaScript dialog cannot be styled, blocks
@@ -217,7 +276,7 @@
         <button
           class="tool"
           class:on
-          title={tool.keys ? `${tool.label}  ${MOD}${tool.keys}` : tool.label}
+          title={tip(tool)}
           aria-label={tool.label}
           aria-pressed={on}
           onclick={tool.run}
@@ -239,6 +298,23 @@
       >
         <Icon name="layers" size={19} weight={1.6} />
       </button>
+    </div>
+  {/if}
+  {#if editor && markdown}
+    <span class="sep" aria-hidden="true"></span>
+    <div class="group">
+      <button
+        class="tool"
+        title="Copy as Markdown"
+        aria-label="Copy as Markdown"
+        onclick={() => void copyMarkdown()}
+      >
+        <Icon name={copied ? 'tick' : 'copy'} size={19} weight={1.6} />
+      </button>
+      <!-- Always in the page, so the reader's screen reader has a region to
+           hear change; text added to a region that is created with it is
+           often not announced. -->
+      <span class="sr-only" role="status" aria-live="polite">{copied ? 'Copied' : ''}</span>
     </div>
   {/if}
 </div>
@@ -334,6 +410,15 @@
   }
   .tool.on:hover {
     background: color-mix(in oklab, var(--journal-accent, var(--accent)) 20%, transparent);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .sep {

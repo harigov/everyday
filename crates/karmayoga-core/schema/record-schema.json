@@ -9279,6 +9279,11 @@
             "description": "Put questions to the owner in that chat while the run works: approvals\nfor what would delete or send something, and a free question when it\nneeds a fact or a decision only they have. Read only when `chat` is\nset. Off, a run has nobody to ask and refuses or parks as it always\nhas.",
             "type": "boolean"
           },
+          "call": {
+            "default": false,
+            "description": "Call the owner on that chat link with the result instead of writing\nit there: the assistant says it, and stays on the line for whatever\nthey ask about it, in the run's own conversation (which the app keeps,\nas it keeps every run). Written in the chat only if they do not pick\nup, or the call cannot be made. Read only when `chat` is set.",
+            "type": "boolean"
+          },
           "chat": {
             "description": "The chat link whose private room with its owner gets the result. A\nreply there carries on the run's own conversation. See\n`docs/plans/chat.md`'s \"Routines in the chat\".",
             "format": "uuid",
@@ -10552,7 +10557,8 @@
           "delivery": {
             "$ref": "#/$defs/Delivery",
             "default": {
-              "ask": false
+              "ask": false,
+              "call": false
             },
             "description": "Where the result goes besides the app, and whether a run may ask."
           },
@@ -11732,6 +11738,11 @@
             "description": "Put questions to the owner in that chat while the run works: approvals\nfor what would delete or send something, and a free question when it\nneeds a fact or a decision only they have. Read only when `chat` is\nset. Off, a run has nobody to ask and refuses or parks as it always\nhas.",
             "type": "boolean"
           },
+          "call": {
+            "default": false,
+            "description": "Call the owner on that chat link with the result instead of writing\nit there: the assistant says it, and stays on the line for whatever\nthey ask about it, in the run's own conversation (which the app keeps,\nas it keeps every run). Written in the chat only if they do not pick\nup, or the call cannot be made. Read only when `chat` is set.",
+            "type": "boolean"
+          },
           "chat": {
             "description": "The chat link whose private room with its owner gets the result. A\nreply there carries on the run's own conversation. See\n`docs/plans/chat.md`'s \"Routines in the chat\".",
             "format": "uuid",
@@ -11947,7 +11958,8 @@
       "delivery": {
         "$ref": "#/$defs/Delivery",
         "default": {
-          "ask": false
+          "ask": false,
+          "call": false
         },
         "description": "Where the result goes besides the app, and whether a run may ask."
       },
