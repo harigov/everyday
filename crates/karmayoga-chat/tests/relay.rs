@@ -17,11 +17,14 @@
 mod support;
 
 use jiff::{SignedDuration, Timestamp};
-use karmayoga_chat::connector::{ChatError, Choice, Connector, Incoming, Picture, Setup};
+use karmayoga_chat::connector::{
+    ChatError, Choice, Connector, Incoming, MessageRef, Picture, Setup,
+};
 use karmayoga_chat::relay::Timing;
 use karmayoga_chat::run_link_with;
 use karmayoga_core::agent::Role;
 use karmayoga_core::chat::{ChatSecret, ChatSettings, Via};
+use karmayoga_core::{Job, JobId};
 use karmayoga_service::chat::{ChatState, FromRun};
 use karmayoga_service::supervisor::Outcome;
 use std::sync::Arc;
@@ -614,7 +617,12 @@ async fn a_message_the_connector_delivers_is_answered_through_the_whole_link() {
         },
     ));
 
-    connector.deliver(Incoming::Said { chat: room(), text: "hello".into(), at: Timestamp::now() });
+    connector.deliver(Incoming::Said {
+        chat: room(),
+        text: "hello".into(),
+        at: Timestamp::now(),
+        reply_to: None,
+    });
     connector.wait_for_sent(1).await;
     assert_eq!(connector.sent(), vec!["Hello from the assistant."]);
 
@@ -633,7 +641,7 @@ async fn a_message_the_connector_delivers_is_answered_through_the_whole_link() {
 fn routine_run(h: &Harness, name: &str) -> (karmayoga_core::Conversation, FromRun) {
     let thread = karmayoga_core::Conversation::for_run(karmayoga_core::RoutineRunId::new(), name);
     h.vault.save_conversation(&thread).unwrap();
-    let from = FromRun { routine: name.into(), conversation: Some(thread.id) };
+    let from = FromRun { routine: name.into(), conversation: Some(thread.id), job: None };
     (thread, from)
 }
 
@@ -823,6 +831,230 @@ async fn a_routines_question_nobody_answers_comes_back_empty_and_says_so() {
     h.connector.wait_for_sent(2).await;
     h.finish().await;
     assert!(h.connector.sent()[1].starts_with("No answer"), "{:?}", h.connector.sent());
+}
+
+// ---- background jobs' updates ---------------------------------------------------
+//
+// A watch or a project tells the owner what it has found as it goes. That goes
+// out at once, beside whatever the chat is doing, and a reply the owner sends
+// to it -- Matrix's own reply, on that message -- is a turn about that job.
+
+/// A background job's update: the job, and no conversation.
+fn update_from(routine: &str) -> (JobId, FromRun) {
+    let job = JobId::new();
+    (job, FromRun { routine: routine.into(), conversation: None, job: Some(job) })
+}
+
+/// A research job in the vault, which the turn about it can look at.
+fn saved_job(h: &Harness) -> Job {
+    let job = Job::research("What is on this week?", "", None);
+    h.vault.save_job(&job).unwrap();
+    job
+}
+
+#[tokio::test]
+async fn a_jobs_update_is_sent_at_once_even_while_a_turn_is_running() {
+    let mut h = Harness::start(|_| support::Script::Hangs, Timing::default()).await;
+    h.connector.set_home(room());
+    h.say("write me a very long essay").await;
+    h.connector.until("the turn to begin", typing_on).await;
+
+    // The turn will not end until it is stopped, and the chat's worker is
+    // in it. The update does not wait for either.
+    let (_, from) = update_from("Watch: CI");
+    within("the update to go out", outlet(&h).await.post(from, "CI failed on PR 412.".into()))
+        .await
+        .expect("it went out");
+    assert_eq!(h.connector.sent(), vec!["CI failed on PR 412."]);
+    assert!(!typing_off(&h.connector.events()), "the turn was still running when it did");
+
+    // What a routine writes after a run still waits its turn, as it did.
+    let (_, from) = routine_run(&h, "Morning brief");
+    let queued = tokio::spawn(outlet(&h).await.post(from, "**Morning brief**".into()));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!queued.is_finished(), "a routine's result is queued behind the turn");
+    assert_eq!(h.connector.sent(), vec!["CI failed on PR 412."]);
+
+    h.say("!stop").await;
+    h.connector.wait_for_sent(3).await;
+    within("the routine's result", queued).await.unwrap().expect("it went out in the end");
+    h.finish().await;
+    let sent = h.connector.sent();
+    assert_eq!(sent[0], "CI failed on PR 412.", "the update was the first thing said: {sent:?}");
+    assert!(sent.contains(&"Stopped.".to_string()), "{sent:?}");
+    assert!(sent.contains(&"**Morning brief**".to_string()), "{sent:?}");
+}
+
+#[tokio::test]
+async fn a_jobs_update_adopts_no_conversation() {
+    let mut h = Harness::start(|_| says("Unused."), Timing::default()).await;
+    h.connector.set_home(room());
+    let (_, from) = update_from("Watch: CI");
+
+    outlet(&h).await.post(from, "CI finished.".into()).await.expect("it went out");
+    h.finish().await;
+
+    assert_eq!(h.connector.sent(), vec!["CI finished."]);
+    assert!(h.conversations().is_empty(), "it started no conversation and took none over");
+}
+
+#[tokio::test]
+async fn a_reply_to_a_jobs_update_is_answered_in_the_chats_own_conversation() {
+    let mut h =
+        Harness::start(|_| says("Understood: I'll only tell you if it fails."), Timing::default())
+            .await;
+    h.connector.set_home(room());
+    let job = saved_job(&h);
+    let from = FromRun { routine: "Watch: CI".into(), conversation: None, job: Some(job.id) };
+
+    outlet(&h).await.post(from, "CI finished on PR 412.".into()).await.expect("it went out");
+    let update = h.connector.reference_of("CI finished on PR 412.");
+    h.say_replying("only tell me if it fails", &update).await;
+    h.connector.wait_for_sent(2).await;
+    h.finish().await;
+
+    assert_eq!(
+        h.connector.sent(),
+        vec!["CI finished on PR 412.", "Understood: I'll only tell you if it fails."]
+    );
+    // One conversation, the reply's, and it belongs to this chat as any does.
+    assert_eq!(their_messages(&h), vec![("only tell me if it fails".to_string(), 0)]);
+    assert_eq!(h.conversations()[0].via, Some(via_of(&h)));
+}
+
+#[tokio::test]
+async fn a_reply_to_an_earlier_update_is_answered_and_what_follows_stays_in_the_conversation() {
+    let mut h = Harness::start(|_| says("Done."), Timing::default()).await;
+    h.connector.set_home(room());
+    let job = saved_job(&h);
+    let from = FromRun { routine: "Watch: CI".into(), conversation: None, job: Some(job.id) };
+    let outlet = outlet(&h).await;
+
+    // Two updates, and a reply to the first of them after the second.
+    outlet.post(from.clone(), "First.".into()).await.expect("it went out");
+    outlet.post(from, "Second.".into()).await.expect("it went out");
+    let first = h.connector.reference_of("First.");
+    h.say_replying("stop watching", &first).await;
+    h.connector.wait_for_sent(3).await;
+    // And what is typed after it, as no reply, is in the same conversation.
+    h.say("thanks").await;
+    h.connector.wait_for_sent(4).await;
+    h.finish().await;
+
+    assert_eq!(
+        their_messages(&h),
+        vec![("stop watching".to_string(), 0), ("thanks".to_string(), 0)],
+        "one conversation: a reply does not start one of its own"
+    );
+}
+
+#[tokio::test]
+async fn a_reply_to_a_jobs_answer_in_its_conversation_is_answered_there() {
+    let mut h = Harness::start(|_| says("Moved it."), Timing::default()).await;
+    h.connector.set_home(room());
+    let job = saved_job(&h);
+    let (thread, mut from) = routine_run(&h, "Research");
+    from.job = Some(job.id);
+
+    // The kind of post a finished job's follow-up makes: its conversation,
+    // and the job.
+    outlet(&h).await.post(from, "Here is what I found.".into()).await.expect("it went out");
+    assert_eq!(h.vault.conversation(thread.id).unwrap().via, Some(via_of(&h)));
+    let answer = h.connector.reference_of("Here is what I found.");
+    h.say_replying("move it to thursday", &answer).await;
+    h.connector.wait_for_sent(2).await;
+    h.finish().await;
+
+    let said: Vec<String> = h
+        .vault
+        .messages(thread.id)
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.role == Role::User)
+        .map(|m| m.content)
+        .collect();
+    assert_eq!(said, vec!["move it to thursday"], "the reply went on in the job's own thread");
+    assert_eq!(h.conversations().len(), 1);
+}
+
+#[tokio::test]
+async fn a_reply_to_anything_else_is_answered_like_any_message() {
+    let mut h = Harness::start(|_| says("Hello again."), Timing::default()).await;
+
+    h.say("hello").await;
+    h.connector.wait_for_sent(1).await;
+    // To the assistant's own answer, and to a message nobody here ever sent.
+    let own = h.connector.reference_of("Hello again.");
+    h.say_replying("and again", &own).await;
+    h.connector.wait_for_sent(2).await;
+    h.say_replying("and once more", &MessageRef("$from-a-year-ago".into())).await;
+    h.connector.wait_for_sent(3).await;
+    h.finish().await;
+
+    assert_eq!(
+        their_messages(&h),
+        vec![
+            ("hello".to_string(), 0),
+            ("and again".to_string(), 0),
+            ("and once more".to_string(), 0)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_picture_held_for_the_words_goes_with_a_reply_to_an_update() {
+    let mut h = Harness::start(|_| says("Yes, that is the failure."), Timing::default()).await;
+    h.connector.set_home(room());
+    let job = saved_job(&h);
+    let from = FromRun { routine: "Watch: CI".into(), conversation: None, job: Some(job.id) };
+    outlet(&h).await.post(from, "CI failed.".into()).await.expect("it went out");
+    let update = h.connector.reference_of("CI failed.");
+
+    h.deliver(showed("")).await;
+    h.say_replying("is this the failure?", &update).await;
+    h.connector.wait_for_sent(2).await;
+    h.finish().await;
+
+    assert_eq!(their_messages(&h), vec![("is this the failure?".to_string(), 1)]);
+}
+
+#[tokio::test]
+async fn an_update_with_no_room_to_go_to_is_told_why() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    let (_, from) = update_from("Watch: CI");
+
+    let why = outlet(&h).await.post(from, "hello".into()).await.expect_err("there is no room yet");
+    assert!(why.contains("has not joined"), "{why}");
+    h.finish().await;
+    assert!(h.connector.sent().is_empty());
+}
+
+#[tokio::test]
+async fn an_update_that_could_not_be_sent_says_so_and_the_next_one_goes() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    h.connector.set_home(room());
+    h.connector.fail_next_sends(1);
+    let outlet = outlet(&h).await;
+    let (_, from) = update_from("Watch: CI");
+
+    let why = outlet.post(from.clone(), "first".into()).await.expect_err("the server is down");
+    assert!(why.contains("unreachable"), "{why}");
+    outlet.post(from, "second".into()).await.expect("the server is back");
+    h.finish().await;
+    assert_eq!(h.connector.sent(), vec!["second"]);
+}
+
+#[tokio::test]
+async fn no_update_is_sent_once_the_relay_is_stopping() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    h.connector.set_home(room());
+    let outlet = outlet(&h).await;
+    h.halt().await;
+
+    let (_, from) = update_from("Watch: CI");
+    let why = outlet.post(from, "too late".into()).await.expect_err("the relay has stopped");
+    assert!(why.contains("stopping"), "{why}");
+    assert!(h.connector.sent().is_empty(), "nothing is said for a relay that has stopped");
 }
 
 // ---- pictures ------------------------------------------------------------------
@@ -1314,8 +1546,13 @@ mod calls {
         }
 
         async fn say(&self, text: &str) {
-            self.deliver(Incoming::Said { chat: room(), text: text.into(), at: Timestamp::now() })
-                .await;
+            self.deliver(Incoming::Said {
+                chat: room(),
+                text: text.into(),
+                at: Timestamp::now(),
+                reply_to: None,
+            })
+            .await;
         }
 
         async fn ring(&self, id: &str) {
@@ -2037,7 +2274,8 @@ mod calls {
         h.connector.chat.set_home(room());
         let thread = Conversation::for_run(karmayoga_core::RoutineRunId::new(), "Morning brief");
         h.vault.save_conversation(&thread).unwrap();
-        let from = FromRun { routine: "Morning brief".into(), conversation: Some(thread.id) };
+        let from =
+            FromRun { routine: "Morning brief".into(), conversation: Some(thread.id), job: None };
         let outlet = loop {
             if let Some(outlet) = h.service.chat_outlet(h.link.id) {
                 break outlet;
@@ -2171,6 +2409,37 @@ mod calls {
         let sent = h.connector.chat.sent();
         assert!(sent.iter().any(|m| m.contains("already on a call") && m.ends_with(MARKDOWN)));
         h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_jobs_update_is_sent_while_a_call_runs_and_a_routines_result_waits_for_it() {
+        let mut h = Calling::start(|_| says("unused")).await;
+        h.ring("c1").await;
+        h.until_answered("c1").await;
+        let (run, outlet) = calling_with_a_run(&h).await;
+        let routine = tokio::spawn(outlet.post(run, MARKDOWN.into()));
+        let update = FromRun {
+            routine: "Watch: CI".into(),
+            conversation: None,
+            job: Some(karmayoga_core::JobId::new()),
+        };
+
+        outlet.post(update, "CI failed on PR 412.".into()).await.expect("it went out");
+        // Long enough for the routine's result to have reached the worker, and
+        // been told to wait for the call.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(h.connector.chat.sent(), vec!["CI failed on PR 412."], "{:?}", h.calls());
+        assert!(!routine.is_finished(), "the routine's result waits for the line to be free");
+        assert!(
+            !h.calls().iter().any(|e| matches!(e, CallEvent::Ended { .. })),
+            "and the call it did not wait for was still running"
+        );
+
+        h.fake.finish(CallEnd::SessionEnded);
+        h.until_ended("c1", HangUp::Finished).await;
+        routine.await.unwrap().expect("it went out when the call was over");
+        h.finish().await;
+        assert!(h.connector.chat.sent().iter().any(|m| m == MARKDOWN));
     }
 
     #[tokio::test]

@@ -39,7 +39,7 @@ use super::devices::Trust;
 use super::rooms::kind_of;
 use super::rules::{self, RoomKind, Unreadable, UnreadableLimit, Welcome};
 use super::speaking::Questions;
-use crate::connector::{Choice, Document, Incoming, MAX_FILE_BYTES, Picture};
+use crate::connector::{Choice, Document, Incoming, MAX_FILE_BYTES, MessageRef, Picture};
 use matrix_sdk::deserialized_responses::EncryptionInfo;
 use matrix_sdk::event_handler::EventHandlerDropGuard;
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
@@ -249,7 +249,7 @@ impl Hearing {
         let chat = rules::chat_id(room.room_id());
         let at = rules::sent_at(event.origin_server_ts);
         let incoming = match heard {
-            Heard::Text(text) => Incoming::Said { chat, text, at },
+            Heard::Text { text, reply_to } => Incoming::Said { chat, text, at, reply_to },
             Heard::Picture { source, filename, caption } => {
                 let Some(bytes) = download(&room, source, DOWNLOAD_TIMEOUT).await else {
                     tell(&room, DOWNLOAD_FAILED).await;
@@ -405,8 +405,9 @@ fn claimed_device(content: &RoomEncryptedEventContent) -> Option<&str> {
 /// Something the owner sent that the bot answers.
 #[derive(Debug)]
 enum Heard {
-    /// Words.
-    Text(String),
+    /// Words, and the message they were sent as a reply to when they were:
+    /// [`replied_to`].
+    Text { text: String, reply_to: Option<MessageRef> },
     /// A picture: where to fetch it, what it is called, and what was written
     /// with it -- empty when nothing was.
     Picture { source: MediaSource, filename: String, caption: String },
@@ -468,7 +469,28 @@ fn heard_of(content: &RoomMessageEventContent) -> Option<Heard> {
             let size = audio.info.as_ref().and_then(|info| info.size);
             Some(file(&audio.source, audio.filename(), audio.caption(), size))
         }
-        _ => said_text(content).map(Heard::Text),
+        _ => said_text(content).map(|text| Heard::Text { text, reply_to: replied_to(content) }),
+    }
+}
+
+/// The message `content` was sent as a reply to, if it was one.
+///
+/// A plain reply names it in `m.in_reply_to`. So does a reply written inside
+/// a thread, but there it is the thread's own bookkeeping too: a message that
+/// only continues a thread points at the thread's latest message for the sake
+/// of clients that have no threads (`is_falling_back`), and answers nothing by
+/// it. Only the genuine kind counts. An edit is not a reply: it names the
+/// message it replaces, and is skipped before this is asked.
+///
+/// This is how the relay learns that the owner is answering one of a
+/// background job's updates, which it recognises by the message's id.
+fn replied_to(content: &RoomMessageEventContent) -> Option<MessageRef> {
+    match content.relates_to.as_ref()? {
+        Relation::Reply(reply) => Some(rules::message_ref(&reply.in_reply_to.event_id)),
+        Relation::Thread(thread) if !thread.is_falling_back => {
+            thread.in_reply_to.as_ref().map(|reply| rules::message_ref(&reply.event_id))
+        }
+        _ => None,
     }
 }
 
@@ -894,6 +916,87 @@ mod tests {
     #[test]
     fn words_are_heard_as_they_always_were() {
         let said = heard_of(&RoomMessageEventContent::text_plain("what's on?"));
-        assert!(matches!(said, Some(Heard::Text(text)) if text == "what's on?"));
+        assert!(matches!(said, Some(Heard::Text { text, reply_to: None }) if text == "what's on?"));
+    }
+
+    fn reply_of(heard: Option<Heard>) -> (String, Option<MessageRef>) {
+        match heard {
+            Some(Heard::Text { text, reply_to }) => (text, reply_to),
+            other => panic!("expected words, heard {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_reply_says_which_message_it_answers() {
+        let reply = content(json!({
+            "msgtype": "m.text",
+            "body": "> <@bot:example.org> CI failed on PR 412\n\nonly tell me if it fails",
+            "m.relates_to": { "m.in_reply_to": { "event_id": "$update:example.org" } },
+        }));
+        assert_eq!(
+            reply_of(heard_of(&reply)),
+            ("only tell me if it fails".into(), Some(MessageRef("$update:example.org".into())))
+        );
+
+        // The same without the quoted lines newer clients leave out.
+        let bare = content(json!({
+            "msgtype": "m.text",
+            "body": "stop watching it",
+            "m.relates_to": { "m.in_reply_to": { "event_id": "$update:example.org" } },
+        }));
+        assert_eq!(
+            reply_of(heard_of(&bare)),
+            ("stop watching it".into(), Some(MessageRef("$update:example.org".into())))
+        );
+    }
+
+    #[test]
+    fn a_message_that_replies_to_nothing_names_nothing() {
+        assert_eq!(
+            reply_of(heard_of(&RoomMessageEventContent::text_plain("what's on?"))),
+            ("what's on?".into(), None)
+        );
+    }
+
+    #[test]
+    fn a_reply_inside_a_thread_counts_but_a_message_that_only_continues_it_does_not() {
+        let reply = content(json!({
+            "msgtype": "m.text",
+            "body": "only if it fails",
+            "m.relates_to": {
+                "rel_type": "m.thread",
+                "event_id": "$root:example.org",
+                "m.in_reply_to": { "event_id": "$update:example.org" },
+                "is_falling_back": false,
+            },
+        }));
+        assert_eq!(
+            reply_of(heard_of(&reply)),
+            ("only if it fails".into(), Some(MessageRef("$update:example.org".into())))
+        );
+
+        let continuing = content(json!({
+            "msgtype": "m.text",
+            "body": "and what about friday?",
+            "m.relates_to": {
+                "rel_type": "m.thread",
+                "event_id": "$root:example.org",
+                "m.in_reply_to": { "event_id": "$latest:example.org" },
+                "is_falling_back": true,
+            },
+        }));
+        assert_eq!(reply_of(heard_of(&continuing)), ("and what about friday?".into(), None));
+    }
+
+    #[test]
+    fn an_edit_of_a_reply_is_still_not_heard() {
+        let edit = content(json!({
+            "msgtype": "m.text",
+            "body": "* only if it fails",
+            "m.new_content": { "msgtype": "m.text", "body": "only if it fails" },
+            "m.relates_to": { "rel_type": "m.replace", "event_id": "$reply:example.org" },
+        }));
+        assert!(heard_of(&edit).is_none());
+        assert_eq!(replied_to(&edit), None);
     }
 }

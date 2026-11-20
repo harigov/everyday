@@ -27,6 +27,21 @@
 //! confirmation question, an apology -- is spoken but is not the reply and is
 //! left out of what is kept, though it does go into the rolling record of
 //! everything said that the echo check reads.
+//!
+//! # Updates from background work
+//!
+//! A watch or a project has news, and the person is in a voice session that
+//! may have been open for hours. [`VoiceInput::Update`] hands it over, and the
+//! session queues it ([`Session::updates`]) rather than saying it: it is said
+//! only at a gap ([`Session::at_a_gap`]) -- nobody talking or being
+//! understood, no turn running, nothing waiting on them, nothing being read
+//! or played -- and then a beat after the last thing played, so that the
+//! person who answers a reply a moment after it ends is not talked over.
+//! Everything waiting is said together, as the session's own speech, led by
+//! "An update:" (past a few, the rest are counted: "And 2 more."). Muting does
+//! not hold it: the session's own speech goes on while muted. If they talk
+//! over it, it is cut like any speech and not said again: it is in the thread
+//! and in the chat.
 
 use super::confirm::{self, SpokenAnswer};
 use super::phrases as text;
@@ -102,6 +117,14 @@ const COULD_NOT_READ: &str = "Sorry, I couldn't read that.";
 /// closing the device, hanging up -- cut it off.
 const GOODBYE_TAIL: Duration = Duration::from_millis(1500);
 
+/// How many waiting updates are read out in full when they are said together.
+/// A session left open while a watch reports every few minutes, or a long
+/// turn that background work finished several times over, would otherwise read
+/// out a page of news in one go. The rest are not dropped without a word: the
+/// session says how many more there are ("And 3 more."), and each of them is
+/// in the thread and in the chat.
+const MAX_SAID_TOGETHER: usize = 5;
+
 /// Start a session on the current Tokio runtime.
 ///
 /// Everything it needs is already built: loading models is
@@ -148,6 +171,8 @@ pub fn spawn(parts: VoiceParts) -> VoiceLink {
         confirm: None,
         ending: false,
         goodbye_at: None,
+        updates: VecDeque::new(),
+        update_at: None,
         working: false,
         reading: None,
         to_read: VecDeque::new(),
@@ -360,6 +385,8 @@ enum Wake {
     OutputGone,
     /// [`Session::goodbye_at`] came.
     Goodbye,
+    /// [`Session::update_at`] came.
+    Update,
 }
 
 struct Session {
@@ -416,6 +443,13 @@ struct Session {
     /// When the goodbye will have been heard and the session ends: set once
     /// it has played, and taken back if anything happens in the meantime.
     goodbye_at: Option<Instant>,
+    /// Updates from background work, waiting for a gap in which to be said,
+    /// oldest first. See the module docs.
+    updates: VecDeque<String>,
+    /// When the gap they are waiting for will have had its beat of silence:
+    /// the first moment they may be said, set while that is all that holds
+    /// them back, and taken back if anything happens in the meantime.
+    update_at: Option<Instant>,
     /// The transport has been asked to play the sound of working.
     working: bool,
     /// What a turn asked to have read aloud, while it is being read.
@@ -436,6 +470,7 @@ async fn run(
     s.sync();
     let error = loop {
         let goodbye_at = s.goodbye_at;
+        let update_at = s.update_at;
         let wake = tokio::select! {
             // Stop is read before anything else, and what was heard last: it
             // is of no use until what is already known is settled.
@@ -445,6 +480,7 @@ async fn run(
             event = live.recv() => Wake::Live(event),
             () = gone.closed() => Wake::OutputGone,
             () = wait_until(goodbye_at) => Wake::Goodbye,
+            () = wait_until(update_at) => Wake::Update,
         };
         match wake {
             // 9. A closed input is a Stop, and so is a transport that has
@@ -462,7 +498,13 @@ async fn run(
             }
             // 10. The assistant said goodbye, and it has been heard.
             Wake::Goodbye => break None,
+            // The beat after the last thing played is over: settled below,
+            // like everything else.
+            Wake::Update => {}
         }
+        // 13. News from background work, said now if this is a gap in which to
+        // say it. Before `sync`, which tells the interface what it started.
+        s.settle_updates();
         s.sync();
         // 10. Once the goodbye has played, the end -- after a moment for its
         // last word to leave the speaker, and not if anything happens first.
@@ -592,6 +634,13 @@ impl Session {
                     for sentence in sentences(&text) {
                         self.say(sentence);
                     }
+                }
+            }
+            // 13. Never said at once: queued for the next gap, which the loop
+            // looks for after every wake. None is dropped while it waits.
+            VoiceInput::Update(text) => {
+                if !self.stopping && !text.trim().is_empty() {
+                    self.updates.push_back(text);
                 }
             }
             // Handled by the loop, which must not leave it to us.
@@ -903,10 +952,95 @@ impl Session {
             && self.pending_prompt.is_none()
     }
 
+    // ---- updates from background work ------------------------------------------
+
+    /// (13) Whether this is a gap in which an update may be said: nobody to
+    /// talk over, nothing of the session's own to talk over, and nothing it is
+    /// in the middle of that an update would break into.
+    ///
+    /// - Nobody is talking or being understood, and no words wait to begin a
+    ///   turn. An update never cuts in while the person is talking.
+    /// - **Muted does not matter.** Muting stops the session listening; what it
+    ///   says itself -- a reply, something read aloud -- goes on playing, and
+    ///   so does an update. (While muted nobody can be heard to talk over it,
+    ///   but they chose that, and can unmute or press stop.)
+    /// - No turn is running -- one that has ended counts, and its reply is
+    ///   then all in the narrator, so "nothing outstanding" below is also
+    ///   "the reply has played".
+    /// - No confirmation is waiting, whether it is asked aloud or on a card:
+    ///   a question has to be the last thing they heard.
+    /// - Nothing is being read aloud or about to be, and nothing of the
+    ///   session's own is queued, being made or playing.
+    /// - The conversation is **not ending**. The goodbye is the last thing
+    ///   said; an update after it would keep the person on a call they have
+    ///   just been told is over. It stays queued, and is said if they talk
+    ///   again and the conversation goes on. The goodbye logic does not look
+    ///   at updates, so one never holds it up.
+    fn at_a_gap(&self) -> bool {
+        !self.stopping
+            && !self.ending
+            && !self.speaking
+            && !self.paused
+            && self.understanding == 0
+            && self.pending_prompt.is_none()
+            && self.turn.as_ref().is_none_or(|t| t.done)
+            && self.confirm.is_none()
+            && self.reading.is_none()
+            && self.to_read.is_empty()
+            && !self.audio_outstanding()
+    }
+
+    /// (13) Say the waiting updates if this is the gap for it, after the beat
+    /// of silence that follows whatever was last played -- or note when that
+    /// beat is up, so the loop wakes for it. Called after every wake.
+    fn settle_updates(&mut self) {
+        if self.updates.is_empty() || !self.at_a_gap() {
+            self.update_at = None;
+            return;
+        }
+        // The end of the last sentence may still be in the air, and the person
+        // who is about to answer it has not had their moment: the beat the
+        // echo check allows for is also the beat they are given.
+        if let Some(at) = self.last_played.map(|at| at + ECHO_TAIL)
+            && at > Instant::now()
+        {
+            self.update_at = Some(at);
+            return;
+        }
+        self.update_at = None;
+        self.say_updates();
+    }
+
+    /// (13) Say everything waiting, together, as the session's own speech:
+    /// not part of any reply, and in the echo record like anything said. Not
+    /// said again if the person talks over it. Past [`MAX_SAID_TOGETHER`] the
+    /// rest are counted, not read.
+    fn say_updates(&mut self) {
+        let said: Vec<Vec<String>> = self
+            .updates
+            .drain(..)
+            .map(|update| sentences(&update))
+            .filter(|parts| !parts.is_empty())
+            .collect();
+        if said.is_empty() {
+            return;
+        }
+        let total = said.len();
+        self.say(text::update_lead(total).to_string());
+        for sentence in said.into_iter().take(MAX_SAID_TOGETHER).flatten() {
+            self.say(sentence);
+        }
+        if total > MAX_SAID_TOGETHER {
+            self.say(text::more_updates(total - MAX_SAID_TOGETHER));
+        }
+    }
+
     /// (9) Cancel any turn, clear what is queued, cut the reply, and say so.
     async fn stop(&mut self, error: Option<String>) {
         self.stopping = true;
         self.pending_prompt = None;
+        self.updates.clear();
+        self.update_at = None;
         self.confirm = None;
         self.reading = None;
         self.to_read.clear();
@@ -1739,6 +1873,14 @@ mod tests {
             }
         }
 
+        /// Keep whatever the session has put out already, without waiting for
+        /// more.
+        fn drain(&mut self) {
+            while let Ok(output) = self.link.output.try_recv() {
+                self.seen.push(output);
+            }
+        }
+
         fn states(&self) -> Vec<VoiceState> {
             self.seen
                 .iter()
@@ -2094,6 +2236,199 @@ mod tests {
         rig.play_out().await;
         assert_eq!(rig.said(), ["This is your Morning brief.", "Three things are due today."]);
         assert!(rig.record.prompts.lock().unwrap().is_empty(), "no turn was run for it");
+    }
+
+    // ---- updates from background work ---------------------------------------
+
+    const BUILD: &str = "Your build finished and all of its checks passed.";
+    const DEPLOY: &str = "The deploy is waiting for your approval.";
+
+    /// How many sentences the session has handed the transport to play.
+    fn plays(rig: &Rig) -> usize {
+        rig.count(|o| matches!(o, VoiceOutput::Play { .. }))
+    }
+
+    /// Report each sentence played as it is handed over, until `total` have
+    /// been in all -- however the session's state moves meanwhile, which a
+    /// wait for it to be listening cannot follow.
+    async fn play_until(rig: &mut Rig, total: usize) {
+        while plays(rig) < total {
+            let utterance = rig.next_play().await;
+            rig.send(VoiceInput::Played { utterance });
+        }
+    }
+
+    #[tokio::test]
+    async fn an_update_said_while_idle_has_its_lead_and_is_not_a_turn() {
+        let mut rig = Rig::start(Vec::new(), &[]).await;
+        rig.send(VoiceInput::Update(format!("**Watch:** {BUILD}")));
+        rig.play_out().await;
+        let spoken = format!("Watch: {BUILD}");
+        assert_eq!(rig.said(), ["An update:", spoken.as_str()]);
+        assert!(rig.record.prompts.lock().unwrap().is_empty(), "no turn was run for it");
+        assert!(rig.record.cuts.lock().unwrap().is_empty(), "it is no part of a reply");
+    }
+
+    #[tokio::test]
+    async fn an_update_sent_while_they_talk_waits_until_they_are_done_and_answered() {
+        let mut rig = Rig::start(vec![short_reply("m1", FIRST)], &["thanks, that is great"]).await;
+        rig.begin();
+        rig.until("hearing", |o| is_state(o, VoiceState::Hearing)).await;
+        rig.send(VoiceInput::Update(BUILD.into()));
+        // Not over them.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        rig.drain();
+        assert_eq!(plays(&rig), 0, "nothing was said over the person");
+        assert!(rig.said().is_empty());
+
+        // Their words are a turn, and the update waits for its reply too.
+        rig.end();
+        rig.play_out().await;
+        assert_eq!(rig.said(), [FIRST], "only the reply so far");
+        // Then, after a beat of quiet, the update.
+        play_until(&mut rig, 3).await;
+        assert_eq!(rig.said(), [FIRST, "An update:", BUILD]);
+        assert_eq!(rig.heard_texts(), ["thanks, that is great"], "the update is not a turn");
+    }
+
+    #[tokio::test]
+    async fn an_update_sent_while_a_turn_runs_is_said_after_the_reply_has_played() {
+        // The first sentence is out as soon as it is complete; the second is
+        // held by the splitter until the turn ends.
+        let running = Script {
+            events: vec![started("m1"), delta(&format!("{FIRST} {SECOND}"))],
+            hang: true,
+            finish: Some("m1"),
+            error: None,
+        };
+        let mut rig = Rig::start(vec![running], &["what is the weather"]).await;
+        rig.talk();
+        let first = rig.next_play().await;
+        rig.send(VoiceInput::Update(BUILD.into()));
+        rig.send(VoiceInput::Played { utterance: first });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        rig.drain();
+        assert_eq!(rig.said(), [FIRST], "the turn is still running, so the update waits");
+
+        rig.record.release.notify_one();
+        rig.play_out().await;
+        assert_eq!(rig.said(), [FIRST, SECOND], "the reply is finished first");
+        play_until(&mut rig, 4).await;
+        assert_eq!(rig.said(), [FIRST, SECOND, "An update:", BUILD]);
+        // The reply was heard whole, and the update is none of it.
+        assert!(rig.record.cuts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn updates_waiting_together_are_said_together_with_the_plural_lead() {
+        let mut rig = Rig::start(Vec::new(), &["hold on"]).await;
+        rig.begin();
+        rig.until("hearing", |o| is_state(o, VoiceState::Hearing)).await;
+        rig.send(VoiceInput::Update(BUILD.into()));
+        rig.send(VoiceInput::Update(DEPLOY.into()));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        rig.drain();
+        assert!(rig.said().is_empty());
+        // What they said was only "hold on": no turn, and the gap is open.
+        rig.end();
+        rig.play_out().await;
+        assert_eq!(rig.said(), ["A couple of updates:", BUILD, DEPLOY]);
+        assert!(rig.record.prompts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_update_is_said_while_a_confirmation_waits() {
+        let mut rig =
+            Rig::start(vec![confirmation("search", "best e-bike")], &["look up an e-bike", "yes"])
+                .await;
+        rig.talk();
+        let question = rig.next_play().await;
+        rig.send(VoiceInput::Played { utterance: question });
+        rig.until("asking", |o| is_state(o, VoiceState::Asking)).await;
+        rig.send(VoiceInput::Update(BUILD.into()));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        rig.drain();
+        assert_eq!(rig.said(), ["Should I search the web for best e-bike?"], "it waits");
+
+        // Answered, the turn ends, and then it is said.
+        tokio::time::sleep(ANSWER_GRACE + Duration::from_millis(50)).await;
+        rig.talk();
+        play_until(&mut rig, 3).await;
+        assert_eq!(rig.said(), ["Should I search the web for best e-bike?", "An update:", BUILD]);
+        assert_eq!(rig.answers(), [("c1".to_string(), ConfirmAnswer::Confirm)]);
+    }
+
+    #[tokio::test]
+    async fn a_muted_session_still_says_updates() {
+        // Muting stops the listening, not the speaking.
+        let mut rig = Rig::start(Vec::new(), &[]).await;
+        rig.send(VoiceInput::Muted(true));
+        rig.send(VoiceInput::Update(BUILD.into()));
+        rig.play_out().await;
+        assert_eq!(rig.said(), ["An update:", BUILD]);
+    }
+
+    #[tokio::test]
+    async fn more_than_a_few_waiting_updates_are_counted_not_dropped() {
+        let mut rig = Rig::start(Vec::new(), &["hold on"]).await;
+        rig.begin();
+        rig.until("hearing", |o| is_state(o, VoiceState::Hearing)).await;
+        let updates: Vec<String> =
+            (1..=7).map(|n| format!("Update number {n} is ready for you.")).collect();
+        for update in &updates {
+            rig.send(VoiceInput::Update(update.clone()));
+        }
+        rig.end();
+        rig.play_out().await;
+        let mut want = vec!["A few updates:".to_string()];
+        want.extend(updates.iter().take(MAX_SAID_TOGETHER).cloned());
+        want.push("And 2 more.".to_string());
+        assert_eq!(rig.said(), want);
+    }
+
+    #[tokio::test]
+    async fn an_update_is_not_said_after_a_goodbye_and_does_not_hold_it_up() {
+        let mut rig = Rig::start(vec![goodbye("m1", "Talk soon.")], &["that's all I have"]).await;
+        rig.talk();
+        rig.until("understanding", |o| is_state(o, VoiceState::Understanding)).await;
+        rig.send(VoiceInput::Update(BUILD.into()));
+        let utterance = rig.next_play().await;
+        rig.send(VoiceInput::Played { utterance });
+        let at = rig
+            .until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. })))
+            .await;
+        assert!(matches!(&rig.seen[at], VoiceOutput::Event(VoiceEvent::Ended { error: None })));
+        assert_eq!(rig.said(), ["Talk soon."], "the goodbye is the last thing said");
+    }
+
+    #[tokio::test]
+    async fn an_update_talked_over_is_cut_and_not_said_again() {
+        let mut rig = Rig::start(Vec::new(), &["stop"]).await;
+        rig.send(VoiceInput::Update(BUILD.into()));
+        rig.next_play().await;
+        eventually("its words are with the voice", || rig.said().len() == 2).await;
+        // They talk over it.
+        rig.begin();
+        rig.until("the pause", |o| matches!(o, VoiceOutput::Pause)).await;
+        rig.end();
+        rig.until("the clear", |o| matches!(o, VoiceOutput::Clear)).await;
+        rig.until("listening", |o| is_state(o, VoiceState::Listening)).await;
+        tokio::time::sleep(ECHO_TAIL + Duration::from_millis(300)).await;
+        rig.drain();
+        assert_eq!(rig.said().len(), 2, "it is not said again");
+        assert!(rig.record.prompts.lock().unwrap().is_empty(), "'stop' is not a message");
+    }
+
+    #[tokio::test]
+    async fn what_an_update_said_counts_for_the_echo_check() {
+        let mut rig = Rig::start(Vec::new(), &[BUILD]).await;
+        rig.send(VoiceInput::Update(BUILD.into()));
+        rig.play_out().await;
+        // Their microphone hears it back, just after: no turn is begun on it.
+        rig.talk();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(rig.record.prompts.lock().unwrap().is_empty());
+        assert!(rig.heard_texts().is_empty());
     }
 
     #[tokio::test]

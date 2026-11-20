@@ -4012,6 +4012,7 @@ let agentSettings: AgentSettings = {
   proposals: {},
   parkUnattended: false,
   reminders: { yours: 'desktop', assistants: 'chat' },
+  quietHours: { enabled: false, start: '22:00', end: '07:00' },
   companion: {},
 }
 
@@ -4336,10 +4337,11 @@ agentMessages.push(
   },
 )
 
-// Two background jobs, a finished one and a failed one, with their notes and
-// transcripts, and the thread the finished one answered in. Plain data: the
-// timers that walk a *new* job through its life start only when one is
-// started. See `mock-jobs.ts`.
+// Five background jobs -- research that finished and research that failed, a
+// project still running, a watch asleep between looks, and a watch that has
+// stopped -- with their notes and transcripts, and the threads that asked.
+// Plain data: the timers that walk a *new* job through its life start only
+// when one is started. See `mock-jobs.ts`.
 mockJobsInit({
   putNote: (note) => {
     const at = notes.findIndex((n) => n.id === note.id)

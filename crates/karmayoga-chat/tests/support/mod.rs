@@ -41,6 +41,9 @@ pub enum Event {
 /// relay directly skip it and push into the inbox themselves.
 pub struct FakeConnector {
     events: Mutex<Vec<Event>>,
+    /// The name each message that went out was given, beside its text -- what
+    /// a reply to it is sent as a reply to.
+    references: Mutex<Vec<(String, MessageRef)>>,
     serial: AtomicUsize,
     send_attempts: AtomicUsize,
     sends_to_fail: Mutex<usize>,
@@ -55,6 +58,7 @@ impl FakeConnector {
         let (delivering, deliveries) = mpsc::unbounded_channel();
         Arc::new(Self {
             events: Mutex::new(Vec::new()),
+            references: Mutex::new(Vec::new()),
             serial: AtomicUsize::new(0),
             send_attempts: AtomicUsize::new(0),
             sends_to_fail: Mutex::new(0),
@@ -101,6 +105,18 @@ impl FakeConnector {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The name the message that went out as `text` was given. The first, if
+    /// the same words went out more than once.
+    pub fn reference_of(&self, text: &str) -> MessageRef {
+        self.references
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(sent, _)| sent == text)
+            .map(|(_, reference)| reference.clone())
+            .unwrap_or_else(|| panic!("nothing was sent as {text:?}; sent {:?}", self.sent()))
     }
 
     /// Every question that was put, with the message it went out as.
@@ -220,7 +236,9 @@ impl Connector for FakeConnector {
             return Err(ChatError::Transient("the server is unreachable".into()));
         }
         self.record(Event::Sent { chat: chat.clone(), text: markdown.to_string() });
-        Ok(self.next_reference("$message"))
+        let reference = self.next_reference("$message");
+        self.references.lock().unwrap().push((markdown.to_string(), reference.clone()));
+        Ok(reference)
     }
 
     async fn show(&self, chat: &ChatId, picture: &Shown) -> Result<MessageRef, ChatError> {
@@ -520,7 +538,18 @@ impl Harness {
 
     /// The owner typed `text` at `at`, and the bot only now hears of it.
     pub async fn say_at(&self, text: &str, at: Timestamp) {
-        self.deliver(Incoming::Said { chat: room(), text: text.into(), at }).await;
+        self.deliver(Incoming::Said { chat: room(), text: text.into(), at, reply_to: None }).await;
+    }
+
+    /// The owner types `text` as a reply to the message `to`, now.
+    pub async fn say_replying(&self, text: &str, to: &MessageRef) {
+        self.deliver(Incoming::Said {
+            chat: room(),
+            text: text.into(),
+            at: Timestamp::now(),
+            reply_to: Some(to.clone()),
+        })
+        .await;
     }
 
     /// The owner taps `choice` on the message `question`.

@@ -87,6 +87,10 @@ fn every_update_tool_is_covered_by_a_partial_patch_test() {
         // `update_transactions_touches_only_the_named_field`, beside the
         // linked bank and accounts it needs seeded.
         "update_transactions",
+        // Checked in `tools/jobs.rs`'s
+        // `update_job_changes_what_a_watch_tells_how_often_it_looks_and_when_it_stops`,
+        // beside the watch it needs started: a rule left out is left alone.
+        "update_job",
     ];
     for tool in tools::catalog() {
         if tool.name.starts_with("update_") {

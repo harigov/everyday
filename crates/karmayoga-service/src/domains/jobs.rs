@@ -3,10 +3,15 @@
 //!
 //! Eight commands, and like `run_routine` the one that starts something does
 //! not do it. `start_research` writes a queued job and rings the worker's
-//! bell; the worker picks it up on its own loop, one at a time, which is what
-//! keeps "one job at a time" true however many times somebody presses the
-//! button, and what lets a twenty-minute job go on after the command that
-//! started it has answered.
+//! bell; the worker picks it up on its own loop, at most two at a time, which
+//! is what keeps that true however many times somebody presses the button,
+//! and what lets a twenty-minute job go on after the command that started it
+//! has answered.
+//!
+//! They cope with every kind of job, a watch included. A watch is not queued
+//! or answered -- it sleeps between looks and says what it has to as it goes
+//! -- so the one command that does not suit it, `answer_job`, refuses it in
+//! words; `cancel_job` stops it, even asleep, and `delete_job` removes it.
 //!
 //! The assistant has tools of the same names for the same things -- see
 //! `karmayoga_core::agent::tools::jobs`. They are separate tables, and a name
@@ -21,6 +26,11 @@ use crate::service::{Service, blocking};
 use karmayoga_core::{ConversationId, Job, JobId, JobKind, JobQuery, JobStatus};
 use serde::Deserialize;
 use std::sync::Arc;
+
+/// The longest deleting a watch waits for a look under way to stop and let go
+/// of it. A stopped look ends in moments; a look past this is left to find the
+/// record gone when it next reads it.
+const LOOK_LETS_GO: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,8 +122,38 @@ async fn cancel_job(svc: Arc<Service>, _ctx: Ctx, args: JobRef) -> CommandResult
     Ok(job)
 }
 
+/// Remove a job and its transcript.
+///
+/// A watch asleep between looks is not running, so the core allows it to be
+/// deleted -- but a look of its own may be under way, a turn in its
+/// transcript, and that is stopped first, as cancelling stops it, so that
+/// nothing goes on writing into a conversation that is about to be gone. The
+/// watch loop reads the record before it writes and finds it deleted.
 async fn delete_job(svc: Arc<Service>, _ctx: Ctx, args: JobRef) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.delete_job(args.id)).await
+    let id = args.id;
+    let looking = svc
+        .on_vault(move |vault| {
+            Ok(vault
+                .job(id)
+                .ok()
+                .filter(|job| job.status == JobStatus::Waiting)
+                .and_then(|job| job.conversation_id))
+        })
+        .await?;
+    if let Some(transcript) = looking {
+        svc.pending().cancel(transcript);
+    }
+    // A watch stays `Waiting` through a look, so the store cannot refuse the
+    // delete the way it refuses a running job's. The look reads the record
+    // again before it writes and finds nothing once it is gone -- but a
+    // delete landing between that read and that write would have the look
+    // write it back, alive. So wait for the look to let go of its claim,
+    // which it does only after writing; a stopped look is a few seconds.
+    let started = tokio::time::Instant::now();
+    while svc.is_running_job(id) && started.elapsed() < LOOK_LETS_GO {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    svc.on_vault(move |vault| vault.delete_job(id)).await
 }
 
 async fn mark_jobs_seen(svc: Arc<Service>, _ctx: Ctx, args: SeenJobs) -> CommandResult<()> {
@@ -125,10 +165,16 @@ async fn mark_jobs_seen(svc: Arc<Service>, _ctx: Ctx, args: SeenJobs) -> Command
 /// Only a finished job that was asked from a conversation and has not been
 /// answered is owed one. The last of those matters: the follow-up is a model
 /// call, and a second click would pay for a second answer to the same
-/// question.
+/// question. A watch is never owed one, whatever state it is in: what it had
+/// to say it said as it went.
 fn unanswerable(job: &Job) -> Option<&'static str> {
+    if job.kind.is_stepped() {
+        return Some(
+            "a watch says what it has to as it goes, so it has no answer to come back with",
+        );
+    }
     let why = match job.status {
-        JobStatus::Queued | JobStatus::Running => {
+        JobStatus::Queued | JobStatus::Running | JobStatus::Waiting => {
             "that job has not finished yet, so there is nothing to answer from"
         }
         JobStatus::Failed => "that job failed, so there is nothing to answer from",
@@ -275,6 +321,34 @@ mod tests {
         let mut cancelled = queued;
         cancelled.cancel("cancelled by you").unwrap();
         assert!(unanswerable(&cancelled).unwrap().contains("cancelled"));
+    }
+
+    #[test]
+    fn a_watch_is_never_answered_in_whatever_state_it_is_in() {
+        let probe = karmayoga_core::Probe::Assistant { how: "Check the inbox".into() };
+        let mut watch = Job::watch(
+            "CI on PR 412",
+            probe,
+            Default::default(),
+            Some(ConversationId::new()),
+            jiff::Timestamp::now(),
+        );
+        for status in JobStatus::ALL {
+            watch.status = status;
+            let why = unanswerable(&watch).unwrap_or_else(|| panic!("{status:?} was allowed"));
+            assert!(why.contains("watch"), "should say why, in words: {why}");
+        }
+    }
+
+    #[test]
+    fn a_project_is_answered_as_research_is() {
+        let mut project = Job::project("Plan a week in Lisbon", "", Some(ConversationId::new()));
+        assert!(unanswerable(&project).unwrap().contains("not finished"));
+        project.begin();
+        project.finish("Planned.");
+        assert_eq!(unanswerable(&project), None);
+        project.answered = true;
+        assert!(unanswerable(&project).unwrap().contains("already been answered"));
     }
 
     #[test]

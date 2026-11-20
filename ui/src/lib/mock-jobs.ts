@@ -19,8 +19,12 @@
 //   - A prompt that also says "unanswered" finishes the job and leaves the
 //     answer undone, which is the state that offers "Answer now".
 //
-// Two jobs are seeded as plain data, one finished and one failed, so that
-// Settings → "What it did" has something in it before anything is driven.
+// Five jobs are seeded as plain data, so that Settings → "What it did" has
+// something in it before anything is driven: research that finished and
+// research that failed, a project still running with one update, a watch
+// asleep between looks with two, and a watch that has stopped. Only research
+// is scripted; the rest stand as they were left, and a watch's clock is moved
+// on when it is read (see `lookIfDue`) rather than by a timer.
 //
 // # No timer at load
 //
@@ -156,12 +160,48 @@ function emit(kind: ChangeEvent['kind'], op: ChangeEvent['op'], id: string): voi
 // ── Records ─────────────────────────────────────────────────────────────
 
 const jobs: Job[] = []
-let jobCounter = 2
+/** The seeds are `job-1` to `job-5`; the next one started is `job-6`. */
+let jobCounter = 5
 let messageCounter = 0
 
 /** A copy, because the script mutates the stored job and a caller's must not move. */
 function snapshot(job: Job): Job {
-  return { ...job, outputs: job.outputs.map((o) => ({ ...o })) }
+  lookIfDue(job)
+  return {
+    ...job,
+    outputs: job.outputs.map((o) => ({ ...o })),
+    ...(job.rules ? { rules: { ...job.rules } } : {}),
+    ...(job.observed ? { observed: { ...job.observed } } : {}),
+    ...(job.updates
+      ? {
+          updates: job.updates.map((u) => ({
+            ...u,
+            ...(u.sentTo ? { sentTo: [...u.sentTo] } : {}),
+          })),
+        }
+      : {}),
+  }
+}
+
+/**
+ * A watch asleep past its time has looked again since, so the mock takes the
+ * looks it missed when the job is read. There is no worker here, and a timer
+ * at load would keep a Node process alive (see the top of this file); this
+ * makes the card's countdown start over, as a real one's does, without either.
+ * Nothing changes hands: the looks saw what the last one did.
+ */
+function lookIfDue(job: Job): void {
+  if (job.kind.type !== 'watch' || job.status !== 'waiting' || !job.wakeAt) return
+  const every = (job.rules?.everyMinutes || 5) * 60_000
+  const due = Date.parse(job.wakeAt)
+  const at = Date.now()
+  if (Number.isNaN(due) || due > at) return
+  const looks = Math.floor((at - due) / every) + 1
+  if (job.observed) {
+    job.observed.checks += looks
+    job.observed.checkedAt = new Date(due + (looks - 1) * every).toISOString()
+  }
+  job.wakeAt = new Date(due + looks * every).toISOString()
 }
 
 function find(id: JobId): Job {
@@ -190,9 +230,18 @@ function message(
   }
 }
 
-/** A job's question and brief. The mock only researches; a task's title stands in. */
+/** A job's question and brief. The mock only researches; what the others are about stands in. */
 function asked(job: Job): { question: string; brief: string } {
-  return job.kind.type === 'research' ? job.kind : { question: job.kind.title, brief: '' }
+  switch (job.kind.type) {
+    case 'research':
+      return job.kind
+    case 'task':
+      return { question: job.kind.title, brief: '' }
+    case 'watch':
+      return { question: job.kind.what, brief: '' }
+    case 'project':
+      return { question: job.kind.goal, brief: job.kind.brief }
+  }
 }
 
 /** A question cut to fit a title or a progress line, at a word if it can. */
@@ -298,6 +347,17 @@ const DONE_QUESTION =
 
 const FAILED_QUESTION = 'How have berthing fees along the south coast changed since 2023?'
 
+const OARS_UPDATE =
+  'The oar locks have shipped. Tracking 8801 442 190, due on Thursday. That is what you asked ' +
+  'to hear about, so I have stopped watching.'
+
+const PROJECT_GOAL =
+  'Plan a week in Lisbon in late March for two, with a loose outline for each day and a list ' +
+  'of what to book ahead.'
+const PROJECT_BRIEF =
+  'Two adults, five nights, flying in on a Monday. They like walking, dislike queues, and do ' +
+  'not want every day full.'
+
 function seedNotes(): Note[] {
   const done: Note = {
     id: 'n-job-1',
@@ -366,7 +426,32 @@ function seedNotes(): Note[] {
     createdAt: minutesAgo(60 * 26 - 1),
     updatedAt: minutesAgo(60 * 25 + 40),
   }
-  return [done, partial]
+  const project: Note = {
+    id: 'n-job-3',
+    title: 'A week in Lisbon, late March',
+    body: {
+      type: 'doc',
+      content: [
+        heading('Where to stay'),
+        paragraph(
+          'Estrela: quiet, on the 28 tram line, and fifteen minutes on foot from the river. ' +
+            'Alfama is livelier and a lot of stairs; Baixa is flat and noisy at night.',
+        ),
+        heading('Still to do'),
+        bullets([
+          'A loose outline for each day, with one thing booked and the rest left open.',
+          'Which places want a table or a ticket booked ahead.',
+        ]),
+      ],
+    },
+    tags: ['project'],
+    pinned: false,
+    attachments: [],
+    origin: 'assistant',
+    createdAt: minutesAgo(40),
+    updatedAt: minutesAgo(14),
+  }
+  return [done, partial, project]
 }
 
 /** A job's prompt as its transcript opens, which is what the worker writes. */
@@ -399,8 +484,8 @@ function callPair(
 }
 
 /**
- * Put the seeds into the vault: two jobs, their notes, their transcripts, and
- * the conversation the finished one answered in.
+ * Put the seeds into the vault: five jobs, their notes, their transcripts, and
+ * the conversations the finished research, the watch and the project were asked in.
  *
  * Called once from `mock.ts`, after the arrays it writes into exist.
  */
@@ -433,6 +518,138 @@ export function mockJobsInit(lend: JobsSink): void {
       createdAt: minutesAgo(60 * 26),
       startedAt: minutesAgo(60 * 26 - 1),
       finishedAt: minutesAgo(60 * 25 + 40),
+    },
+    {
+      id: 'job-5',
+      kind: {
+        type: 'watch',
+        what: 'the oar locks order',
+        probe: {
+          type: 'assistant',
+          how: 'Look in my inbox for a dispatch or delivery email about the oar locks order.',
+        },
+      },
+      askedIn: null,
+      status: 'done',
+      reason: '',
+      progress: '',
+      steps: 0,
+      outputs: [],
+      summary: OARS_UPDATE,
+      conversationId: null,
+      answered: true,
+      attempts: 1,
+      seen: true,
+      createdAt: minutesAgo(60 * 6),
+      startedAt: minutesAgo(60 * 6),
+      finishedAt: minutesAgo(130),
+      rules: {
+        notifyWhen: 'when it ships or arrives',
+        act: '',
+        everyMinutes: 30,
+        until: minutesAgo(-60 * 2),
+        callMe: false,
+      },
+      wakeAt: null,
+      observed: {
+        fingerprint: '7c1e0b52',
+        last: 'From the chandlery: your order has shipped. Tracking 8801 442 190, due Thursday.',
+        checkedAt: minutesAgo(130),
+        checks: 9,
+        failures: 0,
+        trouble: '',
+      },
+      updates: [
+        { at: minutesAgo(130), text: OARS_UPDATE, delivered: true, sentTo: ['thread', 'chat'] },
+      ],
+    },
+    {
+      id: 'job-4',
+      kind: {
+        type: 'watch',
+        what: 'CI on PR 412',
+        probe: {
+          type: 'connection',
+          connection: 'GitHub',
+          tool: 'get_pull_request_status',
+          arguments: { owner: 'harbour-notes', repo: 'tide-tables', pull_number: 412 },
+        },
+      },
+      askedIn: 'c-job-watch',
+      status: 'waiting',
+      reason: '',
+      progress: '',
+      steps: 0,
+      outputs: [],
+      summary: '',
+      conversationId: null,
+      answered: false,
+      attempts: 1,
+      seen: true,
+      createdAt: minutesAgo(95),
+      startedAt: minutesAgo(95),
+      finishedAt: null,
+      rules: {
+        notifyWhen: 'whenever a run finishes or fails',
+        act: '',
+        everyMinutes: 5,
+        until: minutesAgo(-(6 * 60 + 20)),
+        callMe: false,
+      },
+      // Three minutes on from when the page opened: "Next look in 3 min".
+      wakeAt: minutesAgo(-3),
+      observed: {
+        fingerprint: 'a41f9d03',
+        last: 'Run 3f2a9c: build passed, lint passed, tests running (2 of 3 jobs done).',
+        checkedAt: minutesAgo(2),
+        checks: 14,
+        failures: 0,
+        trouble: '',
+      },
+      updates: [
+        {
+          at: minutesAgo(52),
+          text:
+            'CI failed on PR 412. The `lint` job reported 2 errors in `src/tide.rs`; the build ' +
+            'and the tests passed.',
+          delivered: true,
+          sentTo: ['thread', 'chat'],
+        },
+        {
+          at: minutesAgo(18),
+          text: 'The re-run passed: build, lint and tests are all green on PR 412.',
+          delivered: true,
+          sentTo: ['thread', 'chat', 'voice'],
+        },
+      ],
+    },
+    {
+      id: 'job-3',
+      kind: { type: 'project', goal: PROJECT_GOAL, brief: PROJECT_BRIEF },
+      askedIn: 'c-job-project',
+      status: 'running',
+      reason: '',
+      progress: 'Working out a day-by-day outline',
+      steps: 18,
+      outputs: [{ type: 'note', noteId: 'n-job-3' }],
+      summary: '',
+      conversationId: 'c-job-3',
+      answered: false,
+      attempts: 1,
+      seen: true,
+      createdAt: minutesAgo(41),
+      startedAt: minutesAgo(40),
+      finishedAt: null,
+      updates: [
+        {
+          at: minutesAgo(14),
+          text:
+            'Settled on staying in Estrela: quiet, on the tram line, and fifteen minutes on foot ' +
+            'from the river. Next, a loose outline for each day.',
+          delivered: true,
+          sentTo: ['thread', 'chat'],
+        },
+      ],
     },
     {
       id: 'job-1',
@@ -604,6 +821,166 @@ export function mockJobsInit(lend: JobsSink): void {
     ),
   ]
   for (const m of t2) lend.addMessage(m)
+
+  seedWatchThreads(lend)
+}
+
+/**
+ * The threads the watch and the project were asked in, with the updates they
+ * sent as the application's lines, and the project's own transcript. What the
+ * thread's card is drawn from -- see `startedJobs` in `ChatThread.svelte`.
+ */
+function seedWatchThreads(lend: JobsSink): void {
+  const watch: ConversationId = 'c-job-watch'
+  lend.putConversation({
+    id: watch,
+    title: 'Tell me when CI on PR 412 finishes',
+    createdAt: minutesAgo(96),
+    updatedAt: minutesAgo(18),
+  })
+  const watchCall = 'call-job-watch-1'
+  for (const m of [
+    message(
+      watch,
+      'user',
+      'Keep an eye on CI for PR 412 and tell me when a run finishes or fails.',
+      { createdAt: minutesAgo(96) },
+    ),
+    message(
+      watch,
+      'assistant',
+      'I am watching CI on PR 412 through GitHub, every five minutes for the next eight hours. ' +
+        'I will tell you when a run finishes or fails.',
+      {
+        toolCalls: [
+          {
+            id: watchCall,
+            name: 'start_watch',
+            arguments: {
+              what: 'CI on PR 412',
+              connection: 'GitHub',
+              tool: 'get_pull_request_status',
+              arguments: { owner: 'harbour-notes', repo: 'tide-tables', pull_number: 412 },
+              notify_when: 'whenever a run finishes or fails',
+            },
+          },
+        ],
+        createdAt: minutesAgo(95),
+      },
+    ),
+    message(watch, 'tool', 'Started watching CI on PR 412 (job-4).', {
+      toolCallId: watchCall,
+      createdAt: minutesAgo(95),
+    }),
+    message(
+      watch,
+      'system',
+      'Watch: CI on PR 412: CI failed on PR 412. The `lint` job reported 2 errors in ' +
+        '`src/tide.rs`; the build and the tests passed.',
+      { createdAt: minutesAgo(52) },
+    ),
+    message(
+      watch,
+      'system',
+      'Watch: CI on PR 412: The re-run passed: build, lint and tests are all green on PR 412.',
+      { createdAt: minutesAgo(18) },
+    ),
+  ]) {
+    lend.addMessage(m)
+  }
+
+  const project: ConversationId = 'c-job-project'
+  lend.putConversation({
+    id: project,
+    title: 'Plan a week in Lisbon',
+    createdAt: minutesAgo(42),
+    updatedAt: minutesAgo(14),
+  })
+  const projectCall = 'call-job-project-1'
+  for (const m of [
+    message(
+      project,
+      'user',
+      'Plan a week in Lisbon for us in late March. Take your time over it.',
+      { createdAt: minutesAgo(42) },
+    ),
+    message(
+      project,
+      'assistant',
+      'That is a piece of work rather than a question, so I have started it as a project. I will ' +
+        'send you an update when I reach something worth saying, and the plan is in a note.',
+      {
+        toolCalls: [
+          {
+            id: projectCall,
+            name: 'start_project',
+            arguments: { goal: PROJECT_GOAL, brief: PROJECT_BRIEF },
+          },
+        ],
+        createdAt: minutesAgo(41),
+      },
+    ),
+    message(project, 'tool', 'Started project: a week in Lisbon (job-3).', {
+      toolCallId: projectCall,
+      createdAt: minutesAgo(41),
+    }),
+    message(
+      project,
+      'system',
+      'Project: Settled on staying in Estrela: quiet, on the tram line, and fifteen minutes on ' +
+        'foot from the river. Next, a loose outline for each day.',
+      { createdAt: minutesAgo(14) },
+    ),
+  ]) {
+    lend.addMessage(m)
+  }
+
+  lend.putConversation({
+    id: 'c-job-3',
+    title: gist(PROJECT_GOAL),
+    createdAt: minutesAgo(40),
+    updatedAt: minutesAgo(14),
+    jobId: 'job-3',
+  })
+  const transcript: AgentMessage[] = [
+    message(
+      'c-job-3',
+      'user',
+      [
+        'Work on this in the background and keep what you make in a note.',
+        '',
+        `Goal: ${PROJECT_GOAL}`,
+        '',
+        `Background: ${PROJECT_BRIEF}`,
+      ].join('\n'),
+      { createdAt: minutesAgo(40) },
+    ),
+    ...callPair(
+      'c-job-3',
+      1,
+      'web_search',
+      { query: 'best neighbourhoods to stay in Lisbon for walkers' },
+      '8 results',
+      minutesAgo(36),
+    ),
+    ...callPair(
+      'c-job-3',
+      2,
+      'read_web_page',
+      { url: 'https://overview.example/guide' },
+      'Read overview.example',
+      minutesAgo(30),
+    ),
+    ...callPair(
+      'c-job-3',
+      3,
+      'update_note',
+      { title: 'A week in Lisbon, late March' },
+      'Updated the note',
+      minutesAgo(14),
+    ),
+  ]
+  for (const m of transcript) lend.addMessage(m)
 }
 
 // ── Commands ────────────────────────────────────────────────────────────
@@ -678,18 +1055,20 @@ export function mockStartResearch(
 }
 
 /**
- * Stop a queued or running job. Whatever it wrote stays, as the note does.
+ * Stop a job that is still going -- a watch stops looking. Whatever it wrote
+ * stays, as the note does.
  * Refused for one that is over, as `Job::cancel` is.
  */
 export function mockCancelJob(id: JobId): Job {
   const job = find(id)
-  if (job.status !== 'queued' && job.status !== 'running') {
+  if (job.status !== 'queued' && job.status !== 'running' && job.status !== 'waiting') {
     throw new VaultError('invalid', `that job is already ${job.status}; there is nothing to cancel`)
   }
   clearTimeout(timers.get(id))
   timers.delete(id)
   job.status = 'cancelled'
   job.reason = 'cancelled by you'
+  job.wakeAt = null
   job.finishedAt = now()
   emit('job', 'updated', job.id)
   release(id)

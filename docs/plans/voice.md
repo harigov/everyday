@@ -184,6 +184,24 @@ tasks. Nothing the loop awaits may block it from hearing `Stop`.
     said while a slow tool runs must be heard. The desktop mixes `cue::Bed` into the speaker queue
     when it has no speech (so the echo canceller hears it as it hears speech);
     a call puts it in the 20 ms frames.
+13. **Updates.** `VoiceInput::Update` carries something a background job has
+    to say: a watch seeing CI finish, a project reaching a milestone. See
+    `docs/plans/watches.md`. It is queued, never said at once. It is said at
+    the session's next gap:
+    - nobody is talking or being understood;
+    - no turn is running, or the last turn's reply has played;
+    - no question is waiting;
+    - nothing is being read aloud or is still to be;
+    - nothing of the session's own is playing or queued;
+    - the echo tail since the last sound has passed.
+
+    Muting does not hold updates back: muting stops listening, not speaking.
+    Updates are not said while the conversation is ending; they wait, and go
+    if the person talks again. Several waiting are said together after one
+    lead ("A couple of updates:"), at most five, then "And N more." They are
+    the session's own speech, not part of any reply. In quiet hours the router
+    holds updates rather than handing them over, then gives them to the
+    sessions that were open when they were held.
 
 ## The desktop transport (`karmayoga-app/src/voice`)
 

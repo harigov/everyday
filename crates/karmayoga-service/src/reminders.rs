@@ -283,7 +283,7 @@ pub(crate) async fn to_chat(
         .await
         .ok(),
     };
-    let post = outlet.post(FromRun { routine: from.to_string(), conversation }, message);
+    let post = outlet.post(FromRun { routine: from.to_string(), conversation, job: None }, message);
     match tokio::time::timeout(crate::delivery::POST_TIMEOUT, post).await {
         Ok(sent) => sent,
         Err(_) => Err("the chat did not take the message in time".into()),

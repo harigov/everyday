@@ -267,6 +267,15 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     // dream's.
     "start_research",
     "cancel_job",
+    // The same for the rest of background work. A watch is a message at every
+    // look until it ends, a project is hours of the assistant's time, and
+    // `update_job` can tell a watch to *do* something at every look; none is
+    // a record to propose, and `report_progress` is only ever a project's own
+    // turn, which is never a dream.
+    "start_watch",
+    "start_project",
+    "update_job",
+    "report_progress",
     // Every mail write except drafting (which runs for real, see
     // `mail::DRAFT_WRITERS`) and `send_draft` (which is proposable) refuses
     // outright: nobody is there to say yes to a mailbox being reorganised

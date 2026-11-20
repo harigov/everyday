@@ -113,8 +113,11 @@ pub(crate) async fn deliver(
             // A result worth calling about: one that ran. A run that failed is
             // written, not rung through.
             (Some(label), Some(outlet)) if delivery.calls() && run.outcome == Outcome::Done => {
-                let from =
-                    FromRun { routine: routine.name.clone(), conversation: run.conversation_id };
+                let from = FromRun {
+                    routine: routine.name.clone(),
+                    conversation: run.conversation_id,
+                    job: None,
+                };
                 let spoken = spoken(&routine.name, run, waiting);
                 let call = outlet.call(from, message.clone(), spoken);
                 match tokio::time::timeout(CALL_TIMEOUT, call).await {
@@ -137,8 +140,11 @@ pub(crate) async fn deliver(
                 }
             }
             (Some(label), Some(outlet)) => {
-                let from =
-                    FromRun { routine: routine.name.clone(), conversation: run.conversation_id };
+                let from = FromRun {
+                    routine: routine.name.clone(),
+                    conversation: run.conversation_id,
+                    job: None,
+                };
                 match tokio::time::timeout(POST_TIMEOUT, outlet.post(from, message.clone())).await {
                     Ok(Ok(())) => Delivered { to: DeliveredTo::Chat, ok: true, detail: label },
                     Ok(Err(why)) => Delivered { to: DeliveredTo::Chat, ok: false, detail: why },
@@ -154,7 +160,11 @@ pub(crate) async fn deliver(
             && sent.ok
             && !pictures.is_empty()
         {
-            let from = FromRun { routine: routine.name.clone(), conversation: run.conversation_id };
+            let from = FromRun {
+                routine: routine.name.clone(),
+                conversation: run.conversation_id,
+                job: None,
+            };
             let shown = tokio::time::timeout(POST_TIMEOUT, outlet.show(from, pictures.clone()));
             sent.detail.push_str(&match shown.await {
                 Ok(Ok(0)) => String::new(),

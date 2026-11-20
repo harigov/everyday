@@ -650,7 +650,10 @@ pub fn is_mcp_device_id(id: &str) -> bool {
 /// task of the person's own is exactly what an MCP client is for.
 ///
 /// `cancel_job` is deliberately not here: stopping work the person's own
-/// assistant is doing starts and changes nothing.
+/// assistant is doing starts and changes nothing. Changing a watch's rules
+/// does the opposite -- `act` is something the assistant does at every look --
+/// so `update_job` is, with the tools that start a watch or a project and the
+/// one a project reports through.
 pub const NOT_OVER_MCP: &[&str] = &[
     // Standing work: making it, changing it, running it, removing it.
     "create_routine",
@@ -659,6 +662,10 @@ pub const NOT_OVER_MCP: &[&str] = &[
     "run_routine",
     // Background work.
     "start_research",
+    "start_watch",
+    "start_project",
+    "update_job",
+    "report_progress",
     // What it keeps and is told about the person.
     "remember",
     "confirm_memory",

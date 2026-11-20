@@ -1194,7 +1194,7 @@ async fn an_owner_talks_to_the_assistant_over_encrypted_matrix_and_a_stranger_do
     // message as the answer, and posts the routine's result.
     step("scenario 2b: a routine asks a question and posts its result");
     let outlet = rig.svc.chat_outlet(link.id).expect("the running link offers an outlet");
-    let from = FromRun { routine: "Morning brief".into(), conversation: None };
+    let from = FromRun { routine: "Morning brief".into(), conversation: None, job: None };
     let asked = model.requests().len();
     let asking = tokio::spawn(outlet.ask(
         from.clone(),

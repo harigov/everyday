@@ -39,6 +39,7 @@
     AgentSettings,
     EventReminders,
     ProposalKind,
+    QuietHours,
     ReminderSettings,
     ReminderTo,
   } from '../lib/types'
@@ -84,6 +85,30 @@
     { value: 'chat', label: 'Your chat' },
     { value: 'both', label: 'Both' },
   ]
+
+  // ── Quiet hours ──────────────────────────────────────────────────────
+  //
+  // When what the assistant has to say on its own -- a watch that saw its
+  // build finish, a project that reached a milestone -- is not said aloud in
+  // a voice session. It still goes to the chat and the thread at once, and is
+  // said once the hours are over if the session is still open.
+
+  /** What the service assumes while a vault has never said: off, ten at night to seven. */
+  const DEFAULT_QUIET_HOURS: QuietHours = { enabled: false, start: '22:00', end: '07:00' }
+  const quiet = $derived(draft?.quietHours ?? DEFAULT_QUIET_HOURS)
+  function setQuiet(change: Partial<QuietHours>) {
+    if (!draft) return
+    draft.quietHours = { ...quiet, ...change }
+  }
+  /**
+   * A time field cleared is `''`, which the service refuses as a time. Keep
+   * what was there and put it back in the box, rather than save a hole.
+   */
+  function setQuietTime(field: 'start' | 'end', input: HTMLInputElement) {
+    if (input.value) setQuiet(field === 'start' ? { start: input.value } : { end: input.value })
+    else input.value = quiet[field]
+  }
+
   let notice = $state<string | null>(null)
   let saving = $state(false)
   /**
@@ -635,6 +660,44 @@
         comes to this computer instead, so none is lost. A task you hand to the assistant is done by
         it when its time comes, with its own tools; what it did is sent to you here.
       </p>
+    </section>
+
+    <section>
+      <span class="eyebrow">Quiet hours</span>
+      <label class="toggle">
+        <input
+          type="checkbox"
+          checked={quiet.enabled}
+          onchange={(e) => setQuiet({ enabled: e.currentTarget.checked })}
+        />
+        <span>
+          <b>Keep updates quiet at night</b>
+          <small>
+            Updates aren't spoken in a voice session during these hours. They still come to your
+            chat.
+          </small>
+        </span>
+      </label>
+      <div class="pairs">
+        <label for="quiet-start">From</label>
+        <input
+          id="quiet-start"
+          class="field"
+          type="time"
+          value={quiet.start}
+          disabled={!quiet.enabled}
+          onchange={(e) => setQuietTime('start', e.currentTarget)}
+        />
+        <label for="quiet-end">To</label>
+        <input
+          id="quiet-end"
+          class="field"
+          type="time"
+          value={quiet.end}
+          disabled={!quiet.enabled}
+          onchange={(e) => setQuietTime('end', e.currentTarget)}
+        />
+      </div>
     </section>
 
     <section>

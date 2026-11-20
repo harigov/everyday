@@ -1149,6 +1149,7 @@ async fn resume(
         reach,
         job: None,
         follow_up: None,
+        about_job: None,
         // How far, and on which model: the routine's own say, where it has
         // one, and the assistant's otherwise.
         max_steps: routine.max_steps,
@@ -1255,7 +1256,7 @@ async fn reach_for(
     let asker = match outlet {
         Some(outlet) if routine.delivery.asks() => Some(Arc::new(RunAsker {
             outlet,
-            from: FromRun { routine: routine.name.clone(), conversation },
+            from: FromRun { routine: routine.name.clone(), conversation, job: None },
             clock: clock.clone(),
             withdrawn: service.runs_withdrawn(),
         }) as Arc<dyn Asker>),

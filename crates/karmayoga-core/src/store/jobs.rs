@@ -38,6 +38,21 @@ impl JobQuery {
         Self { statuses: vec![JobStatus::Queued, JobStatus::Running], ..Default::default() }
     }
 
+    /// Everything still going, a watch asleep between looks included: what
+    /// the assistant is told it has running.
+    pub fn live() -> Self {
+        Self {
+            statuses: vec![JobStatus::Queued, JobStatus::Running, JobStatus::Waiting],
+            ..Default::default()
+        }
+    }
+
+    /// Watches and other stepped jobs asleep between steps: what the watch
+    /// loop looks through for one that is due.
+    pub fn waiting() -> Self {
+        Self { statuses: vec![JobStatus::Waiting], ..Default::default() }
+    }
+
     pub fn unseen(limit: u32) -> Self {
         Self { unseen: Some(true), limit: Some(limit), ..Default::default() }
     }
@@ -105,6 +120,7 @@ pub fn job_aad(id: JobId) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::id::RoutineRunId;
+    use crate::job::{JobRules, Probe};
     use crate::store::routines::run_aad;
     use uuid::Uuid;
 
@@ -119,6 +135,13 @@ mod tests {
         job.status = status;
         job.seen = seen;
         job
+    }
+
+    /// A watch asleep, looked at for the first time `second` seconds after an
+    /// arbitrary start. Its title is `Watch {second}`.
+    fn watch(second: i64) -> Job {
+        let probe = Probe::Assistant { how: "Check the page".into() };
+        Job::watch(format!("Watch {second}"), probe, JobRules::default(), None, at(second))
     }
 
     fn titles(rows: &[Job]) -> Vec<String> {
@@ -169,6 +192,71 @@ mod tests {
         assert_eq!(titles(&two.apply(rows.clone())), ["Question 4", "Question 3"]);
 
         assert_eq!(titles(&JobQuery::unfinished().apply(rows)), ["Question 2", "Question 1"]);
+    }
+
+    #[test]
+    fn live_is_everything_not_over_and_a_watch_asleep_is_not_over() {
+        let rows = vec![
+            job(1, JobStatus::Queued, false),
+            job(2, JobStatus::Running, false),
+            watch(3),
+            job(4, JobStatus::Done, false),
+            job(5, JobStatus::Failed, false),
+            job(6, JobStatus::Cancelled, false),
+        ];
+        assert_eq!(
+            titles(&JobQuery::live().apply(rows.clone())),
+            ["Watch 3", "Question 2", "Question 1"]
+        );
+
+        // The worker's own question is narrower on purpose: a watch is the
+        // watch loop's, and the sweep must not touch one.
+        assert_eq!(titles(&JobQuery::unfinished().apply(rows)), ["Question 2", "Question 1"]);
+
+        // Whatever a status says about being over, the query agrees.
+        for status in JobStatus::ALL {
+            let one = job(1, status, false);
+            assert_eq!(JobQuery::live().matches(&one), status.is_live(), "{status:?}");
+        }
+    }
+
+    #[test]
+    fn waiting_is_only_what_is_asleep_between_steps() {
+        let rows = vec![
+            job(1, JobStatus::Queued, false),
+            watch(2),
+            job(3, JobStatus::Running, false),
+            watch(4),
+            job(5, JobStatus::Done, false),
+        ];
+        assert_eq!(titles(&JobQuery::waiting().apply(rows.clone())), ["Watch 4", "Watch 2"]);
+
+        // A watch the person stopped is not asleep any more.
+        let mut stopped = watch(6);
+        stopped.cancel("no longer needed").unwrap();
+        let mut rows = rows;
+        rows.push(stopped);
+        assert_eq!(titles(&JobQuery::waiting().apply(rows)), ["Watch 4", "Watch 2"]);
+    }
+
+    #[test]
+    fn live_and_waiting_narrow_like_any_other_query() {
+        let here = ConversationId::new();
+        let mut mine = watch(1);
+        mine.asked_in = Some(here);
+        let theirs = watch(2);
+        let mut queued_here = job(3, JobStatus::Queued, true);
+        queued_here.asked_in = Some(here);
+        let mut done_here = job(4, JobStatus::Done, true);
+        done_here.asked_in = Some(here);
+
+        let in_this_conversation = JobQuery { asked_in: Some(here), ..JobQuery::live() };
+        let got =
+            in_this_conversation.apply(vec![mine.clone(), theirs.clone(), queued_here, done_here]);
+        assert_eq!(titles(&got), ["Question 3", "Watch 1"], "this thread's live jobs");
+
+        let newest_asleep = JobQuery { limit: Some(1), ..JobQuery::waiting() };
+        assert_eq!(titles(&newest_asleep.apply(vec![mine, theirs])), ["Watch 2"]);
     }
 
     #[test]
@@ -256,6 +344,14 @@ mod tests {
         assert_eq!(unfinished.statuses, [JobStatus::Queued, JobStatus::Running]);
         assert_eq!(unfinished.limit, None);
 
+        let live = JobQuery::live();
+        assert_eq!(live.statuses, [JobStatus::Queued, JobStatus::Running, JobStatus::Waiting]);
+        assert_eq!((live.limit, live.unseen, live.asked_in), (None, None, None));
+
+        let waiting = JobQuery::waiting();
+        assert_eq!(waiting.statuses, [JobStatus::Waiting]);
+        assert_eq!((waiting.limit, waiting.unseen, waiting.asked_in), (None, None, None));
+
         let unseen = JobQuery::unseen(7);
         assert_eq!((unseen.unseen, unseen.limit), (Some(true), Some(7)));
         assert!(unseen.statuses.is_empty());
@@ -274,6 +370,9 @@ mod tests {
                 .unwrap();
         assert_eq!(some.statuses, [JobStatus::Queued, JobStatus::Running]);
         assert_eq!(some.unseen, Some(true));
+
+        let asleep: JobQuery = serde_json::from_str(r#"{ "statuses": ["waiting"] }"#).unwrap();
+        assert_eq!(asleep.statuses, [JobStatus::Waiting]);
     }
 
     #[test]

@@ -331,6 +331,93 @@ pub struct AgentSettings {
     /// back with. See [`crate::task::ReminderSettings`].
     #[serde(default)]
     pub reminders: crate::task::ReminderSettings,
+    /// When background updates are not spoken in a voice session -- a watch
+    /// saying CI has finished, at three in the morning, on a call left open.
+    /// Voice only: an update still goes to the chat and the thread at once,
+    /// quiet hours or not, and is spoken once they are over if the session is
+    /// still open. See `docs/plans/watches.md`.
+    #[serde(default)]
+    pub quiet_hours: QuietHours,
+}
+
+/// The hours in which updates are not spoken. Local times, in the person's
+/// zone ([`AgentSettings::zone`]), as `"HH:MM"`. A span that wraps midnight --
+/// 22:00 to 07:00 -- is the usual one; `start == end` is no quiet time at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QuietHours {
+    pub enabled: bool,
+    pub start: String,
+    pub end: String,
+}
+
+impl Default for QuietHours {
+    fn default() -> Self {
+        Self { enabled: false, start: "22:00".into(), end: "07:00".into() }
+    }
+}
+
+impl QuietHours {
+    /// Check both times read as `HH:MM` (`HH:MM:SS` is read too, and its
+    /// seconds ignored). [`AgentSettings::validate`] asks only while they are
+    /// on.
+    pub fn validate(&self) -> Result<()> {
+        for (name, time) in [("start", &self.start), ("end", &self.end)] {
+            if parse_clock(time).is_none() {
+                return Err(Error::Invalid(format!(
+                    "quiet hours' {name} must be a time like 22:00, not {time:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `now` falls in quiet hours. Off, or unreadable, is never.
+    pub fn contains(&self, now: &jiff::Zoned) -> bool {
+        let (Some(start), Some(end)) = (parse_clock(&self.start), parse_clock(&self.end)) else {
+            return false;
+        };
+        if !self.enabled || start == end {
+            return false;
+        }
+        let at = now.time();
+        if start < end { at >= start && at < end } else { at >= start || at < end }
+    }
+
+    /// When the quiet hours `now` is in end, or `None` when `now` is not in
+    /// them.
+    pub fn ends_after(&self, now: &jiff::Zoned) -> Option<jiff::Zoned> {
+        if !self.contains(now) {
+            return None;
+        }
+        let end = parse_clock(&self.end)?;
+        let today = now.date().to_datetime(end).to_zoned(now.time_zone().clone()).ok()?;
+        if today > *now {
+            Some(today)
+        } else {
+            let tomorrow = now.date().tomorrow().ok()?;
+            tomorrow.to_datetime(end).to_zoned(now.time_zone().clone()).ok()
+        }
+    }
+}
+
+/// `"22:00"` as a time of day, or `None`. A time input may hand back
+/// `"22:00:00"`; the seconds are read and ignored, since quiet hours are kept
+/// to the minute.
+fn parse_clock(text: &str) -> Option<jiff::civil::Time> {
+    let mut parts = text.trim().split(':');
+    let hour: i8 = parts.next()?.parse().ok()?;
+    let minute: i8 = parts.next()?.parse().ok()?;
+    if let Some(seconds) = parts.next() {
+        let seconds: i8 = seconds.parse().ok()?;
+        if !(0..60).contains(&seconds) {
+            return None;
+        }
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    jiff::civil::Time::new(hour, minute, 0, 0).ok()
 }
 
 impl Default for AgentSettings {
@@ -356,6 +443,7 @@ impl Default for AgentSettings {
             proposals: crate::proposal::ProposalPolicy::default(),
             park_unattended: false,
             reminders: crate::task::ReminderSettings::default(),
+            quiet_hours: QuietHours::default(),
         }
     }
 }
@@ -431,6 +519,12 @@ impl AgentSettings {
             && jiff::tz::TimeZone::get(tz).is_err()
         {
             return Err(Error::Invalid(format!("{tz:?} is not a time zone this machine knows")));
+        }
+        // Only when they are on. A time input that was cleared while quiet
+        // hours are off is nothing to refuse every other setting for; the
+        // times are kept as they are, and checked the moment they matter.
+        if self.quiet_hours.enabled {
+            self.quiet_hours.validate()?;
         }
         Ok(())
     }
@@ -2164,5 +2258,203 @@ mod tests {
         let bad = Message::tool_result(cid, &call, Err("no such project".into()), None);
         assert!(bad.failed, "a failure must be drawable as one without parsing its prose");
         assert_eq!(bad.content, "no such project");
+    }
+
+    // ---- quiet hours ------------------------------------------------------
+
+    fn quiet(start: &str, end: &str) -> QuietHours {
+        QuietHours { enabled: true, start: start.into(), end: end.into() }
+    }
+
+    /// 20 November 2026 at `hour:minute`, in UTC.
+    fn utc(hour: i8, minute: i8) -> jiff::Zoned {
+        date(2026, 11, 20).at(hour, minute, 0, 0).in_tz("UTC").unwrap()
+    }
+
+    #[test]
+    fn quiet_hours_are_off_until_somebody_turns_them_on() {
+        let default = QuietHours::default();
+        assert!(!default.enabled, "updates are spoken until the person says otherwise");
+        assert_eq!((default.start.as_str(), default.end.as_str()), ("22:00", "07:00"));
+        assert!(default.validate().is_ok());
+        assert!(!default.contains(&utc(23, 30)), "a switch that is off is never in effect");
+        assert!(default.ends_after(&utc(23, 30)).is_none());
+
+        // And so is an older record, which had no such setting.
+        let old = serde_json::json!({
+            "enabled": true,
+            "instructions": "",
+            "confirmDestructive": true,
+            "maxSteps": 24,
+            "remember": true,
+        });
+        let settings: AgentSettings = serde_json::from_value(old).unwrap();
+        assert_eq!(settings.quiet_hours, QuietHours::default());
+        assert!(!AgentSettings::default().quiet_hours.enabled);
+    }
+
+    #[test]
+    fn quiet_hours_that_wrap_midnight_cover_both_ends_of_the_night() {
+        let night = quiet("22:00", "07:00");
+        for (hour, minute) in [(22, 0), (23, 30), (0, 0), (3, 15), (6, 59)] {
+            assert!(night.contains(&utc(hour, minute)), "{hour:02}:{minute:02} is in the night");
+        }
+        for (hour, minute) in [(7, 0), (7, 1), (12, 0), (21, 59)] {
+            assert!(!night.contains(&utc(hour, minute)), "{hour:02}:{minute:02} is not");
+        }
+    }
+
+    #[test]
+    fn quiet_hours_within_one_day_start_at_the_first_time_and_stop_at_the_second() {
+        let afternoon = quiet("13:00", "15:00");
+        assert!(!afternoon.contains(&utc(12, 59)));
+        assert!(afternoon.contains(&utc(13, 0)), "the start is in");
+        assert!(afternoon.contains(&utc(14, 59)));
+        assert!(!afternoon.contains(&utc(15, 0)), "the end is out");
+        assert!(!afternoon.contains(&utc(23, 30)));
+        assert!(!afternoon.contains(&utc(3, 0)), "and it does not wrap");
+    }
+
+    #[test]
+    fn quiet_hours_with_the_same_start_and_end_are_no_quiet_time_at_all() {
+        let same = quiet("22:00", "22:00");
+        for (hour, minute) in [(22, 0), (3, 0), (12, 0), (23, 59)] {
+            assert!(!same.contains(&utc(hour, minute)), "{hour:02}:{minute:02}");
+        }
+        assert!(same.ends_after(&utc(22, 0)).is_none());
+        assert!(same.validate().is_ok(), "an odd choice, not an invalid one");
+    }
+
+    #[test]
+    fn quiet_hours_given_with_seconds_are_read_to_the_minute() {
+        let night = quiet("22:00:00", "07:00:45");
+        assert!(night.contains(&utc(23, 30)));
+        assert!(night.contains(&utc(6, 59)));
+        assert!(!night.contains(&utc(7, 0)), "the seconds are ignored, so 07:00 is the end");
+        let ends = night.ends_after(&utc(3, 0)).expect("in the night");
+        assert_eq!(ends.datetime(), date(2026, 11, 20).at(7, 0, 0, 0));
+    }
+
+    #[test]
+    fn quiet_hours_switched_off_or_unreadable_are_never_in_effect() {
+        let off = QuietHours { enabled: false, ..quiet("22:00", "07:00") };
+        assert!(!off.contains(&utc(23, 30)));
+        assert!(off.ends_after(&utc(23, 30)).is_none());
+
+        // A record that cannot be read is not a reason to be silent all day.
+        for (start, end) in [("late", "07:00"), ("22:00", "25:00"), ("", "")] {
+            assert!(!quiet(start, end).contains(&utc(23, 30)), "{start:?} to {end:?}");
+        }
+    }
+
+    #[test]
+    fn quiet_hours_are_read_by_the_clock_in_the_persons_zone_not_utc() {
+        // 23:30 in the evening at -08:00 is 07:30 in the morning in UTC: the
+        // night by the person's clock, and not by Greenwich's.
+        let pacific = jiff::tz::TimeZone::fixed(jiff::tz::offset(-8));
+        let evening = date(2026, 11, 20).at(23, 30, 0, 0).to_zoned(pacific).unwrap();
+        assert_eq!(evening.timestamp().to_zoned(jiff::tz::TimeZone::UTC).hour(), 7);
+        assert!(quiet("22:00", "07:00").contains(&evening));
+        let in_utc = evening.timestamp().to_zoned(jiff::tz::TimeZone::UTC);
+        assert!(!quiet("22:00", "07:00").contains(&in_utc));
+    }
+
+    #[test]
+    fn quiet_hours_end_at_the_next_end_time_after_now() {
+        let night = quiet("22:00", "07:00");
+
+        // Before midnight, the night ends tomorrow morning.
+        let ends = night.ends_after(&utc(23, 30)).expect("it is in the night");
+        assert_eq!(ends.datetime(), date(2026, 11, 21).at(7, 0, 0, 0));
+        let ends = night.ends_after(&utc(22, 0)).expect("the start is in");
+        assert_eq!(ends.datetime(), date(2026, 11, 21).at(7, 0, 0, 0));
+
+        // After midnight, this morning.
+        let ends = night.ends_after(&utc(3, 0)).expect("it is in the night");
+        assert_eq!(ends.datetime(), date(2026, 11, 20).at(7, 0, 0, 0));
+        let ends = night.ends_after(&utc(6, 59)).expect("a minute before it ends");
+        assert_eq!(ends.datetime(), date(2026, 11, 20).at(7, 0, 0, 0));
+
+        // Outside them, nothing to wait for.
+        assert!(night.ends_after(&utc(7, 0)).is_none(), "it has ended");
+        assert!(night.ends_after(&utc(12, 0)).is_none());
+        assert!(night.ends_after(&utc(21, 59)).is_none());
+
+        // Within one day it is later today.
+        let afternoon = quiet("13:00", "15:00");
+        let ends = afternoon.ends_after(&utc(14, 0)).expect("it is in the afternoon");
+        assert_eq!(ends.datetime(), date(2026, 11, 20).at(15, 0, 0, 0));
+        assert!(afternoon.ends_after(&utc(15, 0)).is_none());
+
+        // The end is always after now, which is what held updates are
+        // released by.
+        for (hour, minute) in [(22, 0), (23, 59), (0, 0), (6, 59)] {
+            let now = utc(hour, minute);
+            assert!(night.ends_after(&now).unwrap() > now, "{hour:02}:{minute:02}");
+        }
+    }
+
+    #[test]
+    fn quiet_hours_must_be_times_of_day_before_they_are_saved() {
+        // `HH:MM:SS` is what a time input hands back when it has been given
+        // seconds; they are ignored.
+        for good in ["22:00", "07:00", "0:00", "7:05", "23:59", " 22:00 ", "22:00:00", "07:30:59"] {
+            assert!(quiet(good, "07:00").validate().is_ok(), "{good:?}");
+        }
+        for bad in [
+            "",
+            "22",
+            "24:00",
+            "25:00",
+            "22:60",
+            "ab:cd",
+            "22:00:60",
+            "22:00:ab",
+            "22:00:00:00",
+            "22:",
+            ":30",
+            "10pm",
+            "-1:00",
+        ] {
+            let err = quiet(bad, "07:00").validate().unwrap_err().to_string();
+            assert!(err.contains("start") && err.contains("22:00"), "{bad:?}: {err}");
+            let err = quiet("22:00", bad).validate().unwrap_err().to_string();
+            assert!(err.contains("end"), "{bad:?}: {err}");
+        }
+
+        // Settings refuse them on the way in when quiet hours are on...
+        assert!(AgentSettings::default().validate().is_ok());
+        let switched_on = QuietHours { start: "late".into(), ..quiet("22:00", "07:00") };
+        let bad = AgentSettings { quiet_hours: switched_on, ..Default::default() };
+        assert!(bad.validate().is_err());
+        let good = AgentSettings { quiet_hours: quiet("22:00", "07:00"), ..Default::default() };
+        assert!(good.validate().is_ok());
+
+        // ...and not when they are off: a cleared time input must not stop
+        // any other setting being saved.
+        for (start, end) in [("", "07:00"), ("22:00", ""), ("", ""), ("late", "later")] {
+            let cleared = QuietHours { enabled: false, start: start.into(), end: end.into() };
+            let off = AgentSettings { quiet_hours: cleared, ..Default::default() };
+            assert!(off.validate().is_ok(), "{start:?} to {end:?} while off");
+        }
+    }
+
+    #[test]
+    fn quiet_hours_are_written_in_camel_case_and_survive_a_round_trip() {
+        let hours = quiet("21:30", "06:45");
+        let wire = serde_json::to_value(&hours).unwrap();
+        assert_eq!(wire, serde_json::json!({ "enabled": true, "start": "21:30", "end": "06:45" }));
+        assert_eq!(serde_json::from_value::<QuietHours>(wire).unwrap(), hours);
+
+        // Naming only some of it leaves the rest as it defaults.
+        let named = serde_json::json!({ "enabled": true });
+        let some: QuietHours = serde_json::from_value(named).unwrap();
+        assert_eq!(some, quiet("22:00", "07:00"));
+
+        let settings = AgentSettings { quiet_hours: hours.clone(), ..Default::default() };
+        let wire = serde_json::to_value(&settings).unwrap();
+        assert_eq!(wire["quietHours"]["start"], "21:30");
+        let back: AgentSettings = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.quiet_hours, hours);
     }
 }

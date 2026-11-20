@@ -111,7 +111,7 @@ impl Executor for TaskJob {
         let to = match job.status {
             JobStatus::Done => TaskStatus::Done,
             JobStatus::Failed | JobStatus::Cancelled => TaskStatus::Todo,
-            JobStatus::Queued | JobStatus::Running => return Vec::new(),
+            JobStatus::Queued | JobStatus::Running | JobStatus::Waiting => return Vec::new(),
         };
         karmayoga_core::Completable::set_status(&mut task, to);
         karmayoga_core::Timestamped::touch(&mut task);

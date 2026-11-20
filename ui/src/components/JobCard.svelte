@@ -8,6 +8,15 @@
   // it is a row of the list of background work, at the size the routine runs
   // beside it are drawn. See `docs/plans/jobs.md`, "The interface".
   //
+  // Three kinds are drawn the same way, and one differently. Research, a
+  // project and a task are one long turn each: a progress line and a count of
+  // steps. A watch is not -- it looks, sleeps and looks again -- so what it
+  // says is when it next looks, what it was asked to tell them, and when it
+  // stops; and what a watch or a project has told them so far is listed
+  // beneath, the last update first and the rest folded. The thread's compact
+  // card leaves that list out: the thread has the updates as lines of its own.
+  // See `docs/plans/watches.md`, "The interface".
+  //
   // The status line is the part that moves. It is a live region, so somebody
   // who cannot see the card still hears "Finished" arrive; the store throttles
   // how often a running job's progress changes, so it does not talk over them.
@@ -19,8 +28,20 @@
 
   import { elapsed } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
-  import { relativeTime } from '../lib/format'
-  import { jobs } from '../lib/jobs.svelte'
+  import { plural, relativeTime } from '../lib/format'
+  import {
+    everyText,
+    isLive,
+    isLookingNow,
+    jobs,
+    nextLookText,
+    notifyText,
+    sentToText,
+    troubleText,
+    untilText,
+    watchOf,
+  } from '../lib/jobs.svelte'
+  import { renderMarkdown } from '../lib/markdown'
   import { notes } from '../lib/notes.svelte'
   import { panels } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
@@ -38,7 +59,12 @@
     onremove?: () => void
   } = $props()
 
-  const KIND_LABELS: Record<JobKind['type'], string> = { research: 'Research', task: 'Task' }
+  const KIND_LABELS: Record<JobKind['type'], string> = {
+    research: 'Research',
+    task: 'Task',
+    watch: 'Watch',
+    project: 'Project',
+  }
 
   /** What the job is about, in the words it was given. */
   function aboutOf(kind: JobKind): string {
@@ -47,12 +73,58 @@
         return kind.question
       case 'task':
         return kind.title
+      case 'watch':
+        return kind.what
+      case 'project':
+        return kind.goal
     }
   }
 
+  /** Set only for a watch, which is drawn by what it is told to look for. */
+  const watch = $derived(watchOf(job))
   const kind = $derived(KIND_LABELS[job.kind.type])
-  const about = $derived(aboutOf(job.kind))
-  const active = $derived(job.status === 'queued' || job.status === 'running')
+  const active = $derived(isLive(job))
+  /** "Watching CI on PR 412" while it looks, and what it watched once it has stopped. */
+  const about = $derived(watch && active ? `Watching ${watch.what}` : aboutOf(job.kind))
+
+  // A watch's card has a clock on it -- "Next look in 3 min" -- and a clock
+  // that did not move would say the wrong thing within the minute. Ticking
+  // only while it is asleep, which is when there is a countdown to show.
+  let now = $state(Date.now())
+  $effect(() => {
+    if (job.status !== 'waiting') return
+    now = Date.now()
+    const timer = setInterval(() => (now = Date.now()), 15_000)
+    return () => clearInterval(timer)
+  })
+
+  /** How many looks it has taken: "14 looks". */
+  const looks = $derived(
+    job.observed && job.observed.checks > 0 ? plural(job.observed.checks, 'look') : '',
+  )
+  /** Looking at this moment: due, and not yet written down. */
+  const looking = $derived(watch !== null && isLookingNow(job, now))
+
+  /** What it is told to tell them, how often it looks, and when it stops. */
+  const rules = $derived(job.rules)
+  const act = $derived(rules?.act?.trim() ?? '')
+  const looksEvery = $derived.by(() => {
+    const probe = watch?.probe
+    const at = probe?.type === 'connection' ? ` at ${probe.connection}` : ''
+    const until = untilText(rules?.until)
+    return `Looks${at} every ${everyText(rules?.everyMinutes)}${until ? ` · ${until}` : ''}`
+  })
+  /** Failed looks, while it is still going: the part of a watch that needs a person. */
+  const trouble = $derived(
+    watch && active && job.observed && job.observed.failures > 0
+      ? troubleText(job.observed.failures, job.observed.trouble)
+      : '',
+  )
+
+  /** What it has told them: the last, and the ones before it newest first. */
+  const updates = $derived(job.updates ?? [])
+  const last = $derived(updates.at(-1) ?? null)
+  const earlier = $derived(updates.slice(0, -1).reverse())
 
   /** The first note it made. A research job's appears as soon as it exists. */
   const noteId = $derived(job.outputs.find((o) => o.type === 'note')?.noteId ?? null)
@@ -71,23 +143,30 @@
       case 'queued':
         return { text: 'Waiting to start', more: '' }
       case 'running':
+        if (watch) return { text: 'Looking now', more: looks }
         return {
           text: job.progress.trim() || 'Working on it',
           more: job.steps > 0 ? `${job.steps} ${job.steps === 1 ? 'step' : 'steps'}` : '',
         }
+      case 'waiting':
+        return { text: nextLookText(job.wakeAt, now), more: looks }
       case 'done': {
+        const when = job.finishedAt ? relativeTime(job.finishedAt) : ''
+        // A watch ends when what it was asked about is over, or its time is up.
+        if (watch) {
+          return { text: 'Stopped watching', more: [when, looks].filter(Boolean).join(' · ') }
+        }
         const took =
           job.startedAt && job.finishedAt
             ? `took ${elapsed(Date.parse(job.finishedAt) - Date.parse(job.startedAt))}`
             : ''
-        const when = job.finishedAt ? relativeTime(job.finishedAt) : ''
         const told = owed ? 'not yet answered in the conversation' : ''
         return { text: 'Finished', more: [when, took, told].filter(Boolean).join(' · ') }
       }
       case 'failed':
-        return { text: 'Could not finish', more: job.reason.trim() }
+        return { text: watch ? 'Stopped watching' : 'Could not finish', more: job.reason.trim() }
       case 'cancelled':
-        return { text: 'Cancelled', more: job.reason.trim() }
+        return { text: watch ? 'Stopped watching' : 'Cancelled', more: job.reason.trim() }
     }
   })
 
@@ -158,15 +237,64 @@
 
   <p class="about">{about}</p>
 
-  <p class="status" data-state={job.status} aria-live="polite" aria-atomic="true">
-    {#if job.status === 'running'}
+  <!-- A countdown that changed in a live region would be read out every
+       quarter minute, so a sleeping watch's line is not one. It is the
+       arrival of a state -- looking, stopped -- that is worth hearing. -->
+  <p
+    class="status"
+    data-state={job.status}
+    aria-live={job.status === 'waiting' && !looking ? 'off' : 'polite'}
+    aria-atomic="true"
+  >
+    {#if job.status === 'running' || looking}
       <span class="spin" aria-hidden="true"></span>
-    {:else if job.status === 'queued'}
+    {:else if job.status === 'queued' || job.status === 'waiting'}
       <span class="dot" aria-hidden="true"></span>
     {/if}
     <span class="now">{status.text}</span>
     {#if status.more}<span class="more">{status.more}</span>{/if}
   </p>
+
+  {#if watch && active}
+    <div class="facts">
+      <p class="fact">Tells you: {notifyText(rules?.notifyWhen)}</p>
+      {#if act}<p class="fact">Then: {act}</p>{/if}
+      <p class="fact">{looksEvery}</p>
+      {#if rules?.callMe}<p class="fact">Calls you with updates</p>{/if}
+      {#if trouble}<p class="fact trouble">{trouble}</p>{/if}
+    </div>
+  {/if}
+
+  {#if last && !compact}
+    <!-- Safe by construction, and checked: `renderMarkdown` escapes the text
+         before it converts any of it, so every angle bracket that comes back
+         was written by that module. What an update says was written by a
+         model, from what a service returned. -->
+    <div class="update">
+      <p class="when">
+        <span class="label">Last update</span>
+        <span class="dim">{relativeTime(last.at)}</span>
+      </p>
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+      <div class="said">{@html renderMarkdown(last.text)}</div>
+      {#if sentToText(last)}<p class="sent">{sentToText(last)}</p>{/if}
+    </div>
+    {#if earlier.length > 0}
+      <details class="earlier">
+        <summary>{plural(earlier.length, 'earlier update')}</summary>
+        <ol class="log">
+          {#each earlier as update, i (i)}
+            <li>
+              <p class="when"><span class="dim">{relativeTime(update.at)}</span></p>
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              <div class="said">{@html renderMarkdown(update.text)}</div>
+              {#if sentToText(update)}<p class="sent">{sentToText(update)}</p>{/if}
+            </li>
+          {/each}
+        </ol>
+      </details>
+    {/if}
+  {/if}
 
   {#if hasActions}
     <footer class="acts">
@@ -176,7 +304,7 @@
           disabled={pending}
           onclick={() => void run(() => jobs.cancel(job.id))}
         >
-          Cancel
+          {watch ? 'Stop watching' : 'Cancel'}
         </button>
       {/if}
       {#if owed}
@@ -283,6 +411,85 @@
   }
   .compact .status {
     font-size: var(--text-xs);
+  }
+
+  /* What a watch was asked to do, a line each: quieter than the status, which
+     is the one that moves. */
+  .facts {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .fact {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: var(--leading-snug);
+    overflow-wrap: anywhere;
+  }
+  .compact .fact {
+    font-size: var(--text-xs);
+  }
+  .fact.trouble {
+    color: var(--danger);
+  }
+
+  /* What it has told them. The last one set off by a rule down its side, as
+     a quotation is; the rest folded beneath it. */
+  .update,
+  .log li {
+    display: grid;
+    gap: var(--sp-1);
+    min-width: 0;
+    padding-left: var(--sp-3);
+    border-left: 2px solid var(--border);
+  }
+  .when {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    margin: 0;
+  }
+  .label {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+  .said {
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+    overflow-wrap: anywhere;
+  }
+  .said :global(p) {
+    margin: 0;
+  }
+  .said :global(p + p) {
+    margin-top: var(--sp-2);
+  }
+  .said :global(ul),
+  .said :global(ol) {
+    margin: var(--sp-1) 0 var(--sp-1) var(--sp-4);
+  }
+  .sent {
+    margin: 0;
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+  }
+  .earlier summary {
+    color: var(--fg-faint);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    user-select: none;
+  }
+  .earlier summary:hover {
+    color: var(--fg-muted);
+  }
+  .log {
+    display: grid;
+    gap: var(--sp-3);
+    margin: var(--sp-2) 0 0;
+    padding: 0;
+    list-style: none;
   }
 
   /* A running job turns, and a queued one waits: the two things the line has
