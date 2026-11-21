@@ -126,7 +126,7 @@ async fn qwen_hears_what_the_voice_says() {
         let started = Instant::now();
         let recogniser = speech::recogniser_async(model).await.unwrap();
         let loaded = started.elapsed();
-        let gpu = recogniser.gpu().unwrap_or("the processor").to_string();
+        let gpu = recogniser.gpu().unwrap_or_else(|| "the processor".to_string());
         eprintln!("{}: loaded on {gpu} in {loaded:.1?}", model.as_str());
 
         for (line, clip) in SAID.iter().zip(&clips) {

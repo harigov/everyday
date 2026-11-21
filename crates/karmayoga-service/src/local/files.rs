@@ -1661,12 +1661,7 @@ mod tests {
         }
         assert_eq!(local_model_id(LocalModel::ParakeetV3), "parakeetV3");
         assert_eq!(local_model_id(LocalModel::WhisperTurbo), "whisperTurbo");
-        for model in [
-            LocalModel::ParakeetV3,
-            LocalModel::WhisperTurbo,
-            LocalModel::Qwen3Asr17b,
-            LocalModel::Qwen3Asr06b,
-        ] {
+        for model in LocalModel::ALL {
             assert!(
                 spec(local_model_id(model)).is_some(),
                 "{} has no catalogue entry",

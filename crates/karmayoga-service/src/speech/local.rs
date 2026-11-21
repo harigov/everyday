@@ -469,7 +469,7 @@ impl Recogniser {
 
     /// The graphics cards it runs on, by name, or `None` on the processor --
     /// where Parakeet and Whisper always are.
-    pub fn gpu(&self) -> Option<&str> {
+    pub fn gpu(&self) -> Option<String> {
         match &self.engine {
             Engine::Sherpa(_) => None,
             #[cfg(feature = "decisions")]

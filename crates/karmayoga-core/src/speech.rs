@@ -73,6 +73,14 @@ pub enum LocalModel {
 }
 
 impl LocalModel {
+    /// Every local recogniser, in the order Settings lists them.
+    pub const ALL: [LocalModel; 4] = [
+        LocalModel::ParakeetV3,
+        LocalModel::WhisperTurbo,
+        LocalModel::Qwen3Asr17b,
+        LocalModel::Qwen3Asr06b,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             LocalModel::ParakeetV3 => "parakeet-tdt-0.6b-v3",
@@ -677,6 +685,21 @@ mod tests {
         }
         assert!(LocalModel::Qwen3Asr17b.on_llama() && LocalModel::Qwen3Asr06b.on_llama());
         assert!(!LocalModel::ParakeetV3.on_llama() && !LocalModel::WhisperTurbo.on_llama());
+    }
+
+    /// A new recogniser has to be given a place here, which the compiler
+    /// insists on, and then in [`LocalModel::ALL`], which this checks.
+    #[test]
+    fn all_holds_every_local_model_once() {
+        let place = |model: LocalModel| match model {
+            LocalModel::ParakeetV3 => 0,
+            LocalModel::WhisperTurbo => 1,
+            LocalModel::Qwen3Asr17b => 2,
+            LocalModel::Qwen3Asr06b => 3,
+        };
+        for (i, model) in LocalModel::ALL.into_iter().enumerate() {
+            assert_eq!(place(model), i, "{model:?}");
+        }
     }
 
     #[test]

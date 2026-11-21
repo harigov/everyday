@@ -297,7 +297,7 @@ mod tests {
     /// speak as another.
     #[test]
     fn the_settings_pane_lists_the_speakers_in_this_order() {
-        use karmayoga_core::speech::KOKORO_SPEAKERS;
+        use karmayoga_core::speech::{KOKORO_SPEAKERS, LocalVoice};
         let pane = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../ui/src/components/ModelsPanel.svelte");
         let text = std::fs::read_to_string(&pane).expect("the settings pane is in the tree");
@@ -334,6 +334,21 @@ mod tests {
         for (name, accent) in &kokoro {
             let british = name.starts_with('b');
             assert_eq!(accent == "British", british, "{name} is listed as {accent}");
+        }
+
+        // Each voice starts at the speaker `LocalVoice::default_speaker` says.
+        for voice in [LocalVoice::Phonon, LocalVoice::Kokoro] {
+            let line = text
+                .lines()
+                .find(|line| line.trim().starts_with(&format!("{}: {{", voice.id())))
+                .unwrap_or_else(|| panic!("LOCAL_VOICES has no {}", voice.id()));
+            let default = line
+                .split("defaultSpeaker: ")
+                .nth(1)
+                .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|n| n.parse::<u32>().ok())
+                .unwrap_or_else(|| panic!("{line} names no defaultSpeaker"));
+            assert_eq!(default, voice.default_speaker(), "{}'s first speaker", voice.id());
         }
     }
 }

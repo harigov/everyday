@@ -24,10 +24,11 @@
 //!
 //! A recogniser goes on the graphics cards llama.cpp can see when both its
 //! files and room to hear a clip fit there, and on the processor otherwise
-//! -- the rule `local::decide` uses for a decision model. A clip that
-//! finds no room on the card after all is heard on a copy loaded on the
-//! processor, kept for the clips after it; the card is tried again once the
-//! recogniser is next loaded.
+//! -- the rule `local::decide` uses for a decision model; room is checked by
+//! hearing a full window of silence there. A clip that fails on the card
+//! after all is heard on a copy loaded on the processor, which takes the
+//! card copy's place, freeing it, for the clips after it; the card is tried
+//! again once the recogniser is next loaded.
 
 // Without llama.cpp nothing runs Qwen, but its plain parts are still built
 // and tested.
@@ -106,27 +107,48 @@ pub(crate) fn prompt(marker: &str, language: Option<&str>) -> String {
 }
 
 /// The words in what Qwen wrote: everything after `<asr_text>`, or all of
-/// it when it was told the language and so wrote no heading. Nothing for a
+/// it when it was `told` the language and so wrote no heading. Nothing for a
 /// heading with no words after it -- `language None<asr_text>` is its answer
-/// to a clip with no speech in it.
-pub(crate) fn words(answer: &str) -> String {
+/// to a clip with no speech in it, and it can stop after `language English`
+/// before the tag. Only a heading it could have written counts as one: told
+/// the language it writes none, and otherwise the second word must be a
+/// language it names, so a turn that is just "language model" is kept.
+pub(crate) fn words(answer: &str, told: bool) -> String {
     let answer = answer.trim();
-    match answer.split_once("<asr_text>") {
-        Some((_, text)) => text.trim().to_string(),
-        // Stopped after the heading, before the tag.
-        None if answer.starts_with("language ") && answer.split_whitespace().count() == 2 => {
-            String::new()
-        }
-        None => answer.to_string(),
+    if let Some((_, text)) = answer.split_once("<asr_text>") {
+        return text.trim().to_string();
+    }
+    let mut parts = answer.split_whitespace();
+    let bare_heading = !told
+        && parts.next() == Some("language")
+        && parts.next().is_some_and(|name| {
+            name == "None" || LANGUAGES.iter().any(|(_, known)| *known == name)
+        })
+        && parts.next().is_none();
+    if bare_heading { String::new() } else { answer.to_string() }
+}
+
+/// Whether text in `language` takes Qwen many tokens a second to write:
+/// scripts its vocabulary splits finely (Devanagari, Thai, Arabic and the
+/// like), Vietnamese with its marks, and a language it was not told, which
+/// could be any of them.
+fn writes_densely(language: Option<&str>) -> bool {
+    const DENSE: &[&str] =
+        &["zh", "yue", "ar", "ko", "ru", "th", "vi", "ja", "hi", "fa", "el", "mk"];
+    match language.and_then(language_name) {
+        Some(name) => LANGUAGES.iter().any(|(code, known)| *known == name && DENSE.contains(code)),
+        None => true,
     }
 }
 
-/// How many tokens Qwen may write for a clip of `samples` at `rate`: more
-/// than anybody says in that time, and few enough that a model stuck
-/// repeating itself stops soon.
-pub(crate) fn token_budget(samples: usize, rate: usize) -> usize {
+/// How many tokens Qwen may write for a clip of `samples` at `rate` in
+/// `language`: more than anybody says in that time, and few enough that a
+/// model stuck repeating itself stops soon. English takes it about three
+/// tokens a second; a script it splits finely can take several times that.
+pub(crate) fn token_budget(samples: usize, rate: usize, language: Option<&str>) -> usize {
     let seconds = samples.div_ceil(rate.max(1));
-    48 + 10 * seconds
+    let a_second = if writes_densely(language) { 24 } else { 10 };
+    48 + a_second * seconds
 }
 
 /// `samples` cut into windows of at most [`MAX_WINDOW_SECONDS`] at `rate`,
@@ -194,7 +216,7 @@ pub use run::Qwen;
 mod run {
     use super::*;
     use crate::error::{CommandError, CommandResult, codes};
-    use crate::local::llama::{self, Hearing, Model};
+    use crate::local::llama::{self, Context, Hearing, Model};
     use karmayoga_core::meeting::{LocalModel, SAMPLE_RATE};
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
@@ -223,9 +245,13 @@ mod run {
         CommandError::new(codes::INTERNAL, format!("{what}: {e}"))
     }
 
-    /// One copy of the two files, loaded. The encoder is dropped before the
-    /// model it was loaded for: fields drop in order.
+    /// One copy of the two files, loaded, with the context every clip is
+    /// heard in: made once, at [`ROOM`], and cleared between clips, so the
+    /// room it takes on a card is set aside while the copy is held rather
+    /// than found again for each clip. Fields drop in order: the context and
+    /// the encoder before the model they were made for.
     struct Loaded {
+        context: Context<'static>,
         hearing: Hearing,
         model: Model,
     }
@@ -240,47 +266,61 @@ mod run {
                     hearing.sample_rate()
                 ));
             }
-            Ok(Self { hearing, model })
+            let context = model.context_batched(ROOM, BATCH, threads())?;
+            // SAFETY: a context borrows its model only in name -- it holds
+            // llama.cpp's own pointer, which moving `model` does not move --
+            // and `context` is declared first, so it is dropped before the
+            // model it was made for.
+            let context = unsafe { std::mem::transmute::<Context<'_>, Context<'static>>(context) };
+            Ok(Self { context, hearing, model })
         }
 
         /// Hear one clip of at most [`MAX_WINDOW_SECONDS`]. With `exactly`,
         /// write that many tokens whatever the model would rather do -- see
         /// `llama::Context::write_after` -- for timing it.
         fn hear(
-            &self,
+            &mut self,
             clip: &[f32],
             language: Option<&str>,
             exactly: Option<usize>,
         ) -> Result<String, String> {
             let clip = padded(clip, SAMPLE_RATE as usize);
             let heard = self.hearing.tokenize(&prompt(Hearing::marker(), language), &clip)?;
-            let budget = token_budget(clip.len(), SAMPLE_RATE as usize);
+            let budget = token_budget(clip.len(), SAMPLE_RATE as usize, language);
             // Past where it would have stopped, a model repeats itself until
             // it is stopped: write the tokens asked for and no more.
             let (budget, at_least) = match exactly {
                 Some(n) => (n.min(budget), n.min(budget)),
                 None => (budget, 0),
             };
-            let size = (heard.positions() + budget) as u32;
-            let mut context = self.model.context_batched(size, BATCH, threads())?;
-            let answer =
-                context.write_after(&self.model, &self.hearing, &heard, budget, at_least)?;
-            Ok(words(&answer))
+            let (answer, stopped) =
+                self.context.write_after(&self.model, &self.hearing, &heard, budget, at_least)?;
+            if stopped && exactly.is_none() {
+                tracing::warn!(
+                    budget,
+                    "Qwen was stopped at its budget; the end of this clip may be missing"
+                );
+            }
+            let told = language.and_then(language_name).is_some();
+            Ok(words(&answer, told))
         }
+    }
+
+    /// The copy a recogniser is hearing with, and the cards it is on.
+    struct Copy {
+        loaded: Loaded,
+        /// The cards' names, or `None` on the processor.
+        gpu: Option<String>,
     }
 
     /// A Qwen3-ASR recogniser, loaded -- see this module's doc.
     pub struct Qwen {
         which: LocalModel,
         paths: (PathBuf, PathBuf),
-        /// The copy first loaded: on the cards named in `gpu`, or the
-        /// processor when that is `None`.
-        loaded: Loaded,
-        gpu: Option<String>,
-        /// Held while a clip is heard: one at a time. Inside is the copy on
-        /// the processor, for a recogniser on a card once a clip has found
-        /// no room there.
-        busy: Mutex<Option<Loaded>>,
+        /// Held while a clip is heard: one at a time. A copy on the cards is
+        /// swapped for one on the processor the first time a clip fails
+        /// there.
+        copy: Mutex<Copy>,
     }
 
     impl Qwen {
@@ -288,13 +328,12 @@ mod run {
         /// and the processor otherwise. Blocking.
         pub fn load(which: LocalModel, model: PathBuf, mmproj: PathBuf) -> CommandResult<Self> {
             let (loaded, gpu) = place(which, &model, &mmproj)?;
-            Ok(Self { which, paths: (model, mmproj), loaded, gpu, busy: Mutex::new(None) })
+            Ok(Self { which, paths: (model, mmproj), copy: Mutex::new(Copy { loaded, gpu }) })
         }
 
         /// The graphics cards it is on, by name, or `None` on the processor.
-        pub fn gpu(&self) -> Option<&str> {
-            let on_processor = self.busy.lock().unwrap_or_else(|e| e.into_inner()).is_some();
-            self.gpu.as_deref().filter(|_| !on_processor)
+        pub fn gpu(&self) -> Option<String> {
+            self.copy.lock().unwrap_or_else(|e| e.into_inner()).gpu.clone()
         }
 
         /// What was said in `samples` (16 kHz mono, -1..1), in the language
@@ -318,26 +357,28 @@ mod run {
             language: Option<&str>,
             tokens_a_second: Option<usize>,
         ) -> CommandResult<String> {
-            let mut processor = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+            let mut copy = self.copy.lock().unwrap_or_else(|e| e.into_inner());
             let mut said = Vec::new();
             for window in windows(samples, SAMPLE_RATE as usize) {
                 let exactly = tokens_a_second.map(|n| n * window.len() / SAMPLE_RATE as usize);
-                let text = match processor.as_ref() {
-                    Some(copy) => copy.hear(window, language, exactly),
-                    None => match self.loaded.hear(window, language, exactly) {
-                        Err(e) if self.gpu.is_some() => {
-                            tracing::info!(
-                                model = self.which.as_str(),
-                                "no room on the graphics card to hear a clip ({e}); \
-                                 hearing it on the processor"
-                            );
-                            let copy = Loaded::load(&self.paths.0, &self.paths.1, false)
-                                .map_err(|e| failed(self.which.as_str(), e))?;
-                            copy.hear(window, language, exactly)
-                                .inspect(|_| *processor = Some(copy))
-                        }
-                        other => other,
-                    },
+                let text = match copy.loaded.hear(window, language, exactly) {
+                    Err(e) if copy.gpu.is_some() => {
+                        tracing::info!(
+                            model = self.which.as_str(),
+                            "a clip failed on the graphics card ({e}); hearing on the \
+                             processor from now on"
+                        );
+                        let processor = Loaded::load(&self.paths.0, &self.paths.1, false)
+                            .map_err(|e| failed(self.which.as_str(), e))?;
+                        // The copy on the cards is let go of here, and its
+                        // memory with it. The processor copy is kept whatever
+                        // this clip does on it, so a clip that fails for its
+                        // own reasons does not load it again for every clip
+                        // after. The cards are tried again on the next load.
+                        *copy = Copy { loaded: processor, gpu: None };
+                        copy.loaded.hear(window, language, exactly)
+                    }
+                    other => other,
                 }
                 .map_err(|e| failed(&format!("{} could not hear it", self.which.as_str()), e))?;
                 if !text.is_empty() {
@@ -351,6 +392,12 @@ mod run {
     /// Load `which` onto the graphics cards when its files fit there with
     /// room to hear a full window, and on the processor otherwise. Answers
     /// it and, when it went on cards, their names.
+    ///
+    /// Room is checked by hearing a full window of silence once loaded: that
+    /// sets aside the encoder's working memory for the longest clip as well
+    /// as the context, where loading alone sets aside neither (llama.cpp
+    /// makes the encoder's on its first clip, and does not say when it could
+    /// not).
     fn place(
         which: LocalModel,
         model: &Path,
@@ -372,23 +419,18 @@ mod run {
                     "no room on {names}; loading on the processor"
                 );
             } else {
-                match Loaded::load(model, mmproj, true) {
+                let silence = vec![0.0; MAX_WINDOW_SECONDS * SAMPLE_RATE as usize];
+                let tried = Loaded::load(model, mmproj, true)
+                    .and_then(|mut loaded| loaded.hear(&silence, None, Some(1)).map(|_| loaded));
+                match tried {
                     Ok(loaded) => {
-                        match loaded.model.context_batched(ROOM, BATCH, threads()).map(drop) {
-                            Ok(()) => {
-                                tracing::info!(model = name, "loaded on {names}");
-                                return Ok((loaded, Some(names)));
-                            }
-                            Err(e) => tracing::info!(
-                                model = name,
-                                "no room on {names} to hear a clip beside it ({e}); loading on \
-                             the processor instead"
-                            ),
-                        }
+                        tracing::info!(model = name, "loaded on {names}");
+                        return Ok((loaded, Some(names)));
                     }
-                    Err(e) => tracing::warn!(
+                    Err(e) => tracing::info!(
                         model = name,
-                        "{e} on {names}; loading on the processor instead"
+                        "no room on {names} to hear a clip ({e}); loading on the processor \
+                         instead"
                     ),
                 }
             }
@@ -430,15 +472,27 @@ mod tests {
 
     #[test]
     fn the_words_are_what_follows_the_heading() {
-        assert_eq!(words("language English<asr_text>Hello there."), "Hello there.");
+        assert_eq!(words("language English<asr_text>Hello there.", false), "Hello there.");
         assert_eq!(
-            words("  Told the language, it writes words alone. "),
+            words("  Told the language, it writes words alone. ", true),
             "Told the language, it writes words alone."
         );
-        assert_eq!(words("language None<asr_text>"), "");
-        assert_eq!(words("language None<asr_text> um "), "um");
-        assert_eq!(words("language English"), "");
-        assert_eq!(words(""), "");
+        assert_eq!(words("language None<asr_text>", false), "");
+        assert_eq!(words("language None<asr_text> um ", false), "um");
+        assert_eq!(words("language English", false), "");
+        assert_eq!(words("language None", false), "");
+        assert_eq!(words("", false), "");
+    }
+
+    /// Somebody's own words that look like a heading are kept: told the
+    /// language, Qwen writes no heading at all, and otherwise only a
+    /// language it names makes one.
+    #[test]
+    fn words_that_only_look_like_a_heading_are_kept() {
+        assert_eq!(words("language model", false), "language model");
+        assert_eq!(words("language barrier", true), "language barrier");
+        assert_eq!(words("language English", true), "language English");
+        assert_eq!(words("language English please", false), "language English please");
     }
 
     #[test]
@@ -477,9 +531,17 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_grows_with_the_clip() {
-        assert_eq!(token_budget(16_000, 16_000), 58);
-        assert_eq!(token_budget(30 * 16_000, 16_000), 348);
-        assert!(token_budget(30 * 16_000, 16_000) + 30 * 13 + 64 < 1536);
+    fn the_budget_grows_with_the_clip_and_the_script() {
+        assert_eq!(token_budget(16_000, 16_000, Some("en")), 58);
+        assert_eq!(token_budget(30 * 16_000, 16_000, Some("en-IN")), 348);
+        assert_eq!(token_budget(30 * 16_000, 16_000, Some("de")), 348);
+        // Devanagari, Thai, Chinese and a language it was not told are
+        // written in many more tokens.
+        for dense in [Some("hi"), Some("th"), Some("zh"), Some("vi"), None, Some("te")] {
+            assert_eq!(token_budget(30 * 16_000, 16_000, dense), 768, "{dense:?}");
+        }
+        // The densest full window still fits the context it is heard in:
+        // about thirteen audio tokens a second, the prompt, and the answer.
+        assert!(token_budget(30 * 16_000, 16_000, None) + 30 * 13 + 64 < 1536);
     }
 }

@@ -446,6 +446,44 @@ impl Drop for Context<'_> {
     }
 }
 
+// SAFETY: a llama.cpp context may be used from any thread, one at a time;
+// every method that touches it takes `&mut self`. It is not `Sync`.
+unsafe impl Send for Context<'_> {}
+
+/// A batch of one token, made once and filled for each token written.
+#[cfg(feature = "speech")]
+struct OneToken(sys::llama_batch);
+
+#[cfg(feature = "speech")]
+impl OneToken {
+    fn new() -> Self {
+        // SAFETY: a batch for one token of one sequence, freed by `Drop`.
+        Self(unsafe { sys::llama_batch_init(1, 0, 1) })
+    }
+
+    /// `token` at `pos`, its logits asked for.
+    fn set(&mut self, token: i32, pos: sys::llama_pos) -> sys::llama_batch {
+        // SAFETY: room for one token was made by `new`.
+        unsafe {
+            *self.0.token = token;
+            *self.0.pos = pos;
+            *self.0.n_seq_id = 1;
+            **self.0.seq_id = 0;
+            *self.0.logits = 1;
+        }
+        self.0.n_tokens = 1;
+        self.0
+    }
+}
+
+#[cfg(feature = "speech")]
+impl Drop for OneToken {
+    fn drop(&mut self) {
+        // SAFETY: made by `new`, freed once, here.
+        unsafe { sys::llama_batch_free(self.0) }
+    }
+}
+
 impl Context<'_> {
     /// Run `tokens` through the model in one batch and answer the logits at
     /// the last of them, one per vocabulary entry. Refuses a prompt larger
@@ -487,6 +525,9 @@ impl Context<'_> {
     /// model answers after it, the likeliest token each time, until it ends
     /// or has written `max_tokens`. Refuses a prompt and answer that would
     /// not fit the context, which llama.cpp would otherwise abort over.
+    /// Whatever an earlier call left in the context is cleared first, so one
+    /// context serves clip after clip. The answer comes back with whether it
+    /// was stopped at `max_tokens` rather than ending by itself.
     ///
     /// `at_least` tokens are written whether the model would end sooner or
     /// not, the likeliest token that does not end it standing in -- for
@@ -499,7 +540,7 @@ impl Context<'_> {
         heard: &Heard,
         max_tokens: usize,
         at_least: usize,
-    ) -> Result<String, String> {
+    ) -> Result<(String, bool), String> {
         let positions = heard.positions();
         if positions + max_tokens > self.size {
             return Err(format!(
@@ -507,6 +548,8 @@ impl Context<'_> {
                 self.size
             ));
         }
+        // SAFETY: a live context; its memory is ours to clear.
+        unsafe { sys::llama_memory_clear(sys::llama_get_memory(self.ptr.as_ptr()), true) };
         let mut past: sys::llama_pos = 0;
         // SAFETY: live contexts, chunks made by `hearing` for this model,
         // and a batch size above zero (`context_batched` clamps it).
@@ -527,6 +570,8 @@ impl Context<'_> {
         }
         let n_vocab = model.n_vocab();
         let mut written = Vec::new();
+        let mut batch = OneToken::new();
+        let mut ended = false;
         for n in 0..max_tokens {
             // SAFETY: the logits of the last token decoded, one per
             // vocabulary entry, read before the next decode.
@@ -537,48 +582,36 @@ impl Context<'_> {
                 }
                 std::slice::from_raw_parts(logits, n_vocab)
             };
-            let mut token = argmax(logits);
+            let mut token = argmax(logits, |_| true);
             if model.ends(token) {
                 if n >= at_least {
+                    ended = true;
                     break;
                 }
-                let mut others = logits.to_vec();
-                while model.ends(token) {
-                    others[token as usize] = f32::NEG_INFINITY;
-                    token = argmax(&others);
-                }
+                token = argmax(logits, |t| !model.ends(t));
             }
             written.extend(model.piece(token));
-            // SAFETY: a batch of one token at the next position, its logits
-            // asked for, freed after.
-            unsafe {
-                let mut batch = sys::llama_batch_init(1, 0, 1);
-                *batch.token = token;
-                *batch.pos = past;
-                *batch.n_seq_id = 1;
-                **batch.seq_id = 0;
-                *batch.logits = 1;
-                batch.n_tokens = 1;
-                let result = sys::llama_decode(self.ptr.as_ptr(), batch);
-                sys::llama_batch_free(batch);
-                if result != 0 {
-                    return Err(format!("llama.cpp could not go on ({result})"));
-                }
+            // SAFETY: a live context and a batch of one token at the next
+            // position.
+            let result = unsafe { sys::llama_decode(self.ptr.as_ptr(), batch.set(token, past)) };
+            if result != 0 {
+                return Err(format!("llama.cpp could not go on ({result})"));
             }
             past += 1;
         }
-        Ok(String::from_utf8_lossy(&written).into_owned())
+        Ok((String::from_utf8_lossy(&written).into_owned(), !ended && max_tokens > 0))
     }
 }
 
-/// The index of the largest of `values`; the first, when several tie.
+/// The index of the largest of `values` that `allowed` lets through; the
+/// first, when several tie, and 0 when none is let through.
 #[cfg(feature = "speech")]
-fn argmax(values: &[f32]) -> i32 {
-    let mut best = 0;
+fn argmax(values: &[f32], allowed: impl Fn(i32) -> bool) -> i32 {
+    let mut best: Option<usize> = None;
     for (i, v) in values.iter().enumerate() {
-        if *v > values[best] {
-            best = i;
+        if best.is_none_or(|b| *v > values[b]) && allowed(i as i32) {
+            best = Some(i);
         }
     }
-    best as i32
+    best.unwrap_or(0) as i32
 }
