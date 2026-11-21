@@ -38,9 +38,9 @@ impl Vault {
     /// Save a routine.
     ///
     /// Validates the record, and then the one thing the schema deliberately
-    /// cannot: a `BeforeEvent` trigger naming a role that does not exist would
+    /// cannot: a `BeforeEvent` trigger naming an area that does not exist would
     /// be a routine that silently never fires. There is no foreign key to
-    /// `roles`, for the reason `goals` has none, so it is checked here.
+    /// `areas`, for the reason `goals` has none, so it is checked here.
     ///
     /// Refuses a *new* routine whose kind is [`RoutineKind::Dream`](crate::routine::RoutineKind::Dream)
     /// -- those three are made only by [`Vault::set_dreaming`] -- and refuses
@@ -68,8 +68,8 @@ impl Vault {
     /// from making.
     fn put_routine_unchecked(&self, routine: &Routine) -> Result<()> {
         routine.validate()?;
-        if let Trigger::BeforeEvent { role_id: Some(role), .. } = &routine.trigger {
-            self.role(*role)?;
+        if let Trigger::BeforeEvent { area_id: Some(area), .. } = &routine.trigger {
+            self.area(*area)?;
         }
         self.with_routines(|r| r.put_routine(routine))?;
         self.wrote(RecordKind::Routine, routine.id);

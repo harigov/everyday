@@ -838,7 +838,7 @@ impl TimeBlock {
         }
     }
 
-    /// File this block under a goal or a role directly, overriding whatever
+    /// File this block under a goal or an area directly, overriding whatever
     /// it would otherwise inherit.
     pub fn for_purpose(mut self, purpose: Purpose) -> Self {
         self.purpose = Some(purpose);

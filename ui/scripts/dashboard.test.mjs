@@ -402,6 +402,23 @@ check('JSON that is not a list is not a page', parseLayout('{"a":1}'), null)
 check('an empty list means nobody has arranged one', parseLayout('[]'), null)
 
 {
+  // A page arranged while areas were still roles keeps its two balance
+  // cards, under their new names and with their own ids and sizes.
+  const stored = JSON.stringify([
+    { id: 'roleBalance-1', type: 'roleBalance', size: 'medium', subject: null, days: null },
+    { id: 'roleShare-1', type: 'roleShare', size: 'large', subject: null, days: null },
+  ])
+  check(
+    'a card from before areas were renamed is kept under its new name',
+    parseLayout(stored).map((w) => [w.id, w.type, w.size]),
+    [
+      ['roleBalance-1', 'areaBalance', 'medium'],
+      ['roleShare-1', 'areaShare', 'large'],
+    ],
+  )
+}
+
+{
   // The case this function exists for: a page written by a build that had a
   // widget this one does not. The unknown card goes; the rest of the page
   // survives, because throwing it away would lose work nobody can get back.
@@ -571,7 +588,7 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
   // before the home cards did. They land as one block, in the order they
   // were written down -- not stacked in reverse, which is what prepending
   // each in turn did.
-  const older = [widget('whatsGoingOn'), widget('roleBalance')]
+  const older = [widget('whatsGoingOn'), widget('areaBalance')]
   check(
     'the home cards arrive in the order they read',
     introduce(older, ['whatsGoingOn']).widgets.map((w) => w.type),
@@ -586,7 +603,7 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
       'watchingNow',
       'playingNow',
       'whatsGoingOn',
-      'roleBalance',
+      'areaBalance',
     ],
   )
   check(

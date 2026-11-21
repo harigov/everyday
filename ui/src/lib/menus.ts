@@ -25,13 +25,15 @@ import { todo } from './todo.svelte'
 import { addDays, minutesBetween, offsetInDay, todayIso } from './time'
 import { formatMinutes, friendlyDate } from './format'
 import { MAX_STARS, fromStars, stars } from './rating'
-import { STATUS_LABELS, PRIORITY_LABELS } from './labels'
-import { ITEM_STATUSES, PRIORITIES, TASK_STATUSES } from './types'
+import { GOAL_STATUS_LABELS, STATUS_LABELS, PRIORITY_LABELS } from './labels'
+import { GOAL_STATUSES, ITEM_STATUSES, PRIORITIES, TASK_STATUSES } from './types'
 import type {
   CalendarEvent,
   CalendarId,
   CalendarInfo,
+  Goal,
   Item,
+  ProjectStatus,
   Purpose,
   Reading,
   Task,
@@ -55,7 +57,7 @@ export function colourItems(current: string, choose: (colour: string) => unknown
 }
 
 /**
- * A "File under" submenu: the roles, with their goals nested under each.
+ * A "File under" submenu: the areas, with their goals nested under each.
  *
  * Offered from a project, a block, an entry, a shelf item and a subscribed
  * calendar. Two levels rather than one flat list, because the flat version
@@ -69,13 +71,13 @@ export function colourItems(current: string, choose: (colour: string) => unknown
 export function purposeItems(
   current: Purpose | null | undefined,
   choose: (next: Purpose | null) => unknown,
-  opts: { rolesOnly?: boolean } = {},
+  opts: { areasOnly?: boolean } = {},
 ): MenuItem[] {
-  const roles = purpose.activeRoles
-  if (roles.length === 0) {
+  const areas = purpose.activeAreas
+  if (areas.length === 0) {
     // Nothing to file under yet. Said rather than shown as an empty menu,
     // which reads as a bug.
-    return [{ label: 'No roles yet — add one in Overview', disabled: true }]
+    return [{ label: 'No areas yet — add one in About You', disabled: true }]
   }
 
   const items: MenuItem[] = [
@@ -87,29 +89,29 @@ export function purposeItems(
     SEP,
   ]
 
-  for (const role of roles) {
-    const goals = opts.rolesOnly
+  for (const area of areas) {
+    const goals = opts.areasOnly
       ? []
-      : purpose.goalsOf(role.id).filter((g) => g.status === 'active' || g.status === 'paused')
-    const asRole: Purpose = { type: 'role', id: role.id }
+      : purpose.goalsOf(area.id).filter((g) => g.status === 'active' || g.status === 'paused')
+    const asArea: Purpose = { type: 'area', id: area.id }
     if (goals.length === 0) {
       items.push({
-        label: role.name,
-        dot: role.color,
-        checked: samePurpose(current, asRole),
-        run: () => choose(asRole),
+        label: area.name,
+        dot: area.color,
+        checked: samePurpose(current, asArea),
+        run: () => choose(asArea),
       })
       continue
     }
     items.push({
-      label: role.name,
-      dot: role.color,
+      label: area.name,
+      dot: area.color,
       items: [
         {
-          label: `${role.name} itself`,
+          label: `${area.name} itself`,
           hint: 'no particular goal',
-          checked: samePurpose(current, asRole),
-          run: () => choose(asRole),
+          checked: samePurpose(current, asArea),
+          run: () => choose(asArea),
         },
         SEP,
         ...goals.map((goal) => ({
@@ -122,6 +124,64 @@ export function purposeItems(
     })
   }
   return items
+}
+
+/**
+ * An "Area" submenu for a goal: which part of a life it sits under.
+ *
+ * Every area still in use, and the goal's own even when that one has been
+ * retired, ticked -- so the menu can always say where the goal is now.
+ * Moving a goal takes nothing filed under it anywhere: the projects and
+ * hours that point at the goal go on pointing at it, and simply count
+ * towards the new area from then on.
+ */
+export function goalAreaItems(goal: Goal): MenuItem[] {
+  const areas = purpose.areasFor(goal)
+  if (areas.length === 0) return [{ label: 'No areas yet', disabled: true }]
+  return areas.map((area) => ({
+    label: area.name,
+    dot: area.color,
+    hint: area.archived ? 'retired' : undefined,
+    checked: area.id === goal.areaId,
+    run: () => {
+      if (area.id !== goal.areaId) void purpose.saveGoal({ ...goal, areaId: area.id })
+    },
+  }))
+}
+
+const PROJECT_STATUSES: { id: ProjectStatus; label: string; hint?: string }[] = [
+  { id: 'active', label: 'Active' },
+  { id: 'paused', label: 'Paused' },
+  { id: 'done', label: 'Done' },
+  { id: 'archived', label: 'Archived', hint: 'hidden' },
+]
+
+/**
+ * A "Status" submenu for a project, offered from the sidebar and from a
+ * goal's list of projects. Archived says it hides the project, because that
+ * is the one of the four that makes a row disappear.
+ */
+export function projectStatusItems(
+  current: ProjectStatus,
+  choose: (status: ProjectStatus) => unknown,
+): MenuItem[] {
+  return PROJECT_STATUSES.map((s) => ({
+    label: s.label,
+    hint: s.hint,
+    checked: current === s.id,
+    run: () => choose(s.id),
+  }))
+}
+
+/** A "Status" submenu for a goal. */
+export function goalStatusItems(goal: Goal): MenuItem[] {
+  return GOAL_STATUSES.map((status) => ({
+    label: GOAL_STATUS_LABELS[status],
+    checked: goal.status === status,
+    run: () => {
+      if (status !== goal.status) void purpose.saveGoal({ ...goal, status })
+    },
+  }))
 }
 
 /** What the views that draw a task row have to supply themselves. */

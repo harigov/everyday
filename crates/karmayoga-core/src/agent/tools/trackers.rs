@@ -11,7 +11,7 @@ use super::{
 use crate::error::{Error, Result};
 use crate::health::report::resolve_stat;
 use crate::health::{Metric, Stat, units};
-use crate::id::{GoalId, KindId, ReadingId, RoleId, TrackerId};
+use crate::id::{GoalId, KindId, ReadingId, TrackerId};
 use crate::purpose::Purpose;
 use crate::store::trackers::ReadingQuery;
 use crate::tracker::{
@@ -28,14 +28,14 @@ pub(super) static TOOLS: &[Tool] = &[
         Trackers,
         empty_schema(),
         "What this vault records in numbers rather than prose \u{2014} habits, doses, \
-         symptoms, counts \u{2014} with what each one's values mean, which goal or role \
+         symptoms, counts \u{2014} with what each one's values mean, which goal or area \
          it is filed under, and its targets (e.g. 'at most 60 min a day', 'at least 12 \
          a year'), each measured over its current period: the period's dates, the \
          value so far, whether that is short, within or over, and for a period longer \
          than a day what an even pace would have reached by today. Weeks run Monday \
          to Sunday. A tracker whose source is not 'manual' is worked out from other \
          records \u{2014} 'time' is minutes of logged time filed under its goal or \
-         role, 'finished' is library items finished or re-read, 'health' is a day's \
+         area, 'finished' is library items finished or re-read, 'health' is a day's \
          figure from the Health app and 'measures' says which \u{2014} and cannot be \
          logged to.",
         run_list_trackers
@@ -57,7 +57,7 @@ pub(super) static TOOLS: &[Tool] = &[
                 ),
                 ("unit", text("The unit, e.g. 'min', 'glasses', 'mg'. Empty for a plain count.")),
                 ("goal_id", text("File it under this goal, from list_goals.")),
-                ("role_id", text("Or under this role directly, from list_roles.")),
+                ("area_id", text("Or under this area directly, from list_areas.")),
             ],
             &["name"]
         ),
@@ -65,7 +65,7 @@ pub(super) static TOOLS: &[Tool] = &[
          so there is a tracker log_reading can record against afterwards. Refuses a \
          second tracker of a name already in use; log_reading against the existing \
          one instead, or tracker_summary to see what it already holds. File it under \
-         a goal or role straight away with goal_id or role_id, or leave both out and \
+         a goal or area straight away with goal_id or area_id, or leave both out and \
          do it later with set_target. For something already worked out from logged \
          time or the library \u{2014} list_trackers calls these 'time' and 'finished' \
          \u{2014} there is nothing to create here: set_target makes one of those \
@@ -187,7 +187,7 @@ pub(super) static TOOLS: &[Tool] = &[
                     "measure",
                     one_of(
                         "When there is no tracker_id, what to count: 'time' is minutes of \
-                         logged time filed under the goal or role; 'finished' is things \
+                         logged time filed under the goal or area; 'finished' is things \
                          finished off a shelf (a re-read counts); 'screen' is minutes of \
                          screen time from the Screen time app, all of it or narrowed by \
                          `screen_category` or `screen_item`; 'health' is a day's figure from \
@@ -198,7 +198,7 @@ pub(super) static TOOLS: &[Tool] = &[
                     )
                 ),
                 ("goal_id", text("File the tracker under this goal. From list_goals.")),
-                ("role_id", text("Or under this role directly. From list_roles.")),
+                ("area_id", text("Or under this area directly. From list_areas.")),
                 (
                     "shelf_id",
                     text("For 'finished': which shelf. From list_shelves. Omit for every shelf.")
@@ -282,7 +282,7 @@ pub(super) static TOOLS: &[Tool] = &[
          replaces it \u{2014} and a measure that already has a tracker (time on the same \
          goal, the same shelf, the same screen time, the same health metric, a tracker \
          of the same name) reuses it rather than making another. Give min, max or both. Passing goal_id or \
-         role_id with an existing tracker also files it there.",
+         area_id with an existing tracker also files it there.",
         run_set_target
     ),
 ];
@@ -359,11 +359,11 @@ fn run_list_trackers(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
     Ok(json!({ "count": rows.len(), "trackers": rows }))
 }
 
-/// The goal's title or the role's name a tracker is filed under.
+/// The goal's title or the area's name a tracker is filed under.
 fn filed_under(ctx: &ToolContext<'_>, purpose: Option<Purpose>) -> Option<String> {
     match purpose? {
         Purpose::Goal { id } => ctx.vault.goal(id).ok().map(|g| format!("goal: {}", g.title)),
-        Purpose::Role { id } => ctx.vault.role(id).ok().map(|r| format!("role: {}", r.name)),
+        Purpose::Area { id } => ctx.vault.area(id).ok().map(|r| format!("area: {}", r.name)),
     }
 }
 
@@ -633,15 +633,15 @@ fn run_set_target(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }
 
     let goal_id = args.opt_id::<GoalId>("goal_id", "goal")?;
-    let role_id = args.opt_id::<RoleId>("role_id", "role")?;
-    if goal_id.is_some() && role_id.is_some() {
-        return Err(args.bad("pass at most one of `goal_id` and `role_id`"));
+    let area_id = args.opt_area()?;
+    if goal_id.is_some() && area_id.is_some() {
+        return Err(args.bad("pass at most one of `goal_id` and `area_id`"));
     }
     // Checked before anything is written, so a bad id is a refusal rather
     // than a tracker filed under nothing.
-    let purpose = match (goal_id, role_id) {
+    let purpose = match (goal_id, area_id) {
         (Some(id), _) => Some(ctx.vault.goal(id).map(|_| Purpose::Goal { id })?),
-        (_, Some(id)) => Some(ctx.vault.role(id).map(|_| Purpose::Role { id })?),
+        (_, Some(id)) => Some(ctx.vault.area(id).map(|_| Purpose::Area { id })?),
         _ => None,
     };
 
@@ -718,7 +718,7 @@ fn run_set_target(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 
 /// The live tracker a `measure` names, if there already is one.
 ///
-/// Time is one per goal or role; finished is one per shelf and filing; a new
+/// Time is one per goal or area; finished is one per shelf and filing; a new
 /// tracker is one per name, among the ones recorded by hand. Anything else
 /// -- a measure with nothing to match on -- answers `None`, and
 /// [`new_tracker`] is where it is refused.
@@ -772,7 +772,7 @@ fn new_tracker(
     let named = |p: Option<Purpose>| -> Option<String> {
         match p? {
             Purpose::Goal { id } => ctx.vault.goal(id).ok().map(|g| g.title),
-            Purpose::Role { id } => ctx.vault.role(id).ok().map(|r| r.name),
+            Purpose::Area { id } => ctx.vault.area(id).ok().map(|r| r.name),
         }
     };
     let mut tracker = match measure.trim().to_lowercase().as_str() {
@@ -780,7 +780,7 @@ fn new_tracker(
             // Time on nothing is not a measure of anything.
             let Some(on) = named(purpose) else {
                 return Err(args.bad(
-                    "'time' counts what is filed under a goal or role: pass `goal_id` or `role_id`",
+                    "'time' counts what is filed under a goal or area: pass `goal_id` or `area_id`",
                 ));
             };
             let mut t = Tracker::new(format!("Time on {on}"), TrackerKind::Amount);

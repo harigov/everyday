@@ -10,6 +10,7 @@
   import Icon from './Icon.svelte'
   import ProgressPie from './ProgressPie.svelte'
   import GoalsPane from './GoalsPane.svelte'
+  import GoalProjects from './GoalProjects.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import TaskList from './TaskList.svelte'
   import TaskBoard from './TaskBoard.svelte'
@@ -94,6 +95,9 @@
      under the list rather than beside it. -->
 {#if todo.showingGoals}
   <main class="todo"><GoalsPane /></main>
+{:else if todo.goal}
+  <!-- One goal: the projects filed under it, as a project is its tasks. -->
+  <main class="todo"><GoalProjects id={todo.goal} /></main>
 {:else}
   <main class="todo">
     <div class="pane">

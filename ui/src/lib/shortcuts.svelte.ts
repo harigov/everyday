@@ -1392,7 +1392,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     id: 'todo:goals',
     label: 'Goals',
     group: 'Todo',
-    keywords: ['goal', 'aim', 'intention', 'purpose', 'role'],
+    keywords: ['goal', 'aim', 'intention', 'purpose', 'area', 'role'],
     icon: 'target',
     quick: true,
     when: () => app.screen === 'main' && app.supportsOverview && app.supportsTasks,
@@ -1733,9 +1733,11 @@ function create() {
 /**
  * "The next thing" in the todo app's goals pane is a goal.
  *
- * The composer belongs to that pane and there is one per role, so this goes
+ * The composer belongs to that pane and there is one per area, so this goes
  * there and puts the caret in the first of them. Reaching it by selector is
- * what this file already does for the search field.
+ * what this file already does for the search field. One goal's own pane
+ * marks its new-project line the same way, so Ctrl/Cmd N there adds a
+ * project under the goal.
  */
 async function newGoal() {
   if (!(await app.goTo('todo'))) return

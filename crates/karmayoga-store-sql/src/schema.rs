@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use karmayoga_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 33;
+pub const SCHEMA_VERSION: i64 = 34;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -122,7 +122,20 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v31(d),
         v32(d),
         v33(d),
+        v34(),
     ]
+}
+
+/// Version 34: roles became areas. No statement: the tables keep their names
+/// (see `purpose.rs`'s module docs for why) and nothing already stored is
+/// rewritten. What changes is what a sealed payload may say from here on --
+/// a goal's or a calendar's `areaId`, a purpose's `"type": "area"` -- which a
+/// build from before the rename cannot read. The step exists to move the
+/// version past what such a build accepts, so it refuses the vault outright,
+/// as [`migrate`] refuses any newer database, rather than opening it and
+/// failing on every list that holds a record this build has saved since.
+fn v34() -> Vec<String> {
+    Vec::new()
 }
 
 /// Version 33: Karma's book -- `karmayoga_core::karma::KarmaBook`, the day
@@ -581,6 +594,11 @@ fn v6(d: Dialect) -> Vec<String> {
 /// Version 7: purpose -- the roles you play, the goals under them, and the
 /// pointer every other record now carries.
 ///
+/// Roles are called areas now. The tables, columns and the `role` kind below
+/// keep the old word, for the reasons given in `purpose.rs`'s module docs:
+/// a step never edits an earlier one, and renaming a table is not something a
+/// re-runnable step can do in SQL both engines accept.
+///
 /// The pointer is a **side table** rather than a pair of columns on each of
 /// the five tables that can carry one, and that is worth explaining because
 /// two columns on `tasks` would obviously be faster to read.
@@ -655,7 +673,7 @@ fn v7(d: Dialect) -> Vec<String> {
         ),
         // The Overview's sidebar: one role's goals, open ones first. There
         // is deliberately no foreign key to `roles` -- a reference invites
-        // the cascade this domain refuses. See `PurposeStore::delete_role`.
+        // the cascade this domain refuses. See `PurposeStore::delete_area`.
         "CREATE INDEX IF NOT EXISTS goals_by_role ON goals (role_id, status)".into(),
         // The pointer. One row per record that carries one; no row at all is
         // the common case and means unattributed.

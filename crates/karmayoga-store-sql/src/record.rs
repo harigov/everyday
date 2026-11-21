@@ -64,7 +64,7 @@ pub(crate) trait Record: RecordDescriptor + Serialize + DeserializeOwned {
     /// to write alongside it. Only meaningful where
     /// [`purpose_kind`](Record::purpose_kind) is `Some`; a table whose
     /// purpose is computed rather than stored on the record itself — a
-    /// calendar's is derived from its `role_id` — answers `None` here and
+    /// calendar's is derived from its `area_id` — answers `None` here and
     /// keeps its own `set_purpose` call instead.
     fn purpose(&self) -> Option<&Purpose> {
         None

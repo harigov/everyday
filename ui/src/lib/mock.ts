@@ -64,8 +64,8 @@ import type {
   RemoteImageSettings,
   Purpose,
   PurposeMinutes,
-  Role,
-  RoleEventMinutes,
+  Area,
+  AreaEventMinutes,
   SearchRequest,
   SearchResult,
   SourceInfo,
@@ -2106,7 +2106,7 @@ const routines: Routine[] = [
     id: 'ro-review',
     name: 'Weekly review',
     instructions:
-      'Look back over the last seven days: where the time went by role, which goals were touched and which were not, and how the habits went. Write it up as a note.',
+      'Look back over the last seven days: where the time went by area, which goals were touched and which were not, and how the habits went. Write it up as a note.',
     trigger: { type: 'schedule', at: '17:00', days: ['fri'] },
     graceMinutes: 240,
     enabled: false,
@@ -2212,7 +2212,7 @@ const TEMPLATES: RoutineTemplate[] = [
   {
     name: 'Weekly review',
     instructions:
-      'Look back over the last seven days: where the time went by role, which goals were touched and which were not, how each goal and habit stood against its targets, and what is still open. Write it up as a note. Be honest about the roles that got nothing.',
+      'Look back over the last seven days: where the time went by area, which goals were touched and which were not, how each goal and habit stood against its targets, and what is still open. Write it up as a note. Be honest about the areas that got nothing.',
     trigger: { type: 'schedule', at: '17:00', days: ['fri'] },
     note: 'An honest account of the week, written down.',
     available: true,
@@ -2237,7 +2237,7 @@ const TEMPLATES: RoutineTemplate[] = [
     name: 'Meeting prep',
     instructions:
       'Before this meeting, look through my journal, my tasks and my notes for anything about the people in it or the subject, and write me a short note: who they are, what we last said, and what is outstanding.',
-    trigger: { type: 'beforeEvent', leadMinutes: 60, roleId: null },
+    trigger: { type: 'beforeEvent', leadMinutes: 60, areaId: null },
     note: 'Who is coming, and what you last said to them.',
     available: true,
   },
@@ -2247,7 +2247,7 @@ const projects: Project[] = [
   {
     id: 'p-house',
     name: 'Move house',
-    purpose: { type: 'role', id: 'r-parent' },
+    purpose: { type: 'area', id: 'r-parent' },
     notes: 'Completion is the 12th. Everything hangs off that.',
     color: '#c2410c',
     icon: '\u{1f4e6}',
@@ -2493,7 +2493,7 @@ const calendars: CalendarInfo[] = [
   {
     id: 'c-work',
     name: 'Priya — Work',
-    roleId: 'r-work',
+    areaId: 'r-work',
     color: '#0369a1',
     origin: { type: 'url', url: 'https://calendar.google.com/calendar/ical/…/basic.ics' },
     provider: 'google',
@@ -3660,23 +3660,23 @@ const readings: Reading[] = (() => {
   return out
 })()
 
-// ── Roles and goals ──────────────────────────────────────────────────────
+// ── Areas and goals ──────────────────────────────────────────────────────
 //
-// Five roles and six goals, deliberately uneven: one role with three goals,
+// Five areas and six goals, deliberately uneven: one area with three goals,
 // one with none, one goal finished and one paused. A balance view drawn
 // against a tidy set of five equal rows looks finished when it is not, and
-// the interesting cases here are the empty role and the goal nothing has
+// the interesting cases here are the empty area and the goal nothing has
 // touched since March.
 
-const roles: Role[] = [
-  role('r-work', 'Work', '#0369a1', '\u{1f4bc}', 0),
-  role('r-parent', 'Parent', '#c2410c', '\u{1f3e1}', 1),
-  role('r-health', 'Health', '#15803d', '\u{1f331}', 2),
-  role('r-friends', 'Friends', '#a21caf', '\u{1f465}', 3),
-  role('r-self', 'Myself', '#4338ca', '\u{1f9ed}', 4),
+const areas: Area[] = [
+  area('r-work', 'Work', '#0369a1', '\u{1f4bc}', 0),
+  area('r-parent', 'Parent', '#c2410c', '\u{1f3e1}', 1),
+  area('r-health', 'Health', '#15803d', '\u{1f331}', 2),
+  area('r-friends', 'Friends', '#a21caf', '\u{1f465}', 3),
+  area('r-self', 'Myself', '#4338ca', '\u{1f9ed}', 4),
 ]
 
-function role(id: string, name: string, color: string, icon: string, sortOrder: number): Role {
+function area(id: string, name: string, color: string, icon: string, sortOrder: number): Area {
   return {
     id,
     name,
@@ -3704,7 +3704,7 @@ const goals: Goal[] = [
 
 function goal(
   id: string,
-  roleId: string,
+  areaId: string,
   title: string,
   status: GoalStatus,
   horizon: string | null,
@@ -3712,7 +3712,7 @@ function goal(
 ): Goal {
   return {
     id,
-    roleId,
+    areaId,
     title,
     notes: '',
     status,
@@ -3768,20 +3768,20 @@ function balanceReport(from: string, to: string): BalanceReport {
     row.blocks += 1
   }
 
-  const byRole = new Map<string | null, RoleEventMinutes>()
+  const byArea = new Map<string | null, AreaEventMinutes>()
   for (const e of events) {
     if (e.endDate < from || e.localDate > to) continue
     const cal = calendars.find((c) => c.id === e.calendarId)
-    const roleId = cal?.roleId ?? null
-    const row = byRole.get(roleId) ?? { roleId, minutes: 0, events: 0 }
+    const areaId = cal?.areaId ?? null
+    const row = byArea.get(areaId) ?? { areaId, minutes: 0, events: 0 }
     row.minutes += Math.max(
       0,
       Math.round((new Date(e.end).getTime() - new Date(e.start).getTime()) / 60_000),
     )
     row.events += 1
-    byRole.set(roleId, row)
+    byArea.set(areaId, row)
   }
-  return { purposes, events: [...byRole.values()] }
+  return { purposes, events: [...byArea.values()] }
 }
 
 function goalActivity(id: string): GoalActivity {
@@ -3870,10 +3870,10 @@ const MOCK_QUICK_ASKS: QuickAskRow[] = (
     ],
     [
       'todo.purpose',
-      'Suggest a role or goal',
+      'Suggest an area or goal',
       'Todo',
       true,
-      'the task\u2019s title and the names of your roles and goals',
+      'the task\u2019s title and the names of your areas and goals',
     ],
     [
       'todo.parse',
@@ -3951,14 +3951,14 @@ const MOCK_QUICK_ASKS: QuickAskRow[] = (
     [
       'purpose.goal',
       'Sharpen a goal\u2019s wording',
-      'Roles and goals',
+      'Areas and goals',
       true,
-      'the goal you typed and the role it sits under',
+      'the goal you typed and the area it sits under',
     ],
     [
       'purpose.backfill',
       'Match existing records to a new goal',
-      'Roles and goals',
+      'Areas and goals',
       true,
       'the goal\u2019s name and the titles of records that have no purpose yet',
     ],
@@ -3967,7 +3967,7 @@ const MOCK_QUICK_ASKS: QuickAskRow[] = (
       'Write the week in a sentence or two',
       'Overview',
       false,
-      'this week\u2019s totals: hours by role, tasks done, entries written',
+      'this week\u2019s totals: hours by area, tasks done, entries written',
     ],
     [
       'data.import_map',
@@ -5021,7 +5021,7 @@ function mockKarma(from: string, to: string): KarmaReport {
 /**
  * A derived tracker's days, worked out the way the vault's `derived_days`
  * does: actual minutes of blocks whose resolved purpose is the tracker's own
- * (a role counting its goals too), or library items finished or re-read,
+ * (an area counting its goals too), or library items finished or re-read,
  * per day. Nothing derived was ticked on a page, beside an entry, or at a
  * known minute, so a query asking for any of those gets none.
  */
@@ -5041,9 +5041,9 @@ function derivedDays(q: ReadingQuery): TrackerDay[] {
         const p = purposeOfBlock(b)
         const counts =
           samePurpose(p, mine) ||
-          (mine.type === 'role' &&
+          (mine.type === 'area' &&
             p?.type === 'goal' &&
-            goals.find((g) => g.id === p.id)?.roleId === mine.id)
+            goals.find((g) => g.id === p.id)?.areaId === mine.id)
         if (!counts) continue
         const minutes = Math.max(
           0,
@@ -5219,7 +5219,7 @@ export const mockInvoke = async <T>(
           },
         ],
         status: status(),
-        protocol: 1,
+        protocol: 2,
         // The mock is one machine with one vault. Server mode is a Rust
         // feature end to end -- the pinning, the pairing, the socket -- and
         // pretending to have paired devices here would be a screen that could
@@ -6863,63 +6863,63 @@ export const mockInvoke = async <T>(
       return report as T
     }
 
-    // ── Roles and goals ──────────────────────────────────────────────
+    // ── Areas and goals ──────────────────────────────────────────────
 
-    case 'list_roles': {
+    case 'list_areas': {
       requireUnlocked()
-      return roles.map((r) => ({
+      return areas.map((r) => ({
         ...r,
-        goals: goals.filter((g) => g.roleId === r.id).length,
-        open: goals.filter((g) => g.roleId === r.id && goalIsOpen(g.status)).length,
+        goals: goals.filter((g) => g.areaId === r.id).length,
+        open: goals.filter((g) => g.areaId === r.id && goalIsOpen(g.status)).length,
       })) as T
     }
 
-    case 'new_role': {
+    case 'new_area': {
       requireUnlocked()
       const now = new Date().toISOString()
       return {
         id: `r-${nextId++}`,
-        name: str(args.name, 'Role').trim(),
+        name: str(args.name, 'Area').trim(),
         color: '#c2410c',
         icon: '\u{1f9ed}',
         notes: '',
         archived: false,
-        sortOrder: roles.length,
+        sortOrder: areas.length,
         createdAt: now,
         updatedAt: now,
       } as T
     }
 
-    case 'save_role': {
+    case 'save_area': {
       requireUnlocked()
-      const role = args.role as Role
-      const at = roles.findIndex((r) => r.id === role.id)
-      if (at >= 0) roles[at] = role
-      else roles.push(role)
+      const area = args.area as Area
+      const at = areas.findIndex((r) => r.id === area.id)
+      if (at >= 0) areas[at] = area
+      else areas.push(area)
       return undefined as T
     }
 
-    case 'delete_role': {
+    case 'delete_area': {
       requireUnlocked()
       const id = str(args.id)
       // Refused while goals point at it, as the real store refuses — so the
       // interface's message for this case can actually be seen.
-      const held = goals.filter((g) => g.roleId === id).length
+      const held = goals.filter((g) => g.areaId === id).length
       if (held > 0) {
         throw new VaultError(
           'invalid',
-          `this role still has ${held} goal${held === 1 ? '' : 's'} under it. ` +
-            'Move them to another role, or archive this one to keep its history.',
+          `this area still has ${held} goal${held === 1 ? '' : 's'} under it. ` +
+            'Move them to another area, or archive this one to keep its history.',
         )
       }
-      const at = roles.findIndex((r) => r.id === id)
-      if (at >= 0) roles.splice(at, 1)
+      const at = areas.findIndex((r) => r.id === id)
+      if (at >= 0) areas.splice(at, 1)
       return undefined as T
     }
 
-    case 'seed_roles':
+    case 'seed_areas':
       requireUnlocked()
-      // The mock ships with roles, so this always answers zero — which is
+      // The mock ships with areas, so this always answers zero — which is
       // the branch the Overview takes on a vault that already has some.
       return 0 as T
 
@@ -6927,7 +6927,7 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const query = (args.query ?? {}) as GoalQuery
       let out = goals.slice()
-      if (query.roleId) out = out.filter((g) => g.roleId === query.roleId)
+      if (query.areaId) out = out.filter((g) => g.areaId === query.areaId)
       if (query.statuses?.length) out = out.filter((g) => query.statuses!.includes(g.status))
       if (query.horizonTo) out = out.filter((g) => !!g.horizon && g.horizon <= query.horizonTo!)
       out.sort(
@@ -6950,7 +6950,7 @@ export const mockInvoke = async <T>(
       const now = new Date().toISOString()
       return {
         id: `g-${nextId++}`,
-        roleId: str(args.roleId),
+        areaId: str(args.areaId),
         title: str(args.title).trim(),
         notes: '',
         status: 'active',
@@ -6967,8 +6967,8 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const incoming = (cmd === 'save_goal' ? [args.goal] : (args.goals ?? [])) as Goal[]
       for (const goal of incoming) {
-        if (!roles.some((r) => r.id === goal.roleId)) {
-          throw new VaultError('notFound', 'no such role')
+        if (!areas.some((r) => r.id === goal.areaId)) {
+          throw new VaultError('notFound', 'no such area')
         }
         const at = goals.findIndex((g) => g.id === goal.id)
         if (at >= 0) goals[at] = goal

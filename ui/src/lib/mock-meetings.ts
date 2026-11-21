@@ -83,7 +83,7 @@ let settings: MeetingSettings = {
   enabled: false,
   offer: 'ask',
   micOffer: true,
-  calendars: { calendarIds: [], roleIds: [] } satisfies CalendarFilter,
+  calendars: { calendarIds: [], areaIds: [] } satisfies CalendarFilter,
   skippedSeries: [],
   speechMoved: true,
   defaultTemplate: 'tpl-default',

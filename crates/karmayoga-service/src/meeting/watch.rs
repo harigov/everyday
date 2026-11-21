@@ -14,7 +14,7 @@
 //!   close to when it starts, rather than for the whole day it happens to
 //!   fall on;
 //! * pass the settings' [`CalendarFilter`](karmayoga_core::meeting::CalendarFilter)
-//!   -- an explicit list of calendars, or of the roles their calendars
+//!   -- an explicit list of calendars, or of the areas their calendars
 //!   serve, with an empty filter meaning every calendar;
 //! * are not in `skipped_series` ("Never for this meeting");
 //! * have not already been recorded (a recordings lookup by calendar and a
@@ -290,13 +290,13 @@ fn starts_in_window(event: &Event, now: Timestamp) -> bool {
 
 /// Does `calendar` pass `filter`? Empty lists (the default) mean every
 /// calendar; otherwise a calendar passes by being named directly or by
-/// serving one of the named roles.
+/// serving one of the named areas.
 fn calendar_allowed(filter: &CalendarFilter, calendar: &Calendar) -> bool {
-    if filter.calendar_ids.is_empty() && filter.role_ids.is_empty() {
+    if filter.calendar_ids.is_empty() && filter.area_ids.is_empty() {
         return true;
     }
     filter.calendar_ids.contains(&calendar.id)
-        || calendar.role_id.is_some_and(|role| filter.role_ids.contains(&role))
+        || calendar.area_id.is_some_and(|area| filter.area_ids.contains(&area))
 }
 
 /// Every address this vault's owner is known by: every signed-in mail
@@ -676,7 +676,7 @@ mod tests {
         let other_calendar = CalendarId::new();
         vault
             .save_meeting_settings(&MeetingSettings {
-                calendars: CalendarFilter { calendar_ids: vec![other_calendar], role_ids: vec![] },
+                calendars: CalendarFilter { calendar_ids: vec![other_calendar], area_ids: vec![] },
                 ..set_up(Offer::Ask)
             })
             .unwrap();
@@ -974,9 +974,9 @@ mod tests {
     fn calendar_allowed_checks_the_named_ids() {
         let (_, vault, _dir) = env();
         let calendar = account_calendar(&vault);
-        let filter = CalendarFilter { calendar_ids: vec![calendar.id], role_ids: vec![] };
+        let filter = CalendarFilter { calendar_ids: vec![calendar.id], area_ids: vec![] };
         assert!(calendar_allowed(&filter, &calendar));
-        let filter = CalendarFilter { calendar_ids: vec![CalendarId::new()], role_ids: vec![] };
+        let filter = CalendarFilter { calendar_ids: vec![CalendarId::new()], area_ids: vec![] };
         assert!(!calendar_allowed(&filter, &calendar));
     }
 }

@@ -83,7 +83,7 @@ impl RunQuery {
 pub trait RoutineStore: Send + Sync {
     /// Every routine, in the order they were made. There are a handful of
     /// these, so filtering is the caller's business -- the same call
-    /// `list_roles` makes.
+    /// `list_areas` makes.
     fn list_routines(&self) -> Result<Vec<Routine>>;
     fn get_routine(&self, id: RoutineId) -> Result<Routine>;
     /// Idempotent: saving the same routine twice leaves one.

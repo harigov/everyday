@@ -25,7 +25,7 @@
 //! running six hours late or saying nothing at all. A laptop shut for a week
 //! shows one honest row per morning instead of seven briefs at once.
 
-use crate::id::{AccountId, ChatLinkId, RoleId, RoutineId, RoutineRunId};
+use crate::id::{AccountId, AreaId, ChatLinkId, RoutineId, RoutineRunId};
 use crate::timestamped::Timestamped;
 use crate::{ConversationId, Error, Result};
 use jiff::civil::{Time, Weekday as CivilWeekday, time};
@@ -160,9 +160,10 @@ pub enum Trigger {
     /// moment to compute in advance. See [`Trigger::is_clock`].
     BeforeEvent {
         lead_minutes: u32,
-        /// Only events on a calendar filed under this role. `None` is any.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        role_id: Option<RoleId>,
+        /// Only events on a calendar filed under this area. `None` is any.
+        /// `roleId` in a routine saved before areas were renamed from roles.
+        #[serde(default, skip_serializing_if = "Option::is_none", alias = "roleId")]
+        area_id: Option<AreaId>,
     },
     /// Before a task falls due. A query, like `BeforeEvent`.
     TaskDue { lead_days: u32 },
@@ -793,6 +794,17 @@ impl RoutineRun {
 mod tests {
     use super::*;
     use jiff::civil::{date, time};
+
+    #[test]
+    fn a_before_event_trigger_saved_with_a_role_still_names_its_area() {
+        // How a routine saved before areas were renamed from roles spelled it.
+        let id = AreaId::new();
+        let old = serde_json::json!({ "type": "beforeEvent", "leadMinutes": 30, "roleId": id });
+        let trigger: Trigger = serde_json::from_value(old).expect("the old spelling reads");
+        assert_eq!(trigger, Trigger::BeforeEvent { lead_minutes: 30, area_id: Some(id) });
+        let json = serde_json::to_value(&trigger).expect("a trigger serialises");
+        assert_eq!(json["areaId"], id.to_string());
+    }
 
     /// A routine that has never run, made a week before the tests look at it.
     fn morning(days: &[Weekday]) -> Routine {

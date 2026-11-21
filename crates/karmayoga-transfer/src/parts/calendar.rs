@@ -23,7 +23,7 @@ use crate::{Files, Landing, Mode, Options, Part, Portable, Report, Spec, land};
 use karmayoga_core::calendar::{Calendar, CalendarOrigin, CalendarProvider};
 use karmayoga_core::store::JournalStore;
 use karmayoga_core::store::calendars::{CalendarStore, EventQuery};
-use karmayoga_core::{CalendarId, Result, RoleId};
+use karmayoga_core::{AreaId, CalendarId, Result};
 use std::collections::BTreeMap;
 
 pub struct CalendarPart;
@@ -49,7 +49,7 @@ const COLUMNS: &[&str] = &[
     "provider",
     "visible",
     "refresh_minutes",
-    "role_id",
+    "area_id",
     "id",
 ];
 
@@ -109,7 +109,7 @@ impl Portable for CalendarPart {
                 calendar.provider.as_str().to_string(),
                 calendar.visible.to_string(),
                 calendar.refresh_minutes.to_string(),
-                calendar.role_id.map(|r| r.to_string()).unwrap_or_default(),
+                calendar.area_id.map(|r| r.to_string()).unwrap_or_default(),
                 calendar.id.to_string(),
             ]);
         }
@@ -167,7 +167,10 @@ fn calendar_from(row: &crate::text::Row<'_>) -> Calendar {
     if let Some(minutes) = row.parse("refresh_minutes") {
         calendar.refresh_minutes = minutes;
     }
-    calendar.role_id = RoleId::parse(row.get("role_id")).ok();
+    // `role_id` is the column's name in an index exported before areas were
+    // renamed from roles.
+    calendar.area_id =
+        AreaId::parse(row.get("area_id")).or_else(|_| AreaId::parse(row.get("role_id"))).ok();
     calendar
 }
 

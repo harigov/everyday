@@ -53,7 +53,11 @@ use std::time::Instant;
 /// Bump it when a command is removed, an argument is removed or narrowed, or a
 /// result changes shape. Adding a command, or an optional argument, does not:
 /// an older client simply does not call it.
-pub const PROTOCOL: u32 = 1;
+///
+/// 2: roles became areas -- `list_roles` and the rest of its commands are
+/// `list_areas` and so on, `roleId` is `areaId`, and a purpose naming one is
+/// `{"type": "area"}`.
+pub const PROTOCOL: u32 = 2;
 
 /// How often a calendar that is failing is tried again. The refresher looks
 /// every minute, which is right for one that works -- it is how a reminder's

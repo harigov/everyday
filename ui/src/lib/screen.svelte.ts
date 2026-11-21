@@ -48,7 +48,7 @@ const deps: AppDeps = {
  *  which page it is. */
 const SETTINGS_PAGES: Record<SettingsTab, string> = {
   general: 'the General tab',
-  profile: 'the About You tab, their profile and roles',
+  profile: 'the About You tab, their profile and areas',
   accounts: 'the Accounts tab',
   sorting: 'the Mail sorting tab, the categories their mail is sorted into',
   writing: 'the Mail writing tab, how they want mail written for them to sound',

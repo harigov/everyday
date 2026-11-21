@@ -78,9 +78,9 @@ use super::{EntryQuery, JournalStore, SortOrder};
 use crate::agent::{AgentSettings, Conversation, Memory, Message, Role, ToolCall};
 use crate::calendar::{Calendar, Event, EventStatus};
 use crate::id::{
-    BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,
-    KindId, LogId, MemoryId, NoteId, ProjectId, ReadingId, RoleId, RoutineId, RoutineRunId, TaskId,
-    TrackerId,
+    AreaId, BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId,
+    JournalId, KindId, LogId, MemoryId, NoteId, ProjectId, ReadingId, RoutineId, RoutineRunId,
+    TaskId, TrackerId,
 };
 use crate::library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, Link, LogEntry, LogEvent,
@@ -89,7 +89,7 @@ use crate::library::{
 use crate::model::{Attachment, Entry, Journal, Location, MediaKind};
 use crate::note::Note;
 use crate::profile::Profile;
-use crate::purpose::{Goal, GoalStatus, Purpose, Role as LifeRole};
+use crate::purpose::{Area, Goal, GoalStatus, Purpose};
 use crate::richtext::{MEDIA_NODE, RichDoc};
 use crate::routine::{Outcome, Routine, RoutineRun, Trigger};
 use crate::store::notes::{NoteQuery, NoteSort};
@@ -153,7 +153,7 @@ pub fn run_all(store: &dyn JournalStore) {
     // whole journal store rather than just its own trait, because the
     // question it exists to answer -- where did the week go -- is a join
     // across the task, calendar and tracking tables, and a suite that only
-    // saw roles and goals could not tell whether any of that works.
+    // saw areas and goals could not tell whether any of that works.
     match store.purpose() {
         Some(_) => run_purpose_suite(store),
         None => eprintln!("backend {name:?} stores no goals; skipping the purpose suite"),

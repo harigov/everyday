@@ -517,7 +517,10 @@ pub enum Offer {
 #[serde(rename_all = "camelCase", default)]
 pub struct CalendarFilter {
     pub calendar_ids: Vec<CalendarId>,
-    pub role_ids: Vec<crate::id::RoleId>,
+    /// Calendars serving any of these areas. Settings saved before areas
+    /// were renamed from roles say `roleIds`; the alias reads them.
+    #[serde(alias = "roleIds")]
+    pub area_ids: Vec<crate::id::AreaId>,
 }
 
 /// How speech becomes text is the platform's speech model now -- see
@@ -699,6 +702,15 @@ pub const SETTINGS_AAD: &[u8] = b"everyday.meeting-settings.v1";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_calendar_filter_saved_with_roles_still_names_its_areas() {
+        // Meeting settings saved before areas were renamed from roles.
+        let id = crate::id::AreaId::new();
+        let old = serde_json::json!({ "calendarIds": [], "roleIds": [id] });
+        let filter: CalendarFilter = serde_json::from_value(old).expect("the old spelling reads");
+        assert_eq!(filter.area_ids, vec![id]);
+    }
 
     fn seg(track: Track, text: &str) -> TrackSegment {
         TrackSegment {

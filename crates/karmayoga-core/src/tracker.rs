@@ -410,7 +410,7 @@ pub enum TrackerSource {
     /// Minutes of actual time blocks filed under the tracker's own
     /// [`purpose`](Tracker::purpose), by the block's own pointer or its
     /// task's or project's — the chain the balance report follows. A
-    /// tracker filed under a role counts that role's goals too.
+    /// tracker filed under an area counts that area's goals too.
     Time,
     /// Library items got to the end of — a finish or a re-read — counted on
     /// the day of the log entry. Every shelf when `kind_id` is `None`.

@@ -375,7 +375,7 @@ async fn delete_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> Comma
 
 /// Every well-known provider's preset, for the add-account sheet to draw
 /// before anybody has typed an address. Pure data; needs an open vault only
-/// so this cannot be called from the lock screen, the same gate `new_role`
+/// so this cannot be called from the lock screen, the same gate `new_area`
 /// and every other minting command sits behind.
 async fn account_presets(
     svc: Arc<Service>,

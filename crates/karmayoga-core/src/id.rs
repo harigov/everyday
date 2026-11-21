@@ -176,12 +176,15 @@ typed_id!(MealId, "meal");
 typed_id!(TrackerId, "tracker");
 typed_id!(ReadingId, "reading");
 
-// The purpose domain. A `RoleId` names who you are being -- parent,
-// engineer, yourself -- and a `GoalId` one outcome under one of those. Two
-// newtypes rather than one because they are not interchangeable in either
-// direction: a goal always belongs to exactly one role, and a record that
-// points straight at a role is saying something a goal cannot say.
-typed_id!(RoleId, "role");
+// The purpose domain. An `AreaId` names a part of a life -- family, work,
+// yourself -- and a `GoalId` one outcome under one of those. Two newtypes
+// rather than one because they are not interchangeable in either direction:
+// a goal always belongs to exactly one area, and a record that points
+// straight at an area is saying something a goal cannot say.
+//
+// Its `KIND` is still `role`, the word areas went by until November 2026 --
+// the same word their AEAD label keeps, pinned in `tests/pinned_strings.rs`.
+typed_id!(AreaId, "role");
 typed_id!(GoalId, "goal");
 
 // The assistant's domain. A `ConversationId` names a thread, a `MessageId`

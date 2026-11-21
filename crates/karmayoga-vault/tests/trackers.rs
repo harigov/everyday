@@ -238,7 +238,7 @@ mod derived {
     use super::support::vault;
     use jiff::civil::{Date, date};
     use karmayoga_core::library::{Item, Kind, LogEntry, LogEvent};
-    use karmayoga_core::purpose::{Goal, Role};
+    use karmayoga_core::purpose::{Area, Goal};
     use karmayoga_core::store::trackers::ReadingQuery;
     use karmayoga_core::task::{BlockKind, BlockSubject, Project, Task, TimeBlock};
     use karmayoga_core::{Period, Reading, Target, Tracker, TrackerKind, TrackerSource};
@@ -257,11 +257,11 @@ mod derived {
     fn time_on_a_goal_is_the_actual_minutes_filed_under_it_per_day() {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(dir.path());
-        let role = Role::new("Myself");
-        v.save_role(&role).unwrap();
-        let piano = Goal::new(role.id, "Learn piano");
+        let area = Area::new("Myself");
+        v.save_area(&area).unwrap();
+        let piano = Goal::new(area.id, "Learn piano");
         v.save_goal(&piano).unwrap();
-        let other = Goal::new(role.id, "Run 10k");
+        let other = Goal::new(area.id, "Run 10k");
         v.save_goal(&other).unwrap();
 
         // Filed once, on the project; every block under it inherits.
@@ -304,10 +304,10 @@ mod derived {
             "Monday's two blocks, and neither the plan behind one of them nor another goal's run"
         );
 
-        // Filed under the role instead, it counts every goal under it.
+        // Filed under the area instead, it counts every goal under it.
         let mut myself = time.clone();
         myself.id = karmayoga_core::TrackerId::new();
-        myself.purpose = Some(role.purpose());
+        myself.purpose = Some(area.purpose());
         v.save_tracker(&myself).unwrap();
         assert_eq!(days_of(&v, &myself, mon, tue), vec![(mon, 45.0), (tue, 50.0)]);
 

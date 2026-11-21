@@ -27,7 +27,7 @@ use karmayoga_core::model::{Attachment, MediaKind};
 use karmayoga_core::purpose::Purpose;
 use karmayoga_core::richtext::RichDoc;
 use karmayoga_core::store::JournalStore;
-use karmayoga_core::{GoalId, Result, RoleId};
+use karmayoga_core::{AreaId, GoalId, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -402,7 +402,8 @@ fn kind_name(kind: MediaKind) -> &'static str {
 // ---- purpose ------------------------------------------------------------
 
 /// A purpose, written the way a person can read and an importer can parse:
-/// `goal:<id>` or `role:<id>`.
+/// `goal:<id>` or `area:<id>`. Archives exported before areas were renamed
+/// from roles say `role:<id>`, which still parses.
 ///
 /// The name is not written beside it. A goal's title is in the purpose part's
 /// own files, and repeating it here would be a second copy to disagree with
@@ -410,7 +411,7 @@ fn kind_name(kind: MediaKind) -> &'static str {
 pub fn purpose_text(purpose: Option<&Purpose>) -> String {
     match purpose {
         Some(Purpose::Goal { id }) => format!("goal:{id}"),
-        Some(Purpose::Role { id }) => format!("role:{id}"),
+        Some(Purpose::Area { id }) => format!("area:{id}"),
         None => String::new(),
     }
 }
@@ -419,7 +420,7 @@ pub fn parse_purpose(text: &str) -> Option<Purpose> {
     let (kind, id) = text.trim().split_once(':')?;
     match kind {
         "goal" => Some(Purpose::Goal { id: GoalId::parse(id).ok()? }),
-        "role" => Some(Purpose::Role { id: RoleId::parse(id).ok()? }),
+        "area" | "role" => Some(Purpose::Area { id: AreaId::parse(id).ok()? }),
         _ => None,
     }
 }
@@ -465,8 +466,11 @@ mod tests {
     fn a_purpose_round_trips() {
         let goal = Purpose::Goal { id: GoalId::new() };
         assert_eq!(parse_purpose(&purpose_text(Some(&goal))), Some(goal));
-        let role = Purpose::Role { id: RoleId::new() };
-        assert_eq!(parse_purpose(&purpose_text(Some(&role))), Some(role));
+        let area = Purpose::Area { id: AreaId::new() };
+        assert_eq!(parse_purpose(&purpose_text(Some(&area))), Some(area));
+        // How an archive from before the rename spelled it.
+        let id = AreaId::new();
+        assert_eq!(parse_purpose(&format!("role:{id}")), Some(Purpose::Area { id }));
         assert!(parse_purpose("").is_none());
         assert!(parse_purpose("goal:not-an-id").is_none());
     }

@@ -212,10 +212,10 @@ fn templates(calendars: bool) -> Vec<Template> {
         },
         Template {
             name: "Weekly review".into(),
-            instructions: "Look back over the last seven days: where the time went by role, \
+            instructions: "Look back over the last seven days: where the time went by area, \
                  which goals were touched and which were not, how each goal and habit stood \
                  against its targets, and what is still open from last week. Write it up as \
-                 a note. Be honest about the roles that got nothing."
+                 a note. Be honest about the areas that got nothing."
                 .into(),
             trigger: Trigger::Schedule {
                 at: time(17, 0, 0, 0),
@@ -264,7 +264,7 @@ fn templates(calendars: bool) -> Vec<Template> {
                  there is a note from the last meeting with the same people, read it -- or \
                  call get_transcript for the dialogue itself -- before you write anything."
                 .into(),
-            trigger: Trigger::BeforeEvent { lead_minutes: 60, role_id: None },
+            trigger: Trigger::BeforeEvent { lead_minutes: 60, area_id: None },
             note: "Who is coming, and what you last said to them.".into(),
             // The trigger needs the calendar. Offered greyed rather than
             // hidden, so that "why is there no meeting prep" has an answer.

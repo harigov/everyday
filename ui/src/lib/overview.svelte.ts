@@ -2,7 +2,7 @@
 //
 // The odd one out among the app stores, and more so than it used to be.
 // Every other app owns records and shows them. This one owns *no records at
-// all* — the roles and goals it used to hold are edited in Settings and in
+// all* — the areas and goals it used to hold are edited in Settings and in
 // the todo app now — and spends its whole life asking the other domains what
 // happened, on behalf of whatever widgets somebody has put on the page.
 //
@@ -25,7 +25,7 @@
 
 import { accounts } from './accounts.svelte'
 import { api } from './api'
-import { byRole, neglected, type RoleTotals } from './balance'
+import { byArea, neglected, type AreaTotals } from './balance'
 import { calendar } from './calendar.svelte'
 import {
   activityWindows,
@@ -335,7 +335,7 @@ class OverviewState {
    * What is on screen, for the assistant -- see `onscreen.ts`.
    *
    * The cards by name rather than described: it is a page of whatever its
-   * owner put on it, so "where the week adds up by role" would be a claim
+   * owner put on it, so "where the week adds up by area" would be a claim
    * about somebody else's page. An empty page is one somebody is allowed to
    * have, and is said as such.
    */
@@ -385,22 +385,22 @@ class OverviewState {
     return addDays(todayIso(), 1)
   }
 
-  /** The balance report, folded into one row per role. */
-  get roles(): RoleTotals[] {
-    return byRole(this.report, purpose.roles, purpose.goals)
+  /** The balance report, folded into one row per area. */
+  get areas(): AreaTotals[] {
+    return byArea(this.report, purpose.areas, purpose.goals)
   }
 
   /**
-   * Roles with an open goal and nothing to show for it.
+   * Areas with an open goal and nothing to show for it.
    *
    * The one thing this app can say that no other can: a goal has to be read
    * across the journal, the todo app, the calendar and the shelf before
    * anybody can tell it has gone quiet.
    */
-  get neglectedRoles() {
+  get neglectedAreas() {
     const touched = new Map<string, string | null>()
     for (const [id, a] of purpose.activity) touched.set(id, a.lastTouched ?? null)
-    return neglected(this.roles, purpose.roles, purpose.goals, touched, todayIso())
+    return neglected(this.areas, purpose.areas, purpose.goals, touched, todayIso())
   }
 
   /** The window a heatmap or a chart draws over, oldest day first. */
@@ -838,7 +838,7 @@ class OverviewState {
       this.weatherNoLocation = weather.noLocation
       this.weatherError = weather.error
 
-      // Roles, goals and what has happened against them belong to `purpose`,
+      // Areas, goals and what has happened against them belong to `purpose`,
       // which the todo app and the pickers also read. Asked for here rather
       // than duplicated, and only when something on the page draws it.
       if (needs.has('purpose')) await purpose.load(true)

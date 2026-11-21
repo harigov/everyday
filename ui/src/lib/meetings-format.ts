@@ -68,10 +68,10 @@ export const SYSTEM_SILENT_WARN_MS = 60_000
 
 /**
  * A speaker's colour in the transcript: the house rule -- entity colour, no
- * donuts -- applied to a person instead of a role or a calendar. "You" is
+ * donuts -- applied to a person instead of an area or a calendar. "You" is
  * always the vault's own accent, since the reader is looking for themself
  * first; everyone else cycles through the same eight-colour palette
- * `DEFAULT_COLORS` gives a journal or a role, picked by their speaker key so
+ * `DEFAULT_COLORS` gives a journal or an area, picked by their speaker key so
  * it stays the same for the length of one transcript.
  */
 export function speakerColor(key: number, isOwner: boolean): string {

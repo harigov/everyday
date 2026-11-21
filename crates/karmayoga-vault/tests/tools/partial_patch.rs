@@ -59,7 +59,7 @@
 
 use super::support::{call, vault};
 use karmayoga_core::agent::tools;
-use karmayoga_core::{Goal, Note, Purpose, Role};
+use karmayoga_core::{Area, Goal, Note, Purpose};
 
 /// The coverage check the plan asks for: every `update_*` tool in the real
 /// catalogue must be named below, so a new one added later fails this test
@@ -115,9 +115,9 @@ fn update_task_touches_only_the_named_field() {
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
 
-    let role = Role::new("Work");
-    vault.save_role(&role).unwrap();
-    let goal = Goal::new(role.id, "Ship the deck");
+    let area = Area::new("Work");
+    vault.save_area(&area).unwrap();
+    let goal = Goal::new(area.id, "Ship the deck");
     vault.save_goal(&goal).unwrap();
 
     let project_a = call(&vault, "create_project", serde_json::json!({ "name": "The deck" }))["id"]
@@ -213,10 +213,10 @@ fn update_task_touches_only_the_named_field() {
         },
     );
     check(
-        "role_id",
-        serde_json::json!({"task_id": task_id, "role_id": role.id.to_string()}),
+        "area_id",
+        serde_json::json!({"task_id": task_id, "area_id": area.id.to_string()}),
         &mut |t| {
-            t.purpose = Some(Purpose::Role { id: role.id });
+            t.purpose = Some(Purpose::Area { id: area.id });
         },
     );
 }
@@ -488,12 +488,12 @@ fn update_item_touches_only_the_named_field() {
 fn update_goal_touches_only_the_named_field() {
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
-    let role_a = Role::new("Work");
-    vault.save_role(&role_a).unwrap();
-    let role_b = Role::new("Parent");
-    vault.save_role(&role_b).unwrap();
+    let area_a = Area::new("Work");
+    vault.save_area(&area_a).unwrap();
+    let area_b = Area::new("Parent");
+    vault.save_area(&area_b).unwrap();
 
-    let mut goal = Goal::new(role_a.id, "Ship the deck");
+    let mut goal = Goal::new(area_a.id, "Ship the deck");
     goal.notes = "Before winter".to_string();
     goal.horizon = Some("2026-11-01".parse().unwrap());
     vault.save_goal(&goal).unwrap();
@@ -529,10 +529,10 @@ fn update_goal_touches_only_the_named_field() {
         },
     );
     check(
-        "role_id",
-        serde_json::json!({"goal_id": goal.id.to_string(), "role_id": role_b.id.to_string()}),
+        "area_id",
+        serde_json::json!({"goal_id": goal.id.to_string(), "area_id": area_b.id.to_string()}),
         &mut |g| {
-            g.role_id = role_b.id;
+            g.area_id = area_b.id;
         },
     );
 }

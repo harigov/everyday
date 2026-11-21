@@ -10,7 +10,7 @@
 // shape of habit tracking that makes people give up — and it neither throws
 // nor fails to compile. A week you are two days into counted as a miss does
 // the same thing to a hit rate. And on the balance side: a goal folded into
-// the wrong role reports a balanced life to somebody who has not got one,
+// the wrong area reports a balanced life to somebody who has not got one,
 // and an unattributed share quietly dropped makes every chart flattering.
 //
 // No test framework, deliberately: one dependency-free file, run by
@@ -35,7 +35,7 @@ const {
   streakTarget,
   summarise,
 } = habits
-const { byRole, neglected, roleOf, totalMinutes } = balance
+const { byArea, neglected, areaOf, totalMinutes } = balance
 
 const { check, finish } = makeCheck()
 
@@ -333,28 +333,28 @@ check('a streak reads in its own period', describeStreak(3, 'week'), '3 weeks')
 check('...and in the singular', describeStreak(1, 'day'), '1 day')
 check('...and says so when there is none', describeStreak(0, 'week'), 'no streak')
 
-// ── by role ────────────────────────────────────────────────────────────
+// ── by area ────────────────────────────────────────────────────────────
 
-const roles = [
+const areas = [
   { id: 'r-work', name: 'Work', color: '#0369a1', icon: '', archived: false },
   { id: 'r-parent', name: 'Parent', color: '#c2410c', icon: '', archived: false },
-  { id: 'r-old', name: 'Retired role', color: '#000', icon: '', archived: true },
+  { id: 'r-old', name: 'Retired area', color: '#000', icon: '', archived: true },
 ]
 const goals = [
-  { id: 'g-ship', roleId: 'r-work', title: 'Ship it', status: 'active' },
-  { id: 'g-bike', roleId: 'r-parent', title: 'Bike', status: 'active' },
+  { id: 'g-ship', areaId: 'r-work', title: 'Ship it', status: 'active' },
+  { id: 'g-bike', areaId: 'r-parent', title: 'Bike', status: 'active' },
 ]
 
 check(
-  'a goal resolves to the role above it',
-  roleOf({ type: 'goal', id: 'g-ship' }, goals),
+  'a goal resolves to the area above it',
+  areaOf({ type: 'goal', id: 'g-ship' }, goals),
   'r-work',
 )
-check('a role points at itself', roleOf({ type: 'role', id: 'r-parent' }, goals), 'r-parent')
-check('nothing is unattributed', roleOf(null, goals), null)
+check('an area points at itself', areaOf({ type: 'area', id: 'r-parent' }, goals), 'r-parent')
+check('nothing is unattributed', areaOf(null, goals), null)
 // Deleting a goal deliberately does not rewrite what pointed at it, so this
 // is a normal state rather than a corruption -- and it must not throw.
-check('a deleted goal reads as unattributed', roleOf({ type: 'goal', id: 'g-gone' }, goals), null)
+check('a deleted goal reads as unattributed', areaOf({ type: 'goal', id: 'g-gone' }, goals), null)
 
 {
   const report = {
@@ -366,7 +366,7 @@ check('a deleted goal reads as unattributed', roleOf({ type: 'goal', id: 'g-gone
         blocks: 2,
       },
       {
-        purpose: { type: 'role', id: 'r-parent' },
+        purpose: { type: 'area', id: 'r-parent' },
         actualMinutes: 60,
         plannedMinutes: 0,
         blocks: 1,
@@ -375,74 +375,74 @@ check('a deleted goal reads as unattributed', roleOf({ type: 'goal', id: 'g-gone
       { actualMinutes: 45, plannedMinutes: 30, blocks: 3 },
     ],
     events: [
-      { roleId: 'r-work', minutes: 90, events: 3 },
-      { roleId: null, minutes: 30, events: 1 },
+      { areaId: 'r-work', minutes: 90, events: 3 },
+      { areaId: null, minutes: 30, events: 1 },
     ],
   }
-  const rows = byRole(report, roles, goals)
+  const rows = byArea(report, areas, goals)
 
   check(
     'busiest first, and the unattributed row last however big',
-    rows.map((r) => r.roleId),
+    rows.map((r) => r.areaId),
     ['r-work', 'r-parent', null],
   )
-  const work = rows.find((r) => r.roleId === 'r-work')
-  check('a goal folds into its role', work.actualMinutes, 120)
+  const work = rows.find((r) => r.areaId === 'r-work')
+  check('a goal folds into its area', work.actualMinutes, 120)
   check('meetings are counted apart from your own record', work.eventMinutes, 90)
   check('and the plan is kept beside the actual, never summed', work.plannedMinutes, 180)
   check('the goal breakdown names what got the time', work.goals, [
     { goalId: 'g-ship', title: 'Ship it', actualMinutes: 120 },
   ])
 
-  const unfiled = rows.find((r) => r.roleId === null)
+  const unfiled = rows.find((r) => r.areaId === null)
   // 45 with no purpose at all, plus 15 against a goal that no longer exists.
   check('unfiled time and a dead pointer land together', unfiled.actualMinutes, 60)
-  check('...as do meetings from a feed with no role', unfiled.eventMinutes, 30)
+  check('...as do meetings from a feed with no area', unfiled.eventMinutes, 30)
   check('the unattributed row is named rather than blank', unfiled.name, 'Not filed')
 
   check(
-    'an archived role gets no row',
-    rows.some((r) => r.roleId === 'r-old'),
+    'an archived area gets no row',
+    rows.some((r) => r.areaId === 'r-old'),
     false,
   )
   check('every minute is accounted for somewhere', totalMinutes(rows), 240)
 }
 
 {
-  // A role with nothing recorded still gets a row: its absence is the
+  // An area with nothing recorded still gets a row: its absence is the
   // finding, and a chart with one fewer bar than last week hides it.
-  const rows = byRole({ purposes: [], events: [] }, roles, goals)
-  check('a quiet role is drawn at zero rather than dropped', rows.length, 3)
+  const rows = byArea({ purposes: [], events: [] }, areas, goals)
+  check('a quiet area is drawn at zero rather than dropped', rows.length, 3)
   check('...and an empty report is not an error', totalMinutes(rows), 0)
 }
 
-check('no report at all still draws the rows', byRole(null, roles, goals).length, 3)
+check('no report at all still draws the rows', byArea(null, areas, goals).length, 3)
 
 // ── neglect ────────────────────────────────────────────────────────────
 
 {
-  const rows = byRole({ purposes: [], events: [] }, roles, goals)
+  const rows = byArea({ purposes: [], events: [] }, areas, goals)
   const touched = new Map([
     ['g-ship', '2026-09-08T10:00:00Z'],
     ['g-bike', '2026-06-01T10:00:00Z'],
   ])
-  const found = neglected(rows, roles, goals, touched, '2026-09-09')
+  const found = neglected(rows, areas, goals, touched, '2026-09-09')
   check(
-    'a role whose goals have gone stale is called out',
-    found.map((f) => f.role.id),
+    'an area whose goals have gone stale is called out',
+    found.map((f) => f.area.id),
     ['r-parent'],
   )
   check('and it says how long', found[0].days, 100)
 }
 
 {
-  // Time this week is a touch on its own: a role you spent six hours on is
+  // Time this week is a touch on its own: an area you spent six hours on is
   // not neglected however stale its goals' own records look.
-  const rows = byRole(
+  const rows = byArea(
     {
       purposes: [
         {
-          purpose: { type: 'role', id: 'r-parent' },
+          purpose: { type: 'area', id: 'r-parent' },
           actualMinutes: 360,
           plannedMinutes: 0,
           blocks: 4,
@@ -450,7 +450,7 @@ check('no report at all still draws the rows', byRole(null, roles, goals).length
       ],
       events: [],
     },
-    roles,
+    areas,
     goals,
   )
   const touched = new Map([
@@ -459,18 +459,18 @@ check('no report at all still draws the rows', byRole(null, roles, goals).length
   ])
   check(
     'time recorded this window clears the flag',
-    neglected(rows, roles, goals, touched, '2026-09-09'),
+    neglected(rows, areas, goals, touched, '2026-09-09'),
     [],
   )
 }
 
 {
-  // A role with no open goals is one you are not using, not one you are
+  // An area with no open goals is one you are not using, not one you are
   // neglecting -- and it must not be nagged about.
   const bare = [{ id: 'r-bare', name: 'Bare', color: '#000', icon: '', archived: false }]
-  const rows = byRole({ purposes: [], events: [] }, bare, [])
+  const rows = byArea({ purposes: [], events: [] }, bare, [])
   check(
-    'a role with no goals is not neglected',
+    'an area with no goals is not neglected',
     neglected(rows, bare, [], new Map(), '2026-09-09'),
     [],
   )
@@ -480,11 +480,11 @@ check('no report at all still draws the rows', byRole(null, roles, goals).length
   // Never touched at all is the strongest case, not the weakest, and sorts
   // ahead of merely stale.
   const touched = new Map([['g-ship', '2026-01-01T10:00:00Z']])
-  const rows = byRole({ purposes: [], events: [] }, roles, goals)
-  const found = neglected(rows, roles, goals, touched, '2026-09-09')
+  const rows = byArea({ purposes: [], events: [] }, areas, goals)
+  const found = neglected(rows, areas, goals, touched, '2026-09-09')
   check(
     'a goal nothing has ever touched sorts first',
-    found.map((f) => f.role.id),
+    found.map((f) => f.area.id),
     ['r-parent', 'r-work'],
   )
   check('and reports no age rather than a made-up one', found[0].days, null)

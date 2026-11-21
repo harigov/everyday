@@ -269,9 +269,9 @@ check('a goal', sectionPatch('purpose', 'goal:g1', task('x'), ctx), {
 })
 check(
   'inherited counts as already there',
-  sectionPatch('purpose', 'role:r1', task('x'), {
+  sectionPatch('purpose', 'area:r1', task('x'), {
     ...ctx,
-    projectPurpose: { type: 'role', id: 'r1' },
+    projectPurpose: { type: 'area', id: 'r1' },
   }),
   {},
 )
@@ -279,7 +279,7 @@ check(
   'not filed refuses a task its project files',
   sectionPatch('purpose', 'none', task('x', { purpose: { type: 'goal', id: 'g1' } }), {
     ...ctx,
-    projectPurpose: { type: 'role', id: 'r1' },
+    projectPurpose: { type: 'area', id: 'r1' },
   }),
   null,
 )

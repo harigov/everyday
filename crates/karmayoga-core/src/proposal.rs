@@ -174,7 +174,7 @@ impl TryFrom<RecordKind> for ProposalKind {
             | RecordKind::Item
             | RecordKind::Tracker
             | RecordKind::Reading
-            | RecordKind::Role
+            | RecordKind::Area
             | RecordKind::Goal
             | RecordKind::RoutineRun
             | RecordKind::Proposal
@@ -463,7 +463,7 @@ impl TryFrom<RecordKind> for AboutKind {
             | RecordKind::Log
             | RecordKind::Tracker
             | RecordKind::Reading
-            | RecordKind::Role
+            | RecordKind::Area
             | RecordKind::RoutineRun
             | RecordKind::Proposal
             | RecordKind::Conversation

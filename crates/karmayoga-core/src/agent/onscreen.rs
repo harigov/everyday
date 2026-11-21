@@ -47,8 +47,8 @@ use super::tools::{Domain, ToolContext, mail as mail_tools};
 use crate::account::{Account, Permission};
 use crate::files::{FileKind, FileStatus};
 use crate::id::{
-    AccountId, AlbumId, BlockId, CalendarId, DraftId, EntryId, EventId, FileId, GoalId, ItemId,
-    JournalId, KindId, MailMessageId, MailboxId, NewsSourceId, NoteId, ProjectId, RoleId, StoryId,
+    AccountId, AlbumId, AreaId, BlockId, CalendarId, DraftId, EntryId, EventId, FileId, GoalId,
+    ItemId, JournalId, KindId, MailMessageId, MailboxId, NewsSourceId, NoteId, ProjectId, StoryId,
     TaskId, ThreadId, TrackerId,
 };
 use crate::mail::{Address, Message};
@@ -138,7 +138,7 @@ pub enum Shown {
     Task(TaskId),
     /// Time set aside on the calendar, or time spent -- a [`crate::task::TimeBlock`].
     Block(BlockId),
-    Role(RoleId),
+    Area(AreaId),
     Goal(GoalId),
     Calendar(CalendarId),
     Event(EventId),
@@ -188,7 +188,7 @@ impl Shown {
             Shown::Project(_) => RecordKind::Project,
             Shown::Task(_) => RecordKind::Task,
             Shown::Block(_) => RecordKind::Block,
-            Shown::Role(_) => RecordKind::Role,
+            Shown::Area(_) => RecordKind::Area,
             Shown::Goal(_) => RecordKind::Goal,
             Shown::Calendar(_) => RecordKind::Calendar,
             Shown::Event(_) => RecordKind::Event,
@@ -434,14 +434,14 @@ fn line(ctx: &ToolContext<'_>, tz: &TimeZone, shown: Shown) -> Option<Said> {
                 on.unwrap_or_default()
             ))
         }
-        Shown::Role(id) => {
-            let role = vault.role(id).ok()?;
-            Said::with_id(format!("the role {} (id {id}).", q(&role.name)))
+        Shown::Area(id) => {
+            let area = vault.area(id).ok()?;
+            Said::with_id(format!("the area {} (id {id}).", q(&area.name)))
         }
         Shown::Goal(id) => {
             let goal = vault.goal(id).ok()?;
-            let role = vault.role(goal.role_id).map(|r| r.name).unwrap_or_default();
-            let under = quote(&role).map(|r| format!(", under the role {r}")).unwrap_or_default();
+            let area = vault.area(goal.area_id).map(|r| r.name).unwrap_or_default();
+            let under = quote(&area).map(|r| format!(", under the area {r}")).unwrap_or_default();
             Said::with_id(format!("the goal {} (id {id}){under}.", q(&goal.title)))
         }
         Shown::Calendar(id) => {
@@ -934,7 +934,7 @@ mod tests {
             Shown::Project(ProjectId::new()),
             Shown::Task(TaskId::new()),
             Shown::Block(BlockId::new()),
-            Shown::Role(RoleId::new()),
+            Shown::Area(AreaId::new()),
             Shown::Goal(GoalId::new()),
             Shown::Calendar(CalendarId::new()),
             Shown::Event(EventId::new()),

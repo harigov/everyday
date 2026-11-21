@@ -10,7 +10,7 @@
   //
   // Two of the four panes did not become widgets, and both left for a better
   // address rather than being dropped. Goals are edited in the todo app,
-  // beside the tasks that make them happen; roles are defined in Settings,
+  // beside the tasks that make them happen; areas are defined in Settings,
   // under About You, with the rest of what this vault knows about its owner.
   // What is left here is the reading, which is what an overview is.
   //
@@ -137,7 +137,7 @@
       SEP,
       { label: 'Refresh', icon: 'refresh', run: () => void overview.refresh() },
       {
-        label: 'Roles and goals…',
+        label: 'Areas and goals…',
         icon: 'compass',
         hint: 'in Settings',
         run: () => panels.openSettings('profile'),
@@ -338,14 +338,14 @@
         {/if}
       </div>
 
-      {#if purpose.roles.length === 0 && overview.needs.has('purpose')}
-        <!-- Roles are never seeded unasked: a list of what a life is made of
+      {#if purpose.areas.length === 0 && overview.needs.has('purpose')}
+        <!-- Areas are never seeded unasked: a list of what a life is made of
              is a claim, and writing one for somebody would be this
              application telling them who they are. Said once, under the
              cards that cannot fill themselves without it. -->
         <p class="hint">
-          Some of these are about <em>roles</em> — who you are being — and nothing has said what
-          yours are.
+          Some of these are about <em>areas</em> — the parts of your life — and nothing has said
+          what yours are.
           <button class="link" onclick={() => panels.openSettings('profile')}>
             Set them up in About You
           </button>

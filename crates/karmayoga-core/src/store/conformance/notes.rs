@@ -228,22 +228,22 @@ fn a_notes_purpose_survives_and_goes_with_it(store: &dyn JournalStore) {
         eprintln!("  (no purpose store; skipping the note's purpose)");
         return;
     };
-    let role = LifeRole::new("Sailor");
-    p.put_role(&role).expect("put_role");
+    let area = Area::new("Sailor");
+    p.put_area(&area).expect("put_area");
 
     let n = note_store(store);
     let mut note = Note::written("Log", "Wind from the south-west.");
-    note.purpose = Some(Purpose::Role { id: role.id });
+    note.purpose = Some(Purpose::Area { id: area.id });
     n.put_note(&note).expect("put_note");
 
     assert_eq!(
         n.get_note(note.id).unwrap().purpose,
-        Some(Purpose::Role { id: role.id }),
+        Some(Purpose::Area { id: area.id }),
         "a note's purpose must survive the round trip"
     );
     assert_eq!(
         n.list_notes(&NoteQuery::default()).unwrap()[0].purpose,
-        Some(Purpose::Role { id: role.id }),
+        Some(Purpose::Area { id: area.id }),
         "and be on the summary, so a list can say what a note is filed under"
     );
 
@@ -260,7 +260,7 @@ fn a_notes_purpose_survives_and_goes_with_it(store: &dyn JournalStore) {
     );
 
     n.delete_note(note.id).expect("delete_note");
-    p.delete_role(role.id).expect("delete_role");
+    p.delete_area(area.id).expect("delete_area");
 }
 
 fn garbage_collection_keeps_pictures_in_notes(store: &dyn JournalStore) {

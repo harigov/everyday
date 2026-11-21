@@ -147,7 +147,7 @@
   /** `sub` marks a tab drawn indented under the one before it. */
   const TABS: { id: SettingsTab; label: string; icon: IconName; group: Group; sub?: true }[] = [
     { id: 'general', label: 'General', icon: 'settings', group: 'platform' },
-    // "About You" rather than "You": the tab now holds the roles as well as
+    // "About You" rather than "You": the tab now holds the areas as well as
     // the six fields, and "You" beside a list of the parts of a life read as
     // a label for one of them.
     { id: 'profile', label: 'About You', icon: 'star', group: 'platform' },

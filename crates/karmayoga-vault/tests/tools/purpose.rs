@@ -1,22 +1,22 @@
-//! Roles and goals, through the tools a model actually has.
+//! Areas and goals, through the tools a model actually has.
 
 use super::support::{call, call_err, vault};
 
 #[test]
 fn the_assistant_can_file_a_project_and_see_where_the_week_went() {
     // The whole point of the purpose domain, exercised through the tools
-    // a model actually has: name a role, name a goal, file one project
+    // a model actually has: name an area, name a goal, file one project
     // under it, and read back where the hours went.
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
 
-    let role = karmayoga_core::Role::new("Work");
-    vault.save_role(&role).unwrap();
+    let area = karmayoga_core::Area::new("Work");
+    vault.save_area(&area).unwrap();
 
     let goal = call(
         &vault,
         "create_goal",
-        serde_json::json!({ "role_id": role.id.to_string(), "title": "Ship the rewrite" }),
+        serde_json::json!({ "area_id": area.id.to_string(), "title": "Ship the rewrite" }),
     );
     let goal_id = goal["id"].as_str().unwrap().to_string();
 
@@ -53,20 +53,20 @@ fn the_assistant_can_file_a_project_and_see_where_the_week_went() {
 
     let report = call(
         &vault,
-        "time_by_role",
+        "time_by_area",
         serde_json::json!({ "from": "2026-09-14", "to": "2026-09-14" }),
     );
-    let rows = report["roles"].as_array().unwrap();
+    let rows = report["areas"].as_array().unwrap();
     let work = rows
         .iter()
-        .find(|r| r["role"] == "Work")
+        .find(|r| r["area"] == "Work")
         .unwrap_or_else(|| panic!("expected a Work row, got {report}"));
     assert_eq!(work["minutes"], 120, "an hour under a task inherits its project's goal");
 
     // ...and the goal itself reports it.
     let goals = call(&vault, "list_goals", serde_json::json!({ "include_activity": true }));
     assert_eq!(goals["goals"][0]["activity"]["minutes"], 120);
-    assert_eq!(goals["goals"][0]["role"], "Work");
+    assert_eq!(goals["goals"][0]["area"], "Work");
 
     // Unfiling puts it back where unattributed time goes, rather than
     // leaving a pointer nothing resolves.
@@ -77,12 +77,12 @@ fn the_assistant_can_file_a_project_and_see_where_the_week_went() {
     );
     let after = call(
         &vault,
-        "time_by_role",
+        "time_by_area",
         serde_json::json!({ "from": "2026-09-14", "to": "2026-09-14" }),
     );
-    let rows = after["roles"].as_array().unwrap();
-    assert!(rows.iter().all(|r| r["role"] != "Work"), "got {after}");
-    assert!(rows.iter().any(|r| r["role"] == "not filed" && r["minutes"] == 120));
+    let rows = after["areas"].as_array().unwrap();
+    assert!(rows.iter().all(|r| r["area"] != "Work"), "got {after}");
+    assert!(rows.iter().any(|r| r["area"] == "not filed" && r["minutes"] == 120));
 }
 
 #[test]
@@ -94,9 +94,9 @@ fn set_purpose_refuses_a_call_that_says_two_things_or_nothing() {
     let vault = vault(dir.path());
     let project = karmayoga_core::Project::new("x");
     vault.save_project(&project).unwrap();
-    let role = karmayoga_core::Role::new("Work");
-    vault.save_role(&role).unwrap();
-    let goal = karmayoga_core::Goal::new(role.id, "g");
+    let area = karmayoga_core::Area::new("Work");
+    vault.save_area(&area).unwrap();
+    let goal = karmayoga_core::Goal::new(area.id, "g");
     vault.save_goal(&goal).unwrap();
 
     let both = call_err(
@@ -106,7 +106,7 @@ fn set_purpose_refuses_a_call_that_says_two_things_or_nothing() {
             "kind": "project",
             "id": project.id.to_string(),
             "goal_id": goal.id.to_string(),
-            "role_id": role.id.to_string(),
+            "area_id": area.id.to_string(),
         }),
     );
     assert!(both.contains("exactly one"), "got {both}");
@@ -140,12 +140,12 @@ fn a_goal_reports_never_touched_rather_than_saying_nothing() {
     // mention.
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
-    let role = karmayoga_core::Role::new("Myself");
-    vault.save_role(&role).unwrap();
+    let area = karmayoga_core::Area::new("Myself");
+    vault.save_area(&area).unwrap();
     call(
         &vault,
         "create_goal",
-        serde_json::json!({ "role_id": role.id.to_string(), "title": "Write every week" }),
+        serde_json::json!({ "area_id": area.id.to_string(), "title": "Write every week" }),
     );
 
     let goals = call(&vault, "list_goals", serde_json::json!({ "include_activity": true }));
@@ -162,12 +162,12 @@ fn dropping_a_goal_is_not_finishing_it() {
     // set out to do you actually did.
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
-    let role = karmayoga_core::Role::new("Work");
-    vault.save_role(&role).unwrap();
+    let area = karmayoga_core::Area::new("Work");
+    vault.save_area(&area).unwrap();
     let made = call(
         &vault,
         "create_goal",
-        serde_json::json!({ "role_id": role.id.to_string(), "title": "Hire someone" }),
+        serde_json::json!({ "area_id": area.id.to_string(), "title": "Hire someone" }),
     );
     let id: karmayoga_core::GoalId = made["id"].as_str().unwrap().parse().unwrap();
 
@@ -181,4 +181,36 @@ fn dropping_a_goal_is_not_finishing_it() {
     );
     assert_eq!(vault.goal(id).unwrap().completed_at, None);
     assert_eq!(vault.goal(id).unwrap().status, karmayoga_core::GoalStatus::Dropped);
+}
+
+#[test]
+fn a_call_that_still_says_role_id_moves_and_files_by_it() {
+    // A pending approval saved before areas were renamed from roles, or a
+    // model copying an earlier turn, still says `role_id`. Ignoring it would
+    // report success having moved nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let work = karmayoga_core::Area::new("Work");
+    let home = karmayoga_core::Area::new("Home");
+    vault.save_area(&work).unwrap();
+    vault.save_area(&home).unwrap();
+
+    let goal = call(
+        &vault,
+        "create_goal",
+        serde_json::json!({ "role_id": work.id.to_string(), "title": "Ship the rewrite" }),
+    );
+    let goal_id = goal["id"].as_str().unwrap().to_string();
+    let id = karmayoga_core::GoalId::parse(&goal_id).unwrap();
+    assert_eq!(vault.goal(id).unwrap().area_id, work.id);
+
+    call(
+        &vault,
+        "update_goal",
+        serde_json::json!({ "goal_id": goal_id, "role_id": home.id.to_string() }),
+    );
+    assert_eq!(vault.goal(id).unwrap().area_id, home.id, "the old argument was ignored");
+
+    let listed = call(&vault, "list_goals", serde_json::json!({ "role_id": work.id.to_string() }));
+    assert_eq!(listed["goals"].as_array().map(Vec::len), Some(0), "got {listed}");
 }

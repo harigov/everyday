@@ -30,10 +30,10 @@ use karmayoga_core::agent::{
 };
 use karmayoga_core::calendar::{AccountCalendarSource, Calendar, Event, EventStatus};
 use karmayoga_core::id::{
-    AccountId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId, ItemId,
-    JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId,
-    NoteId, OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
-    StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    AccountId, AreaId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
+    ItemId, JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId,
+    NewsSourceId, NoteId, OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoutineId,
+    RoutineRunId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 use karmayoga_core::job::{Job, JobStatus};
 use karmayoga_core::library::{Item, ItemStatus, Kind, LogEntry, LogEvent};
@@ -50,7 +50,7 @@ use karmayoga_core::news::{
 use karmayoga_core::note::Note;
 use karmayoga_core::packstore::PackRef;
 use karmayoga_core::proposal::{Payload, Proposal, ProposedRecord};
-use karmayoga_core::purpose::{Goal, GoalStatus, Purpose, Role as LifeRole};
+use karmayoga_core::purpose::{Area, Goal, GoalStatus, Purpose};
 use karmayoga_core::richtext::{MEDIA_NODE, RichDoc};
 use karmayoga_core::routine::{Outcome, Routine, RoutineRun, Trigger};
 use karmayoga_core::store::mail::IngestMessage;
@@ -154,18 +154,20 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
     let mut clock = Clock::new(ts_base);
     let tag = format!("{base:x}");
 
-    // ---- purpose: role and goal, first, so everything else can point at
+    // ---- purpose: area and goal, first, so everything else can point at
     // them ------------------------------------------------------------
 
-    let role_id: RoleId = ids.next();
-    let mut role = LifeRole::new(format!("Fixture role {tag}"));
-    role.id = role_id;
-    role.created_at = clock.next();
-    role.updated_at = role.created_at;
-    vault.save_role(&role).unwrap();
+    let area_id: AreaId = ids.next();
+    // Still named as it was when the frozen vaults were written, so the
+    // records appended to them sit beside their own kind.
+    let mut area = Area::new(format!("Fixture role {tag}"));
+    area.id = area_id;
+    area.created_at = clock.next();
+    area.updated_at = area.created_at;
+    vault.save_area(&area).unwrap();
 
     let goal_id: GoalId = ids.next();
-    let mut goal = Goal::new(role.id, format!("Fixture goal {tag}"));
+    let mut goal = Goal::new(area.id, format!("Fixture goal {tag}"));
     goal.id = goal_id;
     goal.status = GoalStatus::Active;
     goal.created_at = clock.next();
@@ -177,7 +179,7 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
     let tracker_id: TrackerId = ids.next();
     let mut tracker = Tracker::new(format!("Fixture tracker {tag}"), TrackerKind::Amount);
     tracker.id = tracker_id;
-    tracker.purpose = Some(Purpose::Role { id: role.id });
+    tracker.purpose = Some(Purpose::Area { id: area.id });
     tracker.created_at = clock.next();
     tracker.updated_at = tracker.created_at;
     vault.save_tracker(&tracker).unwrap();
@@ -273,7 +275,7 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
     task.id = task_id;
     task.status = TaskStatus::Doing;
     task.priority = Priority::High;
-    task.purpose = Some(Purpose::Role { id: role.id });
+    task.purpose = Some(Purpose::Area { id: area.id });
     task.created_at = clock.next();
     task.updated_at = task.created_at;
     vault.save_task(&task).unwrap();
@@ -353,7 +355,7 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
         format!("Fixture Calendar {tag}"),
     );
     calendar.id = calendar_id;
-    calendar.role_id = Some(role.id);
+    calendar.area_id = Some(area.id);
     calendar.created_at = clock.next();
     calendar.updated_at = calendar.created_at;
 

@@ -111,7 +111,7 @@ class AccountsState {
   /**
    * Create or update an account record. Answers whether it went.
    *
-   * `$state.snapshot`, the same as `saveRole` and `saveGoal` in
+   * `$state.snapshot`, the same as `saveArea` and `saveGoal` in
    * `purpose.svelte.ts`: a caller often hands this a record read straight
    * out of `this.list` or built from a sheet's own `$state` fields, and its
    * nested objects -- `imap`, `auth`, the access grids -- are Svelte
@@ -200,7 +200,7 @@ export const accounts = new AccountsState()
  * context the packaged webview does not always have. There is no
  * `new_account` command for this to defer to -- `save_account` is a plain
  * upsert, and nothing in the surface mints a blank `Account` the way
- * `new_role` and `new_task` mint a blank record of theirs. Until one exists,
+ * `new_area` and `new_task` mint a blank record of theirs. Until one exists,
  * this is the accepted stopgap: `localhost` and the packaged app's own
  * origin are both secure contexts, and a v4 id round-trips through the
  * wire's `Uuid` type exactly as well as a v7 one -- it only sorts

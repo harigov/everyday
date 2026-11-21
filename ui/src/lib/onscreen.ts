@@ -72,7 +72,7 @@ const UNTITLED: Record<ShownKind, string> = {
   project: 'A project',
   task: 'An untitled task',
   block: 'A block of time',
-  role: 'A role',
+  area: 'An area',
   goal: 'A goal',
   calendar: 'A calendar',
   event: 'An untitled event',

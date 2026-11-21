@@ -1,4 +1,4 @@
-//! The purpose half of the conformance suite: roles, goals and the reports.
+//! The purpose half of the conformance suite: areas, goals and the reports.
 
 use super::calendars::sample_event;
 use super::library::seeded_kind;
@@ -10,17 +10,17 @@ use crate::completable::Completable;
 ///
 /// Handed the whole journal store, because half of what it checks is that
 /// *other* domains report their purpose correctly. The store must be empty
-/// of roles on entry; it is left empty on success.
+/// of areas on entry; it is left empty on success.
 pub fn run_purpose_suite(store: &dyn JournalStore) {
     eprintln!("--- purpose conformance suite ---");
 
     purpose_starts_empty(store);
-    role_crud(store);
+    area_crud(store);
     missing_purpose_records_are_not_found(store);
     goal_round_trips_and_filters(store);
     batch_goal_writes_land_together(store);
-    a_role_with_goals_under_it_refuses_to_be_deleted(store);
-    role_goal_counts_are_answered_by_the_backend(store);
+    an_area_with_goals_under_it_refuses_to_be_deleted(store);
+    area_goal_counts_are_answered_by_the_backend(store);
     a_purpose_survives_a_round_trip_on_every_record(store);
     time_is_attributed_down_the_inheritance_chain(store);
     actual_time_is_cut_by_day(store);
@@ -44,71 +44,71 @@ fn purpose_cleanup(store: &dyn JournalStore) {
     for goal in p.list_goals(&GoalQuery::default()).expect("list_goals") {
         p.delete_goal(goal.id).expect("delete_goal");
     }
-    for role in p.list_roles().expect("list_roles") {
-        p.delete_role(role.id).expect("delete_role");
+    for area in p.list_areas().expect("list_areas") {
+        p.delete_area(area.id).expect("delete_area");
     }
-    assert!(p.list_roles().unwrap().is_empty(), "cleanup left roles behind");
+    assert!(p.list_areas().unwrap().is_empty(), "cleanup left areas behind");
     assert!(p.list_goals(&GoalQuery::default()).unwrap().is_empty(), "cleanup left goals behind");
 }
 
-fn seeded_role(store: &dyn JournalStore, name: &str) -> LifeRole {
-    let role = LifeRole::new(name);
-    purpose_store(store).put_role(&role).expect("put_role");
-    role
+fn seeded_area(store: &dyn JournalStore, name: &str) -> Area {
+    let area = Area::new(name);
+    purpose_store(store).put_area(&area).expect("put_area");
+    area
 }
 
-fn seeded_goal(store: &dyn JournalStore, role: &LifeRole, title: &str) -> Goal {
-    let goal = Goal::new(role.id, title);
+fn seeded_goal(store: &dyn JournalStore, area: &Area, title: &str) -> Goal {
+    let goal = Goal::new(area.id, title);
     purpose_store(store).put_goal(&goal).expect("put_goal");
     goal
 }
 
 fn purpose_starts_empty(store: &dyn JournalStore) {
     let p = purpose_store(store);
-    assert!(p.list_roles().unwrap().is_empty(), "a fresh store must have no roles");
+    assert!(p.list_areas().unwrap().is_empty(), "a fresh store must have no areas");
     assert!(p.list_goals(&GoalQuery::default()).unwrap().is_empty(), "a fresh store has no goals");
 }
 
-fn role_crud(store: &dyn JournalStore) {
+fn area_crud(store: &dyn JournalStore) {
     let p = purpose_store(store);
-    let mut role = LifeRole::new("Parent").with_color("#0f766e").with_icon("\u{1f3e1}");
-    role.notes = "the one that matters".into();
-    role.sort_order = 3;
-    p.put_role(&role).unwrap();
+    let mut area = Area::new("Parent").with_color("#0f766e").with_icon("\u{1f3e1}");
+    area.notes = "the one that matters".into();
+    area.sort_order = 3;
+    p.put_area(&area).unwrap();
 
-    assert_eq!(p.get_role(role.id).unwrap(), role, "a role must survive the round trip whole");
-    assert_eq!(p.list_roles().unwrap().len(), 1);
+    assert_eq!(p.get_area(area.id).unwrap(), area, "an area must survive the round trip whole");
+    assert_eq!(p.list_areas().unwrap().len(), 1);
 
     // Idempotent, as every `put_` in this codebase is.
-    p.put_role(&role).unwrap();
-    assert_eq!(p.list_roles().unwrap().len(), 1, "putting twice must not make two roles");
+    p.put_area(&area).unwrap();
+    assert_eq!(p.list_areas().unwrap().len(), 1, "putting twice must not make two areas");
 
-    role.name = "Father".into();
-    role.archived = true;
-    p.put_role(&role).unwrap();
-    let back = p.get_role(role.id).unwrap();
+    area.name = "Father".into();
+    area.archived = true;
+    p.put_area(&area).unwrap();
+    let back = p.get_area(area.id).unwrap();
     assert_eq!(back.name, "Father");
-    assert!(back.archived, "an archived role is still listed; it is only hidden from pickers");
-    assert_eq!(p.list_roles().unwrap().len(), 1, "archiving is not deleting");
+    assert!(back.archived, "an archived area is still listed; it is only hidden from pickers");
+    assert_eq!(p.list_areas().unwrap().len(), 1, "archiving is not deleting");
 
-    p.delete_role(role.id).unwrap();
-    assert!(p.list_roles().unwrap().is_empty());
+    p.delete_area(area.id).unwrap();
+    assert!(p.list_areas().unwrap().is_empty());
 }
 
 fn missing_purpose_records_are_not_found(store: &dyn JournalStore) {
     let p = purpose_store(store);
-    // A role that was never written is not found, not an empty one.
-    super::assert_not_found(p.get_role(RoleId::new()));
+    // An area that was never written is not found, not an empty one.
+    super::assert_not_found(p.get_area(AreaId::new()));
     super::assert_not_found(p.get_goal(GoalId::new()));
     // Deleting what is not there is not an error: it is already true.
     p.delete_goal(GoalId::new()).expect("deleting a missing goal is a no-op");
-    p.delete_role(RoleId::new()).expect("deleting a missing role is a no-op");
+    p.delete_area(AreaId::new()).expect("deleting a missing area is a no-op");
 }
 
 fn goal_round_trips_and_filters(store: &dyn JournalStore) {
     let p = purpose_store(store);
-    let parent = seeded_role(store, "Parent");
-    let work = seeded_role(store, "Work");
+    let parent = seeded_area(store, "Parent");
+    let work = seeded_area(store, "Work");
 
     let mut riding = Goal::new(parent.id, "Viya rides without stabilisers");
     riding.notes = "start on the grass".into();
@@ -131,7 +131,7 @@ fn goal_round_trips_and_filters(store: &dyn JournalStore) {
 
     let under_parent = p.list_goals(&GoalQuery::under(parent.id)).unwrap();
     assert_eq!(under_parent.len(), 2);
-    assert!(under_parent.iter().all(|g| g.role_id == parent.id));
+    assert!(under_parent.iter().all(|g| g.area_id == parent.id));
 
     // Paused is open; done is not.
     let open = p.list_goals(&GoalQuery::open()).unwrap();
@@ -152,16 +152,16 @@ fn goal_round_trips_and_filters(store: &dyn JournalStore) {
     for g in [riding, shipped, later] {
         p.delete_goal(g.id).unwrap();
     }
-    p.delete_role(parent.id).unwrap();
-    p.delete_role(work.id).unwrap();
+    p.delete_area(parent.id).unwrap();
+    p.delete_area(work.id).unwrap();
 }
 
 fn batch_goal_writes_land_together(store: &dyn JournalStore) {
     let p = purpose_store(store);
-    let role = seeded_role(store, "Batch");
-    let goals: Vec<Goal> = (0..5).map(|i| Goal::new(role.id, format!("goal {i}"))).collect();
+    let area = seeded_area(store, "Batch");
+    let goals: Vec<Goal> = (0..5).map(|i| Goal::new(area.id, format!("goal {i}"))).collect();
     p.put_goals(&goals).unwrap();
-    assert_eq!(p.list_goals(&GoalQuery::under(role.id)).unwrap().len(), 5);
+    assert_eq!(p.list_goals(&GoalQuery::under(area.id)).unwrap().len(), 5);
 
     // An empty batch is a no-op rather than an error, because "save the
     // selection" with nothing selected is a real call.
@@ -170,43 +170,43 @@ fn batch_goal_writes_land_together(store: &dyn JournalStore) {
     for g in goals {
         p.delete_goal(g.id).unwrap();
     }
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
-fn a_role_with_goals_under_it_refuses_to_be_deleted(store: &dyn JournalStore) {
+fn an_area_with_goals_under_it_refuses_to_be_deleted(store: &dyn JournalStore) {
     // The one parent in this vault that does not take its children with it.
-    // A shelf is what its items are made of; a role is not what a year of
+    // A shelf is what its items are made of; an area is not what a year of
     // attributed hours is made of, and one click is the wrong distance from
     // losing them.
     let p = purpose_store(store);
-    let role = seeded_role(store, "Held");
-    let goal = seeded_goal(store, &role, "still wanted");
+    let area = seeded_area(store, "Held");
+    let goal = seeded_goal(store, &area, "still wanted");
 
-    let refused = p.delete_role(role.id);
-    assert!(refused.is_err(), "a role with goals under it must not be deletable");
-    assert!(p.get_role(role.id).is_ok(), "the refusal must leave the role alone");
+    let refused = p.delete_area(area.id);
+    assert!(refused.is_err(), "an area with goals under it must not be deletable");
+    assert!(p.get_area(area.id).is_ok(), "the refusal must leave the area alone");
     assert!(p.get_goal(goal.id).is_ok(), "and must certainly leave the goal alone");
 
     // ...and it becomes deletable once nothing points at it.
     p.delete_goal(goal.id).unwrap();
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
-fn role_goal_counts_are_answered_by_the_backend(store: &dyn JournalStore) {
+fn area_goal_counts_are_answered_by_the_backend(store: &dyn JournalStore) {
     let p = purpose_store(store);
-    let role = seeded_role(store, "Counted");
-    assert_eq!(p.count_goals(role.id).unwrap(), (0, 0));
+    let area = seeded_area(store, "Counted");
+    assert_eq!(p.count_goals(area.id).unwrap(), (0, 0));
 
-    let a = seeded_goal(store, &role, "open one");
-    let mut b = Goal::new(role.id, "finished one");
+    let a = seeded_goal(store, &area, "open one");
+    let mut b = Goal::new(area.id, "finished one");
     b.set_status(GoalStatus::Done);
     p.put_goal(&b).unwrap();
-    let mut c = Goal::new(role.id, "paused one");
+    let mut c = Goal::new(area.id, "paused one");
     c.set_status(GoalStatus::Paused);
     p.put_goal(&c).unwrap();
 
     assert_eq!(
-        p.count_goals(role.id).unwrap(),
+        p.count_goals(area.id).unwrap(),
         (3, 2),
         "three goals, two of them still being pursued"
     );
@@ -214,15 +214,15 @@ fn role_goal_counts_are_answered_by_the_backend(store: &dyn JournalStore) {
     for g in [a.id, b.id, c.id] {
         p.delete_goal(g).unwrap();
     }
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
 fn a_purpose_survives_a_round_trip_on_every_record(store: &dyn JournalStore) {
     let p = purpose_store(store);
-    let role = seeded_role(store, "Round trip");
-    let goal = seeded_goal(store, &role, "the goal");
+    let area = seeded_area(store, "Round trip");
+    let goal = seeded_goal(store, &area, "the goal");
     let by_goal = goal.purpose();
-    let by_role = role.purpose();
+    let by_area = area.purpose();
 
     // A project and a task, pointing at a goal.
     if let Some(tasks) = store.tasks() {
@@ -232,12 +232,12 @@ fn a_purpose_survives_a_round_trip_on_every_record(store: &dyn JournalStore) {
         assert_eq!(tasks.get_project(project.id).unwrap().purpose, Some(by_goal));
 
         let mut task = Task::new("filed too");
-        task.purpose = Some(by_role);
+        task.purpose = Some(by_area);
         tasks.put_task(&task).unwrap();
         assert_eq!(
             tasks.get_task(task.id).unwrap().purpose,
-            Some(by_role),
-            "pointing straight at a role is not a degraded case of pointing at a goal"
+            Some(by_area),
+            "pointing straight at an area is not a degraded case of pointing at a goal"
         );
 
         let mut block = TimeBlock::new(
@@ -274,25 +274,25 @@ fn a_purpose_survives_a_round_trip_on_every_record(store: &dyn JournalStore) {
         library.delete_kind(kind.id).unwrap();
     }
 
-    // A subscribed calendar, which carries a role rather than a purpose.
+    // A subscribed calendar, which carries an area rather than a purpose.
     if let Some(calendars) = store.calendars() {
         let mut cal = Calendar::subscribed("work", "https://example.com/w.ics");
-        cal.role_id = Some(role.id);
+        cal.area_id = Some(area.id);
         calendars.put_calendar(&cal).unwrap();
-        assert_eq!(calendars.get_calendar(cal.id).unwrap().role_id, Some(role.id));
+        assert_eq!(calendars.get_calendar(cal.id).unwrap().area_id, Some(area.id));
         calendars.delete_calendar(cal.id).unwrap();
     }
 
     p.delete_goal(goal.id).unwrap();
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
 fn time_is_attributed_down_the_inheritance_chain(store: &dyn JournalStore) {
     let Some(tasks) = store.tasks() else { return };
     let p = purpose_store(store);
-    let role = seeded_role(store, "Chain");
-    let goal = seeded_goal(store, &role, "the goal");
-    let other = seeded_goal(store, &role, "the other goal");
+    let area = seeded_area(store, "Chain");
+    let goal = seeded_goal(store, &area, "the goal");
+    let other = seeded_goal(store, &area, "the other goal");
 
     // A project with a purpose, a task under it with none, and a block under
     // that with none: the block must be attributed to the project's goal.
@@ -324,7 +324,7 @@ fn time_is_attributed_down_the_inheritance_chain(store: &dyn JournalStore) {
     // A block with its own purpose, overriding both.
     let mut own = TimeBlock::new(BlockSubject::Task { id: inherits.id }, at, 15, "UTC")
         .of_kind(BlockKind::Planned);
-    own.purpose = Some(role.purpose());
+    own.purpose = Some(area.purpose());
     tasks.put_block(&own).unwrap();
 
     let window = PurposeWindow::new(day, day);
@@ -346,7 +346,7 @@ fn time_is_attributed_down_the_inheritance_chain(store: &dyn JournalStore) {
         30,
         "a task's own purpose beats the project it is filed under"
     );
-    let owned = find(role.purpose());
+    let owned = find(area.purpose());
     assert_eq!(owned.planned_minutes, 15, "a block's own purpose beats everything above it");
     assert_eq!(owned.actual_minutes, 0, "planned and actual are counted apart, never summed");
 
@@ -359,7 +359,7 @@ fn time_is_attributed_down_the_inheritance_chain(store: &dyn JournalStore) {
     tasks.delete_project(project.id).unwrap();
     p.delete_goal(goal.id).unwrap();
     p.delete_goal(other.id).unwrap();
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
 fn actual_time_is_cut_by_day(store: &dyn JournalStore) {
@@ -367,8 +367,8 @@ fn actual_time_is_cut_by_day(store: &dyn JournalStore) {
     // attribution, one row per day, actual blocks only.
     let Some(tasks) = store.tasks() else { return };
     let p = purpose_store(store);
-    let role = seeded_role(store, "Daily");
-    let goal = seeded_goal(store, &role, "learn piano");
+    let area = seeded_area(store, "Daily");
+    let goal = seeded_goal(store, &area, "learn piano");
 
     let mut project = Project::new("piano");
     project.purpose = Some(goal.purpose());
@@ -415,7 +415,7 @@ fn actual_time_is_cut_by_day(store: &dyn JournalStore) {
 
     tasks.delete_project(project.id).unwrap();
     p.delete_goal(goal.id).unwrap();
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
 fn unattributed_time_is_reported_rather_than_dropped(store: &dyn JournalStore) {
@@ -444,8 +444,8 @@ fn clearing_a_purpose_removes_it_from_the_reports(store: &dyn JournalStore) {
     // that keeps rows the record no longer claims is an index that lies.
     let Some(tasks) = store.tasks() else { return };
     let p = purpose_store(store);
-    let role = seeded_role(store, "Cleared");
-    let goal = seeded_goal(store, &role, "briefly");
+    let area = seeded_area(store, "Cleared");
+    let goal = seeded_goal(store, &area, "briefly");
 
     let day = date(2026, 9, 16);
     let at = day.at(8, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
@@ -469,14 +469,14 @@ fn clearing_a_purpose_removes_it_from_the_reports(store: &dyn JournalStore) {
 
     tasks.delete_block(block.id).unwrap();
     p.delete_goal(goal.id).unwrap();
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
 fn deleting_a_record_takes_its_purpose_with_it(store: &dyn JournalStore) {
     let Some(tasks) = store.tasks() else { return };
     let p = purpose_store(store);
-    let role = seeded_role(store, "Deleted");
-    let goal = seeded_goal(store, &role, "doomed");
+    let area = seeded_area(store, "Deleted");
+    let goal = seeded_goal(store, &area, "doomed");
 
     let day = date(2026, 9, 17);
     let at = day.at(8, 0, 0, 0).in_tz("UTC").unwrap().timestamp();
@@ -505,14 +505,14 @@ fn deleting_a_record_takes_its_purpose_with_it(store: &dyn JournalStore) {
     assert_eq!(p.goal_activity(goal.id).unwrap(), Default::default());
 
     p.delete_goal(goal.id).unwrap();
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
 fn goal_activity_counts_what_points_at_it(store: &dyn JournalStore) {
     let Some(tasks) = store.tasks() else { return };
     let p = purpose_store(store);
-    let role = seeded_role(store, "Active");
-    let goal = seeded_goal(store, &role, "measured");
+    let area = seeded_area(store, "Active");
+    let goal = seeded_goal(store, &area, "measured");
 
     let mut project = Project::new("for the goal");
     project.purpose = Some(goal.purpose());
@@ -544,7 +544,7 @@ fn goal_activity_counts_what_points_at_it(store: &dyn JournalStore) {
     assert!(activity.last_touched.is_some(), "something happened, so there is a latest moment");
 
     // A goal nothing points at reports nothing rather than failing.
-    let untouched = seeded_goal(store, &role, "nothing yet");
+    let untouched = seeded_goal(store, &area, "nothing yet");
     let empty = p.goal_activity(untouched.id).unwrap();
     assert!(empty.is_empty());
     assert_eq!(empty.last_touched, None);
@@ -552,20 +552,20 @@ fn goal_activity_counts_what_points_at_it(store: &dyn JournalStore) {
     tasks.delete_project(project.id).unwrap();
     p.delete_goal(goal.id).unwrap();
     p.delete_goal(untouched.id).unwrap();
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
 fn events_are_attributed_by_their_calendar(store: &dyn JournalStore) {
     let Some(calendars) = store.calendars() else { return };
     let p = purpose_store(store);
-    let role = seeded_role(store, "Meetings");
+    let area = seeded_area(store, "Meetings");
 
     let mut cal = Calendar::subscribed("work", "https://example.com/work.ics");
-    cal.role_id = Some(role.id);
+    cal.area_id = Some(area.id);
     calendars.put_calendar(&cal).unwrap();
 
     let mut unfiled = Calendar::subscribed("holidays", "https://example.com/hol.ics");
-    unfiled.role_id = None;
+    unfiled.area_id = None;
     calendars.put_calendar(&unfiled).unwrap();
 
     // `sample_event` runs 09:00 to 10:00 on its first day, so each of these
@@ -576,37 +576,37 @@ fn events_are_attributed_by_their_calendar(store: &dyn JournalStore) {
         .replace_events(unfiled.id, &[sample_event(unfiled.id, "purpose-2", day, day)])
         .unwrap();
 
-    let rows = p.events_by_role(PurposeWindow::new(day, day)).unwrap();
+    let rows = p.events_by_area(PurposeWindow::new(day, day)).unwrap();
     let mine = rows
         .iter()
-        .find(|r| r.role_id == Some(role.id))
-        .expect("a feed with a role reports under it");
+        .find(|r| r.area_id == Some(area.id))
+        .expect("a feed with an area reports under it");
     assert_eq!(mine.minutes, 60);
     assert_eq!(mine.events, 1);
 
     let theirs = rows
         .iter()
-        .find(|r| r.role_id.is_none())
-        .expect("a feed with no role is reported, not dropped");
+        .find(|r| r.area_id.is_none())
+        .expect("a feed with no area is reported, not dropped");
     assert_eq!(theirs.minutes, 60);
 
     calendars.delete_calendar(cal.id).unwrap();
     calendars.delete_calendar(unfiled.id).unwrap();
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }
 
 fn unicode_survives_a_purpose_round_trip(store: &dyn JournalStore) {
     let p = purpose_store(store);
-    let mut role = LifeRole::new("親 · роль · 🧭");
-    role.notes = "\u{1f3e1} home".into();
-    p.put_role(&role).unwrap();
-    assert_eq!(p.get_role(role.id).unwrap().name, "親 · роль · 🧭");
+    let mut area = Area::new("親 · роль · 🧭");
+    area.notes = "\u{1f3e1} home".into();
+    p.put_area(&area).unwrap();
+    assert_eq!(p.get_area(area.id).unwrap().name, "親 · роль · 🧭");
 
-    let mut goal = Goal::new(role.id, "Viya lernt Fahrrad fahren 🚲");
+    let mut goal = Goal::new(area.id, "Viya lernt Fahrrad fahren 🚲");
     goal.notes = "auf dem Gras anfangen".into();
     p.put_goal(&goal).unwrap();
     assert_eq!(p.get_goal(goal.id).unwrap(), goal);
 
     p.delete_goal(goal.id).unwrap();
-    p.delete_role(role.id).unwrap();
+    p.delete_area(area.id).unwrap();
 }

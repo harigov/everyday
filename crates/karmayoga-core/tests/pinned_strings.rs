@@ -346,7 +346,9 @@ fn proposal_aad_label_is_pinned() {
 #[test]
 fn purpose_domain_aad_labels_are_pinned() {
     assert_eq!(
-        store::purpose::role_aad(id::<RoleId>()),
+        // An area's label still says `role`: areas went by that word when the
+        // first of them was sealed.
+        store::purpose::area_aad(id::<AreaId>()),
         b"everyday.role.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
     );
     assert_eq!(
@@ -360,20 +362,22 @@ fn purpose_kind_str_and_from_columns_are_pinned() {
     use karmayoga_core::purpose::Purpose;
 
     let goal_id: GoalId = id();
-    let role_id: RoleId = id();
+    let area_id: AreaId = id();
     let goal = Purpose::Goal { id: goal_id };
-    let role = Purpose::Role { id: role_id };
+    let area = Purpose::Area { id: area_id };
 
     assert_eq!(goal.kind_str(), "goal");
-    assert_eq!(role.kind_str(), "role");
+    // The `purposes.purpose_kind` column has said `role` since before areas
+    // were renamed, and the reports group by it.
+    assert_eq!(area.kind_str(), "role");
 
     assert_eq!(
         Purpose::from_columns(Some("goal"), Some(&goal_id.to_string())),
         Some(Purpose::Goal { id: goal_id })
     );
     assert_eq!(
-        Purpose::from_columns(Some("role"), Some(&role_id.to_string())),
-        Some(Purpose::Role { id: role_id })
+        Purpose::from_columns(Some("role"), Some(&area_id.to_string())),
+        Some(Purpose::Area { id: area_id })
     );
 }
 
@@ -529,7 +533,7 @@ fn every_typed_id_kind_is_pinned() {
     assert_eq!(LogId::KIND, "log");
     assert_eq!(TrackerId::KIND, "tracker");
     assert_eq!(ReadingId::KIND, "reading");
-    assert_eq!(RoleId::KIND, "role");
+    assert_eq!(AreaId::KIND, "role");
     assert_eq!(GoalId::KIND, "goal");
     assert_eq!(ConversationId::KIND, "conversation");
     assert_eq!(MessageId::KIND, "message");

@@ -161,7 +161,7 @@ const viewPref = pref<MoneyView>(
  *
  * The same stopgap `accounts.svelte.ts`'s `mintAccountId` documents: the
  * surface has no `new_money_category` or `new_money_rule` to mint a blank
- * one the way `new_role` does, `save_*` is a plain upsert, and `localhost`
+ * one the way `new_area` does, `save_*` is a plain upsert, and `localhost`
  * and the packaged app's own origin are both secure contexts. A v4 id
  * round-trips through the wire's `Uuid` exactly as a v7 one does; it only
  * sorts differently, which nothing here relies on.

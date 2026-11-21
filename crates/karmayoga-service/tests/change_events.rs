@@ -444,21 +444,21 @@ async fn every_offline_write_announces_what_was_written_down() {
     )
     .await;
 
-    // ---- purpose: roles and goals ---------------------------------------
-    let role = call(&svc, &h, "new_role", json!({ "name": "Homeowner" })).await;
-    let role_id = role["id"].clone();
-    run(&svc, &h, "save_role", json!({ "role": role })).await;
+    // ---- purpose: areas and goals ---------------------------------------
+    let area = call(&svc, &h, "new_area", json!({ "name": "Homeowner" })).await;
+    let area_id = area["id"].clone();
+    run(&svc, &h, "save_area", json!({ "area": area })).await;
 
     let goal =
-        call(&svc, &h, "new_goal", json!({ "roleId": role_id, "title": "A tidy house" })).await;
+        call(&svc, &h, "new_goal", json!({ "areaId": area_id, "title": "A tidy house" })).await;
     let goal_id = goal["id"].clone();
     run(&svc, &h, "save_goal", json!({ "goal": goal })).await;
 
     let goal2 =
-        call(&svc, &h, "new_goal", json!({ "roleId": role_id, "title": "A tidier house" })).await;
+        call(&svc, &h, "new_goal", json!({ "areaId": area_id, "title": "A tidier house" })).await;
     run(&svc, &h, "save_goals", json!({ "goals": [goal2] })).await;
 
-    run(&svc, &h, "seed_roles", json!({})).await;
+    run(&svc, &h, "seed_areas", json!({})).await;
 
     // ---- trackers --------------------------------------------------------
     let tracker = call(&svc, &h, "new_tracker", json!({ "name": "Steps", "kind": "check" })).await;
@@ -1659,7 +1659,7 @@ async fn every_offline_write_announces_what_was_written_down() {
         json!({ "entry_id": entry_id, "title": "Updated by a tool" }),
     )
     .await;
-    run_tool_call(&svc, &h, "create_goal", json!({ "role_id": role_id, "title": "A tool's goal" }))
+    run_tool_call(&svc, &h, "create_goal", json!({ "area_id": area_id, "title": "A tool's goal" }))
         .await;
     run_tool_call(
         &svc,
@@ -1672,7 +1672,7 @@ async fn every_offline_write_announces_what_was_written_down() {
         &svc,
         &h,
         "set_purpose",
-        json!({ "kind": "task", "id": task_id, "role_id": role_id }),
+        json!({ "kind": "task", "id": task_id, "area_id": area_id }),
     )
     .await;
     run_tool_call(

@@ -286,7 +286,7 @@ impl Vault {
     /// Minutes of actual time per day, for each tracker's own purpose.
     ///
     /// A tracker filed under a goal counts that goal's time. One filed under
-    /// a role counts the role's and every one of its goals', because "an
+    /// an area counts the area's and every one of its goals', because "an
     /// hour a day for myself" is met by an hour on any of the things being
     /// yourself is made of. A tracker filed under nothing counts nothing:
     /// "time on" needs something for the time to be on.
@@ -295,10 +295,10 @@ impl Vault {
         let goals = self.goals(&GoalQuery::default())?;
         let counts = |mine: &Purpose, row: &Purpose| match mine {
             Purpose::Goal { .. } => row == mine,
-            Purpose::Role { id } => {
+            Purpose::Area { id } => {
                 row == mine
                     || row.goal_id().is_some_and(|g| {
-                        goals.iter().any(|goal| goal.id == g && goal.role_id == *id)
+                        goals.iter().any(|goal| goal.id == g && goal.area_id == *id)
                     })
             }
         };

@@ -54,7 +54,7 @@ fn all_kinds() -> Vec<Kind> {
         Kind::Log,
         Kind::Tracker,
         Kind::Reading,
-        Kind::Role,
+        Kind::Area,
         Kind::Goal,
         Kind::Account,
         Kind::Mailbox,
@@ -120,7 +120,7 @@ fn assert_every_kind_is_named(k: Kind) {
         | Kind::Log
         | Kind::Tracker
         | Kind::Reading
-        | Kind::Role
+        | Kind::Area
         | Kind::Goal
         | Kind::Account
         | Kind::Mailbox

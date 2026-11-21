@@ -97,12 +97,12 @@
     draft.calendars = { ...draft.calendars, calendarIds: [...set] }
   }
 
-  function toggleRole(id: string) {
+  function toggleArea(id: string) {
     if (!draft) return
-    const set = new Set(draft.calendars.roleIds)
+    const set = new Set(draft.calendars.areaIds)
     if (set.has(id)) set.delete(id)
     else set.add(id)
-    draft.calendars = { ...draft.calendars, roleIds: [...set] }
+    draft.calendars = { ...draft.calendars, areaIds: [...set] }
   }
 
   function removeSkipped(uid: string) {
@@ -302,15 +302,15 @@
             {/each}
           </div>
         {/if}
-        {#if purpose.roles.length > 0}
+        {#if purpose.areas.length > 0}
           <div class="pick-list">
-            <span class="eyebrow">Roles</span>
-            {#each purpose.roles as r (r.id)}
+            <span class="eyebrow">Areas</span>
+            {#each purpose.areas as r (r.id)}
               <label class="switch">
                 <input
                   type="checkbox"
-                  checked={draft.calendars.roleIds.includes(r.id)}
-                  onchange={() => toggleRole(r.id)}
+                  checked={draft.calendars.areaIds.includes(r.id)}
+                  onchange={() => toggleArea(r.id)}
                 />
                 <span class="switch-text">
                   <span class="switch-label">{r.icon} {r.name}</span>
@@ -320,7 +320,7 @@
           </div>
         {/if}
         <p class="hint">
-          Empty means every calendar. Ticking any narrows it to those — and to any role whose
+          Empty means every calendar. Ticking any narrows it to those — and to any area whose
           calendars are not individually ticked.
         </p>
 
@@ -569,7 +569,7 @@
     flex-direction: column;
     gap: var(--sp-2);
   }
-  /* "Calendars" and "Roles" used to carry their own `.pick-label`, a copy of
+  /* "Calendars" and "Areas" used to carry their own `.pick-label`, a copy of
      the shared `.eyebrow` missing its `font-weight`, so a sub-heading inside
      a section read lighter than every other section heading on the page
      instead of just smaller. They use `.eyebrow` directly now. */

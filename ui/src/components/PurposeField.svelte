@@ -4,7 +4,7 @@
   // The button reads as the value rather than as a control: the common case
   // is nothing at all, and a field that shouted "Purpose: none" at the top of
   // every task detail would be a nag about a thing that is optional on
-  // purpose. Unset it is quiet grey text; set it wears its role's colour,
+  // purpose. Unset it is quiet grey text; set it wears its area's colour,
   // which is the same colour the balance chart will draw that hour in.
 
   import Icon from './Icon.svelte'
@@ -16,18 +16,18 @@
   interface Props {
     value: Purpose | null | undefined
     onchange: (next: Purpose | null) => void
-    /** Roles only, no goals. What a subscribed calendar takes. */
-    rolesOnly?: boolean
+    /** Areas only, no goals. What a subscribed calendar takes. */
+    areasOnly?: boolean
     /** What the button says when nothing is set. */
     placeholder?: string
   }
 
-  const { value, onchange, rolesOnly = false, placeholder = 'Not filed' }: Props = $props()
+  const { value, onchange, areasOnly = false, placeholder = 'Not filed' }: Props = $props()
 
   let open = $state(false)
 
   const label = $derived(store.describe(value))
-  const set = $derived(!!value && label.roleId !== null)
+  const set = $derived(!!value && label.areaId !== null)
 </script>
 
 <div class="field">
@@ -50,7 +50,7 @@
 
   {#if open}
     <div class="pop" use:dismissable={{ onaway: () => (open = false), within: '.field .value' }}>
-      <PurposePicker {value} {onchange} {rolesOnly} onclose={() => (open = false)} />
+      <PurposePicker {value} {onchange} {areasOnly} onclose={() => (open = false)} />
     </div>
   {/if}
 </div>

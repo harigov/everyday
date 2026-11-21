@@ -763,17 +763,17 @@ async fn a_client_can_use_the_records_that_arrived_after_it() {
     let h = Harness::start().await;
     let token = h.pair("Laptop").await;
 
-    // Roles and goals, minted and saved from the other machine.
-    let seeded = h.ok(&token, "seed_roles", json!({})).await;
+    // Areas and goals, minted and saved from the other machine.
+    let seeded = h.ok(&token, "seed_areas", json!({})).await;
     assert!(seeded.as_u64().unwrap() > 0, "a fresh vault offers a starting set");
 
-    let roles = h.ok(&token, "list_roles", json!({})).await;
-    let role_id = roles[0]["id"].clone();
-    // The counts the sidebar draws come back with each role.
-    assert!(roles[0]["goals"].is_number(), "{roles}");
+    let areas = h.ok(&token, "list_areas", json!({})).await;
+    let area_id = areas[0]["id"].clone();
+    // The counts the sidebar draws come back with each area.
+    assert!(areas[0]["goals"].is_number(), "{areas}");
 
     let goal =
-        h.ok(&token, "new_goal", json!({ "roleId": role_id, "title": "Read twelve books" })).await;
+        h.ok(&token, "new_goal", json!({ "areaId": area_id, "title": "Read twelve books" })).await;
     h.ok(&token, "save_goal", json!({ "goal": goal })).await;
 
     let goals = h.ok(&token, "list_goals", json!({ "query": {} })).await;
@@ -809,14 +809,14 @@ async fn a_client_can_use_the_records_that_arrived_after_it() {
     // service behind both.
     let local = h.service.get().unwrap();
     assert!(local.trackers().unwrap().iter().any(|t| t.name == "Floss"));
-    assert!(!local.roles().unwrap().is_empty());
+    assert!(!local.areas().unwrap().is_empty());
 }
 
 /// A token that does not hold the purpose scope cannot read the shape of
 /// somebody's life.
 ///
-/// Roles and goals are their own scope for a reason: a purpose is a pointer on
-/// almost every record, so reading them tells you which roles exist and how
+/// Areas and goals are their own scope for a reason: a purpose is a pointer on
+/// almost every record, so reading them tells you which areas exist and how
 /// much time each takes without reading a single entry.
 #[tokio::test]
 async fn the_purpose_scope_can_be_withheld_on_its_own() {
@@ -835,7 +835,7 @@ async fn the_purpose_scope_can_be_withheld_on_its_own() {
         .unwrap();
     let token = body["token"].as_str().unwrap();
 
-    assert_eq!(h.call(token, "list_roles", json!({})).await.status(), 403);
+    assert_eq!(h.call(token, "list_areas", json!({})).await.status(), 403);
     assert_eq!(h.call(token, "list_goals", json!({ "query": {} })).await.status(), 403);
     assert_eq!(
         h.call(token, "time_by_purpose", json!({ "from": "2026-09-07", "to": "2026-09-13" }))

@@ -16,7 +16,7 @@ use karmayoga_core::calendar::{Calendar, Event, EventStatus};
 use karmayoga_core::library::{Item, ItemStatus, Kind};
 use karmayoga_core::model::{Entry, Journal};
 use karmayoga_core::note::Note;
-use karmayoga_core::purpose::{Goal, Purpose, Role};
+use karmayoga_core::purpose::{Area, Goal, Purpose};
 use karmayoga_core::richtext::RichDoc;
 use karmayoga_core::store::calendars::EventQuery;
 use karmayoga_core::store::library::{ItemQuery, LogQuery};
@@ -51,8 +51,8 @@ fn vault(dir: &std::path::Path) -> Vault {
 /// One of everything, with the pointers between them set: an entry filed
 /// under a goal, a subtask under a task, an hour booked against that task.
 fn fill(vault: &Vault) {
-    let role = Role::new("Parent");
-    let goal = Goal::new(role.id, "Viya rides without stabilisers");
+    let area = Area::new("Parent");
+    let goal = Goal::new(area.id, "Viya rides without stabilisers");
     let mut journal = Journal::new("Personal");
     // A template the journal starts its Sundays from, which has to come back
     // with the journal still pointing at it.
@@ -82,7 +82,7 @@ fn fill(vault: &Vault) {
     let mut project = Project::new("Home renovation");
     project.notes = "Rip out the insulation first.".into();
     project.tags = vec!["house".into()];
-    project.purpose = Some(Purpose::Role { id: role.id });
+    project.purpose = Some(Purpose::Area { id: area.id });
     let mut task = Task::new("Book the plasterer").in_project(project.id);
     task.priority = Priority::High;
     task.estimate_minutes = Some(90);
@@ -146,7 +146,7 @@ fn fill(vault: &Vault) {
     vault
         .with_store(|store| {
             let purpose = store.purpose().unwrap();
-            purpose.put_role(&role)?;
+            purpose.put_area(&area)?;
             purpose.put_goal(&goal)?;
             store.put_entry(&entry)?;
             store.notes().unwrap().put_note(&note)?;
@@ -274,7 +274,7 @@ fn a_vault_comes_back_out_of_its_own_archive() {
             assert_eq!(readings[0].note, "after a run");
 
             let purpose = store.purpose().unwrap();
-            assert_eq!(purpose.list_roles()?.len(), 1);
+            assert_eq!(purpose.list_areas()?.len(), 1);
             let goals = purpose.list_goals(&GoalQuery::default())?;
             assert_eq!(goals.len(), 1);
             assert_eq!(goals[0].title, "Viya rides without stabilisers");
@@ -718,17 +718,17 @@ fn two_shelves_that_reduce_to_one_name_are_still_two_files() {
 }
 
 #[test]
-fn a_role_and_a_goal_keep_what_was_written_about_them() {
+fn an_area_and_a_goal_keep_what_was_written_about_them() {
     let dir = tempfile::tempdir().unwrap();
     let source = vault(dir.path());
-    let mut role = Role::new("Parent");
-    role.notes = "Present, not merely around.\nThe hard one.".into();
-    let mut goal = Goal::new(role.id, "Viya rides without stabilisers");
+    let mut area = Area::new("Parent");
+    area.notes = "Present, not merely around.\nThe hard one.".into();
+    let mut goal = Goal::new(area.id, "Viya rides without stabilisers");
     goal.notes = "Saturdays, in the park behind the school.".into();
     source
         .with_store(|store| {
             let purpose = store.purpose().unwrap();
-            purpose.put_role(&role)?;
+            purpose.put_area(&area)?;
             purpose.put_goal(&goal)
         })
         .unwrap();
@@ -747,12 +747,90 @@ fn a_role_and_a_goal_keep_what_was_written_about_them() {
     target
         .with_store(|store| {
             let purpose = store.purpose().unwrap();
-            let roles = purpose.list_roles()?;
-            assert_eq!(roles.len(), 1);
-            assert_eq!(roles[0].notes, role.notes, "the role's own words were dropped");
+            let areas = purpose.list_areas()?;
+            assert_eq!(areas.len(), 1);
+            assert_eq!(areas[0].notes, area.notes, "the area's own words were dropped");
             let goals = purpose.list_goals(&GoalQuery::default())?;
             assert_eq!(goals.len(), 1);
             assert_eq!(goals[0].notes, goal.notes, "the goal's own words were dropped");
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn an_archive_from_when_areas_were_roles_imports_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = vault(dir.path());
+    let area = Area::new("Family");
+    let goal = Goal::new(area.id, "Viya rides without stabilisers");
+    let mut project = Project::new("Bike lessons");
+    project.purpose = Some(Purpose::Area { id: area.id });
+    let mut calendar = Calendar::imported("School", "school.ics");
+    calendar.area_id = Some(area.id);
+    source
+        .with_store(|store| {
+            let purpose = store.purpose().unwrap();
+            purpose.put_area(&area)?;
+            purpose.put_goal(&goal)?;
+            store.tasks().unwrap().put_project(&project)?;
+            store.calendars().unwrap().put_calendar(&calendar)
+        })
+        .unwrap();
+    let (bytes, _) = karmayoga_transfer::export(
+        &source,
+        &Options { parts: Vec::new(), media: false },
+        Vec::new(),
+    )
+    .unwrap();
+
+    // Spell everything the way a build from before the rename wrote it: the
+    // page's old name, `role:` in every pointer and hidden field, and the
+    // calendar index's old column.
+    let archive = zip::Reader::open(&bytes).unwrap();
+    let (new_pointer, old_pointer) = (format!("area:{}", area.id), format!("role:{}", area.id));
+    let mut rewrites = 0;
+    let files: std::collections::BTreeMap<String, Vec<u8>> = archive
+        .names()
+        .map(|name| {
+            let bytes = archive.get(name).unwrap().to_vec();
+            let Ok(text) = String::from_utf8(bytes.clone()) else {
+                return (name.to_string(), bytes);
+            };
+            let old = text
+                .replace(&new_pointer, &old_pointer)
+                .replace(",area_id,", ",role_id,")
+                .replace("Areas and goals", "Roles and goals");
+            if old != text {
+                rewrites += 1;
+            }
+            (name.replace("areas-and-goals.md", "roles-and-goals.md"), old.into_bytes())
+        })
+        .collect();
+    assert!(files.contains_key("purpose/roles-and-goals.md"), "{:?}", files.keys());
+    assert!(rewrites >= 3, "only {rewrites} files carried an area to respell");
+    let old = zip::Reader::from_files(files);
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = vault(target_dir.path());
+    let reports = karmayoga_transfer::import(&target, &old, &importable(), Mode::Skip).unwrap();
+    let problems: Vec<&String> = reports.iter().flat_map(|r| &r.problems).collect();
+    assert!(problems.is_empty(), "{problems:?}");
+    target
+        .with_store(|store| {
+            let purpose = store.purpose().unwrap();
+            let areas = purpose.list_areas()?;
+            assert_eq!(areas.len(), 1);
+            assert_eq!(areas[0].id, area.id);
+            let goals = purpose.list_goals(&GoalQuery::default())?;
+            assert_eq!(goals.len(), 1);
+            assert_eq!(goals[0].area_id, area.id, "the goal lost its area");
+            let projects = store.tasks().unwrap().list_projects()?;
+            assert_eq!(projects.len(), 1);
+            assert_eq!(projects[0].purpose, Some(Purpose::Area { id: area.id }));
+            let calendars = store.calendars().unwrap().list_calendars()?;
+            assert_eq!(calendars.len(), 1);
+            assert_eq!(calendars[0].area_id, Some(area.id), "the feed lost its area");
             Ok(())
         })
         .unwrap();

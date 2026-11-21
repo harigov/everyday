@@ -29,7 +29,7 @@ impl Record for Calendar {
         ]
     }
 
-    // A calendar's purpose is derived from `role_id` rather than carried as
+    // A calendar's purpose is derived from `area_id` rather than carried as
     // a `Purpose` field of its own, so it cannot be handed back as a
     // borrowed `&Purpose` the way every other record's can. `put_calendar`
     // computes it and calls `set_purpose` itself instead of going through
@@ -72,10 +72,10 @@ impl CalendarStore for SqlStore {
         let mut tx = conn.begin()?;
         let (sql, args) = upsert_stmt(c, data);
         tx.execute(&sql, &args)?;
-        // A feed's role goes in the same pointer table as everything else,
-        // always `role`-kinded: a calendar serves a role, and its forty
+        // A feed's area goes in the same pointer table as everything else,
+        // always an area's (`role`-kinded): a calendar serves an area, and its forty
         // meetings are not each yours to file.
-        let purpose = c.role_id.map(|id| karmayoga_core::purpose::Purpose::Role { id });
+        let purpose = c.area_id.map(|id| karmayoga_core::purpose::Purpose::Area { id });
         set_purpose(tx.as_mut(), RecordKind::Calendar, &c.id.to_string(), purpose.as_ref())?;
         // `account_calendars` is the pointer table `AccountStore::delete_account`
         // reads to find every calendar one account is behind -- see

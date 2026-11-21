@@ -44,7 +44,7 @@
 //!   with them.
 //! - [`tracker`] — what a day produced in numbers rather than in prose:
 //!   habits, doses, symptoms, counts.
-//! - [`purpose`] — the roles you play and the goals under them, which is what
+//! - [`purpose`] — the areas of your life and the goals under them, which is what
 //!   lets any of the above answer "what was this *for*".
 //! - [`routine`] — the assistant's standing work, and the log of what it did.
 //! - [`agent`] — the assistant itself: its configuration, the threads you
@@ -157,14 +157,14 @@ pub use files::{
     ImportOptions, MediaInfo,
 };
 pub use id::{
-    AccountId, AlbumId, AllergyId, BankAccountId, BankLinkId, BlobId, BlockId, CalendarId,
+    AccountId, AlbumId, AllergyId, AreaId, BankAccountId, BankLinkId, BlobId, BlockId, CalendarId,
     ChatLinkId, ConditionId, ConnectionId, ConversationId, DoseId, DraftId, EntryId, EventId,
     FileId, FoodId, GoalId, HealthDocumentId, HealthSourceId, ItemId, JobId, JournalId, KindId,
     LabResultId, LogId, MailMessageId, MailboxId, MealId, MedicationId, MemoryId, MessageId,
     MoneyCategoryId, MoneyRuleId, NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId,
-    ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, ScreenAppId, ScreenCategoryId,
-    ScreenSpanId, SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, TxnId,
-    VoiceprintId, WorkoutId, WritingId,
+    ReadingId, RecordingId, RoutineId, RoutineRunId, ScreenAppId, ScreenCategoryId, ScreenSpanId,
+    SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, TxnId, VoiceprintId,
+    WorkoutId, WritingId,
 };
 pub use job::{Job, JobKind, JobOutput, JobRules, JobStatus, JobUpdate, Observed, Probe};
 pub use library::{
@@ -199,7 +199,7 @@ pub use proposal::{
     Payload, Proposal, ProposalKind, ProposalPolicy, ProposalSource, ProposalState, ProposedRecord,
 };
 pub use purpose::{
-    Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
+    Area, AreaEventMinutes, Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes,
 };
 pub use quick::{Prompt as QuickPrompt, QuickApp, QuickAsk, QuickContext, QuickPolicy};
 pub use record::{RecordDescriptor, RecordKind};

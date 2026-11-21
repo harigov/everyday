@@ -1,25 +1,25 @@
-// Where the week went, by role.
+// Where the week went, by area.
 //
 // Pure, and separate from the Overview's store for the reason `habits.ts` is
 // separate from the tracking store: these are rules, and a rule that is
 // wrong here is wrong quietly. A chart that drops the unattributed share
-// looks tidier and lies. One that folds a goal into the wrong role reports a
+// looks tidier and lies. One that folds a goal into the wrong area reports a
 // balanced life to somebody who does not have one. Neither fails to compile.
 //
 // The input is what the backend already answers: minutes per *purpose*, and
-// separately the meetings somebody else booked, per role. Turning that into
+// separately the meetings somebody else booked, per area. Turning that into
 // rows means one join the backend deliberately does not do — a goal to its
-// role — because the goals are already in the interface and asking the
+// area — because the goals are already in the interface and asking the
 // database to decrypt them to group a bar chart would undo the whole reason
 // the pointer is a clear column.
 
 import { addDays } from './time'
-import type { BalanceReport, Goal, Purpose, Role, RoleId } from './types'
+import type { BalanceReport, Goal, Purpose, Area, AreaId } from './types'
 
-/** One row of the balance view: a role, and what went to it. */
-export interface RoleTotals {
+/** One row of the balance view: an area, and what went to it. */
+export interface AreaTotals {
   /** `null` is the unattributed row, which is always present. */
-  roleId: RoleId | null
+  areaId: AreaId | null
   name: string
   color: string
   icon: string
@@ -28,7 +28,7 @@ export interface RoleTotals {
   /** Minutes of somebody else's meetings, kept apart from your own record. */
   eventMinutes: number
   blocks: number
-  /** Goals under this role that got any time at all, most first. */
+  /** Goals under this area that got any time at all, most first. */
   goals: { goalId: string; title: string; actualMinutes: number }[]
 }
 
@@ -46,28 +46,28 @@ export const UNFILED = {
 } as const
 
 /**
- * Fold a report into one row per role.
+ * Fold a report into one row per area.
  *
- * A purpose naming a goal is counted under that goal's role; a purpose
- * naming a role directly is counted under it; anything else — including a
+ * A purpose naming a goal is counted under that goal's area; a purpose
+ * naming an area directly is counted under it; anything else — including a
  * pointer to a goal that has since been deleted — lands in the unattributed
  * row rather than being dropped. That last case is the one worth stating:
  * deleting a goal deliberately does not rewrite everything that pointed at
  * it, so unresolvable pointers are a normal state and not a corruption.
  *
- * Roles with nothing recorded are kept, because their absence is the
+ * Areas with nothing recorded are kept, because their absence is the
  * finding. A week where you were not a parent at all should show a row at
  * zero, not a chart with one fewer bar than last week.
  */
-export function byRole(report: BalanceReport | null, roles: Role[], goals: Goal[]): RoleTotals[] {
-  const rows = new Map<RoleId | null, RoleTotals>()
-  const blank = (roleId: RoleId | null): RoleTotals => {
-    const role = roleId ? roles.find((r) => r.id === roleId) : undefined
+export function byArea(report: BalanceReport | null, areas: Area[], goals: Goal[]): AreaTotals[] {
+  const rows = new Map<AreaId | null, AreaTotals>()
+  const blank = (areaId: AreaId | null): AreaTotals => {
+    const area = areaId ? areas.find((r) => r.id === areaId) : undefined
     return {
-      roleId,
-      name: role?.name ?? UNFILED.name,
-      color: role?.color ?? UNFILED.color,
-      icon: role?.icon ?? UNFILED.icon,
+      areaId,
+      name: area?.name ?? UNFILED.name,
+      color: area?.color ?? UNFILED.color,
+      icon: area?.icon ?? UNFILED.icon,
       actualMinutes: 0,
       plannedMinutes: 0,
       eventMinutes: 0,
@@ -75,22 +75,22 @@ export function byRole(report: BalanceReport | null, roles: Role[], goals: Goal[
       goals: [],
     }
   }
-  const row = (roleId: RoleId | null): RoleTotals => {
-    const held = rows.get(roleId)
+  const row = (areaId: AreaId | null): AreaTotals => {
+    const held = rows.get(areaId)
     if (held) return held
-    const made = blank(roleId)
-    rows.set(roleId, made)
+    const made = blank(areaId)
+    rows.set(areaId, made)
     return made
   }
 
-  // Every live role gets a row whether or not anything went to it, and the
+  // Every live area gets a row whether or not anything went to it, and the
   // unattributed row always exists.
-  for (const role of roles) if (!role.archived) row(role.id)
+  for (const area of areas) if (!area.archived) row(area.id)
   row(null)
 
   for (const entry of report?.purposes ?? []) {
-    const roleId = roleOf(entry.purpose, goals)
-    const into = row(roleId)
+    const areaId = areaOf(entry.purpose, goals)
+    const into = row(areaId)
     into.actualMinutes += entry.actualMinutes
     into.plannedMinutes += entry.plannedMinutes
     into.blocks += entry.blocks
@@ -111,9 +111,9 @@ export function byRole(report: BalanceReport | null, roles: Role[], goals: Goal[
   }
 
   for (const entry of report?.events ?? []) {
-    // A feed with no role is somebody else's claim on time you have not
+    // A feed with no area is somebody else's claim on time you have not
     // said anything about, which is exactly the unattributed row.
-    row(entry.roleId ?? null).eventMinutes += entry.minutes
+    row(entry.areaId ?? null).eventMinutes += entry.minutes
   }
 
   for (const r of rows.values()) r.goals.sort((a, b) => b.actualMinutes - a.actualMinutes)
@@ -122,8 +122,8 @@ export function byRole(report: BalanceReport | null, roles: Role[], goals: Goal[
   // context for the others rather than a competitor to them, and sorting it
   // to the top would make every chart about it.
   return [...rows.values()].sort((a, b) => {
-    if (a.roleId === null) return 1
-    if (b.roleId === null) return -1
+    if (a.areaId === null) return 1
+    if (b.areaId === null) return -1
     return (
       b.actualMinutes + b.eventMinutes - (a.actualMinutes + a.eventMinutes) ||
       a.name.localeCompare(b.name)
@@ -131,50 +131,50 @@ export function byRole(report: BalanceReport | null, roles: Role[], goals: Goal[
   })
 }
 
-/** Which role a pointer belongs to, following a goal to the role above it. */
-export function roleOf(purpose: Purpose | null | undefined, goals: Goal[]): RoleId | null {
+/** Which area a pointer belongs to, following a goal to the area above it. */
+export function areaOf(purpose: Purpose | null | undefined, goals: Goal[]): AreaId | null {
   if (!purpose) return null
-  if (purpose.type === 'role') return purpose.id
-  return goals.find((g) => g.id === purpose.id)?.roleId ?? null
+  if (purpose.type === 'area') return purpose.id
+  return goals.find((g) => g.id === purpose.id)?.areaId ?? null
 }
 
 /** Total recorded minutes across every row, the unattributed one included. */
-export function totalMinutes(rows: RoleTotals[]): number {
+export function totalMinutes(rows: AreaTotals[]): number {
   return rows.reduce((sum, r) => sum + r.actualMinutes, 0)
 }
 
 /**
- * Roles that look neglected: an open goal, and nothing recorded for a while.
+ * Areas that look neglected: an open goal, and nothing recorded for a while.
  *
  * The one thing this whole domain can say that no individual app can. A
- * neglected role is not a role with no goals — that is a role you are not
- * using — and it is not a role with no time this week, because one quiet
- * week is a week. It is a role you have said you want something from and
+ * neglected area is not an area with no goals — that is an area you are not
+ * using — and it is not an area with no time this week, because one quiet
+ * week is a week. It is an area you have said you want something from and
  * have not touched.
  *
  * `sinceDays` is how long counts as a while, and is the caller's to choose.
  */
 export function neglected(
-  rows: RoleTotals[],
-  roles: Role[],
+  rows: AreaTotals[],
+  areas: Area[],
   goals: Goal[],
   lastTouched: Map<string, string | null>,
   today: string,
   sinceDays = 14,
-): { role: Role; days: number | null }[] {
+): { area: Area; days: number | null }[] {
   const cutoff = addDays(today, -sinceDays)
-  const out: { role: Role; days: number | null }[] = []
+  const out: { area: Area; days: number | null }[] = []
 
-  for (const role of roles) {
-    if (role.archived) continue
+  for (const area of areas) {
+    if (area.archived) continue
     const open = goals.filter(
-      (g) => g.roleId === role.id && (g.status === 'active' || g.status === 'paused'),
+      (g) => g.areaId === area.id && (g.status === 'active' || g.status === 'paused'),
     )
     if (open.length === 0) continue
 
-    // Time this window counts as a touch on its own: a role you spent six
+    // Time this window counts as a touch on its own: an area you spent six
     // hours on is not neglected however stale its goals' own records are.
-    const row = rows.find((r) => r.roleId === role.id)
+    const row = rows.find((r) => r.areaId === area.id)
     if (row && row.actualMinutes > 0) continue
 
     // The latest moment across its goals. `null` means nothing was ever
@@ -185,7 +185,7 @@ export function neglected(
       if (at && (!latest || at > latest)) latest = at
     }
     if (latest && latest.slice(0, 10) > cutoff) continue
-    out.push({ role, days: latest ? daysBetween(latest.slice(0, 10), today) : null })
+    out.push({ area, days: latest ? daysBetween(latest.slice(0, 10), today) : null })
   }
 
   // The stalest first, and never-touched ahead of everything.

@@ -160,8 +160,8 @@ import type {
   RecordingId,
   RecordingQuery,
   Recurrence,
-  Role,
-  RoleId,
+  Area,
+  AreaId,
   Routine,
   RoutineId,
   RoutineRunId,
@@ -1621,36 +1621,36 @@ export const api = {
   // every other failure.
   weather: (place?: string) => call('weather', { place: place?.trim() || null }),
 
-  // ── Roles and goals ────────────────────────────────────────────────
+  // ── Areas and goals ────────────────────────────────────────────────
   //
   // Available only when `status.capabilities.purpose` is true. The two records
   // are small; the interesting call is `balance`, which is the whole reason
   // the purpose pointer exists.
 
-  roles: () => call('listRoles', {}),
+  areas: () => call('listAreas', {}),
 
-  /** Mints an unsaved role; fill it in and pass it to `saveRole`. */
-  newRole: (name: string) => call('newRole', { name }),
-  saveRole: (role: Role) => call('saveRole', { role }),
+  /** Mints an unsaved area; fill it in and pass it to `saveArea`. */
+  newArea: (name: string) => call('newArea', { name }),
+  saveArea: (area: Area) => call('saveArea', { area }),
 
   /**
-   * Delete a role. Refused, with a message naming the count, while goals
+   * Delete an area. Refused, with a message naming the count, while goals
    * still point at it — unlike a project, which takes its tasks with it.
    */
-  deleteRole: (id: RoleId) => call('deleteRole', { id }),
+  deleteArea: (id: AreaId) => call('deleteArea', { id }),
 
   /**
-   * Offer a starting set of roles, and answer 0 if there are any already.
+   * Offer a starting set of areas, and answer 0 if there are any already.
    *
    * Never called on unlock, unlike the library's shelves: a list of what a
    * life is made of is a claim, and writing one unasked would be this
    * application telling somebody who they are.
    */
-  seedRoles: () => call('seedRoles', {}),
+  seedAreas: () => call('seedAreas', {}),
 
   goals: (query: GoalQuery = {}) => call('listGoals', { query }),
   goal: (id: GoalId) => call('getGoal', { id }),
-  newGoal: (roleId: RoleId, title: string) => call('newGoal', { roleId, title }),
+  newGoal: (areaId: AreaId, title: string) => call('newGoal', { areaId, title }),
   saveGoal: (goal: Goal) => call('saveGoal', { goal }),
   saveGoals: (goals: Goal[]) => call('saveGoals', { goals }),
   deleteGoal: (id: GoalId) => call('deleteGoal', { id }),
@@ -1900,7 +1900,7 @@ export const api = {
   quickReadingFromLine: (line: string) => call('quickReadingFromLine', { line }),
   quickTrackerDraft: (args: { name: string; line?: string }) => call('quickTrackerDraft', args),
 
-  quickGoalWording: (args: { title: string; roleId: RoleId }) => call('quickGoalWording', args),
+  quickGoalWording: (args: { title: string; areaId: AreaId }) => call('quickGoalWording', args),
   quickGoalBackfill: (goalId: GoalId) => call('quickGoalBackfill', { goalId }),
 
   quickWeekNote: (args: { thisWeek: string; lastWeek?: string }) => call('quickWeekNote', args),

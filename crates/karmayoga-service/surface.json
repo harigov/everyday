@@ -1536,6 +1536,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "AreaId"
+        }
+      ],
+      "changes": {
+        "kind": "area",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_area",
+      "orScope": null,
+      "returns": "void",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "BankAccountId"
         }
       ],
@@ -2273,26 +2293,6 @@
       "orScope": null,
       "returns": "void",
       "scope": "meetings",
-      "sensitive": false,
-      "streams": false
-    },
-    {
-      "args": [
-        {
-          "name": "id",
-          "required": true,
-          "type": "RoleId"
-        }
-      ],
-      "changes": {
-        "kind": "role",
-        "op": "deleted"
-      },
-      "effect": "destructive",
-      "name": "delete_role",
-      "orScope": null,
-      "returns": "void",
-      "scope": "purpose",
       "sensitive": false,
       "streams": false
     },
@@ -4316,6 +4316,17 @@
       "args": [],
       "changes": null,
       "effect": "read",
+      "name": "list_areas",
+      "orScope": null,
+      "returns": "AreaInfo[]",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
       "name": "list_bank_accounts",
       "orScope": null,
       "returns": "BankAccount[]",
@@ -4867,17 +4878,6 @@
       "orScope": null,
       "returns": "RemoteImageSettings",
       "scope": "mail",
-      "sensitive": false,
-      "streams": false
-    },
-    {
-      "args": [],
-      "changes": null,
-      "effect": "read",
-      "name": "list_roles",
-      "orScope": null,
-      "returns": "RoleInfo[]",
-      "scope": "purpose",
       "sensitive": false,
       "streams": false
     },
@@ -5935,6 +5935,23 @@
     {
       "args": [
         {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_area",
+      "orScope": null,
+      "returns": "Area",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "subject",
           "required": true,
           "type": "BlockSubject"
@@ -6041,9 +6058,9 @@
     {
       "args": [
         {
-          "name": "roleId",
+          "name": "areaId",
           "required": true,
-          "type": "RoleId"
+          "type": "AreaId"
         },
         {
           "name": "title",
@@ -6163,23 +6180,6 @@
       "orScope": null,
       "returns": "Project",
       "scope": "tasks",
-      "sensitive": false,
-      "streams": false
-    },
-    {
-      "args": [
-        {
-          "name": "name",
-          "required": true,
-          "type": "string"
-        }
-      ],
-      "changes": null,
-      "effect": "read",
-      "name": "new_role",
-      "orScope": null,
-      "returns": "Role",
-      "scope": "purpose",
       "sensitive": false,
       "streams": false
     },
@@ -6612,9 +6612,9 @@
           "type": "string"
         },
         {
-          "name": "roleId",
+          "name": "areaId",
           "required": true,
-          "type": "RoleId"
+          "type": "AreaId"
         }
       ],
       "changes": null,
@@ -7617,6 +7617,26 @@
     {
       "args": [
         {
+          "name": "area",
+          "required": true,
+          "type": "Area"
+        }
+      ],
+      "changes": {
+        "kind": "area",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_area",
+      "orScope": null,
+      "returns": "void",
+      "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "settings",
           "required": true,
           "type": "BackupSettings"
@@ -8517,26 +8537,6 @@
     {
       "args": [
         {
-          "name": "role",
-          "required": true,
-          "type": "Role"
-        }
-      ],
-      "changes": {
-        "kind": "role",
-        "op": "updated"
-      },
-      "effect": "write",
-      "name": "save_role",
-      "orScope": null,
-      "returns": "void",
-      "scope": "purpose",
-      "sensitive": false,
-      "streams": false
-    },
-    {
-      "args": [
-        {
           "name": "routine",
           "required": true,
           "type": "Routine"
@@ -8957,11 +8957,11 @@
     {
       "args": [],
       "changes": {
-        "kind": "role",
+        "kind": "area",
         "op": "created"
       },
       "effect": "write",
-      "name": "seed_roles",
+      "name": "seed_areas",
       "orScope": null,
       "returns": "number",
       "scope": "purpose",
@@ -10683,5 +10683,5 @@
       "streams": false
     }
   ],
-  "protocol": 1
+  "protocol": 2
 }

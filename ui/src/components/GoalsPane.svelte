@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Goals, grouped under the roles they belong to, in the todo app.
+  // Goals, grouped under the areas they belong to, in the todo app.
   //
   // This was a pane of the Overview, which was the wrong address for it in a
   // way that was only obvious once the Overview stopped being four fixed
@@ -9,18 +9,28 @@
   // open under it. Keeping it in the reporting app meant leaving the place
   // where the work is to look at the reason for the work.
   //
-  // The roles it groups by are not edited here. They are defined once, in
-  // Settings under About You, because a role is a fact about the person that
+  // The areas it groups by are not edited here. They are defined once, in
+  // Settings under About You, because an area is a fact about the person that
   // four different apps file things under -- not this pane's data.
 
   import { friendlyDate, formatMinutes, plural } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { goalAreaItems, goalStatusItems } from '../lib/menus'
+  import { GOAL_STATUS_LABELS as STATUS_LABELS } from '../lib/labels'
   import { panels } from '../lib/panels.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { todo } from '../lib/todo.svelte'
   import { app } from '../lib/state.svelte'
-  import type { GoalId, GoalStatus, QuickBackfillPick, RoleId, Target, Tracker } from '../lib/types'
+  import type {
+    AreaId,
+    Goal,
+    GoalId,
+    GoalStatus,
+    QuickBackfillPick,
+    Target,
+    Tracker,
+  } from '../lib/types'
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
   import { library } from '../lib/library.svelte'
@@ -47,21 +57,28 @@
   let newGoal = $state<Record<string, string>>({})
   let pendingDelete = $state<{ id: string; title: string } | null>(null)
 
-  const STATUS_LABELS: Record<GoalStatus, string> = {
-    active: 'Active',
-    paused: 'Paused',
-    done: 'Done',
-    dropped: 'Dropped',
-  }
-
   const goal = $derived(purpose.selected ? purpose.goal(purpose.selected) : undefined)
+
+  const areaChoices = $derived(goal ? purpose.areasFor(goal) : [])
+
+  /**
+   * Move the open goal to the area just picked, or put the select back if
+   * the save is refused -- it shows the pick before anything is written.
+   */
+  async function moveGoal(select: HTMLSelectElement) {
+    const target = goal
+    if (!target || target.areaId === select.value) return
+    if (!(await purpose.saveGoal({ ...$state.snapshot(target), areaId: select.value }))) {
+      select.value = target.areaId
+    }
+  }
   const activity = $derived(goal ? (purpose.activity.get(goal.id) ?? null) : null)
 
-  async function add(roleId: RoleId) {
-    const title = (newGoal[roleId] ?? '').trim()
+  async function add(areaId: AreaId) {
+    const title = (newGoal[areaId] ?? '').trim()
     if (!title) return
-    newGoal = { ...newGoal, [roleId]: '' }
-    const made = await purpose.addGoal(roleId, title)
+    newGoal = { ...newGoal, [areaId]: '' }
+    const made = await purpose.addGoal(areaId, title)
     if (!made) return
     purpose.selected = made.id
 
@@ -75,7 +92,7 @@
     // it: its activity chart is empty and it looks abandoned on the day it
     // was made. Matching it against tasks that have no purpose yet is what
     // makes the balance report useful in week one rather than month three.
-    void ask('purpose.goal', () => api.quickGoalWording({ title, roleId })).then((better) => {
+    void ask('purpose.goal', () => api.quickGoalWording({ title, areaId })).then((better) => {
       if (better && better !== title) wording = { goalId: made.id, text: better }
     })
     void backfill(made.id)
@@ -108,33 +125,28 @@
     })
   }
 
-  function goalMenu(id: string, title: string, status: GoalStatus): MenuItem[] {
+  function goalMenu(target: Goal): MenuItem[] {
     return tidyMenu([
       {
-        label: 'Open',
+        label: 'Open goal',
         icon: 'target',
-        disabled: purpose.selected === id,
-        run: () => (purpose.selected = id),
+        run: () => todo.setScope({ kind: 'goal', id: target.id }),
+      },
+      {
+        label: 'Targets and notes',
+        icon: 'pencil',
+        disabled: purpose.selected === target.id,
+        run: () => (purpose.selected = target.id),
       },
       SEP,
-      {
-        label: 'Status',
-        icon: 'flag',
-        items: (Object.keys(STATUS_LABELS) as GoalStatus[]).map((s) => ({
-          label: STATUS_LABELS[s],
-          checked: status === s,
-          run: () => {
-            const target = purpose.goal(id)
-            if (target) void purpose.saveGoal({ ...$state.snapshot(target), status: s })
-          },
-        })),
-      },
+      { label: 'Area', icon: 'compass', items: goalAreaItems(target) },
+      { label: 'Status', icon: 'flag', items: goalStatusItems(target) },
       SEP,
       {
         label: 'Delete goal…',
         icon: 'trash',
         danger: true,
-        run: () => (pendingDelete = { id, title }),
+        run: () => (pendingDelete = { id: target.id, title: target.title }),
       },
     ])
   }
@@ -387,7 +399,7 @@
   function paneMenu(): MenuItem[] {
     return tidyMenu([
       {
-        label: 'Roles…',
+        label: 'Areas…',
         icon: 'compass',
         hint: 'in About You',
         run: () => panels.openSettings('profile'),
@@ -405,34 +417,34 @@
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="scroll goals" oncontextmenu={(e) => menu.show(e, paneMenu())}>
-    {#if purpose.roles.filter((r) => !r.archived).length === 0}
-      <!-- Roles are never written for somebody. A list of what a life is made
+    {#if purpose.areas.filter((r) => !r.archived).length === 0}
+      <!-- Areas are never written for somebody. A list of what a life is made
          of is a claim, and an application that filled it in would be telling
          its owner who they are. -->
       <EmptyState lead="Nothing here yet, because nobody has said what your life is made of.">
         {#snippet icon()}<Icon name="compass" size={28} />{/snippet}
         {#snippet note()}
-          A <em>role</em> is who you are being — Parent, Work, Myself. A <em>goal</em> is something you
-          want under one of them, and it is what a project or an hour gets filed under. Roles are set
+          An <em>area</em> is a part of your life — Family, Work, Health. A <em>goal</em> is something
+          you want in one of them, and it is what a project or an hour gets filed under. Areas are set
           up once, in Settings.
         {/snippet}
         {#snippet action()}
           <button class="btn btn-primary" onclick={() => panels.openSettings('profile')}>
-            Set up your roles
+            Set up your areas
           </button>
         {/snippet}
       </EmptyState>
     {:else}
-      {#each purpose.byRole as group (group.role.id)}
-        <div class="rolegroup">
-          <button class="rolehead" onclick={() => purpose.toggleRole(group.role.id)}>
-            <span class="dot" style="background: {group.role.color}"></span>
-            <span class="glyph">{group.role.icon}</span>
-            <span class="rname">{group.role.name}</span>
+      {#each purpose.byArea as group (group.area.id)}
+        <div class="areagroup">
+          <button class="areahead" onclick={() => purpose.toggleArea(group.area.id)}>
+            <span class="dot" style="background: {group.area.color}"></span>
+            <span class="glyph">{group.area.icon}</span>
+            <span class="rname">{group.area.name}</span>
             <span class="num">{plural(group.goals.length, 'goal')}</span>
           </button>
 
-          {#if !purpose.collapsed.has(group.role.id)}
+          {#if !purpose.collapsed.has(group.area.id)}
             <ul class="plain">
               {#each group.goals as row (row.goal.id)}
                 <li>
@@ -440,8 +452,7 @@
                     class="goalrow"
                     class:sel={purpose.selected === row.goal.id}
                     class:closed={row.goal.status === 'done' || row.goal.status === 'dropped'}
-                    oncontextmenu={(e) =>
-                      menu.show(e, goalMenu(row.goal.id, row.goal.title, row.goal.status))}
+                    oncontextmenu={(e) => menu.show(e, goalMenu(row.goal))}
                     onclick={() =>
                       (purpose.selected = purpose.selected === row.goal.id ? null : row.goal.id)}
                   >
@@ -472,12 +483,12 @@
 
             <input
               class="newgoal"
-              data-newgoal={group.role.id}
-              placeholder="Something you want under {group.role.name}…"
-              value={newGoal[group.role.id] ?? ''}
-              oninput={(e) => (newGoal = { ...newGoal, [group.role.id]: e.currentTarget.value })}
+              data-newgoal={group.area.id}
+              placeholder="Something you want under {group.area.name}…"
+              value={newGoal[group.area.id] ?? ''}
+              oninput={(e) => (newGoal = { ...newGoal, [group.area.id]: e.currentTarget.value })}
               onkeydown={(e) => {
-                if (e.key === 'Enter') void add(group.role.id)
+                if (e.key === 'Enter') void add(group.area.id)
               }}
             />
           {/if}
@@ -529,6 +540,25 @@
         Find work this already covers
       </button>
     {/if}
+
+    <!-- Which part of a life it sits under. A goal is moved here, or from
+         its menu anywhere it is listed; nothing filed under it moves with it
+         or needs to, since everything points at the goal. -->
+    <label class="lab" for="g-area">Area</label>
+    <select
+      id="g-area"
+      value={goal.areaId}
+      disabled={!app.status?.writable}
+      onchange={(e) => moveGoal(e.currentTarget)}
+    >
+      {#if !purpose.area(goal.areaId)}
+        <!-- An area that has gone: said, rather than shown as the first one. -->
+        <option value={goal.areaId} disabled>No area</option>
+      {/if}
+      {#each areaChoices as a (a.id)}
+        <option value={a.id}>{a.icon} {a.name}{a.archived ? ' (retired)' : ''}</option>
+      {/each}
+    </select>
 
     <label class="lab" for="g-status">Status</label>
     <select
@@ -696,7 +726,14 @@
           </li>{/if}
         {#if activity.openTasks > 0}<li>{plural(activity.openTasks, 'task')} open</li>{/if}
         {#if activity.doneTasks > 0}<li>{plural(activity.doneTasks, 'task')} finished</li>{/if}
-        {#if activity.projects > 0}<li>{plural(activity.projects, 'project')}</li>{/if}
+        {#if activity.projects > 0}<li>
+            <button
+              class="link"
+              onclick={() => todo.setScope({ kind: 'goal', id: goal.id })}
+              title="The projects filed under this goal"
+              >{plural(activity.projects, 'project')}</button
+            >
+          </li>{/if}
         {#if activity.entries > 0}<li>{plural(activity.entries, 'entry', 'entries')}</li>{/if}
         {#if activity.readings > 0}<li>{plural(activity.readings, 'reading')}</li>{/if}
         {#if activity.items > 0}<li>{plural(activity.items, 'thing')} on a shelf</li>{/if}
@@ -774,7 +811,7 @@
     flex: none;
     height: var(--header-h);
     padding: 0 var(--sp-4);
-    /* Same cap as `.rolegroup` below, so "Goals" and its count sit directly
+    /* Same cap as `.areagroup` below, so "Goals" and its count sit directly
        over the list they describe instead of spanning the full pane while
        the rows under them stop at a readable width -- on a wide window the
        count was ending up hundreds of pixels right of the last row. */
@@ -804,12 +841,12 @@
     padding: var(--sp-4);
   }
 
-  .rolegroup {
+  .areagroup {
     max-width: 56rem;
     margin-bottom: var(--sp-6);
   }
 
-  .rolehead {
+  .areahead {
     display: flex;
     align-items: center;
     gap: var(--sp-2);
@@ -1003,6 +1040,19 @@
     padding-left: var(--sp-4);
     color: var(--fg-muted);
     font-size: var(--text-sm);
+  }
+
+  /* The projects line in the tally leads to them, so it reads as a link. */
+  .link {
+    color: inherit;
+    font: inherit;
+    text-decoration: underline;
+    text-decoration-color: var(--border-strong);
+    text-underline-offset: 2px;
+  }
+  .link:hover {
+    color: var(--fg);
+    text-decoration-color: currentColor;
   }
 
   .dim {

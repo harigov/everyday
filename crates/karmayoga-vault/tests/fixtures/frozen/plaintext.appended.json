@@ -167,6 +167,36 @@
     }
   },
   {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "kind": "area",
+    "record": {
+      "archived": false,
+      "color": "#c2410c",
+      "createdAt": "2023-11-14T22:13:20Z",
+      "icon": "🧭",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "name": "Fixture role 1",
+      "notes": "",
+      "sortOrder": 0,
+      "updatedAt": "2023-11-14T22:13:20Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-0000000f4240",
+    "kind": "area",
+    "record": {
+      "archived": false,
+      "color": "#c2410c",
+      "createdAt": "2027-01-15T08:00:00Z",
+      "icon": "🧭",
+      "id": "00000000-0000-0000-0000-0000000f4240",
+      "name": "Fixture role f4240",
+      "notes": "",
+      "sortOrder": 0,
+      "updatedAt": "2027-01-15T08:00:00Z"
+    }
+  },
+  {
     "id": "2b150478ded32669c92770fc64e206a81ab2bf9611bd7f8de5ebaeb04a000a4b",
     "kind": "blob",
     "record": {
@@ -240,6 +270,7 @@
         "etags": {},
         "recurringHrefs": []
       },
+      "areaId": "00000000-0000-0000-0000-000000000001",
       "color": "#c2410c",
       "createdAt": "2023-11-14T22:13:38Z",
       "id": "00000000-0000-0000-0000-000000000010",
@@ -255,7 +286,6 @@
       "provider": "other",
       "readOnly": false,
       "refreshMinutes": 5,
-      "roleId": "00000000-0000-0000-0000-000000000001",
       "updatedAt": "2023-11-14T22:13:38Z",
       "visible": true
     }
@@ -268,6 +298,7 @@
         "etags": {},
         "recurringHrefs": []
       },
+      "areaId": "00000000-0000-0000-0000-0000000f4240",
       "color": "#c2410c",
       "createdAt": "2027-01-15T08:00:18Z",
       "id": "00000000-0000-0000-0000-0000000f424f",
@@ -283,7 +314,6 @@
       "provider": "other",
       "readOnly": false,
       "refreshMinutes": 5,
-      "roleId": "00000000-0000-0000-0000-0000000f4240",
       "updatedAt": "2027-01-15T08:00:18Z",
       "visible": true
     }
@@ -492,10 +522,10 @@
     "id": "00000000-0000-0000-0000-000000000002",
     "kind": "goal",
     "record": {
+      "areaId": "00000000-0000-0000-0000-000000000001",
       "createdAt": "2023-11-14T22:13:21Z",
       "id": "00000000-0000-0000-0000-000000000002",
       "notes": "",
-      "roleId": "00000000-0000-0000-0000-000000000001",
       "sortOrder": 0,
       "status": "active",
       "title": "Fixture goal 1",
@@ -506,10 +536,10 @@
     "id": "00000000-0000-0000-0000-0000000f4241",
     "kind": "goal",
     "record": {
+      "areaId": "00000000-0000-0000-0000-0000000f4240",
       "createdAt": "2027-01-15T08:00:01Z",
       "id": "00000000-0000-0000-0000-0000000f4241",
       "notes": "",
-      "roleId": "00000000-0000-0000-0000-0000000f4240",
       "sortOrder": 0,
       "status": "active",
       "title": "Fixture goal f4240",
@@ -1505,36 +1535,6 @@
     }
   },
   {
-    "id": "00000000-0000-0000-0000-000000000001",
-    "kind": "role",
-    "record": {
-      "archived": false,
-      "color": "#c2410c",
-      "createdAt": "2023-11-14T22:13:20Z",
-      "icon": "🧭",
-      "id": "00000000-0000-0000-0000-000000000001",
-      "name": "Fixture role 1",
-      "notes": "",
-      "sortOrder": 0,
-      "updatedAt": "2023-11-14T22:13:20Z"
-    }
-  },
-  {
-    "id": "00000000-0000-0000-0000-0000000f4240",
-    "kind": "role",
-    "record": {
-      "archived": false,
-      "color": "#c2410c",
-      "createdAt": "2027-01-15T08:00:00Z",
-      "icon": "🧭",
-      "id": "00000000-0000-0000-0000-0000000f4240",
-      "name": "Fixture role f4240",
-      "notes": "",
-      "sortOrder": 0,
-      "updatedAt": "2027-01-15T08:00:00Z"
-    }
-  },
-  {
     "id": "00000000-0000-0000-0000-000000000012",
     "kind": "routine",
     "record": {
@@ -1701,7 +1701,7 @@
       "projectId": "00000000-0000-0000-0000-000000000008",
       "purpose": {
         "id": "00000000-0000-0000-0000-000000000001",
-        "type": "role"
+        "type": "area"
       },
       "sortOrder": 0,
       "status": "doing",
@@ -1739,7 +1739,7 @@
       "projectId": "00000000-0000-0000-0000-0000000f4247",
       "purpose": {
         "id": "00000000-0000-0000-0000-0000000f4240",
-        "type": "role"
+        "type": "area"
       },
       "sortOrder": 0,
       "status": "doing",
@@ -1781,7 +1781,7 @@
       "onCalendar": false,
       "purpose": {
         "id": "00000000-0000-0000-0000-000000000001",
-        "type": "role"
+        "type": "area"
       },
       "scaleMax": 10.0,
       "sortOrder": 0,
@@ -1804,7 +1804,7 @@
       "onCalendar": false,
       "purpose": {
         "id": "00000000-0000-0000-0000-0000000f4240",
-        "type": "role"
+        "type": "area"
       },
       "scaleMax": 10.0,
       "sortOrder": 0,

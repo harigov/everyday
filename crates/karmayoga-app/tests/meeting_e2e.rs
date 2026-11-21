@@ -96,7 +96,7 @@ use karmayoga_core::meeting::{
     Attribution, LocalModel, MeetingSettings, Offer, Recording, SAMPLE_RATE, Stage,
     TranscriberConfig,
 };
-use karmayoga_core::purpose::{Purpose, Role};
+use karmayoga_core::purpose::{Area, Purpose};
 use karmayoga_core::{CalendarId, RecordingId, Vault, VaultConfig};
 use karmayoga_service::error::CommandResult;
 use karmayoga_service::events::{EventSink, MeetingOffer};
@@ -464,7 +464,7 @@ async fn chat_stub() -> String {
 }
 
 // ============================================================================
-// Vault, calendar, event, role
+// Vault, calendar, event, area
 // ============================================================================
 
 fn configure_assistant(vault: &Vault, base_url: &str) {
@@ -488,14 +488,14 @@ fn configure_assistant(vault: &Vault, base_url: &str) {
     vault.save_model_settings(&models).unwrap();
 }
 
-/// An account calendar with a role, so the note this call produces has
+/// An account calendar with an area, so the note this call produces has
 /// something to be filed under -- `docs/plans/meeting-notes.md`'s "a
-/// meeting note is filed under its calendar's role automatically". Mirrors
+/// meeting note is filed under its calendar's area automatically". Mirrors
 /// `watch.rs`'s own `account_calendar` test helper: only an account
 /// calendar's origin is one `Vault::sync_account_calendar` accepts.
-fn calendar_with_role(vault: &Vault) -> (Calendar, Role) {
-    let role = Role::new("Work");
-    vault.save_role(&role).unwrap();
+fn calendar_with_area(vault: &Vault) -> (Calendar, Area) {
+    let area = Area::new("Work");
+    vault.save_area(&area).unwrap();
     let mut calendar = Calendar::subscribed("Work", "https://example.com/work.ics");
     calendar.origin = CalendarOrigin::Account {
         account_id: AccountId::new(),
@@ -503,9 +503,9 @@ fn calendar_with_role(vault: &Vault) -> (Calendar, Role) {
         remote_name: "Work".into(),
         source: AccountCalendarSource::Google,
     };
-    calendar.role_id = Some(role.id);
+    calendar.area_id = Some(area.id);
     vault.save_calendar(&calendar).unwrap();
-    (calendar, role)
+    (calendar, area)
 }
 
 /// An online call, starting `offset_secs` from now, with a Zoom join link
@@ -708,7 +708,7 @@ async fn local_parakeet_hears_a_real_call_through_real_capture_and_writes_a_note
     let settings = meeting_settings_local_parakeet(&harness.vault).await;
     harness.vault.save_meeting_settings(&settings).unwrap();
 
-    let (calendar, role) = calendar_with_role(&harness.vault);
+    let (calendar, area) = calendar_with_area(&harness.vault);
     let event = online_event(calendar.id, 0, &call.attendees);
     seed_event(&harness.vault, calendar.id, &event);
 
@@ -761,8 +761,8 @@ async fn local_parakeet_hears_a_real_call_through_real_capture_and_writes_a_note
     assert!(body.contains("## Decisions"), "missing the template's own heading: {body}");
     assert_eq!(
         note.purpose,
-        Some(Purpose::Role { id: role.id }),
-        "should be filed under the calendar's role"
+        Some(Purpose::Area { id: area.id }),
+        "should be filed under the calendar's area"
     );
 
     let transcript =
@@ -836,7 +836,7 @@ async fn the_watcher_offers_always_mode_starts_capture_and_ask_mode_does_not() {
     let sink = OfferSink::default();
     harness.service.set_events(Arc::new(sink.clone()));
 
-    let (calendar, _role) = calendar_with_role(&harness.vault);
+    let (calendar, _area) = calendar_with_area(&harness.vault);
     let always_attendee = vec!["Priya <priya@example.com>".to_string()];
     let always_event = online_event(calendar.id, 0, &always_attendee);
     seed_event(&harness.vault, calendar.id, &always_event);

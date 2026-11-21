@@ -42,7 +42,7 @@ export type ConversationId = string
 export type MessageId = string
 export type MemoryId = string
 export type SkillId = string
-export type RoleId = string
+export type AreaId = string
 export type GoalId = string
 export type KindId = string
 export type ItemId = string
@@ -100,15 +100,17 @@ export interface Journal {
   updatedAt: string
 }
 
-// ── Purpose: roles and goals ─────────────────────────────────────────────
+// ── Purpose: areas and goals ─────────────────────────────────────────────
 //
-// A role is who you are being; a goal is an outcome under one. Every record
-// that represents effort can point at one of the two, and that pointer is
-// what makes "where did my week go, by role" answerable.
+// An area is a part of your life; a goal is an outcome under one. Every
+// record that represents effort can point at one of the two, and that pointer
+// is what makes "where did my week go, by area" answerable. Areas were called
+// roles until November 2026; see `karmayoga_core::purpose` for what kept the
+// old word.
 
-/** Who you are being. A handful of these, changing about once a year. */
-export interface Role {
-  id: RoleId
+/** A part of your life. A handful of these, changing about once a year. */
+export interface Area {
+  id: AreaId
   name: string
   /** `#rrggbb`. The axis colour of every balance chart, so it is identity. */
   color: string
@@ -122,8 +124,8 @@ export interface Role {
   updatedAt: string
 }
 
-/** A role with the two counts the sidebar draws under its name. */
-export interface RoleInfo extends Role {
+/** An area with the two counts the sidebar draws under its name. */
+export interface AreaInfo extends Area {
   goals: number
   open: number
 }
@@ -136,11 +138,11 @@ export function goalIsOpen(status: GoalStatus): boolean {
   return status === 'active' || status === 'paused'
 }
 
-/** An outcome you want, under a role. */
+/** An outcome you want, under an area. */
 export interface Goal {
   id: GoalId
-  /** Every goal belongs to exactly one role. */
-  roleId: RoleId
+  /** Every goal belongs to exactly one area. */
+  areaId: AreaId
   title: string
   notes: string
   status: GoalStatus
@@ -159,14 +161,14 @@ export interface Goal {
 /**
  * What a record is *for*.
  *
- * Pointing at a role directly is not a degraded case of pointing at a goal:
- * a great deal of being a parent serves no particular outcome and is still
- * the thing you most want counted.
+ * Pointing at an area directly is not a degraded case of pointing at a goal:
+ * a great deal of family life serves no particular outcome and is still the
+ * thing you most want counted.
  */
-export type Purpose = { type: 'goal'; id: GoalId } | { type: 'role'; id: RoleId }
+export type Purpose = { type: 'goal'; id: GoalId } | { type: 'area'; id: AreaId }
 
 export interface GoalQuery {
-  roleId?: RoleId | null
+  areaId?: AreaId | null
   statuses?: GoalStatus[]
   horizonTo?: string | null
   limit?: number | null
@@ -187,14 +189,14 @@ export interface PurposeMinutes {
 }
 
 /**
- * Minutes of somebody else's meetings, by the role their calendar serves.
+ * Minutes of somebody else's meetings, by the area their calendar serves.
  *
  * Reported apart from `PurposeMinutes` rather than summed into it: an event
  * is a claim on an hour and a block is your record of one, and adding them
  * would double-count every meeting you also logged.
  */
-export interface RoleEventMinutes {
-  roleId?: RoleId | null
+export interface AreaEventMinutes {
+  areaId?: AreaId | null
   minutes: number
   events: number
 }
@@ -202,7 +204,7 @@ export interface RoleEventMinutes {
 /** Both halves of the balance report, fetched together so they cannot disagree. */
 export interface BalanceReport {
   purposes: PurposeMinutes[]
-  events: RoleEventMinutes[]
+  events: AreaEventMinutes[]
 }
 
 /** What has happened against one goal, over all time. */
@@ -575,7 +577,7 @@ export interface Entry {
   location?: Location
   attachments: Attachment[]
   /**
-   * What this is *for*: a goal, or a role directly. Optional everywhere and
+   * What this is *for*: a goal, or an area directly. Optional everywhere and
    * never required by capture. See `Purpose`.
    */
   purpose?: Purpose | null
@@ -728,7 +730,7 @@ export type Trigger =
   /** A time of day, on the given days. An empty list means every day. */
   | { type: 'schedule'; at: string; days: Weekday[]; dayOfMonth?: number | null }
   /** Before a calendar event starts. Answered by a query on each tick. */
-  | { type: 'beforeEvent'; leadMinutes: number; roleId?: RoleId | null }
+  | { type: 'beforeEvent'; leadMinutes: number; areaId?: AreaId | null }
   /** Before a task falls due. Also a query. */
   | { type: 'taskDue'; leadDays: number }
   /** Never on its own. Run now, and nothing else. */
@@ -1162,7 +1164,7 @@ export interface Capabilities {
    */
   trackers: boolean
   /**
-   * Backend carries the purpose domain, so roles and goals have somewhere to
+   * Backend carries the purpose domain, so areas and goals have somewhere to
    * live and the balance report can be asked for.
    *
    * False hides the Overview app and every purpose picker with it: offering
@@ -1398,7 +1400,7 @@ export interface Project {
   estimateMinutes?: number | null
   tags: string[]
   /**
-   * What this is *for*: a goal, or a role directly. Optional everywhere
+   * What this is *for*: a goal, or an area directly. Optional everywhere
    * and never required by capture. See `Purpose`.
    */
   purpose?: Purpose | null
@@ -1427,7 +1429,7 @@ export interface Task {
   estimateMinutes?: number | null
   tags: string[]
   /**
-   * What this is *for*: a goal, or a role directly. Optional everywhere
+   * What this is *for*: a goal, or an area directly. Optional everywhere
    * and never required by capture. See `Purpose`.
    */
   purpose?: Purpose | null
@@ -1636,10 +1638,10 @@ export interface Calendar {
   /** Why the last refresh failed. Shown beside the calendar, never as a dialog. */
   lastError?: string | null
   /**
-   * Which role this feed serves. A role rather than a purpose: a work
+   * Which area this feed serves. An area rather than a purpose: a work
    * calendar is work, and its forty meetings are not each yours to file.
    */
-  roleId?: RoleId | null
+  areaId?: AreaId | null
   /**
    * Where new events go when nobody names a calendar. At most one calendar
    * has it; none means this computer's own time blocks. Moved only by
@@ -3175,7 +3177,7 @@ export interface Item {
   /** Which source filled this in; empty for something typed by hand. */
   source: string
   /**
-   * What this is *for*: a goal, or a role directly. Optional everywhere
+   * What this is *for*: a goal, or an area directly. Optional everywhere
    * and never required by capture. See `Purpose`.
    */
   purpose?: Purpose | null
@@ -3933,7 +3935,7 @@ export const SHOWN_KINDS = [
   'project',
   'task',
   'block',
-  'role',
+  'area',
   'goal',
   'calendar',
   'event',
@@ -4088,9 +4090,10 @@ export interface QuickBackfillPick {
  * Who said a turn in a conversation.
  *
  * Named for the message rather than for the word "role" on its own, because
- * this application now has a `Role` that means something quite different —
- * who *you* are being, in `purpose`. Two unrelated ideas sharing a name in a
- * file this widely imported is a bug waiting for somebody in a hurry.
+ * this application once had a `Role` that meant something quite different --
+ * a part of your life, in `purpose`, an `Area` now. Two unrelated ideas
+ * sharing a name in a file this widely imported is a bug waiting for
+ * somebody in a hurry.
  */
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
 
@@ -4824,7 +4827,7 @@ export type Offer = 'off' | 'ask' | 'always'
 
 export interface CalendarFilter {
   calendarIds: CalendarId[]
-  roleIds: RoleId[]
+  areaIds: AreaId[]
 }
 
 /** What a talking session is doing -- `karmayoga_service::voice::VoiceState`. */

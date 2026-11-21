@@ -1076,7 +1076,7 @@ async fn a_meeting_inside_the_window_is_prepared_for_once() {
     let mut routine = Routine::new(
         "Meeting prep",
         "Say who is coming and what we last said.",
-        Trigger::BeforeEvent { lead_minutes: 60, role_id: None },
+        Trigger::BeforeEvent { lead_minutes: 60, area_id: None },
     );
     routine.created_at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
     vault.save_routine(&routine).unwrap();
@@ -1113,7 +1113,7 @@ async fn a_meeting_outside_the_window_is_left_alone() {
     let mut routine = Routine::new(
         "Meeting prep",
         "Say who is coming.",
-        Trigger::BeforeEvent { lead_minutes: 60, role_id: None },
+        Trigger::BeforeEvent { lead_minutes: 60, area_id: None },
     );
     routine.created_at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
     vault.save_routine(&routine).unwrap();

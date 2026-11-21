@@ -1,4 +1,5 @@
-//! Why a thing is being done: the roles you play and the goals under them.
+//! Why a thing is being done: the areas of your life and the goals under
+//! them.
 //!
 //! Every other domain in this vault answers *what* — what you wrote, what
 //! you have to do, what you spent an hour on, what is on the shelf. None of
@@ -6,18 +7,18 @@
 //! be answered by project, which is a list of work and not a life.
 //!
 //! ```text
-//!   Role ──── Goal ──── (anything: a project, a task, an hour, an entry)
-//!  (parent)  (Viya rides without stabilisers)
+//!   Area ──── Goal ──── (anything: a project, a task, an hour, an entry)
+//!  (family)  (Viya rides without stabilisers)
 //! ```
 //!
 //! # Two records, not one
 //!
-//! A [`Role`] is who you are being: parent, engineer, partner, yourself.
+//! An [`Area`] is a part of your life: family, work, health, yourself.
 //! There are a handful, they rarely change, and they are the axis a balance
-//! report is drawn against. A [`Goal`] is an outcome under a role with a
+//! report is drawn against. A [`Goal`] is an outcome under an area with a
 //! horizon: it has a status, it gets done or dropped, and there are as many
 //! of them as you like. Folding the two together would mean either a
-//! permanent goal or a role that finishes, and neither is a thing.
+//! permanent goal or an area that finishes, and neither is a thing.
 //!
 //! # Neither of them is a project
 //!
@@ -30,9 +31,9 @@
 //!
 //! # One pointer, on everything
 //!
-//! [`Purpose`] is what a record carries. It names a goal, or a role
-//! directly, and the second case is not a fallback — a great deal of being a
-//! parent serves no goal whatever and is still the thing you most want
+//! [`Purpose`] is what a record carries. It names a goal, or an area
+//! directly, and the second case is not a fallback — a great deal of family
+//! life serves no goal whatever and is still the thing you most want
 //! counted. It is shaped like [`BlockSubject`](crate::task::BlockSubject) and
 //! for the same reason: an enum with an id in it is one nullable pair of
 //! columns, and a join rather than a table.
@@ -52,28 +53,40 @@
 //! over clear columns, so a year of blocks is a `GROUP BY` and not a
 //! decryption; [`resolve`] is the same rule in Rust for callers holding the
 //! records already.
+//!
+//! # Areas were roles
+//!
+//! Areas were called roles until November 2026. Nothing a vault already holds
+//! was rewritten for the rename, so the old word survives wherever it was
+//! stored: the `roles` table and `goals.role_id` column, the `role` written
+//! in `purposes.purpose_kind`, the AEAD label `everyday.role.v1:<id>`, and
+//! the `roleId` field and `"role"` purpose tag inside sealed payloads written
+//! before the rename. Reading accepts both spellings; writing uses the new
+//! one wherever the old is not pinned to storage, which a build from before
+//! the rename cannot read -- schema step 34 is there so that such a build
+//! refuses the vault rather than half-opening it.
 
 use crate::completable::Completable;
-use crate::id::{GoalId, RoleId};
+use crate::id::{AreaId, GoalId};
 use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 
-/// Who you are being. A handful of these, changing about once a year.
+/// A part of your life. A handful of these, changing about once a year.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
-pub struct Role {
-    pub id: RoleId,
+pub struct Area {
+    pub id: AreaId,
     pub name: String,
     /// `#rrggbb`. The axis colour of every balance chart, so it is identity
-    /// rather than decoration — two roles the same colour makes the one
+    /// rather than decoration — two areas the same colour makes the one
     /// report this domain exists for unreadable.
     pub color: String,
     /// A short emoji or glyph shown next to the name.
     pub icon: String,
-    /// What being this means to you, in your own words. Plain text: it is
-    /// read in a sidebar, not edited in an editor.
+    /// What this part of your life means to you, in your own words. Plain
+    /// text: it is read in a sidebar, not edited in an editor.
     #[serde(default)]
     pub notes: String,
     /// Retired: kept for its history, gone from the pickers.
@@ -90,13 +103,13 @@ pub struct Role {
     pub updated_at: Timestamp,
 }
 
-impl Role {
+impl Area {
     pub fn new(name: impl Into<String>) -> Self {
         let now = Timestamp::now();
         Self {
-            id: RoleId::new(),
+            id: AreaId::new(),
             name: name.into(),
-            color: DEFAULT_ROLE_COLORS[0].to_string(),
+            color: DEFAULT_AREA_COLORS[0].to_string(),
             icon: "\u{1f9ed}".into(), // compass
             notes: String::new(),
             archived: false,
@@ -116,10 +129,10 @@ impl Role {
         self
     }
 
-    /// What this role points at, for a record that serves the role itself
+    /// What this area points at, for a record that serves the area itself
     /// rather than any one goal under it.
     pub fn purpose(&self) -> Purpose {
-        Purpose::Role { id: self.id }
+        Purpose::Area { id: self.id }
     }
 
     /// Everything a text filter should look at.
@@ -132,16 +145,16 @@ impl Role {
     }
 }
 
-/// Role accents. The journal palette, so one vault has one set of colours.
-pub const DEFAULT_ROLE_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS;
+/// Area accents. The journal palette, so one vault has one set of colours.
+pub const DEFAULT_AREA_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS;
 
-/// Roles a vault starts with when somebody asks for a starting point.
+/// Areas a vault starts with when somebody asks for a starting point.
 ///
-/// Offered, never imposed: [`Vault::seed_roles`](crate::vault::Vault) writes
+/// Offered, never imposed: [`Vault::seed_areas`](crate::vault::Vault) writes
 /// these only into a vault that has none, and the app asks first. A list of
 /// what a life is made of is a personal document, and shipping one as a
 /// default would be this application telling somebody who they are.
-pub fn suggested_roles() -> Vec<Role> {
+pub fn suggested_areas() -> Vec<Area> {
     let specs: [(&str, &str); 5] = [
         ("Work", "\u{1f4bc}"),    // briefcase
         ("Family", "\u{1f3e1}"),  // house with garden
@@ -153,22 +166,22 @@ pub fn suggested_roles() -> Vec<Role> {
         .into_iter()
         .enumerate()
         .map(|(i, (name, icon))| {
-            let mut role = Role::new(name)
+            let mut area = Area::new(name)
                 .with_icon(icon)
-                .with_color(DEFAULT_ROLE_COLORS[i % DEFAULT_ROLE_COLORS.len()]);
-            role.sort_order = i as i32;
-            role
+                .with_color(DEFAULT_AREA_COLORS[i % DEFAULT_AREA_COLORS.len()]);
+            area.sort_order = i as i32;
+            area
         })
         .collect()
 }
 
 /// How a goal is going.
 ///
-/// A closed set, and the same closed set for every role, which is the
+/// A closed set, and the same closed set for every area, which is the
 /// argument [`TaskStatus`](crate::task::TaskStatus) and
 /// [`ItemStatus`](crate::library::ItemStatus) both make: "how long do my
 /// goals sit paused" has to be askable across a whole life at once, and
-/// per-role vocabularies would make it unanswerable.
+/// per-area vocabularies would make it unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -209,15 +222,19 @@ impl GoalStatus {
     }
 }
 
-/// An outcome you want, under a role.
+/// An outcome you want, under an area.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Goal {
     pub id: GoalId,
-    /// Every goal belongs to exactly one role. Not optional: a goal with no
-    /// role is a task, and this app already has those.
-    pub role_id: RoleId,
+    /// Every goal belongs to exactly one area. Not optional: a goal with no
+    /// area is a task, and this app already has those.
+    ///
+    /// Sealed payloads written before areas were renamed from roles say
+    /// `roleId`; the alias reads them.
+    #[serde(alias = "roleId")]
+    pub area_id: AreaId,
     pub title: String,
     /// What "done" looks like, in your own words. Plain text, for the reason
     /// a task's notes are: it keeps the record cheap to make.
@@ -230,7 +247,7 @@ pub struct Goal {
     /// nagged would turn it into one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub horizon: Option<Date>,
-    /// Manual ordering within its role; ties broken by `title`.
+    /// Manual ordering within its area; ties broken by `title`.
     #[serde(default)]
     pub sort_order: i32,
     pub created_at: Timestamp,
@@ -240,11 +257,11 @@ pub struct Goal {
 }
 
 impl Goal {
-    pub fn new(role_id: RoleId, title: impl Into<String>) -> Self {
+    pub fn new(area_id: AreaId, title: impl Into<String>) -> Self {
         let now = Timestamp::now();
         Self {
             id: GoalId::new(),
-            role_id,
+            area_id,
             title: title.into(),
             notes: String::new(),
             status: GoalStatus::Active,
@@ -305,40 +322,51 @@ impl Timestamped for Goal {
 
 /// What a record is *for*.
 ///
-/// Pointing at a role directly is not a degraded case of pointing at a goal.
-/// Reading to a child at bedtime serves being a parent and no particular
-/// outcome, and an hour of it should count against that role rather than
-/// against nothing at all.
+/// Pointing at an area directly is not a degraded case of pointing at a goal.
+/// Reading to a child at bedtime serves family and no particular outcome, and
+/// an hour of it should count against that area rather than against nothing
+/// at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Purpose {
-    Goal { id: GoalId },
-    Role { id: RoleId },
+    Goal {
+        id: GoalId,
+    },
+    /// Tagged `"role"` in every sealed payload written before areas were
+    /// renamed from roles, which the alias reads.
+    #[serde(alias = "role")]
+    Area {
+        id: AreaId,
+    },
 }
 
 impl Purpose {
     pub fn goal_id(&self) -> Option<GoalId> {
         match self {
             Purpose::Goal { id } => Some(*id),
-            Purpose::Role { .. } => None,
+            Purpose::Area { .. } => None,
         }
     }
 
-    /// The role this names *directly*. A goal's role is one join away and is
+    /// The area this names *directly*. A goal's area is one join away and is
     /// deliberately not resolved here: this module has no store.
-    pub fn role_id(&self) -> Option<RoleId> {
+    pub fn area_id(&self) -> Option<AreaId> {
         match self {
-            Purpose::Role { id } => Some(*id),
+            Purpose::Area { id } => Some(*id),
             Purpose::Goal { .. } => None,
         }
     }
 
     /// The discriminant, as the `purpose_kind` column spells it.
+    ///
+    /// An area is `role` there, as it was before the rename: the column is
+    /// what the reports group by, so rows written since have to match every
+    /// row written before. See the module docs.
     pub fn kind_str(&self) -> &'static str {
         match self {
             Purpose::Goal { .. } => "goal",
-            Purpose::Role { .. } => "role",
+            Purpose::Area { .. } => "role",
         }
     }
 
@@ -346,7 +374,7 @@ impl Purpose {
     pub fn id_str(&self) -> String {
         match self {
             Purpose::Goal { id } => id.to_string(),
-            Purpose::Role { id } => id.to_string(),
+            Purpose::Area { id } => id.to_string(),
         }
     }
 
@@ -358,7 +386,7 @@ impl Purpose {
     pub fn from_columns(kind: Option<&str>, id: Option<&str>) -> Option<Self> {
         match (kind?, id?) {
             ("goal", id) => GoalId::parse(id).ok().map(|id| Purpose::Goal { id }),
-            ("role", id) => RoleId::parse(id).ok().map(|id| Purpose::Role { id }),
+            ("role", id) => AreaId::parse(id).ok().map(|id| Purpose::Area { id }),
             _ => None,
         }
     }
@@ -422,7 +450,7 @@ pub struct PurposeDayMinutes {
     pub minutes: u64,
 }
 
-/// Minutes from a subscribed calendar, attributed by the calendar's role.
+/// Minutes from a subscribed calendar, attributed by the calendar's area.
 ///
 /// Kept apart from [`PurposeMinutes`] rather than summed into it. An event
 /// is somebody else's claim on an hour and a block is your own record of
@@ -432,9 +460,9 @@ pub struct PurposeDayMinutes {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
-pub struct RoleEventMinutes {
+pub struct AreaEventMinutes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role_id: Option<RoleId>,
+    pub area_id: Option<AreaId>,
     pub minutes: u64,
     pub events: u64,
 }
@@ -499,7 +527,7 @@ mod tests {
 
     #[test]
     fn a_new_goal_is_active_and_unfinished() {
-        let g = Goal::new(RoleId::new(), "learn to swim");
+        let g = Goal::new(AreaId::new(), "learn to swim");
         assert!(g.status.is_open());
         assert_eq!(g.completed_at, None);
         assert_eq!(g.horizon, None, "a goal need not have a date to be a goal");
@@ -507,7 +535,7 @@ mod tests {
 
     #[test]
     fn finishing_a_goal_stamps_it_and_dropping_one_does_not() {
-        let mut g = Goal::new(RoleId::new(), "x");
+        let mut g = Goal::new(AreaId::new(), "x");
         g.set_status(GoalStatus::Done);
         let stamped = g.completed_at.expect("a finished goal carries the moment");
 
@@ -535,8 +563,8 @@ mod tests {
     #[test]
     fn a_purpose_survives_the_pair_of_columns() {
         let goal = Purpose::Goal { id: GoalId::new() };
-        let role = Purpose::Role { id: RoleId::new() };
-        for p in [goal, role] {
+        let area = Purpose::Area { id: AreaId::new() };
+        for p in [goal, area] {
             let id = p.id_str();
             let back = Purpose::from_columns(Some(p.kind_str()), Some(&id));
             assert_eq!(back, Some(p));
@@ -556,21 +584,21 @@ mod tests {
     }
 
     #[test]
-    fn a_goal_and_a_role_are_different_purposes_even_with_the_same_bytes() {
+    fn a_goal_and_an_area_are_different_purposes_even_with_the_same_bytes() {
         // The two id types are distinct in Rust but the same 16 bytes on the
         // wire, so the discriminant is doing real work here.
         let uuid = uuid::Uuid::now_v7();
         let goal = Purpose::Goal { id: GoalId::from(uuid) };
-        let role = Purpose::Role { id: RoleId::from(uuid) };
-        assert_ne!(goal, role);
-        assert_ne!(goal.kind_str(), role.kind_str());
-        assert_eq!(goal.id_str(), role.id_str());
+        let area = Purpose::Area { id: AreaId::from(uuid) };
+        assert_ne!(goal, area);
+        assert_ne!(goal.kind_str(), area.kind_str());
+        assert_eq!(goal.id_str(), area.id_str());
     }
 
     #[test]
     fn resolution_takes_the_first_purpose_in_the_chain() {
         let own = Purpose::Goal { id: GoalId::new() };
-        let inherited = Purpose::Role { id: RoleId::new() };
+        let inherited = Purpose::Area { id: AreaId::new() };
 
         // Its own wins over what it would inherit.
         assert_eq!(resolve([Some(own), Some(inherited)]), Some(own));
@@ -583,11 +611,11 @@ mod tests {
 
     #[test]
     fn a_goal_serialises_with_the_shape_the_interface_expects() {
-        let mut g = Goal::new(RoleId::new(), "ride without stabilisers");
+        let mut g = Goal::new(AreaId::new(), "ride without stabilisers");
         g.horizon = Some(date(2027, 3, 1));
         let json = serde_json::to_value(&g).expect("a goal serialises");
         assert_eq!(json["title"], "ride without stabilisers");
-        assert_eq!(json["roleId"], g.role_id.to_string());
+        assert_eq!(json["areaId"], g.area_id.to_string());
         assert_eq!(json["status"], "active");
         assert_eq!(json["horizon"], "2027-03-01");
         assert!(json.get("completedAt").is_none(), "an unfinished goal omits the field");
@@ -604,20 +632,40 @@ mod tests {
     }
 
     #[test]
-    fn suggested_roles_are_distinct_and_not_written_by_default() {
-        let roles = suggested_roles();
-        assert_eq!(roles.len(), 5);
-        let mut names: Vec<&str> = roles.iter().map(|r| r.name.as_str()).collect();
+    fn what_was_written_as_a_role_reads_as_an_area() {
+        // Every vault from before the rename holds these spellings inside
+        // its sealed payloads, and none of it was rewritten.
+        let id = AreaId::new();
+        let old: Purpose = serde_json::from_value(serde_json::json!({ "type": "role", "id": id }))
+            .expect("a purpose tagged role still reads");
+        assert_eq!(old, Purpose::Area { id });
+        let new = serde_json::to_value(old).expect("a purpose serialises");
+        assert_eq!(new["type"], "area", "written under the new name");
+
+        let goal = Goal::new(id, "ride without stabilisers");
+        let mut json = serde_json::to_value(&goal).expect("a goal serialises");
+        let held = json.as_object_mut().expect("an object");
+        let area = held.remove("areaId").expect("written as areaId");
+        held.insert("roleId".into(), area);
+        let back: Goal = serde_json::from_value(json).expect("a goal with roleId still reads");
+        assert_eq!(back, goal);
+    }
+
+    #[test]
+    fn suggested_areas_are_distinct_and_not_written_by_default() {
+        let areas = suggested_areas();
+        assert_eq!(areas.len(), 5);
+        let mut names: Vec<&str> = areas.iter().map(|r| r.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 5, "a starting point should not offer the same role twice");
-        let mut colors: Vec<&str> = roles.iter().map(|r| r.color.as_str()).collect();
+        assert_eq!(names.len(), 5, "a starting point should not offer the same area twice");
+        let mut colors: Vec<&str> = areas.iter().map(|r| r.color.as_str()).collect();
         colors.sort_unstable();
         colors.dedup();
-        assert_eq!(colors.len(), 5, "role colour is identity, so a default set cannot collide");
-        for (i, role) in roles.iter().enumerate() {
-            assert_eq!(role.sort_order, i as i32);
-            assert!(!role.archived);
+        assert_eq!(colors.len(), 5, "area colour is identity, so a default set cannot collide");
+        for (i, area) in areas.iter().enumerate() {
+            assert_eq!(area.sort_order, i as i32);
+            assert!(!area.archived);
         }
     }
 

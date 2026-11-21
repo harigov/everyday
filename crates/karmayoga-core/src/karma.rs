@@ -44,8 +44,8 @@ pub const RULES_VERSION: u32 = 1;
 /// well-lived day; there is no such thing as a two-hundred day.
 pub const DAY_CEILING: i32 = 100;
 
-/// A finished task: five, and five more if it was filed under a goal or a
-/// role -- work towards something is worth more than work.
+/// A finished task: five, and five more if it was filed under a goal or an
+/// area -- work towards something is worth more than work.
 pub const TASK_POINTS: i32 = 5;
 pub const TASK_PURPOSE_BONUS: i32 = 5;
 /// At most this from tasks in one day.
@@ -61,7 +61,7 @@ pub const HABIT_LIMIT: i32 = 50;
 /// Writing in the journal on the day: once a day, however many entries.
 pub const JOURNAL_POINTS: i32 = 10;
 
-/// Each whole hour of recorded time filed under a goal or a role.
+/// Each whole hour of recorded time filed under a goal or an area.
 pub const TIME_POINTS_PER_HOUR: i32 = 5;
 pub const TIME_CAP: i32 = 20;
 
@@ -80,7 +80,7 @@ pub enum DeedKind {
     Habit,
     /// The journal written in.
     Journal,
-    /// Time recorded against a goal or a role.
+    /// Time recorded against a goal or an area.
     Time,
     /// Something on a shelf got to the end of.
     Finished,

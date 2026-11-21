@@ -70,7 +70,7 @@ export const NEEDS = [
   'balance',
   /** Daily tracker aggregates over the habit window. */
   'trackerDays',
-  /** Roles and goals. */
+  /** Areas and goals. */
   'purpose',
   /** Per-goal counts: what has happened against each. */
   'goalActivity',
@@ -318,9 +318,9 @@ export const WIDGETS = {
   },
 
   // ── Your time ──────────────────────────────────────────────────────
-  roleBalance: {
+  areaBalance: {
     label: 'Where the week went',
-    note: 'One bar per role: what you recorded, against what you planned.',
+    note: 'One bar per area: what you recorded, against what you planned.',
     group: 'Your time',
     app: 'calendar',
     icon: 'week',
@@ -338,7 +338,7 @@ export const WIDGETS = {
     sizes: ['medium', 'large'],
     needs: ['balance', 'purpose'],
   },
-  roleShare: {
+  areaShare: {
     label: 'Share of your week',
     note: 'The same hours as a single bar, so the proportions are the point.',
     group: 'Your time',
@@ -350,7 +350,7 @@ export const WIDGETS = {
   },
   neglected: {
     label: 'Gone quiet',
-    note: 'Roles with a goal still open and nothing recorded against it.',
+    note: 'Areas with a goal still open and nothing recorded against it.',
     group: 'Your time',
     app: 'calendar',
     icon: 'alert',
@@ -690,6 +690,18 @@ export function specOf(type: WidgetType): WidgetSpec {
 // is, only `parseLayout` below, which is guarding a page read back from disk.
 function isWidgetType(value: unknown): value is WidgetType {
   return typeof value === 'string' && value in WIDGETS
+}
+
+/**
+ * Widget types a stored page may still name, and what each is called now.
+ *
+ * A layout outlives the build that wrote it, and a rename that dropped the
+ * card would empty a corner of somebody's page for no reason they could
+ * see. Areas were roles until November 2026.
+ */
+const RENAMED: Record<string, WidgetType> = {
+  roleBalance: 'areaBalance',
+  roleShare: 'areaShare',
 }
 
 // ── An arranged page ─────────────────────────────────────────────────────
@@ -1219,7 +1231,8 @@ export function parseLayout(raw: string | null): Widget[] | null {
   const out: Widget[] = []
   for (const row of parsed) {
     if (typeof row !== 'object' || row === null) continue
-    const { type, size, subject, days, id } = row as Record<string, unknown>
+    const { type: written, size, subject, days, id } = row as Record<string, unknown>
+    const type = typeof written === 'string' ? (RENAMED[written] ?? written) : written
     if (!isWidgetType(type)) continue
     const spec = specOf(type)
     // Ids are trusted from storage, so a hand-edited file can repeat one --

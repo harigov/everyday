@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Where the week went, one row per role.
+  // Where the week went, one row per area.
   //
   // Rows rather than a stacked column per day, and the reason is not taste.
   // The question is "how much of my week went to each of these", which is a
@@ -7,9 +7,9 @@
   // the form that answers it, and a stack answers "what is this day made of"
   // instead, which is a different and lesser question.
   //
-  // It also settles an accessibility problem the app's palette has. Role
+  // It also settles an accessibility problem the app's palette has. Area
   // colours come from the journal palette, which somebody can also change
-  // per role: two of its eight hues (the indigo and the magenta) separate
+  // per area: two of its eight hues (the indigo and the magenta) separate
   // well for normal vision and badly for protanopia. In a stack, colour is
   // the *only* identity channel and that would matter. Here every row is
   // directly labelled with its own name and icon, so the colour is a
@@ -25,10 +25,10 @@
   //               and a block is your record of one
 
   import { formatMinutes } from '../lib/format'
-  import type { RoleTotals } from '../lib/balance'
+  import type { AreaTotals } from '../lib/balance'
 
   interface Props {
-    rows: RoleTotals[]
+    rows: AreaTotals[]
   }
 
   const { rows }: Props = $props()
@@ -44,14 +44,14 @@
 </script>
 
 <div class="bars">
-  {#each rows as row (row.roleId ?? 'none')}
+  {#each rows as row (row.areaId ?? 'none')}
     {@const total = row.actualMinutes + row.eventMinutes}
     {@const quiet = total === 0 && row.plannedMinutes === 0}
     <!-- A row rather than a button. It used to be one, with a `picked` prop
          behind it that opened a per-goal breakdown underneath -- and the
          breakdown now lives in the todo app, beside the goals themselves. It
          also carried a bug worth recording: the selected row was decided by
-         `picked === row.roleId`, and the unattributed row's id *is* `null`,
+         `picked === row.areaId`, and the unattributed row's id *is* `null`,
          which is also what "nothing is picked" was spelt as. So the one row
          nobody had chosen was always drawn as chosen. Two meanings, one
          value; the fix was to stop having the state at all. -->
@@ -123,7 +123,7 @@
     text-align: left;
   }
 
-  /* A role with nothing recorded is still drawn — its absence is the
+  /* An area with nothing recorded is still drawn — its absence is the
      finding — but it should not compete with the rows that have something
      to say. */
   .row.quiet .label,
