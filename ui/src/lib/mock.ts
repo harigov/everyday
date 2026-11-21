@@ -2769,9 +2769,9 @@ const accounts: AccountView[] = [
     updatedAt: iso(1),
     hasPassword: true,
     signedIn: true,
-    // (p) TODO: unacknowledged, so the "Mail assistant" section in
-    // `AccountDetail.svelte` has an account to demonstrate the disabled,
-    // explained state on -- every switch off, per `MailAi`'s own default.
+    // (p) TODO: unacknowledged, so Settings → AI features' Mail switches
+    // have an account to demonstrate the "not for this account yet" state
+    // on -- every switch off, per `MailAi`'s own default.
   },
 ]
 
@@ -4205,7 +4205,7 @@ function mockFollowUpStatus(): FollowUpStatus {
             }
           : {
               accountId: a.id,
-              blocked: `${a.address} does not have AI categorisation switched on. Turn it on in Settings → Accounts → ${a.address} → Mail assistant.`,
+              blocked: `${a.address} does not have AI categorisation switched on. Turn it on in Settings → AI features → Mail.`,
               lookedAt: null,
               fullLookAt: null,
               asked: 0,
@@ -8315,7 +8315,7 @@ export const mockInvoke = async <T>(
       if (!accounts.some((a) => a.services.mail && a.mailAi?.writing)) {
         throw new VaultError(
           'forbidden',
-          'no account has writing help on, so there are no replies it may read; switch it on under Settings → Accounts',
+          'no account has writing help on, so there are no replies it may read; switch it on under Settings → AI features',
         )
       }
       return (await mockLearnFromReplies()) as T
@@ -8349,7 +8349,7 @@ export const mockInvoke = async <T>(
       if (allowed.length === 0) {
         throw new VaultError(
           'forbidden',
-          'no account allows its mail to be sorted by the models; switch on sorting under Settings → Accounts',
+          'no account allows its mail to be sorted by the models; switch on sorting under Settings → AI features',
         )
       }
       mockSortOlderMail(

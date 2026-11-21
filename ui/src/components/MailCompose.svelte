@@ -366,7 +366,7 @@
   const writingEnabled = $derived(account?.mailAi?.writing === true)
   /** Why the sparkle and Improve buttons are disabled, when they are --
    *  read as `title`, so a mouse finds out why without opening Settings. */
-  const writingDisabledReason = 'Turn on Writing help in Settings → Accounts'
+  const writingDisabledReason = 'Turn on Writing help in Settings → AI features'
 
   /** The sparkle prompt row -- closed by default, except when
    *  `MailQuickReplies`' quiet "Write with AI…" chip asked for it to open

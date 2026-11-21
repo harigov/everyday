@@ -74,7 +74,7 @@ impl MailAiRefusal {
         match self {
             MailAiRefusal::FeatureOff => format!(
                 "{addr} does not have {} switched on. Turn it on in Settings \u{2192} \
-                 Accounts \u{2192} {addr} \u{2192} Mail assistant.",
+                 AI features \u{2192} Mail.",
                 feature.setting_name()
             ),
             MailAiRefusal::NotAcknowledged => format!(

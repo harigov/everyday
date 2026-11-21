@@ -666,7 +666,7 @@ export function followUpHint(
 /** What the Inbox says when every account is held back and they differ -- each
  *  one's own sentence is in Settings → Mail sorting. */
 const NO_ACCOUNT_READY =
-  'No mail account is ready for follow-ups. Each needs sorting switched on and the assistant allowed to reach its mail, under Settings → Accounts.'
+  'No mail account is ready for follow-ups. Each needs sorting switched on and the assistant allowed to reach its mail: the switch is under Settings → AI features, the permission under Settings → Accounts.'
 
 /**
  * Why follow-ups cannot run for the Inbox on screen, in a sentence naming the

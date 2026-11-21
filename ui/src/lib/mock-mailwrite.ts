@@ -269,7 +269,7 @@ export async function mockCheckDraft(id: string): Promise<DraftCheckReport> {
       results: [],
       off:
         'me@fastmail.com does not have writing help switched on. Turn it on in ' +
-        'Settings → Accounts → me@fastmail.com → Mail assistant.',
+        'Settings → AI features → Mail.',
     }
   }
   await delay(600)

@@ -3,9 +3,15 @@
   //
   // Sections in the order the decisions actually get made: whether to do this
   // at all (blocked until the speech model is chosen and working), which
-  // speech model that is and where the audio goes, when a call starts a
-  // recording, what the note looks like, and — last, because it is opt-in on
-  // top of an opt-in feature — whether voices are matched to names at all.
+  // speech model that is and where the audio goes, what the note looks like,
+  // when a call starts a recording, and — last, because it is opt-in on top
+  // of an opt-in feature — whether voices are matched to names at all.
+  //
+  // Split into three tabs along those lines -- General, Calls, Voices -- since
+  // one column of it ran so far down that the Save sat out of sight. Each tab
+  // holds part of the one draft, so the Save is at the foot of all three and
+  // saves what was changed on any of them. The voices themselves are recorded
+  // and deleted by their own buttons, as they always were.
   //
   // How speech becomes text is not chosen here. It is the platform's speech
   // model, on its own card in Settings → Models, shared with anything else
@@ -26,6 +32,7 @@
   import { templates } from '../lib/templates.svelte'
   import type { MeetingSettings, Offer, VoiceprintInfo } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import SubTabs from './SubTabs.svelte'
 
   // Read afresh each time the tab opens: the speech model may have been
   // changed in Settings → Models since this view was last read.
@@ -37,6 +44,7 @@
   let draft = $state<MeetingSettings | null>(null)
   let notice = $state<string | null>(null)
   let saving = $state(false)
+  let sub = $state<'general' | 'calls' | 'voices'>('general')
 
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
   function confirm(message: string) {
@@ -152,262 +160,277 @@
 {#if !draft}
   <p class="hint">Loading…</p>
 {:else}
+  <SubTabs
+    tabs={[
+      { id: 'general', label: 'General' },
+      { id: 'calls', label: 'Calls' },
+      { id: 'voices', label: 'Voices' },
+    ]}
+    bind:value={sub}
+    label="Meetings"
+  />
+
   <div class="panes">
-    <label class="toggle">
-      <input
-        type="checkbox"
-        checked={draft.enabled}
-        disabled={!meetings.view?.usable && !draft.enabled}
-        onchange={(e) => draft && (draft.enabled = e.currentTarget.checked)}
-      />
-      <span>
-        <b>Take meeting notes</b>
-        <small>
-          {#if meetings.view?.usable}
-            Offers to take notes when a meeting starts, and writes a note from the call.
-          {:else}
-            {meetings.view?.problem ?? 'Choose a speech model in Settings → Models first.'}
-          {/if}
-        </small>
-      </span>
-    </label>
-
-    <section>
-      <span class="eyebrow">How speech becomes text</span>
-      <div class="row">
-        <p class="hint grow">Speech: {speechLine}.</p>
-        <button class="btn" onclick={() => panels.openSettings('models')}>Open Models</button>
-      </div>
-      <p class="hint">
-        Chosen in Settings → Models, with its key and its downloads, and shared with anything else
-        in the app that turns speech into text.
-      </p>
-    </section>
-
-    <section>
-      <span class="eyebrow">Where the audio goes</span>
-      <p class="hint">
-        {#if !meetings.view?.speech}
-          Nothing is recorded until a speech model is chosen, so no audio goes anywhere yet.
-        {:else if meetings.view?.remote}
-          Audio is sent to the speech model's provider while a call is recording. It is deleted the
-          moment the note is written; the transcript — text, timings and speakers — is what stays.
-        {:else}
-          Audio never leaves this computer. It is deleted the moment the note is written; the
-          transcript — text, timings and speakers — is what stays.
-        {/if}
-      </p>
-    </section>
-
-    <section>
-      <span class="eyebrow">When calls start</span>
-      <div class="segmented">
-        {#each OFFER_CHOICES as c (c.value)}
-          <button
-            class="seg"
-            class:on={draft.offer === c.value}
-            onclick={() => draft && (draft.offer = c.value)}
-          >
-            {c.label}
-          </button>
-        {/each}
-      </div>
-      <p class="hint">
-        {#if draft.offer === 'off'}
-          Meeting notes are never offered, for a calendar meeting or a call on the microphone.
-        {:else if draft.offer === 'ask'}
-          An offer comes for any calendar meeting with other people in it, about a minute before it
-          starts — a banner here, and a notification if the app is behind other windows. Nothing
-          records until you say yes.
-        {:else}
-          Records every calendar meeting with other people in it, on these calendars, without
-          asking.
-        {/if}
-      </p>
-      {#if draft.offer === 'ask'}
-        <label class="toggle small">
-          <input type="checkbox" bind:checked={draft.autoRecord} />
-          <span>Start recording automatically after you join</span>
-        </label>
-        <p class="hint">
-          A card in the corner of the screen offers to join and record. If you join the call another
-          way, recording starts in 15 seconds unless you cancel.
-        </p>
-      {/if}
-      <label class="toggle small">
-        <input type="checkbox" bind:checked={draft.micOffer} disabled={draft.offer === 'off'} />
-        <span>Also offer when another app starts using the microphone</span>
-      </label>
-      <p class="hint">
-        Catches calls that aren’t on your calendar — Zoom, Meet or Teams in a browser. Linux only
-        for now.
-      </p>
-
-      {#if calendar.calendars.length > 0}
-        <div class="pick-list">
-          <span class="eyebrow">Calendars</span>
-          {#each calendar.calendars as c (c.id)}
-            <label class="switch">
-              <input
-                type="checkbox"
-                checked={draft.calendars.calendarIds.includes(c.id)}
-                onchange={() => toggleCalendar(c.id)}
-              />
-              <span class="switch-text">
-                <span class="switch-label">{c.name}</span>
-              </span>
-            </label>
-          {/each}
-        </div>
-      {/if}
-      {#if purpose.roles.length > 0}
-        <div class="pick-list">
-          <span class="eyebrow">Roles</span>
-          {#each purpose.roles as r (r.id)}
-            <label class="switch">
-              <input
-                type="checkbox"
-                checked={draft.calendars.roleIds.includes(r.id)}
-                onchange={() => toggleRole(r.id)}
-              />
-              <span class="switch-text">
-                <span class="switch-label">{r.icon} {r.name}</span>
-              </span>
-            </label>
-          {/each}
-        </div>
-      {/if}
-      <p class="hint">
-        Empty means every calendar. Ticking any narrows it to those — and to any role whose
-        calendars are not individually ticked.
-      </p>
-
-      <label class="toggle small">
-        <input type="checkbox" bind:checked={draft.autoStop} />
-        <span>Stop automatically when the calendar event ends</span>
-      </label>
-
-      <label class="setting">
-        <span>Names and words to spell right</span>
-        <textarea
-          class="terms"
-          rows="4"
-          value={draft.vocabulary.join('\n')}
-          oninput={(e) => draft && (draft.vocabulary = e.currentTarget.value.split('\n'))}
-          placeholder="One per line: product names, acronyms, people"
-          spellcheck="false"
-        ></textarea>
-      </label>
-      <p class="hint">
-        Told to the speech model and the note writer in every meeting, along with the names on the
-        invite, and used to correct near misses in the transcript.
-      </p>
-
-      {#if draft.skippedSeries.length > 0}
-        <div class="pick-list">
-          <span class="eyebrow">Never for these meetings</span>
-          {#each draft.skippedSeries as uid (uid)}
-            <div class="skip-row">
-              <span>{uid}</span>
-              <button class="link" onclick={() => removeSkipped(uid)}>Remove</button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </section>
-
-    <section>
-      <span class="eyebrow">Template</span>
-      <label class="setting">
-        <span>Write notes from</span>
-        <select bind:value={draft.defaultTemplate}>
-          {#if meetingTemplates.length === 0}
-            <option value={null}>The built-in meeting notes</option>
-          {/if}
-          {#each meetingTemplates as t (t.id)}
-            <option value={t.id}>{t.name}</option>
-          {/each}
-        </select>
-      </label>
-      <p class="hint">
-        Shared with the journal and notes: a heading is kept as written, and the text under it tells
-        the model what to write there.
-        <button class="linkish" onclick={() => panels.openSettings('templates')}>
-          Edit templates
-        </button>
-      </p>
-    </section>
-
-    <section>
-      <span class="eyebrow">Voices</span>
+    {#if sub === 'general'}
       <label class="toggle">
-        <input type="checkbox" bind:checked={draft.voiceprints} />
+        <input
+          type="checkbox"
+          checked={draft.enabled}
+          disabled={!meetings.view?.usable && !draft.enabled}
+          onchange={(e) => draft && (draft.enabled = e.currentTarget.checked)}
+        />
         <span>
-          <b>Match voices to names</b>
+          <b>Take meeting notes</b>
           <small>
-            Biometric data, kept only in this vault and never sent anywhere. Off by default; on, a
-            voice is matched against the event's attendees and asked about once when no match can be
-            made.
+            {#if meetings.view?.usable}
+              Offers to take notes when a meeting starts, and writes a note from the call.
+            {:else}
+              {meetings.view?.problem ?? 'Choose a speech model in Settings → Models first.'}
+            {/if}
           </small>
         </span>
       </label>
 
-      {#if draft.voiceprints}
+      <section>
+        <span class="eyebrow">How speech becomes text</span>
         <div class="row">
-          <button class="btn" disabled={enrolling} onclick={() => void enrol()}>
-            {enrolling ? 'Recording…' : 'Record my voice (20s)'}
-          </button>
-          {#if enrolNotice}<span class="notice">{enrolNotice}</span>{/if}
+          <p class="hint grow">Speech: {speechLine}.</p>
+          <button class="btn" onclick={() => panels.openSettings('models')}>Open Models</button>
         </div>
+        <p class="hint">
+          Chosen in Settings → Models, with its key and its downloads, and shared with anything else
+          in the app that turns speech into text.
+        </p>
+      </section>
 
-        {#if meetings.voiceprints.length > 0}
-          <ul class="vp-list">
-            {#each meetings.voiceprints as v (v.id)}
-              <li>
-                <span class="vp-text">
-                  <b>{v.name}{v.isOwner ? ' (you)' : ''}</b>
-                  <small>{plural(v.samples, 'sample')} · updated {relativeTime(v.updatedAt)}</small>
-                </span>
-                <button class="link" onclick={() => (pendingVoiceDelete = v)}>Delete</button>
-              </li>
+      <section>
+        <span class="eyebrow">Where the audio goes</span>
+        <p class="hint">
+          {#if !meetings.view?.speech}
+            Nothing is recorded until a speech model is chosen, so no audio goes anywhere yet.
+          {:else if meetings.view?.remote}
+            Audio is sent to the speech model's provider while a call is recording. It is deleted
+            the moment the note is written; the transcript — text, timings and speakers — is what
+            stays.
+          {:else}
+            Audio never leaves this computer. It is deleted the moment the note is written; the
+            transcript — text, timings and speakers — is what stays.
+          {/if}
+        </p>
+      </section>
+
+      <section>
+        <span class="eyebrow">Template</span>
+        <label class="setting">
+          <span>Write notes from</span>
+          <select bind:value={draft.defaultTemplate}>
+            {#if meetingTemplates.length === 0}
+              <option value={null}>The built-in meeting notes</option>
+            {/if}
+            {#each meetingTemplates as t (t.id)}
+              <option value={t.id}>{t.name}</option>
             {/each}
-          </ul>
-          <div>
-            <button class="link danger" onclick={() => (confirmingDeleteAll = true)}>
-              Delete all voices
+          </select>
+        </label>
+        <p class="hint">
+          Shared with the journal and notes: a heading is kept as written, and the text under it
+          tells the model what to write there.
+          <button class="linkish" onclick={() => panels.openSettings('templates')}>
+            Edit templates
+          </button>
+        </p>
+      </section>
+    {:else if sub === 'calls'}
+      <section>
+        <span class="eyebrow">When calls start</span>
+        <div class="segmented">
+          {#each OFFER_CHOICES as c (c.value)}
+            <button
+              class="seg"
+              class:on={draft.offer === c.value}
+              onclick={() => draft && (draft.offer = c.value)}
+            >
+              {c.label}
             </button>
+          {/each}
+        </div>
+        <p class="hint">
+          {#if draft.offer === 'off'}
+            Meeting notes are never offered, for a calendar meeting or a call on the microphone.
+          {:else if draft.offer === 'ask'}
+            An offer comes for any calendar meeting with other people in it, about a minute before
+            it starts — a banner here, and a notification if the app is behind other windows.
+            Nothing records until you say yes.
+          {:else}
+            Records every calendar meeting with other people in it, on these calendars, without
+            asking.
+          {/if}
+        </p>
+        {#if draft.offer === 'ask'}
+          <label class="toggle small">
+            <input type="checkbox" bind:checked={draft.autoRecord} />
+            <span>Start recording automatically after you join</span>
+          </label>
+          <p class="hint">
+            A card in the corner of the screen offers to join and record. If you join the call
+            another way, recording starts in 15 seconds unless you cancel.
+          </p>
+        {/if}
+        <label class="toggle small">
+          <input type="checkbox" bind:checked={draft.micOffer} disabled={draft.offer === 'off'} />
+          <span>Also offer when another app starts using the microphone</span>
+        </label>
+        <p class="hint">
+          Catches calls that aren’t on your calendar — Zoom, Meet or Teams in a browser. Linux only
+          for now.
+        </p>
+
+        {#if calendar.calendars.length > 0}
+          <div class="pick-list">
+            <span class="eyebrow">Calendars</span>
+            {#each calendar.calendars as c (c.id)}
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  checked={draft.calendars.calendarIds.includes(c.id)}
+                  onchange={() => toggleCalendar(c.id)}
+                />
+                <span class="switch-text">
+                  <span class="switch-label">{c.name}</span>
+                </span>
+              </label>
+            {/each}
           </div>
         {/if}
-      {/if}
-    </section>
-
-    {#if isMock}
-      <section>
-        <span class="eyebrow">Simulate (dev only)</span>
+        {#if purpose.roles.length > 0}
+          <div class="pick-list">
+            <span class="eyebrow">Roles</span>
+            {#each purpose.roles as r (r.id)}
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  checked={draft.calendars.roleIds.includes(r.id)}
+                  onchange={() => toggleRole(r.id)}
+                />
+                <span class="switch-text">
+                  <span class="switch-label">{r.icon} {r.name}</span>
+                </span>
+              </label>
+            {/each}
+          </div>
+        {/if}
         <p class="hint">
-          There is no native shell in a browser build; these stand in for what it would send, so the
-          pill and the offer banner can be exercised here.
+          Empty means every calendar. Ticking any narrows it to those — and to any role whose
+          calendars are not individually ticked.
         </p>
-        <div class="row wrap">
-          <button class="btn" onclick={() => void meetings.mockTriggerOffer(false)}>
-            Trigger an offer
-          </button>
-          <button class="btn" onclick={() => void meetings.mockTriggerOffer(true)}>
-            Trigger an automatic recording
-          </button>
-          <button class="btn" onclick={() => void meetings.mockTriggerMicOffer(false)}>
-            Microphone offer
-          </button>
-          <button class="btn" onclick={() => void meetings.mockTriggerMicOffer(true)}>
-            Microphone offer during a meeting
-          </button>
-          <button class="btn" onclick={() => void meetings.mockTriggerStillOn()}>
-            Trigger "still on the call?"
-          </button>
-          <button class="btn" onclick={() => void meetings.mockTriggerSystemSilent()}>
-            Simulate a silent call
-          </button>
-        </div>
+
+        <label class="toggle small">
+          <input type="checkbox" bind:checked={draft.autoStop} />
+          <span>Stop automatically when the calendar event ends</span>
+        </label>
+
+        <label class="setting">
+          <span>Names and words to spell right</span>
+          <textarea
+            class="terms"
+            rows="4"
+            value={draft.vocabulary.join('\n')}
+            oninput={(e) => draft && (draft.vocabulary = e.currentTarget.value.split('\n'))}
+            placeholder="One per line: product names, acronyms, people"
+            spellcheck="false"
+          ></textarea>
+        </label>
+        <p class="hint">
+          Told to the speech model and the note writer in every meeting, along with the names on the
+          invite, and used to correct near misses in the transcript.
+        </p>
+
+        {#if draft.skippedSeries.length > 0}
+          <div class="pick-list">
+            <span class="eyebrow">Never for these meetings</span>
+            {#each draft.skippedSeries as uid (uid)}
+              <div class="skip-row">
+                <span>{uid}</span>
+                <button class="link" onclick={() => removeSkipped(uid)}>Remove</button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      {#if isMock}
+        <section>
+          <span class="eyebrow">Simulate (dev only)</span>
+          <p class="hint">
+            There is no native shell in a browser build; these stand in for what it would send, so
+            the pill and the offer banner can be exercised here.
+          </p>
+          <div class="row wrap">
+            <button class="btn" onclick={() => void meetings.mockTriggerOffer(false)}>
+              Trigger an offer
+            </button>
+            <button class="btn" onclick={() => void meetings.mockTriggerOffer(true)}>
+              Trigger an automatic recording
+            </button>
+            <button class="btn" onclick={() => void meetings.mockTriggerMicOffer(false)}>
+              Microphone offer
+            </button>
+            <button class="btn" onclick={() => void meetings.mockTriggerMicOffer(true)}>
+              Microphone offer during a meeting
+            </button>
+            <button class="btn" onclick={() => void meetings.mockTriggerStillOn()}>
+              Trigger "still on the call?"
+            </button>
+            <button class="btn" onclick={() => void meetings.mockTriggerSystemSilent()}>
+              Simulate a silent call
+            </button>
+          </div>
+        </section>
+      {/if}
+    {:else}
+      <section>
+        <span class="eyebrow">Voices</span>
+        <label class="toggle">
+          <input type="checkbox" bind:checked={draft.voiceprints} />
+          <span>
+            <b>Match voices to names</b>
+            <small>
+              Biometric data, kept only in this vault and never sent anywhere. Off by default; on, a
+              voice is matched against the event's attendees and asked about once when no match can
+              be made.
+            </small>
+          </span>
+        </label>
+
+        {#if draft.voiceprints}
+          <div class="row">
+            <button class="btn" disabled={enrolling} onclick={() => void enrol()}>
+              {enrolling ? 'Recording…' : 'Record my voice (20s)'}
+            </button>
+            {#if enrolNotice}<span class="notice">{enrolNotice}</span>{/if}
+          </div>
+
+          {#if meetings.voiceprints.length > 0}
+            <ul class="vp-list">
+              {#each meetings.voiceprints as v (v.id)}
+                <li>
+                  <span class="vp-text">
+                    <b>{v.name}{v.isOwner ? ' (you)' : ''}</b>
+                    <small
+                      >{plural(v.samples, 'sample')} · updated {relativeTime(v.updatedAt)}</small
+                    >
+                  </span>
+                  <button class="link" onclick={() => (pendingVoiceDelete = v)}>Delete</button>
+                </li>
+              {/each}
+            </ul>
+            <div>
+              <button class="link danger" onclick={() => (confirmingDeleteAll = true)}>
+                Delete all voices
+              </button>
+            </div>
+          {/if}
+        {/if}
       </section>
     {/if}
   </div>

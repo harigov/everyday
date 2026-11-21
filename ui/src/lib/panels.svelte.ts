@@ -29,14 +29,18 @@ export const SETTINGS_TABS = [
   'general',
   'profile',
   'accounts',
-  // The categories a decision model sorts mail into -- under Accounts, whose
-  // mail it is, though it is the models that read it.
-  'sorting',
-  // What the person says about how mail is written for them, beside it.
-  'writing',
   // Which model each size of work runs on -- application settings, not the
   // assistant's, though the assistant is the main thing that asks one.
   'models',
+  // What the models are used for, for the whole application: mail's
+  // categorising and drafting, the small model's quick asks, writing help
+  // and voice typing anywhere on this computer. See AiFeaturesPanel.
+  'ai',
+  // The categories a decision model sorts mail into -- under AI features,
+  // with the switch that turns categorising on.
+  'sorting',
+  // What the person says about how mail is written for them, beside it.
+  'writing',
   'assistant',
   // The assistant's standing work, drawn under its own tab -- see
   // `assistant.svelte.ts`'s `Pane`, which is these four by name.

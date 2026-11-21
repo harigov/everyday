@@ -1,16 +1,36 @@
 <script lang="ts">
   // One account, in full: its display name, its identities, which services
-  // it provides, an attachment cap, signing in again, and what agents may
-  // do with it -- everything Settings → Accounts lets you change after the
-  // add-account sheet has done its one job of creating the record.
+  // it provides, its servers and calendars, an attachment cap, signing in
+  // again, and what agents may do with it -- everything Settings → Accounts
+  // lets you change after the add-account sheet has done its one job of
+  // creating the record.
   //
-  // Two save rhythms, and they are different on purpose. The fields below --
-  // name, identities, services, the cap -- are a draft with an explicit
+  // Split into tabs -- General, Mail, Servers, Calendars, Agents -- each
+  // shown only when it has something to say for this account. Stacked one
+  // under another, these grew into a column taller than the window, with
+  // Save somewhere in the middle of the scroll and sections that saved on
+  // their own underneath it, so nobody could tell which of them Save
+  // covered. The sheet is a header, a scrolling body and a footer: the
+  // address, the status and the tabs stay put, the tab's own content
+  // scrolls, and Save -- with Remove at the other end -- is always at the
+  // foot, whichever tab is showing. Its height is fixed rather than fitted
+  // to the tab, so switching tabs does not make the dialog jump.
+  //
+  // Two save rhythms, and they are different on purpose. The draft fields --
+  // name, identities, services, servers, the cap -- wait for an explicit
   // Save, the same as About You: a half-typed signature must never be
-  // written mid-keystroke. The permission grid applies each switch the
-  // moment it is ticked, the same as MCP's own "let it delete things" --
-  // "ticking one switch in Settings → Accounts is one call," per
+  // written mid-keystroke. Save is greyed out until one of them differs from
+  // what is saved, so it says whether there is anything to save at all. The
+  // interval, the notification rule and the permission grid apply each
+  // choice the moment it is made, the same as MCP's own "let it delete
+  // things" -- "ticking one switch in Settings → Accounts is one call," per
   // `set_agent_access`'s own doc, not a form waiting to be submitted.
+  //
+  // What the mail assistant does -- categorising, drafting ahead, summaries,
+  // writing help -- used to be four switches here, one set per account. They
+  // are one set for every account under Settings → AI features now; the
+  // Agents tab only points there, since each still waits for this account's
+  // own "I understand" box before it reads any of its mail.
 
   import { agent } from '../lib/agent.svelte'
   import { models } from '../lib/models.svelte'
@@ -18,8 +38,6 @@
   import { accounts, beginAccountSignIn, type OAuthSignInHandle } from '../lib/accounts.svelte'
   import { humanBytes } from '../lib/format'
   import {
-    DEFAULT_MAIL_AI,
-    MAIL_AI_SWITCHES,
     MAIL_NOTIFY_CHOICES,
     PROVIDER_LABELS,
     SYNC_INTERVALS,
@@ -34,6 +52,7 @@
   import { errorMessage } from '../lib/errors'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { openExternal } from '../lib/open-external'
+  import { panels } from '../lib/panels.svelte'
   import type {
     Account,
     AccountId,
@@ -41,7 +60,6 @@
     AgentMailAccess,
     Endpoint,
     Identity,
-    MailAi,
     MailCategory,
     MailNotify,
     RemoteCalendarInfo,
@@ -52,6 +70,8 @@
   import Icon from './Icon.svelte'
   import SignatureField from './SignatureField.svelte'
   import SignInLink from './SignInLink.svelte'
+  import SubTabs from './SubTabs.svelte'
+  import { shownTab } from '../lib/subtabs'
 
   let { id, onclose }: { id: AccountId; onclose: () => void } = $props()
 
@@ -149,27 +169,39 @@
     username: string | null
   }
 
+  /** The form as `account` would fill it -- what the sheet opens with, and
+   *  what `dirty` holds the form up against. */
+  function draftOf(account: Account): Draft {
+    return {
+      displayName: account.displayName,
+      signatureHtml: account.signatureHtml ?? '',
+      identities: account.identities.map((i) => ({ ...i })),
+      services: { ...account.services },
+      capEnabled: account.attachmentCapBytes != null,
+      capMb: account.attachmentCapBytes ? Math.round(account.attachmentCapBytes / 1_048_576) : 25,
+      imap: { ...account.imap },
+      smtp: { ...account.smtp },
+      username: account.auth.type === 'password' ? account.auth.username : null,
+    }
+  }
+
   let draft = $state<Draft | null>(null)
   // Populated once, the moment the account is first known -- a later change
   // to the underlying record (another window's edit) does not silently
   // discard whatever is half-typed here.
   $effect(() => {
-    if (!draft && original) {
-      draft = {
-        displayName: original.displayName,
-        signatureHtml: original.signatureHtml ?? '',
-        identities: original.identities.map((i) => ({ ...i })),
-        services: { ...original.services },
-        capEnabled: original.attachmentCapBytes != null,
-        capMb: original.attachmentCapBytes
-          ? Math.round(original.attachmentCapBytes / 1_048_576)
-          : 25,
-        imap: { ...original.imap },
-        smtp: { ...original.smtp },
-        username: original.auth.type === 'password' ? original.auth.username : null,
-      }
-    }
+    if (!draft && original) draft = draftOf(original)
   })
+
+  /** Does the form say anything the saved record does not? What Save is
+   *  greyed out on. `draftOf` builds both sides the same way, field for
+   *  field and in the same order, so the two strings differ only where an
+   *  edit does. */
+  const dirty = $derived(
+    !!draft &&
+      !!original &&
+      JSON.stringify($state.snapshot(draft)) !== JSON.stringify(draftOf(original)),
+  )
 
   let saving = $state(false)
   let notice = $state<string | null>(null)
@@ -179,6 +211,9 @@
     if (!draft || !original) return
     saving = true
     notice = null
+    /** The form as it was sent, to tell whether anything was typed while
+     *  the save and the reload were under way. */
+    const sent = JSON.stringify($state.snapshot(draft))
     try {
       // `$state.snapshot`: `...original` spreads a reactive record straight
       // from the store's list, and its nested fields (`imap`, `auth`,
@@ -203,6 +238,14 @@
       })
       await api.saveAccount(account)
       await accounts.refresh()
+      // Drawn afresh from what was just written, trims and all: the form
+      // that was saved is the record now, and Save greys out again rather
+      // than still seeing a trailing space as an edit.
+      // Unless it was edited again in the meantime -- an IMAP reconnect can
+      // make this slow -- in which case those keystrokes are kept, and Save
+      // stays lit for them.
+      const saved = accounts.account(id)
+      if (saved && JSON.stringify($state.snapshot(draft)) === sent) draft = draftOf(saved)
       notice = 'Saved.'
       sendCheck = null
     } catch (e) {
@@ -263,34 +306,9 @@
     draft.identities = draft.identities.filter((_, i) => i !== index)
   }
 
-  // ── (p) TODO: the Superhuman layer's three switches ───────────────────
-  //
-  // Applies immediately, the same as the agent-access grid above and for
-  // the same reason: a switch in Settings → Accounts is one call, not a
-  // form waiting on Save. Disabled until the account's mail is acknowledged
-  // for the assistant -- reusing `AgentAccessGrid`'s own acknowledgement
-  // checkbox above, since categorising, drafting and summarising all run
-  // through the same configured model that checkbox already gates.
-
-  let mailAiSaving = $state(false)
-
-  async function setMailAi(patch: Partial<MailAi>) {
-    if (!original) return
-    mailAiSaving = true
-    try {
-      const mailAi = { ...(original.mailAi ?? DEFAULT_MAIL_AI), ...patch }
-      await api.saveAccount($state.snapshot({ ...original, mailAi }))
-      await accounts.refresh()
-    } catch (e) {
-      notice = errorMessage(e)
-    } finally {
-      mailAiSaving = false
-    }
-  }
-
   // ── How often every folder is re-checked ─────────────────────────────
   //
-  // Applied the moment it is picked, the same as the switches above: one
+  // Applied the moment it is picked, the same as the agent-access grid: one
   // setting, one call -- and the backend runs a pass straight away on
   // saving, so a shorter interval is felt at once rather than after the old
   // one runs out.
@@ -463,6 +481,9 @@
    *  preset's calendar scopes added to whatever the account already has. */
   function signInForCalendarAccess() {
     if (!original || original.auth.type !== 'oAuth') return
+    // The flow -- a client secret to type, a link to open if no browser
+    // came up, Cancel -- is drawn under Signing in, on General.
+    sub = 'general'
     const preset = accounts.preset(original.provider)
     extraScopes = preset?.oauth?.calendarScopes ?? []
     clientSecretInput = ''
@@ -492,6 +513,30 @@
     }
   }
 
+  // ── Tabs ─────────────────────────────────────────────────────────────
+
+  type Sub = 'general' | 'mail' | 'servers' | 'calendars' | 'agents'
+
+  /** Only the tabs with something to say for this account. Mail and
+   *  Calendars follow the *saved* services, for the reason the calendar
+   *  section above gives; Servers follows the draft, as its fields always
+   *  have, since they are typed in before Save switches mail on. */
+  const subTabs = $derived.by(() => {
+    const tabs: { id: Sub; label: string }[] = [{ id: 'general', label: 'General' }]
+    if (original?.services.mail) tabs.push({ id: 'mail', label: 'Mail' })
+    if (original?.auth.type === 'password' && draft?.services.mail)
+      tabs.push({ id: 'servers', label: 'Servers' })
+    if (original?.services.calendar) tabs.push({ id: 'calendars', label: 'Calendars' })
+    tabs.push({ id: 'agents', label: 'Agents' })
+    return tabs
+  })
+
+  let sub = $state<Sub>('general')
+  /** The tab actually showing: the one picked, unless it has gone -- Mail
+   *  unticked and saved -- in which case General, rather than a strip with
+   *  nothing selected over an empty body. */
+  const shownSub = $derived(shownTab(subTabs, sub))
+
   // ── Removing ─────────────────────────────────────────────────────────
 
   async function confirmRemove() {
@@ -515,445 +560,448 @@
     <p class="hint">Loading…</p>
   {:else}
     {@const st = statusLabel(original.status)}
-    <header>
-      <div>
-        <h2>{original.address}</h2>
-        <p class="sub">
-          {accounts.preset(original.provider)?.label ?? PROVIDER_LABELS[original.provider]}
-        </p>
-      </div>
-      <button class="ghost" onclick={onclose} title="Close"><Icon name="close" size={16} /></button>
-    </header>
-
-    <p class="status tone-{st.tone}">
-      <span class="dot"></span>
-      {st.label}{#if st.detail}<span> — {st.detail}</span>{/if}
-    </p>
-
-    <section>
-      <label class="field-label" for="detail-name">Display name</label>
-      <input id="detail-name" class="field" bind:value={draft.displayName} />
-    </section>
-
-    <section>
-      <span class="eyebrow">Signature</span>
-      <SignatureField label="Signature" bind:value={draft.signatureHtml} />
-      <p class="hint">
-        Starts off every new message, reply and forward from this account, under where you write and
-        above the quote. It is ordinary text there: change it or delete it for that one message.
-      </p>
-    </section>
-
-    <section>
-      <span class="eyebrow">Identities</span>
-      <p class="hint">
-        A second address this account can send as, chosen under From when you write. With no
-        signature of its own, it uses the one above.
-      </p>
-      {#each draft.identities as identity, i (i)}
-        <div class="identity">
-          <div class="row">
-            <input class="field" placeholder="Name" bind:value={identity.name} />
-            <input class="field" placeholder="Address" bind:value={identity.address} />
-            <button class="ghost" title="Remove this identity" onclick={() => removeIdentity(i)}>
-              <Icon name="trash" size={14} />
-            </button>
-          </div>
-          <SignatureField
-            label="This identity's signature"
-            placeholder="Signature"
-            bind:value={identity.signatureHtml}
-          />
+    <div class="head">
+      <header>
+        <div>
+          <h2>{original.address}</h2>
+          <p class="sub">
+            {accounts.preset(original.provider)?.label ?? PROVIDER_LABELS[original.provider]}
+          </p>
         </div>
-      {/each}
-      <div>
-        <button class="btn" onclick={addIdentity}
-          ><Icon name="plus" size={13} /> Add an identity</button
+        <button class="ghost" onclick={onclose} title="Close"
+          ><Icon name="close" size={16} /></button
         >
-      </div>
-    </section>
+      </header>
 
-    <section>
-      <span class="eyebrow">Services</span>
-      <div class="services">
-        <label class="check">
-          <input type="checkbox" bind:checked={draft.services.mail} />
-          Mail
-        </label>
-        <label class="check">
-          <input type="checkbox" bind:checked={draft.services.calendar} />
-          Calendar
-        </label>
-      </div>
-    </section>
-
-    {#if original.auth.type === 'password' && draft.services.mail}
-      <section>
-        <span class="eyebrow">Servers</span>
-        {#each [{ key: 'imap', label: 'Incoming (IMAP)' }, { key: 'smtp', label: 'Outgoing (SMTP)' }] as const as server (server.key)}
-          <div class="server">
-            <div class="grow">
-              <label class="field-label" for="detail-{server.key}-host">{server.label} host</label>
-              <input
-                id="detail-{server.key}-host"
-                class="field"
-                spellcheck="false"
-                bind:value={draft[server.key].host}
-              />
-            </div>
-            <div>
-              <label class="field-label" for="detail-{server.key}-port">Port</label>
-              <input
-                id="detail-{server.key}-port"
-                class="field port"
-                type="number"
-                min="1"
-                max="65535"
-                bind:value={draft[server.key].port}
-              />
-            </div>
-            <div>
-              <label class="field-label" for="detail-{server.key}-sec">Security</label>
-              <select
-                id="detail-{server.key}-sec"
-                class="field"
-                bind:value={draft[server.key].security}
-              >
-                <option value="tls">TLS</option>
-                <option value="startTls">STARTTLS</option>
-              </select>
-            </div>
-          </div>
-        {/each}
-        {#if draft.username !== null}
-          <div>
-            <label class="field-label" for="detail-username">Sign in as</label>
-            <input
-              id="detail-username"
-              class="field"
-              spellcheck="false"
-              autocomplete="username"
-              bind:value={draft.username}
-            />
-          </div>
-        {/if}
-        <p class="hint">
-          Port 465 is TLS and 587 is STARTTLS on most servers. Saving new settings connects again
-          and retries any message waiting to be sent.
-        </p>
-        <div class="row">
-          <button
-            class="btn"
-            disabled={checkingSend || serversEdited}
-            title={serversEdited ? 'Save first: this checks the saved settings' : undefined}
-            onclick={checkSending}
-          >
-            {checkingSend ? 'Checking…' : 'Check sending'}
-          </button>
-          {#if sendCheck}
-            <span class="check-result" class:bad={!sendCheck.ok} role="status"
-              >{sendCheck.text}</span
-            >
-          {/if}
-        </div>
-      </section>
-    {/if}
-
-    {#if original.services.calendar}
-      <section>
-        <span class="eyebrow">Calendars</span>
-        {#if calendarScopesMissing}
-          <p class="hint">This account was signed in before calendar access was requested.</p>
-          <div>
-            <button class="btn" onclick={signInForCalendarAccess}>
-              Sign in again to allow calendar access
-            </button>
-          </div>
-        {:else if remoteLoading}
-          <p class="hint">Looking…</p>
-        {:else if remoteError}
-          <p class="error">{remoteError}</p>
-        {:else if remoteCalendars && remoteCalendars.length === 0}
-          <p class="hint">This account has no calendars to offer.</p>
-        {:else if remoteCalendars}
-          <ul class="remotelist">
-            {#each remoteCalendars as r (r.remoteId)}
-              <li class="remoterow">
-                <span class="remotedot" style="--c: {r.color ?? '#64748b'}" aria-hidden="true"
-                ></span>
-                <span class="remotename">{r.name}</span>
-                {#if r.subscribed}
-                  <span class="hint subscribed">Subscribed</span>
-                {:else}
-                  <button
-                    class="btn"
-                    disabled={subscribingRemoteId === r.remoteId}
-                    onclick={() => toggleRemoteCalendar(r)}
-                  >
-                    {subscribingRemoteId === r.remoteId ? 'Adding…' : 'Add'}
-                  </button>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </section>
-    {/if}
-
-    <section>
-      <span class="eyebrow">Attachments</span>
-      <label class="toggle">
-        <input type="checkbox" bind:checked={draft.capEnabled} />
-        <span>
-          <b>Cap how large an attachment is kept</b>
-          <small>
-            Off by default: every attachment is kept in full. On, anything larger than the limit is
-            left on the server instead of stored here.
-          </small>
-        </span>
-      </label>
-      {#if draft.capEnabled}
-        <div class="row cap-row">
-          <input class="field cap" type="number" min="1" bind:value={draft.capMb} />
-          <span class="hint">MB ({humanBytes(draft.capMb * 1_048_576)})</span>
-        </div>
-      {/if}
-    </section>
-
-    {#if notice}<p class="notice">{notice}</p>{/if}
-    <div class="sheet-row">
-      <span class="spacer"></span>
-      <button class="btn btn-primary" disabled={saving} onclick={save}>
-        {saving ? 'Saving…' : 'Save changes'}
-      </button>
+      <p class="status tone-{st.tone}">
+        <span class="dot"></span>
+        {st.label}{#if st.detail}<span> — {st.detail}</span>{/if}
+      </p>
+      <SubTabs
+        tabs={subTabs}
+        bind:value={() => shownSub, (v: Sub) => (sub = v)}
+        label="Account sections"
+      />
     </div>
 
-    {#if original.services.mail}
-      <section>
-        <label class="eyebrow" for="detail-sync">Check for new mail</label>
-        <select
-          id="detail-sync"
-          class="interval"
-          value={syncChoice}
-          disabled={syncSaving}
-          onchange={(e) => void setSyncMinutes(e.currentTarget.value)}
-        >
-          {#each SYNC_INTERVALS as interval (interval.label)}
-            <option value={interval.minutes === null ? '' : String(interval.minutes)}>
-              {interval.label}
-            </option>
-          {/each}
-          {#if syncOther}
-            <option value={String(syncOther)}>Every {syncOther} minutes</option>
-          {/if}
-        </select>
-        <p class="hint">
-          New mail in the Inbox normally arrives straight away. This is how often every folder is
-          checked again as well.
-        </p>
-      </section>
-
-      <section>
-        <label class="eyebrow" for="detail-notify">Notify me about</label>
-        {#key notifyRedraw}
-          <select
-            id="detail-notify"
-            class="interval"
-            value={notifyRule.type}
-            disabled={notifySaving}
-            onchange={(e) =>
-              void setMailNotify(
-                mailNotifyForChoice(
-                  e.currentTarget.value as MailNotify['type'],
-                  notifyRule,
-                  lastNotifyPick,
-                ),
-              )}
-          >
-            {#each MAIL_NOTIFY_CHOICES as choice (choice.type)}
-              <option value={choice.type}>{choice.label}</option>
-            {/each}
-          </select>
-          <p class="hint">{notifyHint}</p>
-          {#if notifyRule.type === 'categories'}
-            {@const rule = notifyRule}
-            <div class="notify-picks" role="group" aria-label="Categories to notify about">
-              {#each CATEGORY_TABS as tab (tab.key)}
-                <label class="check">
-                  <input
-                    type="checkbox"
-                    checked={rule.tabs.includes(tab.key)}
-                    disabled={notifySaving}
-                    onchange={(e) => toggleNotifyTab(tab.key, e.currentTarget.checked)}
-                  />
-                  {tab.label}
-                </label>
-              {/each}
-              {#each ownCategories as category (category.id)}
-                <label class="check">
-                  <input
-                    type="checkbox"
-                    checked={rule.sorted.includes(category.id)}
-                    disabled={notifySaving}
-                    onchange={(e) => toggleNotifySorted(category.id, e.currentTarget.checked)}
-                  />
-                  {category.name}
-                </label>
-              {/each}
+    <div class="body">
+      {#if shownSub === 'general'}
+        <!-- First on the tab the sheet opens on: an account whose status
+             above says it needs signing in should not have its button hidden
+             behind another tab. -->
+        <section>
+          <span class="eyebrow">Signing in</span>
+          {#if signInPhase === 'idle'}
+            <div>
+              <button class="btn" onclick={startSignIn}>Sign in again</button>
+            </div>
+          {:else if signInPhase === 'clientSecret'}
+            <p class="hint">
+              Google and Microsoft do not hand a client secret back once it is set the first time --
+              type it again to continue.
+            </p>
+            <input
+              class="field"
+              type="password"
+              placeholder="Client secret"
+              bind:value={clientSecretInput}
+              use:focusOnMount
+            />
+            <div class="sheet-row">
+              <span class="spacer"></span>
+              <button class="btn" onclick={() => (signInPhase = 'idle')}>Cancel</button>
+              <button class="btn btn-primary" onclick={() => void runOAuthSignIn()}>Continue</button
+              >
+            </div>
+          {:else if signInPhase === 'waiting' && original.auth.type === 'password'}
+            <input
+              class="field"
+              type="password"
+              placeholder="Password"
+              bind:value={passwordInput}
+              autocomplete="new-password"
+              use:focusOnMount
+            />
+            <div class="sheet-row">
+              <span class="spacer"></span>
+              <button class="btn" onclick={() => (signInPhase = 'idle')}>Cancel</button>
+              <button
+                class="btn btn-primary"
+                disabled={!passwordInput.trim()}
+                onclick={submitPassword}
+              >
+                Save password
+              </button>
+            </div>
+          {:else if signInPhase === 'waiting'}
+            <p class="hint">
+              {#if openedInBrowser}
+                Finish signing in in the browser window that just opened. If none did, open this
+                link:
+              {:else if signIn}
+                This build cannot open a browser itself. Open this link and finish signing in there:
+              {/if}
+            </p>
+            {#if signIn}
+              <SignInLink url={signIn.url} />
+            {/if}
+            <div class="sheet-row">
+              <span class="spacer"></span>
+              <button class="btn" onclick={cancelSignIn}>Cancel</button>
+            </div>
+          {:else if signInPhase === 'success'}
+            {#if original.services.calendar && calendarScopesMissing}
+              <p class="error">
+                Signed in, but without permission to change calendars. The consent page gives each
+                permission its own checkbox -- sign in again and tick the calendar ones too.
+              </p>
+              <div>
+                <button class="btn" onclick={startSignIn}>Sign in again</button>
+              </div>
+            {:else}
+              <p class="hint">Signed in.</p>
+            {/if}
+          {:else if signInPhase === 'cancelled'}
+            <p class="hint">Cancelled.</p>
+            <div>
+              <button class="btn" onclick={startSignIn}>Try again</button>
+            </div>
+          {:else if signInPhase === 'error'}
+            <p class="error">{signInError}</p>
+            <div>
+              <button class="btn" onclick={startSignIn}>Try again</button>
             </div>
           {/if}
-        {/key}
-      </section>
-    {/if}
+        </section>
 
-    <section>
-      <span class="eyebrow">Signing in</span>
-      {#if signInPhase === 'idle'}
-        <div>
-          <button class="btn" onclick={startSignIn}>Sign in again</button>
-        </div>
-      {:else if signInPhase === 'clientSecret'}
-        <p class="hint">
-          Google and Microsoft do not hand a client secret back once it is set the first time --
-          type it again to continue.
-        </p>
-        <input
-          class="field"
-          type="password"
-          placeholder="Client secret"
-          bind:value={clientSecretInput}
-          use:focusOnMount
-        />
-        <div class="sheet-row">
-          <span class="spacer"></span>
-          <button class="btn" onclick={() => (signInPhase = 'idle')}>Cancel</button>
-          <button class="btn btn-primary" onclick={() => void runOAuthSignIn()}>Continue</button>
-        </div>
-      {:else if signInPhase === 'waiting' && original.auth.type === 'password'}
-        <input
-          class="field"
-          type="password"
-          placeholder="Password"
-          bind:value={passwordInput}
-          autocomplete="new-password"
-          use:focusOnMount
-        />
-        <div class="sheet-row">
-          <span class="spacer"></span>
-          <button class="btn" onclick={() => (signInPhase = 'idle')}>Cancel</button>
-          <button class="btn btn-primary" disabled={!passwordInput.trim()} onclick={submitPassword}>
-            Save password
-          </button>
-        </div>
-      {:else if signInPhase === 'waiting'}
-        <p class="hint">
-          {#if openedInBrowser}
-            Finish signing in in the browser window that just opened. If none did, open this link:
-          {:else if signIn}
-            This build cannot open a browser itself. Open this link and finish signing in there:
-          {/if}
-        </p>
-        {#if signIn}
-          <SignInLink url={signIn.url} />
-        {/if}
-        <div class="sheet-row">
-          <span class="spacer"></span>
-          <button class="btn" onclick={cancelSignIn}>Cancel</button>
-        </div>
-      {:else if signInPhase === 'success'}
-        {#if original.services.calendar && calendarScopesMissing}
-          <p class="error">
-            Signed in, but without permission to change calendars. The consent page gives each
-            permission its own checkbox -- sign in again and tick the calendar ones too.
-          </p>
-          <div>
-            <button class="btn" onclick={startSignIn}>Sign in again</button>
+        <section>
+          <label class="field-label" for="detail-name">Display name</label>
+          <input id="detail-name" class="field" bind:value={draft.displayName} />
+        </section>
+
+        <section>
+          <span class="eyebrow">Services</span>
+          <div class="services">
+            <label class="check">
+              <input type="checkbox" bind:checked={draft.services.mail} />
+              Mail
+            </label>
+            <label class="check">
+              <input type="checkbox" bind:checked={draft.services.calendar} />
+              Calendar
+            </label>
           </div>
-        {:else}
-          <p class="hint">Signed in.</p>
-        {/if}
-      {:else if signInPhase === 'cancelled'}
-        <p class="hint">Cancelled.</p>
-        <div>
-          <button class="btn" onclick={startSignIn}>Try again</button>
-        </div>
-      {:else if signInPhase === 'error'}
-        <p class="error">{signInError}</p>
-        <div>
-          <button class="btn" onclick={startSignIn}>Try again</button>
-        </div>
-      {/if}
-    </section>
+        </section>
 
-    <section>
-      <span class="eyebrow">What agents may do</span>
-      <AgentAccessGrid
-        assistantAccess={original.assistantAccess}
-        mcpAccess={original.mcpAccess}
-        {providerName}
-        acknowledged={providerAck != null && original.assistantProviderAcknowledged === providerAck}
-        {ackUnavailable}
-        onchange={(caller: AgentCallerKind, access: AgentMailAccess) =>
-          void accounts.setAccess(original.id, caller, access)}
-        onacknowledge={(ack: boolean) =>
-          (!ack || providerAck) &&
-          void api
-            .saveAccount(
-              $state.snapshot({
-                ...original,
-                assistantProviderAcknowledged: ack ? providerAck : null,
-              }),
-            )
-            .then(() => accounts.refresh())
-            .catch((e) => {
-              notice = errorMessage(e)
-              void accounts.refresh()
-            })}
-      />
-    </section>
+        <section>
+          <span class="eyebrow">Signature</span>
+          <SignatureField label="Signature" bind:value={draft.signatureHtml} />
+          <p class="hint">
+            Starts off every new message, reply and forward from this account, under where you write
+            and above the quote. It is ordinary text there: change it or delete it for that one
+            message.
+          </p>
+        </section>
 
-    <section>
-      <span class="eyebrow">Mail assistant</span>
-      <p class="hint">
-        Categorising, drafting ahead and summarising all run in the background, through the models
-        set under Settings → Models -- sorting on the decision model if one is set and otherwise the
-        small one, drafting ahead on the small one, summaries on the assistant's -- not as something
-        you ask for in chat. Off until the "I understand" checkbox above is ticked, since they read
-        this account's mail the same way the assistant's own tools do -- except categorising on a
-        decision model on this computer, which sends the mail nowhere.
-      </p>
-      {#each MAIL_AI_SWITCHES as sw (sw.key)}
-        {@const acknowledged =
-          providerAck != null && original.assistantProviderAcknowledged === providerAck}
-        {@const sortsHere = sw.key === 'categorize' && models.settings?.decision?.api === 'local'}
-        {@const allowed = acknowledged || sortsHere}
-        <label class="mailai-row" class:disabled={!allowed}>
-          <input
-            type="checkbox"
-            checked={original.mailAi?.[sw.key] ?? false}
-            disabled={!allowed || mailAiSaving}
-            onchange={(e) => void setMailAi({ [sw.key]: e.currentTarget.checked })}
+        <section>
+          <span class="eyebrow">Identities</span>
+          <p class="hint">
+            A second address this account can send as, chosen under From when you write. With no
+            signature of its own, it uses the one above.
+          </p>
+          {#each draft.identities as identity, i (i)}
+            <div class="identity">
+              <div class="row">
+                <input class="field" placeholder="Name" bind:value={identity.name} />
+                <input class="field" placeholder="Address" bind:value={identity.address} />
+                <button
+                  class="ghost"
+                  title="Remove this identity"
+                  onclick={() => removeIdentity(i)}
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
+              <SignatureField
+                label="This identity's signature"
+                placeholder="Signature"
+                bind:value={identity.signatureHtml}
+              />
+            </div>
+          {/each}
+          <div>
+            <button class="btn" onclick={addIdentity}
+              ><Icon name="plus" size={13} /> Add an identity</button
+            >
+          </div>
+        </section>
+      {:else if shownSub === 'mail'}
+        <section>
+          <label class="eyebrow" for="detail-sync">Check for new mail</label>
+          <select
+            id="detail-sync"
+            class="interval"
+            value={syncChoice}
+            disabled={syncSaving}
+            onchange={(e) => void setSyncMinutes(e.currentTarget.value)}
+          >
+            {#each SYNC_INTERVALS as interval (interval.label)}
+              <option value={interval.minutes === null ? '' : String(interval.minutes)}>
+                {interval.label}
+              </option>
+            {/each}
+            {#if syncOther}
+              <option value={String(syncOther)}>Every {syncOther} minutes</option>
+            {/if}
+          </select>
+          <p class="hint">
+            New mail in the Inbox normally arrives straight away. This is how often every folder is
+            checked again as well.
+          </p>
+        </section>
+
+        <section>
+          <label class="eyebrow" for="detail-notify">Notify me about</label>
+          {#key notifyRedraw}
+            <select
+              id="detail-notify"
+              class="interval"
+              value={notifyRule.type}
+              disabled={notifySaving}
+              onchange={(e) =>
+                void setMailNotify(
+                  mailNotifyForChoice(
+                    e.currentTarget.value as MailNotify['type'],
+                    notifyRule,
+                    lastNotifyPick,
+                  ),
+                )}
+            >
+              {#each MAIL_NOTIFY_CHOICES as choice (choice.type)}
+                <option value={choice.type}>{choice.label}</option>
+              {/each}
+            </select>
+            <p class="hint">{notifyHint}</p>
+            {#if notifyRule.type === 'categories'}
+              {@const rule = notifyRule}
+              <div class="notify-picks" role="group" aria-label="Categories to notify about">
+                {#each CATEGORY_TABS as tab (tab.key)}
+                  <label class="check">
+                    <input
+                      type="checkbox"
+                      checked={rule.tabs.includes(tab.key)}
+                      disabled={notifySaving}
+                      onchange={(e) => toggleNotifyTab(tab.key, e.currentTarget.checked)}
+                    />
+                    {tab.label}
+                  </label>
+                {/each}
+                {#each ownCategories as category (category.id)}
+                  <label class="check">
+                    <input
+                      type="checkbox"
+                      checked={rule.sorted.includes(category.id)}
+                      disabled={notifySaving}
+                      onchange={(e) => toggleNotifySorted(category.id, e.currentTarget.checked)}
+                    />
+                    {category.name}
+                  </label>
+                {/each}
+              </div>
+            {/if}
+          {/key}
+        </section>
+
+        <section>
+          <span class="eyebrow">Attachments</span>
+          <label class="toggle">
+            <input type="checkbox" bind:checked={draft.capEnabled} />
+            <span>
+              <b>Cap how large an attachment is kept</b>
+              <small>
+                Off by default: every attachment is kept in full. On, anything larger than the limit
+                is left on the server instead of stored here.
+              </small>
+            </span>
+          </label>
+          {#if draft.capEnabled}
+            <div class="row cap-row">
+              <input class="field cap" type="number" min="1" bind:value={draft.capMb} />
+              <span class="hint">MB ({humanBytes(draft.capMb * 1_048_576)})</span>
+            </div>
+          {/if}
+        </section>
+      {:else if shownSub === 'servers'}
+        <section>
+          <span class="eyebrow">Servers</span>
+          {#each [{ key: 'imap', label: 'Incoming (IMAP)' }, { key: 'smtp', label: 'Outgoing (SMTP)' }] as const as server (server.key)}
+            <div class="server">
+              <div class="grow">
+                <label class="field-label" for="detail-{server.key}-host">{server.label} host</label
+                >
+                <input
+                  id="detail-{server.key}-host"
+                  class="field"
+                  spellcheck="false"
+                  bind:value={draft[server.key].host}
+                />
+              </div>
+              <div>
+                <label class="field-label" for="detail-{server.key}-port">Port</label>
+                <input
+                  id="detail-{server.key}-port"
+                  class="field port"
+                  type="number"
+                  min="1"
+                  max="65535"
+                  bind:value={draft[server.key].port}
+                />
+              </div>
+              <div>
+                <label class="field-label" for="detail-{server.key}-sec">Security</label>
+                <select
+                  id="detail-{server.key}-sec"
+                  class="field"
+                  bind:value={draft[server.key].security}
+                >
+                  <option value="tls">TLS</option>
+                  <option value="startTls">STARTTLS</option>
+                </select>
+              </div>
+            </div>
+          {/each}
+          {#if draft.username !== null}
+            <div>
+              <label class="field-label" for="detail-username">Sign in as</label>
+              <input
+                id="detail-username"
+                class="field"
+                spellcheck="false"
+                autocomplete="username"
+                bind:value={draft.username}
+              />
+            </div>
+          {/if}
+          <p class="hint">
+            Port 465 is TLS and 587 is STARTTLS on most servers. Saving new settings connects again
+            and retries any message waiting to be sent.
+          </p>
+          <div class="row">
+            <button
+              class="btn"
+              disabled={checkingSend || serversEdited}
+              title={serversEdited ? 'Save first: this checks the saved settings' : undefined}
+              onclick={checkSending}
+            >
+              {checkingSend ? 'Checking…' : 'Check sending'}
+            </button>
+            {#if sendCheck}
+              <span class="check-result" class:bad={!sendCheck.ok} role="status"
+                >{sendCheck.text}</span
+              >
+            {/if}
+          </div>
+        </section>
+      {:else if shownSub === 'calendars'}
+        <section>
+          <span class="eyebrow">Calendars</span>
+          {#if calendarScopesMissing}
+            <p class="hint">This account was signed in before calendar access was requested.</p>
+            <div>
+              <button class="btn" onclick={signInForCalendarAccess}>
+                Sign in again to allow calendar access
+              </button>
+            </div>
+          {:else if remoteLoading}
+            <p class="hint">Looking…</p>
+          {:else if remoteError}
+            <p class="error">{remoteError}</p>
+          {:else if remoteCalendars && remoteCalendars.length === 0}
+            <p class="hint">This account has no calendars to offer.</p>
+          {:else if remoteCalendars}
+            <ul class="remotelist">
+              {#each remoteCalendars as r (r.remoteId)}
+                <li class="remoterow">
+                  <span class="remotedot" style="--c: {r.color ?? '#64748b'}" aria-hidden="true"
+                  ></span>
+                  <span class="remotename">{r.name}</span>
+                  {#if r.subscribed}
+                    <span class="hint subscribed">Subscribed</span>
+                  {:else}
+                    <button
+                      class="btn"
+                      disabled={subscribingRemoteId === r.remoteId}
+                      onclick={() => toggleRemoteCalendar(r)}
+                    >
+                      {subscribingRemoteId === r.remoteId ? 'Adding…' : 'Add'}
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+      {:else}
+        <section>
+          <span class="eyebrow">What agents may do</span>
+          <AgentAccessGrid
+            assistantAccess={original.assistantAccess}
+            mcpAccess={original.mcpAccess}
+            {providerName}
+            acknowledged={providerAck != null &&
+              original.assistantProviderAcknowledged === providerAck}
+            {ackUnavailable}
+            onchange={(caller: AgentCallerKind, access: AgentMailAccess) =>
+              void accounts.setAccess(original.id, caller, access)}
+            onacknowledge={(ack: boolean) =>
+              (!ack || providerAck) &&
+              void api
+                .saveAccount(
+                  $state.snapshot({
+                    ...original,
+                    assistantProviderAcknowledged: ack ? providerAck : null,
+                  }),
+                )
+                .then(() => accounts.refresh())
+                .catch((e) => {
+                  notice = errorMessage(e)
+                  void accounts.refresh()
+                })}
           />
-          <span class="mailai-text">
-            <span class="mailai-label">{sw.label}</span>
-            <span class="mailai-hint">{sw.hint}</span>
-          </span>
-        </label>
-      {/each}
-    </section>
+          <p class="hint">
+            Categorising, drafting ahead, summaries and writing help are switched on for every
+            account at once, under Settings → AI features. Except for sorting on a decision model on
+            this computer, they still wait for this account's "I understand" box above before they
+            read any of its mail.
+          </p>
+          <!-- Leaving closes the sheet, so not with edits unsaved: they would
+               go without a word. -->
+          <div>
+            <button
+              class="link"
+              disabled={dirty}
+              title={dirty ? 'Save or undo your changes first' : undefined}
+              onclick={() => {
+                panels.openSettings('ai')
+                onclose()
+              }}>Open AI features</button
+            >
+          </div>
+        </section>
+      {/if}
+    </div>
 
-    <section>
-      <span class="eyebrow">Remove</span>
-      <p class="hint">
-        Removes this account and deletes the local copy of its mail. Nothing changes on the server
-        itself.
-      </p>
-      <div>
-        <button class="btn btn-danger" onclick={() => (pendingRemove = true)}
-          >Remove account…</button
-        >
-      </div>
-    </section>
+    <footer class="foot">
+      <button
+        class="btn btn-ghost-danger"
+        title="Removes this account and deletes the local copy of its mail. Nothing changes on the server itself."
+        onclick={() => (pendingRemove = true)}>Remove account…</button
+      >
+      <span class="notice" role="status">{notice ?? ''}</span>
+      <button class="btn btn-primary" disabled={saving || !dirty} onclick={save}>
+        {saving ? 'Saving…' : 'Save changes'}
+      </button>
+    </footer>
   {/if}
 </div>
 
@@ -968,15 +1016,50 @@
 {/if}
 
 <style>
-  /* Centred rather than hung from the shared sheet's 22%: a form this long
-     would otherwise run off the bottom of the window before its own
-     max-height ever made it scroll. */
+  /* Centred rather than hung from the shared sheet's 22%, and a fixed height
+     rather than one fitted to the tab: switching from a short tab to a long
+     one would otherwise grow the dialog under the pointer, and the footer
+     with it. A column of header, body and footer, the body the only part
+     that scrolls -- the sheet itself never does, since its frosted layer
+     would scroll away with the first screenful (see app.css's
+     `.sheet-scroll`). */
   .wide {
     top: 50%;
     translate: -50% -50%;
     width: min(560px, calc(100vw - var(--sp-8)));
-    max-height: calc(100vh - var(--sp-8));
+    height: min(640px, calc(100vh - var(--sp-8)));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .head {
+    flex: none;
+  }
+  /* The shared strip's own gap is sized for a page; under a dialog's
+     header it pushes the first field half a screen down. */
+  .head :global(.subtabs) {
+    margin-bottom: var(--sp-3);
+  }
+
+  /* Out to the sheet's edges, so the scrollbar sits at the rim rather than
+     beside the fields. */
+  .body {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
+    margin: 0 calc(var(--sp-4) * -1);
+    padding: var(--sp-1) var(--sp-4) 0;
+  }
+
+  .foot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: 0 calc(var(--sp-4) * -1);
+    padding: var(--sp-3) var(--sp-4) 0;
+    border-top: 1px solid var(--border);
   }
 
   header {
@@ -1015,7 +1098,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    margin: 0 0 var(--sp-4);
+    margin: 0 0 var(--sp-3);
     font-size: var(--text-sm);
     color: var(--fg-subtle);
   }
@@ -1189,41 +1272,21 @@
     line-height: var(--leading-normal);
   }
 
+  /* The footer's spacer as well: an error from any part of the sheet lands
+     here, between Remove and Save, where it is seen whichever tab is up. */
   .notice {
+    flex: 1;
+    min-width: 0;
     font-size: var(--text-sm);
     color: var(--fg-muted);
+    overflow-wrap: anywhere;
   }
 
-  .mailai-row {
-    display: flex;
-    gap: var(--sp-2);
-    align-items: flex-start;
-    padding: var(--sp-1) 0;
-    cursor: pointer;
-  }
-  .mailai-row.disabled {
-    cursor: not-allowed;
-  }
-  .mailai-row input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .mailai-text {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .mailai-label {
+  .link {
+    color: var(--accent);
     font-size: var(--text-sm);
-    color: var(--fg);
   }
-  .mailai-row.disabled .mailai-label {
-    color: var(--fg-faint);
-  }
-  .mailai-hint {
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
-    line-height: var(--leading-normal);
+  .link:hover {
+    text-decoration: underline;
   }
 </style>
