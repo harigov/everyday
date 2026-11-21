@@ -53,6 +53,7 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   sorting: 'the Mail sorting tab, the categories their mail is sorted into',
   writing: 'the Mail writing tab, how they want mail written for them to sound',
   models: 'the Models tab, which model each kind of work runs on',
+  ai: 'the AI features tab, what the models are used for: mail sorting and drafting, the quick asks in each app, writing help and voice typing',
   assistant: "the Assistant tab, the assistant's own settings",
   runs: 'the list of what the assistant did on its own',
   routines: "the assistant's routines",

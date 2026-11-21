@@ -59,6 +59,7 @@
   import { badge } from '../lib/badge.svelte'
   import AccountsPanel from './AccountsPanel.svelte'
   import AgentPanel from './AgentPanel.svelte'
+  import AiFeaturesPanel from './AiFeaturesPanel.svelte'
   import AssistantPanes from './AssistantPanes.svelte'
   import BackupPanel from './BackupPanel.svelte'
   import ChatLinksPanel from './ChatLinksPanel.svelte'
@@ -78,18 +79,14 @@
   import SharePanel from './SharePanel.svelte'
   import WebAccessPanel from './WebAccessPanel.svelte'
   import SkillsPanel from './SkillsPanel.svelte'
+  import SubTabs from './SubTabs.svelte'
+  import { shownTab } from '../lib/subtabs'
   import TemplatesPanel from './TemplatesPanel.svelte'
   import ThemePicker from './ThemePicker.svelte'
   import Icon from './Icon.svelte'
   import Symbol from './Symbol.svelte'
   import type { IconName } from '../lib/icons'
-  import type {
-    BadgeSources,
-    VoiceTypingKeyMode,
-    VoiceTypingSettings,
-    HotkeyStatus,
-    WritingSettings,
-  } from '../lib/types'
+  import type { BadgeSources, HotkeyStatus } from '../lib/types'
 
   let changing = $state(false)
   let current = $state('')
@@ -129,125 +126,6 @@
     }
   }
 
-  /**
-   * Writing help: the OS-wide key over text selected in any application.
-   * `null` where there is no shell to ask -- the mock backend -- and the
-   * section is left out.
-   */
-  let writing = $state<WritingSettings | null>(null)
-  let writingNotice = $state<string | null>(null)
-  let writingKey = $state('')
-  let writingBusy = $state(false)
-
-  void api
-    .writingSettings()
-    .then((s) => {
-      writing = s
-      writingKey = s.shortcut
-    })
-    .catch(() => (writing = null))
-
-  async function saveWriting(enabled: boolean, shortcut: string | null) {
-    writingNotice = null
-    writingBusy = true
-    try {
-      writing = await api.setWritingSettings(enabled, shortcut)
-      writingKey = writing.shortcut
-      if (writing.enabled && !writing.key.registered && writing.key.problem) {
-        writingNotice = writing.key.problem
-      }
-    } catch (e) {
-      writingNotice = e instanceof Error ? e.message : String(e)
-    } finally {
-      writingBusy = false
-    }
-  }
-
-  /** What the switch's small print says, by desktop. */
-  function writingBlurb(w: WritingSettings): string {
-    const what =
-      'Select text in any application and press it to improve it, correct its grammar or make ' +
-      'it concise. The answer is pasted over the selection, and every use is kept in this vault.'
-    switch (w.platform) {
-      case 'wayland':
-        return (
-          what +
-          ' The desktop asks once which key to use and once whether Karma Yoga may paste; change ' +
-          'the key in its own keyboard settings. Switched off, the key stays reserved there and ' +
-          'does nothing.'
-        )
-      case 'macos':
-        return (
-          what +
-          ' macOS asks once for Accessibility access, which is how the text is copied and pasted.'
-        )
-      default:
-        return what
-    }
-  }
-
-  /**
-   * Voice typing: the OS-wide key that types what is said into any text field.
-   * Left out where there is no shell to ask, like writing help's.
-   */
-  let voiceTyping = $state<VoiceTypingSettings | null>(null)
-  let voiceTypingNotice = $state<string | null>(null)
-  let voiceTypingKey = $state('')
-  let voiceTypingBusy = $state(false)
-
-  const VOICE_TYPING_MODES: { value: VoiceTypingKeyMode; label: string }[] = [
-    { value: 'toggle', label: 'Press to start and stop' },
-    { value: 'hold', label: 'Hold to talk' },
-  ]
-
-  void api
-    .voiceTypingSettings()
-    .then((s) => {
-      voiceTyping = s
-      voiceTypingKey = s.shortcut
-    })
-    .catch(() => (voiceTyping = null))
-
-  async function saveVoiceTyping(
-    enabled: boolean,
-    shortcut: string | null = null,
-    mode: VoiceTypingKeyMode | null = null,
-    clean: boolean | null = null,
-  ) {
-    voiceTypingNotice = null
-    voiceTypingBusy = true
-    try {
-      voiceTyping = await api.setVoiceTypingSettings(enabled, shortcut, mode, clean)
-      voiceTypingKey = voiceTyping.shortcut
-      if (voiceTyping.enabled && !voiceTyping.key.registered && voiceTyping.key.problem) {
-        voiceTypingNotice = voiceTyping.key.problem
-      }
-    } catch (e) {
-      voiceTypingNotice = e instanceof Error ? e.message : String(e)
-    } finally {
-      voiceTypingBusy = false
-    }
-  }
-
-  /** What the switch's small print says, by desktop. */
-  function voiceTypingBlurb(d: VoiceTypingSettings): string {
-    const what =
-      'Speak, and what you said is heard by the speech model in Settings → Models, written up ' +
-      'by the medium model and typed where the cursor is. Every use is kept in this vault.'
-    switch (d.platform) {
-      case 'wayland':
-        return (
-          what +
-          ' The desktop asks once which key to use and once whether Karma Yoga may paste; change ' +
-          'the key in its own keyboard settings.'
-        )
-      case 'macos':
-        return what + ' macOS asks once for Accessibility access, which is how the text is pasted.'
-      default:
-        return what
-    }
-  }
-
   const status = $derived(app.status)
   const tab = $derived(panels.settings ?? 'general')
 
@@ -277,6 +155,18 @@
     // sorting and meeting notes run on these too, and the assistant's own
     // tab is who it is and how it behaves, not which model it is.
     { id: 'models', label: 'Models', icon: 'layers', group: 'platform' },
+    // What the models are used for, beside where they are: mail's background
+    // work, the other apps' quick asks, writing help and voice typing. The
+    // mail switches were per account, at the foot of each account's sheet,
+    // and the quick asks hung off the small model's card; neither is where
+    // anybody looks for "what does the AI do for me". See `AiFeaturesPanel`.
+    { id: 'ai', label: 'AI features', icon: 'sparkle', group: 'platform' },
+    // Under AI features: steering two of its mail switches -- the categories
+    // a decision model sorts into, and what writing help knows about how you
+    // write. They were under Accounts, whose mail it is, but they are
+    // choices about the work the models do, made once for every account.
+    { id: 'sorting', label: 'Mail sorting', icon: 'tag', group: 'platform', sub: true },
+    { id: 'writing', label: 'Mail writing', icon: 'sparkle', group: 'platform', sub: true },
     // The other services the assistant may use, each through its MCP server.
     // Platform: a connection serves the assistant in every app.
     { id: 'connections', label: 'Connections', icon: 'link', group: 'platform' },
@@ -286,10 +176,6 @@
     { id: 'data', label: 'Data', icon: 'upload', group: 'platform' },
     { id: 'vault', label: 'Vault', icon: 'lock', group: 'platform' },
     { id: 'accounts', label: 'Accounts', icon: 'inbox', group: 'apps' },
-    // Under Accounts: whose mail it sorts. Shown with the models, which do
-    // the sorting, on a backend that carries mail.
-    { id: 'sorting', label: 'Mail sorting', icon: 'tag', group: 'apps', sub: true },
-    { id: 'writing', label: 'Mail writing', icon: 'sparkle', group: 'apps', sub: true },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle', group: 'apps' },
     // The assistant's standing work, which was the Assistant app's four
     // panes until that app became the conversation. Under the Assistant tab
@@ -358,6 +244,7 @@
       (t) =>
         (t.id !== 'assistant' &&
           t.id !== 'models' &&
+          t.id !== 'ai' &&
           t.id !== 'skills' &&
           t.id !== 'chat' &&
           !isPane(t.id)) ||
@@ -383,6 +270,27 @@
       (g) => g.tabs.length > 0,
     ),
   )
+
+  /**
+   * The Vault tab's own tabs. It stacked eight sections -- two idle locks,
+   * the keychain, the password, three ways of serving the vault and the
+   * facts about it -- into one page taller than most windows. Split by the
+   * question being asked: how it is kept shut, who else may reach it, and
+   * what it is. Security is only there for an encrypted vault, which is
+   * the only kind with a lock or a password; Sharing is never drawn in a
+   * browser that is itself one of the ways in.
+   */
+  type VaultSub = 'security' | 'sharing' | 'about'
+  const vaultSubs = $derived(
+    [
+      { id: 'security' as VaultSub, label: 'Security', show: !!status?.encrypted },
+      { id: 'sharing' as VaultSub, label: 'Sharing', show: !isWeb && !app.remote },
+      { id: 'about' as VaultSub, label: 'About', show: true },
+    ].filter((t) => t.show),
+  )
+  let vaultPicked = $state<VaultSub>('security')
+  /** What is drawn: the pick, unless this vault does not offer it. */
+  const vaultSub = $derived(shownTab(vaultSubs, vaultPicked))
 
   async function changePassword(e: Event) {
     e.preventDefault()
@@ -551,6 +459,8 @@
         <AgentPanel />
       {:else if tab === 'models'}
         <ModelsPanel />
+      {:else if tab === 'ai'}
+        <AiFeaturesPanel />
       {:else if isPane(tab)}
         <AssistantPanes pane={tab} />
       {:else if tab === 'skills'}
@@ -737,139 +647,15 @@
             </button>
           </div>
         </section>
-
-        {#if writing}
-          <section>
-            <span class="eyebrow">Writing help</span>
-            <label class="toggle">
-              <input
-                type="checkbox"
-                checked={writing.enabled}
-                disabled={writingBusy}
-                onchange={(e) => saveWriting(e.currentTarget.checked, null)}
-              />
-              <span>
-                <b>Rewrite selected text anywhere with {writing.key.shortcut || writing.shortcut}</b
-                >
-                <small>
-                  {#if writingNotice}
-                    {writingNotice}
-                  {:else}
-                    {writingBlurb(writing)}
-                  {/if}
-                </small>
-              </span>
-            </label>
-            {#if writing.enabled && !writing.key.desktopManaged}
-              <form
-                onsubmit={(e) => {
-                  e.preventDefault()
-                  void saveWriting(true, writingKey)
-                }}
-              >
-                <input
-                  class="field"
-                  aria-label="Writing help shortcut"
-                  placeholder="Ctrl+Alt+Space"
-                  bind:value={writingKey}
-                />
-                <div class="row">
-                  <button
-                    class="btn btn-primary"
-                    type="submit"
-                    disabled={writingBusy ||
-                      !writingKey.trim() ||
-                      writingKey.trim() === writing.shortcut}
-                  >
-                    Use this shortcut
-                  </button>
-                </div>
-              </form>
-            {/if}
-          </section>
-        {/if}
-
-        {#if voiceTyping}
-          <section>
-            <span class="eyebrow">Voice typing</span>
-            <label class="toggle">
-              <input
-                type="checkbox"
-                checked={voiceTyping.enabled}
-                disabled={voiceTypingBusy}
-                onchange={(e) => saveVoiceTyping(e.currentTarget.checked)}
-              />
-              <span>
-                <b
-                  >Type what you say into any text field with {voiceTyping.key.shortcut ||
-                    voiceTyping.shortcut}</b
-                >
-                <small>
-                  {#if voiceTypingNotice}
-                    {voiceTypingNotice}
-                  {:else}
-                    {voiceTypingBlurb(voiceTyping)}
-                  {/if}
-                </small>
-              </span>
-            </label>
-            {#if voiceTyping.enabled && !voiceTyping.key.desktopManaged}
-              <form
-                onsubmit={(e) => {
-                  e.preventDefault()
-                  void saveVoiceTyping(true, voiceTypingKey)
-                }}
-              >
-                <input
-                  class="field"
-                  aria-label="Voice typing shortcut"
-                  placeholder="Ctrl+Alt+M"
-                  bind:value={voiceTypingKey}
-                />
-                <div class="row">
-                  <button
-                    class="btn btn-primary"
-                    type="submit"
-                    disabled={voiceTypingBusy ||
-                      !voiceTypingKey.trim() ||
-                      voiceTypingKey.trim() === voiceTyping.shortcut}
-                  >
-                    Use this shortcut
-                  </button>
-                </div>
-              </form>
-            {/if}
-            <div class="segmented" class:disabled={!voiceTyping.enabled}>
-              {#each VOICE_TYPING_MODES as m (m.value)}
-                <button
-                  class="seg"
-                  class:on={voiceTyping.mode === m.value}
-                  disabled={voiceTypingBusy || !voiceTyping.enabled}
-                  onclick={() => saveVoiceTyping(true, null, m.value)}
-                >
-                  {m.label}
-                </button>
-              {/each}
-            </div>
-            <label class="toggle">
-              <input
-                type="checkbox"
-                checked={voiceTyping.clean}
-                disabled={voiceTypingBusy || !voiceTyping.enabled}
-                onchange={(e) => saveVoiceTyping(true, null, null, e.currentTarget.checked)}
-              />
-              <span>
-                <b>Write it up with the medium model</b>
-                <small>
-                  Takes out the ums and false starts, applies your own corrections and punctuates.
-                  Off, it types exactly what was heard.
-                </small>
-              </span>
-            </label>
-          </section>
-        {/if}
       {:else}
-        {#if status?.encrypted}
+        {#if vaultSubs.length > 1}
+          <SubTabs
+            tabs={vaultSubs}
+            bind:value={() => vaultSub, (v: VaultSub) => (vaultPicked = v)}
+            label="Vault sections"
+          />
+        {/if}
+        {#if vaultSub === 'security'}
           <section>
             <span class="eyebrow">Lock after</span>
             <!-- Suspended rather than hidden while the key is in the
@@ -879,7 +665,7 @@
               {#each LOCK_CHOICES as c (c.value)}
                 <button
                   class="seg"
-                  class:on={status.autoLockSeconds === c.value}
+                  class:on={status?.autoLockSeconds === c.value}
                   disabled={opensItself}
                   onclick={() => setAutoLock(c.value)}
                 >
@@ -904,7 +690,7 @@
               {#each KEY_CHOICES as c (c.value)}
                 <button
                   class="seg"
-                  class:on={status.forgetKeySeconds === c.value}
+                  class:on={status?.forgetKeySeconds === c.value}
                   disabled={opensItself}
                   onclick={() => setForgetKey(c.value)}
                 >
@@ -1022,43 +808,41 @@
               </div>
             {/if}
           </section>
-        {/if}
 
-        <!-- Three ways of serving this vault from the machine holding it, so none
-           of them is drawn in a browser that is itself one of the ways in. -->
-        {#if !isWeb}
+          {#if notice}<p class="notice">{notice}</p>{/if}
+        {:else if vaultSub === 'sharing'}
+          <!-- Said first, and always: each of the three draws nothing until
+               the shell has answered whether it can serve the vault, and a
+               build that cannot draws none of them at all. -->
+          <p class="hint lead">
+            Ways to reach this vault from somewhere other than this window: other computers on your
+            network, a browser over your tailnet, and other agents through MCP.
+          </p>
           <SharePanel />
 
           <WebAccessPanel />
 
           <McpPanel />
-        {/if}
-
-        {#if notice}<p class="notice">{notice}</p>{/if}
-
-        <!-- `vault-facts`: this section's own `margin-top`, not the generic
-           `section + section` rule below -- that rule only reaches a literal
-           sibling `<section>` written in this file, and the element directly
-           above this one is drawn by `SharePanel` or `McpPanel` (or is
-           absent, on a build with neither), never that. -->
-        <section class="vault-facts">
-          <span class="eyebrow">This vault</span>
-          <div class="facts">
-            <div><span>Name</span><b>{status?.name}</b></div>
-            <div><span>Storage</span><b>{status?.backend}</b></div>
-            <div>
-              <span>Encryption</span>
-              <b class:warn={!status?.encrypted}>{status?.encrypted ? 'On' : 'Off'}</b>
-            </div>
-            {#if status?.stats}
+        {:else}
+          <section>
+            <span class="eyebrow">This vault</span>
+            <div class="facts">
+              <div><span>Name</span><b>{status?.name}</b></div>
+              <div><span>Storage</span><b>{status?.backend}</b></div>
               <div>
-                <span>Entries</span><b>{plural(status.stats.entries, 'entry', 'entries')}</b>
+                <span>Encryption</span>
+                <b class:warn={!status?.encrypted}>{status?.encrypted ? 'On' : 'Off'}</b>
               </div>
-              <div><span>Media</span><b>{humanBytes(status.stats.blobBytes)}</b></div>
-            {/if}
-          </div>
-          <p class="path" title={status?.path}>{status?.path}</p>
-        </section>
+              {#if status?.stats}
+                <div>
+                  <span>Entries</span><b>{plural(status.stats.entries, 'entry', 'entries')}</b>
+                </div>
+                <div><span>Media</span><b>{humanBytes(status.stats.blobBytes)}</b></div>
+              {/if}
+            </div>
+            <p class="path" title={status?.path}>{status?.path}</p>
+          </section>
+        {/if}
       {/if}
     </div>
   </main>
@@ -1144,16 +928,41 @@
   /* The page's own flex item, next to `.nav` the way every other app's main
      view sits next to its sidebar. Padding lives here rather than on
      `.content`, so the same top padding applies above every tab regardless
-     of its own height; the bottom figure is `Editor.svelte`'s own `.page`,
-     so a long Accounts list does not end up with its last row behind the
-     floating assistant button. */
+     of its own height. No room left at the foot for the floating assistant
+     button: `App.svelte` does not draw it over Settings, whose corner is
+     where a tab's Save is pinned. */
   .pane {
     /* As tall as the stage by a stated height, not stretched: see
        `.shell-stage` in app.css. */
     height: 100%;
     flex: 1;
     min-width: 0;
-    padding: var(--sp-8) var(--sp-8) var(--fab-size);
+    padding: var(--sp-8) var(--sp-8) 0;
+  }
+  /* The foot of the scroll, for a tab with no Save to end on. */
+  .content::after {
+    content: '';
+    display: block;
+    height: var(--sp-8);
+  }
+
+  /* A tab with a draft ends on its `.save` row -- Assistant, Models, Mail
+     sorting, Meetings and the rest each draw their own. Pinned to the foot
+     of the pane, so Save is always at the bottom of what is on screen
+     rather than wherever the end of a long page happens to have scrolled
+     to, which was halfway up the window as often as not. Each panel keeps
+     its own row's layout; this adds only where it sits and what is behind
+     it: `--float`, opaque enough in a glass theme that the page scrolling
+     underneath does not show through the button. It has to be the last
+     thing in its panel, with nothing that saves itself after it -- a panel
+     with such a section puts it on a tab of its own (`SubTabs`). */
+  .pane .content > :global(.save) {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin-bottom: calc(-1 * var(--sp-8));
+    padding-bottom: var(--sp-4);
+    background: var(--float);
   }
 
   /* One column, every tab: the same `--measure` the journal's own editor is
@@ -1178,12 +987,6 @@
     min-width: 0;
   }
   section + section {
-    margin-top: var(--sp-6);
-  }
-  /* See the comment on the markup above: this section's predecessor in the
-     Vault tab is drawn by a different component, so it cannot rely on
-     `section + section` the way the rest of this file's sections do. */
-  .vault-facts {
     margin-top: var(--sp-6);
   }
 
@@ -1273,6 +1076,9 @@
 
   .gap {
     height: var(--sp-2);
+  }
+  .lead {
+    margin-bottom: var(--sp-6);
   }
   .row {
     display: flex;

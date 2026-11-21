@@ -3,10 +3,21 @@
   //
   // Application settings rather than the assistant's -- the assistant is one
   // of three things here that ask a model, and its own tab is about who it is
-  // and how it behaves. Three cards, largest first, each opening with what it
-  // is used for, because that is what decides which model belongs in it; then
-  // the decision model, and the speech model -- platform choices too, made
-  // here once rather than inside the first feature that needed them.
+  // and how it behaves. A tab for each kind of model, because one column of
+  // seven cards was taller than any window and the Save ended up a long
+  // scroll from the card being changed. Language holds three cards, largest
+  // first, each opening with what it is used for, because that is what
+  // decides which model belongs in it; then the decision model, speech, the
+  // voice and the image model, one tab each -- platform choices too, made
+  // here once rather than inside the first feature that needed them. The
+  // draft is this component's, so moving between tabs keeps what was typed,
+  // and the one Save at the foot saves every tab.
+  //
+  // Which features use a model is not here any more. The small model's quick
+  // asks used to be a column of switches inside its card; they are under
+  // Settings → AI features now, with the mail and writing switches, because
+  // "what may ask a model" is a different decision from "which model answers"
+  // and the second page was burying the first.
   //
   // A key belongs to an endpoint, not to a card: two cards at one address
   // share one key, and the card says so. Moving a card to another address
@@ -35,7 +46,7 @@
   import { meetings } from '../lib/meetings.svelte'
   import { LOCAL_RECOGNISERS, formatRealtimeFactor, isTooSlow } from '../lib/meetings-format'
   import { models } from '../lib/models.svelte'
-  import { quick } from '../lib/quick.svelte'
+  import { panels } from '../lib/panels.svelte'
   import { quietly } from '../lib/state.svelte'
   import type {
     DecisionApi,
@@ -48,7 +59,6 @@
     ModelSettings,
     ModelSlot,
     ModelTier,
-    QuickAskRow,
     ReasoningEffort,
     SynthesiserConfig,
     TranscriberConfig,
@@ -56,6 +66,7 @@
   import { OPENAI_IMAGE_MODELS } from '../lib/types'
   import Icon from './Icon.svelte'
   import Meter from './Meter.svelte'
+  import SubTabs from './SubTabs.svelte'
 
   // Edited on a copy. The pane has a Save, so a half-typed base URL must not
   // be what the next message is sent to.
@@ -102,7 +113,16 @@
   void models.refreshSpeech().catch(quietly)
   void models.refreshVoice().catch(quietly)
   void models.refreshImages().catch(quietly)
-  void quick.load()
+
+  type Sub = 'language' | 'decision' | 'speech' | 'voice' | 'image'
+  const SUBS: { id: Sub; label: string }[] = [
+    { id: 'language', label: 'Language' },
+    { id: 'decision', label: 'Decision' },
+    { id: 'speech', label: 'Speech' },
+    { id: 'voice', label: 'Voice' },
+    { id: 'image', label: 'Image' },
+  ]
+  let sub = $state<Sub>('language')
 
   type Card = {
     tier: ModelTier
@@ -294,35 +314,6 @@
   function sharing(card: Card): string[] {
     const mine = configOf(card.tier)
     return mine ? cardsAt(endpointOf(mine.baseUrl), card.title) : []
-  }
-
-  /**
-   * The quick-ask switches, grouped the way the app bar is -- moved here from
-   * the Assistant tab with the small model they run on.
-   *
-   * Grouped rather than listed because twenty checkboxes in one column is a
-   * wall nobody reads, and the decision somebody is actually making is
-   * per-app: "the library may look things up, the journal may not".
-   */
-  const grouped = $derived(
-    quick.asks.reduce<Record<string, QuickAskRow[]>>((acc, ask) => {
-      ;(acc[ask.app] ??= []).push(ask)
-      return acc
-    }, {}),
-  )
-
-  /**
-   * A quick-ask switch, saved on the spot rather than with the pane: these are
-   * twenty checkboxes somebody flicks one at a time, and round-tripping a
-   * whole settings record per flick is how two panes open at once overwrite
-   * one another.
-   */
-  async function setAsk(name: string, on: boolean) {
-    try {
-      await quick.setAsk(name, on)
-    } catch (e) {
-      notice = e instanceof Error ? e.message : String(e)
-    }
   }
 
   // ── Speech ───────────────────────────────────────────────────────
@@ -737,936 +728,942 @@
 {:else if !draft}
   <p class="hint">Loading…</p>
 {:else}
+  <p class="hint lead intro">
+    Each kind of model is chosen once, here, and everything that needs one uses it. What you ask
+    about is sent to the provider of whichever model does the work; a model on this machine sends
+    nothing anywhere. Which features may ask a model is chosen under
+    <button class="link" onclick={() => panels.openSettings('ai')}>AI features</button>.
+  </p>
+
+  <SubTabs tabs={SUBS} bind:value={sub} label="Kinds of model" />
+
   <div class="panes">
-    <p class="hint lead">
-      Three models, one for each size of work, each with its own provider and model name; a decision
-      model for sorting mail; a speech model for turning speech into text; a voice for the assistant
-      to talk back in; and an image model for making a picture. Anything that speaks the OpenAI chat
-      API works — leave the address empty for OpenAI itself. What you ask about is sent to the
-      provider of whichever model does the work; a model on this machine sends nothing anywhere. A
-      reasoning effort left at the provider's default is the provider's choice, and can be no
-      thinking at all — OpenAI's gpt-5.1 defaults to None.
-    </p>
+    {#if sub === 'language'}
+      <p class="hint">
+        Three models, one for each size of work, each with its own provider and model name. Anything
+        that speaks the OpenAI chat API works — leave the address empty for OpenAI itself. A
+        reasoning effort left at the provider's default is the provider's choice, and can be no
+        thinking at all — OpenAI's gpt-5.1 defaults to None.
+      </p>
 
-    {#each CARDS as card (card.tier)}
-      {@const config = configOf(card.tier)}
-      <section class="card" aria-labelledby="model-{card.tier}">
-        <div class="head">
-          <span class="eyebrow" id="model-{card.tier}">{card.title}</span>
-          {#if card.fresh}
-            <label class="toggle compact">
-              <input
-                type="checkbox"
-                checked={config != null}
-                onchange={(e) => toggle(card, e.currentTarget.checked)}
-              />
-              <span>{config ? 'On' : 'Off'}</span>
-            </label>
-          {/if}
-        </div>
-        <p class="hint">{card.uses}</p>
-
-        {#if !config}
-          <p class="hint">
-            {#if card.tier === 'large'}
-              Off: research runs on the Medium model.
-            {:else}
-              Off: none of this is done. It never falls back to a bigger model — these run as you
-              type, and a bill at the assistant's rates for every keystroke is not one anybody
-              agreed to.
+      {#each CARDS as card (card.tier)}
+        {@const config = configOf(card.tier)}
+        <section class="card" aria-labelledby="model-{card.tier}">
+          <div class="head">
+            <span class="eyebrow" id="model-{card.tier}">{card.title}</span>
+            {#if card.fresh}
+              <label class="toggle compact">
+                <input
+                  type="checkbox"
+                  checked={config != null}
+                  onchange={(e) => toggle(card, e.currentTarget.checked)}
+                />
+                <span>{config ? 'On' : 'Off'}</span>
+              </label>
             {/if}
-          </p>
+          </div>
+          <p class="hint">{card.uses}</p>
+
+          {#if !config}
+            <p class="hint">
+              {#if card.tier === 'large'}
+                Off: research runs on the Medium model.
+              {:else}
+                Off: none of this is done. It never falls back to a bigger model — these run as you
+                type, and a bill at the assistant's rates for every keystroke is not one anybody
+                agreed to.
+              {/if}
+            </p>
+          {:else}
+            {@const local = isLoopback(config.baseUrl)}
+            {@const keyed = models.hasKey(config)}
+            {@const shared = sharing(card)}
+            <div class="presets" role="group" aria-label="{card.title} provider">
+              {#each KNOWN_LLM_ENDPOINTS as preset (preset.label)}
+                <button
+                  class="chip"
+                  class:on={(config.baseUrl ?? '') === preset.url}
+                  aria-pressed={(config.baseUrl ?? '') === preset.url}
+                  onclick={() => (config.baseUrl = preset.url || null)}
+                >
+                  {preset.label}
+                </button>
+              {/each}
+            </div>
+
+            <label class="setting">
+              <span>Base URL</span>
+              <input
+                value={config.baseUrl ?? ''}
+                oninput={(e) => (config.baseUrl = e.currentTarget.value.trim() || null)}
+                placeholder="https://api.openai.com/v1"
+                spellcheck="false"
+              />
+            </label>
+
+            <label class="setting">
+              <span>Model name</span>
+              <input bind:value={config.model} placeholder={card.placeholder} spellcheck="false" />
+            </label>
+
+            <label class="setting">
+              <span>Reasoning effort</span>
+              <select
+                value={config.reasoningEffort ?? ''}
+                onchange={(e) =>
+                  (config.reasoningEffort = (e.currentTarget.value ||
+                    null) as ReasoningEffort | null)}
+              >
+                <option value="">The provider's default</option>
+                {#each card.efforts as effort (effort.value)}
+                  <option value={effort.value}>{effort.label}</option>
+                {/each}
+              </select>
+            </label>
+            <p class="hint">{card.effortHint}</p>
+
+            {#if keyed}
+              <div class="stored">
+                <span>
+                  <Icon name="lock" size={14} />
+                  A key for {providerLabel(config.baseUrl)} is stored{shared.length
+                    ? `, shared with ${shared.join(' and ')}`
+                    : ''}.
+                </span>
+                {#if savedEndpoint(card.tier) === endpointOf(config.baseUrl)}
+                  <button class="link" onclick={() => void removeKey(card.tier)}>Remove</button>
+                {/if}
+              </div>
+            {/if}
+            <label class="setting">
+              <span>{keyed ? 'Replace the key' : 'API key'}</span>
+              <input
+                type="password"
+                bind:value={keys[card.tier]}
+                placeholder={local ? 'Not needed for a model on this machine' : 'sk-…'}
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </label>
+            {#if !keyed && !local && shared.length}
+              <p class="hint">One key serves {card.title} and {shared.join(' and ')}.</p>
+            {/if}
+          {/if}
+
+          {#if card.tier === 'small'}
+            <p class="hint">
+              Which of these it is used for is chosen under
+              <button class="link" onclick={() => panels.openSettings('ai')}>AI features</button>,
+              app by app, for mail and on this computer, each switch saying what it sends.
+            </p>
+          {/if}
+        </section>
+      {/each}
+    {/if}
+
+    {#if sub === 'decision'}
+      <section class="card" aria-labelledby="model-decision">
+        <div class="head">
+          <span class="eyebrow" id="model-decision">Decision</span>
+          <label class="toggle compact">
+            <input
+              type="checkbox"
+              checked={draft.decision != null}
+              onchange={(e) => toggleDecision(e.currentTarget.checked)}
+            />
+            <span>{draft.decision ? 'On' : 'Off'}</span>
+          </label>
+        </div>
+        <p class="hint">
+          Sorting mail into your own categories, under Settings → Mail sorting. A decision model
+          does not write: it is shown a message and your categories, and picks one. At a provider
+          that takes a fraction of a second and a fraction of what a chat model costs; on this
+          computer it costs nothing, takes a second or a few, and your mail never leaves it.
+        </p>
+        {#if !draft.decision}
+          <p class="hint">Off: mail is sorted on the Small model, into the five inbox tabs.</p>
         {:else}
-          {@const local = isLoopback(config.baseUrl)}
-          {@const keyed = models.hasKey(config)}
-          {@const shared = sharing(card)}
-          <div class="presets" role="group" aria-label="{card.title} provider">
-            {#each KNOWN_LLM_ENDPOINTS as preset (preset.label)}
+          {@const decision = draft.decision}
+          {@const here = decision.api === 'local'}
+          <div class="presets" role="group" aria-label="Where the decision model runs">
+            {#if models.localDecisions || here}
               <button
                 class="chip"
-                class:on={(config.baseUrl ?? '') === preset.url}
-                aria-pressed={(config.baseUrl ?? '') === preset.url}
-                onclick={() => (config.baseUrl = preset.url || null)}
+                class:on={here}
+                aria-pressed={here}
+                onclick={() => pickLocal(decision)}
+              >
+                On this computer
+              </button>
+            {/if}
+            {#each KNOWN_DECISION_ENDPOINTS as preset (preset.label)}
+              {@const on = !here && decisionEndpointOf(decision) === preset.url}
+              <button
+                class="chip"
+                class:on
+                aria-pressed={on}
+                onclick={() => pickDecision(decision, preset)}
               >
                 {preset.label}
               </button>
             {/each}
           </div>
 
-          <label class="setting">
-            <span>Base URL</span>
-            <input
-              value={config.baseUrl ?? ''}
-              oninput={(e) => (config.baseUrl = e.currentTarget.value.trim() || null)}
-              placeholder="https://api.openai.com/v1"
-              spellcheck="false"
-            />
-          </label>
-
-          <label class="setting">
-            <span>Model name</span>
-            <input bind:value={config.model} placeholder={card.placeholder} spellcheck="false" />
-          </label>
-
-          <label class="setting">
-            <span>Reasoning effort</span>
-            <select
-              value={config.reasoningEffort ?? ''}
-              onchange={(e) =>
-                (config.reasoningEffort = (e.currentTarget.value ||
-                  null) as ReasoningEffort | null)}
-            >
-              <option value="">The provider's default</option>
-              {#each card.efforts as effort (effort.value)}
-                <option value={effort.value}>{effort.label}</option>
-              {/each}
-            </select>
-          </label>
-          <p class="hint">{card.effortHint}</p>
-
-          {#if keyed}
-            <div class="stored">
-              <span>
-                <Icon name="lock" size={14} />
-                A key for {providerLabel(config.baseUrl)} is stored{shared.length
-                  ? `, shared with ${shared.join(' and ')}`
-                  : ''}.
-              </span>
-              {#if savedEndpoint(card.tier) === endpointOf(config.baseUrl)}
-                <button class="link" onclick={() => void removeKey(card.tier)}>Remove</button>
-              {/if}
-            </div>
-          {/if}
-          <label class="setting">
-            <span>{keyed ? 'Replace the key' : 'API key'}</span>
-            <input
-              type="password"
-              bind:value={keys[card.tier]}
-              placeholder={local ? 'Not needed for a model on this machine' : 'sk-…'}
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-          {#if !keyed && !local && shared.length}
-            <p class="hint">One key serves {card.title} and {shared.join(' and ')}.</p>
-          {/if}
-
-          {#if card.tier === 'small'}
-            <div class="switches">
-              {#each Object.entries(grouped) as [app, asks] (app)}
-                <div class="group">
-                  <span class="group-name">{app}</span>
-                  {#each asks as ask (ask.name)}
-                    <label class="switch">
-                      <input
-                        type="checkbox"
-                        checked={ask.on}
-                        onchange={(e) => void setAsk(ask.name, e.currentTarget.checked)}
-                      />
-                      <span class="switch-text">
-                        <span class="switch-label">{ask.label}</span>
-                        <span class="switch-blurb">{ask.blurb}</span>
-                      </span>
-                    </label>
-                  {/each}
+          {#if here}
+            {#if !models.localDecisions}
+              <p class="hint">
+                This copy of Karma Yoga cannot run a decision model itself. Choose a provider above.
+              </p>
+            {/if}
+            {#each models.local as m (m.id)}
+              <label class="model-row pick">
+                <input
+                  type="radio"
+                  name="decision-model"
+                  checked={decision.model === m.id}
+                  onchange={() => (decision.model = m.id)}
+                />
+                <div class="model-text">
+                  <b>{m.name}</b>
+                  <small>{m.description} · {humanBytes(m.bytes)}</small>
+                  {#if timed[m.id]}<small class="speed">{timed[m.id]}</small>{/if}
+                  {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
                 </div>
-              {/each}
-            </div>
+                {#if m.progress}
+                  <div class="model-progress">
+                    <Meter
+                      label="Downloading"
+                      value={m.progress.done / m.progress.total}
+                      note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
+                    />
+                    <button class="btn" onclick={() => void onLocal(() => models.cancelLocal(m.id))}
+                      >Cancel</button
+                    >
+                  </div>
+                {:else if m.installed}
+                  <button
+                    class="btn"
+                    disabled={timing === m.id}
+                    onclick={() => void checkSpeed(m.id)}
+                  >
+                    {timing === m.id ? 'Checking…' : 'Check speed'}
+                  </button>
+                  <button class="btn" onclick={() => void onLocal(() => models.deleteLocal(m.id))}
+                    >Delete</button
+                  >
+                {:else}
+                  <button class="btn" onclick={() => void onLocal(() => models.downloadLocal(m.id))}
+                    >Download</button
+                  >
+                {/if}
+              </label>
+            {/each}
             <p class="hint">
-              A separate switch from the assistant, and deliberately: wanting your shelves filled in
-              is not the same as wanting something to talk to. Each one says what it sends, because
-              “AI features: on” is not a decision anybody can make; the ones that read a journal
-              entry start switched off. None of them ever changes what you already typed.
+              Runs here, so your mail goes nowhere: no account's “I understand” is needed, only
+              sorting switched on under Settings → AI features. Nothing is sorted until the model
+              you pick is downloaded. It is loaded when mail is sorted, and let go of after 15
+              minutes unused.
+            </p>
+          {:else}
+            {@const endpoint = decisionEndpointOf(decision) ?? ''}
+            {@const local = isLoopback(decision.url)}
+            {@const keyed = models.hasKeyAt(endpoint)}
+            <label class="setting">
+              <span>Request format</span>
+              <select
+                value={decision.api}
+                onchange={(e) => (decision.api = e.currentTarget.value as DecisionApi)}
+              >
+                {#each DECISION_APIS as api (api.value)}
+                  <option value={api.value}>{api.label}</option>
+                {/each}
+              </select>
+            </label>
+
+            <label class="setting">
+              <span>Server</span>
+              <input
+                value={decision.url ?? ''}
+                oninput={(e) => (decision.url = e.currentTarget.value.trim() || null)}
+                placeholder={decisionEndpointOf({ api: decision.api, url: null }) ?? ''}
+                spellcheck="false"
+              />
+            </label>
+            <p class="hint">The whole address requests are posted to, path and all.</p>
+
+            <label class="setting">
+              <span>Model name</span>
+              <input
+                bind:value={decision.model}
+                placeholder={KNOWN_DECISION_ENDPOINTS.find((k) => k.api === decision.api)?.model}
+                spellcheck="false"
+              />
+            </label>
+
+            {#if keyed}
+              <div class="stored">
+                <span>
+                  <Icon name="lock" size={14} />
+                  A key for {decisionProviderLabel(decision)} is stored.
+                </span>
+                {#if models.settings?.decision && decisionEndpointOf(models.settings.decision) === endpoint}
+                  <button class="link" onclick={() => void removeKey('decision')}>Remove</button>
+                {/if}
+              </div>
+            {/if}
+            <label class="setting">
+              <span>{keyed ? 'Replace the key' : 'API key'}</span>
+              <input
+                type="password"
+                bind:value={keys.decision}
+                placeholder={local ? 'Not needed for a model on this machine' : 'Its API key'}
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </label>
+            <p class="hint">
+              Switching it on, or moving it to another provider, changes where mail may go, so each
+              account's “I understand” under Settings → Accounts needs ticking again before anything
+              is sorted.
             </p>
           {/if}
         {/if}
       </section>
-    {/each}
+    {/if}
 
-    <section class="card" aria-labelledby="model-decision">
-      <div class="head">
-        <span class="eyebrow" id="model-decision">Decision</span>
-        <label class="toggle compact">
-          <input
-            type="checkbox"
-            checked={draft.decision != null}
-            onchange={(e) => toggleDecision(e.currentTarget.checked)}
-          />
-          <span>{draft.decision ? 'On' : 'Off'}</span>
-        </label>
-      </div>
-      <p class="hint">
-        Sorting mail into your own categories, under Settings → Mail sorting. A decision model does
-        not write: it is shown a message and your categories, and picks one. At a provider that
-        takes a fraction of a second and a fraction of what a chat model costs; on this computer it
-        costs nothing, takes a second or a few, and your mail never leaves it.
-      </p>
-      {#if !draft.decision}
-        <p class="hint">Off: mail is sorted on the Small model, into the five inbox tabs.</p>
-      {:else}
-        {@const decision = draft.decision}
-        {@const here = decision.api === 'local'}
-        <div class="presets" role="group" aria-label="Where the decision model runs">
-          {#if models.localDecisions || here}
-            <button
-              class="chip"
-              class:on={here}
-              aria-pressed={here}
-              onclick={() => pickLocal(decision)}
-            >
-              On this computer
-            </button>
-          {/if}
-          {#each KNOWN_DECISION_ENDPOINTS as preset (preset.label)}
-            {@const on = !here && decisionEndpointOf(decision) === preset.url}
-            <button
-              class="chip"
-              class:on
-              aria-pressed={on}
-              onclick={() => pickDecision(decision, preset)}
-            >
-              {preset.label}
-            </button>
-          {/each}
+    {#if sub === 'speech'}
+      <section class="card" aria-labelledby="model-speech">
+        <div class="head">
+          <span class="eyebrow" id="model-speech">Speech</span>
+          <label class="toggle compact">
+            <input
+              type="checkbox"
+              checked={draft.speech != null}
+              onchange={(e) => toggleSpeech(e.currentTarget.checked)}
+            />
+            <span>{draft.speech ? 'On' : 'Off'}</span>
+          </label>
         </div>
-
-        {#if here}
-          {#if !models.localDecisions}
-            <p class="hint">
-              This copy of Karma Yoga cannot run a decision model itself. Choose a provider above.
-            </p>
-          {/if}
-          {#each models.local as m (m.id)}
-            <label class="model-row pick">
-              <input
-                type="radio"
-                name="decision-model"
-                checked={decision.model === m.id}
-                onchange={() => (decision.model = m.id)}
-              />
-              <div class="model-text">
-                <b>{m.name}</b>
-                <small>{m.description} · {humanBytes(m.bytes)}</small>
-                {#if timed[m.id]}<small class="speed">{timed[m.id]}</small>{/if}
-                {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
-              </div>
-              {#if m.progress}
-                <div class="model-progress">
-                  <Meter
-                    label="Downloading"
-                    value={m.progress.done / m.progress.total}
-                    note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
-                  />
-                  <button class="btn" onclick={() => void onLocal(() => models.cancelLocal(m.id))}
-                    >Cancel</button
-                  >
-                </div>
-              {:else if m.installed}
-                <button
-                  class="btn"
-                  disabled={timing === m.id}
-                  onclick={() => void checkSpeed(m.id)}
-                >
-                  {timing === m.id ? 'Checking…' : 'Check speed'}
-                </button>
-                <button class="btn" onclick={() => void onLocal(() => models.deleteLocal(m.id))}
-                  >Delete</button
-                >
-              {:else}
-                <button class="btn" onclick={() => void onLocal(() => models.downloadLocal(m.id))}
-                  >Download</button
-                >
-              {/if}
-            </label>
-          {/each}
+        <p class="hint">
+          Turning speech into text. Meeting notes use it today, to transcribe a call; it is set
+          here, once, so anything else in the app that listens uses the same model and the same key.
+        </p>
+        {#if !draft.speech}
           <p class="hint">
-            Runs here, so your mail goes nowhere: no account's “I understand” is needed, only
-            sorting switched on for it under Settings → Accounts. Nothing is sorted until the model
-            you pick is downloaded. It is loaded when mail is sorted, and let go of after 15 minutes
-            unused.
+            Off: nothing turns speech into text, so meeting notes cannot be switched on.
           </p>
         {:else}
-          {@const endpoint = decisionEndpointOf(decision) ?? ''}
-          {@const local = isLoopback(decision.url)}
-          {@const keyed = models.hasKeyAt(endpoint)}
-          <label class="setting">
-            <span>Request format</span>
-            <select
-              value={decision.api}
-              onchange={(e) => (decision.api = e.currentTarget.value as DecisionApi)}
-            >
-              {#each DECISION_APIS as api (api.value)}
-                <option value={api.value}>{api.label}</option>
-              {/each}
-            </select>
-          </label>
+          {@const speech = draft.speech}
+          {@const t = speech.transcriber}
+          {@const endpoint = speechEndpointOf(t)}
+          {@const keyed = endpoint != null && models.hasKeyAt(endpoint)}
+          {@const shared = cardsAt(endpoint, 'Speech')}
+          {@const needsKey =
+            t.type === 'openAi' ||
+            t.type === 'google' ||
+            (t.type === 'compatible' && !!endpoint && !isLoopback(endpoint))}
 
-          <label class="setting">
-            <span>Server</span>
-            <input
-              value={decision.url ?? ''}
-              oninput={(e) => (decision.url = e.currentTarget.value.trim() || null)}
-              placeholder={decisionEndpointOf({ api: decision.api, url: null }) ?? ''}
-              spellcheck="false"
-            />
-          </label>
-          <p class="hint">The whole address requests are posted to, path and all.</p>
-
-          <label class="setting">
-            <span>Model name</span>
-            <input
-              bind:value={decision.model}
-              placeholder={KNOWN_DECISION_ENDPOINTS.find((k) => k.api === decision.api)?.model}
-              spellcheck="false"
-            />
-          </label>
-
-          {#if keyed}
-            <div class="stored">
-              <span>
-                <Icon name="lock" size={14} />
-                A key for {decisionProviderLabel(decision)} is stored.
-              </span>
-              {#if models.settings?.decision && decisionEndpointOf(models.settings.decision) === endpoint}
-                <button class="link" onclick={() => void removeKey('decision')}>Remove</button>
-              {/if}
-            </div>
-          {/if}
-          <label class="setting">
-            <span>{keyed ? 'Replace the key' : 'API key'}</span>
-            <input
-              type="password"
-              bind:value={keys.decision}
-              placeholder={local ? 'Not needed for a model on this machine' : 'Its API key'}
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-          <p class="hint">
-            Switching it on, or moving it to another provider, changes where mail may go, so each
-            account's “I understand” under Settings → Accounts needs ticking again before anything
-            is sorted.
-          </p>
-        {/if}
-      {/if}
-    </section>
-
-    <section class="card" aria-labelledby="model-speech">
-      <div class="head">
-        <span class="eyebrow" id="model-speech">Speech</span>
-        <label class="toggle compact">
-          <input
-            type="checkbox"
-            checked={draft.speech != null}
-            onchange={(e) => toggleSpeech(e.currentTarget.checked)}
-          />
-          <span>{draft.speech ? 'On' : 'Off'}</span>
-        </label>
-      </div>
-      <p class="hint">
-        Turning speech into text. Meeting notes use it today, to transcribe a call; it is set here,
-        once, so anything else in the app that listens uses the same model and the same key.
-      </p>
-      {#if !draft.speech}
-        <p class="hint">
-          Off: nothing turns speech into text, so meeting notes cannot be switched on.
-        </p>
-      {:else}
-        {@const speech = draft.speech}
-        {@const t = speech.transcriber}
-        {@const endpoint = speechEndpointOf(t)}
-        {@const keyed = endpoint != null && models.hasKeyAt(endpoint)}
-        {@const shared = cardsAt(endpoint, 'Speech')}
-        {@const needsKey =
-          t.type === 'openAi' ||
-          t.type === 'google' ||
-          (t.type === 'compatible' && !!endpoint && !isLoopback(endpoint))}
-
-        {#if speechKit}
-          {@const kit = speechKit}
-          <div class="model-row">
-            <div class="model-text">
-              <b>Speech kit</b>
-              <small>{kit.description} · {humanBytes(kit.bytes)}</small>
-              {#if kit.error}<small class="failed">The download failed: {kit.error}</small>{/if}
-            </div>
-            {#if kit.progress}
-              <div class="model-progress">
-                <Meter
-                  label="Downloading"
-                  value={kit.progress.done / kit.progress.total}
-                  note={`${humanBytes(kit.progress.done)} of ${humanBytes(kit.progress.total)}`}
-                />
-                <button class="btn" onclick={() => void onLocal(() => models.cancelSpeech(kit.id))}
-                  >Cancel</button
-                >
-              </div>
-            {:else if kit.installed}
-              <button class="btn" onclick={() => void onLocal(() => models.deleteSpeech(kit.id))}
-                >Delete</button
-              >
-            {:else}
-              <button class="btn" onclick={() => void onLocal(() => models.downloadSpeech(kit.id))}
-                >Download</button
-              >
-            {/if}
-          </div>
-          <p class="hint">
-            Needed whichever way speech becomes text: it finds the speech in a call before anything
-            is transcribed, and tells voices apart.
-          </p>
-        {/if}
-
-        <div class="presets" role="group" aria-label="Where speech becomes text">
-          {#if models.localSpeech || t.type === 'local'}
-            <button
-              class="chip"
-              class:on={t.type === 'local'}
-              aria-pressed={t.type === 'local'}
-              onclick={() => chooseTranscriber('local')}
-            >
-              On this computer
-            </button>
-          {/if}
-          {#each SPEECH_CHOICES as choice (choice.kind)}
-            <button
-              class="chip"
-              class:on={t.type === choice.kind}
-              aria-pressed={t.type === choice.kind}
-              onclick={() => chooseTranscriber(choice.kind)}
-            >
-              {choice.label}
-            </button>
-          {/each}
-        </div>
-
-        {#if t.type === 'local'}
-          {#if !models.localSpeech}
-            <p class="hint">
-              This copy of Karma Yoga cannot run a recogniser itself. Choose a provider above.
-            </p>
-          {/if}
-          {#each LOCAL_RECOGNISERS.filter((m) => !m.llama || models.localDecisions || t.model === m.id) as m (m.id)}
-            {@const info = speechInfo(m.id)}
-            <label class="model-row pick">
-              <input
-                type="radio"
-                name="speech-model"
-                checked={t.model === m.id}
-                onchange={() => (speech.transcriber = { type: 'local', model: m.id })}
-              />
-              <div class="model-text">
-                <b>{m.name}</b>
-                <small>{m.blurb}{info ? ` · ${humanBytes(info.bytes)}` : ''}</small>
-                {#if speechTimed[m.id]}<small class="speed">{speechTimed[m.id]}</small>{/if}
-                {#if info?.error}
-                  <small class="failed">The download failed: {info.error}</small>
-                {/if}
-              </div>
-              {#if info?.progress}
-                <div class="model-progress">
-                  <Meter
-                    label="Downloading"
-                    value={info.progress.done / info.progress.total}
-                    note={`${humanBytes(info.progress.done)} of ${humanBytes(info.progress.total)}`}
-                  />
-                  <button class="btn" onclick={() => void onLocal(() => models.cancelSpeech(m.id))}
-                    >Cancel</button
-                  >
-                </div>
-              {:else if info?.installed}
-                <button
-                  class="btn"
-                  disabled={speechTiming === m.id}
-                  onclick={() => void checkSpeechSpeed(m.id)}
-                >
-                  {speechTiming === m.id ? 'Checking…' : 'Check speed'}
-                </button>
-                <button class="btn" onclick={() => void onLocal(() => models.deleteSpeech(m.id))}
-                  >Delete</button
-                >
-              {:else}
-                <button class="btn" onclick={() => void onLocal(() => models.downloadSpeech(m.id))}
-                  >Download</button
-                >
-              {/if}
-            </label>
-          {/each}
-          <p class="hint">
-            Runs here, so a call never leaves this computer. Choose one and download it after;
-            nothing is transcribed until it and the speech kit are both downloaded.
-          </p>
-        {:else if t.type === 'openAi'}
-          <label class="setting">
-            <span>Model name</span>
-            <input
-              list="openai-speech-models"
-              bind:value={t.model}
-              placeholder="gpt-4o-transcribe-diarize"
-              spellcheck="false"
-            />
-            <datalist id="openai-speech-models">
-              <option value="gpt-4o-transcribe-diarize"></option>
-              <option value="gpt-4o-transcribe"></option>
-            </datalist>
-          </label>
-        {:else if t.type === 'google'}
-          <label class="setting">
-            <span>Model name</span>
-            <input
-              list="google-speech-models"
-              bind:value={t.model}
-              placeholder="gemini-2.5-flash"
-              spellcheck="false"
-            />
-            <datalist id="google-speech-models">
-              <option value="gemini-2.5-flash"></option>
-            </datalist>
-          </label>
-        {:else if t.type === 'compatible'}
-          <label class="setting">
-            <span>Base URL</span>
-            <input
-              value={t.baseUrl}
-              oninput={(e) => (t.baseUrl = e.currentTarget.value.trim())}
-              placeholder="http://localhost:8000/v1"
-              spellcheck="false"
-            />
-          </label>
-          <label class="setting">
-            <span>Model name</span>
-            <input bind:value={t.model} placeholder="whisper-1" spellcheck="false" />
-          </label>
-          <p class="hint">
-            Anything that speaks OpenAI's transcription API: whisper.cpp's server, Speaches.
-          </p>
-        {/if}
-
-        {#if t.type !== 'local'}
-          {#if keyed}
-            <div class="stored">
-              <span>
-                <Icon name="lock" size={14} />
-                A key for {speechProviderLabel(t)} is stored{shared.length
-                  ? `, shared with ${shared.join(' and ')}`
-                  : ''}.
-              </span>
-              {#if savedSpeechEndpoint === endpoint}
-                <button class="link" onclick={() => void removeKey('speech')}>Remove</button>
-              {/if}
-            </div>
-          {/if}
-          <label class="setting">
-            <span>{keyed ? 'Replace the key' : 'API key'}</span>
-            <input
-              type="password"
-              bind:value={keys.speech}
-              placeholder={needsKey ? 'Its API key' : 'Not needed for a server on this machine'}
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-          {#if !keyed && needsKey && shared.length}
-            <p class="hint">One key serves Speech and {shared.join(' and ')}.</p>
-          {/if}
-          {#if needsKey}
-            <p class="hint">
-              While a call is recorded its speech is sent to {speechProviderLabel(t)} — only speech, cut
-              from silence on this computer first.
-            </p>
-          {:else if endpoint}
-            <p class="hint">Audio never leaves this computer: the server runs here.</p>
-          {/if}
-        {/if}
-
-        <label class="setting">
-          <span>Language</span>
-          <input
-            value={speech.language ?? ''}
-            oninput={(e) => (speech.language = e.currentTarget.value.trim() || null)}
-            placeholder="Detect automatically"
-            spellcheck="false"
-          />
-        </label>
-        <p class="hint">
-          A language code such as en or de, told to the recogniser. Left empty, it works out which
-          language is being spoken.
-        </p>
-
-        <div class="row">
-          <button
-            class="btn"
-            disabled={testingSpeech || !models.settings?.speech}
-            onclick={() => void testSpeech()}
-          >
-            {testingSpeech ? 'Testing…' : 'Test'}
-          </button>
-          {#if speechTested}
-            <span class="notice">{speechTested}</span>
-          {:else if speechUnsaved}
-            <span class="notice">Test tries what is saved, so save first.</span>
-          {/if}
-        </div>
-      {/if}
-    </section>
-
-    <section class="card" aria-labelledby="model-voice">
-      <div class="head">
-        <span class="eyebrow" id="model-voice">Voice</span>
-        <label class="toggle compact">
-          <input
-            type="checkbox"
-            checked={draft.voice != null}
-            onchange={(e) => toggleVoice(e.currentTarget.checked)}
-          />
-          <span>{draft.voice ? 'On' : 'Off'}</span>
-        </label>
-      </div>
-      <p class="hint">
-        What the assistant sounds like when you talk to it, with the microphone beside the message
-        box. It is set here, once, with its own key.
-      </p>
-      {#if !draft.voice}
-        <p class="hint">Off: the assistant has no voice, so it cannot be talked to.</p>
-      {:else}
-        {@const voice = draft.voice}
-        {@const t = voice.synthesiser}
-        {@const endpoint = voiceEndpointOf(t)}
-        {@const keyed = endpoint != null && models.hasKeyAt(endpoint)}
-        {@const shared = cardsAt(endpoint, 'Voice')}
-        {@const needsKey =
-          t.type === 'openAi' || (t.type === 'compatible' && !!endpoint && !isLoopback(endpoint))}
-
-        <p class="hint">
-          Talking also needs a speech model, in the card above, and its speech kit: they are how you
-          are heard.
-        </p>
-
-        <div class="presets" role="group" aria-label="Where the voice is made">
-          {#if models.localVoice || t.type === 'local'}
-            <button
-              class="chip"
-              class:on={t.type === 'local'}
-              aria-pressed={t.type === 'local'}
-              onclick={() => chooseSynthesiser('local')}
-            >
-              On this computer
-            </button>
-          {/if}
-          {#each VOICE_CHOICES as choice (choice.kind)}
-            <button
-              class="chip"
-              class:on={t.type === choice.kind}
-              aria-pressed={t.type === choice.kind}
-              onclick={() => chooseSynthesiser(choice.kind)}
-            >
-              {choice.label}
-            </button>
-          {/each}
-        </div>
-
-        {#if t.type === 'local'}
-          {#if !models.localVoice}
-            <p class="hint">
-              This copy of Karma Yoga cannot make a voice itself. Choose a provider above.
-            </p>
-          {/if}
-          {#each models.voiceModels as m (m.id)}
+          {#if speechKit}
+            {@const kit = speechKit}
             <div class="model-row">
               <div class="model-text">
-                <b>{m.name}</b>
-                <small>{m.description} · {humanBytes(m.bytes)}</small>
-                {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
+                <b>Speech kit</b>
+                <small>{kit.description} · {humanBytes(kit.bytes)}</small>
+                {#if kit.error}<small class="failed">The download failed: {kit.error}</small>{/if}
               </div>
-              {#if m.progress}
+              {#if kit.progress}
                 <div class="model-progress">
                   <Meter
                     label="Downloading"
-                    value={m.progress.done / m.progress.total}
-                    note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
+                    value={kit.progress.done / kit.progress.total}
+                    note={`${humanBytes(kit.progress.done)} of ${humanBytes(kit.progress.total)}`}
                   />
-                  <button class="btn" onclick={() => void onLocal(() => models.cancelVoice(m.id))}
-                    >Cancel</button
+                  <button
+                    class="btn"
+                    onclick={() => void onLocal(() => models.cancelSpeech(kit.id))}>Cancel</button
                   >
                 </div>
-              {:else if m.installed}
-                <button class="btn" onclick={() => void onLocal(() => models.deleteVoice(m.id))}
+              {:else if kit.installed}
+                <button class="btn" onclick={() => void onLocal(() => models.deleteSpeech(kit.id))}
                   >Delete</button
                 >
               {:else}
-                <button class="btn" onclick={() => void onLocal(() => models.downloadVoice(m.id))}
-                  >Download</button
+                <button
+                  class="btn"
+                  onclick={() => void onLocal(() => models.downloadSpeech(kit.id))}>Download</button
                 >
               {/if}
             </div>
-          {/each}
-          {@const speakers = LOCAL_VOICES[t.voice].speakers}
-          <label class="setting">
-            <span>Voice</span>
-            <select
-              value={t.voice}
-              onchange={(e) => {
-                const voice = e.currentTarget.value as LocalVoice
-                if (draft?.voice) draft.voice.synthesiser = localVoice(voice)
-              }}
-            >
-              {#each Object.entries(LOCAL_VOICES) as [id, v] (id)}
-                <option value={id}>{v.name}</option>
-              {/each}
-            </select>
-          </label>
-          <label class="setting">
-            <span>Speaker</span>
-            <select value={t.speaker} onchange={(e) => (t.speaker = Number(e.currentTarget.value))}>
-              {#each ['American', 'British'] as accent (accent)}
-                <optgroup label={accent}>
-                  {#each speakers.filter((s) => s.accent === accent) as speaker (speaker.value)}
-                    <option value={speaker.value}>{speaker.label}</option>
-                  {/each}
-                </optgroup>
-              {/each}
-            </select>
-          </label>
-          <p class="hint">
-            Runs here, so what the assistant says is never sent anywhere. English only. Nothing is
-            spoken until the voice is downloaded.
-          </p>
-          {#if speaksOtherThanEnglish(draft.speech?.language)}
-            <p class="hint lead">
-              The speech model is set to “{draft.speech?.language}”, but this voice speaks only
-              English, so replies in another language will sound wrong. OpenAI or a compatible
-              server above can speak it.
+            <p class="hint">
+              Needed whichever way speech becomes text: it finds the speech in a call before
+              anything is transcribed, and tells voices apart.
             </p>
           {/if}
-        {:else}
-          {#if t.type === 'compatible'}
+
+          <div class="presets" role="group" aria-label="Where speech becomes text">
+            {#if models.localSpeech || t.type === 'local'}
+              <button
+                class="chip"
+                class:on={t.type === 'local'}
+                aria-pressed={t.type === 'local'}
+                onclick={() => chooseTranscriber('local')}
+              >
+                On this computer
+              </button>
+            {/if}
+            {#each SPEECH_CHOICES as choice (choice.kind)}
+              <button
+                class="chip"
+                class:on={t.type === choice.kind}
+                aria-pressed={t.type === choice.kind}
+                onclick={() => chooseTranscriber(choice.kind)}
+              >
+                {choice.label}
+              </button>
+            {/each}
+          </div>
+
+          {#if t.type === 'local'}
+            {#if !models.localSpeech}
+              <p class="hint">
+                This copy of Karma Yoga cannot run a recogniser itself. Choose a provider above.
+              </p>
+            {/if}
+            {#each LOCAL_RECOGNISERS.filter((m) => !m.llama || models.localDecisions || t.model === m.id) as m (m.id)}
+              {@const info = speechInfo(m.id)}
+              <label class="model-row pick">
+                <input
+                  type="radio"
+                  name="speech-model"
+                  checked={t.model === m.id}
+                  onchange={() => (speech.transcriber = { type: 'local', model: m.id })}
+                />
+                <div class="model-text">
+                  <b>{m.name}</b>
+                  <small>{m.blurb}{info ? ` · ${humanBytes(info.bytes)}` : ''}</small>
+                  {#if speechTimed[m.id]}<small class="speed">{speechTimed[m.id]}</small>{/if}
+                  {#if info?.error}
+                    <small class="failed">The download failed: {info.error}</small>
+                  {/if}
+                </div>
+                {#if info?.progress}
+                  <div class="model-progress">
+                    <Meter
+                      label="Downloading"
+                      value={info.progress.done / info.progress.total}
+                      note={`${humanBytes(info.progress.done)} of ${humanBytes(info.progress.total)}`}
+                    />
+                    <button
+                      class="btn"
+                      onclick={() => void onLocal(() => models.cancelSpeech(m.id))}>Cancel</button
+                    >
+                  </div>
+                {:else if info?.installed}
+                  <button
+                    class="btn"
+                    disabled={speechTiming === m.id}
+                    onclick={() => void checkSpeechSpeed(m.id)}
+                  >
+                    {speechTiming === m.id ? 'Checking…' : 'Check speed'}
+                  </button>
+                  <button class="btn" onclick={() => void onLocal(() => models.deleteSpeech(m.id))}
+                    >Delete</button
+                  >
+                {:else}
+                  <button
+                    class="btn"
+                    onclick={() => void onLocal(() => models.downloadSpeech(m.id))}>Download</button
+                  >
+                {/if}
+              </label>
+            {/each}
+            <p class="hint">
+              Runs here, so a call never leaves this computer. Choose one and download it after;
+              nothing is transcribed until it and the speech kit are both downloaded.
+            </p>
+          {:else if t.type === 'openAi'}
+            <label class="setting">
+              <span>Model name</span>
+              <input
+                list="openai-speech-models"
+                bind:value={t.model}
+                placeholder="gpt-4o-transcribe-diarize"
+                spellcheck="false"
+              />
+              <datalist id="openai-speech-models">
+                <option value="gpt-4o-transcribe-diarize"></option>
+                <option value="gpt-4o-transcribe"></option>
+              </datalist>
+            </label>
+          {:else if t.type === 'google'}
+            <label class="setting">
+              <span>Model name</span>
+              <input
+                list="google-speech-models"
+                bind:value={t.model}
+                placeholder="gemini-2.5-flash"
+                spellcheck="false"
+              />
+              <datalist id="google-speech-models">
+                <option value="gemini-2.5-flash"></option>
+              </datalist>
+            </label>
+          {:else if t.type === 'compatible'}
             <label class="setting">
               <span>Base URL</span>
               <input
                 value={t.baseUrl}
                 oninput={(e) => (t.baseUrl = e.currentTarget.value.trim())}
-                placeholder="http://localhost:8880/v1"
+                placeholder="http://localhost:8000/v1"
                 spellcheck="false"
               />
             </label>
+            <label class="setting">
+              <span>Model name</span>
+              <input bind:value={t.model} placeholder="whisper-1" spellcheck="false" />
+            </label>
             <p class="hint">
-              Any server that speaks OpenAI's speech API works, such as Kokoro-FastAPI. Its base URL
-              ends in /v1.
+              Anything that speaks OpenAI's transcription API: whisper.cpp's server, Speaches.
             </p>
           {/if}
-          <label class="setting">
-            <span>Model name</span>
-            <input
-              bind:value={t.model}
-              placeholder={t.type === 'openAi' ? 'gpt-4o-mini-tts' : 'kokoro'}
-              spellcheck="false"
-            />
-          </label>
-          <label class="setting">
-            <span>Voice</span>
-            <input
-              bind:value={t.voice}
-              placeholder={t.type === 'openAi' ? 'alloy' : 'af_heart'}
-              spellcheck="false"
-            />
-          </label>
 
-          {#if keyed}
-            <div class="stored">
-              <span>
-                <Icon name="lock" size={14} />
-                A key for {voiceProviderLabel(t)} is stored{shared.length
-                  ? `, shared with ${shared.join(' and ')}`
-                  : ''}.
-              </span>
-              {#if savedVoiceEndpoint === endpoint}
-                <button class="link" onclick={() => void removeKey('voice')}>Remove</button>
-              {/if}
-            </div>
-          {/if}
-          <label class="setting">
-            <span>{keyed ? 'Replace the key' : 'API key'}</span>
-            <input
-              type="password"
-              bind:value={keys.voice}
-              placeholder={needsKey ? 'Its API key' : 'Not needed for a server on this machine'}
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-          {#if !keyed && needsKey && shared.length}
-            <p class="hint">One key serves Voice and {shared.join(' and ')}.</p>
-          {/if}
-          {#if needsKey}
-            <p class="hint">
-              What the assistant says is sent to {voiceProviderLabel(t)} to be spoken, a sentence at a
-              time.
-            </p>
-          {:else if endpoint}
-            <p class="hint">
-              What the assistant says never leaves this computer: the server runs here.
-            </p>
-          {/if}
-        {/if}
-
-        <label class="setting">
-          <span>Speed · {Number(voice.speed.toFixed(2))}×</span>
-          <input
-            type="range"
-            min="0.5"
-            max="2"
-            step="0.05"
-            value={voice.speed}
-            oninput={(e) => (voice.speed = Number(e.currentTarget.value))}
-          />
-        </label>
-
-        <div class="row">
-          <button
-            class="btn"
-            disabled={tryingVoice || !models.settings?.voice || voiceUnsaved}
-            onclick={() => void tryVoice()}
-          >
-            {tryingVoice ? 'Playing…' : 'Try it'}
-          </button>
-          {#if voiceTried}
-            <span class="notice">{voiceTried}</span>
-          {:else if voiceUnsaved}
-            <span class="notice">Try it plays what is saved, so save first.</span>
-          {/if}
-        </div>
-      {/if}
-    </section>
-
-    <section class="card" aria-labelledby="model-image">
-      <div class="head">
-        <span class="eyebrow" id="model-image">Image</span>
-        <label class="toggle compact">
-          <input
-            type="checkbox"
-            checked={draft.image != null}
-            onchange={(e) => toggleImage(e.currentTarget.checked)}
-          />
-          <span>{draft.image ? 'On' : 'Off'}</span>
-        </label>
-      </div>
-      <p class="hint">
-        What makes a picture when one is asked for. It is set here, once, the same way the voice is.
-        A model on this computer keeps the prompt here.
-      </p>
-      {#if !draft.image}
-        <p class="hint">Off: nothing can make a picture.</p>
-      {:else}
-        {@const image = draft.image}
-        {@const g = image.generator}
-        {@const endpoint = imageEndpointOf(g)}
-        {@const keyed = endpoint != null && models.hasKeyAt(endpoint)}
-        {@const shared = cardsAt(endpoint, 'Image')}
-        <div class="presets" role="group" aria-label="Which image model">
-          {#each IMAGE_CHOICES as choice (choice.kind)}
-            <button
-              class="chip"
-              class:on={imageChoiceOn(g, choice.kind)}
-              aria-pressed={imageChoiceOn(g, choice.kind)}
-              onclick={() => chooseImage(choice.kind)}
-            >
-              {choice.label}
-            </button>
-          {/each}
-        </div>
-
-        {#if g.type === 'local'}
-          {#each models.imageModels.filter((m) => m.id === 'sdCli' || m.id === g.model) as m (m.id)}
-            <div class="model-row">
-              <div class="model-text">
-                <b>{m.name}</b>
-                <small>{m.description} · {humanBytes(m.bytes)}</small>
-                {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
+          {#if t.type !== 'local'}
+            {#if keyed}
+              <div class="stored">
+                <span>
+                  <Icon name="lock" size={14} />
+                  A key for {speechProviderLabel(t)} is stored{shared.length
+                    ? `, shared with ${shared.join(' and ')}`
+                    : ''}.
+                </span>
+                {#if savedSpeechEndpoint === endpoint}
+                  <button class="link" onclick={() => void removeKey('speech')}>Remove</button>
+                {/if}
               </div>
-              {#if m.progress}
-                <div class="model-progress">
-                  <Meter
-                    label="Downloading"
-                    value={m.progress.done / m.progress.total}
-                    note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
-                  />
-                  <button class="btn" onclick={() => void onLocal(() => models.cancelImage(m.id))}
-                    >Cancel</button
-                  >
-                </div>
-              {:else if m.installed}
-                <button class="btn" onclick={() => void onLocal(() => models.deleteImage(m.id))}
-                  >Delete</button
-                >
-              {:else}
-                <button class="btn" onclick={() => void onLocal(() => models.downloadImage(m.id))}
-                  >Download</button
-                >
-              {/if}
-            </div>
-          {/each}
-          <p class="hint">
-            Quantized weights, run on this computer. Download the engine and the model first. A
-            picture at 512 pixels can take a few minutes.
-          </p>
-        {:else}
+            {/if}
+            <label class="setting">
+              <span>{keyed ? 'Replace the key' : 'API key'}</span>
+              <input
+                type="password"
+                bind:value={keys.speech}
+                placeholder={needsKey ? 'Its API key' : 'Not needed for a server on this machine'}
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </label>
+            {#if !keyed && needsKey && shared.length}
+              <p class="hint">One key serves Speech and {shared.join(' and ')}.</p>
+            {/if}
+            {#if needsKey}
+              <p class="hint">
+                While a call is recorded its speech is sent to {speechProviderLabel(t)} — only speech,
+                cut from silence on this computer first.
+              </p>
+            {:else if endpoint}
+              <p class="hint">Audio never leaves this computer: the server runs here.</p>
+            {/if}
+          {/if}
+
           <label class="setting">
-            <span>Model</span>
-            <select bind:value={g.model}>
-              {#each OPENAI_IMAGE_MODELS as name (name)}
-                <option value={name}>{name}</option>
-              {/each}
-            </select>
+            <span>Language</span>
+            <input
+              value={speech.language ?? ''}
+              oninput={(e) => (speech.language = e.currentTarget.value.trim() || null)}
+              placeholder="Detect automatically"
+              spellcheck="false"
+            />
           </label>
-          {#if keyed}
+          <p class="hint">
+            A language code such as en or de, told to the recogniser. Left empty, it works out which
+            language is being spoken.
+          </p>
+
+          <div class="row">
+            <button
+              class="btn"
+              disabled={testingSpeech || !models.settings?.speech}
+              onclick={() => void testSpeech()}
+            >
+              {testingSpeech ? 'Testing…' : 'Test'}
+            </button>
+            {#if speechTested}
+              <span class="notice">{speechTested}</span>
+            {:else if speechUnsaved}
+              <span class="notice">Test tries what is saved, so save first.</span>
+            {/if}
+          </div>
+        {/if}
+      </section>
+    {/if}
+
+    {#if sub === 'voice'}
+      <section class="card" aria-labelledby="model-voice">
+        <div class="head">
+          <span class="eyebrow" id="model-voice">Voice</span>
+          <label class="toggle compact">
+            <input
+              type="checkbox"
+              checked={draft.voice != null}
+              onchange={(e) => toggleVoice(e.currentTarget.checked)}
+            />
+            <span>{draft.voice ? 'On' : 'Off'}</span>
+          </label>
+        </div>
+        <p class="hint">
+          What the assistant sounds like when you talk to it, with the microphone beside the message
+          box. It is set here, once, with its own key.
+        </p>
+        {#if !draft.voice}
+          <p class="hint">Off: the assistant has no voice, so it cannot be talked to.</p>
+        {:else}
+          {@const voice = draft.voice}
+          {@const t = voice.synthesiser}
+          {@const endpoint = voiceEndpointOf(t)}
+          {@const keyed = endpoint != null && models.hasKeyAt(endpoint)}
+          {@const shared = cardsAt(endpoint, 'Voice')}
+          {@const needsKey =
+            t.type === 'openAi' || (t.type === 'compatible' && !!endpoint && !isLoopback(endpoint))}
+
+          <p class="hint">
+            Talking also needs a speech model, under
+            <button class="link" onclick={() => (sub = 'speech')}>Speech</button>, and its speech
+            kit: they are how you are heard.
+          </p>
+
+          <div class="presets" role="group" aria-label="Where the voice is made">
+            {#if models.localVoice || t.type === 'local'}
+              <button
+                class="chip"
+                class:on={t.type === 'local'}
+                aria-pressed={t.type === 'local'}
+                onclick={() => chooseSynthesiser('local')}
+              >
+                On this computer
+              </button>
+            {/if}
+            {#each VOICE_CHOICES as choice (choice.kind)}
+              <button
+                class="chip"
+                class:on={t.type === choice.kind}
+                aria-pressed={t.type === choice.kind}
+                onclick={() => chooseSynthesiser(choice.kind)}
+              >
+                {choice.label}
+              </button>
+            {/each}
+          </div>
+
+          {#if t.type === 'local'}
+            {#if !models.localVoice}
+              <p class="hint">
+                This copy of Karma Yoga cannot make a voice itself. Choose a provider above.
+              </p>
+            {/if}
+            {#each models.voiceModels as m (m.id)}
+              <div class="model-row">
+                <div class="model-text">
+                  <b>{m.name}</b>
+                  <small>{m.description} · {humanBytes(m.bytes)}</small>
+                  {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
+                </div>
+                {#if m.progress}
+                  <div class="model-progress">
+                    <Meter
+                      label="Downloading"
+                      value={m.progress.done / m.progress.total}
+                      note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
+                    />
+                    <button class="btn" onclick={() => void onLocal(() => models.cancelVoice(m.id))}
+                      >Cancel</button
+                    >
+                  </div>
+                {:else if m.installed}
+                  <button class="btn" onclick={() => void onLocal(() => models.deleteVoice(m.id))}
+                    >Delete</button
+                  >
+                {:else}
+                  <button class="btn" onclick={() => void onLocal(() => models.downloadVoice(m.id))}
+                    >Download</button
+                  >
+                {/if}
+              </div>
+            {/each}
+            {@const speakers = LOCAL_VOICES[t.voice].speakers}
+            <label class="setting">
+              <span>Voice</span>
+              <select
+                value={t.voice}
+                onchange={(e) => {
+                  const voice = e.currentTarget.value as LocalVoice
+                  if (draft?.voice) draft.voice.synthesiser = localVoice(voice)
+                }}
+              >
+                {#each Object.entries(LOCAL_VOICES) as [id, v] (id)}
+                  <option value={id}>{v.name}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="setting">
+              <span>Speaker</span>
+              <select
+                value={t.speaker}
+                onchange={(e) => (t.speaker = Number(e.currentTarget.value))}
+              >
+                {#each ['American', 'British'] as accent (accent)}
+                  <optgroup label={accent}>
+                    {#each speakers.filter((s) => s.accent === accent) as speaker (speaker.value)}
+                      <option value={speaker.value}>{speaker.label}</option>
+                    {/each}
+                  </optgroup>
+                {/each}
+              </select>
+            </label>
             <p class="hint">
-              A key for OpenAI is stored{shared.length
-                ? `, shared with ${shared.join(' and ')}`
-                : ''}.
-              {#if savedImageEndpoint === endpoint}
-                <button class="link" onclick={() => void removeKey('image')}>Remove</button>
-              {/if}
+              Runs here, so what the assistant says is never sent anywhere. English only. Nothing is
+              spoken until the voice is downloaded.
+            </p>
+            {#if speaksOtherThanEnglish(draft.speech?.language)}
+              <p class="hint lead">
+                The speech model is set to “{draft.speech?.language}”, but this voice speaks only
+                English, so replies in another language will sound wrong. OpenAI or a compatible
+                server above can speak it.
+              </p>
+            {/if}
+          {:else}
+            {#if t.type === 'compatible'}
+              <label class="setting">
+                <span>Base URL</span>
+                <input
+                  value={t.baseUrl}
+                  oninput={(e) => (t.baseUrl = e.currentTarget.value.trim())}
+                  placeholder="http://localhost:8880/v1"
+                  spellcheck="false"
+                />
+              </label>
+              <p class="hint">
+                Any server that speaks OpenAI's speech API works, such as Kokoro-FastAPI. Its base
+                URL ends in /v1.
+              </p>
+            {/if}
+            <label class="setting">
+              <span>Model name</span>
+              <input
+                bind:value={t.model}
+                placeholder={t.type === 'openAi' ? 'gpt-4o-mini-tts' : 'kokoro'}
+                spellcheck="false"
+              />
+            </label>
+            <label class="setting">
+              <span>Voice</span>
+              <input
+                bind:value={t.voice}
+                placeholder={t.type === 'openAi' ? 'alloy' : 'af_heart'}
+                spellcheck="false"
+              />
+            </label>
+
+            {#if keyed}
+              <div class="stored">
+                <span>
+                  <Icon name="lock" size={14} />
+                  A key for {voiceProviderLabel(t)} is stored{shared.length
+                    ? `, shared with ${shared.join(' and ')}`
+                    : ''}.
+                </span>
+                {#if savedVoiceEndpoint === endpoint}
+                  <button class="link" onclick={() => void removeKey('voice')}>Remove</button>
+                {/if}
+              </div>
+            {/if}
+            <label class="setting">
+              <span>{keyed ? 'Replace the key' : 'API key'}</span>
+              <input
+                type="password"
+                bind:value={keys.voice}
+                placeholder={needsKey ? 'Its API key' : 'Not needed for a server on this machine'}
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </label>
+            {#if !keyed && needsKey && shared.length}
+              <p class="hint">One key serves Voice and {shared.join(' and ')}.</p>
+            {/if}
+            {#if needsKey}
+              <p class="hint">
+                What the assistant says is sent to {voiceProviderLabel(t)} to be spoken, a sentence at
+                a time.
+              </p>
+            {:else if endpoint}
+              <p class="hint">
+                What the assistant says never leaves this computer: the server runs here.
+              </p>
+            {/if}
+          {/if}
+
+          <label class="setting">
+            <span>Speed · {Number(voice.speed.toFixed(2))}×</span>
+            <input
+              type="range"
+              min="0.5"
+              max="2"
+              step="0.05"
+              value={voice.speed}
+              oninput={(e) => (voice.speed = Number(e.currentTarget.value))}
+            />
+          </label>
+
+          <div class="row">
+            <button
+              class="btn"
+              disabled={tryingVoice || !models.settings?.voice || voiceUnsaved}
+              onclick={() => void tryVoice()}
+            >
+              {tryingVoice ? 'Playing…' : 'Try it'}
+            </button>
+            {#if voiceTried}
+              <span class="notice">{voiceTried}</span>
+            {:else if voiceUnsaved}
+              <span class="notice">Try it plays what is saved, so save first.</span>
+            {/if}
+          </div>
+        {/if}
+      </section>
+    {/if}
+
+    {#if sub === 'image'}
+      <section class="card" aria-labelledby="model-image">
+        <div class="head">
+          <span class="eyebrow" id="model-image">Image</span>
+          <label class="toggle compact">
+            <input
+              type="checkbox"
+              checked={draft.image != null}
+              onchange={(e) => toggleImage(e.currentTarget.checked)}
+            />
+            <span>{draft.image ? 'On' : 'Off'}</span>
+          </label>
+        </div>
+        <p class="hint">
+          What makes a picture when one is asked for. It is set here, once, the same way the voice
+          is. A model on this computer keeps the prompt here.
+        </p>
+        {#if !draft.image}
+          <p class="hint">Off: nothing can make a picture.</p>
+        {:else}
+          {@const image = draft.image}
+          {@const g = image.generator}
+          {@const endpoint = imageEndpointOf(g)}
+          {@const keyed = endpoint != null && models.hasKeyAt(endpoint)}
+          {@const shared = cardsAt(endpoint, 'Image')}
+          <div class="presets" role="group" aria-label="Which image model">
+            {#each IMAGE_CHOICES as choice (choice.kind)}
+              <button
+                class="chip"
+                class:on={imageChoiceOn(g, choice.kind)}
+                aria-pressed={imageChoiceOn(g, choice.kind)}
+                onclick={() => chooseImage(choice.kind)}
+              >
+                {choice.label}
+              </button>
+            {/each}
+          </div>
+
+          {#if g.type === 'local'}
+            {#each models.imageModels.filter((m) => m.id === 'sdCli' || m.id === g.model) as m (m.id)}
+              <div class="model-row">
+                <div class="model-text">
+                  <b>{m.name}</b>
+                  <small>{m.description} · {humanBytes(m.bytes)}</small>
+                  {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
+                </div>
+                {#if m.progress}
+                  <div class="model-progress">
+                    <Meter
+                      label="Downloading"
+                      value={m.progress.done / m.progress.total}
+                      note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
+                    />
+                    <button class="btn" onclick={() => void onLocal(() => models.cancelImage(m.id))}
+                      >Cancel</button
+                    >
+                  </div>
+                {:else if m.installed}
+                  <button class="btn" onclick={() => void onLocal(() => models.deleteImage(m.id))}
+                    >Delete</button
+                  >
+                {:else}
+                  <button class="btn" onclick={() => void onLocal(() => models.downloadImage(m.id))}
+                    >Download</button
+                  >
+                {/if}
+              </div>
+            {/each}
+            <p class="hint">
+              Quantized weights, run on this computer. Download the engine and the model first. A
+              picture at 512 pixels can take a few minutes.
             </p>
           {:else}
             <label class="setting">
-              <span>API key</span>
-              <input
-                type="password"
-                bind:value={keys.image}
-                autocomplete="off"
-                spellcheck="false"
-              />
+              <span>Model</span>
+              <select bind:value={g.model}>
+                {#each OPENAI_IMAGE_MODELS as name (name)}
+                  <option value={name}>{name}</option>
+                {/each}
+              </select>
             </label>
-            {#if shared.length}
-              <p class="hint">One key serves Image and {shared.join(' and ')}.</p>
+            {#if keyed}
+              <p class="hint">
+                A key for OpenAI is stored{shared.length
+                  ? `, shared with ${shared.join(' and ')}`
+                  : ''}.
+                {#if savedImageEndpoint === endpoint}
+                  <button class="link" onclick={() => void removeKey('image')}>Remove</button>
+                {/if}
+              </p>
+            {:else}
+              <label class="setting">
+                <span>API key</span>
+                <input
+                  type="password"
+                  bind:value={keys.image}
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              {#if shared.length}
+                <p class="hint">One key serves Image and {shared.join(' and ')}.</p>
+              {/if}
             {/if}
+            <p class="hint">The prompt is sent to OpenAI, and the picture comes back.</p>
           {/if}
-          <p class="hint">The prompt is sent to OpenAI, and the picture comes back.</p>
-        {/if}
 
-        <label class="setting">
-          <span>Try a prompt</span>
-          <input bind:value={imagePrompt} spellcheck="true" />
-        </label>
-        <div class="row">
-          <button
-            class="btn"
-            disabled={makingImage || !models.settings?.image || imageUnsaved || !imagePrompt.trim()}
-            onclick={() => void tryImage()}
-          >
-            {makingImage ? 'Making…' : 'Try it'}
-          </button>
-          {#if imageTried}
-            <span class="notice">{imageTried}</span>
-          {:else if imageUnsaved}
-            <span class="notice">Try it uses what is saved, so save first.</span>
+          <label class="setting">
+            <span>Try a prompt</span>
+            <input bind:value={imagePrompt} spellcheck="true" />
+          </label>
+          <div class="row">
+            <button
+              class="btn"
+              disabled={makingImage ||
+                !models.settings?.image ||
+                imageUnsaved ||
+                !imagePrompt.trim()}
+              onclick={() => void tryImage()}
+            >
+              {makingImage ? 'Making…' : 'Try it'}
+            </button>
+            {#if imageTried}
+              <span class="notice">{imageTried}</span>
+            {:else if imageUnsaved}
+              <span class="notice">Try it uses what is saved, so save first.</span>
+            {/if}
+          </div>
+          {#if imageUrl}
+            <img class="picture" src={imageUrl} alt={imagePrompt} />
           {/if}
-        </div>
-        {#if imageUrl}
-          <img class="picture" src={imageUrl} alt={imagePrompt} />
         {/if}
-      {/if}
-    </section>
+      </section>
+    {/if}
 
     <p class="hint">
       Keys are encrypted with everything else in the vault, so they are unreadable while it is
@@ -1742,6 +1739,11 @@
   }
   .hint.lead {
     color: var(--fg-muted);
+  }
+  /* The lead says what holds on every tab, so it sits over the tabs, with the
+     same room under it as there is between the cards. */
+  .intro {
+    margin-bottom: var(--sp-6);
   }
 
   .presets {
@@ -1843,49 +1845,6 @@
   }
   .link:hover {
     text-decoration: underline;
-  }
-
-  /* The quick-ask switches. Grouped by app, and each one carries the sentence
-     that says what it sends -- which is the only thing that makes the
-     checkbox a decision rather than a shrug. */
-  .switches {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-4);
-    margin-top: var(--sp-2);
-  }
-  .group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-2);
-  }
-  .group-name {
-    color: var(--fg-subtle);
-    font-size: var(--text-xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .switch {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-2);
-    cursor: pointer;
-  }
-  .switch input {
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .switch-text {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .switch-label {
-    font-size: var(--text-sm);
-  }
-  .switch-blurb {
-    color: var(--fg-subtle);
-    font-size: var(--text-xs);
   }
 
   .row {

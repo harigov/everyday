@@ -33,7 +33,7 @@
 //! whether it was to you, subject, snippet and a 600-character excerpt of
 //! the body with quotes cut -- plus two facts from the account's own record:
 //! how long the thread is and whether you have written to the sender. The
-//! switch's own hint in Settings → Accounts says so.
+//! switch's own hint in Settings → AI features says so.
 //!
 //! The same switch and the same acknowledgement as every other mail feature
 //! gate it: `MailAiFeature::Categorize`, against

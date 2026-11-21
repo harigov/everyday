@@ -458,7 +458,10 @@
              the bottom right of a window is the most conventional gesture in
              software, and this is the feature least likely to be discovered
              by anybody hunting through a bar of grey labels. -->
-        {#if !pinned && agent.supported && !agent.open && app.section !== 'assistant'}
+        <!-- Not over Settings either: its corner is where a tab's Save is
+             pinned (see `SettingsView.svelte`'s `.save` rule), and there is
+             nothing selected on a settings page for it to ask about. -->
+        {#if !pinned && agent.supported && !agent.open && app.section !== 'assistant' && panels.settings === null}
           <button
             class="float"
             onclick={() => void agent.toggle()}

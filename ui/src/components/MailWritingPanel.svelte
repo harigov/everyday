@@ -9,6 +9,13 @@
   // when Send is pressed -- answered in `MailCompose.svelte`. The signature is
   // not here, because that is one per account and belongs with the account.
   // See `karmayoga_core::mail::writing` and `karmayoga_core::mail::learning`.
+  //
+  // Three tabs, because one column of all of it was taller than the window
+  // and put the Save in the middle of the scroll, with the learned notes --
+  // saved by their own buttons -- under it. What you say and the calendar;
+  // the checks; and learning, whose switch is part of the draft and whose
+  // notes are not. The draft is this component's, so one Save at the foot of
+  // any tab saves what was changed on all three.
 
   import { onDestroy } from 'svelte'
   import { accounts } from '../lib/accounts.svelte'
@@ -20,6 +27,7 @@
   import type { MailWriting, VoiceLearningView } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import SubTabs from './SubTabs.svelte'
 
   /** `MAX_INSTRUCTIONS_CHARS` in `crates/karmayoga-core/src/mail/writing.rs`. */
   const MAX_INSTRUCTIONS = 4_000
@@ -61,6 +69,7 @@
   let loadError = $state<string | null>(null)
   let notice = $state<string | null>(null)
   let saving = $state(false)
+  let sub = $state<'writing' | 'checks' | 'learning'>('writing')
 
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
   onDestroy(() => {
@@ -221,13 +230,25 @@
 {:else if !draft}
   <p class="hint">Loading…</p>
 {:else}
+  <SubTabs
+    tabs={[
+      { id: 'writing', label: 'How you write' },
+      { id: 'checks', label: 'Checks before sending' },
+      { id: 'learning', label: 'What it has learned' },
+    ]}
+    bind:value={sub}
+    label="Mail writing"
+  />
+
   <div class="panes">
-    <p class="hint lead">
-      How the model should sound when it writes mail for you: the three replies under a message,
-      Write with AI, rewriting what you wrote, drafts it prepares ahead, and mail the assistant
-      drafts. It already reads your sent mail for how you write. This is for what it cannot work out
-      from that.
-    </p>
+    {#if sub === 'writing'}
+      <p class="hint lead">
+        How the model should sound when it writes mail for you: the three replies under a message,
+        Write with AI, rewriting what you wrote, drafts it prepares ahead, and mail the assistant
+        drafts. It already reads your sent mail for how you write. This is for what it cannot work
+        out from that.
+      </p>
+    {/if}
 
     {#if nobodyOn}
       <p class="hint">
@@ -237,194 +258,198 @@
       </p>
     {/if}
 
-    <section>
-      <label class="eyebrow" for="writing-instructions">How you write</label>
-      <textarea
-        id="writing-instructions"
-        rows="9"
-        maxlength={MAX_INSTRUCTIONS}
-        placeholder="Short and direct, no pleasantries. I never say &quot;hope you're well&quot;. First names, always. A bit warmer with customers. I sign off &quot;Thanks&quot; with colleagues and with nothing at all with friends. No meetings before 10 or on Fridays."
-        bind:value={draft.instructions}
-      ></textarea>
-      <p class="hint">
-        In your own words. It wins over what was read from your sent mail wherever the two disagree,
-        but it cannot make up facts for you. For something true of only one account, say which
-        address.
-      </p>
-    </section>
-
-    <section>
-      <span class="eyebrow">Your calendar</span>
-      <label class="switch">
-        <input type="checkbox" bind:checked={draft.useCalendar} />
-        <span class="switch-text">
-          <span class="switch-label">Use my calendar to suggest meeting times</span>
-          <span class="switch-blurb">
-            Off until you tick it. With each suggested reply and each Write with AI, the next four
-            weeks of the calendars you show in Calendar go to the model: times and titles, never
-            descriptions or guest lists. From an account with writing help off it gets the times
-            only, so it can keep clear of them. It is told to keep what is on them to itself, and
-            you read every draft before it goes.
-          </span>
-        </span>
-      </label>
-      <p class="hint">
-        Anything with somebody else on it, or a place to be, counts as a meeting, and its time is
-        never offered. Your own events with nobody else on them, and time blocks, count as plans for
-        your day: it works around them where it can, and can use the time if nothing else fits. It
-        assumes weekdays from 9 to 5 unless you say otherwise above. If a calendar you show cannot
-        be read right now, it leaves times out rather than guess.
-      </p>
-    </section>
-
-    <section>
-      <span class="eyebrow">Your replies</span>
-      <label class="switch">
-        <input type="checkbox" bind:checked={draft.learn} />
-        <span class="switch-text">
-          <span class="switch-label">Learn from the replies I send</span>
-          <span class="switch-blurb">
-            Now and then the model reads replies you sent — the message each answered, the replies
-            it suggested if it did, and what you wrote instead — and keeps a few short notes on how
-            you reply. Everything it writes for you goes with them after that, under what you say
-            above, which wins. It reads only accounts with writing help on, on the same model.
-          </span>
-        </span>
-      </label>
-    </section>
-
-    <section>
-      <span class="eyebrow" id="writing-checks">Checks before sending</span>
-      <p class="hint">
-        When you press Send, each check switched on is put to your decision model, or to the Small
-        model when you have none switched on, along with the message. It needs writing help on for
-        the account you send from. A check that does not pass warns you, and you can still send.
-      </p>
-      {#if draft.sendChecks.length > 0}
-        <ul class="checks" aria-labelledby="writing-checks">
-          {#each draft.sendChecks as check, i (i)}
-            <li class="check">
-              <input
-                class="check-on"
-                type="checkbox"
-                bind:checked={check.on}
-                aria-label="Run check {i + 1} before sending"
-                title={check.on ? 'On: runs when you send' : 'Off: kept, but not run'}
-              />
-              <input
-                class="field"
-                class:off={!check.on}
-                bind:value={check.text}
-                maxlength={MAX_CHECK_CHARS}
-                aria-label="Check {i + 1}"
-              />
-              <button
-                class="remove"
-                aria-label="Remove this check"
-                title="Remove"
-                onclick={() => removeCheck(i)}
-              >
-                <Icon name="close" size={12} />
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-      <form
-        class="add-check"
-        onsubmit={(e) => {
-          e.preventDefault()
-          addCheck()
-        }}
-      >
-        <input
-          class="field"
-          bind:value={newCheck}
-          maxlength={MAX_CHECK_CHARS}
-          placeholder="The tone is friendly"
-          aria-label="A new check"
-          disabled={checkFull}
-        />
-        <button class="btn btn-outline" disabled={checkFull || !newCheck.trim()}>Add</button>
-      </form>
-      {#if checkFull}
-        <p class="hint">That is the most there can be: {MAX_CHECKS}.</p>
-      {:else if draft.sendChecks.length === 0}
-        <div class="suggested">
-          {#each SUGGESTED_CHECKS as suggestion (suggestion)}
-            <button class="btn btn-sm btn-outline" onclick={() => addCheck(suggestion)}>
-              <Icon name="plus" size={12} />
-              {suggestion}
-            </button>
-          {/each}
-        </div>
-      {/if}
-    </section>
-
-    <div class="save">
-      {#if notice}<span class="notice">{notice}</span>{/if}
-      <button class="btn btn-primary" onclick={() => void save()} disabled={saving}>
-        {saving ? 'Saving…' : 'Save'}
-      </button>
-    </div>
-
-    <!-- After Save, not before it, as Mail sorting's "Older mail" is: what is
-         here is saved by its own buttons, and the Save above is not for it. -->
-    <section class="card">
-      <label class="eyebrow" for="writing-learned">What it has learned</label>
-      {#if learnedError}
-        <p class="hint">What it has learned could not be read: {learnedError}</p>
-      {:else if !learned}
-        <p class="hint">Loading…</p>
-      {:else}
+    {#if sub === 'writing'}
+      <section>
+        <label class="eyebrow" for="writing-instructions">How you write</label>
         <textarea
-          id="writing-learned"
-          rows="7"
-          maxlength={MAX_NOTES}
-          placeholder="Nothing yet."
-          disabled={!learnOn || busy !== null}
-          bind:value={notes}
+          id="writing-instructions"
+          rows="9"
+          maxlength={MAX_INSTRUCTIONS}
+          placeholder="Short and direct, no pleasantries. I never say &quot;hope you're well&quot;. First names, always. A bit warmer with customers. I sign off &quot;Thanks&quot; with colleagues and with nothing at all with friends. No meetings before 10 or on Fridays."
+          bind:value={draft.instructions}
         ></textarea>
-        <p class="hint">{learnedLine}</p>
-        <div class="learned-actions">
-          <button
-            class="btn btn-sm btn-outline"
-            disabled={!canLearn || notesEdited || busy !== null}
-            title={notesEdited ? 'Save or undo your changes to the notes first' : undefined}
-            aria-busy={busy === 'learn'}
-            onclick={() => void learnNow()}
-          >
-            {busy === 'learn' ? 'Learning…' : 'Learn now'}
-          </button>
-          <button
-            class="btn btn-sm btn-outline"
-            disabled={!learnOn || !notesEdited || busy !== null}
-            onclick={() => void saveNotes()}
-          >
-            {busy === 'save' ? 'Saving…' : 'Save notes'}
-          </button>
-          <span class="spacer"></span>
-          <!-- Not held back with learning off: forgetting is what somebody
-               switching it off may well want next. -->
-          {#if learned.notes.trim()}
-            <button
-              class="btn btn-sm btn-ghost-danger"
-              disabled={busy !== null}
-              onclick={() => (forgetting = true)}
-            >
-              {busy === 'forget' ? 'Forgetting…' : 'Forget what it learned'}
-            </button>
-          {/if}
-        </div>
-        {#if !learnOn}
-          <p class="hint">
-            Learning is off, so these notes are left as they are and nothing new is learned.
-          </p>
-        {:else if !savedLearn}
-          <p class="hint">Save to switch learning on, then it can learn.</p>
+        <p class="hint">
+          In your own words. It wins over what was read from your sent mail wherever the two
+          disagree, but it cannot make up facts for you. For something true of only one account, say
+          which address.
+        </p>
+      </section>
+
+      <section>
+        <span class="eyebrow">Your calendar</span>
+        <label class="switch">
+          <input type="checkbox" bind:checked={draft.useCalendar} />
+          <span class="switch-text">
+            <span class="switch-label">Use my calendar to suggest meeting times</span>
+            <span class="switch-blurb">
+              Off until you tick it. With each suggested reply and each Write with AI, the next four
+              weeks of the calendars you show in Calendar go to the model: times and titles, never
+              descriptions or guest lists. From an account with writing help off it gets the times
+              only, so it can keep clear of them. It is told to keep what is on them to itself, and
+              you read every draft before it goes.
+            </span>
+          </span>
+        </label>
+        <p class="hint">
+          Anything with somebody else on it, or a place to be, counts as a meeting, and its time is
+          never offered. Your own events with nobody else on them, and time blocks, count as plans
+          for your day: it works around them where it can, and can use the time if nothing else
+          fits. It assumes weekdays from 9 to 5 unless you say otherwise above. If a calendar you
+          show cannot be read right now, it leaves times out rather than guess.
+        </p>
+      </section>
+    {:else if sub === 'checks'}
+      <section>
+        <span class="eyebrow" id="writing-checks">Checks before sending</span>
+        <p class="hint">
+          When you press Send, each check switched on is put to your decision model, or to the Small
+          model when you have none switched on, along with the message. It needs writing help on for
+          the account you send from. A check that does not pass warns you, and you can still send.
+        </p>
+        {#if draft.sendChecks.length > 0}
+          <ul class="checks" aria-labelledby="writing-checks">
+            {#each draft.sendChecks as check, i (i)}
+              <li class="check">
+                <input
+                  class="check-on"
+                  type="checkbox"
+                  bind:checked={check.on}
+                  aria-label="Run check {i + 1} before sending"
+                  title={check.on ? 'On: runs when you send' : 'Off: kept, but not run'}
+                />
+                <input
+                  class="field"
+                  class:off={!check.on}
+                  bind:value={check.text}
+                  maxlength={MAX_CHECK_CHARS}
+                  aria-label="Check {i + 1}"
+                />
+                <button
+                  class="remove"
+                  aria-label="Remove this check"
+                  title="Remove"
+                  onclick={() => removeCheck(i)}
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </li>
+            {/each}
+          </ul>
         {/if}
-      {/if}
-    </section>
+        <form
+          class="add-check"
+          onsubmit={(e) => {
+            e.preventDefault()
+            addCheck()
+          }}
+        >
+          <input
+            class="field"
+            bind:value={newCheck}
+            maxlength={MAX_CHECK_CHARS}
+            placeholder="The tone is friendly"
+            aria-label="A new check"
+            disabled={checkFull}
+          />
+          <button class="btn btn-outline" disabled={checkFull || !newCheck.trim()}>Add</button>
+        </form>
+        {#if checkFull}
+          <p class="hint">That is the most there can be: {MAX_CHECKS}.</p>
+        {:else if draft.sendChecks.length === 0}
+          <div class="suggested">
+            {#each SUGGESTED_CHECKS as suggestion (suggestion)}
+              <button class="btn btn-sm btn-outline" onclick={() => addCheck(suggestion)}>
+                <Icon name="plus" size={12} />
+                {suggestion}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </section>
+    {:else}
+      <section>
+        <span class="eyebrow">Your replies</span>
+        <label class="switch">
+          <input type="checkbox" bind:checked={draft.learn} />
+          <span class="switch-text">
+            <span class="switch-label">Learn from the replies I send</span>
+            <span class="switch-blurb">
+              Now and then the model reads replies you sent — the message each answered, the replies
+              it suggested if it did, and what you wrote instead — and keeps a few short notes on
+              how you reply. Everything it writes for you goes with them after that, under what you
+              say in How you write, which wins. It reads only accounts with writing help on, on the
+              same model.
+            </span>
+          </span>
+        </label>
+      </section>
+
+      <!-- A card of its own, set apart from the switch above: what is in
+           it is saved by its own buttons, and the Save at the foot of the
+           tab is not for it -- only for the switch. -->
+      <section class="card">
+        <label class="eyebrow" for="writing-learned">What it has learned</label>
+        {#if learnedError}
+          <p class="hint">What it has learned could not be read: {learnedError}</p>
+        {:else if !learned}
+          <p class="hint">Loading…</p>
+        {:else}
+          <textarea
+            id="writing-learned"
+            rows="7"
+            maxlength={MAX_NOTES}
+            placeholder="Nothing yet."
+            disabled={!learnOn || busy !== null}
+            bind:value={notes}
+          ></textarea>
+          <p class="hint">{learnedLine}</p>
+          <div class="learned-actions">
+            <button
+              class="btn btn-sm btn-outline"
+              disabled={!canLearn || notesEdited || busy !== null}
+              title={notesEdited ? 'Save or undo your changes to the notes first' : undefined}
+              aria-busy={busy === 'learn'}
+              onclick={() => void learnNow()}
+            >
+              {busy === 'learn' ? 'Learning…' : 'Learn now'}
+            </button>
+            <button
+              class="btn btn-sm btn-outline"
+              disabled={!learnOn || !notesEdited || busy !== null}
+              onclick={() => void saveNotes()}
+            >
+              {busy === 'save' ? 'Saving…' : 'Save notes'}
+            </button>
+            <span class="spacer"></span>
+            <!-- Not held back with learning off: forgetting is what somebody
+                 switching it off may well want next. -->
+            {#if learned.notes.trim()}
+              <button
+                class="btn btn-sm btn-ghost-danger"
+                disabled={busy !== null}
+                onclick={() => (forgetting = true)}
+              >
+                {busy === 'forget' ? 'Forgetting…' : 'Forget what it learned'}
+              </button>
+            {/if}
+          </div>
+          {#if !learnOn}
+            <p class="hint">
+              Learning is off, so these notes are left as they are and nothing new is learned.
+            </p>
+          {:else if !savedLearn}
+            <p class="hint">Save to switch learning on, then it can learn.</p>
+          {/if}
+        {/if}
+      </section>
+    {/if}
+  </div>
+
+  <div class="save">
+    {#if notice}<span class="notice">{notice}</span>{/if}
+    <button class="btn btn-primary" onclick={() => void save()} disabled={saving}>
+      {saving ? 'Saving…' : 'Save'}
+    </button>
   </div>
 {/if}
 

@@ -279,7 +279,7 @@ fn readable_accounts(vault: &Vault) -> CommandResult<(Vec<Account>, ModelAccess)
             CommandError::new(
                 codes::FORBIDDEN,
                 "no account has writing help switched on, so there is no mail of yours to learn \
-                 from. Turn it on in Settings \u{2192} Accounts \u{2192} Mail assistant.",
+                 from. Turn it on in Settings \u{2192} AI features \u{2192} Mail.",
             )
         })),
     }
