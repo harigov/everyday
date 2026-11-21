@@ -2528,6 +2528,18 @@
       ]
     },
     {
+      "command": "set_brief",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "routine",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "start_research",
       "events": [
         {

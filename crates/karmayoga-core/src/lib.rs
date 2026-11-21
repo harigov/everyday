@@ -82,6 +82,7 @@ pub mod agent;
 pub mod air_quality;
 pub mod backup;
 pub mod blobstore;
+pub mod brief;
 pub mod calendar;
 pub mod chat;
 pub mod completable;

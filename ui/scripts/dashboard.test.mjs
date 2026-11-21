@@ -95,7 +95,9 @@ for (const size of WIDGET_SIZES) {
 // ── the page a vault starts on ─────────────────────────────────────────
 
 const start = defaultLayout()
-ok('the default page is short enough to read', start.length <= 8)
+// Nine since the brief went on top of the eight home cards: it is the one
+// card that is a reading of the others rather than another thing to read.
+ok('the default page is short enough to read', start.length <= 9)
 check(
   'every default widget is a real one',
   start.filter((w) => !WIDGET_TYPES.includes(w.type)),
@@ -290,9 +292,10 @@ check(
 // twenty-two since the home cards -- today's tasks, today's events, and the
 // three Inbox cards, each a read of its own so a page with one of them does
 // not decrypt the other two's threads. The three shelf cards share `going`.
+// Twenty-four since the brief, whose one need is the briefs store's own load.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 23,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 24,
 )
 check(
   'the three shelf cards share one read with "What\'s going on"',
@@ -319,6 +322,19 @@ check(
   false,
 )
 ok('the reading card has a size it offers', WIDGETS.reading.sizes.includes(WIDGETS.reading.size))
+
+// The brief card asks for the briefs and nothing else -- its counts and its
+// timeline are drawn from the digest the brief was written from, not from
+// another read of the calendar or the Inbox.
+check('the brief card asks only for the briefs', [...needsOf(addWidget([], 'brief'))], ['brief'])
+check(
+  'a page without it asks nothing of the briefs',
+  [...needsOf(defaultLayout().filter((w) => w.type !== 'brief'))].includes('brief'),
+  false,
+)
+check('the brief opens the default page', defaultLayout()[0]?.type, 'brief')
+check('...across the whole width', fillRows(defaultLayout()).get('brief:1'), 6)
+check('the brief is never narrow', WIDGETS.brief.sizes.includes('small'), false)
 check(
   'a stored page keeps the reading card',
   ids(parseLayout(JSON.stringify([{ id: 'r', type: 'reading', size: 'large' }]))),
@@ -602,9 +618,25 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
       'readingNow',
       'watchingNow',
       'playingNow',
+      'brief',
       'whatsGoingOn',
       'areaBalance',
     ],
+  )
+  // A page that had already been shown every home card is shown the brief
+  // alone, on top -- the one card it has not seen.
+  const homed = [widget('karma'), widget('todayEvents')]
+  const seenHome = INTRODUCED.filter((t) => t !== 'brief')
+  check(
+    'the brief arrives alone on top of a page that has seen the rest',
+    ids(introduce(homed, seenHome).widgets),
+    ['brief:1', 'karma:1', 'todayEvents:1'],
+  )
+  check(
+    '...and a page that already has one is left alone',
+    introduce([widget('brief'), ...homed], seenHome).widgets.filter((w) => w.type === 'brief')
+      .length,
+    1,
   )
   check(
     'a card the page already has is not added twice',

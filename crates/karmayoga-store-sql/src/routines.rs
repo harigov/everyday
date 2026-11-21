@@ -82,7 +82,15 @@ impl RoutineStore for SqlStore {
         }
         let (where_sql, args) = w.finish();
         let mut sql = format!("SELECT id, data FROM routine_runs WHERE {where_sql}");
-        sql.push_str(" ORDER BY started_us DESC");
+        sql.push_str(" ORDER BY started_us DESC, id DESC");
+        // With nothing left to filter in Rust, the limit can be the store's
+        // too, so a long log is not unsealed only to be cut. The order above
+        // is `RunQuery::apply`'s own, ties included.
+        if query.outcomes.is_empty()
+            && let Some(limit) = query.limit
+        {
+            sql.push_str(&format!(" LIMIT {limit}"));
+        }
         let rows = self.read().records(&sql, &args)?;
         Ok(query.apply(self.collect(rows, run_aad)?))
     }

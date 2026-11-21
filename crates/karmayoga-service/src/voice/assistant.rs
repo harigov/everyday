@@ -81,6 +81,7 @@ impl VoiceAssistant for ServiceAssistant {
                 about_job: None,
                 max_steps: None,
                 tier: None,
+                read_only: false,
             })
             .await?;
             service.announce_turn(&turned, conversation, Some(origin.to_string()));

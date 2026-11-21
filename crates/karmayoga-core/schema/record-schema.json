@@ -9513,6 +9513,130 @@
           }
         ]
       },
+      "BriefKind": {
+        "description": "Which brief: before the day, or at the end of it.",
+        "oneOf": [
+          {
+            "const": "morning",
+            "description": "The day ahead, first thing.",
+            "type": "string"
+          },
+          {
+            "const": "evening",
+            "description": "How today went, and what tomorrow needs.",
+            "type": "string"
+          },
+          {
+            "const": "weekly",
+            "description": "Today and the week ahead, on Sunday mornings. On its day it takes the\nmorning brief's place: see `karmayoga_service::scheduler`.",
+            "type": "string"
+          }
+        ]
+      },
+      "BriefLength": {
+        "description": "How long a brief is. A brief is short by definition; this is how short.",
+        "oneOf": [
+          {
+            "const": "short",
+            "description": "About a minute and a half to hear.",
+            "type": "string"
+          },
+          {
+            "const": "standard",
+            "description": "About three and a half minutes.",
+            "type": "string"
+          },
+          {
+            "const": "long",
+            "description": "About seven minutes. Still under ten, which is the ceiling.",
+            "type": "string"
+          }
+        ]
+      },
+      "BriefSection": {
+        "description": "One part of a brief the person can switch on or off and put in order.\n\nA closed set, because each one is a section of the digest and a paragraph\nof guidance in the prompt, and a picture in the interface. Anything else a\nperson wants goes in their own paragraph on the routine.",
+        "oneOf": [
+          {
+            "const": "schedule",
+            "description": "The meetings and events, and the free time between them.",
+            "type": "string"
+          },
+          {
+            "const": "people",
+            "description": "Who they are meeting: who each person is, when they last met, what is\nopen between them.",
+            "type": "string"
+          },
+          {
+            "const": "tasks",
+            "description": "What is due, and what is overdue.",
+            "type": "string"
+          },
+          {
+            "const": "mail",
+            "description": "Mail waiting on a reply from them, and replies they are waiting on.",
+            "type": "string"
+          },
+          {
+            "const": "weather",
+            "description": "What the weather means for the day.",
+            "type": "string"
+          },
+          {
+            "const": "goals",
+            "description": "Where their targets stand.",
+            "type": "string"
+          },
+          {
+            "const": "tidbit",
+            "description": "One short, true, interesting thing connected to a goal.",
+            "type": "string"
+          },
+          {
+            "const": "occasions",
+            "description": "Birthdays, and people overdue a catch-up.",
+            "type": "string"
+          },
+          {
+            "const": "reading",
+            "description": "Unread stories from the Feed worth their time.",
+            "type": "string"
+          },
+          {
+            "const": "review",
+            "description": "How today went -- or, in the weekly brief, how last week went.",
+            "type": "string"
+          },
+          {
+            "const": "week",
+            "description": "The week ahead, day by day. The weekly brief's own.",
+            "type": "string"
+          }
+        ]
+      },
+      "BriefSpec": {
+        "description": "What a brief routine is set to: which brief, what it covers in what order,\nand how long it is. Held on the routine's kind.",
+        "properties": {
+          "brief": {
+            "$ref": "#/$defs/BriefKind"
+          },
+          "length": {
+            "$ref": "#/$defs/BriefLength",
+            "default": "standard"
+          },
+          "sections": {
+            "default": [],
+            "description": "In the order they appear. A section that has nothing worth saying on a\ngiven day is left out of that day's brief.",
+            "items": {
+              "$ref": "#/$defs/BriefSection"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "brief"
+        ],
+        "type": "object"
+      },
       "DeclineReason": {
         "description": "Why somebody said no. Optional, and one tap: forcing a reason is how a\nsignal stops being given.",
         "oneOf": [
@@ -10938,7 +11062,7 @@
         "type": "object"
       },
       "RoutineKind": {
-        "description": "Whose routine this is.\n\nA dream is a routine the application owns: it is made when dreaming is\nswitched on, it cannot be deleted by hand, and its instructions field is\nthe person's paragraph *added to* an app-owned prompt rather than the\nprompt itself. See `docs/plans/dreaming.md`.",
+        "description": "Whose routine this is.\n\nA dream is a routine the application owns: it is made when dreaming is\nswitched on, it cannot be deleted by hand, and its instructions field is\nthe person's paragraph *added to* an app-owned prompt rather than the\nprompt itself. See `docs/plans/dreaming.md`.\n\nA brief is the other routine the application owns: one per\n[`BriefKind`], made when it is first switched on, and its instructions are\nlikewise the person's paragraph added to the app's own prompt. What it\ncovers and how long it is ride on the kind itself -- see [`BriefSpec`] and\n`docs/plans/briefs.md`.",
         "oneOf": [
           {
             "properties": {
@@ -10965,6 +11089,19 @@
             "required": [
               "type",
               "scope"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/BriefSpec",
+            "properties": {
+              "type": {
+                "const": "brief",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
             ],
             "type": "object"
           }
@@ -11976,6 +12113,130 @@
   },
   "Routine": {
     "$defs": {
+      "BriefKind": {
+        "description": "Which brief: before the day, or at the end of it.",
+        "oneOf": [
+          {
+            "const": "morning",
+            "description": "The day ahead, first thing.",
+            "type": "string"
+          },
+          {
+            "const": "evening",
+            "description": "How today went, and what tomorrow needs.",
+            "type": "string"
+          },
+          {
+            "const": "weekly",
+            "description": "Today and the week ahead, on Sunday mornings. On its day it takes the\nmorning brief's place: see `karmayoga_service::scheduler`.",
+            "type": "string"
+          }
+        ]
+      },
+      "BriefLength": {
+        "description": "How long a brief is. A brief is short by definition; this is how short.",
+        "oneOf": [
+          {
+            "const": "short",
+            "description": "About a minute and a half to hear.",
+            "type": "string"
+          },
+          {
+            "const": "standard",
+            "description": "About three and a half minutes.",
+            "type": "string"
+          },
+          {
+            "const": "long",
+            "description": "About seven minutes. Still under ten, which is the ceiling.",
+            "type": "string"
+          }
+        ]
+      },
+      "BriefSection": {
+        "description": "One part of a brief the person can switch on or off and put in order.\n\nA closed set, because each one is a section of the digest and a paragraph\nof guidance in the prompt, and a picture in the interface. Anything else a\nperson wants goes in their own paragraph on the routine.",
+        "oneOf": [
+          {
+            "const": "schedule",
+            "description": "The meetings and events, and the free time between them.",
+            "type": "string"
+          },
+          {
+            "const": "people",
+            "description": "Who they are meeting: who each person is, when they last met, what is\nopen between them.",
+            "type": "string"
+          },
+          {
+            "const": "tasks",
+            "description": "What is due, and what is overdue.",
+            "type": "string"
+          },
+          {
+            "const": "mail",
+            "description": "Mail waiting on a reply from them, and replies they are waiting on.",
+            "type": "string"
+          },
+          {
+            "const": "weather",
+            "description": "What the weather means for the day.",
+            "type": "string"
+          },
+          {
+            "const": "goals",
+            "description": "Where their targets stand.",
+            "type": "string"
+          },
+          {
+            "const": "tidbit",
+            "description": "One short, true, interesting thing connected to a goal.",
+            "type": "string"
+          },
+          {
+            "const": "occasions",
+            "description": "Birthdays, and people overdue a catch-up.",
+            "type": "string"
+          },
+          {
+            "const": "reading",
+            "description": "Unread stories from the Feed worth their time.",
+            "type": "string"
+          },
+          {
+            "const": "review",
+            "description": "How today went -- or, in the weekly brief, how last week went.",
+            "type": "string"
+          },
+          {
+            "const": "week",
+            "description": "The week ahead, day by day. The weekly brief's own.",
+            "type": "string"
+          }
+        ]
+      },
+      "BriefSpec": {
+        "description": "What a brief routine is set to: which brief, what it covers in what order,\nand how long it is. Held on the routine's kind.",
+        "properties": {
+          "brief": {
+            "$ref": "#/$defs/BriefKind"
+          },
+          "length": {
+            "$ref": "#/$defs/BriefLength",
+            "default": "standard"
+          },
+          "sections": {
+            "default": [],
+            "description": "In the order they appear. A section that has nothing worth saying on a\ngiven day is left out of that day's brief.",
+            "items": {
+              "$ref": "#/$defs/BriefSection"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "brief"
+        ],
+        "type": "object"
+      },
       "Delivery": {
         "description": "Where a run's result goes besides the Assistant app, and whether the run\nmay reach its person while it works.\n\nEvery run is kept in the app whatever this says; this adds places. The\ndefault is none, which is every routine saved before this existed.\n\nThe email goes to the sending account's own address, always. It is the\nperson's own report reaching them, not a message to anybody else, and a\nroutine the assistant set up must not be able to point it anywhere else.",
         "properties": {
@@ -12049,7 +12310,7 @@
         ]
       },
       "RoutineKind": {
-        "description": "Whose routine this is.\n\nA dream is a routine the application owns: it is made when dreaming is\nswitched on, it cannot be deleted by hand, and its instructions field is\nthe person's paragraph *added to* an app-owned prompt rather than the\nprompt itself. See `docs/plans/dreaming.md`.",
+        "description": "Whose routine this is.\n\nA dream is a routine the application owns: it is made when dreaming is\nswitched on, it cannot be deleted by hand, and its instructions field is\nthe person's paragraph *added to* an app-owned prompt rather than the\nprompt itself. See `docs/plans/dreaming.md`.\n\nA brief is the other routine the application owns: one per\n[`BriefKind`], made when it is first switched on, and its instructions are\nlikewise the person's paragraph added to the app's own prompt. What it\ncovers and how long it is ride on the kind itself -- see [`BriefSpec`] and\n`docs/plans/briefs.md`.",
         "oneOf": [
           {
             "properties": {
@@ -12076,6 +12337,19 @@
             "required": [
               "type",
               "scope"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/BriefSpec",
+            "properties": {
+              "type": {
+                "const": "brief",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
             ],
             "type": "object"
           }
@@ -12286,6 +12560,1019 @@
   },
   "RoutineRun": {
     "$defs": {
+      "Brief": {
+        "description": "A brief, as kept on the run that wrote it.",
+        "properties": {
+          "day": {
+            "description": "The day it was made on, in the person's zone.",
+            "format": "date",
+            "type": "string"
+          },
+          "digest": {
+            "$ref": "#/$defs/BriefDigest",
+            "description": "What it was written from: what the interface draws the pictures from."
+          },
+          "headline": {
+            "description": "The shape of the day, in one sentence.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/BriefKind"
+          },
+          "parts": {
+            "default": [],
+            "description": "The written brief, a section at a time, in the order written.",
+            "items": {
+              "$ref": "#/$defs/BriefPart"
+            },
+            "type": "array"
+          },
+          "spoken": {
+            "default": "",
+            "description": "The same brief, written to be heard.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "day",
+          "headline",
+          "digest"
+        ],
+        "type": "object"
+      },
+      "BriefBlock": {
+        "description": "Time the person set aside.",
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "purpose": {
+            "default": "",
+            "description": "The goal or area it is for, by name.",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "start",
+          "end"
+        ],
+        "type": "object"
+      },
+      "BriefDay": {
+        "description": "One day of the week ahead, for the weekly brief.",
+        "properties": {
+          "allDay": {
+            "default": [],
+            "description": "All-day events: a trip, a holiday.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "date": {
+            "default": null,
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "due": {
+            "default": [],
+            "description": "Titles of the tasks due that day.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "events": {
+            "default": [],
+            "description": "The day's timed events in order, at most [`MAX_DAY_EVENTS`].",
+            "items": {
+              "$ref": "#/$defs/BriefDayEvent"
+            },
+            "type": "array"
+          },
+          "meetings": {
+            "default": 0,
+            "description": "Timed, busy events, and the minutes they take.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "minutes": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "BriefDayEvent": {
+        "description": "An event on a day of the week ahead.",
+        "properties": {
+          "color": {
+            "default": "",
+            "type": "string"
+          },
+          "end": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "guests": {
+            "default": 0,
+            "description": "How many people besides the person are on it.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "location": {
+            "default": "",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "start",
+          "end"
+        ],
+        "type": "object"
+      },
+      "BriefDigest": {
+        "description": "What a brief is written from, kept with it so the interface can draw from\nthe same facts the words were written from.\n\nEvery list is capped -- see [`MAX_ITEMS`] -- and every field defaults, so a\nbrief kept by an older build still reads.",
+        "properties": {
+          "activeGoals": {
+            "default": [],
+            "description": "The person's active goals by name, which a tidbit is about.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ahead": {
+            "default": null,
+            "description": "The day the schedule, people, tasks and weather are about: today in\nthe morning and the weekly brief, tomorrow in the evening.",
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blocks": {
+            "default": [],
+            "description": "Time they set aside for themselves that day.",
+            "items": {
+              "$ref": "#/$defs/BriefBlock"
+            },
+            "type": "array"
+          },
+          "day": {
+            "default": null,
+            "description": "Today, in the person's zone.",
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "done": {
+            "default": [],
+            "description": "Finished today, for the evening's review.",
+            "items": {
+              "$ref": "#/$defs/BriefTask"
+            },
+            "type": "array"
+          },
+          "due": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/BriefTask"
+            },
+            "type": "array"
+          },
+          "events": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/BriefEvent"
+            },
+            "type": "array"
+          },
+          "firstName": {
+            "default": "",
+            "type": "string"
+          },
+          "free": {
+            "default": [],
+            "description": "Gaps of [`MIN_FREE_MINUTES`] or more between eight and eight.",
+            "items": {
+              "$ref": "#/$defs/FreeStretch"
+            },
+            "type": "array"
+          },
+          "gaps": {
+            "default": [],
+            "description": "Why a section the person asked for has nothing in it: no location set\nfor the weather, no mail account the assistant may read. For the\ninterface; the model is told too, so it does not apologise for it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "goals": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/BriefGoal"
+            },
+            "type": "array"
+          },
+          "karmaToday": {
+            "default": null,
+            "description": "Today's Karma so far, for the evening's review.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/BriefKind",
+            "default": "morning"
+          },
+          "madeAt": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mail": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/BriefThread"
+            },
+            "type": "array"
+          },
+          "met": {
+            "default": [],
+            "description": "The meetings today that have happened, for the evening's review.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "occasions": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/BriefOccasion"
+            },
+            "type": "array"
+          },
+          "overdue": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/BriefTask"
+            },
+            "type": "array"
+          },
+          "overdueCount": {
+            "default": 0,
+            "description": "All of them, not just the ones listed.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "people": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/BriefPerson"
+            },
+            "type": "array"
+          },
+          "previous": {
+            "default": null,
+            "description": "The last brief's headline and tidbit, so today's does not repeat it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sections": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/BriefSection"
+            },
+            "type": "array"
+          },
+          "stories": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/BriefStory"
+            },
+            "type": "array"
+          },
+          "unreadImportant": {
+            "default": 0,
+            "description": "Unread Priority and Important threads, across the accounts read.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "until": {
+            "default": null,
+            "description": "The weekly brief's last day: it looks from `day` to here.",
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "weather": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/BriefWeather"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "week": {
+            "default": [],
+            "description": "The weekly brief's days after today, one each.",
+            "items": {
+              "$ref": "#/$defs/BriefDay"
+            },
+            "type": "array"
+          },
+          "zone": {
+            "default": "",
+            "description": "The person's zone, as an IANA name.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "BriefEvent": {
+        "description": "One event on the calendar.",
+        "properties": {
+          "allDay": {
+            "default": false,
+            "type": "boolean"
+          },
+          "busy": {
+            "default": false,
+            "description": "Whether it holds the time. A \"free\" event is drawn faintly.",
+            "type": "boolean"
+          },
+          "calendar": {
+            "default": "",
+            "type": "string"
+          },
+          "calendarId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "clash": {
+            "default": false,
+            "description": "Whether it overlaps another busy event.",
+            "type": "boolean"
+          },
+          "color": {
+            "default": "",
+            "description": "The calendar's own colour, for the timeline.",
+            "type": "string"
+          },
+          "end": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "guests": {
+            "default": [],
+            "description": "Everybody on it but the person, by name where there is one.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "location": {
+            "default": "",
+            "type": "string"
+          },
+          "organizer": {
+            "default": "",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "video": {
+            "default": false,
+            "description": "Whether it has a video call link.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "calendarId",
+          "title",
+          "start",
+          "end"
+        ],
+        "type": "object"
+      },
+      "BriefGoal": {
+        "description": "Where one of the person's targets stands.",
+        "properties": {
+          "aim": {
+            "description": "The minimum, or for a limit the maximum.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "color": {
+            "default": "",
+            "type": "string"
+          },
+          "from": {
+            "format": "date",
+            "type": "string"
+          },
+          "icon": {
+            "default": "",
+            "type": "string"
+          },
+          "limit": {
+            "default": false,
+            "description": "Whether it is a limit rather than something to reach.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "onPace": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "standing": {
+            "description": "\"short\", \"within\" or \"over\".",
+            "type": "string"
+          },
+          "target": {
+            "description": "The target in words: \"at least 3 days a week\".",
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "type": "string"
+          },
+          "trackerId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "value": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "trackerId",
+          "name",
+          "target",
+          "value",
+          "from",
+          "to",
+          "standing"
+        ],
+        "type": "object"
+      },
+      "BriefKind": {
+        "description": "Which brief: before the day, or at the end of it.",
+        "oneOf": [
+          {
+            "const": "morning",
+            "description": "The day ahead, first thing.",
+            "type": "string"
+          },
+          {
+            "const": "evening",
+            "description": "How today went, and what tomorrow needs.",
+            "type": "string"
+          },
+          {
+            "const": "weekly",
+            "description": "Today and the week ahead, on Sunday mornings. On its day it takes the\nmorning brief's place: see `karmayoga_service::scheduler`.",
+            "type": "string"
+          }
+        ]
+      },
+      "BriefNoteRef": {
+        "description": "A meeting note, named and quoted.",
+        "properties": {
+          "day": {
+            "format": "date",
+            "type": "string"
+          },
+          "excerpt": {
+            "default": "",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "day"
+        ],
+        "type": "object"
+      },
+      "BriefOccasion": {
+        "description": "A birthday coming, or somebody overdue a catch-up.",
+        "properties": {
+          "circle": {
+            "default": "",
+            "type": "string"
+          },
+          "date": {
+            "description": "The birthday's day; absent for a catch-up.",
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "daysOver": {
+            "default": 0,
+            "description": "For a catch-up, how many days past due.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "lastContact": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "what": {
+            "$ref": "#/$defs/OccasionKind"
+          }
+        },
+        "required": [
+          "name",
+          "what"
+        ],
+        "type": "object"
+      },
+      "BriefPart": {
+        "description": "One section of a written brief.",
+        "properties": {
+          "body": {
+            "description": "Markdown.",
+            "type": "string"
+          },
+          "section": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/BriefSection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which section this is, when the model said so. `None` for a paragraph\nbefore the first heading, or a heading it made up."
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "body"
+        ],
+        "type": "object"
+      },
+      "BriefPerson": {
+        "description": "Somebody the person is meeting, and what is known about them.",
+        "properties": {
+          "circle": {
+            "default": "",
+            "type": "string"
+          },
+          "company": {
+            "default": "",
+            "type": "string"
+          },
+          "email": {
+            "default": "",
+            "type": "string"
+          },
+          "lastContact": {
+            "default": null,
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastNote": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/BriefNoteRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The most recent meeting note with them."
+          },
+          "meetings": {
+            "default": [],
+            "description": "The meetings they are on, by title, in time order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "nextAt": {
+            "default": null,
+            "description": "When the first of those starts.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relationship": {
+            "default": "",
+            "description": "From their card on the Contacts shelf, when they have one.",
+            "type": "string"
+          },
+          "waitingOnYou": {
+            "default": false,
+            "description": "Whether a thread from them is waiting on a reply.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "BriefSection": {
+        "description": "One part of a brief the person can switch on or off and put in order.\n\nA closed set, because each one is a section of the digest and a paragraph\nof guidance in the prompt, and a picture in the interface. Anything else a\nperson wants goes in their own paragraph on the routine.",
+        "oneOf": [
+          {
+            "const": "schedule",
+            "description": "The meetings and events, and the free time between them.",
+            "type": "string"
+          },
+          {
+            "const": "people",
+            "description": "Who they are meeting: who each person is, when they last met, what is\nopen between them.",
+            "type": "string"
+          },
+          {
+            "const": "tasks",
+            "description": "What is due, and what is overdue.",
+            "type": "string"
+          },
+          {
+            "const": "mail",
+            "description": "Mail waiting on a reply from them, and replies they are waiting on.",
+            "type": "string"
+          },
+          {
+            "const": "weather",
+            "description": "What the weather means for the day.",
+            "type": "string"
+          },
+          {
+            "const": "goals",
+            "description": "Where their targets stand.",
+            "type": "string"
+          },
+          {
+            "const": "tidbit",
+            "description": "One short, true, interesting thing connected to a goal.",
+            "type": "string"
+          },
+          {
+            "const": "occasions",
+            "description": "Birthdays, and people overdue a catch-up.",
+            "type": "string"
+          },
+          {
+            "const": "reading",
+            "description": "Unread stories from the Feed worth their time.",
+            "type": "string"
+          },
+          {
+            "const": "review",
+            "description": "How today went -- or, in the weekly brief, how last week went.",
+            "type": "string"
+          },
+          {
+            "const": "week",
+            "description": "The week ahead, day by day. The weekly brief's own.",
+            "type": "string"
+          }
+        ]
+      },
+      "BriefStory": {
+        "description": "An unread story.",
+        "properties": {
+          "publishedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "storyId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "storyId",
+          "title",
+          "source",
+          "publishedAt"
+        ],
+        "type": "object"
+      },
+      "BriefTask": {
+        "description": "A task, as a brief mentions it.",
+        "properties": {
+          "due": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dueTime": {
+            "format": "partial-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimateMinutes": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "priority": {
+            "$ref": "#/$defs/Priority",
+            "default": "none"
+          },
+          "purpose": {
+            "default": "",
+            "description": "The goal or area it is for, by name.",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "BriefThread": {
+        "description": "A mail thread worth a line.",
+        "properties": {
+          "since": {
+            "description": "How long it has waited from.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "threadId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "waiting": {
+            "$ref": "#/$defs/MailWaiting"
+          },
+          "with": {
+            "description": "Who it is from, or who it is waiting on.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId",
+          "subject",
+          "with",
+          "waiting",
+          "since"
+        ],
+        "type": "object"
+      },
+      "BriefWeather": {
+        "description": "The weather where the person lives, for the day the brief is about.",
+        "properties": {
+          "condition": {
+            "default": "",
+            "type": "string"
+          },
+          "gusts": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "high": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "low": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "now": {
+            "default": null,
+            "description": "Right now, for the morning; absent for tomorrow's.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "nowCondition": {
+            "default": "",
+            "type": "string"
+          },
+          "outlook": {
+            "default": [],
+            "description": "The weekly brief's days after today. Empty for the others.",
+            "items": {
+              "$ref": "#/$defs/BriefWeatherDay"
+            },
+            "type": "array"
+          },
+          "place": {
+            "default": "",
+            "type": "string"
+          },
+          "precipitationUnit": {
+            "default": "",
+            "type": "string"
+          },
+          "rain": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "rainChance": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sunrise": {
+            "default": "",
+            "description": "Local times, `07:12`.",
+            "type": "string"
+          },
+          "sunset": {
+            "default": "",
+            "type": "string"
+          },
+          "temperatureUnit": {
+            "default": "",
+            "description": "\"°C\", \"°F\".",
+            "type": "string"
+          },
+          "wind": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "windUnit": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "BriefWeatherDay": {
+        "description": "One day of a week's forecast.",
+        "properties": {
+          "condition": {
+            "default": "",
+            "type": "string"
+          },
+          "date": {
+            "default": "",
+            "type": "string"
+          },
+          "high": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "low": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "rainChance": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "Delivered": {
         "description": "Where a run's result was sent, or why it could not be.",
         "properties": {
@@ -12312,6 +13599,57 @@
         "enum": [
           "chat",
           "email"
+        ],
+        "type": "string"
+      },
+      "FreeStretch": {
+        "description": "A stretch of the day with nothing in it.",
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "minutes": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "minutes"
+        ],
+        "type": "object"
+      },
+      "MailWaiting": {
+        "description": "Which way a thread is waiting.",
+        "oneOf": [
+          {
+            "const": "onYou",
+            "description": "On a reply from the person.",
+            "type": "string"
+          },
+          {
+            "const": "onThem",
+            "description": "On a reply to the person: worth a nudge.",
+            "type": "string"
+          },
+          {
+            "const": "unread",
+            "description": "Unread, and filed Priority or Important.",
+            "type": "string"
+          }
+        ]
+      },
+      "OccasionKind": {
+        "enum": [
+          "birthday",
+          "catchUp"
         ],
         "type": "string"
       },
@@ -12345,11 +13683,33 @@
             "type": "string"
           }
         ]
+      },
+      "Priority": {
+        "description": "How much this matters.\n\n`None` is a real value and the default: most tasks do not deserve a\npriority, and a scheme where everything must be triaged on capture is a\nscheme people stop capturing into.",
+        "enum": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "urgent"
+        ],
+        "type": "string"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "One run of a routine.",
     "properties": {
+      "brief": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Brief"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What a brief's run wrote, taken apart: the headline, the sections, the\nspoken brief and the digest it was written from. Only a brief's run\nthat finished has one. See [`crate::brief`]."
+      },
       "conversationId": {
         "description": "The transcript. Absent for a run that never reached the model.",
         "format": "uuid",

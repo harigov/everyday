@@ -62,6 +62,7 @@
   import AiFeaturesPanel from './AiFeaturesPanel.svelte'
   import AssistantPanes from './AssistantPanes.svelte'
   import BackupPanel from './BackupPanel.svelte'
+  import BriefSettingsPanel from './BriefSettingsPanel.svelte'
   import ChatLinksPanel from './ChatLinksPanel.svelte'
   import ConnectionsPanel from './ConnectionsPanel.svelte'
   import DataPanel from './DataPanel.svelte'
@@ -182,6 +183,10 @@
     // rather than beside it, because they are its, and a flat list of eleven
     // tabs would hide that. See `AssistantPanes.svelte`.
     { id: 'routines', label: PANE_LABELS.routines, icon: 'clock', group: 'apps', sub: true },
+    // Routines too, but the application's: when each brief comes, what it
+    // covers, and where it goes. Beside Routines, which lists them and sends
+    // their Edit here.
+    { id: 'briefs', label: 'Briefs', icon: 'newspaper', group: 'apps', sub: true },
     { id: 'runs', label: PANE_LABELS.runs, icon: 'inbox', group: 'apps', sub: true },
     { id: 'memory', label: 'Memory', icon: 'sparkle', group: 'apps', sub: true },
     // A skill is managed from here, not drawn as a pane of the Assistant
@@ -251,6 +256,7 @@
         agent.supported,
     )
       .filter((t) => (t.id !== 'routines' && t.id !== 'runs') || app.supportsRoutines)
+      .filter((t) => t.id !== 'briefs' || (agent.supported && app.supportsRoutines))
       .filter((t) => t.id !== 'proposals' || app.supportsProposals)
       .filter((t) => t.id !== 'meetings' || meetings.supported)
       .filter((t) => t.id !== 'templates' || app.supportsNotes)
@@ -463,6 +469,8 @@
         <AiFeaturesPanel />
       {:else if isPane(tab)}
         <AssistantPanes pane={tab} />
+      {:else if tab === 'briefs'}
+        <BriefSettingsPanel />
       {:else if tab === 'skills'}
         <SkillsPanel />
       {:else if tab === 'chat'}

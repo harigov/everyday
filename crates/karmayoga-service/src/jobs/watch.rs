@@ -874,6 +874,7 @@ impl Look {
             about_job: None,
             max_steps: Some(steps),
             tier: Some(tier),
+            read_only: false,
             // A watch asks nobody: it is refused what it would need somebody for.
             reach: Reach::default(),
         };

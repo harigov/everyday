@@ -127,6 +127,15 @@ async fn save_routine(svc: Arc<Service>, _ctx: Ctx, args: SaveRoutine) -> Comman
     blocking(move || {
         let mut routine = args.routine;
         routine.updated_at = now;
+        // When it last ran is the scheduler's to say. A copy edited in a
+        // window since before the last run would put the old moment back, and
+        // the run it records would be due again -- a second brief, a second
+        // call.
+        if let Ok(stored) = vault.routine(routine.id)
+            && stored.last_run_at > routine.last_run_at
+        {
+            routine.last_run_at = stored.last_run_at;
+        }
         vault.save_routine(&routine)?;
         Ok(routine)
     })
@@ -188,28 +197,15 @@ async fn routine_templates(
     Ok(templates(calendars))
 }
 
-/// The five a person is offered, and why each one.
+/// The four a person is offered, and why each one. (A morning brief is not
+/// one of them any more: the briefs are the application's own, switched on in
+/// Settings, under Briefs -- see `domains::briefs`.)
 ///
 /// A blank routine is a hard thing to write -- it is a prompt, and most people
 /// have never written one -- so the empty state is these rather than an empty
 /// box with a cursor in it.
 fn templates(calendars: bool) -> Vec<Template> {
     vec![
-        Template {
-            name: "Morning brief".into(),
-            instructions: "Look at what is due today and overdue, what is on the calendar, \
-                 and any habit or goal target I am behind on. Write me a short note called \
-                 \"Brief for <today's date>\" with the three or four things that actually \
-                 matter, and say plainly if there is nothing much on."
-                .into(),
-            trigger: Trigger::Schedule {
-                at: time(7, 0, 0, 0),
-                days: Weekday::WEEKDAYS.to_vec(),
-                day_of_month: None,
-            },
-            note: "What is on today, before you open anything.".into(),
-            available: true,
-        },
         Template {
             name: "Weekly review".into(),
             instructions: "Look back over the last seven days: where the time went by area, \

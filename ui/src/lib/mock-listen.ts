@@ -30,6 +30,16 @@ const ARTICLE = [
   'A second vote is expected next month.',
 ]
 
+/** What a daily brief says, as it was written to be heard. */
+const DAILY_BRIEF = [
+  "Good morning. It's a full afternoon after a quiet morning, and the grant report is due by five.",
+  'Three things matter today.',
+  'First, the Acme renewal at two, with Priya. She is still waiting on your reply about the terms.',
+  'Second, the dentist at a quarter to three clashes with the renewal, so move one of them.',
+  'Third, the grant report: you set aside half past ten for it.',
+  'It will rain from mid-afternoon, so take an umbrella. Have a good day.',
+]
+
 /** How long a sentence takes to say, before the speed: a pause for breath and
  *  a little per word. */
 const SENTENCE_MS = 300
@@ -65,6 +75,7 @@ export function mockListenSpeed(): number | null {
 }
 
 function sentencesFor(source: ListenSource): string[] {
+  if (source.type === 'brief') return DAILY_BRIEF
   return source.type === 'mailThread' ? BRIEFING : ARTICLE
 }
 

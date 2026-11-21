@@ -264,9 +264,17 @@ fn pictures_said(n: usize) -> String {
 /// is calling about what, the result, anything left waiting, and that they
 /// can ask about it. Written as speech; the voice reads it as it reads a
 /// reply, so the result's own Markdown is fine.
+///
+/// A brief has its own spoken version, written to be heard, and says that
+/// instead of its written one.
 pub(crate) fn spoken(name: &str, run: &RoutineRun, waiting: usize) -> String {
     let mut out = format!("This is your {}.", name.trim().trim_end_matches('.'));
-    let said = run.summary.trim();
+    let said = run
+        .brief
+        .as_deref()
+        .map(|b| b.spoken.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(run.summary.trim());
     if !said.is_empty() {
         out.push_str("\n\n");
         out.push_str(said);

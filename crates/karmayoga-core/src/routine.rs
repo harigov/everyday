@@ -25,6 +25,7 @@
 //! running six hours late or saying nothing at all. A laptop shut for a week
 //! shows one honest row per morning instead of seven briefs at once.
 
+use crate::brief::{Brief, BriefKind, BriefSpec};
 use crate::id::{AccountId, AreaId, ChatLinkId, RoutineId, RoutineRunId};
 use crate::timestamped::Timestamped;
 use crate::{ConversationId, Error, Result};
@@ -40,6 +41,10 @@ pub const MAX_INSTRUCTIONS_BYTES: usize = 8_000;
 
 /// Longest a routine's name may be.
 pub const MAX_NAME_BYTES: usize = 200;
+
+/// The most steps a brief takes unless somebody says otherwise: one to write,
+/// and a few reads before it.
+pub const BRIEF_STEPS: u32 = 8;
 
 /// How long after its moment a routine will still run, when nothing else is
 /// said. An hour: long enough to survive a laptop opened after breakfast,
@@ -265,7 +270,13 @@ pub enum Due {
 /// switched on, it cannot be deleted by hand, and its instructions field is
 /// the person's paragraph *added to* an app-owned prompt rather than the
 /// prompt itself. See `docs/plans/dreaming.md`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// A brief is the other routine the application owns: one per
+/// [`BriefKind`], made when it is first switched on, and its instructions are
+/// likewise the person's paragraph added to the app's own prompt. What it
+/// covers and how long it is ride on the kind itself -- see [`BriefSpec`] and
+/// `docs/plans/briefs.md`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum RoutineKind {
@@ -274,17 +285,48 @@ pub enum RoutineKind {
     Dream {
         scope: DreamScope,
     },
+    Brief(BriefSpec),
 }
 
 impl RoutineKind {
-    pub fn is_dream(self) -> bool {
+    pub fn is_dream(&self) -> bool {
         matches!(self, RoutineKind::Dream { .. })
     }
 
-    pub fn dream_scope(self) -> Option<DreamScope> {
+    pub fn dream_scope(&self) -> Option<DreamScope> {
         match self {
-            RoutineKind::Dream { scope } => Some(scope),
-            RoutineKind::Custom => None,
+            RoutineKind::Dream { scope } => Some(*scope),
+            _ => None,
+        }
+    }
+
+    pub fn brief(&self) -> Option<&BriefSpec> {
+        match self {
+            RoutineKind::Brief(spec) => Some(spec),
+            _ => None,
+        }
+    }
+
+    pub fn brief_kind(&self) -> Option<BriefKind> {
+        self.brief().map(|spec| spec.brief)
+    }
+
+    /// Whether the application owns this routine: a dream or a brief. Such a
+    /// routine is made only by the application, never deleted by hand, and
+    /// its instructions may be empty.
+    pub fn is_owned(&self) -> bool {
+        !matches!(self, RoutineKind::Custom)
+    }
+
+    /// Whether `other` is the same routine as far as ownership goes: both a
+    /// person's, the same dream, or the same brief -- whatever that brief
+    /// covers, which is the person's to change.
+    pub fn same_owner(&self, other: &RoutineKind) -> bool {
+        match (self, other) {
+            (RoutineKind::Custom, RoutineKind::Custom) => true,
+            (RoutineKind::Dream { scope: a }, RoutineKind::Dream { scope: b }) => a == b,
+            (RoutineKind::Brief(a), RoutineKind::Brief(b)) => a.brief == b.brief,
+            _ => false,
         }
     }
 }
@@ -491,6 +533,28 @@ impl Routine {
         routine
     }
 
+    /// The application-owned routine for one brief, as first created when it
+    /// is switched on. See `Vault::set_brief`.
+    ///
+    /// At the kind's own time on its own days (every day, or Sundays for the
+    /// weekly brief), covering the kind's default
+    /// sections, at a standard length; instructions empty (the person's
+    /// paragraph), eight steps at most -- a brief reads a few things and
+    /// writes once -- and disabled until `set_brief` turns it on.
+    pub fn brief(kind: BriefKind) -> Self {
+        let trigger = Trigger::Schedule {
+            at: kind.default_time(),
+            days: kind.default_days(),
+            day_of_month: None,
+        };
+        let mut routine = Routine::new(kind.name(), "", trigger);
+        routine.grace_minutes = kind.default_grace_minutes();
+        routine.kind = RoutineKind::Brief(BriefSpec::new(kind));
+        routine.max_steps = Some(BRIEF_STEPS);
+        routine.enabled = false;
+        routine
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(Error::Invalid("a routine needs a name".into()));
@@ -500,10 +564,11 @@ impl Routine {
                 "a routine's name must be under {MAX_NAME_BYTES} bytes"
             )));
         }
-        // A person's routine is a prompt and needs one. A dream's is the
-        // app's own prompt with the person's paragraph merely appended --
-        // see `crate::dream::instructions` -- so an empty box beside it is
-        // not an empty routine.
+        // A person's routine is a prompt and needs one. A dream's or a
+        // brief's is the app's own prompt with the person's paragraph merely
+        // appended -- see `crate::dream::instructions` and
+        // `crate::brief::instructions` -- so an empty box beside it is not an
+        // empty routine.
         if matches!(self.kind, RoutineKind::Custom) && self.instructions.trim().is_empty() {
             return Err(Error::Invalid(
                 "a routine needs instructions: what should it do when it runs?".into(),
@@ -520,6 +585,34 @@ impl Routine {
         // morning.
         if self.kind.is_dream() && (!self.delivery.is_empty() || self.delivery.ask) {
             return Err(Error::Invalid("a dream's results stay in the Assistant app".into()));
+        }
+        if let Some(spec) = self.kind.brief() {
+            spec.validate()?;
+            // A brief tells; it has nothing to ask, and every question would
+            // hold up the morning's brief until it was answered.
+            if self.delivery.ask {
+                return Err(Error::Invalid(
+                    "a brief does not ask questions while it works; turn asking off".into(),
+                ));
+            }
+            if !self.trigger.is_clock() && self.trigger != Trigger::Manual {
+                return Err(Error::Invalid(
+                    "a brief runs at a time of day, or only when asked".into(),
+                ));
+            }
+            // A weekly brief takes the morning brief's place on its days, so
+            // "every day" would quietly end the morning brief.
+            if spec.brief == BriefKind::Weekly
+                && let Trigger::Schedule { days, day_of_month, .. } = &self.trigger
+                && day_of_month.is_none()
+                && (days.is_empty() || days.len() == Weekday::ALL.len())
+            {
+                return Err(Error::Invalid(
+                    "a weekly brief runs on chosen days -- Sunday, say -- not every day; for \
+                     every day, use the morning brief"
+                        .into(),
+                ));
+            }
         }
         if let Trigger::Schedule { day_of_month: Some(dom), .. } = &self.trigger
             && !(1..=28).contains(dom)
@@ -600,6 +693,16 @@ impl Routine {
         } else {
             Due::Missed { slot }
         }
+    }
+
+    /// Whether this routine's schedule has a slot on `day` at all -- switched
+    /// on, on the clock, and the day one of its days. What lets the weekly
+    /// brief take the morning brief's place on its day.
+    pub fn runs_on(&self, day: jiff::civil::Date) -> bool {
+        let Trigger::Schedule { days, day_of_month, .. } = &self.trigger else { return false };
+        self.enabled
+            && day_of_month.is_none_or(|dom| day.day() == dom as i8)
+            && (days.is_empty() || days.contains(&Weekday::from_civil(day.weekday())))
     }
 
     /// The next moment this routine will want running, strictly after `now`.
@@ -728,6 +831,11 @@ pub struct RoutineRun {
     /// routine's [`Delivery`] named, each saying whether it got there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delivered: Vec<Delivered>,
+    /// What a brief's run wrote, taken apart: the headline, the sections, the
+    /// spoken brief and the digest it was written from. Only a brief's run
+    /// that finished has one. See [`crate::brief`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<Box<Brief>>,
 }
 
 impl RoutineRun {
@@ -747,6 +855,7 @@ impl RoutineRun {
             seen: false,
             steps: 0,
             delivered: Vec::new(),
+            brief: None,
         }
     }
 

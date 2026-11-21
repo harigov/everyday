@@ -18,22 +18,29 @@
   // every combination tiles without a hole -- see `dashboard.ts`. Below a
   // narrow width it collapses to three columns and then to one, because a
   // two-column card in a 320px pane is not a card, it is a sliver.
+  //
+  // The grid is one of two pages. The other is the newest brief, written
+  // out in full with its timeline and figures (`BriefView`) -- reached from
+  // the switch in the header, or the brief card's Read. The week, Add and
+  // Arrange are the grid's and are not drawn over the brief.
 
   import { dismissable } from '../lib/dismiss'
   import { fillRows, specOf, SPAN, type Widget, type WidgetType } from '../lib/dashboard'
   import { friendlyDate } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import { overview } from '../lib/overview.svelte'
+  import { overview, type OverviewPage } from '../lib/overview.svelte'
   import { panels } from '../lib/panels.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { todayIso } from '../lib/time'
   import AddWidgetDialog from './AddWidgetDialog.svelte'
+  import BriefView from './BriefView.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import LogReading from './LogReading.svelte'
   import NeedsAttention from './NeedsAttention.svelte'
   import OverviewWidget from './OverviewWidget.svelte'
+  import SubTabs from './SubTabs.svelte'
   import WidgetCard from './WidgetCard.svelte'
 
   // Loaded when the view appears rather than when the store is imported, so
@@ -79,9 +86,25 @@
     }
   })
 
+  const PAGES: { id: OverviewPage; label: string }[] = [
+    { id: 'home', label: 'Home' },
+    { id: 'brief', label: 'Brief' },
+  ]
+
+  /** The grid is on screen, rather than the brief. */
+  const home = $derived(overview.page === 'home')
+
+  // A card picked from the catalogue has nowhere to go once the grid is
+  // gone, so leaving Home lets go of it.
+  $effect(() => {
+    if (!home) placing = null
+  })
+
   const today = todayIso()
   /** Does anything on the page care which week is showing? */
-  const weekly = $derived(overview.widgets.some((w) => specOf(w.type).needs.includes('balance')))
+  const weekly = $derived(
+    home && overview.widgets.some((w) => specOf(w.type).needs.includes('balance')),
+  )
 
   const weekLabel = $derived(
     overview.thisWeek
@@ -189,8 +212,18 @@
       <h1 class="pane-title">Overview</h1>
       <span class="pane-sub">
         {#if weekly}{weekLabel}{/if}
-        {#if overview.loading}{#if weekly}·{/if} loading…{/if}
+        {#if home && overview.loading}{#if weekly}·{/if} loading…{/if}
       </span>
+    </div>
+
+    <!-- Between the title and the tools, with as much room on each side, so
+         it stays put when the tools on its right come and go with the page. -->
+    <div class="pages">
+      <SubTabs
+        tabs={PAGES}
+        bind:value={() => overview.page, (v: OverviewPage) => (overview.page = v)}
+        label="Overview pages"
+      />
     </div>
 
     <div class="tools">
@@ -230,19 +263,21 @@
         </div>
       {/if}
 
-      <button class="btn" aria-haspopup="dialog" onclick={() => (adding = true)}>
-        <Icon name="plus" size={14} /> Add
-      </button>
+      {#if home}
+        <button class="btn" aria-haspopup="dialog" onclick={() => (adding = true)}>
+          <Icon name="plus" size={14} /> Add
+        </button>
 
-      <button
-        class="btn"
-        class:on={overview.editing}
-        aria-pressed={overview.editing}
-        onclick={() => (overview.editing = !overview.editing)}
-      >
-        <Icon name="grip" size={14} />
-        {overview.editing ? 'Done' : 'Arrange'}
-      </button>
+        <button
+          class="btn"
+          class:on={overview.editing}
+          aria-pressed={overview.editing}
+          onclick={() => (overview.editing = !overview.editing)}
+        >
+          <Icon name="grip" size={14} />
+          {overview.editing ? 'Done' : 'Arrange'}
+        </button>
+      {/if}
     </div>
   </header>
 
@@ -259,16 +294,23 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="scroll body"
-    oncontextmenu={(e) => menu.show(e, pageMenu())}
+    oncontextmenu={(e) => {
+      if (home) menu.show(e, pageMenu())
+    }}
     ondragover={(e) => {
       if (dragging) e.preventDefault()
     }}
     ondrop={() => onDrop(null)}
   >
     <!-- Above the arranged page and not part of it: drawn only while the
-         assistant is waiting on an answer. -->
-    <NeedsAttention />
-    {#if overview.widgets.length === 0}
+         assistant is waiting on an answer. Not above the brief: a brief is
+         read top to bottom, and what is waiting on you is in it already. -->
+    {#if home}
+      <NeedsAttention />
+    {/if}
+    {#if !home}
+      <BriefView />
+    {:else if overview.widgets.length === 0}
       <EmptyState lead="This page is empty, which is a thing you are allowed to do.">
         {#snippet icon()}<Icon name="compass" size={28} />{/snippet}
         {#snippet note()}
@@ -378,10 +420,24 @@
     border-bottom: 1px solid var(--border);
   }
 
+  /* As wide as the titles on the other side of the page switch, so the
+     switch sits in the middle of the bar whatever is drawn here. */
   .tools {
+    flex: 1 1 0;
+    min-width: 0;
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: var(--sp-2);
+  }
+
+  .pages {
+    flex: none;
+  }
+  /* The tabs end a settings page's heading with room under them; in a bar
+     they are one more control on its line. */
+  .bar .pages :global(.subtabs) {
+    margin-bottom: 0;
   }
 
   .btn.on {

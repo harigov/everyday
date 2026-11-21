@@ -804,6 +804,7 @@ impl Service {
             about_job,
             max_steps: None,
             tier: None,
+            read_only: false,
         })
         .await?;
         // What the tools wrote, then the thread -- the same two things, in

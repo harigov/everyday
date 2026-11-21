@@ -1385,7 +1385,11 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     icon: 'grip',
     when: () => app.screen === 'main' && app.supportsOverview,
     run: async () => {
-      if (await app.goTo('overview')) overview.editing = true
+      // Arranging is the Home page's; the Brief page has no cards to move.
+      if (await app.goTo('overview')) {
+        overview.page = 'home'
+        overview.editing = true
+      }
     },
   },
   {

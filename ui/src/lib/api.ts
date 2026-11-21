@@ -7,6 +7,7 @@
 
 import type {
   Account,
+  BriefKind,
   AccountId,
   AccountKind,
   BankAccount,
@@ -1216,6 +1217,14 @@ export const api = {
   /** How many runs nobody has looked at. The number on the app bar. */
   unseenRuns: () => call('unseenRuns', {}),
   routineTemplates: () => call('routineTemplates', {}),
+
+  /**
+   * Switch a daily brief on or off. The first time makes its routine; after
+   * that only `enabled` moves -- everything else is `saveRoutine`.
+   */
+  setBrief: (kind: BriefKind, on: boolean) => call('setBrief', { kind, on }),
+  /** What the briefs wrote, newest first: finished runs, each with its brief. */
+  briefs: (kind: BriefKind | null = null, limit = 14) => call('briefs', { kind, limit }),
 
   /**
    * Work the assistant took on in the background. See `jobs.svelte.ts`.

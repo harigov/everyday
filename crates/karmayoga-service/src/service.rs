@@ -1488,6 +1488,7 @@ impl Service {
             about_job: None,
             max_steps: None,
             tier: None,
+            read_only: false,
         })
         .await?;
         self.announce_turn(&turned, args.conversation_id, ctx.caller.origin().map(str::to_string));

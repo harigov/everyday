@@ -28,6 +28,7 @@ import { jobs } from './jobs.svelte'
 import { library } from './library.svelte'
 import { mail } from './mail.svelte'
 import { assistant } from './assistant.svelte'
+import { briefs } from './brief.svelte'
 import { meetings } from './meetings.svelte'
 import { money } from './money.svelte'
 import { applierFor, type ChangeWithIds } from './live-apply'
@@ -79,7 +80,8 @@ export const RELOAD = {
   // The one list of templates, which Settings, a journal's settings and both
   // editors read. Only once something has read it since unlock.
   templates: () => templates.liveRefresh(),
-  assistant: () => assistant.refresh(),
+  // The briefs are routines too, and a run finishing is a brief arriving.
+  assistant: () => Promise.all([assistant.refresh(), briefs.loaded ? briefs.refresh() : null]),
   // Work the assistant is doing in the background: a job moving from queued
   // to running to done, a line of progress, a cancel from another window.
   // Reloads the list and the count together, since the app bar draws one

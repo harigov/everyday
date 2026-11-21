@@ -64,16 +64,24 @@
     type Widget,
   } from '../lib/dashboard'
   import { panels } from '../lib/panels.svelte'
+  import { briefs } from '../lib/brief.svelte'
+  import { briefDay, KIND_INFO } from '../lib/brief'
+  import { listening } from '../lib/listen.svelte'
+  import { renderMarkdown } from '../lib/markdown'
   import type {
+    BriefKind,
     CalendarEvent,
     Item,
     Proposal,
+    RoutineRun,
     Story,
     Thread,
     WeatherCurrent,
     WeatherDay,
   } from '../lib/types'
   import BalanceBars from './BalanceBars.svelte'
+  import BriefStats from './BriefStats.svelte'
+  import BriefTimeline from './BriefTimeline.svelte'
   import ColumnChart from './ColumnChart.svelte'
   import Cover from './Cover.svelte'
   import HabitHeatmap from './HabitHeatmap.svelte'
@@ -760,6 +768,40 @@
     return line
   }
 
+  // ── Today's brief ────────────────────────────────────────────────────
+  //
+  // The newest brief of any kind, drawn from the briefs store the Brief page
+  // and Settings → Briefs share. The counts and the timeline are the digest
+  // the brief was written from, not another read of the calendar, so the
+  // card and the words it opens can never disagree.
+
+  const latestBrief = $derived(briefs.latest)
+
+  /** The brief "Make one now" makes when there is none: the evening one
+   *  after six, when a morning brief would be about a day nearly over. */
+  const firstKind = $derived<BriefKind>(new Date().getHours() >= 18 ? 'evening' : 'morning')
+
+  /** What the card says with no brief to show, naming when the next one
+   *  comes if one is switched on. */
+  const briefEmpty = $derived.by(() => {
+    const on = (['morning', 'evening', 'weekly'] as BriefKind[])
+      .map((k) => briefs.routineOf(k))
+      .find((r) => r?.enabled)
+    if (!on) {
+      return 'No brief yet. A brief is the day ahead in a few minutes: what matters most, who you are meeting, what is due.'
+    }
+    const when = on.when ? on.when.charAt(0).toLowerCase() + on.when.slice(1) : ''
+    return when
+      ? `No brief yet. The ${on.name.toLowerCase()} comes ${when}, or make one now.`
+      : 'No brief yet. Make one now to see what it says.'
+  })
+
+  /** Read a brief aloud in the player in the top bar, or stop if it already is. */
+  function listenToBrief(run: RoutineRun) {
+    if (briefs.isListening(run)) listening.stop()
+    else void briefs.listen(run)
+  }
+
   /** "Today: high 21°C, low 14°C, 10% chance of rain". */
   function todayLine(day: WeatherDay, unit: string): string {
     const temp = (t: number | null) => (t != null ? `${Math.round(t)}${unit}` : '—')
@@ -790,7 +832,70 @@
   </li>
 {/snippet}
 
-{#if widget.type === 'karma'}
+{#if widget.type === 'brief'}
+  {#if !briefs.enabled}
+    <p class="dim">This vault's storage does not keep routines, and a brief is one.</p>
+  {:else if latestBrief?.brief}
+    {@const run = latestBrief}
+    {@const b = latestBrief.brief}
+    {@const reading = briefs.isListening(run)}
+    <div class="brief">
+      <p class="eyebrow brief-eyebrow">{KIND_INFO[b.kind].name} · {briefDay(b.day)}</p>
+      <!-- The model's own sentence, **bold** and all: rendered, not shown
+           as the asterisks it was written with. `renderMarkdown` escapes
+           before it marks anything up. -->
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+      <div class="brief-headline">{@html renderMarkdown(b.headline)}</div>
+      <BriefStats digest={b.digest} compact />
+      {#if b.digest.sections.includes('schedule')}
+        <BriefTimeline digest={b.digest} compact />
+      {/if}
+      <div class="brief-actions">
+        <button class="btn btn-primary btn-sm" onclick={() => (overview.page = 'brief')}>
+          Read
+        </button>
+        <button
+          class="btn btn-outline btn-sm"
+          aria-pressed={reading}
+          disabled={!listening.available}
+          title={listening.available
+            ? reading
+              ? 'Stop reading it aloud'
+              : 'Hear it, as it was written to be heard'
+            : 'Reading aloud needs the desktop app, on a vault of its own'}
+          onclick={() => listenToBrief(run)}
+        >
+          <Icon name={reading ? 'stop' : 'play'} size={13} />
+          {reading ? 'Stop' : 'Listen'}
+        </button>
+      </div>
+      {#if briefs.error}<p class="footnote">{briefs.error}</p>{/if}
+    </div>
+  {:else if !briefs.loaded}
+    <p class="dim">Reading your briefs…</p>
+  {:else}
+    <p class="dim">
+      {briefs.isMaking(firstKind)
+        ? `Making your ${KIND_INFO[firstKind].name.toLowerCase()}. It takes a minute or two.`
+        : briefEmpty}
+    </p>
+    <div class="brief-actions">
+      <button
+        class="btn btn-primary btn-sm"
+        disabled={briefs.isMaking(firstKind)}
+        onclick={() => void briefs.makeNow(firstKind)}
+      >
+        {briefs.isMaking(firstKind) ? 'Making it…' : 'Make one now'}
+      </button>
+      <button class="btn btn-sm" onclick={() => panels.openSettings('briefs')}>
+        Set up briefs
+      </button>
+    </div>
+    {#if briefs.error}<p class="footnote">{briefs.error}</p>{/if}
+  {/if}
+
+  <!-- ── Karma ─────────────────────────────────────────────────────── -->
+{:else if widget.type === 'karma'}
   {#if !overview.karma}
     <p class="dim">Karma has not been worked out yet.</p>
   {:else}
@@ -1579,6 +1684,38 @@
 {/if}
 
 <style>
+  /* ── Today's brief ──────────────────────────────────────────────── */
+
+  .brief {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    min-width: 0;
+  }
+  .brief-eyebrow {
+    margin: 0;
+  }
+  /* The one sentence the brief opens on, set the way the page sets reading. */
+  .brief-headline {
+    color: var(--fg);
+    font-family: var(--font-read);
+    font-size: var(--text-lg);
+    line-height: var(--leading-snug);
+  }
+  .brief-headline :global(p) {
+    margin: 0;
+  }
+  .brief-headline :global(strong) {
+    font-weight: 650;
+  }
+  .brief-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-top: var(--sp-1);
+  }
+
   /* ── Karma ──────────────────────────────────────────────────────── */
 
   /* Laid out by the card's own width, not the window's: the same card is

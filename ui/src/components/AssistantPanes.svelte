@@ -34,8 +34,10 @@
     ordinal,
     PROPOSAL_KIND_LABELS,
   } from '../lib/dream'
+  import { isBriefRoutine } from '../lib/brief'
   import { PROPOSAL_KINDS } from '../lib/types'
   import type {
+    BriefKind,
     DeclineReason,
     ModelTier,
     Outcome,
@@ -195,9 +197,32 @@
   }
 
   // The dreams sit above the routines a person wrote, under their own
-  // heading -- see `docs/plans/dreaming.md`'s routines-pane phase.
+  // heading -- see `docs/plans/dreaming.md`'s routines-pane phase. The
+  // briefs have a heading of their own too, and no editor here: what they
+  // cover and where they go is Settings → Briefs' to say, and the routine
+  // editor would offer a name, a prompt and an "ask me" that a brief does
+  // not have. See `docs/plans/briefs.md`.
   const dreamRoutines = $derived(assistant.routines.filter((r) => r.kind?.type === 'dream'))
-  const customRoutines = $derived(assistant.routines.filter((r) => r.kind?.type !== 'dream'))
+  const briefRoutines = $derived(assistant.routines.filter(isBriefRoutine))
+  const customRoutines = $derived(
+    assistant.routines.filter((r) => r.kind?.type !== 'dream' && !isBriefRoutine(r)),
+  )
+
+  /** A brief's kind, as the pill beside its name says it. */
+  const BRIEF_PILLS: Record<BriefKind, string> = {
+    morning: 'Morning',
+    evening: 'Evening',
+    weekly: 'Weekly',
+  }
+
+  // However the editor came to be holding a brief, it is the wrong place for
+  // one: Settings → Briefs is where it is edited, so that is where it goes.
+  $effect(() => {
+    if (editing && isBriefRoutine(editing)) {
+      assistant.cancelEdit()
+      panels.openSettings('briefs')
+    }
+  })
 
   /** A routine's trigger, in words -- overriding the service's `when` for the
    *  one shape it cannot yet say. See `monthlySchedule`. */
@@ -758,6 +783,7 @@
       {:else}
         {#snippet routineCard(routine: RoutineInfo)}
           {@const isDream = routine.kind?.type === 'dream'}
+          {@const isBrief = routine.kind?.type === 'brief'}
           <article
             class="card"
             class:off={!routine.enabled}
@@ -767,6 +793,8 @@
               <span class="name">{routine.name}</span>
               {#if isDream && routine.kind?.type === 'dream'}
                 <span class="pill dream">{DREAM_SCOPE_LABELS[routine.kind.scope]}</span>
+              {:else if routine.kind?.type === 'brief'}
+                <span class="pill dream">{BRIEF_PILLS[routine.kind.brief]}</span>
               {/if}
               <span class="spacer"></span>
               <span class="dim">{whenLabel(routine)}</span>
@@ -789,13 +817,24 @@
             </header>
             {#if routine.instructions}<p class="said">{routine.instructions}</p>{/if}
             <footer class="cardfoot">
-              <button class="link" onclick={() => assistant.edit(routine)}>Edit</button>
-              <button class="link" onclick={() => void assistant.runNow(routine.id)}>
-                Run now
-              </button>
-              <button class="link" onclick={() => void assistant.toggle(routine)}>
-                {routine.enabled ? 'Switch off' : 'Switch on'}
-              </button>
+              {#if isBrief}
+                <!-- Switched on and off there too, beside what it covers:
+                     a brief is never deleted, only switched off. -->
+                <button class="link" onclick={() => panels.openSettings('briefs')}>
+                  Edit in Briefs
+                </button>
+                <button class="link" onclick={() => void assistant.runNow(routine.id)}>
+                  Run now
+                </button>
+              {:else}
+                <button class="link" onclick={() => assistant.edit(routine)}>Edit</button>
+                <button class="link" onclick={() => void assistant.runNow(routine.id)}>
+                  Run now
+                </button>
+                <button class="link" onclick={() => void assistant.toggle(routine)}>
+                  {routine.enabled ? 'Switch off' : 'Switch on'}
+                </button>
+              {/if}
               <button class="link" onclick={() => assistant.toggleExpanded(routine.id)}>
                 {assistant.expanded === routine.id ? 'Hide runs' : 'Runs'}
               </button>
@@ -850,6 +889,21 @@
           {#each dreamRoutines as routine (routine.id)}
             {@render routineCard(routine)}
           {/each}
+        {/if}
+        {#if briefRoutines.length > 0}
+          <p class="lead heading">Briefs</p>
+          <p class="lead">
+            Made by the app when a brief is switched on, and set up under
+            <button class="link" onclick={() => panels.openSettings('briefs')}>Briefs</button>.
+          </p>
+          {#each briefRoutines as routine (routine.id)}
+            {@render routineCard(routine)}
+          {/each}
+        {/if}
+        <!-- Under a heading of their own once there is one above them, or
+             they would read as more of the dreams or the briefs. -->
+        {#if customRoutines.length > 0 && (dreamRoutines.length > 0 || briefRoutines.length > 0)}
+          <p class="lead heading">Your routines</p>
         {/if}
         {#each customRoutines as routine (routine.id)}
           {@render routineCard(routine)}
