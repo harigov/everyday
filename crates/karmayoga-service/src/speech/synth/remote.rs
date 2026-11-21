@@ -3,6 +3,7 @@
 use super::{Speech, Synthesiser, nothing_to_say};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
+use crate::speech::script;
 use crate::speech::transcribe::BoxFuture;
 use crate::speech::wav;
 use std::time::Duration;
@@ -17,6 +18,24 @@ const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// that is going to answer.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How OpenAI's newer voices are asked to sound.
+///
+/// The one voice here that can be told how to say things rather than only
+/// what to say: `gpt-4o-mini-tts` and the models after it take
+/// `instructions`. Warmth and pauses are what the writing asks for already
+/// (see the core's note to a spoken turn); this asks the voice to follow it.
+const INSTRUCTIONS: &str = "Speak like a warm, friendly person talking with someone they know: \
+    relaxed and natural, never flat, with feeling that follows the words -- bright when the news \
+    is good, gentle when it is not, curious when asking. Take a breath between sentences, and a \
+    slightly longer pause between the items of a list.";
+
+/// The instructions `model` is sent: OpenAI's `gpt-` voices take them, and
+/// `tts-1` and `tts-1-hd` do not. Only ever for OpenAI's own address -- a
+/// server that copies its shape may refuse a field it does not know.
+pub fn instructions_for(model: &str) -> Option<String> {
+    model.trim().starts_with("gpt-").then(|| INSTRUCTIONS.to_string())
+}
+
 /// OpenAI's `/audio/speech`, or a server that copies its shape.
 ///
 /// `key` is `None` for a server on this machine, and the request is then sent
@@ -27,6 +46,9 @@ pub struct OpenAiSynthesiser {
     model: String,
     voice: String,
     speed: f32,
+    /// How it is asked to sound, for a voice that takes it: see
+    /// [`instructions_for`].
+    instructions: Option<String>,
 }
 
 impl OpenAiSynthesiser {
@@ -37,7 +59,20 @@ impl OpenAiSynthesiser {
         voice: impl Into<String>,
         speed: f32,
     ) -> Self {
-        Self { base_url: base_url.into(), key, model: model.into(), voice: voice.into(), speed }
+        Self {
+            base_url: base_url.into(),
+            key,
+            model: model.into(),
+            voice: voice.into(),
+            speed,
+            instructions: None,
+        }
+    }
+
+    /// The same, asked to sound as `instructions` say.
+    pub fn with_instructions(mut self, instructions: Option<String>) -> Self {
+        self.instructions = instructions;
+        self
     }
 
     fn url(&self) -> String {
@@ -72,16 +107,22 @@ impl OpenAiSynthesiser {
     }
 
     async fn speak(&self, text: &str) -> CommandResult<Speech> {
+        // A word marked with how it is said is sent as its respelling: a
+        // server reads letters, and nothing else.
+        let text = script::as_read(text);
         if text.trim().is_empty() {
             return Err(nothing_to_say());
         }
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.model,
             "input": text,
             "voice": self.voice,
             "speed": self.speed,
             "response_format": "wav",
         });
+        if let Some(instructions) = &self.instructions {
+            body["instructions"] = serde_json::Value::String(instructions.clone());
+        }
         let mut request = http::client()?.post(self.url()).timeout(REQUEST_TIMEOUT).json(&body);
         if let Some(key) = &self.key {
             request = request.bearer_auth(key);
@@ -181,6 +222,23 @@ mod tests {
         assert_eq!(body["speed"], 1.25);
         assert_eq!(body["response_format"], "wav");
         assert_eq!(captured.auth.lock().unwrap().as_deref(), Some("Bearer sk-secret"));
+    }
+
+    #[tokio::test]
+    async fn a_marked_word_is_sent_respelled_and_only_openai_voices_are_told_how_to_sound() {
+        let captured = Captured::default();
+        let base = spawn(captured.clone(), wav::encode(&[1], 24_000)).await;
+        voice(base.clone(), None).synthesise("Ask {Siobhan|shiv-AWN} now.").await.unwrap();
+        let body = captured.body.lock().unwrap().clone().unwrap();
+        assert_eq!(body["input"], "Ask shiv-awn now.");
+        assert!(body.get("instructions").is_none(), "a compatible server is sent none");
+
+        let told = OpenAiSynthesiser::new(base, None, "gpt-4o-mini-tts", "coral", 1.0)
+            .with_instructions(instructions_for("gpt-4o-mini-tts"));
+        told.synthesise("Hi.").await.unwrap();
+        let body = captured.body.lock().unwrap().clone().unwrap();
+        assert!(body["instructions"].as_str().is_some_and(|i| i.contains("warm")), "{body}");
+        assert_eq!(instructions_for("tts-1-hd"), None);
     }
 
     #[tokio::test]

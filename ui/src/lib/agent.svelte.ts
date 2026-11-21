@@ -474,6 +474,11 @@ class AgentState {
   #fold(turn: Turn, event: AgentEvent) {
     applyEvent(turn, event)
     if (event.type !== 'toolFinished') return
+    // Told how to say a word: the list Settings draws is the store's.
+    if (event.name === 'remember_pronunciation' && event.ok) {
+      void this.#reloadSettings()
+      return
+    }
     if (turn.cards.some((c) => c.callId === event.callId && c.trusted)) void this.#reloadSettings()
   }
 
@@ -513,6 +518,20 @@ class AgentState {
   /** Take `site` off the safe websites. Throws as `trustSite` does. */
   async untrustSite(site: string) {
     this.settings = await api.untrustSite(site)
+  }
+
+  /**
+   * Have every voice say `word` as `say`. Throws the backend's refusal for
+   * the pane to show. Like the safe websites, never part of `saveSettings`:
+   * the assistant can add one while the pane is open.
+   */
+  async setPronunciation(word: string, say: string) {
+    this.settings = await api.setPronunciation(word, say)
+  }
+
+  /** Let the voices say `word` their own way again. Throws as `setPronunciation` does. */
+  async removePronunciation(word: string) {
+    this.settings = await api.removePronunciation(word)
   }
 
   async loadMemories() {

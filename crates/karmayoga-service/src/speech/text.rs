@@ -22,7 +22,14 @@
 //! A fragment too short to be worth a voice's breath ("OK.") is held and
 //! joined to the sentence after it. One too long to say in a breath is cut
 //! at a comma, or failing that a space.
+//!
+//! A sentence that ended a line -- an item of a list, the end of a paragraph
+//! -- is handed out with [`LINE_END`] after it, so that the voice pauses
+//! longer there; and a `{word|respelling}` mark is kept as it was written.
+//! Both are [`script`]'s: anything that shows or keeps a sentence rather than
+//! saying it takes them off with [`script::shown`].
 
+use super::script::{self, LINE_END};
 use std::collections::VecDeque;
 
 /// A sentence shorter than this, once made speakable, is joined to the next
@@ -100,7 +107,12 @@ impl SentenceSplitter {
                 Step::Emit { end, text } if end > 0 => {
                     pos += end;
                     if !text.is_empty() {
-                        if self.repeats.front() == Some(&text) {
+                        // Whether a line ended after it can hang on how
+                        // the text arrived, and is only the pause after it.
+                        let same = |said: &String| {
+                            said.trim_end_matches(LINE_END) == text.trim_end_matches(LINE_END)
+                        };
+                        if self.repeats.front().is_some_and(same) {
                             // Said before the step was retried.
                             self.repeats.pop_front();
                         } else {
@@ -169,7 +181,14 @@ fn step(rest: &str, last: bool) -> Step {
     if body[..end].chars().count() > MAX_SENTENCE {
         end = split_point(&body[..end]);
     }
-    Step::Emit { end: lead + end, text: speakable(&body[..end]) }
+    let mut text = speakable(&body[..end]);
+    // A line ended here -- an item of a list, a paragraph -- which is a
+    // longer pause than a full stop; the mark says so to the voice, since the
+    // line break itself is left behind. See `script::pause_after`.
+    if !text.is_empty() && body[end..].trim_start_matches([' ', '\t']).starts_with(['\n', '\r']) {
+        text.push(LINE_END);
+    }
+    Step::Emit { end: lead + end, text }
 }
 
 fn starts_fence(body: &str) -> bool {
@@ -225,20 +244,31 @@ fn is_short(piece: &str) -> bool {
 /// Where to cut a piece longer than [`MAX_SENTENCE`]: after the last comma in
 /// the latter part of its first stretch, failing that at the last space, and
 /// failing that after the stretch.
+///
+/// Never inside a `{word|respelling}` mark, which cut in two would be neither
+/// a mark nor what was meant.
 fn split_point(piece: &str) -> usize {
     let limit = piece.char_indices().nth(MAX_SENTENCE).map_or(piece.len(), |(i, _)| i);
+    let marks = script::marks(piece);
+    let free = |i: usize| !marks.iter().any(|m| m.start < i && i < m.end);
     let head = &piece[..limit];
-    if let Some(i) = head.rfind(", ")
+    if let Some((i, _)) = head.rmatch_indices(", ").find(|&(i, _)| free(i))
         && i >= limit / 3
     {
         return i + 1;
     }
-    if let Some(i) = head.rfind(char::is_whitespace)
-        && i > 0
+    if let Some((i, _)) =
+        head.char_indices().rev().find(|&(i, c)| c.is_whitespace() && i > 0 && free(i))
     {
         return i;
     }
-    limit
+    // In the middle of a word, the only cut left: before a mark it would fall
+    // in, or after one that starts the piece.
+    match marks.iter().find(|m| m.start < limit && limit < m.end) {
+        Some(m) if m.start > 0 => m.start,
+        Some(m) => m.end,
+        None => limit,
+    }
 }
 
 /// What a full stop after a word amounts to.
@@ -301,20 +331,44 @@ fn dot_ends(text: &str, at: usize) -> Dot {
 /// Where the first sentence of `text` ends, in bytes, leaving out the space
 /// after it. `None` when what has arrived does not settle it, unless `last`:
 /// then whatever there is, is a sentence.
+///
+/// Never inside a `{word|respelling}` mark -- "Mt." in `{Mt. Fuji|...}` ends
+/// nothing -- and never after a `{` that more text could still close into
+/// one, which is waited for.
 fn boundary(text: &str, last: bool) -> Option<usize> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let n = chars.len();
+    let marks = script::marks(text);
+    let pending = script::unfinished_mark(text);
+    // What to do about a cut at `pos`: `None` passes over it, `Some(None)`
+    // waits for more text, `Some(Some(pos))` cuts there.
+    let decide = |pos: usize| -> Option<Option<usize>> {
+        if marks.iter().any(|m| m.start < pos && pos < m.end) {
+            return None;
+        }
+        if !last && pending.is_some_and(|open| open < pos) {
+            return Some(None);
+        }
+        Some(Some(pos))
+    };
     let mut i = 0;
     while i < n {
         let (at, c) = chars[i];
         match c {
             '\n' => {
-                if !text[..at].trim().is_empty() {
-                    return Some(at);
+                if !text[..at].trim().is_empty()
+                    && let Some(cut) = decide(at)
+                {
+                    return cut;
                 }
                 i += 1;
             }
-            '。' | '！' | '？' => return Some(at + c.len_utf8()),
+            '。' | '！' | '？' => {
+                if let Some(cut) = decide(at + c.len_utf8()) {
+                    return cut;
+                }
+                i += 1;
+            }
             '.' | '!' | '?' | '…' => {
                 let mut j = i;
                 while j < n && matches!(chars[j].1, '.' | '!' | '?' | '…') {
@@ -335,15 +389,18 @@ fn boundary(text: &str, last: bool) -> Option<usize> {
                 }
                 if chars[k].1.is_whitespace() {
                     let ends = if j - i == 1 && c == '.' { dot_ends(text, at) } else { Dot::End };
-                    match ends {
-                        Dot::End => return Some(chars[k].0),
-                        Dot::NotEnd => {}
+                    let cut = match ends {
+                        Dot::End => decide(chars[k].0),
+                        Dot::NotEnd => None,
                         Dot::Ask => match text[chars[k].0..].trim_start().chars().next() {
-                            Some(next) if next.is_uppercase() => return Some(chars[k].0),
-                            Some(_) => {}
-                            None if last => return Some(chars[k].0),
-                            None => return None,
+                            Some(next) if next.is_uppercase() => decide(chars[k].0),
+                            Some(_) => None,
+                            None if last => decide(chars[k].0),
+                            None => Some(None),
                         },
+                    };
+                    if let Some(cut) = cut {
+                        return cut;
                     }
                 }
                 i = k.max(i + 1);
@@ -826,14 +883,15 @@ mod tests {
     #[test]
     fn a_list_number_is_not_a_sentence() {
         let found = all(&["1. Eggs and some milk\n2. Bread and some butter\n"]);
-        assert_eq!(found, ["Eggs and some milk", "Bread and some butter"]);
+        assert_eq!(found, ["Eggs and some milk¶", "Bread and some butter¶"]);
     }
 
     #[test]
     fn a_newline_ends_a_sentence() {
         let (out, rest) =
             split(&["First line here is long enough\nSecond line is also long enough\nThi"]);
-        assert_eq!(out, ["First line here is long enough", "Second line is also long enough"]);
+        // Each ended a line, which the voice pauses longer after.
+        assert_eq!(out, ["First line here is long enough¶", "Second line is also long enough¶"]);
         assert_eq!(rest.as_deref(), Some("Thi"));
     }
 
@@ -907,14 +965,14 @@ mod tests {
         ]);
         assert_eq!(
             found,
-            ["Here is the code you asked for:", "That should do it.", "Anything else?"]
+            ["Here is the code you asked for:¶", "That should do it.", "Anything else?"]
         );
     }
 
     #[test]
     fn a_fence_split_across_pieces_is_skipped_too() {
         let mut splitter = SentenceSplitter::new();
-        assert_eq!(splitter.push("Look at this:\n```\nlet x"), ["Look at this:"]);
+        assert_eq!(splitter.push("Look at this:\n```\nlet x"), ["Look at this:¶"]);
         assert!(splitter.push(" = 1; // not. said. aloud.\n").is_empty());
         assert!(splitter.push("```\nDone then").is_empty());
         assert_eq!(splitter.finish().as_deref(), Some("Done then"));
@@ -923,7 +981,7 @@ mod tests {
     #[test]
     fn an_unclosed_fence_says_nothing_even_at_the_end() {
         let mut splitter = SentenceSplitter::new();
-        assert_eq!(splitter.push("Try this out now:\n```\nrm -rf"), ["Try this out now:"]);
+        assert_eq!(splitter.push("Try this out now:\n```\nrm -rf"), ["Try this out now:¶"]);
         assert_eq!(splitter.finish(), None);
     }
 
@@ -1015,9 +1073,68 @@ mod tests {
             [
                 "The first sentence is here.",
                 "The second is a bold one!",
-                "See the site for more detail?",
+                "See the site for more detail?¶",
                 "And then the end of it",
             ]
+        );
+    }
+
+    #[test]
+    fn a_mark_is_kept_whole_and_never_cut_in_two() {
+        let found = sentences("Say hi to {Siobhan|shiv-AWN} for me.");
+        assert_eq!(found, ["Say hi to {Siobhan|shiv-AWN} for me."]);
+        // Long enough to be cut, with the only spaces late on inside a mark.
+        let long = format!("{} {{Saoirse Ronan|SEER-shuh ROH-nun}} too.", "word".repeat(55));
+        for piece in sentences(&long) {
+            assert_eq!(script::marks(&piece).len(), piece.matches('{').count(), "{piece}");
+        }
+    }
+
+    #[test]
+    fn a_full_stop_inside_a_mark_ends_nothing() {
+        assert_eq!(
+            sentences("We hiked {Mt. Fuji|mount FOO-jee} today. It was cold."),
+            ["We hiked {Mt. Fuji|mount FOO-jee} today.", "It was cold."]
+        );
+        // Streamed: a mark still arriving is waited for, not cut.
+        let mut splitter = SentenceSplitter::new();
+        assert!(splitter.push("We hiked {Mt. Fu").is_empty());
+        assert_eq!(
+            splitter.push("ji|mount FOO-jee} today. And"),
+            ["We hiked {Mt. Fuji|mount FOO-jee} today."]
+        );
+        // A brace that never closes is only a brace, and does not hold the
+        // reply up for good.
+        let mut splitter = SentenceSplitter::new();
+        assert!(splitter.push("Odd {x. Yes").is_empty());
+        assert_eq!(splitter.finish().as_deref(), Some("Odd {x. Yes"));
+    }
+
+    #[test]
+    fn a_retried_step_that_now_ends_a_line_is_not_said_again() {
+        // The retry differs before the sentence (a doubled space), so it is
+        // made again -- and this time a line ends after it.
+        let mut splitter = SentenceSplitter::new();
+        assert_eq!(
+            splitter.push("Well, the dentist is at ten. Then"),
+            ["Well, the dentist is at ten."]
+        );
+        assert_eq!(
+            splitter.replace("Well,  the dentist is at ten.\nThen lunch with Sam at noon. And"),
+            ["Then lunch with Sam at noon."]
+        );
+    }
+
+    #[test]
+    fn a_line_end_is_marked_however_the_line_ended() {
+        assert_eq!(
+            sentences("You have three things today.\nFirst, the dentist at ten.  \nThen lunch."),
+            ["You have three things today.¶", "First, the dentist at ten.¶", "Then lunch."]
+        );
+        // Not between two sentences of one line.
+        assert_eq!(
+            sentences("One thing here. And another one."),
+            ["One thing here.", "And another one."]
         );
     }
 

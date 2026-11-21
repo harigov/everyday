@@ -86,6 +86,22 @@ pub struct SiteArg {
     pub site: String,
 }
 
+/// How a word is said, for `set_pronunciation`: see
+/// [`karmayoga_core::speech::Pronunciation`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PronunciationArg {
+    pub word: String,
+    pub say: String,
+}
+
+/// A word whose pronunciation `remove_pronunciation` forgets.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordArg {
+    pub word: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelTurn {
@@ -186,16 +202,21 @@ async fn save_agent_settings(
     let vault = svc.require()?;
     let settings = blocking(move || {
         // The safe websites are `trust_site`'s and `untrust_site`'s to change,
-        // and the quick asks `set_quick_ask`'s: a pane opened before either
-        // changed -- "always allow" answered in a chat, a switch flicked in
-        // another window -- would otherwise put back what it had by saving.
+        // the quick asks `set_quick_ask`'s and the pronunciations
+        // `set_pronunciation`'s: a pane opened before any changed -- "always
+        // allow" answered in a chat, a switch flicked in another window, a
+        // word the assistant was told how to say -- would otherwise put back
+        // what it had by saving.
         let mut dreaming_before = false;
         vault.update_agent_settings(|stored| {
             dreaming_before = stored.dreaming;
-            let kept =
-                (std::mem::take(&mut stored.safe_sites), std::mem::take(&mut stored.quick_asks));
+            let kept = (
+                std::mem::take(&mut stored.safe_sites),
+                std::mem::take(&mut stored.quick_asks),
+                std::mem::take(&mut stored.pronunciations),
+            );
             *stored = args.settings.clone();
-            (stored.safe_sites, stored.quick_asks) = kept;
+            (stored.safe_sites, stored.quick_asks, stored.pronunciations) = kept;
             Ok(())
         })?;
 
@@ -311,6 +332,31 @@ async fn trust_site(svc: Arc<Service>, _ctx: Ctx, args: SiteArg) -> CommandResul
 /// Take `site` off the websites the assistant may open without asking.
 async fn untrust_site(svc: Arc<Service>, _ctx: Ctx, args: SiteArg) -> CommandResult<AgentSettings> {
     svc.on_vault(move |vault| vault.untrust_site(&args.site)).await
+}
+
+/// Have every voice say `word` as `say`, and answer with the settings as
+/// stored. A word already there is said the new way -- by a voice already
+/// speaking too, from its next sentence.
+async fn set_pronunciation(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: PronunciationArg,
+) -> CommandResult<AgentSettings> {
+    let settings =
+        svc.on_vault(move |vault| vault.set_pronunciation(&args.word, &args.say)).await?;
+    svc.pronunciations().set(&settings.pronunciations);
+    Ok(settings)
+}
+
+/// Let the voices say `word` as they would by themselves again.
+async fn remove_pronunciation(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: WordArg,
+) -> CommandResult<AgentSettings> {
+    let settings = svc.on_vault(move |vault| vault.remove_pronunciation(&args.word)).await?;
+    svc.pronunciations().set(&settings.pronunciations);
+    Ok(settings)
 }
 
 /// Stop whatever the assistant is doing on a conversation.
@@ -499,6 +545,20 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SiteArg, returns: "AgentSettings",
         signature: &[("site", "string", true)],
         run: untrust_site,
+    },
+    command! {
+        name: "set_pronunciation", scope: Agent, effect: Write,
+        change: Settings / Updated,
+        args: PronunciationArg, returns: "AgentSettings",
+        signature: &[("word", "string", true), ("say", "string", true)],
+        run: set_pronunciation,
+    },
+    command! {
+        name: "remove_pronunciation", scope: Agent, effect: Write,
+        change: Settings / Updated,
+        args: WordArg, returns: "AgentSettings",
+        signature: &[("word", "string", true)],
+        run: remove_pronunciation,
     },
     command! {
         name: "list_conversations", scope: Agent, effect: Read,

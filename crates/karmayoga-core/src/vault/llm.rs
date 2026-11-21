@@ -298,13 +298,25 @@ impl Vault {
 
     /// The voice, with the key it needs -- [`Vault::speech_access`] for the
     /// card that turns the assistant's words into speech, on the same terms.
+    ///
+    /// With the person's pronunciations, which are the assistant's settings'
+    /// -- and none when this vault's backend keeps no assistant, or they
+    /// cannot be read: the voice still speaks, for Listen and a call as much
+    /// as for the assistant.
     pub fn voice_access(&self) -> Result<VoiceAccess> {
-        self.read(|u| {
+        let (config, key) = self.read(|u| {
             let models = Models::read(u.store.as_ref())?;
-            let (config, key) =
-                card_access(&models, models.settings.voice.as_ref(), ModelSlot::Voice)?;
-            Ok(VoiceAccess { config, key })
-        })
+            card_access(&models, models.settings.voice.as_ref(), ModelSlot::Voice)
+        })?;
+        let pronunciations = match self.supports_agent().then(|| self.agent_settings()) {
+            Some(Ok(settings)) => settings.pronunciations,
+            Some(Err(e)) => {
+                tracing::warn!(error = %e, "could not read how words are to be said");
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        Ok(VoiceAccess { config, key, pronunciations })
     }
 
     /// The picture model, with the key it needs -- [`Vault::speech_access`]

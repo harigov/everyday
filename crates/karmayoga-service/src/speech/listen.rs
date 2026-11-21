@@ -51,6 +51,7 @@
 
 use crate::error::CommandResult;
 use crate::speech::narrate::{Narrated, Narrator, Synthesised};
+use crate::speech::script;
 use crate::speech::synth::Synthesiser;
 use crate::speech::text::SentenceSplitter;
 use crate::speech::transcribe::BoxFuture;
@@ -431,6 +432,8 @@ impl Session {
     fn announce(&mut self, index: usize) {
         self.current = index;
         let (text, part) = self.sentences[index].clone();
+        // Shown without the line's end the splitter marked for the voice.
+        let text = script::shown(&text);
         self.emit(ListenEvent::Saying { index: index as u32, part, text });
     }
 
@@ -495,8 +498,10 @@ impl Session {
             self.flush();
         }
         self.open_part = Some(piece.part);
-        // The splitter's sentences are already made speakable.
-        for sentence in self.splitter.push(&piece.text) {
+        // The splitter's sentences are already made speakable. Said as
+        // written: what is read aloud is somebody else's writing, or a model's
+        // account of it, and has no say in how a word sounds (see `script`).
+        for sentence in self.splitter.push(&script::inert(&piece.text)) {
             self.add(sentence, piece.part);
         }
         self.know_more();

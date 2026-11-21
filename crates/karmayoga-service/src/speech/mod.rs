@@ -10,6 +10,7 @@
 //!   listening                                talking
 //!
 //!   detect      where speech starts and ends   text      writing made fit to hear
+//!                                              script    how it is said, and what is shown
 //!   utterance   one stretch of speech -> words synth     words -> audio
 //!   live        a stream -> words as they come narrate   sentences -> audio, in order
 //!   transcribe  chunks of a recording -> words
@@ -35,6 +36,7 @@ pub mod narrate;
 pub mod pcm;
 pub mod qwen;
 pub mod resample;
+pub mod script;
 pub mod synth;
 pub mod tempo;
 pub mod text;

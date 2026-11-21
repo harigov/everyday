@@ -284,6 +284,18 @@ pub struct AgentSettings {
     /// cannot take it away again by saving.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub safe_sites: Vec<String>,
+    /// How the voice says words it would otherwise say wrong -- see
+    /// [`Pronunciation`](crate::speech::Pronunciation). Here rather than with
+    /// the voice in the models' settings because they are the person's, and
+    /// outlive whichever voice is chosen; read by every voice, the Listen
+    /// button's as much as the assistant's.
+    ///
+    /// Changed only by `set_pronunciation` and `remove_pronunciation` (the
+    /// assistant's `remember_pronunciation` is the first):
+    /// `save_agent_settings` keeps whatever is stored, as it does
+    /// [`safe_sites`](Self::safe_sites).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pronunciations: Vec<crate::speech::Pronunciation>,
     /// How many model turns one request may take before the loop gives up.
     ///
     /// A ceiling rather than a target. Its job is to bound a model that has
@@ -449,6 +461,7 @@ impl Default for AgentSettings {
             confirm_destructive: true,
             confirm_web: true,
             safe_sites: Vec::new(),
+            pronunciations: Vec::new(),
             max_steps: DEFAULT_MAX_STEPS,
             remember: true,
             timezone: None,
@@ -510,6 +523,7 @@ impl AgentSettings {
             companion.validate()?;
         }
         sites::validate(&self.safe_sites)?;
+        crate::speech::validate_pronunciations(&self.pronunciations)?;
         // "Soul" rather than the field name, because this sentence is shown
         // verbatim under the box it is about, and the box is labelled Soul.
         // The routine's own identical-looking limit still says
@@ -1430,16 +1444,61 @@ macro_rules! end_voice_tool {
 /// [`SPOKEN_NOTE`], which tells the model about it, cannot name another.
 pub const END_VOICE_TOOL: &str = end_voice_tool!();
 
+/// The name of the tool a turn saves how a word is said with, as a literal
+/// for [`SPOKEN_NOTE`] to be built from.
+macro_rules! pronunciation_tool {
+    () => {
+        "remember_pronunciation"
+    };
+}
+
+/// The tool a turn saves how a word is said with -- see
+/// [`crate::speech::Pronunciation`]. Declared by the service; named here so
+/// that [`SPOKEN_NOTE`], which tells the model about it, cannot name another.
+pub const PRONUNCIATION_TOOL: &str = pronunciation_tool!();
+
 /// What a spoken turn is told about being spoken.
+///
+/// The voices read exactly what they are given, and the delivery is in the
+/// writing: a voice has no switch for warmth, only the words, the marks and
+/// the shape of the sentences. So this is mostly how a person talks rather
+/// than how a model writes. Feeling comes from words and from `!`, `?`, `…`
+/// and dashes, which every voice pauses or lifts at (the service makes sure
+/// of the pauses, whichever voice it is); stress from where a word falls,
+/// because capitals are read as letters and asterisks as nothing. A list said
+/// in one breath was the complaint that started this: items get a sentence
+/// and a line each, and a line's end is a longer pause (see
+/// `karmayoga_service::speech::script`). `{word|respelling}` is the one mark
+/// that is not plain prose; the service takes it out of everything shown and
+/// kept, and every voice says the respelling.
 const SPOKEN_NOTE: &str = concat!(
-    "The person is talking to you and your reply is read aloud by a voice. Answer the way you \
-     would out loud: a sentence or two unless they ask for more, plain words, no markdown, \
-     lists, tables, links or code. Say numbers, dates and times as a person says them. If the \
-     full answer is long, give the gist and offer the detail. What they ask you out loud to do \
-     with their tasks, calendar, library or notes -- add, finish, move, schedule, reschedule, \
-     cancel, remove, record -- they have already said yes to: do it without asking them to \
-     confirm, then say in a few words what you did. When they make clear they are done \
-     talking for now, call ",
+    "The person is talking to you and your reply is read aloud, exactly as written, by a \
+     voice. Talk the way a warm, easy-going person talks out loud, not the way you write. \
+     Keep it short: a sentence or two unless they ask for more; if the full answer is long, \
+     give the gist and offer the rest. Use contractions, everyday words and sentences of \
+     different lengths. When it fits, start with a natural reaction (\"Oh, nice!\", \"Hmm, \
+     let me see.\", \"Ah, got it.\"), but not the same one every time. Let real feeling show \
+     in your words and punctuation: an exclamation mark when you are glad for them, a \
+     question mark when you ask, an ellipsis for a thoughtful beat, a comma or a dash where \
+     a speaker would pause; warm when the news is good, gentle when it is not. To stress a \
+     word, put it at the end of a short sentence or give it one of its own (\"It's on \
+     Friday. Not Thursday.\"); never use capitals or asterisks for emphasis. A voice cannot \
+     show a list, and items said in one sentence run together, so say how many there are, \
+     then give each its own short sentence on its own line, walking through them: \"You've \
+     got three things today.\nFirst, the dentist at ten.\nThen lunch with Sam.\nAnd last, \
+     the report is due at five.\" No markdown, headings, bullets, tables, links, code or \
+     emoji. Say numbers, dates, times, amounts and abbreviations the way a person says them \
+     (\"half past two\", \"about twelve hundred dollars\"). Each time you write a name or word \
+     the voice is likely to say wrong -- an unusual name, a foreign word, a brand -- write it \
+     as {word|respelling}: the respelling in plain letters, syllables split by hyphens, the \
+     stressed one in capitals, as in {Siobhan|shiv-AWN}, {Nguyen|win} or {quinoa|KEEN-wah}. \
+     Only the word is shown on screen. Leave everyday words alone. If they tell you a word is \
+     said differently, call ",
+    pronunciation_tool!(),
+    " with how they say it. What they ask you out loud to do with their tasks, calendar, \
+     library or notes -- add, finish, move, schedule, reschedule, cancel, remove, record -- \
+     they have already said yes to: do it without asking them to confirm, then say in a few \
+     words what you did. When they make clear they are done talking for now, call ",
     end_voice_tool!(),
     " and say a short goodbye."
 );

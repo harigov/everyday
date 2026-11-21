@@ -7339,6 +7339,10 @@ export const mockInvoke = async <T>(
       const next = { ...(args.settings as AgentSettings), quickAsks: agentSettings.quickAsks }
       if (agentSettings.safeSites?.length) next.safeSites = [...agentSettings.safeSites]
       else delete next.safeSites
+      // And the pronunciations `set_pronunciation`'s.
+      if (agentSettings.pronunciations?.length)
+        next.pronunciations = agentSettings.pronunciations.map((p) => ({ ...p }))
+      else delete next.pronunciations
       agentSettings = next
       // The real one makes the three dream routines the first time dreaming
       // is turned on, and switches them with it after that.
@@ -7360,6 +7364,35 @@ export const mockInvoke = async <T>(
       const kept = (agentSettings.safeSites ?? []).filter((s) => s !== site)
       const { safeSites: _before, ...rest } = agentSettings
       agentSettings = kept.length > 0 ? { ...rest, safeSites: kept } : rest
+      return agentSettings as T
+    }
+
+    case 'set_pronunciation': {
+      requireUnlocked()
+      const word = str(args.word).trim().replace(/\s+/g, ' ')
+      const say = str(args.say).trim().replace(/\s+/g, ' ')
+      if (!/[\p{L}\p{N}]/u.test(word)) throw new Error('say which word it is')
+      if (!/^[\p{L} '’-]+$/u.test(say) || !/\p{L}/u.test(say)) {
+        throw new Error('spell how it sounds in letters, with hyphens between the syllables')
+      }
+      const others = (agentSettings.pronunciations ?? []).filter(
+        (p) => p.word.toLowerCase() !== word.toLowerCase(),
+      )
+      const at = (agentSettings.pronunciations ?? []).findIndex(
+        (p) => p.word.toLowerCase() === word.toLowerCase(),
+      )
+      const list = [...others]
+      list.splice(at < 0 ? list.length : at, 0, { word, say })
+      agentSettings = { ...agentSettings, pronunciations: list }
+      return agentSettings as T
+    }
+
+    case 'remove_pronunciation': {
+      requireUnlocked()
+      const word = str(args.word).trim().toLowerCase()
+      const kept = (agentSettings.pronunciations ?? []).filter((p) => p.word.toLowerCase() !== word)
+      const { pronunciations: _before, ...rest } = agentSettings
+      agentSettings = kept.length > 0 ? { ...rest, pronunciations: kept } : rest
       return agentSettings as T
     }
 

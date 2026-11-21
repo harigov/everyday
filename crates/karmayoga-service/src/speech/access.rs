@@ -17,7 +17,7 @@
 
 use super::detect::{Tuning, build_detector};
 use super::live::LiveTranscription;
-use super::synth::{Synthesiser, build_synthesiser};
+use super::synth::{Synthesiser, build_synthesiser_with};
 use super::utterance::{self, UtteranceTranscriber};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
@@ -99,7 +99,9 @@ impl Service {
         if multiple.is_finite() && multiple > 0.0 {
             voice.config.speed *= multiple;
         }
-        build_synthesiser(voice).await
+        let book = self.pronunciations();
+        book.set(&voice.pronunciations);
+        build_synthesiser_with(voice, book).await
     }
 
     /// Words from a stream of audio, as they are said: the chosen speech model

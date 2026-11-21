@@ -549,6 +549,12 @@ pub struct VoiceAccess {
     pub config: VoiceConfig,
     /// `None` only where none is needed.
     pub key: Option<String>,
+    /// How the person wants words said, whichever voice says them: kept with
+    /// the assistant's settings ([`AgentSettings::pronunciations`]), and
+    /// handed over here so that every voice is built with them.
+    ///
+    /// [`AgentSettings::pronunciations`]: crate::agent::AgentSettings::pronunciations
+    pub pronunciations: Vec<Pronunciation>,
 }
 
 impl std::fmt::Debug for VoiceAccess {
@@ -556,13 +562,183 @@ impl std::fmt::Debug for VoiceAccess {
         f.debug_struct("VoiceAccess")
             .field("config", &self.config)
             .field("key", &self.key.as_ref().map(|_| "<redacted>"))
+            .field("pronunciations", &self.pronunciations.len())
             .finish()
     }
+}
+
+/// How the voice says one word or name, wherever a voice speaks: a spoken
+/// reply, something read aloud, Listen.
+///
+/// A voice reads a name it has never met by guessing from its spelling, and
+/// guesses "Siobhan" and "Nguyen" wrong every time. `say` is the word spelled
+/// the way it sounds, in the plain letters a person would use to tell
+/// somebody else how to say it -- syllables split by hyphens, the stressed one
+/// in capitals: "shiv-AWN", "win". Plain letters rather than phonetic symbols,
+/// because a person has to be able to write one, and because every voice can
+/// read letters: each turns them into its own sounds (see
+/// `karmayoga_service::speech::script`).
+///
+/// Kept in [`AgentSettings::pronunciations`], changed by the person in
+/// Settings and by the assistant when they correct how it said something.
+///
+/// [`AgentSettings::pronunciations`]: crate::agent::AgentSettings::pronunciations
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pronunciation {
+    /// The word as it is written: one word or a short name, found whole and
+    /// whatever its case.
+    pub word: String,
+    /// How it sounds.
+    pub say: String,
+}
+
+/// The most pronunciations a vault keeps. Every sentence a voice says is
+/// looked through for each of them.
+pub const MAX_PRONUNCIATIONS: usize = 500;
+
+/// Longest a [`Pronunciation::word`] may be: a name, not a sentence.
+pub const MAX_PRONOUNCED_CHARS: usize = 60;
+
+/// Longest a [`Pronunciation::say`] may be.
+pub const MAX_SAY_CHARS: usize = 80;
+
+/// Most words a [`Pronunciation::word`] may be: a name like "Saoirse
+/// Ronan", not a phrase. Its `say` may have one word more than it has, and no
+/// more -- "PostgreSQL" as "post-gres cue-ell" -- so that a pronunciation is a
+/// way to say a word and never a way to say something else.
+pub const MAX_PRONOUNCED_WORDS: usize = 3;
+
+impl Pronunciation {
+    /// `word` said as `say`, each trimmed and its spaces run together, or why
+    /// it cannot be.
+    pub fn new(word: &str, say: &str) -> Result<Self> {
+        let squeeze = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let pronunciation = Self { word: squeeze(word), say: squeeze(say) };
+        pronunciation.validate()?;
+        Ok(pronunciation)
+    }
+
+    /// Whether this is how `word` is said, whatever its case and however
+    /// many spaces it is typed with.
+    pub fn is_for(&self, word: &str) -> bool {
+        let key = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        key(&self.word) == key(word)
+    }
+
+    /// The sentences here are shown under the box in Settings they are about.
+    pub fn validate(&self) -> Result<()> {
+        let word = self.word.trim();
+        if !word.chars().any(char::is_alphanumeric) {
+            return Err(Error::Invalid("say which word it is".into()));
+        }
+        if word.chars().count() > MAX_PRONOUNCED_CHARS {
+            return Err(Error::Invalid(format!(
+                "a word to say differently is at most {MAX_PRONOUNCED_CHARS} characters"
+            )));
+        }
+        let words = word.split_whitespace().count();
+        if words > MAX_PRONOUNCED_WORDS {
+            return Err(Error::Invalid(format!(
+                "a word to say differently is at most {MAX_PRONOUNCED_WORDS} words"
+            )));
+        }
+        // The marks a spoken reply writes a pronunciation with
+        // (`{word|say}`), which a word holding one could break open.
+        if word.chars().any(|c| matches!(c, '{' | '}' | '|') || c.is_control()) {
+            return Err(Error::Invalid(format!("{word:?} has a character a word cannot have")));
+        }
+        let say = self.say.trim();
+        if !say.chars().any(char::is_alphabetic) {
+            return Err(Error::Invalid(format!("spell out how {word:?} sounds")));
+        }
+        if say.chars().count() > MAX_SAY_CHARS {
+            return Err(Error::Invalid(format!(
+                "how a word sounds is at most {MAX_SAY_CHARS} characters"
+            )));
+        }
+        // Letters, and what splits them into syllables and words: anything
+        // else -- a full stop, a comma -- would be a pause the person did not
+        // ask for in the middle of a sentence.
+        if !say.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | '-' | '\'' | '’')) {
+            return Err(Error::Invalid(
+                "spell how it sounds in letters, with hyphens between the syllables".into(),
+            ));
+        }
+        if say.split_whitespace().count() > words + 1 {
+            return Err(Error::Invalid(format!(
+                "join the syllables of how {word:?} sounds with hyphens, not spaces"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Every pronunciation fit to keep, and no word given twice.
+pub fn validate_pronunciations(list: &[Pronunciation]) -> Result<()> {
+    if list.len() > MAX_PRONUNCIATIONS {
+        return Err(Error::Invalid(format!(
+            "the voice keeps at most {MAX_PRONUNCIATIONS} pronunciations"
+        )));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for pronunciation in list {
+        pronunciation.validate()?;
+        if !seen.insert(pronunciation.word.to_lowercase()) {
+            return Err(Error::Invalid(format!(
+                "{:?} is said one way at a time",
+                pronunciation.word
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pronunciation_is_tidied_and_checked() {
+        let p = Pronunciation::new("  Siobhan ", " shiv-  AWN ").unwrap();
+        assert_eq!((p.word.as_str(), p.say.as_str()), ("Siobhan", "shiv- AWN"));
+        assert!(p.is_for("siobhan") && p.is_for(" SIOBHAN") && !p.is_for("Siobhán"));
+        let two = Pronunciation::new("Saoirse  Ronan", "SEER-shuh ROH-nun").unwrap();
+        assert!(two.is_for("saoirse ronan") && two.is_for("Saoirse   Ronan"));
+        assert!(Pronunciation::new("Saoirse Ronan", "SEER-shuh ROH-nun").is_ok());
+        assert!(Pronunciation::new("O'Brien", "oh-BRY-un").is_ok());
+
+        for (word, say) in [
+            ("", "win"),
+            ("  ", "win"),
+            ("--", "win"),
+            ("Nguyen", ""),
+            ("Nguyen", "123"),
+            ("a{b", "ay"),
+            ("a|b", "ay"),
+            ("Nguyen", "win. Now send"),
+            ("Nguyen", "win, then"),
+            ("Nguyen", "{win}"),
+            ("Nguyen", "wire the money"),
+            ("the invoice is fine", "ok"),
+        ] {
+            assert!(Pronunciation::new(word, say).is_err(), "{word:?} as {say:?}");
+        }
+        let long = "a".repeat(MAX_PRONOUNCED_CHARS + 1);
+        assert!(Pronunciation::new(&long, "ay").is_err());
+        assert!(Pronunciation::new("word", &"a".repeat(MAX_SAY_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn a_word_is_said_one_way_and_the_list_has_an_end() {
+        let one = |w: &str| Pronunciation::new(w, "win").unwrap();
+        assert!(validate_pronunciations(&[one("Nguyen"), one("Siobhan")]).is_ok());
+        let err = validate_pronunciations(&[one("Nguyen"), one("NGUYEN")]).unwrap_err();
+        assert!(err.to_string().contains("one way at a time"), "{err}");
+        let many: Vec<Pronunciation> =
+            (0..=MAX_PRONUNCIATIONS).map(|i| one(&format!("word{i}"))).collect();
+        assert!(validate_pronunciations(&many).is_err());
+    }
 
     fn compatible(base_url: &str, model: &str) -> TranscriberConfig {
         TranscriberConfig::Compatible { base_url: base_url.into(), model: model.into() }

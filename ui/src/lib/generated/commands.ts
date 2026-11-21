@@ -917,6 +917,7 @@ export interface Commands {
   removeChatLink: { args: { id: ChatLinkId }; result: void }
   removeConnection: { args: { id: ConnectionId }; result: ConnectionsView }
   removeFromAlbum: { args: { id: string; files: string[] }; result: void }
+  removePronunciation: { args: { word: string }; result: AgentSettings }
   renameFile: { args: { id: string; name: string }; result: FileEntry }
   renameFolder: { args: { path: string; name: string }; result: string }
   renderIllustration: {
@@ -1100,6 +1101,7 @@ export interface Commands {
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setMemoryOrigin: { args: { id: MemoryId; origin: MemoryOrigin }; result: Memory }
   setModelKey: { args: { tier: ModelSlot; key: string }; result: ModelSettingsView }
+  setPronunciation: { args: { word: string; say: string }; result: AgentSettings }
   setQuickAsk: { args: { name: string; on: boolean }; result: QuickAskRow[] }
   setThisComputer: { args: { on: boolean }; result: void }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
@@ -1544,6 +1546,7 @@ export const COMMAND_NAMES = {
   removeChatLink: 'remove_chat_link',
   removeConnection: 'remove_connection',
   removeFromAlbum: 'remove_from_album',
+  removePronunciation: 'remove_pronunciation',
   renameFile: 'rename_file',
   renameFolder: 'rename_folder',
   renderIllustration: 'render_illustration',
@@ -1651,6 +1654,7 @@ export const COMMAND_NAMES = {
   setItemStatus: 'set_item_status',
   setMemoryOrigin: 'set_memory_origin',
   setModelKey: 'set_model_key',
+  setPronunciation: 'set_pronunciation',
   setQuickAsk: 'set_quick_ask',
   setThisComputer: 'set_this_computer',
   setThreadCategory: 'set_thread_category',
@@ -2096,6 +2100,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'remove_chat_link',
   'remove_connection',
   'remove_from_album',
+  'remove_pronunciation',
   'rename_file',
   'rename_folder',
   'render_illustration',
@@ -2202,6 +2207,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_status',
   'set_memory_origin',
   'set_model_key',
+  'set_pronunciation',
   'set_quick_ask',
   'set_this_computer',
   'set_thread_category',
@@ -2440,6 +2446,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'remove_chat_link',
   'remove_connection',
   'remove_from_album',
+  'remove_pronunciation',
   'rename_file',
   'rename_folder',
   'rescan_files',
@@ -2534,6 +2541,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_status',
   'set_memory_origin',
   'set_model_key',
+  'set_pronunciation',
   'set_quick_ask',
   'set_this_computer',
   'set_thread_category',
@@ -2717,6 +2725,7 @@ export const CHANGE_KINDS = {
   remove_chat_link: 'settings',
   remove_connection: 'settings',
   remove_from_album: 'album',
+  remove_pronunciation: 'settings',
   rename_file: 'file',
   rename_folder: 'file',
   rescan_files: 'file',
@@ -2806,6 +2815,7 @@ export const CHANGE_KINDS = {
   set_item_status: 'item',
   set_memory_origin: 'memory',
   set_model_key: 'settings',
+  set_pronunciation: 'settings',
   set_quick_ask: 'settings',
   set_this_computer: 'calendar',
   set_thread_category: 'thread',

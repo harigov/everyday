@@ -41,7 +41,9 @@ async fn kokoro(speaker: u32, speed: f32) -> Arc<dyn Synthesiser> {
     let mut config =
         VoiceConfig::new(SynthesiserConfig::Local { voice: LocalVoice::Kokoro, speaker });
     config.speed = speed;
-    build_synthesiser(VoiceAccess { config, key: None }).await.expect("Kokoro loads")
+    build_synthesiser(VoiceAccess { config, key: None, pronunciations: Vec::new() })
+        .await
+        .expect("Kokoro loads")
 }
 
 /// To 16 kHz, averaging what each output sample covers.

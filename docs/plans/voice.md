@@ -74,6 +74,54 @@ goes into the same thread as what is typed.
   briefing instead. `read_aloud`, offered to spoken turns, reads a newsletter,
   an email or a Feed article out in full after the reply, made fit to hear as
   the Listen player makes it; the text never reaches the model.
+- **It talks like a person, because the writing does.** None of the voices
+  has a switch for warmth or emphasis (Phonon has none at all, and Kokoro's
+  stress marks only lift a word that was unstressed), so the delivery is in
+  the text: the core's note to a spoken turn asks for contractions, a natural
+  reaction when it fits, feeling carried by words and by `!`, `?`, `…` and
+  dashes, stress by where a word falls rather than capitals, and a list as a
+  count and then one short sentence on its own line per item. OpenAI's
+  `gpt-…-tts` voices, the only ones that take instructions, are also asked to
+  sound warm and to pause between items.
+- **Pauses are the sentence's, whichever voice says it.** Each model leaves its
+  own silence round a clip -- measured, Phonon nothing before and 0.5 to 0.75 s
+  after, Kokoro 0.3 s before and about 0.45 s after -- so every clip is cut
+  back to the speech in it, faded at both edges, and given the pause its
+  ending asks for (`speech::synth::pace`, `speech::script::pause_after`):
+  about 0.3 s after a full stop or an exclamation, a little more after a
+  question, half a second after an ellipsis, 0.55 s after a line (an item of a
+  list, a paragraph), a breath after a sentence cut at a comma. The splitter
+  marks a sentence that ended a line with `¶`, since the line break is gone by
+  then. A faster speed shortens the pauses with the words. Phonon reads a dash
+  as a space, so a dash becomes a comma for it; Kokoro's phonemiser drops `…`
+  and a hyphen standing alone, so they become `...` and a dash for it.
+- **Kokoro keeps its pauses.** sherpa-onnx's default `silence_scale` of 0.2
+  cut every silence of 0.2 s or more to a fifth, splicing straight to the next
+  sound with no fade: commas came out at 60 ms, sentences said together ran
+  into each other, and the voice was heard stopping short and jumping on.
+  The scale is 1.
+- **Words it would say wrong are said the person's way.** A spoken reply
+  writes a word the voice is likely to get wrong as `{word|respelling}` --
+  plain letters, hyphens between syllables, the stressed one in capitals:
+  `{Siobhan|shiv-AWN}`. The person's own list (`AgentSettings::pronunciations`,
+  edited in Settings → Models → Voice, and by `remember_pronunciation` when
+  they correct the assistant) is marked into every sentence any voice says,
+  Listen's included. Every voice says the respelling its own way: Kokoro as
+  phonemes made a syllable at a time, with the capital syllable stressed
+  (the respelling run through misaki whole read its capitals as letters);
+  Phonon and OpenAI-style servers as lower-case letters. Only the word is
+  shown and kept: the session streams the reply to the screen through
+  `script::Shown`, and the thread, what was heard of a cut reply and the echo
+  check all have the marks taken out (`script::shown`). Only the assistant's
+  own spoken reply is said with its marks: a question about a call, something
+  read aloud, an update and Listen are made inert first (`script::inert`) and
+  said as written, so a stranger's text cannot make a question say one thing
+  while another is sent. A respelling holds only letters, spaces, hyphens and
+  apostrophes, and no more words than the word it is for and one more (of at
+  most three), and the tool asks first once a stranger's words are in the
+  turn. The list is shared by every voice the service builds
+  (`Service::pronunciations`), so a word corrected mid-conversation is said
+  the new way from the next sentence.
 - **Audio is not kept.** The thread holds words only.
 - **This computer only, for now.** A window connected to a remote vault, and the
   web interface, have no voice mode. A call through a chat link is answered by
@@ -99,6 +147,7 @@ meant to be built on them without new plumbing.
 | `synth` | Words into audio, through any configured voice, Phonon and Kokoro included |
 | `tempo` | Speech sped up or slowed down without changing its pitch, for the local voice |
 | `text` | Writing made fit to hear, cut into sentences |
+| `script` | The marks in a sentence that say how it is said -- a word and its respelling, and a line's end -- the pause after it, and what of it is shown |
 | `narrate` | Sentences into audio in order, a limited way ahead of playback |
 | `pcm`, `wav` | Sample and file conversions everything shares |
 

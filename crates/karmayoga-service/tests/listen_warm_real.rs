@@ -95,10 +95,13 @@ async fn listening_loads_the_recogniser_before_anything_is_heard() {
     // ---- opened: loaded while the person is still talking --------------------
     let local =
         VoiceConfig::new(SynthesiserConfig::Local { voice: LocalVoice::Phonon, speaker: 0 });
-    let synthesiser =
-        build_synthesiser(karmayoga_core::speech::VoiceAccess { config: local, key: None })
-            .await
-            .unwrap();
+    let synthesiser = build_synthesiser(karmayoga_core::speech::VoiceAccess {
+        config: local,
+        key: None,
+        pronunciations: Vec::new(),
+    })
+    .await
+    .unwrap();
     let question =
         to_16k(&synthesiser.synthesise("What is on my calendar tomorrow morning?").await.unwrap());
     let LiveTranscription { control, mut events } =

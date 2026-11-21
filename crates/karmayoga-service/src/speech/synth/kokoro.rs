@@ -8,10 +8,36 @@
 //! what Kokoro was trained on, with its lexicons, and a small neural model for
 //! the words they do not have. sherpa-onnx is handed the phonemes.
 //!
+//! # Pauses
+//!
+//! sherpa-onnx shortens every silence of a fifth of a second or more to a
+//! fifth of its length unless told otherwise (`silence_scale`, 0.2), and
+//! does it by cutting from the first fifth straight to the next sound, with
+//! no fade. Every comma's pause came out at a third of what Kokoro made of
+//! it, and every pause between sentences said together as a blink: heard as
+//! the voice stopping short and jumping on, which is what it was doing. So
+//! the scale is 1: the pauses are Kokoro's, and the silence before and after
+//! a clip is [`super::pace`]'s to cut.
+//!
+//! A sentence is also mended a little for misaki on the way
+//! ([`for_misaki`]): it drops `…` and a hyphen standing alone, and the pause
+//! with them, where it keeps `...` and a dash. A word marked with how it is
+//! said is handed over as misaki's own mark for a pronunciation,
+//! `[word](/phonemes/)`, the phonemes made from its respelling a syllable at
+//! a time ([`sounded`]): the whole respelling run through the lexicons is
+//! read as a word, and the neural fallback guesses at it as it guessed at
+//! the name -- "shih-VAWN" came out with the capitals read as letters.
+//!
 //! Everything that needs the model is behind the `speech` feature, as for
 //! [`super::local`].
 
+use crate::speech::script::{self, Piece};
 use karmayoga_core::speech::KOKORO_SPEAKERS;
+
+/// What sherpa-onnx is asked to keep of a pause: all of it. See the module
+/// docs.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+const SILENCE_SCALE: f32 = 1.0;
 
 /// The most phonemes handed to the model in one go. Kokoro reads at most 510
 /// tokens, two of them the padding around a sentence, and sherpa-onnx does not
@@ -61,12 +87,124 @@ fn pieces(phonemes: &str) -> Vec<Vec<i32>> {
     out
 }
 
+/// `text`, a sentence in [`script`]'s terms, as misaki is to be given it:
+/// see the module docs. `sound` turns a respelling into phonemes.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+fn for_misaki(text: &str, sound: impl Fn(&str) -> String) -> String {
+    let mut out = String::with_capacity(text.len());
+    for piece in script::pieces(text) {
+        match piece {
+            Piece::Plain(plain) => out.push_str(&mended(plain)),
+            Piece::Say { word, sound: respelling } => {
+                let phonemes = sound(respelling);
+                // misaki's mark ends its word at `]` and its phonemes at
+                // `)`; neither may be in them.
+                let word: String =
+                    word.chars().filter(|c| !matches!(c, '[' | ']' | '(' | ')')).collect();
+                let phonemes: String =
+                    phonemes.chars().filter(|c| !matches!(c, '(' | ')' | '/')).collect();
+                if phonemes.trim().is_empty() || word.trim().is_empty() {
+                    out.push_str(&mended(&script::respelled(respelling)));
+                } else {
+                    out.push_str(&format!("[{}](/{}/)", word.trim(), phonemes.trim()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Prose with the marks misaki drops made ones it keeps: `…` as `...`, and a
+/// hyphen standing alone between spaces as a dash -- after a dash between
+/// two numbers is made "to" ([`script::ranges_said`]), which Kokoro would
+/// otherwise say as a pause between two numbers.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+fn mended(plain: &str) -> String {
+    script::ranges_said(plain).replace('…', "...").replace(" - ", " — ")
+}
+
+/// The vowels of misaki's phonemes, before the first of which a syllable's
+/// stress goes, as misaki puts it: `wˈɪn`, not `ˈwɪn`. The capitals are its
+/// diphthongs.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+const VOWELS: &str = "aeiouɑɐɒæɔəɚɛɜɪɨʊʌᵻᵊAIOQWY";
+
+/// A respelling as Kokoro's phonemes. Each syllable is phonemized on its
+/// own, its stress taken off, and the one marked stressed given it; a word
+/// of one syllable that marks none is said as the lexicon says it. A syllable
+/// with no vowel ("sh") is spelled out by the lexicon as letters, so it is
+/// turned into sounds here instead. `phonemize` is the lexicon.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+fn sounded(respelling: &str, phonemize: impl Fn(&str) -> String) -> String {
+    let sounds = |syllable: &str| -> String {
+        let raw = if syllable.chars().any(|c| "aeiouy".contains(c)) {
+            phonemize(syllable)
+        } else {
+            consonants(syllable)
+        };
+        raw.chars().filter(|c| c.is_alphabetic() || "ɚɜᵻᵊ".contains(*c)).collect()
+    };
+    script::syllables(respelling)
+        .iter()
+        .map(|word| match word.as_slice() {
+            [(syllable, false)] if syllable.chars().any(|c| "aeiouy".contains(c)) => {
+                phonemize(syllable)
+                    .chars()
+                    .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+                    .collect::<String>()
+            }
+            _ => word
+                .iter()
+                .map(|(syllable, stressed)| {
+                    let plain: String =
+                        sounds(syllable).chars().filter(|c| !matches!(c, 'ˈ' | 'ˌ')).collect();
+                    match plain.find(|c| VOWELS.contains(c)).filter(|_| *stressed) {
+                        Some(at) => format!("{}ˈ{}", &plain[..at], &plain[at..]),
+                        None => plain,
+                    }
+                })
+                .collect::<String>(),
+        })
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A syllable of consonants alone as their sounds, the pairs first.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+fn consonants(syllable: &str) -> String {
+    let mut out = String::new();
+    let mut rest = syllable;
+    while let Some(c) = rest.chars().next() {
+        let pair = [("sh", "ʃ"), ("zh", "ʒ"), ("ch", "ʧ"), ("th", "θ"), ("dh", "ð"), ("ng", "ŋ")]
+            .iter()
+            .find(|(spelled, _)| rest.starts_with(spelled));
+        if let Some((spelled, sound)) = pair {
+            out.push_str(sound);
+            rest = &rest[spelled.len()..];
+            continue;
+        }
+        out.push_str(match c {
+            'j' => "ʤ",
+            'y' => "j",
+            'c' | 'q' => "k",
+            'x' => "ks",
+            'r' => "ɹ",
+            'g' => "ɡ",
+            c if c.is_ascii_alphabetic() => &rest[..1],
+            _ => "",
+        });
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
 #[cfg(feature = "speech")]
 pub(super) use engine::KokoroSynthesiser;
 
 #[cfg(feature = "speech")]
 mod engine {
-    use super::{is_british, pieces};
+    use super::{SILENCE_SCALE, for_misaki, is_british, pieces, sounded};
     use crate::error::{CommandError, CommandResult, codes};
     use crate::local::files as models;
     use crate::local::resident::Resident;
@@ -133,6 +271,7 @@ mod engine {
                 provider: Some("cpu".to_string()),
                 ..Default::default()
             },
+            silence_scale: SILENCE_SCALE,
             ..Default::default()
         };
         let tts = sherpa_onnx::OfflineTts::create(&config).ok_or_else(|| {
@@ -173,7 +312,11 @@ mod engine {
                 return Err(nothing_to_say());
             }
             let engine = VOICES.get(LocalVoice::Kokoro, load)?;
-            let phonemes = engine.g2p(is_british(self.speaker))?.phonemize(text);
+            let g2p = engine.g2p(is_british(self.speaker))?;
+            let text = for_misaki(text, |respelling| {
+                sounded(respelling, |syllable| g2p.phonemize(syllable))
+            });
+            let phonemes = g2p.phonemize(&text);
             let pieces = pieces(&phonemes);
             if pieces.is_empty() {
                 return Err(nothing_to_say());
@@ -184,6 +327,9 @@ mod engine {
                 sid: self.speaker as i32,
                 speed: self.speed,
                 phoneme_codepoints: Some(pieces),
+                // Its own default is the "use the model's" value, which is
+                // 0.2 again: said here too.
+                silence_scale: SILENCE_SCALE,
                 ..Default::default()
             };
             let audio = {
@@ -218,6 +364,50 @@ mod tests {
 
     fn text(piece: &[i32]) -> String {
         piece.iter().map(|&c| char::from_u32(c as u32).unwrap()).collect()
+    }
+
+    /// What misaki's lexicon says of the syllables the tests use, as
+    /// loqui-g2p 0.4 says them.
+    fn lexicon(syllable: &str) -> String {
+        match syllable {
+            "shiv" => "ʃˈɪv",
+            "awn" => "ˈɔn",
+            "win" => "wˈɪn",
+            "keen" => "kˈin",
+            "wah" => "wˈɑ",
+            "seer" => "sˈɪɹ",
+            "shuh" => "ʃˈʌ",
+            other => panic!("the test did not expect {other:?}"),
+        }
+        .to_string()
+    }
+
+    #[test]
+    fn a_respelling_becomes_phonemes_a_syllable_at_a_time() {
+        assert_eq!(sounded("shiv-AWN", lexicon), "ʃɪvˈɔn");
+        assert_eq!(sounded("keen-wah", lexicon), "kˈinwɑ", "the first, when none is marked");
+        assert_eq!(sounded("win", lexicon), "wˈɪn", "one syllable, as the lexicon says it");
+        assert_eq!(sounded("SEER-shuh win", lexicon), "sˈɪɹʃʌ wˈɪn");
+        // A syllable with no vowel is never handed to the lexicon, which
+        // would spell it out.
+        assert_eq!(sounded("SHIV-zh", lexicon), "ʃˈɪvʒ");
+        assert_eq!(consonants("shng"), "ʃŋ");
+        assert_eq!(consonants("chj"), "ʧʤ");
+    }
+
+    #[test]
+    fn a_sentence_is_mended_for_misaki_and_a_marked_word_is_its_mark() {
+        let sound = |respelling: &str| sounded(respelling, lexicon);
+        assert_eq!(
+            for_misaki("Ask {Siobhan|shiv-AWN} now… or - later.", sound),
+            "Ask [Siobhan](/ʃɪvˈɔn/) now... or — later."
+        );
+        // Brackets that would end misaki's mark early are left out of it.
+        assert_eq!(for_misaki("{Win (Sr)|win}", sound), "[Win Sr](/wˈɪn/)");
+        // Nothing came of the respelling: its letters are read instead.
+        assert_eq!(for_misaki("{Odd|keen}", |_| String::new()), "keen");
+        assert_eq!(for_misaki("plain words.", sound), "plain words.");
+        assert_eq!(for_misaki("It takes 10 - 15 minutes.", sound), "It takes 10 to 15 minutes.");
     }
 
     #[test]
