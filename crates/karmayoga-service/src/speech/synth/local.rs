@@ -1,6 +1,7 @@
-//! Phonon 31M on this computer, through `ptts`.
+//! The voices on this computer: Phonon 31M, through `ptts`, here, and
+//! Kokoro 82M, through sherpa-onnx, in [`super::kokoro`].
 //!
-//! Everything that needs the model is behind the `speech` feature; a build
+//! Everything that needs a model is behind the `speech` feature; a build
 //! without it can still be configured with a local voice and is told, when it
 //! tries to load one, that it cannot.
 
@@ -36,9 +37,25 @@ pub(super) async fn build(
     speaker: u32,
     speed: f32,
 ) -> CommandResult<Arc<dyn Synthesiser>> {
-    let synthesiser = engine::LocalSynthesiser::new(voice, speaker_name(speaker)?, speed);
-    synthesiser.warm().await?;
-    Ok(Arc::new(synthesiser))
+    use karmayoga_core::speech::LocalVoice;
+    match voice {
+        LocalVoice::Phonon => {
+            let synthesiser = engine::LocalSynthesiser::new(voice, speaker_name(speaker)?, speed);
+            synthesiser.warm().await?;
+            Ok(Arc::new(synthesiser))
+        }
+        LocalVoice::Kokoro => {
+            if speaker >= voice.speakers() {
+                return Err(CommandError::new(
+                    codes::INVALID,
+                    format!("Kokoro has {} speakers, and no speaker {speaker}", voice.speakers()),
+                ));
+            }
+            let synthesiser = super::kokoro::KokoroSynthesiser::new(speaker, speed);
+            synthesiser.warm().await?;
+            Ok(Arc::new(synthesiser))
+        }
+    }
 }
 
 #[cfg(not(feature = "speech"))]
@@ -140,11 +157,11 @@ mod engine {
         CommandError::new(codes::INTERNAL, format!("{what}: {error}"))
     }
 
-    fn load(voice: LocalVoice) -> CommandResult<Engine> {
-        let paths = models::voice_paths(voice).ok_or_else(|| {
+    fn load(_voice: LocalVoice) -> CommandResult<Engine> {
+        let paths = models::phonon_paths().ok_or_else(|| {
             CommandError::new(
                 codes::NOT_FOUND,
-                "the voice on this computer is not downloaded yet; download it in Settings → Models",
+                "Phonon is not downloaded yet; download it in Settings → Models",
             )
         })?;
         start_workers();
@@ -275,27 +292,48 @@ mod tests {
         }
     }
 
-    /// The settings pane lists the speakers by hand, under their accent; its
-    /// list must name them in this order, or choosing one would speak as
-    /// another.
+    /// The settings pane lists each voice's speakers by hand, under their
+    /// accent; its lists must name them in this order, or choosing one would
+    /// speak as another.
     #[test]
     fn the_settings_pane_lists_the_speakers_in_this_order() {
+        use karmayoga_core::speech::KOKORO_SPEAKERS;
         let pane = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../ui/src/components/ModelsPanel.svelte");
         let text = std::fs::read_to_string(&pane).expect("the settings pane is in the tree");
-        let listed: Vec<(&str, &str)> = text
-            .lines()
-            .filter_map(|line| {
-                let rest = line.trim().strip_prefix("['")?;
-                let (name, rest) = rest.split_once("', '")?;
-                let (accent, _) = rest.split_once("',")?;
-                matches!(accent, "American" | "British").then_some((name, accent))
-            })
-            .collect();
-        let names: Vec<&str> = listed.iter().map(|(name, _)| *name).collect();
-        assert_eq!(names, PHONON_SPEAKERS, "ModelsPanel.svelte's SPEAKERS");
-        let american = listed.iter().take_while(|(_, accent)| *accent == "American").count();
+        // The `['name', 'accent', ...]` lines of the list that starts at
+        // `const {list}: Speaker[]`, up to the end of that list.
+        let listed = |list: &str| -> Vec<(String, String)> {
+            let start = text
+                .find(&format!("const {list}: Speaker[]"))
+                .unwrap_or_else(|| panic!("ModelsPanel.svelte has no {list}"));
+            text[start..]
+                .lines()
+                .skip(1)
+                .take_while(|line| !line.contains("] as ["))
+                .filter_map(|line| {
+                    let rest = line.trim().strip_prefix("['")?;
+                    let (name, rest) = rest.split_once("', '")?;
+                    let (accent, _) = rest.split_once("',")?;
+                    matches!(accent, "American" | "British")
+                        .then(|| (name.to_string(), accent.to_string()))
+                })
+                .collect()
+        };
+
+        let phonon = listed("PHONON_SPEAKERS");
+        let names: Vec<&str> = phonon.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, PHONON_SPEAKERS, "ModelsPanel.svelte's PHONON_SPEAKERS");
+        let american = phonon.iter().take_while(|(_, accent)| accent == "American").count();
         assert_eq!(american, 12, "the American voices come first, then the British");
-        assert!(listed[american..].iter().all(|(_, accent)| *accent == "British"));
+        assert!(phonon[american..].iter().all(|(_, accent)| accent == "British"));
+
+        let kokoro = listed("KOKORO_SPEAKERS");
+        let names: Vec<&str> = kokoro.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, KOKORO_SPEAKERS, "ModelsPanel.svelte's KOKORO_SPEAKERS");
+        for (name, accent) in &kokoro {
+            let british = name.starts_with('b');
+            assert_eq!(accent == "British", british, "{name} is listed as {accent}");
+        }
     }
 }

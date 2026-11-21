@@ -71,6 +71,8 @@ Reproduced below in full:
   62. tokenizers — © Hugging Face, https://github.com/huggingface/tokenizers
   63. resvg (with usvg, tiny-skia and fontdb) — © 2017 the Resvg Authors, https://github.com/linebender/resvg
   64. Qwen3-ASR 1.7B and 0.6B (models) — © Alibaba Cloud, https://huggingface.co/Qwen/Qwen3-ASR-1.7B
+  65. Kokoro 82M (model and voices) — © hexgrad, https://huggingface.co/hexgrad/Kokoro-82M
+  66. loqui-g2p — © 2026 Awakened Labs Inc., https://github.com/Awakened-Labs/loqui, with misaki's lexicons (© hexgrad, https://github.com/hexgrad/misaki), Peter Reid's grapheme-to-phoneme models (https://huggingface.co/PeterReid/graphemes_to_phonemes_en_us) and spaCy's English tokenizer rules (© ExplosionAI GmbH, https://github.com/explosion/spaCy)
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -4081,3 +4083,63 @@ They are not part of this application: they are downloaded on request and
 pinned by SHA-256 in `local::files`, and run by llama.cpp (entry 46).
 Apache-2.0 licensed; see entry 32 above for the licence text. Used as
 published.
+
+---
+
+## 65. Kokoro 82M (model and voices)
+
+The second voice `karmayoga_core::speech::LocalVoice` offers is hexgrad's
+Kokoro 82M v1.0 (https://huggingface.co/hexgrad/Kokoro-82M), with its English
+speakers, as sherpa-onnx packages them (`kokoro-multi-lang-v1_0` in
+sherpa-onnx's `tts-models` release). It is not part of this application: it
+is downloaded on request, pinned by SHA-256 in `local::files`, and run by
+sherpa-onnx (entry 32). Apache-2.0 licensed; see entry 32 above for the
+licence text. Used as published.
+
+---
+
+## 66. loqui-g2p
+
+`speech::synth::kokoro` turns English text into Kokoro's phonemes with
+`loqui-g2p` (https://github.com/Awakened-Labs/loqui), a Rust port of misaki's
+English pipeline. MIT licensed:
+
+MIT License
+
+Copyright (c) 2026 Awakened Labs Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+It embeds, and so this application's binary carries:
+
+- misaki's US and British gold and silver lexicons, version 0.9.4, and its
+  English rules, ported (https://github.com/hexgrad/misaki). Apache-2.0
+  licensed; see entry 32 above for the licence text.
+- Peter Reid's character-level grapheme-to-phoneme models for American and
+  British English (https://huggingface.co/PeterReid/graphemes_to_phonemes_en_us
+  and `graphemes_to_phonemes_en_gb`), trained on misaki's lexicons, for words
+  the lexicons lack. Apache-2.0 licensed; see entry 32.
+- spaCy's English tokenizer rules, exported as data
+  (https://github.com/explosion/spaCy). MIT licensed:
+
+  Copyright (C) 2016-2026 ExplosionAI GmbH, 2016 spaCy GmbH, 2015 Matthew
+  Honnibal. The MIT licence text is as above.
+
+- A part-of-speech tagger's weights original to loqui, under its MIT licence
+  above.

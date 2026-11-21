@@ -13,7 +13,7 @@ authors.workspace = true
 # computer through Phonon's own pure-Rust runtime. On in the desktop app and
 # the server; off for the CLI and a plain `cargo test`. See
 # docs/plans/meeting-notes.md and docs/plans/voice.md.
-speech = ["dep:sherpa-onnx", "dep:ptts", "dep:xn"]
+speech = ["dep:sherpa-onnx", "dep:ptts", "dep:xn", "dep:loqui-g2p"]
 # Local decision models: a downloaded GGUF run through llama.cpp, for sorting
 # mail on this computer instead of at a provider. With `speech` as well, also
 # the Qwen3-ASR recognisers, which llama.cpp runs too. Links a native library
@@ -247,6 +247,15 @@ sherpa-onnx = { version = "2.0.1", optional = true }
 # variable, and one whose behaviour `speech::synth::local` relies on.
 ptts = { version = "=0.7.1", optional = true, default-features = false, features = ["hf"] }
 xn = { version = "=0.2.14", optional = true }
+# The other voice on this computer, Kokoro, runs in sherpa-onnx, which since
+# 2.0 skips any word its lexicon lacks; `speech::synth::kokoro` turns words
+# into Kokoro's phonemes itself with this. A Rust port of misaki's English
+# pipeline -- the one Kokoro was trained on -- with misaki's lexicons
+# (Apache-2.0) and a small character-level model for unknown words embedded,
+# where misaki would call espeak-ng (GPL-3). Pure Rust, MIT, about 20 MB of
+# embedded data. Pinned exactly: what it says for a word is what the voice
+# says.
+loqui-g2p = { version = "=0.4.0", optional = true }
 # A local decision model is a GGUF file run through llama.cpp -- see
 # `local::decide` and docs/plans/mail-sorting.md. Off by default; the
 # `decisions` feature above turns it on. llama.cpp is compiled from the

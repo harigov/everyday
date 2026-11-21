@@ -4905,7 +4905,7 @@ export type DictationEvent =
   | { type: 'ended'; reason: DictationEnd; text: string; error: string | null }
 
 /** The voices that run on this computer -- `karmayoga_core::speech::LocalVoice`. */
-export type LocalVoice = 'phonon'
+export type LocalVoice = 'phonon' | 'kokoro'
 
 /** Who turns the assistant's words into speech --
  *  `karmayoga_core::speech::SynthesiserConfig`. */

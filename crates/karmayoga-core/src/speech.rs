@@ -280,6 +280,10 @@ pub enum LocalVoice {
     /// maintaining it) read as this, keeping their speaker number.
     #[serde(alias = "supertonic3")]
     Phonon,
+    /// hexgrad's Kokoro 82M v1.0: English, the [`KOKORO_SPEAKERS`], a few
+    /// times quicker than it speaks on a CPU. Slower than Phonon and a larger
+    /// download, with a different set of voices.
+    Kokoro,
 }
 
 impl LocalVoice {
@@ -287,14 +291,31 @@ impl LocalVoice {
     pub fn id(self) -> &'static str {
         match self {
             LocalVoice::Phonon => "phonon",
+            LocalVoice::Kokoro => "kokoro",
+        }
+    }
+
+    /// The names of its speakers, in the order a
+    /// [`SynthesiserConfig::Local`]'s `speaker` counts them.
+    pub fn speaker_names(self) -> &'static [&'static str] {
+        match self {
+            LocalVoice::Phonon => &PHONON_SPEAKERS,
+            LocalVoice::Kokoro => &KOKORO_SPEAKERS,
         }
     }
 
     /// How many speakers it has; a [`SynthesiserConfig::Local`]'s `speaker`
     /// is below this.
     pub fn speakers(self) -> u32 {
+        self.speaker_names().len() as u32
+    }
+
+    /// The speaker it starts at when it is chosen: Phonon's first, and
+    /// Kokoro's best, which is not its first.
+    pub fn default_speaker(self) -> u32 {
         match self {
-            LocalVoice::Phonon => PHONON_SPEAKERS.len() as u32,
+            LocalVoice::Phonon => 0,
+            LocalVoice::Kokoro => KOKORO_DEFAULT_SPEAKER,
         }
     }
 }
@@ -335,6 +356,49 @@ pub const PHONON_SPEAKERS: [&str; 25] = [
     "Teddy",
     "Alfie",
 ];
+
+/// Kokoro's English speakers, by the names hexgrad gives them, in the order
+/// its voice table holds them -- so a [`SynthesiserConfig::Local`]'s
+/// `speaker` is the speaker id the model is asked for. The prefix says who
+/// they are: `af` an American woman, `am` an American man, `bf` and `bm`
+/// British. The British are read with British pronunciations. The voice table
+/// also holds speakers for other languages, after these; they are not offered,
+/// since only English text is turned into the sounds they would need. The
+/// settings pane's list (`ui/src/components/ModelsPanel.svelte`) is in the
+/// same order, which a test in `karmayoga-service` holds it to.
+pub const KOKORO_SPEAKERS: [&str; 28] = [
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_heart",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
+];
+
+/// `af_heart`, the speaker hexgrad grades best.
+const KOKORO_DEFAULT_SPEAKER: u32 = 3;
 
 /// Who turns the assistant's words into speech: this computer, OpenAI, or
 /// anything that speaks OpenAI's `/v1/audio/speech` -- which is how an
@@ -561,6 +625,21 @@ mod tests {
         assert!(last.validate().is_ok());
         let past = SynthesiserConfig::Local { voice: LocalVoice::Phonon, speaker: speakers };
         assert!(past.validate().is_err());
+    }
+
+    #[test]
+    fn every_local_voice_has_speakers_and_starts_at_one_of_them() {
+        assert_eq!(LocalVoice::Kokoro.speakers(), 28);
+        assert_eq!(KOKORO_SPEAKERS[LocalVoice::Kokoro.default_speaker() as usize], "af_heart");
+        for voice in [LocalVoice::Phonon, LocalVoice::Kokoro] {
+            let first = SynthesiserConfig::Local { voice, speaker: voice.default_speaker() };
+            assert!(first.validate().is_ok(), "{voice:?}");
+            let past = SynthesiserConfig::Local { voice, speaker: voice.speakers() };
+            assert!(past.validate().is_err(), "{voice:?}");
+        }
+        let saved = serde_json::json!({ "type": "local", "voice": "kokoro", "speaker": 21 });
+        let read: SynthesiserConfig = serde_json::from_value(saved).unwrap();
+        assert_eq!(read, SynthesiserConfig::Local { voice: LocalVoice::Kokoro, speaker: 21 });
     }
 
     #[test]

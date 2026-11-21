@@ -573,6 +573,46 @@ const PHONON_SOURCES: &[Source] = &[
     },
 ];
 
+/// hexgrad's Kokoro 82M v1.0, as sherpa-onnx packages it for its own runtime:
+/// the full-precision model (the int8 one in the same release is less than
+/// half as quick on a CPU), the table of speaker embeddings and the phoneme
+/// vocabulary. The archive's lexicons, its espeak-ng data and its Chinese
+/// dictionaries are left behind: English text is turned into phonemes here,
+/// by `loqui-g2p` -- see `speech::synth::kokoro`. Model and voices are
+/// Apache-2.0. The archive's hash is GitHub's own digest for the release
+/// asset; each member's was taken from the files it unpacked to.
+const KOKORO_SOURCES: &[Source] = &[Source::Archive {
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2",
+    sha256: "60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4",
+    bytes: 349_886_476,
+    members: &[
+        (
+            "kokoro-multi-lang-v1_0/model.onnx",
+            ModelFile {
+                dest: "model.onnx",
+                sha256: "b40f62b166ac8164b0627ef48a0b358eda0985e272fb03ef5252e7206305da11",
+                bytes: 325_560_556,
+            },
+        ),
+        (
+            "kokoro-multi-lang-v1_0/voices.bin",
+            ModelFile {
+                dest: "voices.bin",
+                sha256: "1c5a5b983d3d50d8586d437a51f3faa2da7919ce76a013c081e65671a3447c29",
+                bytes: 28_200_960,
+            },
+        ),
+        (
+            "kokoro-multi-lang-v1_0/tokens.txt",
+            ModelFile {
+                dest: "tokens.txt",
+                sha256: "6ebb6bb288f20f3ae8d004d3c2ca27697da27c037d75e81a60e2a6a663f95425",
+                bytes: 687,
+            },
+        ),
+    ],
+}];
+
 /// The stable-diffusion.cpp release the picture models are run with. Pinned
 /// and hashed, like every other download here: a newer build is a deliberate
 /// change, not something a card picks up on its own.
@@ -746,7 +786,7 @@ const QWEN3_ASR_06B_SOURCES: &[Source] = &[
 ];
 
 /// Every downloadable model, in the order the settings panes list them.
-pub static CATALOGUE: [ModelSpec; 12] = [
+pub static CATALOGUE: [ModelSpec; 13] = [
     ModelSpec {
         id: SPEECH_KIT_ID,
         kind: ModelKind::Speech,
@@ -818,6 +858,14 @@ pub static CATALOGUE: [ModelSpec; 12] = [
         description: "Twenty-five natural voices that run on this computer, many times quicker than they speak.",
         languages: "English",
         sources: PHONON_SOURCES,
+    },
+    ModelSpec {
+        id: "kokoro",
+        kind: ModelKind::Voice,
+        name: "Kokoro 82M",
+        description: "Twenty-eight voices that run on this computer, a few times quicker than they speak. A larger download than Phonon, and slower.",
+        languages: "English",
+        sources: KOKORO_SOURCES,
     },
     ModelSpec {
         id: SD_CLI_ID,
@@ -1430,10 +1478,10 @@ pub fn voice_installed(voice: LocalVoice) -> bool {
     spec(voice.id()).is_some_and(is_installed)
 }
 
-/// Where a voice's files are, once [`voice_installed`]: what `ptts` is
-/// handed to load Phonon, and each speaker's embedding by its
+/// Where Phonon's files are, once [`voice_installed`]: what `ptts` is
+/// handed to load it, and each speaker's embedding by its
 /// [`PHONON_SPEAKERS`](karmayoga_core::speech::PHONON_SPEAKERS) name.
-pub struct VoicePaths {
+pub struct PhononPaths {
     pub config: PathBuf,
     pub tokenizer: PathBuf,
     pub weights: PathBuf,
@@ -1441,23 +1489,39 @@ pub struct VoicePaths {
     pub speakers: Vec<(&'static str, PathBuf)>,
 }
 
-pub fn voice_paths(voice: LocalVoice) -> Option<VoicePaths> {
+pub fn phonon_paths() -> Option<PhononPaths> {
+    let dir = installed_voice_dir(LocalVoice::Phonon)?;
+    Some(PhononPaths {
+        config: dir.join("config.json"),
+        tokenizer: dir.join("tokenizer.json"),
+        weights: dir.join("model.q8.gguf"),
+        speakers: karmayoga_core::speech::PHONON_SPEAKERS
+            .iter()
+            .map(|name| (*name, dir.join(phonon_speaker_file(name))))
+            .collect(),
+    })
+}
+
+/// Where Kokoro's files are, once [`voice_installed`]: what sherpa-onnx is
+/// handed to load it.
+pub struct KokoroPaths {
+    pub model: PathBuf,
+    pub voices: PathBuf,
+    pub tokens: PathBuf,
+}
+
+pub fn kokoro_paths() -> Option<KokoroPaths> {
+    let dir = installed_voice_dir(LocalVoice::Kokoro)?;
+    Some(KokoroPaths {
+        model: dir.join("model.onnx"),
+        voices: dir.join("voices.bin"),
+        tokens: dir.join("tokens.txt"),
+    })
+}
+
+fn installed_voice_dir(voice: LocalVoice) -> Option<PathBuf> {
     let spec = spec(voice.id())?;
-    if !is_installed(spec) {
-        return None;
-    }
-    let dir = spec.dir();
-    match voice {
-        LocalVoice::Phonon => Some(VoicePaths {
-            config: dir.join("config.json"),
-            tokenizer: dir.join("tokenizer.json"),
-            weights: dir.join("model.q8.gguf"),
-            speakers: karmayoga_core::speech::PHONON_SPEAKERS
-                .iter()
-                .map(|name| (*name, dir.join(phonon_speaker_file(name))))
-                .collect(),
-        }),
-    }
+    is_installed(spec).then(|| spec.dir())
 }
 
 /// The file a Phonon speaker's embedding is kept under.
@@ -1635,6 +1699,18 @@ mod tests {
             assert!(dests.contains(&wanted), "the voice is missing {wanted}");
         }
         assert_eq!(dests.len(), 3 + karmayoga_core::speech::PHONON_SPEAKERS.len());
+    }
+
+    #[test]
+    fn every_local_voice_has_a_catalogue_entry_of_its_kind() {
+        for voice in [LocalVoice::Phonon, LocalVoice::Kokoro] {
+            let spec = spec(voice.id()).unwrap_or_else(|| panic!("{} is missing", voice.id()));
+            assert_eq!(spec.kind, ModelKind::Voice);
+        }
+        assert_eq!(catalogue_of(ModelKind::Voice).count(), 2);
+        let spec = spec(LocalVoice::Kokoro.id()).unwrap();
+        let dests: Vec<&str> = spec.files().iter().map(|f| f.dest).collect();
+        assert_eq!(dests, ["model.onnx", "voices.bin", "tokens.txt"]);
     }
 
     #[test]

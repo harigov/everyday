@@ -131,6 +131,17 @@ const voiceModels: LocalModelInfo[] = [
     progress: null,
     error: null,
   },
+  {
+    id: 'kokoro',
+    name: 'Kokoro 82M',
+    description:
+      'Twenty-eight voices that run on this computer, a few times quicker than they speak. A larger download than Phonon, and slower.',
+    languages: 'English',
+    bytes: 349_886_476,
+    installed: false,
+    progress: null,
+    error: null,
+  },
 ]
 
 const downloadTimers = new Map<string, ReturnType<typeof setInterval>>()

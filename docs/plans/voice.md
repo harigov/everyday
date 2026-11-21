@@ -16,7 +16,7 @@ goes into the same thread as what is typed.
   processing. A browser brings its own.
 - **Voices are a setting**, the sixth card in Settings → Models: OpenAI, any
   server that speaks OpenAI's `/v1/audio/speech` (how open-source voices such as
-  Kokoro run), or Phonon 31M on this computer.
+  Kokoro run), or Phonon 31M or Kokoro 82M on this computer.
 - **Phonon 31M for the built-in voice:** the best small open voice in blind tests
   (Artificial Analysis Elo 1110, tied with OpenAI's tts-1 HD), Apache-2.0 weights,
   and a pure Rust runtime, `ptts`, with no native library and no phonemiser. About
@@ -24,6 +24,16 @@ goes into the same thread as what is typed.
   70 ms. English only. It replaces Supertonic 3, which Supertone stopped
   maintaining; saved `supertonic3` settings read as Phonon. A speed set for it is
   applied afterwards by `speech::tempo`, which keeps the pitch.
+- **Kokoro 82M as the second voice on this computer** (Nov 20 2026), for its
+  different speakers: 28 English ones, American and British, hexgrad's v1.0 as
+  sherpa-onnx packages it. Run by sherpa-onnx, already linked for listening.
+  Since 2.0 sherpa-onnx has no espeak-ng and skips any word its lexicon lacks,
+  so `speech::synth::kokoro` makes the phonemes itself with `loqui-g2p`
+  (misaki's pipeline in Rust, with a small neural model for unknown words) and
+  hands them over in runs of at most 400. The full-precision model, about 4×
+  faster than real time on four threads; the int8 one is less than half as
+  quick. Kokoro sets its own speed, so nothing is stretched afterwards. It
+  scores below Phonon in blind tests (AA Elo 1060).
 - **What is asked for out loud is approved by asking** (Nov 19 2026). At this
   computer, adding, finishing and moving tasks, scheduling, moving and
   cancelling events, changing what is on a shelf and writing notes
@@ -86,7 +96,7 @@ meant to be built on them without new plumbing.
 | `live` | A stream of audio into ordered, timed words as they are said |
 | `transcribe` | Chunks of a recording into timed segments, the meeting pipeline's backends |
 | `local` | The sherpa-onnx models on this computer |
-| `synth` | Words into audio, through any configured voice, Phonon included |
+| `synth` | Words into audio, through any configured voice, Phonon and Kokoro included |
 | `tempo` | Speech sped up or slowed down without changing its pitch, for the local voice |
 | `text` | Writing made fit to hear, cut into sentences |
 | `narrate` | Sentences into audio in order, a limited way ahead of playback |
