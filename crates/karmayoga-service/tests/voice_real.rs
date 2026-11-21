@@ -162,7 +162,7 @@ fn to_16k(speech: &Speech) -> Vec<i16> {
 
 async fn transcribe(samples: Vec<i16>) -> String {
     let recogniser = speech::recogniser_async(LocalModel::ParakeetV3).await.unwrap();
-    tokio::task::spawn_blocking(move || recogniser.transcribe(&samples, Some("en")).text)
+    tokio::task::spawn_blocking(move || recogniser.transcribe(&samples, Some("en")).unwrap().text)
         .await
         .unwrap()
         .to_lowercase()

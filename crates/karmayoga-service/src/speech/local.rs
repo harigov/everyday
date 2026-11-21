@@ -361,7 +361,9 @@ pub async fn recogniser_async(model: LocalModel) -> CommandResult<Arc<Recogniser
 }
 
 /// A local recogniser for one [`LocalModel`]: a transducer (Parakeet) or
-/// Whisper, both driven through sherpa-onnx's `OfflineRecognizer`.
+/// Whisper, both driven through sherpa-onnx's `OfflineRecognizer`, or
+/// Qwen3-ASR, run by llama.cpp ([`crate::speech::qwen`]) in a build with
+/// the `decisions` feature too.
 ///
 /// # The `Mutex`
 ///
@@ -371,19 +373,26 @@ pub async fn recogniser_async(model: LocalModel) -> CommandResult<Arc<Recogniser
 /// reads one result back. The `Mutex` exists only so two threads sharing one
 /// `Arc<Recogniser>` cannot call into the same native `OfflineRecognizer`
 /// object at once, not because a call leaves state behind for the next one.
+/// Qwen keeps its own, for the same reason.
 pub struct Recogniser {
     model: LocalModel,
-    inner: Mutex<sherpa_onnx::OfflineRecognizer>,
+    engine: Engine,
+}
+
+enum Engine {
+    Sherpa(Mutex<sherpa_onnx::OfflineRecognizer>),
+    #[cfg(feature = "decisions")]
+    Qwen(crate::speech::qwen::Qwen),
 }
 
 /// What [`Recogniser::transcribe`] heard.
 pub struct Transcription {
     pub text: String,
     /// Per-token timestamps, in milliseconds from the start of `samples`,
-    /// when the model gives them. Parakeet does; this crate does not rely on
-    /// Whisper's, which sherpa-onnx's docs note are approximate, since the
-    /// caller already knows the turn's own start and end from
-    /// [`SpeechKit::vad`].
+    /// when the model gives them. Parakeet does, Qwen does not; this crate
+    /// does not rely on Whisper's, which sherpa-onnx's docs note are
+    /// approximate, since the caller already knows the turn's own start and
+    /// end from [`SpeechKit::vad`].
     pub token_timestamps_ms: Option<Vec<u64>>,
 }
 
@@ -406,6 +415,22 @@ impl Recogniser {
                     joiner: Some(path_string(&joiner)),
                 };
                 config.model_config.tokens = Some(path_string(&tokens));
+            }
+            #[cfg(feature = "decisions")]
+            RecogniserPaths::Llama { model: weights, mmproj } => {
+                let qwen = crate::speech::qwen::Qwen::load(model, weights, mmproj)?;
+                return Ok(Self { model, engine: Engine::Qwen(qwen) });
+            }
+            #[cfg(not(feature = "decisions"))]
+            RecogniserPaths::Llama { .. } => {
+                return Err(CommandError::new(
+                    codes::UNSUPPORTED,
+                    format!(
+                        "this copy of Karma Yoga cannot run {}, which needs llama.cpp; choose \
+                         Parakeet or Whisper",
+                        model.as_str()
+                    ),
+                ));
             }
             RecogniserPaths::Whisper { encoder, decoder, tokens } => {
                 config.model_config.whisper = sherpa_onnx::OfflineWhisperModelConfig {
@@ -435,21 +460,59 @@ impl Recogniser {
         let recognizer = sherpa_onnx::OfflineRecognizer::create(&config).ok_or_else(|| {
             CommandError::new(codes::INTERNAL, format!("could not load {}", model.as_str()))
         })?;
-        Ok(Self { model, inner: Mutex::new(recognizer) })
+        Ok(Self { model, engine: Engine::Sherpa(Mutex::new(recognizer)) })
     }
 
     pub fn model(&self) -> LocalModel {
         self.model
     }
 
+    /// The graphics cards it runs on, by name, or `None` on the processor --
+    /// where Parakeet and Whisper always are.
+    pub fn gpu(&self) -> Option<String> {
+        match &self.engine {
+            Engine::Sherpa(_) => None,
+            #[cfg(feature = "decisions")]
+            Engine::Qwen(qwen) => qwen.gpu(),
+        }
+    }
+
+    /// Run over `samples` as [`Self::transcribe`] does, for timing it:
+    /// Qwen, which writes its words one at a time, writes as many as a
+    /// person talking for that long would need, even when `samples` say
+    /// nothing. Blocking.
+    pub fn transcribe_timed(&self, samples: &[i16]) -> CommandResult<()> {
+        match &self.engine {
+            Engine::Sherpa(_) => self.transcribe(samples, None).map(drop),
+            #[cfg(feature = "decisions")]
+            Engine::Qwen(qwen) => qwen.transcribe_timed(&to_f32(samples)).map(drop),
+        }
+    }
+
     /// Transcribe one speech turn. `language` is a BCP-47-ish hint; Whisper
     /// accepts it per stream (`OfflineStream::set_option("language", _)`)
     /// and this passes it on when the loaded model exposes that option,
     /// Parakeet's multilingual model does not take one and the hint is
-    /// silently unused. `None` means "detect". Blocking.
-    pub fn transcribe(&self, samples: &[i16], language: Option<&str>) -> Transcription {
+    /// silently unused, and Qwen is told it when it is one of its languages.
+    /// `None` means "detect". Fails only for Qwen, whose llama.cpp can run
+    /// out of room. Blocking.
+    // A build without `decisions` has only the one engine to match.
+    #[allow(clippy::infallible_destructuring_match)]
+    pub fn transcribe(
+        &self,
+        samples: &[i16],
+        language: Option<&str>,
+    ) -> CommandResult<Transcription> {
         let f32_samples = to_f32(samples);
-        let recognizer = self.inner.lock().unwrap();
+        let recognizer = match &self.engine {
+            Engine::Sherpa(recognizer) => recognizer,
+            #[cfg(feature = "decisions")]
+            Engine::Qwen(qwen) => {
+                let text = qwen.transcribe(&f32_samples, language)?;
+                return Ok(Transcription { text, token_timestamps_ms: None });
+            }
+        };
+        let recognizer = recognizer.lock().unwrap();
         let stream = recognizer.create_stream();
         if let Some(lang) = language
             && stream.has_option("language")
@@ -459,12 +522,12 @@ impl Recogniser {
         stream.accept_waveform(SAMPLE_RATE as i32, &f32_samples);
         recognizer.decode(&stream);
         let Some(result) = stream.get_result() else {
-            return Transcription { text: String::new(), token_timestamps_ms: None };
+            return Ok(Transcription { text: String::new(), token_timestamps_ms: None });
         };
         let token_timestamps_ms = result
             .timestamps
             .map(|ts| ts.iter().map(|t| (f64::from(*t) * 1000.0).round() as u64).collect());
-        Transcription { text: result.text, token_timestamps_ms }
+        Ok(Transcription { text: result.text, token_timestamps_ms })
     }
 }
 

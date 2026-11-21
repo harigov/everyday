@@ -59,6 +59,11 @@ impl LocalTranscriber {
         let recogniser = speech::recogniser_async(self.model).await?;
         let language = hints.language.clone();
         let mut segments = Vec::with_capacity(turns.len());
+        // A turn that cannot be heard is left out rather than ending the
+        // chunk, so the turns around it are kept; only a chunk where every
+        // turn failed is an error.
+        let mut failure = None;
+        let mut heard_any = false;
         for (start_ms, end_ms) in turns {
             let start = index_of(start_ms);
             let end = index_of(end_ms).min(chunk.samples.len());
@@ -68,11 +73,21 @@ impl LocalTranscriber {
             let turn_samples = chunk.samples[start..end].to_vec();
             let recogniser = recogniser.clone();
             let language = language.clone();
-            let text = blocking(move || {
-                Ok(recogniser.transcribe(&turn_samples, language.as_deref()).text)
+            let heard = blocking(move || {
+                Ok(recogniser.transcribe(&turn_samples, language.as_deref())?.text)
             })
-            .await?;
-            let text = text.trim().to_string();
+            .await;
+            let text = match heard {
+                Ok(text) => {
+                    heard_any = true;
+                    text.trim().to_string()
+                }
+                Err(error) => {
+                    tracing::warn!(start_ms, end_ms, error = %error.message, "a turn could not be heard; leaving it out");
+                    failure.get_or_insert(error);
+                    continue;
+                }
+            };
             if text.is_empty() {
                 continue;
             }
@@ -85,7 +100,10 @@ impl LocalTranscriber {
                 avg_logprob: None,
             });
         }
-        Ok(segments)
+        match failure {
+            Some(error) if !heard_any => Err(error),
+            _ => Ok(segments),
+        }
     }
 }
 

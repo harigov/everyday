@@ -10,14 +10,16 @@
 //!   transcription. `wav` is asked for rather than `mp3` or `opus` because it
 //!   is the one format that can be read here without a codec; reading it is
 //!   [`crate::speech::wav`]'s.
-//! - **Phonon 31M on this computer** ([`local`], feature `speech`), Gradium's
-//!   English voice, run by `ptts`. Held in a
+//! - **A voice on this computer** ([`local`], feature `speech`): Gradium's
+//!   Phonon 31M, run by `ptts`, or hexgrad's Kokoro 82M, run by sherpa-onnx
+//!   ([`kokoro`]), both English. Held in a
 //!   [`Resident`](crate::local::resident::Resident), so it is loaded for the
 //!   first sentence and let go of once nobody has needed a voice for a while.
 //!
 //! What is said, and who hears it, is the caller's: this turns one piece of
 //! text into one stretch of audio.
 
+mod kokoro;
 mod local;
 mod remote;
 

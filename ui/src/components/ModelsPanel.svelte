@@ -55,6 +55,7 @@
     LocalModelInfo,
     ImageGeneratorConfig,
     LocalImageModel,
+    LocalVoice,
     ModelSettings,
     ModelSlot,
     ModelTier,
@@ -377,7 +378,7 @@
       const slow = isTooSlow(b.realtimeFactor)
         ? ' — a provider will be faster on this machine.'
         : ''
-      speechTimed = { ...speechTimed, [id]: formatRealtimeFactor(b.realtimeFactor) + slow }
+      speechTimed = { ...speechTimed, [id]: formatRealtimeFactor(b.realtimeFactor, b.gpu) + slow }
     } catch (e) {
       speechTimed = { ...speechTimed, [id]: e instanceof Error ? e.message : String(e) }
     } finally {
@@ -430,10 +431,16 @@
       ? null
       : {
           synthesiser: models.localVoice
-            ? { type: 'local', voice: 'phonon', speaker: 0 }
+            ? localVoice('phonon')
             : { type: 'openAi', model: 'gpt-4o-mini-tts', voice: 'alloy' },
           speed: 1,
         }
+  }
+
+  /** A voice on this computer, at the speaker it starts at --
+   *  `LocalVoice::default_speaker`. */
+  function localVoice(voice: LocalVoice): SynthesiserConfig {
+    return { type: 'local', voice, speaker: LOCAL_VOICES[voice].defaultSpeaker }
   }
 
   /** Choosing where the voice is made. The speed stays: it is about how it
@@ -443,7 +450,7 @@
     if (!draft?.voice || draft.voice.synthesiser.type === kind) return
     draft.voice.synthesiser =
       kind === 'local'
-        ? { type: 'local', voice: 'phonon', speaker: 0 }
+        ? localVoice('phonon')
         : kind === 'compatible'
           ? { type: 'compatible', baseUrl: '', model: '', voice: '' }
           : { type: 'openAi', model: 'gpt-4o-mini-tts', voice: 'alloy' }
@@ -454,12 +461,14 @@
     { kind: 'compatible', label: 'Compatible server' },
   ]
 
-  /** The built-in voice's speakers, as people see them: a name and how it
-   *  sounds, listed under their accent. The order is
+  type Speaker = { value: number; accent: 'American' | 'British'; label: string }
+
+  /** Phonon's speakers, as people see them: a name and how it sounds, listed
+   *  under their accent. The order is
    *  `karmayoga_core::speech::PHONON_SPEAKERS`'s -- a test in
    *  `karmayoga-service` (`speech::synth::local`) holds this list to it --
    *  and `value` is the index the voice is asked for by. */
-  const SPEAKERS = (
+  const PHONON_SPEAKERS: Speaker[] = (
     [
       ['Harper', 'American', 'woman'],
       ['Everly', 'American', 'woman'],
@@ -492,8 +501,58 @@
     accent,
     label: `${name} · ${sounds}`,
   }))
-  const AMERICAN_SPEAKERS = SPEAKERS.filter((s) => s.accent === 'American')
-  const BRITISH_SPEAKERS = SPEAKERS.filter((s) => s.accent === 'British')
+
+  /** Kokoro's speakers, in `karmayoga_core::speech::KOKORO_SPEAKERS`' order,
+   *  which the same test holds this list to. The prefix of each name says who
+   *  it is (`af` an American woman, `bm` a British man); the last column is
+   *  hexgrad's own grade of how good each sounds, in words -- blank for the
+   *  middling ones. */
+  const KOKORO_SPEAKERS: Speaker[] = (
+    [
+      ['af_alloy', 'American', ''],
+      ['af_aoede', 'American', ''],
+      ['af_bella', 'American', 'very good'],
+      ['af_heart', 'American', 'the best'],
+      ['af_jessica', 'American', 'rough'],
+      ['af_kore', 'American', ''],
+      ['af_nicole', 'American', 'good, soft'],
+      ['af_nova', 'American', ''],
+      ['af_river', 'American', 'rough'],
+      ['af_sarah', 'American', ''],
+      ['af_sky', 'American', ''],
+      ['am_adam', 'American', 'rough'],
+      ['am_echo', 'American', 'rough'],
+      ['am_eric', 'American', 'rough'],
+      ['am_fenrir', 'American', ''],
+      ['am_liam', 'American', 'rough'],
+      ['am_michael', 'American', ''],
+      ['am_onyx', 'American', 'rough'],
+      ['am_puck', 'American', ''],
+      ['am_santa', 'American', 'rough'],
+      ['bf_alice', 'British', 'rough'],
+      ['bf_emma', 'British', 'good'],
+      ['bf_isabella', 'British', ''],
+      ['bf_lily', 'British', 'rough'],
+      ['bm_daniel', 'British', 'rough'],
+      ['bm_fable', 'British', ''],
+      ['bm_george', 'British', ''],
+      ['bm_lewis', 'British', 'rough'],
+    ] as [string, 'American' | 'British', string][]
+  ).map(([id, accent, grade], value) => {
+    const name = id.slice(3, 4).toUpperCase() + id.slice(4)
+    const who = id[1] === 'f' ? 'woman' : 'man'
+    return { value, accent, label: [name, who, grade].filter(Boolean).join(' · ') }
+  })
+
+  /** The voices on this computer, by `LocalVoice`: what the picker calls
+   *  them, their speakers, and the one each starts at. */
+  const LOCAL_VOICES: Record<
+    LocalVoice,
+    { name: string; speakers: Speaker[]; defaultSpeaker: number }
+  > = {
+    phonon: { name: 'Phonon 31M', speakers: PHONON_SPEAKERS, defaultSpeaker: 0 },
+    kokoro: { name: 'Kokoro 82M', speakers: KOKORO_SPEAKERS, defaultSpeaker: 3 },
+  }
 
   /** Whether the speech model is told a language other than English -- one
    *  the built-in voice, which speaks only English, would read wrongly. */
@@ -1070,7 +1129,7 @@
                 This copy of Karma Yoga cannot run a recogniser itself. Choose a provider above.
               </p>
             {/if}
-            {#each LOCAL_RECOGNISERS as m (m.id)}
+            {#each LOCAL_RECOGNISERS.filter((m) => !m.llama || models.localDecisions || t.model === m.id) as m (m.id)}
               {@const info = speechInfo(m.id)}
               <label class="model-row pick">
                 <input
@@ -1329,22 +1388,34 @@
                 {/if}
               </div>
             {/each}
+            {@const speakers = LOCAL_VOICES[t.voice].speakers}
+            <label class="setting">
+              <span>Voice</span>
+              <select
+                value={t.voice}
+                onchange={(e) => {
+                  const voice = e.currentTarget.value as LocalVoice
+                  if (draft?.voice) draft.voice.synthesiser = localVoice(voice)
+                }}
+              >
+                {#each Object.entries(LOCAL_VOICES) as [id, v] (id)}
+                  <option value={id}>{v.name}</option>
+                {/each}
+              </select>
+            </label>
             <label class="setting">
               <span>Speaker</span>
               <select
                 value={t.speaker}
                 onchange={(e) => (t.speaker = Number(e.currentTarget.value))}
               >
-                <optgroup label="American">
-                  {#each AMERICAN_SPEAKERS as speaker (speaker.value)}
-                    <option value={speaker.value}>{speaker.label}</option>
-                  {/each}
-                </optgroup>
-                <optgroup label="British">
-                  {#each BRITISH_SPEAKERS as speaker (speaker.value)}
-                    <option value={speaker.value}>{speaker.label}</option>
-                  {/each}
-                </optgroup>
+                {#each ['American', 'British'] as accent (accent)}
+                  <optgroup label={accent}>
+                    {#each speakers.filter((s) => s.accent === accent) as speaker (speaker.value)}
+                      <option value={speaker.value}>{speaker.label}</option>
+                    {/each}
+                  </optgroup>
+                {/each}
               </select>
             </label>
             <p class="hint">

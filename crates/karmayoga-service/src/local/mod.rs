@@ -4,13 +4,14 @@
 //!   files      what can be downloaded, where it goes, whether it is there
 //!   resident   a loaded model kept in memory while it is used, let go after
 //!   decide     a decision model: its prompt, and running it (feature `decisions`)
-//!   llama      the parts of llama.cpp `decide` calls (feature `decisions`)
+//!   llama      the parts of llama.cpp `decide` and `speech::qwen` call (feature `decisions`)
 //! ```
 //!
 //! Each kind of model brings its own runtime -- sherpa-onnx for speech
 //! (`crate::speech::local`, feature `speech`, which meeting notes and the
 //! assistant's voice mode both load from), llama.cpp for decisions
-//! ([`decide`], feature `decisions`) -- and shares the rest: one catalogue of
+//! ([`decide`], feature `decisions`) and for the Qwen3-ASR recognisers
+//! (`crate::speech::qwen`, both features) -- and shares the rest: one catalogue of
 //! pinned downloads beside the vaults, and one rule for memory. A model is
 //! loaded the first time it is asked for and let go once nobody has used it
 //! for [`resident::IDLE_AFTER`], so a speech recogniser, a decision model and

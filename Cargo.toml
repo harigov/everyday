@@ -104,6 +104,11 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.pulp]
 opt-level = 3
+# Kokoro's phonemes come from a small neural network written out by hand in
+# `loqui-g2p`, for the words its lexicons lack; unoptimised, it would take
+# longer over a name than the model takes over the sentence.
+[profile.dev.package.loqui-g2p]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

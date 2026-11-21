@@ -87,6 +87,9 @@ pub(crate) fn info(spec: &models::ModelSpec) -> LocalModelInfo {
 #[serde(rename_all = "camelCase")]
 pub struct ModelBenchmark {
     pub realtime_factor: f64,
+    /// The graphics cards it ran on, by name; absent on the processor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -105,11 +108,19 @@ fn speech_id(id: &str) -> CommandResult<&str> {
 }
 
 fn parse_local_model(id: &str) -> CommandResult<LocalModel> {
-    match id {
-        "parakeetV3" => Ok(LocalModel::ParakeetV3),
-        "whisperTurbo" => Ok(LocalModel::WhisperTurbo),
-        _ => Err(CommandError::new(codes::INVALID, format!("{id} is not a local recogniser"))),
-    }
+    LocalModel::ALL
+        .into_iter()
+        .find(|m| models::local_model_id(*m) == id)
+        .ok_or_else(|| CommandError::new(codes::INVALID, format!("{id} is not a local recogniser")))
+}
+
+/// Whether this copy could run the speech model `id`: every one but a
+/// recogniser on llama.cpp, which needs the `decisions` feature too -- the
+/// desktop app has it, the server does not. The speech kit and the
+/// sherpa-onnx recognisers stay listed in a copy without `speech`, which
+/// still answers what one would need.
+fn runs_here(id: &str) -> bool {
+    cfg!(feature = "decisions") || parse_local_model(id).map_or(true, |m| !m.on_llama())
 }
 
 async fn speech_models(
@@ -117,11 +128,18 @@ async fn speech_models(
     _ctx: Ctx,
     _args: super::Nothing,
 ) -> CommandResult<Vec<LocalModelInfo>> {
-    Ok(models::catalogue_of(ModelKind::Speech).map(info).collect())
+    Ok(models::catalogue_of(ModelKind::Speech).filter(|s| runs_here(s.id)).map(info).collect())
 }
 
 async fn download_speech_model(_svc: Arc<Service>, _ctx: Ctx, args: ModelRef) -> CommandResult<()> {
-    models::start_download(speech_id(&args.id)?).map_err(|e| CommandError::new(codes::INVALID, e))
+    let id = speech_id(&args.id)?;
+    if !runs_here(id) {
+        return Err(CommandError::new(
+            codes::UNSUPPORTED,
+            format!("this copy of Karma Yoga cannot run {id}"),
+        ));
+    }
+    models::start_download(id).map_err(|e| CommandError::new(codes::INVALID, e))
 }
 
 async fn cancel_speech_model_download(
@@ -157,22 +175,24 @@ async fn benchmark_speech_model(
     // pass costs the same whether the audio is speech or not -- it is a
     // fixed amount of arithmetic over a fixed number of frames -- so this
     // measures real inference throughput without needing a bundled sample
-    // clip, and the same seed gives the same number run to run.
+    // clip, and the same seed gives the same number run to run. Qwen's time
+    // goes mostly on writing what it heard, so `transcribe_timed` has it
+    // write as much as ten seconds of talking would need.
     const SECONDS: u64 = 10;
     let n = (SECONDS * u64::from(SAMPLE_RATE)) as usize;
     let samples: Vec<i16> =
         (0..n).map(|i| ((i.wrapping_mul(2_654_435_761) % 2000) as i16) - 1000).collect();
 
-    let elapsed = crate::service::blocking(move || {
+    let (elapsed, gpu) = crate::service::blocking(move || {
         let started = std::time::Instant::now();
-        let _ = recogniser.transcribe(&samples, None);
-        Ok(started.elapsed())
+        recogniser.transcribe_timed(&samples)?;
+        Ok((started.elapsed(), recogniser.gpu()))
     })
     .await?;
 
     let realtime_factor =
         if elapsed.as_secs_f64() > 0.0 { SECONDS as f64 / elapsed.as_secs_f64() } else { 0.0 };
-    Ok(ModelBenchmark { realtime_factor })
+    Ok(ModelBenchmark { realtime_factor, gpu })
 }
 
 #[cfg(not(feature = "speech"))]
@@ -223,3 +243,34 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: benchmark_speech_model,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_copy_with_llama_cpp_offers_the_recognisers_on_it() {
+        assert!(runs_here(models::SPEECH_KIT_ID));
+        assert!(runs_here("parakeetV3") && runs_here("whisperTurbo"));
+        for model in LocalModel::ALL.into_iter().filter(LocalModel::on_llama) {
+            assert_eq!(runs_here(models::local_model_id(model)), cfg!(feature = "decisions"));
+        }
+    }
+
+    /// The interface hides the llama.cpp recognisers in a copy without
+    /// llama.cpp by a flag of its own; it must flag the same ones.
+    #[test]
+    fn the_interface_flags_the_same_recognisers_as_on_llama_cpp() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/src/lib/meetings-format.ts");
+        let text = std::fs::read_to_string(&path).expect("meetings-format.ts is in the tree");
+        let start = text.find("export const LOCAL_RECOGNISERS").expect("LOCAL_RECOGNISERS");
+        let list = &text[start..start + text[start..].find("\n]").expect("the list ends")];
+        for model in LocalModel::ALL {
+            let id = models::local_model_id(model);
+            let at = list.find(&format!("id: '{id}'")).unwrap_or_else(|| panic!("{id} unlisted"));
+            let entry = &list[at..list[at..].find('}').map_or(list.len(), |end| at + end)];
+            assert_eq!(entry.contains("llama: true"), model.on_llama(), "{id}");
+        }
+    }
+}

@@ -226,8 +226,7 @@ async fn test_local(model: karmayoga_core::meeting::LocalModel) -> CommandResult
     let recogniser = speech::recogniser_async(model).await?;
     blocking(move || {
         let silence = vec![0i16; karmayoga_core::meeting::SAMPLE_RATE as usize];
-        recogniser.transcribe(&silence, None);
-        Ok(())
+        recogniser.transcribe(&silence, None).map(drop)
     })
     .await
 }
