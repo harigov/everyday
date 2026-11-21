@@ -512,7 +512,7 @@ class AppState {
    * A pair, as the calendar needs. The app is a view over what the other
    * apps store — where the week went, which goals have gone quiet, which
    * habits are holding — and the two halves of that come from the purpose
-   * domain and the tracking one. A backend with roles and no readings could
+   * domain and the tracking one. A backend with areas and no readings could
    * draw half of it, and half of a balance report is a report that is
    * wrong rather than short.
    */

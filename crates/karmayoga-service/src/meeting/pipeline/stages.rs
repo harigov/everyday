@@ -1097,7 +1097,7 @@ fn slug_of(title: &str) -> String {
     out.chars().take(40).collect::<String>().trim_end_matches('-').to_string()
 }
 
-/// Purpose for a meeting note: the calendar's own role, or none. Delegates
+/// Purpose for a meeting note: the calendar's own area, or none. Delegates
 /// to `karmayoga_core::meeting::filing::purpose_for`, now that it has landed.
 pub(crate) fn purpose_for(
     vault: &Vault,

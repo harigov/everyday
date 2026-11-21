@@ -59,7 +59,7 @@
 //! nobody says otherwise. With none marked, they go to this computer, as
 //! time blocks.
 
-use crate::id::{AccountId, CalendarId, EventId, RoleId};
+use crate::id::{AccountId, AreaId, CalendarId, EventId};
 use crate::recurrence::Recurrence;
 use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
@@ -336,15 +336,18 @@ pub struct Calendar {
     /// the calendar, not an error to interrupt someone with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
-    /// Which role this feed serves.
+    /// Which area this feed serves.
     ///
-    /// A role rather than a [`Purpose`](crate::purpose::Purpose), because a
+    /// An area rather than a [`Purpose`](crate::purpose::Purpose), because a
     /// feed is not filed under one outcome: a work calendar is work, and the
     /// forty meetings on it are not each yours to attribute. It is the
     /// cheapest large win in the whole balance report — one click here
     /// attributes a year of somebody else's claims on your time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role_id: Option<RoleId>,
+    ///
+    /// Sealed as `roleId` by builds from before areas were renamed from
+    /// roles; the alias reads those.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "roleId")]
+    pub area_id: Option<AreaId>,
     /// Sync state for an account calendar: a sync-token, or the etags an
     /// etag-diff fallback compares against. Always empty for a `Url` or
     /// `File` origin, which have no such state to remember. `#[serde(default)]`
@@ -436,7 +439,7 @@ impl Calendar {
             refresh_minutes: DEFAULT_REFRESH_MINUTES,
             last_synced_at: None,
             last_error: None,
-            role_id: None,
+            area_id: None,
             account_sync: AccountSyncCursor::default(),
             is_default: false,
             this_computer_off: false,
@@ -459,7 +462,7 @@ impl Calendar {
             refresh_minutes: 0,
             last_synced_at: None,
             last_error: None,
-            role_id: None,
+            area_id: None,
             account_sync: AccountSyncCursor::default(),
             is_default: false,
             this_computer_off: false,
@@ -500,7 +503,7 @@ impl Calendar {
             refresh_minutes: DEFAULT_ACCOUNT_REFRESH_MINUTES,
             last_synced_at: None,
             last_error: None,
-            role_id: None,
+            area_id: None,
             account_sync: AccountSyncCursor::default(),
             is_default: false,
             this_computer_off: false,

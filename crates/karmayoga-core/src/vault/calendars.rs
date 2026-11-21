@@ -97,7 +97,7 @@ impl Vault {
         self.with_calendars(|c| c.get_calendar(id))
     }
 
-    /// Save a calendar's settings -- its name, colour, visibility, role.
+    /// Save a calendar's settings -- its name, colour, visibility, area.
     ///
     /// Two fields are kept as stored rather than taken from `calendar`:
     /// [`Calendar::is_default`], which only [`Vault::set_default_calendar`]

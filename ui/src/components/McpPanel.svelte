@@ -28,8 +28,8 @@
   // token is issued.
   //
   // Most read as the app bar's own names, and one deliberately does not.
-  // `purpose` was labelled "Overview" when the Overview owned roles and
-  // goals; it does not any more -- roles are defined in Settings and goals
+  // `purpose` was labelled "Overview" when the Overview owned areas and
+  // goals; it does not any more -- areas are defined in Settings and goals
   // live in the todo app, and the Overview is a page of cards drawn from
   // every domain at once. Ticking a box named after that page would be
   // granting an agent something quite different from what the page shows, so
@@ -41,7 +41,7 @@
     { scope: 'calendars', label: 'Calendar' },
     { scope: 'library', label: 'Library' },
     { scope: 'trackers', label: 'Tracking' },
-    { scope: 'purpose', label: 'Roles and goals' },
+    { scope: 'purpose', label: 'Areas and goals' },
     { scope: 'agent', label: 'Assistant' },
   ]
 

@@ -1,8 +1,8 @@
-//! Roles and goals: what everything else in the vault answers "what was
+//! Areas and goals: what everything else in the vault answers "what was
 //! this for" to.
 //!
 //! The purpose domain, on exactly the terms of every domain before it. What
-//! is different is that almost nothing here is *about* roles and goals: the
+//! is different is that almost nothing here is *about* areas and goals: the
 //! two records are small and dull, and the interesting half is the pair
 //! of reports, which read every other domain's tables and are the only
 //! reason the pointer exists.
@@ -10,15 +10,15 @@
 use super::Vault;
 use super::session::Domain;
 use crate::error::{Error, Result};
-use crate::id::{GoalId, RoleId};
+use crate::id::{AreaId, GoalId};
 use crate::purpose::{
-    Goal, GoalActivity, PurposeDayMinutes, PurposeMinutes, Role, RoleEventMinutes, suggested_roles,
+    Area, AreaEventMinutes, Goal, GoalActivity, PurposeDayMinutes, PurposeMinutes, suggested_areas,
 };
 use crate::record::RecordKind;
 use crate::store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 
 impl Vault {
-    /// Does this vault's backend store roles and goals?
+    /// Does this vault's backend store areas and goals?
     pub fn supports_purpose(&self) -> bool {
         self.with_purpose(|_| Ok(())).is_ok()
     }
@@ -27,64 +27,64 @@ impl Vault {
         self.with_domain(Domain::Purpose, |s| s.purpose().map(f))
     }
 
-    pub fn roles(&self) -> Result<Vec<Role>> {
+    pub fn areas(&self) -> Result<Vec<Area>> {
         self.with_purpose(|p| {
-            let mut roles = p.list_roles()?;
-            roles.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
-            Ok(roles)
+            let mut areas = p.list_areas()?;
+            areas.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
+            Ok(areas)
         })
     }
 
-    pub fn role(&self, id: RoleId) -> Result<Role> {
-        self.with_purpose(|p| p.get_role(id))
+    pub fn area(&self, id: AreaId) -> Result<Area> {
+        self.with_purpose(|p| p.get_area(id))
     }
 
-    pub fn save_role(&self, role: &Role) -> Result<()> {
+    pub fn save_area(&self, area: &Area) -> Result<()> {
         self.writable()?;
-        if role.name.trim().is_empty() {
-            return Err(Error::Invalid("a role needs a name".into()));
+        if area.name.trim().is_empty() {
+            return Err(Error::Invalid("an area needs a name".into()));
         }
-        self.with_purpose(|p| p.put_role(role))?;
-        self.wrote(RecordKind::Role, role.id);
+        self.with_purpose(|p| p.put_area(area))?;
+        self.wrote(RecordKind::Area, area.id);
         Ok(())
     }
 
-    /// Delete a role, which the backend refuses while goals point at it.
-    pub fn delete_role(&self, id: RoleId) -> Result<()> {
+    /// Delete an area, which the backend refuses while goals point at it.
+    pub fn delete_area(&self, id: AreaId) -> Result<()> {
         self.writable()?;
-        self.with_purpose(|p| p.delete_role(id))?;
-        self.wrote(RecordKind::Role, id);
+        self.with_purpose(|p| p.delete_area(id))?;
+        self.wrote(RecordKind::Area, id);
         Ok(())
     }
 
-    /// How many goals sit under a role, and how many are still open.
-    pub fn count_goals(&self, role: RoleId) -> Result<(u64, u64)> {
-        self.with_purpose(|p| p.count_goals(role))
+    /// How many goals sit under an area, and how many are still open.
+    pub fn count_goals(&self, area: AreaId) -> Result<(u64, u64)> {
+        self.with_purpose(|p| p.count_goals(area))
     }
 
-    /// Put a starting set of roles in a vault that has none, and do nothing
+    /// Put a starting set of areas in a vault that has none, and do nothing
     /// at all otherwise. Returns how many were added.
     ///
     /// Unlike [`seed_library`](Vault::seed_library) this is **not** called on
     /// unlock. A list of shelves is a guess about what people read; a list
-    /// of roles is a claim about what somebody's life is made of, and an
+    /// of areas is a claim about what somebody's life is made of, and an
     /// application that wrote one unasked would be telling them who they
     /// are. The Overview offers it behind a button on an empty screen, and
     /// somebody who deletes the lot never sees it again.
-    pub fn seed_roles(&self) -> Result<usize> {
+    pub fn seed_areas(&self) -> Result<usize> {
         self.writable()?;
         let added = self.with_purpose(|p| {
-            if !p.list_roles()?.is_empty() {
+            if !p.list_areas()?.is_empty() {
                 return Ok(Vec::new());
             }
-            let seeds = suggested_roles();
-            for role in &seeds {
-                p.put_role(role)?;
+            let seeds = suggested_areas();
+            for area in &seeds {
+                p.put_area(area)?;
             }
             Ok(seeds)
         })?;
-        for role in &added {
-            self.wrote(RecordKind::Role, role.id);
+        for area in &added {
+            self.wrote(RecordKind::Area, area.id);
         }
         Ok(added.len())
     }
@@ -102,13 +102,13 @@ impl Vault {
         if goal.title.trim().is_empty() {
             return Err(Error::Invalid("a goal needs a title".into()));
         }
-        // A goal must name a role that exists. Checked here rather than by a
+        // A goal must name an area that exists. Checked here rather than by a
         // foreign key because the backend deliberately has none — see
-        // `PurposeStore::delete_role` for why — and a goal under a role that
+        // `PurposeStore::delete_area` for why — and a goal under an area that
         // was never written would be invisible in every view the Overview
-        // has, all of which are grouped by role.
+        // has, all of which are grouped by area.
         self.with_purpose(|p| {
-            p.get_role(goal.role_id)?;
+            p.get_area(goal.area_id)?;
             p.put_goal(goal)
         })?;
         self.wrote(RecordKind::Goal, goal.id);
@@ -141,9 +141,9 @@ impl Vault {
         self.with_purpose(|p| p.actual_minutes_by_day(window))
     }
 
-    /// Minutes of subscribed-calendar events per role over a window.
-    pub fn events_by_role(&self, window: PurposeWindow) -> Result<Vec<RoleEventMinutes>> {
-        self.with_purpose(|p| p.events_by_role(window))
+    /// Minutes of subscribed-calendar events per area over a window.
+    pub fn events_by_area(&self, window: PurposeWindow) -> Result<Vec<AreaEventMinutes>> {
+        self.with_purpose(|p| p.events_by_area(window))
     }
 
     pub fn goal_activity(&self, id: GoalId) -> Result<GoalActivity> {

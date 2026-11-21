@@ -52,7 +52,7 @@ use serde_json::{Value, json};
 use std::sync::OnceLock;
 
 use crate::error::{Error, Result};
-use crate::id::{ConversationId, GoalId, RoleId};
+use crate::id::{AreaId, ConversationId, GoalId};
 use crate::purpose::Purpose;
 use crate::record::RecordKind;
 use crate::vault::Vault;
@@ -320,7 +320,7 @@ impl Domain {
             | Domain::Calendars
             | Domain::Library
             | Domain::Trackers
-            // Roles and goals are the shape of somebody's life rather than
+            // Areas and goals are the shape of somebody's life rather than
             // its contents, and the assistant is specifically for reasoning
             // about them -- "what did I actually spend the week on" is the
             // question the Overview exists to answer.
@@ -413,7 +413,7 @@ impl TryFrom<RecordKind> for Domain {
             RecordKind::Calendar | RecordKind::Event => Ok(Domain::Calendars),
             RecordKind::Kind | RecordKind::Item | RecordKind::Log => Ok(Domain::Library),
             RecordKind::Tracker | RecordKind::Reading => Ok(Domain::Trackers),
-            RecordKind::Role | RecordKind::Goal => Ok(Domain::Purpose),
+            RecordKind::Area | RecordKind::Goal => Ok(Domain::Purpose),
             RecordKind::Routine | RecordKind::RoutineRun => Ok(Domain::Routines),
             RecordKind::Job => Ok(Domain::Jobs),
             RecordKind::Conversation
@@ -1214,6 +1214,23 @@ impl<'a> Args<'a> {
         self.opt_id(key, kind)?.ok_or_else(|| self.bad(format!("`{key}` is required")))
     }
 
+    /// `area_id`, or `role_id` where a call still spells it the way it was
+    /// spelled before areas were renamed from roles: a pending approval saved
+    /// then, a client holding the old schema, a model copying an earlier turn
+    /// of the thread. Ignoring the old name would let such a call report
+    /// success having moved or filed nothing.
+    pub fn opt_area(&self) -> Result<Option<AreaId>> {
+        match self.opt_id("area_id", "area")? {
+            Some(id) => Ok(Some(id)),
+            None => self.opt_id("role_id", "area"),
+        }
+    }
+
+    /// [`opt_area`](Args::opt_area), required.
+    pub fn area(&self) -> Result<AreaId> {
+        self.opt_area()?.ok_or_else(|| self.bad("`area_id` is required"))
+    }
+
     /// Parse an enum from its wire spelling, listing the alternatives.
     pub fn opt_enum<T: DeserializeOwned>(&self, key: &str, allowed: &[&str]) -> Result<Option<T>> {
         let Some(raw) = self.opt_str(key) else { return Ok(None) };
@@ -1325,20 +1342,20 @@ fn limit_arg() -> (&'static str, Value) {
     ("limit", number("Most rows to return. Defaults to 50, capped at 200."))
 }
 
-/// Read `goal_id`/`role_id` off a call into the [`Purpose`] it names,
+/// Read `goal_id`/`area_id` off a call into the [`Purpose`] it names,
 /// checking that whichever was given still exists before anything is built
 /// against it -- the same reasoning `tasks::resolve_project` gives for a
 /// project id. Shared by every tool that lets a model file a record against
-/// a goal or a role directly: `create_task`, `update_task` and
+/// a goal or an area directly: `create_task`, `update_task` and
 /// `create_time_block`.
 ///
 /// `Ok(None)` when neither is given, which the caller reads as "leave the
 /// purpose alone" on an update and "no purpose" on a create.
 fn resolve_purpose(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Option<Purpose>> {
     let goal_id: Option<GoalId> = args.opt_id("goal_id", "goal")?;
-    let role_id: Option<RoleId> = args.opt_id("role_id", "role")?;
-    match (goal_id, role_id) {
-        (Some(_), Some(_)) => Err(args.bad("give only one of `goal_id` or `role_id`")),
+    let area_id: Option<AreaId> = args.opt_area()?;
+    match (goal_id, area_id) {
+        (Some(_), Some(_)) => Err(args.bad("give only one of `goal_id` or `area_id`")),
         (Some(id), None) => {
             ctx.vault.goal(id).map_err(|_| {
                 Error::Invalid(format!(
@@ -1348,12 +1365,12 @@ fn resolve_purpose(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Option<Purp
             Ok(Some(Purpose::Goal { id }))
         }
         (None, Some(id)) => {
-            ctx.vault.role(id).map_err(|_| {
+            ctx.vault.area(id).map_err(|_| {
                 Error::Invalid(format!(
-                    "no role with id {id}. Call list_roles and use an id from it."
+                    "no area with id {id}. Call list_areas and use an id from it."
                 ))
             })?;
-            Ok(Some(Purpose::Role { id }))
+            Ok(Some(Purpose::Area { id }))
         }
         (None, None) => Ok(None),
     }
@@ -1956,7 +1973,7 @@ mod tests {
             (RecordKind::Log, Domain::Library),
             (RecordKind::Tracker, Domain::Trackers),
             (RecordKind::Reading, Domain::Trackers),
-            (RecordKind::Role, Domain::Purpose),
+            (RecordKind::Area, Domain::Purpose),
             (RecordKind::Goal, Domain::Purpose),
             (RecordKind::Routine, Domain::Routines),
             (RecordKind::RoutineRun, Domain::Routines),

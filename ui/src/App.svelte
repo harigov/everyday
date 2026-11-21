@@ -120,7 +120,7 @@
     agent.restore()
   }
 
-  // Roles and goals, loaded once the vault is open and reloaded after every
+  // Areas and goals, loaded once the vault is open and reloaded after every
   // unlock.
   //
   // Here rather than inside `state.svelte.ts`, which is where the unlock

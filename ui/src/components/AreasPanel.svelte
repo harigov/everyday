@@ -1,11 +1,11 @@
 <script lang="ts">
   // The parts of a life this vault is organised around, edited in Settings.
   //
-  // Roles used to be defined in the Overview's sidebar, on the rule this
+  // Areas used to be defined in the Overview's sidebar, on the rule this
   // application follows almost everywhere: a thing is defined where its data
   // is seen, the way a library shelf is made in the library's sidebar. That
   // rule was applied to the wrong noun here. A shelf belongs to the library
-  // and nothing else has an opinion about it; a role is filed against by the
+  // and nothing else has an opinion about it; an area is filed against by the
   // todo app, the calendar, the journal and the shelf alike, and the Overview
   // was only the app that happened to draw it first. It is a standing fact
   // about the person, which is what this tab is — and which is why it sits
@@ -13,7 +13,7 @@
   // inside a report.
   //
   // Archiving is above deleting and reads as the ordinary answer, because it
-  // is: a role you have stopped playing keeps a year of attributed hours, and
+  // is: an area you have stopped playing keeps a year of attributed hours, and
   // deleting is refused by the backend while any goal still points at it.
 
   import { focusOnMount } from '../lib/focus'
@@ -25,60 +25,60 @@
   import { purpose } from '../lib/purpose.svelte'
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
-  import type { RoleInfo } from '../lib/types'
+  import type { AreaInfo } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
 
   let creating = $state(false)
   let draft = $state('')
-  let renaming = $state<RoleInfo | null>(null)
+  let renaming = $state<AreaInfo | null>(null)
   let renameDraft = $state('')
-  let pendingDelete = $state<RoleInfo | null>(null)
+  let pendingDelete = $state<AreaInfo | null>(null)
 
   void purpose.load()
 
-  const live = $derived(purpose.roles.filter((r) => !r.archived))
-  const archived = $derived(purpose.roles.filter((r) => r.archived))
+  const live = $derived(purpose.areas.filter((r) => !r.archived))
+  const archived = $derived(purpose.areas.filter((r) => r.archived))
   const writable = $derived(app.status?.writable !== false)
 
   async function create() {
     const name = draft.trim()
     draft = ''
     creating = false
-    if (name) await purpose.addRole(name)
+    if (name) await purpose.addArea(name)
   }
 
   async function commitRename() {
-    const role = renaming
+    const area = renaming
     const name = renameDraft.trim()
     renaming = null
-    if (role && name && name !== role.name) {
-      await purpose.saveRole({ ...$state.snapshot(role), name })
+    if (area && name && name !== area.name) {
+      await purpose.saveArea({ ...$state.snapshot(area), name })
     }
   }
 
-  function roleMenu(role: RoleInfo): MenuItem[] {
+  function areaMenu(area: AreaInfo): MenuItem[] {
     return tidyMenu([
       {
         label: 'Rename…',
         icon: 'pencil',
         run: () => {
-          renameDraft = role.name
-          renaming = role
+          renameDraft = area.name
+          renaming = area
         },
       },
       {
         label: 'Colour',
-        dot: role.color,
-        items: colourItems(role.color, (color) =>
-          purpose.saveRole({ ...$state.snapshot(role), color }),
+        dot: area.color,
+        items: colourItems(area.color, (color) =>
+          purpose.saveArea({ ...$state.snapshot(area), color }),
         ),
       },
       {
-        label: role.archived ? 'Bring it back' : 'Archive',
-        icon: role.archived ? 'refresh' : 'hidden',
-        hint: role.archived ? undefined : 'keeps its history',
-        run: () => purpose.saveRole({ ...$state.snapshot(role), archived: !role.archived }),
+        label: area.archived ? 'Bring it back' : 'Archive',
+        icon: area.archived ? 'refresh' : 'hidden',
+        hint: area.archived ? undefined : 'keeps its history',
+        run: () => purpose.saveArea({ ...$state.snapshot(area), archived: !area.archived }),
       },
       SEP,
       {
@@ -93,26 +93,26 @@
       },
       SEP,
       {
-        label: 'Delete role…',
+        label: 'Delete area…',
         icon: 'trash',
         danger: true,
-        // Said here rather than discovered on the way: a role with goals
+        // Said here rather than discovered on the way: an area with goals
         // under it cannot be deleted, and offering the row as though it
         // could is a dialog that ends in a refusal.
-        disabled: role.goals > 0,
-        hint: role.goals > 0 ? 'move its goals first' : undefined,
-        run: () => (pendingDelete = role),
+        disabled: area.goals > 0,
+        hint: area.goals > 0 ? 'move its goals first' : undefined,
+        run: () => (pendingDelete = area),
       },
     ])
   }
 </script>
 
 <section>
-  <span class="eyebrow">Your roles</span>
+  <span class="eyebrow">Your areas</span>
   <p class="hint">
-    Who you are being — <em>Parent</em>, <em>Work</em>, <em>Myself</em>. Everything that takes time
-    can be filed under one, which is what lets the Overview say where a week went, and what a goal
-    in the Todo app hangs from.
+    The parts of your life — <em>Family</em>, <em>Work</em>, <em>Health</em>. Everything that takes
+    time can be filed under one, which is what lets the Overview say where a week went, and what a
+    goal in the Todo app hangs from.
   </p>
 
   {#if live.length === 0 && !creating}
@@ -127,13 +127,13 @@
     </div>
   {/if}
 
-  <ul class="roles">
-    {#each live as role (role.id)}
+  <ul class="areas">
+    {#each live as area (area.id)}
       <li>
-        {#if renaming?.id === role.id}
+        {#if renaming?.id === area.id}
           <input
             class="field"
-            aria-label="Role name"
+            aria-label="Area name"
             bind:value={renameDraft}
             use:focusOnMount
             onblur={commitRename}
@@ -144,18 +144,18 @@
           />
         {:else}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="role" oncontextmenu={(e) => menu.show(e, roleMenu(role))}>
-            <span class="dot" style="background: {role.color}"></span>
-            <span class="glyph">{role.icon}</span>
-            <span class="name">{role.name}</span>
+          <div class="area" oncontextmenu={(e) => menu.show(e, areaMenu(area))}>
+            <span class="dot" style="background: {area.color}"></span>
+            <span class="glyph">{area.icon}</span>
+            <span class="name">{area.name}</span>
             <span class="count">
-              {role.open > 0 ? `${role.open} open` : plural(role.goals, 'goal')}
+              {area.open > 0 ? `${area.open} open` : plural(area.goals, 'goal')}
             </span>
             <button
               class="more"
-              title="What can be done to this role"
-              aria-label="More, for {role.name}"
-              onclick={(e) => menu.show(e, roleMenu(role))}
+              title="What can be done to this area"
+              aria-label="More, for {area.name}"
+              onclick={(e) => menu.show(e, areaMenu(area))}
             >
               <Icon name="chevron" size={13} />
             </button>
@@ -168,7 +168,7 @@
   {#if creating}
     <input
       class="field"
-      placeholder="Role name"
+      placeholder="Area name"
       bind:value={draft}
       use:focusOnMount
       onblur={create}
@@ -183,25 +183,25 @@
   {:else}
     <div>
       <button class="btn btn-outline" disabled={!writable} onclick={() => (creating = true)}>
-        <Icon name="plus" size={13} /> Add a role
+        <Icon name="plus" size={13} /> Add an area
       </button>
     </div>
   {/if}
 
   {#if archived.length > 0}
     <span class="eyebrow archived">Archived</span>
-    <ul class="roles">
-      {#each archived as role (role.id)}
+    <ul class="areas">
+      {#each archived as area (area.id)}
         <li>
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="role muted" oncontextmenu={(e) => menu.show(e, roleMenu(role))}>
-            <span class="dot" style="background: {role.color}"></span>
-            <span class="glyph">{role.icon}</span>
-            <span class="name">{role.name}</span>
+          <div class="area muted" oncontextmenu={(e) => menu.show(e, areaMenu(area))}>
+            <span class="dot" style="background: {area.color}"></span>
+            <span class="glyph">{area.icon}</span>
+            <span class="name">{area.name}</span>
             <button
               class="more"
-              aria-label="More, for {role.name}"
-              onclick={(e) => menu.show(e, roleMenu(role))}
+              aria-label="More, for {area.name}"
+              onclick={(e) => menu.show(e, areaMenu(area))}
             >
               <Icon name="chevron" size={13} />
             </button>
@@ -210,20 +210,20 @@
       {/each}
     </ul>
     <p class="hint">
-      An archived role keeps every hour ever attributed to it and stops appearing in the pickers.
+      An archived area keeps every hour ever attributed to it and stops appearing in the pickers.
     </p>
   {/if}
 </section>
 
 {#if pendingDelete}
   <ConfirmDialog
-    title={'Delete the “' + pendingDelete.name + '” role?'}
-    detail="Nothing that was filed under it is deleted. Time already recorded against it stops being counted under any role. This cannot be undone."
-    confirmLabel="Delete role"
+    title={'Delete the “' + pendingDelete.name + '” area?'}
+    detail="Nothing that was filed under it is deleted. Time already recorded against it stops being counted under any area. This cannot be undone."
+    confirmLabel="Delete area"
     onconfirm={() => {
-      const role = pendingDelete
+      const area = pendingDelete
       pendingDelete = null
-      if (role) void purpose.deleteRole(role.id)
+      if (area) void purpose.deleteArea(area.id)
     }}
     oncancel={() => (pendingDelete = null)}
   />
@@ -244,7 +244,7 @@
     line-height: var(--leading-normal);
   }
 
-  .roles {
+  .areas {
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -253,7 +253,7 @@
     list-style: none;
   }
 
-  .role {
+  .area {
     display: flex;
     align-items: center;
     gap: var(--sp-2);
@@ -263,10 +263,10 @@
     font-size: var(--text-base);
     color: var(--fg);
   }
-  .role:hover {
+  .area:hover {
     background: var(--bg-hover);
   }
-  .role.muted {
+  .area.muted {
     opacity: 0.6;
   }
 

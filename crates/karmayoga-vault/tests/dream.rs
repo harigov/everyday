@@ -3,7 +3,7 @@
 //! idempotence and its refusals.
 
 use karmayoga_core::dream;
-use karmayoga_core::purpose::{Goal, Role};
+use karmayoga_core::purpose::{Area, Goal};
 use karmayoga_core::routine::{
     DreamScope, Outcome as RunOutcome, Routine, RoutineKind, RoutineRun, Trigger,
 };
@@ -133,9 +133,9 @@ fn the_week_digest_reads_the_nightly_dreams_run_summaries_not_raw_entries() {
 #[test]
 fn the_month_digest_names_a_goal_with_no_activity() {
     let (_dir, vault) = vault_for_test();
-    let role = Role::new("Health");
-    vault.save_role(&role).unwrap();
-    let goal = Goal::new(role.id, "Run a 10k");
+    let area = Area::new("Health");
+    vault.save_area(&area).unwrap();
+    let goal = Goal::new(area.id, "Run a 10k");
     vault.save_goal(&goal).unwrap();
 
     let now = zoned(2026, 9, 30, 4, 0);

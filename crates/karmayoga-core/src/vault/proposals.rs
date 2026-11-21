@@ -319,10 +319,10 @@ impl Vault {
     }
 
     /// The references a record carries beyond itself -- the project a task
-    /// is filed under, the task or project a block is for, the goal or role
+    /// is filed under, the task or project a block is for, the goal or area
     /// a purpose names -- checked here because they may have gone since the
     /// proposal was made and nothing else re-checks them before this saves.
-    /// A routine's own reference (`Trigger::BeforeEvent`'s role) is
+    /// A routine's own reference (`Trigger::BeforeEvent`'s area) is
     /// [`Vault::save_routine`]'s to check, and it already does.
     fn check_references(&self, record: &ProposedRecord) -> Result<(), String> {
         match record {
@@ -370,8 +370,8 @@ impl Vault {
             Some(Purpose::Goal { id }) => {
                 self.goal(id).map_err(|_| "the goal this was for has been deleted".to_string())?;
             }
-            Some(Purpose::Role { id }) => {
-                self.role(id).map_err(|_| "the role this was for has been deleted".to_string())?;
+            Some(Purpose::Area { id }) => {
+                self.area(id).map_err(|_| "the area this was for has been deleted".to_string())?;
             }
             None => {}
         }
@@ -434,7 +434,7 @@ impl Vault {
     /// them again -- cheap, and one less place that can drift from what a
     /// direct save enforces. A routine goes through [`Vault::save_routine`],
     /// which also checks the one reference this module does not:
-    /// `Trigger::BeforeEvent`'s role. A note goes through
+    /// `Trigger::BeforeEvent`'s area. A note goes through
     /// [`Vault::overwrite_note`], the force path: staleness was already
     /// checked, against the proposal's own `expected_updated_at`, so a
     /// second conflict check against whatever `updated_at` a concurrent

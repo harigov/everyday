@@ -1,7 +1,7 @@
-// Roles and goals, and the one thing every other app needs from them.
+// Areas and goals, and the one thing every other app needs from them.
 //
 // The smallest of the stores. Almost nothing in the interface wants to *edit*
-// a role — that happens in one place, the About You tab of Settings — but a
+// an area — that happens in one place, the About You tab of Settings — but a
 // great deal of it wants to turn a `Purpose` into a name and a colour: a task
 // detail panel, a block's context menu, a chip on a card. So the two lists
 // are loaded once after unlock and kept here, and `label` and `color` are
@@ -23,9 +23,9 @@ import type {
   GoalId,
   GoalQuery,
   Purpose,
-  Role,
-  RoleId,
-  RoleInfo,
+  Area,
+  AreaId,
+  AreaInfo,
 } from './types'
 
 /** A resolved purpose: what to write, and what colour to write it in. */
@@ -33,8 +33,8 @@ export interface PurposeLabel {
   name: string
   color: string
   icon: string
-  /** The role behind it, whether the purpose named a goal or the role itself. */
-  roleId: RoleId | null
+  /** The area behind it, whether the purpose named a goal or the area itself. */
+  areaId: AreaId | null
 }
 
 /**
@@ -49,18 +49,18 @@ export const UNATTRIBUTED: PurposeLabel = {
   name: 'Unattributed',
   color: 'var(--fg-faint)',
   icon: '',
-  roleId: null,
+  areaId: null,
 }
 
 /** A goal with what has happened against it, as the goals pane draws it. */
 export interface GoalRow {
   goal: Goal
-  role: RoleInfo | undefined
+  area: AreaInfo | undefined
   activity: GoalActivity | null
 }
 
 class PurposeState {
-  roles = $state<RoleInfo[]>([])
+  areas = $state<AreaInfo[]>([])
   goals = $state<Goal[]>([])
   /** What has happened against each goal. Filled in by `refreshActivity`. */
   activity = $state<Map<GoalId, GoalActivity>>(new Map())
@@ -68,8 +68,8 @@ class PurposeState {
 
   /** The goal whose detail rail is open, in whichever app is showing one. */
   selected = $state<GoalId | null>(null)
-  /** Which role's section is folded away, by id. Chrome, not vault contents. */
-  collapsed = $state<Set<RoleId>>(new Set())
+  /** Which area's section is folded away, by id. Chrome, not vault contents. */
+  collapsed = $state<Set<AreaId>>(new Set())
 
   /**
    * Which load is the current one, so a slow one cannot land after a lock.
@@ -99,9 +99,18 @@ class PurposeState {
     return app.status?.capabilities?.purpose === true
   }
 
-  /** Roles worth offering in a picker: everything not retired. */
-  get activeRoles(): RoleInfo[] {
-    return this.roles.filter((r) => !r.archived)
+  /** Areas worth offering in a picker: everything not retired. */
+  get activeAreas(): AreaInfo[] {
+    return this.areas.filter((r) => !r.archived)
+  }
+
+  /**
+   * Where a goal can be moved: every area still in use, and its own even
+   * when that one has been retired -- a picker that cannot show where the
+   * goal is now reads as if it had no area at all.
+   */
+  areasFor(goal: Goal): AreaInfo[] {
+    return this.areas.filter((a) => !a.archived || a.id === goal.areaId)
   }
 
   /** Goals worth offering in a picker: everything still being pursued. */
@@ -111,7 +120,7 @@ class PurposeState {
 
   reset() {
     this.#generation += 1
-    this.roles = []
+    this.areas = []
     this.goals = []
     this.activity = new Map()
     this.selected = null
@@ -119,20 +128,20 @@ class PurposeState {
     this.#loaded = false
   }
 
-  /** Goals grouped under their roles, in sidebar order, freshest first. */
-  get byRole(): { role: RoleInfo; goals: GoalRow[] }[] {
-    return this.roles
+  /** Goals grouped under their areas, in sidebar order, freshest first. */
+  get byArea(): { area: AreaInfo; goals: GoalRow[] }[] {
+    return this.areas
       .filter((r) => !r.archived)
-      .map((role) => ({
-        role,
+      .map((area) => ({
+        area,
         goals: this.goals
-          .filter((g) => g.roleId === role.id)
-          .map((goal) => ({ goal, role, activity: this.activity.get(goal.id) ?? null }))
+          .filter((g) => g.areaId === area.id)
+          .map((goal) => ({ goal, area, activity: this.activity.get(goal.id) ?? null }))
           .sort(byLastTouched),
       }))
   }
 
-  toggleRole(id: RoleId) {
+  toggleArea(id: AreaId) {
     const next = new Set(this.collapsed)
     if (next.has(id)) next.delete(id)
     else next.add(id)
@@ -175,9 +184,9 @@ class PurposeState {
     await guardedRefresh(
       this.#loadGeneration,
       async (isCurrent) => {
-        const [roles, goals] = await Promise.all([api.roles(), api.goals()])
+        const [areas, goals] = await Promise.all([api.areas(), api.goals()])
         if (!isCurrent()) return
-        this.roles = roles
+        this.areas = areas
         this.goals = goals
         this.#loaded = true
       },
@@ -185,43 +194,43 @@ class PurposeState {
     )
   }
 
-  role(id: RoleId | null | undefined): RoleInfo | undefined {
-    return id ? this.roles.find((r) => r.id === id) : undefined
+  area(id: AreaId | null | undefined): AreaInfo | undefined {
+    return id ? this.areas.find((r) => r.id === id) : undefined
   }
 
   goal(id: GoalId | null | undefined): Goal | undefined {
     return id ? this.goals.find((g) => g.id === id) : undefined
   }
 
-  /** Goals under one role, in the order the sidebar draws them. */
-  goalsOf(role: RoleId): Goal[] {
-    return this.goals.filter((g) => g.roleId === role)
+  /** Goals under one area, in the order the sidebar draws them. */
+  goalsOf(area: AreaId): Goal[] {
+    return this.goals.filter((g) => g.areaId === area)
   }
 
   /**
    * Resolve a pointer to something drawable.
    *
-   * A goal takes its colour from its role rather than having one of its own.
+   * A goal takes its colour from its area rather than having one of its own.
    * Colour on this axis means "which part of your life", and a goal that
-   * could be a different colour from the role above it would break the one
+   * could be a different colour from the area above it would break the one
    * chart this whole domain exists to draw.
    */
   describe(purpose: Purpose | null | undefined): PurposeLabel {
     if (!purpose) return UNATTRIBUTED
-    if (purpose.type === 'role') {
-      const role = this.role(purpose.id)
-      return role
-        ? { name: role.name, color: role.color, icon: role.icon, roleId: role.id }
+    if (purpose.type === 'area') {
+      const area = this.area(purpose.id)
+      return area
+        ? { name: area.name, color: area.color, icon: area.icon, areaId: area.id }
         : UNATTRIBUTED
     }
     const goal = this.goal(purpose.id)
     if (!goal) return UNATTRIBUTED
-    const role = this.role(goal.roleId)
+    const area = this.area(goal.areaId)
     return {
       name: goal.title,
-      color: role?.color ?? 'var(--accent)',
-      icon: role?.icon ?? '',
-      roleId: goal.roleId,
+      color: area?.color ?? 'var(--accent)',
+      icon: area?.icon ?? '',
+      areaId: goal.areaId,
     }
   }
 
@@ -233,20 +242,20 @@ class PurposeState {
     return this.describe(purpose).color
   }
 
-  /** Which role a pointer ultimately belongs to, following a goal to its own. */
-  roleOf(purpose: Purpose | null | undefined): RoleId | null {
-    return this.describe(purpose).roleId
+  /** Which area a pointer ultimately belongs to, following a goal to its own. */
+  areaOf(purpose: Purpose | null | undefined): AreaId | null {
+    return this.describe(purpose).areaId
   }
 
   // ── writes ───────────────────────────────────────────────────────────
   //
-  // Small enough to be immediate rather than debounced. A role is edited
+  // Small enough to be immediate rather than debounced. An area is edited
   // about once a year and a goal a few times in its life; an `Autosave` here
   // would be machinery guarding against a burst of typing that never comes.
 
-  async saveRole(role: Role): Promise<void> {
+  async saveArea(area: Area): Promise<void> {
     try {
-      await api.saveRole($state.snapshot(role))
+      await api.saveArea($state.snapshot(area))
       await this.load(true)
     } catch (e) {
       await handle(e)
@@ -254,19 +263,19 @@ class PurposeState {
   }
 
   /**
-   * Create a role, and return it so a caller can select it at once.
+   * Create an area, and return it so a caller can select it at once.
    *
    * Returns `null` on failure rather than throwing: every caller is a
    * component reacting to a keystroke, and the error has already been shown.
    */
-  async addRole(name: string): Promise<RoleInfo | null> {
+  async addArea(name: string): Promise<AreaInfo | null> {
     const trimmed = name.trim()
     if (!trimmed) return null
     try {
-      const role = await api.newRole(trimmed)
-      await api.saveRole(role)
+      const area = await api.newArea(trimmed)
+      await api.saveArea(area)
       await this.load(true)
-      return this.role(role.id) ?? null
+      return this.area(area.id) ?? null
     } catch (e) {
       await handle(e)
       return null
@@ -274,14 +283,14 @@ class PurposeState {
   }
 
   /**
-   * Delete a role, which the backend refuses while goals point at it.
+   * Delete an area, which the backend refuses while goals point at it.
    *
    * Returns whether it went. The refusal is not a failure of this
    * application, it is the answer, and the caller offers archiving instead.
    */
-  async deleteRole(id: RoleId): Promise<boolean> {
+  async deleteArea(id: AreaId): Promise<boolean> {
     try {
-      await api.deleteRole(id)
+      await api.deleteArea(id)
       await this.load(true)
       return true
     } catch (e) {
@@ -290,22 +299,28 @@ class PurposeState {
     }
   }
 
-  async saveGoal(goal: Goal): Promise<void> {
+  /**
+   * Save a goal, and say whether it went: a select that showed the new value
+   * the moment it was picked has to be put back when the save is refused.
+   */
+  async saveGoal(goal: Goal): Promise<boolean> {
     try {
       await api.saveGoal($state.snapshot(goal))
       await this.load(true)
       await this.refreshActivity()
+      return true
     } catch (e) {
       await handle(e)
+      return false
     }
   }
 
-  /** Create a goal under a role, and return it so a picker can select it. */
-  async addGoal(roleId: RoleId, title: string): Promise<Goal | null> {
+  /** Create a goal under an area, and return it so a picker can select it. */
+  async addGoal(areaId: AreaId, title: string): Promise<Goal | null> {
     const trimmed = title.trim()
     if (!trimmed) return null
     try {
-      const goal = await api.newGoal(roleId, trimmed)
+      const goal = await api.newGoal(areaId, trimmed)
       await api.saveGoal(goal)
       await this.load(true)
       await this.refreshActivity()
@@ -327,10 +342,10 @@ class PurposeState {
     }
   }
 
-  /** Put a starting set of roles in a vault that has none. */
+  /** Put a starting set of areas in a vault that has none. */
   async seed(): Promise<number> {
     try {
-      const added = await api.seedRoles()
+      const added = await api.seedAreas()
       if (added > 0) await this.load(true)
       return added
     } catch (e) {

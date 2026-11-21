@@ -49,7 +49,7 @@
     machineTag,
     touchpoints,
   } from '../lib/insights'
-  import { byRole, type RoleTotals } from '../lib/balance'
+  import { byArea, type AreaTotals } from '../lib/balance'
   import { describeStreak, streakTarget } from '../lib/habits'
   import { addDays, localeWeekStart, startOfDay, startOfWeek } from '../lib/time'
   import { currentDay } from '../lib/today.svelte'
@@ -104,10 +104,10 @@
     (widget.subject ? tracking.tracker(widget.subject) : null) ?? tracking.live[0] ?? null,
   )
 
-  /** Roles as slices, meetings counted beside your own record. */
-  const roleSlices = $derived(
-    overview.roles.map((r) => ({
-      id: r.roleId ?? 'none',
+  /** Areas as slices, meetings counted beside your own record. */
+  const areaSlices = $derived(
+    overview.areas.map((r) => ({
+      id: r.areaId ?? 'none',
       name: r.name,
       color: r.color,
       icon: r.icon,
@@ -134,8 +134,8 @@
   // be the same thing with a frame of the previous week's sentence in it.
   let weekWords = $derived(localStorage.getItem(weekKey) ?? '')
 
-  /** One line per role, as a model can read it. */
-  function render(rows: RoleTotals[]): string {
+  /** One line per area, as a model can read it. */
+  function render(rows: AreaTotals[]): string {
     const lines = rows
       .filter((r) => r.actualMinutes + r.eventMinutes > 0)
       .map((r) => `${r.name}: ${formatMinutes(r.actualMinutes + r.eventMinutes)} recorded`)
@@ -157,12 +157,12 @@
     const priorStart = addDays(overview.weekStart, -7)
     const prior = await api
       .balance(priorStart, addDays(priorStart, 6))
-      .then((report) => byRole(report, purpose.roles, purpose.goals))
+      .then((report) => byArea(report, purpose.areas, purpose.goals))
       .catch(() => null)
 
     const text = await ask('overview.week', () =>
       api.quickWeekNote({
-        thisWeek: render(overview.roles),
+        thisWeek: render(overview.areas),
         // Empty rather than "Nothing recorded" when the query failed: the
         // instruction treats an absent field as nothing to compare with,
         // where a sentence saying nothing was recorded is a claim about a
@@ -185,7 +185,7 @@
         const total = (a?.openTasks ?? 0) + (a?.doneTasks ?? 0)
         return {
           goal,
-          role: purpose.role(goal.roleId),
+          area: purpose.area(goal.areaId),
           done: a?.doneTasks ?? 0,
           total,
           value: total === 0 ? 0 : (a?.doneTasks ?? 0) / total,
@@ -1042,8 +1042,8 @@
   {/if}
 
   <!-- ── Where the week went ───────────────────────────────────────── -->
-{:else if widget.type === 'roleBalance'}
-  <BalanceBars rows={overview.roles} />
+{:else if widget.type === 'areaBalance'}
+  <BalanceBars rows={overview.areas} />
   <p class="footnote">
     The bar is what you recorded; the hairline under it is what you planned. Meetings from
     subscribed calendars are the paler segment, counted beside your own record rather than added to
@@ -1076,19 +1076,19 @@
   {/if}
 
   <!-- ── Share of your week ────────────────────────────────────────── -->
-{:else if widget.type === 'roleShare'}
-  <ShareBar slices={roleSlices} empty="No hours recorded in this week yet." />
+{:else if widget.type === 'areaShare'}
+  <ShareBar slices={areaSlices} empty="No hours recorded in this week yet." />
 
   <!-- ── Gone quiet ────────────────────────────────────────────────── -->
 {:else if widget.type === 'neglected'}
-  {#if overview.neglectedRoles.length === 0}
-    <p class="dim">Every role with a goal open has had something recorded against it.</p>
+  {#if overview.neglectedAreas.length === 0}
+    <p class="dim">Every area with a goal open has had something recorded against it.</p>
   {:else}
     <ul class="plain">
-      {#each overview.neglectedRoles as row (row.role.id)}
+      {#each overview.neglectedAreas as row (row.area.id)}
         <li class="quiet-row">
-          <span class="dot" style="background: {row.role.color}"></span>
-          <span class="qname">{row.role.name}</span>
+          <span class="dot" style="background: {row.area.color}"></span>
+          <span class="qname">{row.area.name}</span>
           <span class="dim">
             {row.days === null ? 'nothing ever recorded' : `${row.days} days`}
           </span>
@@ -1107,7 +1107,7 @@
         <Meter
           label={row.goal.title}
           value={row.value}
-          color={row.role?.color ?? 'var(--accent)'}
+          color={row.area?.color ?? 'var(--accent)'}
           note={row.total === 0
             ? row.minutes > 0
               ? `${formatMinutes(row.minutes)} recorded, no tasks yet`

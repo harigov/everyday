@@ -72,7 +72,7 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("label", text("Or a free-text label, if it is neither.")),
                 ("notes", text("Anything worth noting.")),
                 ("goal_id", text("File it under this goal, from list_goals.")),
-                ("role_id", text("Or under this role directly, from list_roles.")),
+                ("area_id", text("Or under this area directly, from list_areas.")),
             ],
             &["date", "start_time", "end_time"]
         ),
@@ -100,7 +100,7 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("project_id", text("Or onto this project instead.")),
                 ("label", text("Or give it this free-text label instead.")),
                 ("goal_id", text("File it under this goal, from list_goals.")),
-                ("role_id", text("Or under this role directly, from list_roles.")),
+                ("area_id", text("Or under this area directly, from list_areas.")),
             ],
             &["block_id"]
         ),

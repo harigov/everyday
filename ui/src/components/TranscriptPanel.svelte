@@ -4,7 +4,7 @@
   never grows this panel at all -- see the parent's own `{#if}`.
 
   One colour per speaker, the house rule (`meetings-format.ts`'s
-  `speakerColor`) applied to a person instead of a role. Naming an "Unknown"
+  `speakerColor`) applied to a person instead of an area. Naming an "Unknown"
   speaker offers the event's attendees first, because in a two- or three-
   person call that is almost always the right guess, and free text for
   whoever it is not.

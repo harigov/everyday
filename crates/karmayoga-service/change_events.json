@@ -145,12 +145,12 @@
       ]
     },
     {
-      "command": "save_role",
+      "command": "save_area",
       "events": [
         {
           "idPresent": true,
           "idsLen": 0,
-          "kind": "role",
+          "kind": "area",
           "op": "updated",
           "origin": "local"
         }
@@ -181,12 +181,12 @@
       ]
     },
     {
-      "command": "seed_roles",
+      "command": "seed_areas",
       "events": [
         {
           "idPresent": false,
           "idsLen": 0,
-          "kind": "role",
+          "kind": "area",
           "op": "created",
           "origin": "local"
         }

@@ -213,9 +213,9 @@ other memory if it is ever wrong.\n\n";
 const MONTHLY: &str = "\
 You are the monthly dream. Read the digest below -- the last four-odd weekly dreams, not \
 the raw month -- and look for the arcs a single week is too short to see: a goal with \
-nothing against it all month, a role that has had no time at all, a birthday in the \
-month ahead -- the person's own, or someone on their Contacts shelf, with when they last \
-caught up. A birthday is a reason to propose a task or time to get in touch, never a reason \
+nothing against it all month, an area of their life that has had no time at all, a \
+birthday in the month ahead -- the person's own, or someone on their Contacts shelf, with \
+when they last caught up. A birthday is a reason to propose a task or time to get in touch, never a reason \
 to guess at the relationship. Confirm or let lapse the inferred memories the month's \
 evidence still supports, infer new ones a month of data plainly justifies, propose what is \
 worth proposing -- a skill among them, when the weekly summaries show the same process \
@@ -261,7 +261,7 @@ pub struct Digest {
     /// title, request count, skills loaded and excerpts of their own words
     /// -- [`DreamScope::Day`] only.
     pub conversations: Vec<String>,
-    /// Long-arc lines -- goals with no activity, roles with no hours, an
+    /// Long-arc lines -- goals with no activity, areas with no hours, an
     /// anniversary in the window. Only the monthly dream fills this in.
     pub arcs: Vec<String>,
     /// Proposals made in the window, kept structured rather than rendered
@@ -551,8 +551,8 @@ fn time_section(vault: &Vault, from: Date, to: Date) -> Vec<String> {
 fn purpose_label(vault: &Vault, purpose: Option<Purpose>) -> String {
     match purpose {
         None => "Unattributed".to_string(),
-        Some(Purpose::Role { id }) => {
-            vault.role(id).map(|r| r.name).unwrap_or_else(|_| "a role".into())
+        Some(Purpose::Area { id }) => {
+            vault.area(id).map(|r| r.name).unwrap_or_else(|_| "an area".into())
         }
         Some(Purpose::Goal { id }) => {
             vault.goal(id).map(|g| g.title).unwrap_or_else(|_| "a goal".into())
@@ -877,20 +877,20 @@ fn runs_section(vault: &Vault, from: Date, to: Date, now: &Zoned) -> Vec<String>
     })
 }
 
-/// Goals with nothing against them and roles with no time, over the window.
+/// Goals with nothing against them and areas with no time, over the window.
 /// Only the monthly dream asks for this.
 fn arcs_section(vault: &Vault, from: Date, to: Date) -> Vec<String> {
     let mut out = Vec::new();
     if vault.supports_purpose() {
-        if let Ok(roles) = vault.roles() {
+        if let Ok(areas) = vault.areas() {
             let minutes = vault.time_by_purpose(PurposeWindow::new(from, to)).unwrap_or_default();
-            for role in &roles {
+            for area in &areas {
                 let touched = minutes.iter().any(|m| {
-                    matches!(m.purpose, Some(Purpose::Role { id }) if id == role.id)
+                    matches!(m.purpose, Some(Purpose::Area { id }) if id == area.id)
                         && (m.actual_minutes > 0 || m.planned_minutes > 0)
                 });
                 if !touched {
-                    out.push(format!("{}: no time logged this month", role.name));
+                    out.push(format!("{}: no time logged this month", area.name));
                 }
             }
         }

@@ -119,8 +119,8 @@ pub fn dump(vault: &Vault) -> String {
         rows.push(("reading", r.id.to_string(), redact_updated_at(value(&r))));
     }
 
-    for role in vault.roles().unwrap() {
-        rows.push(("role", role.id.to_string(), value(&role)));
+    for area in vault.areas().unwrap() {
+        rows.push(("area", area.id.to_string(), value(&area)));
     }
     for g in vault.goals(&GoalQuery::default()).unwrap() {
         rows.push(("goal", g.id.to_string(), value(&g)));

@@ -28,11 +28,11 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 use crate::id::{
-    AccountId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId, ItemId,
-    JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId,
-    NoteId, OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
-    SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
-    WritingId,
+    AccountId, AreaId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
+    ItemId, JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId,
+    NewsSourceId, NoteId, OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoutineId,
+    RoutineRunId, SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId,
+    VoiceprintId, WritingId,
 };
 
 /// The kind of one persisted record — every table `karmayoga-store-sql`
@@ -63,7 +63,9 @@ pub enum RecordKind {
     Log,
     Tracker,
     Reading,
-    Role,
+    /// A part of a life -- `Area` the type, `"role"` in its AEAD label, the
+    /// word areas went by until November 2026. See [`RecordKind::aad_word`].
+    Area,
     Goal,
     Routine,
     /// One run of a routine — `RoutineRun` the type, `"run"` on the wire.
@@ -166,7 +168,9 @@ impl RecordKind {
             RecordKind::Log => "log",
             RecordKind::Tracker => "tracker",
             RecordKind::Reading => "reading",
-            RecordKind::Role => "role",
+            // Legacy: areas were roles when the first of them was sealed, and
+            // the label bound into every one of those ciphertexts says so.
+            RecordKind::Area => "role",
             RecordKind::Goal => "goal",
             RecordKind::Routine => "routine",
             // Legacy: a `RoutineRun`'s aad has always been
@@ -237,7 +241,7 @@ impl RecordKind {
             | RecordKind::Kind
             | RecordKind::Log
             | RecordKind::Reading
-            | RecordKind::Role
+            | RecordKind::Area
             | RecordKind::Goal
             | RecordKind::Routine
             | RecordKind::RoutineRun
@@ -308,7 +312,7 @@ impl RecordKind {
             | RecordKind::Log
             | RecordKind::Tracker
             | RecordKind::Reading
-            | RecordKind::Role
+            | RecordKind::Area
             | RecordKind::Goal
             | RecordKind::Routine
             | RecordKind::RoutineRun
@@ -353,8 +357,10 @@ impl RecordKind {
     /// The word an "X not found" [`crate::error::Error`] names this kind
     /// with — `karmayoga-store-sql`'s old `Record::KIND` constant.
     ///
-    /// Equal to [`aad_word`](RecordKind::aad_word) for every kind but one:
-    /// a piece of mail seals as `mail_message` but has always been reported
+    /// Equal to [`aad_word`](RecordKind::aad_word) for every kind but two.
+    /// An area seals as `role`, the word it went by when its label was fixed,
+    /// and is reported as the `"area"` the interface calls it. And a piece of
+    /// mail seals as `mail_message` but has always been reported
     /// as a plain `"message"` not found, because `store-sql`'s `Record for
     /// Message` in `mail/mod.rs` gave it `const KIND: &'static str =
     /// "message"` while its `aad` pointed at `mail::message_aad`, which
@@ -377,7 +383,9 @@ impl RecordKind {
             RecordKind::Log => "log",
             RecordKind::Tracker => "tracker",
             RecordKind::Reading => "reading",
-            RecordKind::Role => "role",
+            // The other exception: what a person reads says what the
+            // interface calls it, not the label its ciphertext is bound to.
+            RecordKind::Area => "area",
             RecordKind::Goal => "goal",
             RecordKind::Routine => "routine",
             RecordKind::RoutineRun => "run",
@@ -591,14 +599,14 @@ impl RecordDescriptor for crate::tracker::Reading {
     }
 }
 
-impl RecordDescriptor for crate::purpose::Role {
-    const KIND: RecordKind = RecordKind::Role;
-    type Id = RoleId;
+impl RecordDescriptor for crate::purpose::Area {
+    const KIND: RecordKind = RecordKind::Area;
+    type Id = AreaId;
     fn id(&self) -> Self::Id {
         self.id
     }
     fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::purpose::role_aad(id)
+        crate::store::purpose::area_aad(id)
     }
 }
 
@@ -1085,7 +1093,7 @@ mod tests {
         check::<crate::library::LogEntry>(id());
         check::<crate::tracker::Tracker>(id());
         check::<crate::tracker::Reading>(id());
-        check::<crate::purpose::Role>(id());
+        check::<crate::purpose::Area>(id());
         check::<crate::purpose::Goal>(id());
         check::<crate::routine::Routine>(id());
         check::<crate::routine::RoutineRun>(id());
@@ -1129,11 +1137,14 @@ mod tests {
     }
 
     #[test]
-    fn not_found_noun_matches_aad_word_except_the_one_mail_exception() {
+    fn not_found_noun_matches_aad_word_except_the_two_exceptions() {
         for kind in ALL {
             if kind == RecordKind::MailMessage {
                 assert_eq!(kind.not_found_noun(), "message");
                 assert_eq!(kind.aad_word(), "mail_message");
+            } else if kind == RecordKind::Area {
+                assert_eq!(kind.not_found_noun(), "area");
+                assert_eq!(kind.aad_word(), "role");
             } else {
                 assert_eq!(kind.not_found_noun(), kind.aad_word(), "{kind:?}");
             }
@@ -1158,7 +1169,7 @@ mod tests {
         RecordKind::Log,
         RecordKind::Tracker,
         RecordKind::Reading,
-        RecordKind::Role,
+        RecordKind::Area,
         RecordKind::Goal,
         RecordKind::Routine,
         RecordKind::RoutineRun,

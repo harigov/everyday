@@ -23,7 +23,7 @@ use karmayoga_core::store::mail::IngestMessage;
 use karmayoga_core::store::tasks::BlockQuery;
 use karmayoga_core::task::BlockSubject;
 use karmayoga_core::{
-    Goal, Memory, Note, Project, ProposalQuery, Role, Routine, Task, TimeBlock, Trigger, Vault,
+    Area, Goal, Memory, Note, Project, ProposalQuery, Routine, Task, TimeBlock, Trigger, Vault,
 };
 use serde_json::{Value, json};
 use support::{TODAY, ctx, ctx_drafting, vault};
@@ -94,9 +94,9 @@ fn seed_message(v: &Vault, account: AccountId, mailbox: MailboxId) -> MailMessag
 }
 
 fn seed(v: &Vault) -> Fixtures {
-    let role = Role::new("Work");
-    v.save_role(&role).unwrap();
-    let goal = Goal::new(role.id, "Ship the thing");
+    let area = Area::new("Work");
+    v.save_area(&area).unwrap();
+    let goal = Goal::new(area.id, "Ship the thing");
     v.save_goal(&goal).unwrap();
 
     let project = Project::new("The deck");
@@ -245,7 +245,7 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     "create_tracker",
     "update_reading",
     "delete_reading",
-    // Roles and goals are the shape of a life, set up deliberately and
+    // Areas and goals are the shape of a life, set up deliberately and
     // rarely -- not something a dream drafts on somebody's behalf. A target
     // is part of that: how much of a goal is wanted is theirs to say.
     "create_goal",
@@ -488,7 +488,7 @@ fn every_non_read_tool_is_either_proposable_or_explicitly_refused_while_drafting
     assert_eq!(before.skills, after.skills, "no skill was ever actually written");
     assert_eq!(before.entries, after.entries, "the journal is untouched");
     assert_eq!(before.items, after.items, "the library is untouched");
-    assert_eq!(before.goals, after.goals, "roles and goals are untouched");
+    assert_eq!(before.goals, after.goals, "areas and goals are untouched");
     assert_eq!(before.jobs, after.jobs, "no background job was ever started");
     assert_eq!(
         after.drafts,
@@ -805,7 +805,7 @@ fn remember_while_drafting_proposes_an_inferred_memory() {
     assert_eq!(saved.origin, karmayoga_core::MemoryOrigin::Told);
 }
 
-// ---- (g) new arguments: due_time, goal_id/role_id, both-given error -------
+// ---- (g) new arguments: due_time, goal_id/area_id, both-given error -------
 
 #[test]
 fn due_time_is_refused_without_a_due_date_on_create_and_allowed_on_update_with_one() {
@@ -852,13 +852,13 @@ fn due_time_is_refused_without_a_due_date_on_create_and_allowed_on_update_with_o
 }
 
 #[test]
-fn goal_id_and_role_id_set_a_tasks_purpose_and_giving_both_is_refused() {
+fn goal_id_and_area_id_set_a_tasks_purpose_and_giving_both_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let v = vault(dir.path());
 
-    let role = Role::new("Health");
-    v.save_role(&role).unwrap();
-    let goal = Goal::new(role.id, "Run a 10k");
+    let area = Area::new("Health");
+    v.save_area(&area).unwrap();
+    let goal = Goal::new(area.id, "Run a 10k");
     v.save_goal(&goal).unwrap();
 
     let err = tools::dispatch(
@@ -867,7 +867,7 @@ fn goal_id_and_role_id_set_a_tasks_purpose_and_giving_both_is_refused() {
         &json!({
             "title": "Book the run",
             "goal_id": goal.id.to_string(),
-            "role_id": role.id.to_string(),
+            "area_id": area.id.to_string(),
         }),
     )
     .unwrap_err();
@@ -883,22 +883,22 @@ fn goal_id_and_role_id_set_a_tasks_purpose_and_giving_both_is_refused() {
     let saved = v.task(task_id).unwrap();
     assert_eq!(saved.purpose, Some(karmayoga_core::Purpose::Goal { id: goal.id }));
 
-    // The purposes side table agrees -- `time_by_role` is the query that
-    // reads it, so a project or task filed under a role must show up there.
-    let by_role = tools::dispatch(&ctx(&v), "time_by_role", &json!({})).unwrap();
-    let _ = by_role;
+    // The purposes side table agrees -- `time_by_area` is the query that
+    // reads it, so a project or task filed under an area must show up there.
+    let by_area = tools::dispatch(&ctx(&v), "time_by_area", &json!({})).unwrap();
+    let _ = by_area;
 
-    // `role_id` alone works too, and `clear_purpose` takes it back off.
+    // `area_id` alone works too, and `clear_purpose` takes it back off.
     let out = tools::dispatch(
         &ctx(&v),
         "update_task",
-        &json!({ "task_id": task_id.to_string(), "role_id": role.id.to_string() }),
+        &json!({ "task_id": task_id.to_string(), "area_id": area.id.to_string() }),
     )
     .unwrap();
     assert_eq!(out["action"], "updated");
     assert_eq!(
         v.task(task_id).unwrap().purpose,
-        Some(karmayoga_core::Purpose::Role { id: role.id })
+        Some(karmayoga_core::Purpose::Area { id: area.id })
     );
 
     tools::dispatch(
@@ -920,12 +920,12 @@ fn goal_id_and_role_id_set_a_tasks_purpose_and_giving_both_is_refused() {
 }
 
 #[test]
-fn create_time_block_also_takes_a_goal_or_role() {
+fn create_time_block_also_takes_a_goal_or_area() {
     let dir = tempfile::tempdir().unwrap();
     let v = vault(dir.path());
 
-    let role = Role::new("Health");
-    v.save_role(&role).unwrap();
+    let area = Area::new("Health");
+    v.save_area(&area).unwrap();
 
     let out = tools::dispatch(
         &ctx(&v),
@@ -935,11 +935,11 @@ fn create_time_block_also_takes_a_goal_or_role() {
             "start_time": "07:00",
             "end_time": "08:00",
             "label": "Run",
-            "role_id": role.id.to_string(),
+            "area_id": area.id.to_string(),
         }),
     )
     .unwrap();
     let block_id: karmayoga_core::BlockId = out["id"].as_str().unwrap().parse().unwrap();
     let block = v.block(block_id).unwrap();
-    assert_eq!(block.purpose, Some(karmayoga_core::Purpose::Role { id: role.id }));
+    assert_eq!(block.purpose, Some(karmayoga_core::Purpose::Area { id: area.id }));
 }

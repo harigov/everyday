@@ -96,7 +96,7 @@ impl Domain {
             Domain::Tasks => "tasks (this vault's backend stores journals only)",
             Domain::Calendars => "calendars (this vault's backend stores journals only)",
             Domain::Library => "a library (this vault's backend stores journals only)",
-            Domain::Purpose => "roles and goals (this vault's backend stores journals only)",
+            Domain::Purpose => "areas and goals (this vault's backend stores journals only)",
             Domain::Trackers => "tracking (this vault's backend stores journals only)",
             Domain::Agent => "the assistant (this vault's backend stores journals only)",
             Domain::Routines => "routines (this vault's backend stores journals only)",
@@ -287,7 +287,7 @@ mod tests {
         );
         assert_eq!(
             Domain::Purpose.to_string(),
-            "roles and goals (this vault's backend stores journals only)"
+            "areas and goals (this vault's backend stores journals only)"
         );
         assert_eq!(
             Domain::Trackers.to_string(),

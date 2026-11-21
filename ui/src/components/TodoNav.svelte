@@ -15,12 +15,18 @@
   import { focusOnMount } from '../lib/focus'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import { colourItems, purposeItems } from '../lib/menus'
+  import {
+    colourItems,
+    goalAreaItems,
+    goalStatusItems,
+    projectStatusItems,
+    purposeItems,
+  } from '../lib/menus'
   import Icon from './Icon.svelte'
   import Symbol from './Symbol.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { IconName } from '../lib/icons'
-  import type { GoalId, Project, ProjectStatus } from '../lib/types'
+  import type { Goal, GoalId, Project } from '../lib/types'
 
   let creating = $state(false)
   let draft = $state('')
@@ -39,7 +45,7 @@
       : todo.scope.kind === scope.kind
   }
 
-  // Roles and goals load when the pane opens; the count beside the row has
+  // Areas and goals load when the pane opens; the count beside the row has
   // to be right before anybody has opened it, or the sidebar would read
   // "Goals" with nothing beside it until it was clicked once.
   // The same goes for how each goal is doing against its targets, which is
@@ -51,32 +57,63 @@
   const openGoals = $derived(purpose.openGoals.length)
 
   /**
-   * Every goal still being pursued, one row each, in role order.
+   * Every goal still being pursued, one row each, in area order.
    *
    * The count alone used to be all the sidebar said, so a goal written under
-   * a role showed up nowhere you could click it -- only as a number going up
-   * beside a row that opened the whole pane. Grouped by role without a
-   * heading per role: the role's glyph and colour on each row say which part
-   * of life it belongs to, and a sidebar with one subheading per role would
+   * an area showed up nowhere you could click it -- only as a number going up
+   * beside a row that opened the whole pane. Grouped by area without a
+   * heading per area: the area's glyph and colour on each row say which part
+   * of life it belongs to, and a sidebar with one subheading per area would
    * push the projects below the fold.
    */
   const goalRows = $derived(
-    purpose.activeRoles.flatMap((role) =>
+    purpose.activeAreas.flatMap((area) =>
       purpose.openGoals
-        .filter((g) => g.roleId === role.id)
+        .filter((g) => g.areaId === area.id)
         .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
-        .map((goal) => ({ goal, role })),
+        .map((goal) => ({ goal, area })),
     ),
   )
 
-  /** Open the goals pane with its rail already on this goal. */
-  async function openGoal(id: GoalId | null) {
-    purpose.selected = id
+  /** Every goal, grouped under its area, with no rail open. */
+  async function showAllGoals() {
+    purpose.selected = null
     await todo.setScope({ kind: 'goals' })
   }
 
-  function goalSelected(id: GoalId | null): boolean {
-    return todo.scope.kind === 'goals' && purpose.selected === id
+  /** One goal: the projects filed under it, as a project opens its tasks. */
+  async function openGoal(id: GoalId) {
+    await todo.setScope({ kind: 'goal', id })
+  }
+
+  function goalSelected(id: GoalId): boolean {
+    return todo.scope.kind === 'goal' && todo.scope.id === id
+  }
+
+  /**
+   * What a right-click on a goal offers: where it sits and how it is going,
+   * changed without opening anything.
+   */
+  function goalMenu(goal: Goal): MenuItem[] {
+    return tidyMenu([
+      {
+        label: 'Open goal',
+        icon: 'target',
+        disabled: goalSelected(goal.id),
+        run: () => openGoal(goal.id),
+      },
+      {
+        label: 'Targets and notes…',
+        icon: 'pencil',
+        run: async () => {
+          purpose.selected = goal.id
+          await todo.setScope({ kind: 'goals' })
+        },
+      },
+      SEP,
+      { label: 'Area', icon: 'compass', items: goalAreaItems(goal) },
+      { label: 'Status', icon: 'flag', items: goalStatusItems(goal) },
+    ])
   }
 
   async function create() {
@@ -107,13 +144,6 @@
     if (!p || !name || name === p.name) return
     await todo.saveProject({ ...$state.snapshot(p), name })
   }
-
-  const PROJECT_STATUSES: { id: ProjectStatus; label: string; hint?: string }[] = [
-    { id: 'active', label: 'Active' },
-    { id: 'paused', label: 'Paused' },
-    { id: 'done', label: 'Done' },
-    { id: 'archived', label: 'Archived', hint: 'hidden' },
-  ]
 
   /**
    * What a right-click on a project offers.
@@ -169,12 +199,9 @@
       {
         label: 'Status',
         icon: 'flag',
-        items: PROJECT_STATUSES.map((s) => ({
-          label: s.label,
-          hint: s.hint,
-          checked: p.status === s.id,
-          run: () => todo.saveProject({ ...$state.snapshot(p), status: s.id }),
-        })),
+        items: projectStatusItems(p.status, (status) =>
+          todo.saveProject({ ...$state.snapshot(p), status }),
+        ),
       },
       SEP,
       { label: 'Delete project…', icon: 'trash', danger: true, run: () => (pendingDelete = p) },
@@ -193,7 +220,7 @@
       },
       SEP,
       app.supportsOverview && {
-        label: 'Roles…',
+        label: 'Areas…',
         icon: 'compass',
         hint: 'in About You',
         run: () => panels.openSettings('profile'),
@@ -235,37 +262,38 @@
       <span class="eyebrow">Goals</span>
       <button
         class="side-add"
-        title="Roles, in Settings"
-        aria-label="Set up your roles"
+        title="Areas, in Settings"
+        aria-label="Set up your areas"
         onclick={() => panels.openSettings('profile')}
       >
         <Icon name="settings" size={14} />
       </button>
     </div>
-    <button class="side-row" class:sel={goalSelected(null)} onclick={() => openGoal(null)}>
+    <button class="side-row" class:sel={todo.scope.kind === 'goals'} onclick={showAllGoals}>
       <span class="side-icon"><Symbol name="target" size={16} /></span>
       <span class="side-text">What this is all for</span>
       {#if openGoals > 0}<span class="side-count">{openGoals}</span>{/if}
     </button>
-    {#each goalRows as { goal, role } (goal.id)}
+    {#each goalRows as { goal, area } (goal.id)}
       {@const measure = targets.headline(goal.id)}
       {@const words = measure ? describeProgress(measure.tracker, measure.progress) : null}
-      <!-- The role's colour is set on the whole row rather than on its dot,
+      <!-- The area's colour is set on the whole row rather than on its dot,
            because the meter in place of the dot is drawn in it too. -->
       <button
         class="side-row"
         class:sel={goalSelected(goal.id)}
         class:paused={goal.status === 'paused'}
-        style:--dot={role.color}
+        style:--dot={area.color}
         onclick={() => openGoal(goal.id)}
-        title="{role.name} · {goal.title}"
+        oncontextmenu={(e) => menu.show(e, goalMenu(goal))}
+        title="{area.name} · {goal.title}"
       >
         <span class="side-icon">
-          {#if role.icon}{role.icon}{:else}<Symbol name="target" size={15} />{/if}
+          {#if area.icon}{area.icon}{:else}<Symbol name="target" size={15} />{/if}
         </span>
         <span class="side-text">{goal.title}</span>
         {#if words}
-          <!-- Its first target, this period: a fill in the role's colour and
+          <!-- Its first target, this period: a fill in the area's colour and
                the numbers beside it, so the bar is never the only reading.
                Past a limit is the one state drawn in the danger colour, and
                it says so in the tooltip as well. -->

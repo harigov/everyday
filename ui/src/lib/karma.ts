@@ -78,8 +78,8 @@ export function karmaOf(tracker: Tracker): number {
   return Math.max(-HABIT_LIMIT, Math.min(HABIT_LIMIT, Math.trunc(k)))
 }
 
-/** What a finished task is worth: more when it was filed under a goal or a
- *  role. */
+/** What a finished task is worth: more when it was filed under a goal or an
+ *  area. */
 export function taskPoints(purposed: boolean): number {
   return TASK_POINTS + (purposed ? TASK_PURPOSE_BONUS : 0)
 }

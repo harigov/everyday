@@ -131,7 +131,7 @@ impl Vault {
     /// Replace whatever secret this account has stored.
     ///
     /// Whole-record rather than field-by-field, on the same reasoning
-    /// `save_role` and every other `save_*` here takes: the caller read the
+    /// `save_area` and every other `save_*` here takes: the caller read the
     /// current value first (or is deliberately starting fresh, as sign-in
     /// does), and a partial update would invite two writers to clobber each
     /// other's half of it.

@@ -149,7 +149,7 @@ export interface CreateDeps {
   assistant: AssistantLike
   /** The conversation, which is what the Assistant app starts a new one of. */
   agent: AgentLike
-  /** The todo app's goals pane has no task line to put a cursor in -- see
+  /** The todo app's goal panes have no task line to put a cursor in -- see
    *  `shortcuts.svelte.ts`'s own `focusNewGoal`. */
   focusNewGoal: () => void
 }
@@ -215,14 +215,15 @@ export const APPS: Record<Section, AppModule> = {
     symbol: 'check',
     supported: (app) => app.supportsTasks,
     accent: (d) => d.todo.accent,
-    // The goals pane has no task line to put a cursor in, and the next
-    // thing somebody wants there is a goal.
-    create: (d) => (d.todo.showingGoals ? d.focusNewGoal() : d.todo.focusCapture()),
+    // The goal panes have no task line to put a cursor in, and the next
+    // thing somebody wants there is a goal -- or, in one goal's pane, a
+    // project under it.
+    create: (d) => (d.todo.showingTasks ? d.todo.focusCapture() : d.focusNewGoal()),
     onScreen: (d) => d.todo.showing,
-    // The goals pane lists goals, not tasks, so there is nothing for a task
-    // filter to narrow there.
+    // The goal panes list goals and projects, not tasks, so there is
+    // nothing for a task filter to narrow there.
     search: (d) =>
-      d.todo.showingGoals
+      !d.todo.showingTasks
         ? null
         : {
             placeholder: d.todo.project ? `Filter tasks in ${d.todo.project.name}` : 'Filter tasks',

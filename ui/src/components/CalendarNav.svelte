@@ -207,14 +207,14 @@
         items: colourItems(cal.color, (color) => calendar.setCalendarColor(cal.id, color)),
       },
       {
-        // Roles only: a feed serves one, and its events are not each yours
+        // Areas only: a feed serves one, and its events are not each yours
         // to file under a goal.
         label: 'Serves',
         icon: 'compass',
         items: purposeItems(
-          cal.roleId ? { type: 'role', id: cal.roleId } : null,
-          (next) => calendar.setCalendarRole(cal.id, next?.type === 'role' ? next.id : null),
-          { rolesOnly: true },
+          cal.areaId ? { type: 'area', id: cal.areaId } : null,
+          (next) => calendar.setCalendarArea(cal.id, next?.type === 'area' ? next.id : null),
+          { areasOnly: true },
         ),
       },
       SEP,

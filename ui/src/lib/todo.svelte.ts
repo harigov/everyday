@@ -41,9 +41,11 @@ import {
   type Zone,
 } from './tasklist'
 import type {
+  GoalId,
   Priority,
   Project,
   ProjectId,
+  Purpose,
   Proposal,
   ProposalId,
   TagCount,
@@ -76,7 +78,7 @@ export type Scope =
   | { kind: 'all' }
   | { kind: 'project'; id: ProjectId }
   /**
-   * Goals, grouped under the roles they belong to.
+   * Goals, grouped under the areas they belong to.
    *
    * The odd one out: it selects no tasks at all, and the pane it opens is
    * not a task list. It is here rather than in its own app because a goal is
@@ -86,6 +88,14 @@ export type Scope =
    * task query for this scope entirely; see `query`.
    */
   | { kind: 'goals' }
+  /**
+   * One goal, and the projects filed under it.
+   *
+   * What a project is to its tasks, a goal is to its projects: picking one
+   * in the sidebar lists the work it is for, and a project picked from that
+   * list opens its own tasks. Like `goals`, it selects no tasks itself.
+   */
+  | { kind: 'goal'; id: GoalId }
 
 export type View = 'list' | 'board'
 export type { GroupBy }
@@ -274,7 +284,7 @@ class TodoState {
       async (isCurrent) => {
         const [projects, tasks, stats, tags] = await Promise.all([
           api.projects(),
-          this.showingGoals ? Promise.resolve([]) : api.tasks(this.query()),
+          this.showingTasks ? api.tasks(this.query()) : Promise.resolve([]),
           api.taskStats(),
           api.taskTags(),
         ])
@@ -327,7 +337,8 @@ class TodoState {
       case 'all':
         return base
       case 'goals':
-        // Nothing. The goals pane draws no task list, and asking for two
+      case 'goal':
+        // Nothing. Neither goal pane draws a task list, and asking for two
         // thousand tasks to throw them away would be a query per switch to
         // a pane that never reads the answer.
         return { ...base, limit: 0 }
@@ -343,7 +354,7 @@ class TodoState {
     // lists are date queries, and dragging a card between columns in one
     // would silently change a status the list was not filtered on.
     if (!this.boardable && this.view === 'board') this.view = 'list'
-    // The goals pane reads roles, goals and what has happened against each.
+    // The goals pane reads areas, goals and what has happened against each.
     // Loaded on the way in rather than by the component, so that arriving
     // from a widget with a goal already selected does not draw an empty
     // rail for a frame.
@@ -351,12 +362,26 @@ class TodoState {
       await purpose.load()
       await Promise.all([purpose.refreshActivity(), targets.refresh()])
     }
+    // One goal's pane draws its name, its area and the projects under it --
+    // nothing of what has happened against every goal, which is a round
+    // trip per goal and not worth making for a page that never reads it.
+    if (scope.kind === 'goal') await purpose.load()
     await this.refresh()
   }
 
-  /** Is the pane a list of tasks at all? */
+  /** Is the pane the list of every goal? */
   get showingGoals(): boolean {
     return this.scope.kind === 'goals'
+  }
+
+  /** The goal whose projects the pane is listing, if it is listing any. */
+  get goal(): GoalId | null {
+    return this.scope.kind === 'goal' ? this.scope.id : null
+  }
+
+  /** Is the pane a list of tasks at all? Neither goal pane is. */
+  get showingTasks(): boolean {
+    return this.scope.kind !== 'goals' && this.scope.kind !== 'goal'
   }
 
   /** Can this scope be shown as a board? */
@@ -529,11 +554,18 @@ class TodoState {
     if (this.showingGoals) {
       const goal = purpose.goal(purpose.selected)
       return {
-        view: 'goals, grouped by role',
+        view: 'goals, grouped by area',
         open: seen('goal', goal?.id, goal?.title ?? ''),
       }
     }
-    const scope: Record<Exclude<Scope['kind'], 'project' | 'goals'>, string> = {
+    if (this.scope.kind === 'goal') {
+      const goal = purpose.goal(this.scope.id)
+      return {
+        view: 'the projects filed under a goal',
+        within: seen('goal', goal?.id, goal?.title ?? ''),
+      }
+    }
+    const scope: Record<Exclude<Scope['kind'], 'project' | 'goals' | 'goal'>, string> = {
       today: 'Today',
       upcoming: 'Upcoming',
       inbox: 'the inbox, tasks in no project',
@@ -964,6 +996,9 @@ class TodoState {
         return { kind: 'upcoming', to: addDays(todayIso(), UPCOMING_DAYS) }
       case 'project':
         return { kind: 'project', id: this.scope.id }
+      case 'goal':
+        // A goal's pane draws projects, not tasks, so no ghost lands on it.
+        return { kind: 'goals' }
       default:
         return { kind: this.scope.kind }
     }
@@ -1056,14 +1091,25 @@ class TodoState {
 
   // ── projects ─────────────────────────────────────────────────────────
 
-  async newProject(name: string, color: string): Promise<boolean> {
+  /**
+   * Make a project and open it -- or, given a purpose, file it there and stay
+   * where the caller is: a project added from a goal's pane belongs in that
+   * goal's list, which is what somebody adding it is looking at.
+   */
+  async newProject(name: string, color: string, filedUnder?: Purpose): Promise<boolean> {
     try {
       const project = await api.newProject(name)
       project.color = color
       project.sortOrder = this.projects.length
+      if (filedUnder) project.purpose = filedUnder
       await api.saveProject($state.snapshot(project))
       this.projects = [...this.projects, project]
-      await this.setScope({ kind: 'project', id: project.id })
+      if (filedUnder) {
+        void targets.refresh()
+        void this.refreshStats()
+      } else {
+        await this.setScope({ kind: 'project', id: project.id })
+      }
       return true
     } catch (e) {
       await handle(e)
@@ -1103,6 +1149,16 @@ class TodoState {
   /** Projects worth showing in the sidebar: everything not archived. */
   get liveProjects(): Project[] {
     return this.projects.filter((p) => p.status !== 'archived')
+  }
+
+  /**
+   * The projects filed directly under one goal, in sidebar order.
+   *
+   * Directly: a project filed under the goal's area, or under nothing, is
+   * not this goal's work however its tasks are filed.
+   */
+  projectsUnder(goal: GoalId): Project[] {
+    return this.projects.filter((p) => p.purpose?.type === 'goal' && p.purpose.id === goal)
   }
 
   /**

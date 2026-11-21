@@ -483,7 +483,7 @@ struct Subject {
 /// hour before it and not at breakfast.
 fn subjects_for(vault: &Arc<Vault>, routine: &Routine, now: &jiff::Zoned) -> Vec<Subject> {
     match &routine.trigger {
-        Trigger::BeforeEvent { lead_minutes, role_id } => {
+        Trigger::BeforeEvent { lead_minutes, area_id } => {
             let lead = i64::from(*lead_minutes) * 60;
             let window_end = now.timestamp().as_second() + lead;
             // Two days of events, filtered by the instant. The query is by
@@ -497,15 +497,15 @@ fn subjects_for(vault: &Arc<Vault>, routine: &Routine, now: &jiff::Zoned) -> Vec
             }) else {
                 return Vec::new();
             };
-            // A role narrows by *calendar*, because that is where a role is
+            // An area narrows by *calendar*, because that is where an area is
             // filed: a work feed is work, and its events do not each carry
             // their own answer.
-            let allowed: Option<std::collections::HashSet<_>> = role_id.map(|role| {
+            let allowed: Option<std::collections::HashSet<_>> = area_id.map(|area| {
                 vault
                     .calendars()
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|c| c.role_id == Some(role))
+                    .filter(|c| c.area_id == Some(area))
                     .map(|c| c.id)
                     .collect()
             });

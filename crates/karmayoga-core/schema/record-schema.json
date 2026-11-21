@@ -817,6 +817,61 @@
     "title": "Allergy",
     "type": "object"
   },
+  "Area": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "A part of your life. A handful of these, changing about once a year.",
+    "properties": {
+      "archived": {
+        "default": false,
+        "description": "Retired: kept for its history, gone from the pickers.\n\nThe alternative — deleting it — would take every goal under it, and\nwith them the attribution of a year of hours. That is the wrong\nanswer to \"I changed jobs in March\".",
+        "type": "boolean"
+      },
+      "color": {
+        "description": "`#rrggbb`. The axis colour of every balance chart, so it is identity\nrather than decoration — two areas the same colour makes the one\nreport this domain exists for unreadable.",
+        "type": "string"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "icon": {
+        "description": "A short emoji or glyph shown next to the name.",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "notes": {
+        "default": "",
+        "description": "What this part of your life means to you, in your own words. Plain\ntext: it is read in a sidebar, not edited in an editor.",
+        "type": "string"
+      },
+      "sortOrder": {
+        "default": 0,
+        "description": "Manual ordering in the sidebar; ties broken by `name`.",
+        "format": "int32",
+        "type": "integer"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "color",
+      "icon",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Area",
+    "type": "object"
+  },
   "BankAccount": {
     "$defs": {
       "AccountKind": {
@@ -1200,6 +1255,14 @@
         },
         "description": "Sync state for an account calendar: a sync-token, or the etags an\netag-diff fallback compares against. Always empty for a `Url` or\n`File` origin, which have no such state to remember. `#[serde(default)]`\nso a calendar sealed before this field existed still deserialises."
       },
+      "areaId": {
+        "description": "Which area this feed serves.\n\nAn area rather than a [`Purpose`](crate::purpose::Purpose), because a\nfeed is not filed under one outcome: a work calendar is work, and the\nforty meetings on it are not each yours to attribute. It is the\ncheapest large win in the whole balance report — one click here\nattributes a year of somebody else's claims on your time.\n\nSealed as `roleId` by builds from before areas were renamed from\nroles; the alias reads those.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "color": {
         "description": "`#rrggbb`. Every event on this calendar is drawn in it, which is the\nwhole of how you tell four calendars apart at a glance.",
         "type": "string"
@@ -1251,14 +1314,6 @@
         "format": "uint32",
         "minimum": 0,
         "type": "integer"
-      },
-      "roleId": {
-        "description": "Which role this feed serves.\n\nA role rather than a [`Purpose`](crate::purpose::Purpose), because a\nfeed is not filed under one outcome: a work calendar is work, and the\nforty meetings on it are not each yours to attribute. It is the\ncheapest large win in the whole balance report — one click here\nattributes a year of somebody else's claims on your time.",
-        "format": "uuid",
-        "type": [
-          "string",
-          "null"
-        ]
       },
       "thisComputerOff": {
         "description": "Set on the default calendar when the person has switched this\ncomputer off as a calendar: new events go here and never to this\ncomputer's own time blocks -- not from the grid, not from the command\nbar, not from the assistant, which is then not told this computer is a\ncalendar at all.\n\nOn the default rather than a setting of its own because that is the\none state in which it means anything: this computer can only be\nswitched off while new events have somewhere else to go, so the switch\nrides with the default -- [`crate::vault::Vault::set_default_calendar`]\nmoves it from one account calendar to the next -- and goes when the\ndefault does. Only [`crate::vault::Vault::set_this_computer`] sets it.\nBlocks already on this computer stay where they are: timer sessions and\ntime booked against a task are records of time spent, not events.",
@@ -2672,7 +2727,7 @@
         "type": "string"
       },
       "Purpose": {
-        "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
+        "description": "What a record is *for*.\n\nPointing at an area directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves family and no particular outcome, and\nan hour of it should count against that area rather than against nothing\nat all.",
         "oneOf": [
           {
             "properties": {
@@ -2692,13 +2747,14 @@
             "type": "object"
           },
           {
+            "description": "Tagged `\"role\"` in every sealed payload written before areas were\nrenamed from roles, which the alias reads.",
             "properties": {
               "id": {
                 "format": "uuid",
                 "type": "string"
               },
               "type": {
-                "const": "role",
+                "const": "area",
                 "type": "string"
               }
             },
@@ -3723,7 +3779,7 @@
   "Goal": {
     "$defs": {
       "GoalStatus": {
-        "description": "How a goal is going.\n\nA closed set, and the same closed set for every role, which is the\nargument [`TaskStatus`](crate::task::TaskStatus) and\n[`ItemStatus`](crate::library::ItemStatus) both make: \"how long do my\ngoals sit paused\" has to be askable across a whole life at once, and\nper-role vocabularies would make it unanswerable.",
+        "description": "How a goal is going.\n\nA closed set, and the same closed set for every area, which is the\nargument [`TaskStatus`](crate::task::TaskStatus) and\n[`ItemStatus`](crate::library::ItemStatus) both make: \"how long do my\ngoals sit paused\" has to be askable across a whole life at once, and\nper-area vocabularies would make it unanswerable.",
         "oneOf": [
           {
             "enum": [
@@ -3746,8 +3802,13 @@
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "An outcome you want, under a role.",
+    "description": "An outcome you want, under an area.",
     "properties": {
+      "areaId": {
+        "description": "Every goal belongs to exactly one area. Not optional: a goal with no\narea is a task, and this app already has those.\n\nSealed payloads written before areas were renamed from roles say\n`roleId`; the alias reads them.",
+        "format": "uuid",
+        "type": "string"
+      },
       "completedAt": {
         "format": "date-time",
         "type": [
@@ -3776,14 +3837,9 @@
         "description": "What \"done\" looks like, in your own words. Plain text, for the reason\na task's notes are: it keeps the record cheap to make.",
         "type": "string"
       },
-      "roleId": {
-        "description": "Every goal belongs to exactly one role. Not optional: a goal with no\nrole is a task, and this app already has those.",
-        "format": "uuid",
-        "type": "string"
-      },
       "sortOrder": {
         "default": 0,
-        "description": "Manual ordering within its role; ties broken by `title`.",
+        "description": "Manual ordering within its area; ties broken by `title`.",
         "format": "int32",
         "type": "integer"
       },
@@ -3800,7 +3856,7 @@
     },
     "required": [
       "id",
-      "roleId",
+      "areaId",
       "title",
       "status",
       "createdAt",
@@ -4706,7 +4762,7 @@
         "type": "object"
       },
       "Purpose": {
-        "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
+        "description": "What a record is *for*.\n\nPointing at an area directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves family and no particular outcome, and\nan hour of it should count against that area rather than against nothing\nat all.",
         "oneOf": [
           {
             "properties": {
@@ -4726,13 +4782,14 @@
             "type": "object"
           },
           {
+            "description": "Tagged `\"role\"` in every sealed payload written before areas were\nrenamed from roles, which the alias reads.",
             "properties": {
               "id": {
                 "format": "uuid",
                 "type": "string"
               },
               "type": {
-                "const": "role",
+                "const": "area",
                 "type": "string"
               }
             },
@@ -5472,7 +5529,7 @@
         "type": "string"
       },
       "Purpose": {
-        "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
+        "description": "What a record is *for*.\n\nPointing at an area directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves family and no particular outcome, and\nan hour of it should count against that area rather than against nothing\nat all.",
         "oneOf": [
           {
             "properties": {
@@ -5492,13 +5549,14 @@
             "type": "object"
           },
           {
+            "description": "Tagged `\"role\"` in every sealed payload written before areas were\nrenamed from roles, which the alias reads.",
             "properties": {
               "id": {
                 "format": "uuid",
                 "type": "string"
               },
               "type": {
-                "const": "role",
+                "const": "area",
                 "type": "string"
               }
             },
@@ -5823,7 +5881,7 @@
             "type": "object"
           },
           {
-            "description": "Minutes of actual time blocks filed under the tracker's own\n[`purpose`](Tracker::purpose), by the block's own pointer or its\ntask's or project's — the chain the balance report follows. A\ntracker filed under a role counts that role's goals too.",
+            "description": "Minutes of actual time blocks filed under the tracker's own\n[`purpose`](Tracker::purpose), by the block's own pointer or its\ntask's or project's — the chain the balance report follows. A\ntracker filed under an area counts that area's goals too.",
             "properties": {
               "type": {
                 "const": "time",
@@ -6161,7 +6219,7 @@
           },
           {
             "const": "time",
-            "description": "Time recorded against a goal or a role.",
+            "description": "Time recorded against a goal or an area.",
             "type": "string"
           },
           {
@@ -8444,7 +8502,7 @@
         ]
       },
       "Purpose": {
-        "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
+        "description": "What a record is *for*.\n\nPointing at an area directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves family and no particular outcome, and\nan hour of it should count against that area rather than against nothing\nat all.",
         "oneOf": [
           {
             "properties": {
@@ -8464,13 +8522,14 @@
             "type": "object"
           },
           {
+            "description": "Tagged `\"role\"` in every sealed payload written before areas were\nrenamed from roles, which the alias reads.",
             "properties": {
               "id": {
                 "format": "uuid",
                 "type": "string"
               },
               "type": {
-                "const": "role",
+                "const": "area",
                 "type": "string"
               }
             },
@@ -9103,7 +9162,7 @@
         ]
       },
       "Purpose": {
-        "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
+        "description": "What a record is *for*.\n\nPointing at an area directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves family and no particular outcome, and\nan hour of it should count against that area rather than against nothing\nat all.",
         "oneOf": [
           {
             "properties": {
@@ -9123,13 +9182,14 @@
             "type": "object"
           },
           {
+            "description": "Tagged `\"role\"` in every sealed payload written before areas were\nrenamed from roles, which the alias reads.",
             "properties": {
               "id": {
                 "format": "uuid",
                 "type": "string"
               },
               "type": {
-                "const": "role",
+                "const": "area",
                 "type": "string"
               }
             },
@@ -10696,7 +10756,7 @@
         ]
       },
       "Purpose": {
-        "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
+        "description": "What a record is *for*.\n\nPointing at an area directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves family and no particular outcome, and\nan hour of it should count against that area rather than against nothing\nat all.",
         "oneOf": [
           {
             "properties": {
@@ -10716,13 +10776,14 @@
             "type": "object"
           },
           {
+            "description": "Tagged `\"role\"` in every sealed payload written before areas were\nrenamed from roles, which the alias reads.",
             "properties": {
               "id": {
                 "format": "uuid",
                 "type": "string"
               },
               "type": {
-                "const": "role",
+                "const": "area",
                 "type": "string"
               }
             },
@@ -11263,18 +11324,18 @@
           {
             "description": "Before an event on the calendar starts.\n\nEvaluated as a *query* on each tick rather than as a clock slot: the\nevents it is about arrive from somebody else's server, so there is no\nmoment to compute in advance. See [`Trigger::is_clock`].",
             "properties": {
-              "leadMinutes": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "roleId": {
-                "description": "Only events on a calendar filed under this role. `None` is any.",
+              "areaId": {
+                "description": "Only events on a calendar filed under this area. `None` is any.\n`roleId` in a routine saved before areas were renamed from roles.",
                 "format": "uuid",
                 "type": [
                   "string",
                   "null"
                 ]
+              },
+              "leadMinutes": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "type": {
                 "const": "beforeEvent",
@@ -11913,61 +11974,6 @@
     "title": "Recording",
     "type": "object"
   },
-  "Role": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "Who you are being. A handful of these, changing about once a year.",
-    "properties": {
-      "archived": {
-        "default": false,
-        "description": "Retired: kept for its history, gone from the pickers.\n\nThe alternative — deleting it — would take every goal under it, and\nwith them the attribution of a year of hours. That is the wrong\nanswer to \"I changed jobs in March\".",
-        "type": "boolean"
-      },
-      "color": {
-        "description": "`#rrggbb`. The axis colour of every balance chart, so it is identity\nrather than decoration — two roles the same colour makes the one\nreport this domain exists for unreadable.",
-        "type": "string"
-      },
-      "createdAt": {
-        "format": "date-time",
-        "type": "string"
-      },
-      "icon": {
-        "description": "A short emoji or glyph shown next to the name.",
-        "type": "string"
-      },
-      "id": {
-        "format": "uuid",
-        "type": "string"
-      },
-      "name": {
-        "type": "string"
-      },
-      "notes": {
-        "default": "",
-        "description": "What being this means to you, in your own words. Plain text: it is\nread in a sidebar, not edited in an editor.",
-        "type": "string"
-      },
-      "sortOrder": {
-        "default": 0,
-        "description": "Manual ordering in the sidebar; ties broken by `name`.",
-        "format": "int32",
-        "type": "integer"
-      },
-      "updatedAt": {
-        "format": "date-time",
-        "type": "string"
-      }
-    },
-    "required": [
-      "id",
-      "name",
-      "color",
-      "icon",
-      "createdAt",
-      "updatedAt"
-    ],
-    "title": "Role",
-    "type": "object"
-  },
   "Routine": {
     "$defs": {
       "Delivery": {
@@ -12116,18 +12122,18 @@
           {
             "description": "Before an event on the calendar starts.\n\nEvaluated as a *query* on each tick rather than as a clock slot: the\nevents it is about arrive from somebody else's server, so there is no\nmoment to compute in advance. See [`Trigger::is_clock`].",
             "properties": {
-              "leadMinutes": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "roleId": {
-                "description": "Only events on a calendar filed under this role. `None` is any.",
+              "areaId": {
+                "description": "Only events on a calendar filed under this area. `None` is any.\n`roleId` in a routine saved before areas were renamed from roles.",
                 "format": "uuid",
                 "type": [
                   "string",
                   "null"
                 ]
+              },
+              "leadMinutes": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "type": {
                 "const": "beforeEvent",
@@ -12817,7 +12823,7 @@
         "type": "string"
       },
       "Purpose": {
-        "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
+        "description": "What a record is *for*.\n\nPointing at an area directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves family and no particular outcome, and\nan hour of it should count against that area rather than against nothing\nat all.",
         "oneOf": [
           {
             "properties": {
@@ -12837,13 +12843,14 @@
             "type": "object"
           },
           {
+            "description": "Tagged `\"role\"` in every sealed payload written before areas were\nrenamed from roles, which the alias reads.",
             "properties": {
               "id": {
                 "format": "uuid",
                 "type": "string"
               },
               "type": {
-                "const": "role",
+                "const": "area",
                 "type": "string"
               }
             },
@@ -13492,7 +13499,7 @@
         "type": "string"
       },
       "Purpose": {
-        "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
+        "description": "What a record is *for*.\n\nPointing at an area directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves family and no particular outcome, and\nan hour of it should count against that area rather than against nothing\nat all.",
         "oneOf": [
           {
             "properties": {
@@ -13512,13 +13519,14 @@
             "type": "object"
           },
           {
+            "description": "Tagged `\"role\"` in every sealed payload written before areas were\nrenamed from roles, which the alias reads.",
             "properties": {
               "id": {
                 "format": "uuid",
                 "type": "string"
               },
               "type": {
-                "const": "role",
+                "const": "area",
                 "type": "string"
               }
             },
@@ -13775,7 +13783,7 @@
         "type": "string"
       },
       "Purpose": {
-        "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
+        "description": "What a record is *for*.\n\nPointing at an area directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves family and no particular outcome, and\nan hour of it should count against that area rather than against nothing\nat all.",
         "oneOf": [
           {
             "properties": {
@@ -13795,13 +13803,14 @@
             "type": "object"
           },
           {
+            "description": "Tagged `\"role\"` in every sealed payload written before areas were\nrenamed from roles, which the alias reads.",
             "properties": {
               "id": {
                 "format": "uuid",
                 "type": "string"
               },
               "type": {
-                "const": "role",
+                "const": "area",
                 "type": "string"
               }
             },
@@ -14011,7 +14020,7 @@
             "type": "object"
           },
           {
-            "description": "Minutes of actual time blocks filed under the tracker's own\n[`purpose`](Tracker::purpose), by the block's own pointer or its\ntask's or project's — the chain the balance report follows. A\ntracker filed under a role counts that role's goals too.",
+            "description": "Minutes of actual time blocks filed under the tracker's own\n[`purpose`](Tracker::purpose), by the block's own pointer or its\ntask's or project's — the chain the balance report follows. A\ntracker filed under an area counts that area's goals too.",
             "properties": {
               "type": {
                 "const": "time",

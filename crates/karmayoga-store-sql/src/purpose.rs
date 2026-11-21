@@ -1,13 +1,22 @@
-//! The purpose domain: roles, goals, and the reports every other table feeds.
+//! The purpose domain: areas, goals, and the reports every other table feeds.
 //!
 //! What stays in the clear here is only what an index is built from — which
-//! role a goal is under, its status, its horizon, the ordering, and the
-//! archived flag. Every word is sealed: the name of the role, the title of
+//! area a goal is under, its status, its horizon, the ordering, and the
+//! archived flag. Every word is sealed: the name of the area, the title of
 //! the goal, the notes under both. The file can say that goal `7f3a` is
-//! active under role `91c0` with a horizon in March and that three hours
+//! active under area `91c0` with a horizon in March and that three hours
 //! went to it on Tuesday. It cannot say that `91c0` is "parent", which is
 //! the whole of what somebody holding the database would actually want to
 //! know.
+//!
+//! # The tables still say role
+//!
+//! Areas were called roles until November 2026, and the tables were not
+//! renamed with them: the table is `roles`, a goal's area is `goals.role_id`,
+//! and an area in `purposes.purpose_kind` is `role`. A table rename is not
+//! something a re-runnable step can do in SQL both backends accept, every
+//! row already written says `role`, and nobody reads these names but this
+//! file. Schema step 34 marks the rename without touching any of it.
 //!
 //! # The one interesting query
 //!
@@ -26,12 +35,12 @@
 //! either column, and it always writes both.
 
 use karmayoga_core::error::{Error, Result};
-use karmayoga_core::id::{GoalId, RoleId};
+use karmayoga_core::id::{AreaId, GoalId};
 use karmayoga_core::purpose::{
-    Goal, GoalActivity, Purpose, PurposeDayMinutes, PurposeMinutes, Role, RoleEventMinutes,
+    Area, AreaEventMinutes, Goal, GoalActivity, Purpose, PurposeDayMinutes, PurposeMinutes,
 };
 use karmayoga_core::record::RecordKind;
-use karmayoga_core::store::purpose::{GoalQuery, PurposeStore, PurposeWindow, goal_aad, role_aad};
+use karmayoga_core::store::purpose::{GoalQuery, PurposeStore, PurposeWindow, area_aad, goal_aad};
 
 use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
 use crate::record::Record;
@@ -97,7 +106,7 @@ fn purpose_column(kind: RecordKind) -> &'static str {
     kind.purpose_column().unwrap_or_else(|| panic!("{kind:?} has no purposes.record_kind column"))
 }
 
-impl Record for Role {
+impl Record for Area {
     const TABLE: &'static str = "roles";
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
@@ -115,7 +124,7 @@ impl Record for Goal {
 
     fn columns(&self) -> Vec<(&'static str, Value)> {
         vec![
-            ("role_id", self.role_id.to_string().to_value()),
+            ("role_id", self.area_id.to_string().to_value()),
             ("status", self.status.as_str().to_value()),
             ("horizon", date_str(self.horizon).to_value()),
             ("sort_order", self.sort_order.to_value()),
@@ -127,32 +136,32 @@ impl Record for Goal {
 }
 
 impl PurposeStore for SqlStore {
-    // ---- roles ----------------------------------------------------------
+    // ---- areas ----------------------------------------------------------
 
-    fn list_roles(&self) -> Result<Vec<Role>> {
+    fn list_areas(&self) -> Result<Vec<Area>> {
         let rows = self
             .read()
             .records("SELECT id, data FROM roles ORDER BY sort_order, created_us", &[])?;
-        self.collect(rows, role_aad)
+        self.collect(rows, area_aad)
     }
 
-    fn get_role(&self, id: RoleId) -> Result<Role> {
+    fn get_area(&self, id: AreaId) -> Result<Area> {
         self.get(id)
     }
 
-    fn put_role(&self, role: &Role) -> Result<()> {
-        // The name and the colour are inside `data`. A database whose roles
-        // table said "parent" and "recovering alcoholic" would be telling
+    fn put_area(&self, area: &Area) -> Result<()> {
+        // The name and the colour are inside `data`. A database whose areas
+        // (`roles`) table said "parent" and "recovering alcoholic" would be telling
         // somebody a great deal more than a list of shelf names would.
-        self.upsert(role)
+        self.upsert(area)
     }
 
-    fn delete_role(&self, id: RoleId) -> Result<()> {
+    fn delete_area(&self, id: AreaId) -> Result<()> {
         // Refused rather than cascaded, and the count is in the message so
         // the interface can say what is in the way rather than "no". See the
         // trait's module docs for why this one parent does not take its
         // children with it. Counted and deleted in one transaction, so
-        // nothing can file a goal under this role between the count that
+        // nothing can file a goal under this area between the count that
         // cleared it and the delete that follows.
         let mut conn = self.write();
         let mut tx = conn.begin()?;
@@ -160,7 +169,7 @@ impl PurposeStore for SqlStore {
             tx.scalar_i64("SELECT COUNT(*) FROM goals WHERE role_id = ?1", &vals![id.to_string()])?;
         if goals > 0 {
             return Err(Error::Invalid(format!(
-                "this role still has {goals} goal{} under it. Move them to another role, \
+                "this area still has {goals} goal{} under it. Move them to another area, \
                  or archive this one to keep its history.",
                 if goals == 1 { "" } else { "s" }
             )));
@@ -173,8 +182,8 @@ impl PurposeStore for SqlStore {
 
     fn list_goals(&self, query: &GoalQuery) -> Result<Vec<Goal>> {
         let mut w = Where::new();
-        if let Some(role) = query.role_id {
-            w = w.eq("role_id", role.to_string());
+        if let Some(area) = query.area_id {
+            w = w.eq("role_id", area.to_string());
         }
         if !query.statuses.is_empty() {
             w = w.in_list("status", query.statuses.iter().map(|s| s.as_str()));
@@ -217,9 +226,9 @@ impl PurposeStore for SqlStore {
         Ok(())
     }
 
-    fn count_goals(&self, role: RoleId) -> Result<(u64, u64)> {
+    fn count_goals(&self, area: AreaId) -> Result<(u64, u64)> {
         let mut conn = self.read();
-        let id = vals![role.to_string()];
+        let id = vals![area.to_string()];
         let all = conn.scalar_i64("SELECT COUNT(*) FROM goals WHERE role_id = ?1", &id)?;
         let open = conn.scalar_i64(
             "SELECT COUNT(*) FROM goals WHERE role_id = ?1 AND status IN ('active', 'paused')",
@@ -334,7 +343,7 @@ impl PurposeStore for SqlStore {
             .collect()
     }
 
-    fn events_by_role(&self, window: PurposeWindow) -> Result<Vec<RoleEventMinutes>> {
+    fn events_by_area(&self, window: PurposeWindow) -> Result<Vec<AreaEventMinutes>> {
         // Events overlap the window rather than start in it, which is the
         // same two-column test the calendar's own week query uses: a holiday
         // that began last Thursday is still this week's.
@@ -353,12 +362,12 @@ impl PurposeStore for SqlStore {
             self.read().query(&sql, &vals![window.from.to_string(), window.to.to_string()])?;
         rows.into_iter()
             .map(|row| {
-                // A calendar's row is always `role`-kinded, so the id column
-                // alone is enough here. An unparseable one reads as no role
+                // A calendar's row is always an area's (`role`-kinded), so the id column
+                // alone is enough here. An unparseable one reads as no area
                 // rather than as an error: the week still has to draw.
-                let role_id = row.opt_text(0)?.and_then(|id| RoleId::parse(&id).ok());
-                Ok(RoleEventMinutes {
-                    role_id,
+                let area_id = row.opt_text(0)?.and_then(|id| AreaId::parse(&id).ok());
+                Ok(AreaEventMinutes {
+                    area_id,
                     minutes: (row.i64(1)?.max(0) / 1_000_000 / 60) as u64,
                     events: row.u64(2)?,
                 })

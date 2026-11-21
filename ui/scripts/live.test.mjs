@@ -59,7 +59,7 @@ const KINDS = [
   'log',
   'tracker',
   'reading',
-  'role',
+  'area',
   'goal',
   'conversation',
   'memory',
@@ -121,7 +121,7 @@ assert.deepEqual(targetsFor(['tracker', 'reading']), ['tracking'])
 // The two purpose records. They are stored once and read in three places --
 // the todo app's goals pane, every purpose picker, the Overview -- so one
 // batch carrying both is one reload of the store that holds them.
-assert.deepEqual(targetsFor(['role', 'goal']), ['purpose'])
+assert.deepEqual(targetsFor(['area', 'goal']), ['purpose'])
 
 // Distinct stores stay distinct.
 assert.deepEqual(new Set(targetsFor(['task', 'item'])), new Set(['todo', 'library']))

@@ -43,19 +43,19 @@ assert.equal(app.screen, 'main', 'the mock vault should open unlocked')
 
 assert.equal(purpose.loading, false)
 await purpose.load()
-assert.ok(purpose.roles.length > 0, 'the mock vault ships with roles')
+assert.ok(purpose.areas.length > 0, 'the mock vault ships with areas')
 assert.ok(purpose.goals.length > 0, 'and with goals under them')
 assert.equal(purpose.loading, false, 'loading settles back to false once the load lands')
 
 // Called again without `force`, it is a no-op -- `#loaded` short-circuits it
 // before a token is even minted.
-const rolesBefore = purpose.roles
+const areasBefore = purpose.areas
 await purpose.load()
-assert.ok(purpose.roles === rolesBefore, 'a second load without force does not re-fetch')
+assert.ok(purpose.areas === areasBefore, 'a second load without force does not re-fetch')
 
 // `force` re-fetches even though it is already loaded.
 await purpose.load(true)
-assert.ok(purpose.roles.length > 0)
+assert.ok(purpose.areas.length > 0)
 
 // ── refreshActivity ──────────────────────────────────────────────────
 
@@ -69,14 +69,14 @@ assert.ok(
 // ── reset ────────────────────────────────────────────────────────────
 
 purpose.reset()
-assert.deepEqual(purpose.roles, [])
+assert.deepEqual(purpose.areas, [])
 assert.deepEqual(purpose.goals, [])
 assert.equal(purpose.activity.size, 0)
 
 // A load after a reset works again -- the generation counter's bump in
 // `reset` must not leave `load` believing a stale call is still current.
 await purpose.load()
-assert.ok(purpose.roles.length > 0, 'purpose can be loaded again after a reset')
+assert.ok(purpose.areas.length > 0, 'purpose can be loaded again after a reset')
 
 await close()
 console.log('purpose-store: all checks passed')

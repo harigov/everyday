@@ -23,6 +23,9 @@ import type {
   Allergy,
   AllergyId,
   ArchiveManifest,
+  Area,
+  AreaId,
+  AreaInfo,
   Attachment,
   AttachmentPreview,
   AwaitedSignIn,
@@ -255,9 +258,6 @@ import type {
   RemoteImageSettings,
   RenderedTemplate,
   ReplySuggestions,
-  Role,
-  RoleId,
-  RoleInfo,
   Routine,
   RoutineId,
   RoutineInfo,
@@ -352,7 +352,7 @@ import type {
 } from '../types'
 
 /** The command surface this build of the interface was generated against. */
-export const PROTOCOL = 1
+export const PROTOCOL = 2
 
 /** What each command takes and gives back. */
 export interface Commands {
@@ -488,6 +488,7 @@ export interface Commands {
   deleteAlbum: { args: { id: string }; result: void }
   deleteAllVoiceprints: { args: Record<string, never>; result: void }
   deleteAllergy: { args: { id: AllergyId }; result: void }
+  deleteArea: { args: { id: AreaId }; result: void }
   deleteBankAccount: { args: { id: BankAccountId }; result: void }
   deleteBankLink: { args: { id: BankLinkId; keepHistory?: boolean }; result: void }
   deleteBlock: { args: { id: BlockId }; result: void }
@@ -526,7 +527,6 @@ export interface Commands {
   deleteProject: { args: { id: ProjectId }; result: void }
   deleteReading: { args: { id: ReadingId }; result: void }
   deleteRecording: { args: { id: RecordingId }; result: void }
-  deleteRole: { args: { id: RoleId }; result: void }
   deleteRoutine: { args: { id: RoutineId }; result: void }
   deleteRun: { args: { id: RoutineRunId }; result: void }
   deleteScreenApp: { args: { id: ScreenAppId }; result: void }
@@ -681,6 +681,7 @@ export interface Commands {
   listAccounts: { args: Record<string, never>; result: AccountView[] }
   listAlbums: { args: Record<string, never>; result: AlbumView[] }
   listAllergies: { args: Record<string, never>; result: Allergy[] }
+  listAreas: { args: Record<string, never>; result: AreaInfo[] }
   listBankAccounts: { args: Record<string, never>; result: BankAccount[] }
   listBankLinks: { args: Record<string, never>; result: LinkSummary[] }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
@@ -725,7 +726,6 @@ export interface Commands {
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
   listRecordings: { args: { query?: RecordingQuery }; result: Recording[] }
   listRemoteImageAllowances: { args: Record<string, never>; result: RemoteImageSettings }
-  listRoles: { args: Record<string, never>; result: RoleInfo[] }
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
   listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
   listScreenApps: { args: Record<string, never>; result: ScreenAppRow[] }
@@ -818,6 +818,7 @@ export interface Commands {
     result: Transcript
   }
   needsReply: { args: { id: ThreadId }; result: NeedsReply }
+  newArea: { args: { name: string }; result: Area }
   newBlock: {
     args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
     result: TimeBlock
@@ -834,14 +835,13 @@ export interface Commands {
     result: Draft
   }
   newEntry: { args: { journalId: JournalId }; result: Entry }
-  newGoal: { args: { roleId: RoleId; title: string }; result: Goal }
+  newGoal: { args: { areaId: AreaId; title: string }; result: Goal }
   newJournal: { args: { name: string }; result: Journal }
   newKind: { args: { name: string; singular: string }; result: Kind }
   newLog: { args: { itemId: ItemId; event: LogEvent }; result: LogEntry }
   newMemory: { args: Record<string, never>; result: Memory }
   newNote: { args: { templateId?: TemplateId | null }; result: Note }
   newProject: { args: { name: string }; result: Project }
-  newRole: { args: { name: string }; result: Role }
   newRoutine: { args: Record<string, never>; result: Routine }
   newSkill: { args: Record<string, never>; result: Skill }
   newTask: {
@@ -881,7 +881,7 @@ export interface Commands {
   quickEventTitle: { args: { title: string }; result: string }
   quickFrontMatter: { args: { ours: string[]; theirs: string[] }; result: QuickMapping }
   quickGoalBackfill: { args: { goalId: GoalId }; result: QuickBackfillPick[] }
-  quickGoalWording: { args: { title: string; roleId: RoleId }; result: string }
+  quickGoalWording: { args: { title: string; areaId: AreaId }; result: string }
   quickImportColumns: {
     args: { kindId: KindId; columns: string[]; sample?: string[] }
     result: QuickMapping
@@ -964,6 +964,7 @@ export interface Commands {
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
   saveAlbum: { args: { album: Album }; result: Album }
   saveAllergy: { args: { allergy: Allergy }; result: Allergy }
+  saveArea: { args: { area: Area }; result: void }
   saveBackupSettings: { args: { settings: BackupSettings }; result: BackupView }
   saveBankAccount: { args: { account: BankAccount }; result: void }
   saveBankLink: { args: { link: BankLink }; result: void }
@@ -1016,7 +1017,6 @@ export interface Commands {
   saveProfile: { args: { profile: Profile }; result: Profile }
   saveProject: { args: { project: Project }; result: void }
   saveReading: { args: { reading: Reading }; result: void }
-  saveRole: { args: { role: Role }; result: void }
   saveRoutine: { args: { routine: Routine }; result: Routine }
   saveScreenApp: { args: { app: ScreenApp }; result: void }
   saveScreenCategory: { args: { category: ScreenCategory }; result: void }
@@ -1052,7 +1052,7 @@ export interface Commands {
     result: SearchMailResult
   }
   searchSources: { args: Record<string, never>; result: SourceInfo[] }
-  seedRoles: { args: Record<string, never>; result: number }
+  seedAreas: { args: Record<string, never>; result: number }
   sendDraft: {
     args: { id: DraftId; delaySeconds?: number | null; sendAt?: string | null }
     result: Draft
@@ -1253,6 +1253,7 @@ export const COMMAND_NAMES = {
   deleteAlbum: 'delete_album',
   deleteAllVoiceprints: 'delete_all_voiceprints',
   deleteAllergy: 'delete_allergy',
+  deleteArea: 'delete_area',
   deleteBankAccount: 'delete_bank_account',
   deleteBankLink: 'delete_bank_link',
   deleteBlock: 'delete_block',
@@ -1288,7 +1289,6 @@ export const COMMAND_NAMES = {
   deleteProject: 'delete_project',
   deleteReading: 'delete_reading',
   deleteRecording: 'delete_recording',
-  deleteRole: 'delete_role',
   deleteRoutine: 'delete_routine',
   deleteRun: 'delete_run',
   deleteScreenApp: 'delete_screen_app',
@@ -1390,6 +1390,7 @@ export const COMMAND_NAMES = {
   listAccounts: 'list_accounts',
   listAlbums: 'list_albums',
   listAllergies: 'list_allergies',
+  listAreas: 'list_areas',
   listBankAccounts: 'list_bank_accounts',
   listBankLinks: 'list_bank_links',
   listBlocks: 'list_blocks',
@@ -1428,7 +1429,6 @@ export const COMMAND_NAMES = {
   listReadings: 'list_readings',
   listRecordings: 'list_recordings',
   listRemoteImageAllowances: 'list_remote_image_allowances',
-  listRoles: 'list_roles',
   listRoutines: 'list_routines',
   listRuns: 'list_runs',
   listScreenApps: 'list_screen_apps',
@@ -1483,6 +1483,7 @@ export const COMMAND_NAMES = {
   moveToMailbox: 'move_to_mailbox',
   nameSpeaker: 'name_speaker',
   needsReply: 'needs_reply',
+  newArea: 'new_area',
   newBlock: 'new_block',
   newChatLink: 'new_chat_link',
   newConversation: 'new_conversation',
@@ -1495,7 +1496,6 @@ export const COMMAND_NAMES = {
   newMemory: 'new_memory',
   newNote: 'new_note',
   newProject: 'new_project',
-  newRole: 'new_role',
   newRoutine: 'new_routine',
   newSkill: 'new_skill',
   newTask: 'new_task',
@@ -1568,6 +1568,7 @@ export const COMMAND_NAMES = {
   saveAgentSettings: 'save_agent_settings',
   saveAlbum: 'save_album',
   saveAllergy: 'save_allergy',
+  saveArea: 'save_area',
   saveBackupSettings: 'save_backup_settings',
   saveBankAccount: 'save_bank_account',
   saveBankLink: 'save_bank_link',
@@ -1611,7 +1612,6 @@ export const COMMAND_NAMES = {
   saveProfile: 'save_profile',
   saveProject: 'save_project',
   saveReading: 'save_reading',
-  saveRole: 'save_role',
   saveRoutine: 'save_routine',
   saveScreenApp: 'save_screen_app',
   saveScreenCategory: 'save_screen_category',
@@ -1633,7 +1633,7 @@ export const COMMAND_NAMES = {
   searchFoods: 'search_foods',
   searchMail: 'search_mail',
   searchSources: 'search_sources',
-  seedRoles: 'seed_roles',
+  seedAreas: 'seed_areas',
   sendDraft: 'send_draft',
   sendMessage: 'send_message',
   setAgentAccess: 'set_agent_access',
@@ -1805,6 +1805,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_album',
   'delete_all_voiceprints',
   'delete_allergy',
+  'delete_area',
   'delete_bank_account',
   'delete_bank_link',
   'delete_block',
@@ -1840,7 +1841,6 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_project',
   'delete_reading',
   'delete_recording',
-  'delete_role',
   'delete_routine',
   'delete_run',
   'delete_screen_app',
@@ -1942,6 +1942,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_accounts',
   'list_albums',
   'list_allergies',
+  'list_areas',
   'list_bank_accounts',
   'list_bank_links',
   'list_blocks',
@@ -1980,7 +1981,6 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_readings',
   'list_recordings',
   'list_remote_image_allowances',
-  'list_roles',
   'list_routines',
   'list_runs',
   'list_screen_apps',
@@ -2035,6 +2035,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'move_to_mailbox',
   'name_speaker',
   'needs_reply',
+  'new_area',
   'new_block',
   'new_chat_link',
   'new_conversation',
@@ -2047,7 +2048,6 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_memory',
   'new_note',
   'new_project',
-  'new_role',
   'new_routine',
   'new_skill',
   'new_task',
@@ -2120,6 +2120,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_agent_settings',
   'save_album',
   'save_allergy',
+  'save_area',
   'save_backup_settings',
   'save_bank_account',
   'save_bank_link',
@@ -2163,7 +2164,6 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_profile',
   'save_project',
   'save_reading',
-  'save_role',
   'save_routine',
   'save_screen_app',
   'save_screen_category',
@@ -2185,7 +2185,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'search_foods',
   'search_mail',
   'search_sources',
-  'seed_roles',
+  'seed_areas',
   'send_draft',
   'set_agent_access',
   'set_auto_lock',
@@ -2332,6 +2332,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_album',
   'delete_all_voiceprints',
   'delete_allergy',
+  'delete_area',
   'delete_bank_account',
   'delete_bank_link',
   'delete_block',
@@ -2367,7 +2368,6 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_project',
   'delete_reading',
   'delete_recording',
-  'delete_role',
   'delete_routine',
   'delete_run',
   'delete_screen_app',
@@ -2460,6 +2460,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_agent_settings',
   'save_album',
   'save_allergy',
+  'save_area',
   'save_backup_settings',
   'save_bank_account',
   'save_bank_link',
@@ -2503,7 +2504,6 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_profile',
   'save_project',
   'save_reading',
-  'save_role',
   'save_routine',
   'save_screen_app',
   'save_screen_category',
@@ -2516,7 +2516,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_tracker',
   'save_voice_learning',
   'save_workout',
-  'seed_roles',
+  'seed_areas',
   'send_draft',
   'send_message',
   'set_agent_access',
@@ -2619,6 +2619,7 @@ export const CHANGE_KINDS = {
   delete_album: 'album',
   delete_all_voiceprints: 'voiceprint',
   delete_allergy: 'allergy',
+  delete_area: 'area',
   delete_bank_account: 'bankAccount',
   delete_bank_link: 'bankLink',
   delete_block: 'block',
@@ -2654,7 +2655,6 @@ export const CHANGE_KINDS = {
   delete_project: 'project',
   delete_reading: 'reading',
   delete_recording: 'recording',
-  delete_role: 'role',
   delete_routine: 'routine',
   delete_run: 'routineRun',
   delete_screen_app: 'screenApp',
@@ -2732,6 +2732,7 @@ export const CHANGE_KINDS = {
   save_agent_settings: 'settings',
   save_album: 'album',
   save_allergy: 'allergy',
+  save_area: 'area',
   save_backup_settings: 'settings',
   save_bank_account: 'bankAccount',
   save_bank_link: 'bankLink',
@@ -2775,7 +2776,6 @@ export const CHANGE_KINDS = {
   save_profile: 'settings',
   save_project: 'project',
   save_reading: 'reading',
-  save_role: 'role',
   save_routine: 'routine',
   save_screen_app: 'screenApp',
   save_screen_category: 'screenCategory',
@@ -2788,7 +2788,7 @@ export const CHANGE_KINDS = {
   save_tracker: 'tracker',
   save_voice_learning: 'settings',
   save_workout: 'workout',
-  seed_roles: 'role',
+  seed_areas: 'area',
   send_draft: 'draft',
   send_message: 'conversation',
   set_agent_access: 'account',

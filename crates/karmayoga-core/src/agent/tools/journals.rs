@@ -452,10 +452,10 @@ fn run_overview(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
     if vault.supports_purpose() {
         // The parts of a life and what is wanted from each, so a model
         // knows the vocabulary before it is asked a question in it. Names
-        // and ids only -- the hours are `time_by_role`'s answer and the
+        // and ids only -- the hours are `time_by_area`'s answer and the
         // per-goal detail is `list_goals`'.
-        let roles: Vec<Value> = vault
-            .roles()?
+        let areas: Vec<Value> = vault
+            .areas()?
             .iter()
             .filter(|r| !r.archived)
             .map(|r| json!({ "id": r.id.to_string(), "name": r.name }))
@@ -467,12 +467,12 @@ fn run_overview(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
                 json!({
                     "id": g.id.to_string(),
                     "title": g.title,
-                    "role_id": g.role_id.to_string(),
+                    "area_id": g.area_id.to_string(),
                     "status": g.status.as_str(),
                 })
             })
             .collect();
-        m.insert("roles".into(), json!(roles));
+        m.insert("areas".into(), json!(areas));
         m.insert("open_goals".into(), json!(goals));
     }
 

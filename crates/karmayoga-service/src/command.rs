@@ -340,8 +340,8 @@ fn assert_declared_matches_touched(
 ) {
     // A command that wrote nothing at all is a no-op write, not a wrong
     // declaration: `save_tasks` with an empty array, `mark_runs_seen` with
-    // the empty "all of them" list when nothing is unseen, `seed_roles` on a
-    // vault that already has roles. Every one of those still announces its
+    // the empty "all of them" list when nothing is unseen, `seed_areas` on a
+    // vault that already has areas. Every one of those still announces its
     // `change:`, as it did long before this assertion existed -- the event is
     // harmlessly coarse, and a client reloading a list it did not need to is
     // not a bug worth panicking a debug build over. What this function is
@@ -411,12 +411,12 @@ const KNOWN_MISMATCHES: &[&str] = &[
     "sync_bank_links",
     "apply_money_rules",
     "import_transactions",
-    // Declares `Role/Created` unconditionally because it cannot know ahead
-    // of running whether the vault already has roles -- `Vault::seed_roles`
+    // Declares `Area/Created` unconditionally because it cannot know ahead
+    // of running whether the vault already has areas -- `Vault::seed_areas`
     // is a no-op, touching nothing, on every call after the first. This
     // command has fired its event on an empty seed since long before this
     // phase; the assertion is what is new, not the behaviour.
-    "seed_roles",
+    "seed_areas",
     // Health's sample writes declare `HealthSample`, which names no record:
     // samples are filed by the thousand into series days, and the collector
     // sees only the records a write touched beside them -- the source whose
@@ -457,7 +457,7 @@ const KNOWN_MISMATCHES: &[&str] = &[
     // queue a second run behind one that has not finished yet -- "pressing
     // it twice does not pay for two model calls" -- and answers the
     // already-waiting run instead of minting and saving a new one. Nothing
-    // is touched on that path, the same shape `seed_roles` already
+    // is touched on that path, the same shape `seed_areas` already
     // documents above.
     "run_routine",
 ];

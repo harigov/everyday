@@ -93,7 +93,7 @@ export const RELOAD = {
   mail: () => mail.refresh(),
   tracking: () => tracking.refresh(),
   overview: () => overview.refresh(),
-  // Roles and goals, which three surfaces now draw: the todo app's goals
+  // Areas and goals, which three surfaces now draw: the todo app's goals
   // pane, every purpose picker, and whatever the Overview has on it. One
   // reload for all of them, because there is one copy -- see `purpose`.
   purpose: () => purpose.load(true),
@@ -207,7 +207,7 @@ const TARGET_FEEDING: ReadonlySet<ChangeKind> = new Set([
   'tracker',
   'reading',
   'goal',
-  'role',
+  'area',
   'healthSample',
 ])
 
@@ -227,11 +227,11 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   log: 'library',
   tracker: 'tracking',
   reading: 'tracking',
-  // Roles and goals. They used to reload the Overview, because that is where
+  // Areas and goals. They used to reload the Overview, because that is where
   // they were edited; they are read in three places now and stored in one, so
   // the reload is of the store rather than of an app. The Overview redraws
   // anyway when it is the app on screen -- see `targetsFor`.
-  role: 'purpose',
+  area: 'purpose',
   goal: 'purpose',
   // The assistant's standing work, and the log of what it did. The routines
   // pane redraws for either, and the count on the app bar is read from the
@@ -345,9 +345,9 @@ export function targetsFor(
   if (overviewShowing && kinds.some((kind) => PURPOSE_BEARING.has(kind))) {
     targets.add('overview')
   }
-  // A role or a goal moving changes every chart the Overview draws, and the
+  // An area or a goal moving changes every chart the Overview draws, and the
   // store reload above only refreshes the lists behind them.
-  if (overviewShowing && kinds.some((kind) => kind === 'role' || kind === 'goal')) {
+  if (overviewShowing && kinds.some((kind) => kind === 'area' || kind === 'goal')) {
     targets.add('overview')
   }
   if (todoShowing && kinds.some((kind) => TARGET_FEEDING.has(kind))) {

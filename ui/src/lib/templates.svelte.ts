@@ -1,6 +1,6 @@
 // Templates: one list for the journal, notes and meeting notes.
 //
-// Loaded once after unlock, the way roles are, because three places want it
+// Loaded once after unlock, the way areas are, because three places want it
 // -- Settings → Templates edits it, a journal's settings pick from it, and
 // the notes app and both editors offer it -- and none of them should have to
 // ask again. Applying a template is not here: `newEntry` and `newNote` fill

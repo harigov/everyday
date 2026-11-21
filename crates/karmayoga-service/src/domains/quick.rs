@@ -28,13 +28,13 @@ use std::sync::Arc;
 
 use karmayoga_core::agent::AgentSettings;
 use karmayoga_core::model::system_tz;
-use karmayoga_core::purpose::{Goal, Purpose, Role};
+use karmayoga_core::purpose::{Area, Goal, Purpose};
 use karmayoga_core::quick::{self, QuickAsk, QuickContext, QuickPolicy};
 use karmayoga_core::store::purpose::GoalQuery;
 use karmayoga_core::store::tasks::{TaskQuery, TaskSort};
 use karmayoga_core::tracker::Tracker;
 use karmayoga_core::{
-    EntryId, GoalId, ItemId, JournalId, KindId, NoteId, RoleId, TaskId, TrackerId, Vault,
+    AreaId, EntryId, GoalId, ItemId, JournalId, KindId, NoteId, TaskId, TrackerId, Vault,
 };
 use serde::{Deserialize, Serialize};
 
@@ -188,7 +188,7 @@ where
 /// `quick_note_labels` shares once the model has answered: clamp the tags
 /// against whatever the record already carries -- empty for a task, which
 /// has none yet -- and resolve the answer's one-based choice back through
-/// `roles` and `goals`. `prep` is the one thing that differs between the
+/// `areas` and `goals`. `prep` is the one thing that differs between the
 /// three: which prompt to build, and, for the two with a record to read,
 /// its tags -- read in the same trip `prep` builds the prompt from, through
 /// [`ask_extra`], rather than a second one afterwards just to re-read them.
@@ -196,7 +196,7 @@ async fn labels_for<P>(
     svc: &Arc<Service>,
     ctx: &Ctx,
     name: &str,
-    roles: &[Role],
+    areas: &[Area],
     goals: &[Goal],
     prep: P,
 ) -> CommandResult<Labels>
@@ -208,23 +208,23 @@ where
     let (mut answer, existing): (quick::LabelsAnswer, Vec<String>) =
         ask_extra(svc, ctx, name, prep).await?;
     answer.clamp(&existing);
-    Ok(Labels { purpose: purpose_at(roles, goals, answer.purpose), tags: answer.tags })
+    Ok(Labels { purpose: purpose_at(areas, goals, answer.purpose), tags: answer.tags })
 }
 
-/// The roles and goals a purpose suggestion chooses between, in the order the
-/// prompt numbers them: goals first, then roles.
+/// The areas and goals a purpose suggestion chooses between, in the order the
+/// prompt numbers them: goals first, then areas.
 ///
 /// Returned alongside so the answer's *number* can be turned back into a
 /// [`Purpose`] here, where the list came from. The model never sees an id and
 /// never returns one.
-fn purposes(vault: &Vault) -> CommandResult<(Vec<Role>, Vec<Goal>)> {
-    let roles = vault.roles()?;
+fn purposes(vault: &Vault) -> CommandResult<(Vec<Area>, Vec<Goal>)> {
+    let areas = vault.areas()?;
     let goals = vault.goals(&GoalQuery::open())?;
-    Ok((roles, goals))
+    Ok((areas, goals))
 }
 
 /// Turn a one-based position in that list back into a purpose.
-fn purpose_at(roles: &[Role], goals: &[Goal], choice: Option<usize>) -> Option<Purpose> {
+fn purpose_at(areas: &[Area], goals: &[Goal], choice: Option<usize>) -> Option<Purpose> {
     let n = choice?;
     if n == 0 {
         return None;
@@ -233,7 +233,7 @@ fn purpose_at(roles: &[Role], goals: &[Goal], choice: Option<usize>) -> Option<P
     if let Some(goal) = goals.get(index) {
         return Some(Purpose::Goal { id: goal.id });
     }
-    roles.get(index - goals.len()).map(|role| Purpose::Role { id: role.id })
+    areas.get(index - goals.len()).map(|area| Purpose::Area { id: area.id })
 }
 
 /// Tags already in use, so a suggestion prefers an existing one over
@@ -469,23 +469,23 @@ pub struct Title {
     pub title: String,
 }
 
-/// T1 — which role or goal a task serves, and what to tag it.
+/// T1 — which area or goal a task serves, and what to tag it.
 async fn quick_task_labels(svc: Arc<Service>, ctx: Ctx, args: Title) -> CommandResult<Labels> {
     let vault = svc.require()?;
-    let (roles, goals) = {
+    let (areas, goals) = {
         let vault = vault.clone();
         blocking(move || purposes(&vault)).await?
     };
-    if roles.is_empty() && goals.is_empty() {
+    if areas.is_empty() && goals.is_empty() {
         // Nothing to choose between. Asking anyway would spend a request to
         // be told null.
         return Ok(Labels::default());
     }
-    let (r, g) = (roles.clone(), goals.clone());
+    let (r, g) = (areas.clone(), goals.clone());
     let title = args.title;
     // No record yet, so no existing tags to clamp against -- a task being
     // captured has not been saved, let alone tagged.
-    labels_for(&svc, &ctx, "todo.purpose", &roles, &goals, move |vault, qctx| {
+    labels_for(&svc, &ctx, "todo.purpose", &areas, &goals, move |vault, qctx| {
         let tags = known_tags(vault.task_tags());
         Ok((quick::todo_purpose(qctx, &title, &r, &g, &tags), Vec::new()))
     })
@@ -630,12 +630,12 @@ async fn quick_entry_title(svc: Arc<Service>, ctx: Ctx, args: EntryRef) -> Comma
 /// J3 — tags and a purpose for a day.
 async fn quick_entry_labels(svc: Arc<Service>, ctx: Ctx, args: EntryRef) -> CommandResult<Labels> {
     let vault = svc.require()?;
-    let (roles, goals) = {
+    let (areas, goals) = {
         let vault = vault.clone();
         blocking(move || purposes(&vault)).await?
     };
-    let (r, g, id) = (roles.clone(), goals.clone(), args.entry_id);
-    labels_for(&svc, &ctx, "journal.labels", &roles, &goals, move |vault, qctx| {
+    let (r, g, id) = (areas.clone(), goals.clone(), args.entry_id);
+    labels_for(&svc, &ctx, "journal.labels", &areas, &goals, move |vault, qctx| {
         let entry = vault.entry(id)?;
         let tags = known_tags(vault.entry_tags());
         let prompt = quick::journal_labels(qctx, &entry.body.plain_text(), &r, &g, &tags);
@@ -682,12 +682,12 @@ async fn quick_note_tasks(
 /// N3 — tags and a purpose for a note.
 async fn quick_note_labels(svc: Arc<Service>, ctx: Ctx, args: NoteRef) -> CommandResult<Labels> {
     let vault = svc.require()?;
-    let (roles, goals) = {
+    let (areas, goals) = {
         let vault = vault.clone();
         blocking(move || purposes(&vault)).await?
     };
-    let (r, g, id) = (roles.clone(), goals.clone(), args.note_id);
-    labels_for(&svc, &ctx, "notes.labels", &roles, &goals, move |vault, qctx| {
+    let (r, g, id) = (areas.clone(), goals.clone(), args.note_id);
+    labels_for(&svc, &ctx, "notes.labels", &areas, &goals, move |vault, qctx| {
         let note = vault.note(id)?;
         let tags = known_tags(vault.note_tags());
         let prompt = quick::notes_labels(qctx, &note.body.plain_text(), &r, &g, &tags);
@@ -740,13 +740,13 @@ async fn quick_tracker_draft(
     Ok(draft.clamp().then_some(draft))
 }
 
-// ── Roles and goals ──────────────────────────────────────────────────────
+// ── Areas and goals ──────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalWording {
     pub title: String,
-    pub role_id: RoleId,
+    pub area_id: AreaId,
 }
 
 /// P1 — a goal phrased as an outcome.
@@ -755,11 +755,11 @@ async fn quick_goal_wording(
     ctx: Ctx,
     args: GoalWording,
 ) -> CommandResult<String> {
-    let GoalWording { title, role_id } = args;
+    let GoalWording { title, area_id } = args;
     let original = title.clone();
     let answer: quick::TextAnswer = ask(&svc, &ctx, "purpose.goal", move |vault, qctx| {
-        let role = vault.roles()?.into_iter().find(|r| r.id == role_id);
-        let name = role.map(|r| r.name).unwrap_or_default();
+        let area = vault.areas()?.into_iter().find(|r| r.id == area_id);
+        let name = area.map(|r| r.name).unwrap_or_default();
         Ok(quick::purpose_goal(qctx, &title, &name))
     })
     .await?;
@@ -1014,7 +1014,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "quick_goal_wording", scope: Quick, effect: Read,
         args: GoalWording, returns: "string",
-        signature: &[("title", "string", true), ("roleId", "RoleId", true)],
+        signature: &[("title", "string", true), ("areaId", "AreaId", true)],
         run: quick_goal_wording,
     },
     command! {

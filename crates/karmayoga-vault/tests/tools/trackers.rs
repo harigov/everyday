@@ -142,13 +142,13 @@ fn a_reading_reports_the_value_that_was_stored_rather_than_the_one_asked_for() {
 mod targets {
     use super::super::support::{call, call_err, vault};
     use karmayoga_core::library::{Item, Kind, LogEntry, LogEvent};
-    use karmayoga_core::purpose::{Goal, Role};
+    use karmayoga_core::purpose::{Area, Goal};
     use karmayoga_core::task::{BlockKind, BlockSubject, Project, Task, TimeBlock};
 
     fn piano(v: &karmayoga_core::Vault) -> Goal {
-        let role = Role::new("Myself");
-        v.save_role(&role).unwrap();
-        let goal = Goal::new(role.id, "Learn piano");
+        let area = Area::new("Myself");
+        v.save_area(&area).unwrap();
+        let goal = Goal::new(area.id, "Learn piano");
         v.save_goal(&goal).unwrap();
         goal
     }

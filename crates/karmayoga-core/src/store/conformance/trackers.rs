@@ -319,9 +319,9 @@ fn a_tracker_can_measure_a_goal(store: &dyn JournalStore) {
     // other evidence.
     let Some(purpose) = store.purpose() else { return };
     let t = tracker_store(store);
-    let role = LifeRole::new("Health");
-    purpose.put_role(&role).unwrap();
-    let goal = Goal::new(role.id, "run 10k without stopping");
+    let area = Area::new("Health");
+    purpose.put_area(&area).unwrap();
+    let goal = Goal::new(area.id, "run 10k without stopping");
     purpose.put_goal(&goal).unwrap();
 
     let mut tracker = Tracker::new("Run", TrackerKind::Amount).with_unit("min");
@@ -343,7 +343,7 @@ fn a_tracker_can_measure_a_goal(store: &dyn JournalStore) {
     assert_eq!(purpose.goal_activity(goal.id).unwrap().readings, 0);
 
     purpose.delete_goal(goal.id).unwrap();
-    purpose.delete_role(role.id).unwrap();
+    purpose.delete_area(area.id).unwrap();
 }
 
 fn unicode_survives_a_tracking_round_trip(store: &dyn JournalStore) {

@@ -369,6 +369,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "From list_areas. Required: every goal sits under one.",
+            "type": "string"
+          },
           "horizon": {
             "description": "When it would ideally be true by. Soft; nothing is notified. Format: YYYY-MM-DD.",
             "type": "string"
@@ -377,17 +381,13 @@
             "description": "What done would look like.",
             "type": "string"
           },
-          "role_id": {
-            "description": "From list_roles. Required: every goal sits under one.",
-            "type": "string"
-          },
           "title": {
             "description": "What is wanted.",
             "type": "string"
           }
         },
         "required": [
-          "role_id",
+          "area_id",
           "title"
         ],
         "type": "object"
@@ -720,6 +720,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "Or under this area directly, from list_areas.",
+            "type": "string"
+          },
           "assignee": {
             "description": "Who does it: owner (them; the default) or assistant (you, as a background job when its reminder comes round).",
             "enum": [
@@ -775,10 +779,6 @@
             "description": "When to remind them, HH:MM in 24-hour time, on remind_date. For the assistant's own task, when to start on it.",
             "type": "string"
           },
-          "role_id": {
-            "description": "Or under this role directly, from list_roles.",
-            "type": "string"
-          },
           "start_date": {
             "description": "Earliest sensible start. Format: YYYY-MM-DD.",
             "type": "string"
@@ -823,6 +823,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "Or under this area directly, from list_areas.",
+            "type": "string"
+          },
           "date": {
             "description": "The day it falls on. Format: YYYY-MM-DD.",
             "type": "string"
@@ -845,10 +849,6 @@
           },
           "project_id": {
             "description": "Or which project, if it is not one task.",
-            "type": "string"
-          },
-          "role_id": {
-            "description": "Or under this role directly, from list_roles.",
             "type": "string"
           },
           "start_time": {
@@ -878,6 +878,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "Or under this area directly, from list_areas.",
+            "type": "string"
+          },
           "goal_id": {
             "description": "File it under this goal, from list_goals.",
             "type": "string"
@@ -893,10 +897,6 @@
           },
           "name": {
             "description": "What is being recorded, e.g. 'Water', 'Creatine', 'Flossed'.",
-            "type": "string"
-          },
-          "role_id": {
-            "description": "Or under this role directly, from list_roles.",
             "type": "string"
           },
           "unit": {
@@ -2020,6 +2020,20 @@
       "title": "List accounts"
     },
     {
+      "domain": "purpose",
+      "effect": "read",
+      "name": "list_areas",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "purpose",
+      "sensitivity": "ordinary",
+      "title": "List areas"
+    },
+    {
       "domain": "money",
       "effect": "read",
       "name": "list_bank_accounts",
@@ -2137,6 +2151,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "From list_areas. Omit for every area.",
+            "type": "string"
+          },
           "include_activity": {
             "description": "Also say what has been recorded against each.",
             "type": "boolean"
@@ -2144,10 +2162,6 @@
           "limit": {
             "description": "Most rows to return. Defaults to 50, capped at 200.",
             "type": "integer"
-          },
-          "role_id": {
-            "description": "From list_roles. Omit for every role.",
-            "type": "string"
           },
           "status": {
             "description": "Only goals in this state.",
@@ -2598,20 +2612,6 @@
       "scope": "money",
       "sensitivity": "ordinary",
       "title": "List recurring"
-    },
-    {
-      "domain": "purpose",
-      "effect": "read",
-      "name": "list_roles",
-      "parameters": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "scope": "purpose",
-      "sensitivity": "ordinary",
-      "title": "List roles"
     },
     {
       "domain": "routines",
@@ -4003,6 +4003,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "Or under this area directly. From list_areas.",
+            "type": "string"
+          },
           "clear": {
             "description": "Unfile it instead.",
             "type": "boolean"
@@ -4026,10 +4030,6 @@
               "tracker"
             ],
             "type": "string"
-          },
-          "role_id": {
-            "description": "Or under this role directly. From list_roles.",
-            "type": "string"
           }
         },
         "required": [
@@ -4049,6 +4049,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "Or under this area directly. From list_areas.",
+            "type": "string"
+          },
           "count_days": {
             "description": "Count days with something recorded rather than adding values up — 'run 3 times a week' is min 3, per week, count_days.",
             "type": "boolean"
@@ -4097,7 +4101,7 @@
             "type": "number"
           },
           "measure": {
-            "description": "When there is no tracker_id, what to count: 'time' is minutes of logged time filed under the goal or role; 'finished' is things finished off a shelf (a re-read counts); 'screen' is minutes of screen time from the Screen time app, all of it or narrowed by `screen_category` or `screen_item`; 'health' is a day's figure from the Health app, named by `health_metric` (or written 'health:<metric>'); 'new' makes a tracker recorded by hand, named by `name`.",
+            "description": "When there is no tracker_id, what to count: 'time' is minutes of logged time filed under the goal or area; 'finished' is things finished off a shelf (a re-read counts); 'screen' is minutes of screen time from the Screen time app, all of it or narrowed by `screen_category` or `screen_item`; 'health' is a day's figure from the Health app, named by `health_metric` (or written 'health:<metric>'); 'new' makes a tracker recorded by hand, named by `name`.",
             "enum": [
               "time",
               "finished",
@@ -4129,10 +4133,6 @@
           "remove": {
             "description": "Remove the tracker's target for this period instead of setting it.",
             "type": "boolean"
-          },
-          "role_id": {
-            "description": "Or under this role directly. From list_roles.",
-            "type": "string"
           },
           "screen_category": {
             "description": "For 'screen': only this screen time category, by name, e.g. 'Social'.",
@@ -4371,7 +4371,7 @@
     {
       "domain": "purpose",
       "effect": "read",
-      "name": "time_by_role",
+      "name": "time_by_area",
       "parameters": {
         "additionalProperties": false,
         "properties": {
@@ -4389,7 +4389,7 @@
       },
       "scope": "purpose",
       "sensitivity": "ordinary",
-      "title": "Time by role"
+      "title": "Time by area"
     },
     {
       "domain": "trackers",
@@ -4750,6 +4750,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "Move it under a different area.",
+            "type": "string"
+          },
           "goal_id": {
             "description": "From list_goals.",
             "type": "string"
@@ -4760,10 +4764,6 @@
           },
           "notes": {
             "description": "What done would look like.",
-            "type": "string"
-          },
-          "role_id": {
-            "description": "Move it under a different role.",
             "type": "string"
           },
           "status": {
@@ -5219,6 +5219,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "Or under this area directly, from list_areas.",
+            "type": "string"
+          },
           "assignee": {
             "description": "Who does it: owner (them; the default) or assistant (you, as a background job when its reminder comes round).",
             "enum": [
@@ -5240,7 +5244,7 @@
             "type": "boolean"
           },
           "clear_purpose": {
-            "description": "Unfile it from whatever goal or role it carries.",
+            "description": "Unfile it from whatever goal or area it carries.",
             "type": "boolean"
           },
           "clear_reminder": {
@@ -5288,10 +5292,6 @@
           },
           "remind_time": {
             "description": "Set the reminder to this time, HH:MM in 24-hour time, on remind_date. A time later than the last reminder sends it again.",
-            "type": "string"
-          },
-          "role_id": {
-            "description": "Or under this role directly, from list_roles.",
             "type": "string"
           },
           "start_date": {
@@ -5342,6 +5342,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "area_id": {
+            "description": "Or under this area directly, from list_areas.",
+            "type": "string"
+          },
           "block_id": {
             "description": "Id from list_time_blocks.",
             "type": "string"
@@ -5364,10 +5368,6 @@
           },
           "project_id": {
             "description": "Or onto this project instead.",
-            "type": "string"
-          },
-          "role_id": {
-            "description": "Or under this role directly, from list_roles.",
             "type": "string"
           },
           "start_time": {

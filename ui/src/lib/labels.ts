@@ -8,7 +8,7 @@
 // task's priority off, rather than a heading above a group of them -- so
 // that is the spelling kept here.
 
-import type { Priority, TaskStatus } from './types'
+import type { GoalStatus, Priority, TaskStatus } from './types'
 
 /** How a task's status reads, wherever one is shown. */
 export const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -18,6 +18,14 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
   blocked: 'Blocked',
   done: 'Done',
   cancelled: 'Cancelled',
+}
+
+/** How a goal's status reads, wherever one is shown. */
+export const GOAL_STATUS_LABELS: Record<GoalStatus, string> = {
+  active: 'Active',
+  paused: 'Paused',
+  done: 'Done',
+  dropped: 'Dropped',
 }
 
 /** How a task's priority reads, wherever one is shown. */

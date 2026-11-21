@@ -1,9 +1,9 @@
 <script lang="ts">
-  // Choose what something is for: a goal, or a role directly.
+  // Choose what something is for: a goal, or an area directly.
   //
   // One control, used from a task's detail panel, a project's settings, a
   // block, an entry, a shelf item and the calendar's subscription sheet. The
-  // list is short — a handful of roles with a few goals under each — so it
+  // list is short — a handful of areas with a few goals under each — so it
   // is drawn whole rather than searched, and the typed line is there to
   // *create* rather than to filter: the commonest reason to open this and
   // not find what you want is that the goal does not exist yet, and making
@@ -16,7 +16,7 @@
 
   import Icon from './Icon.svelte'
   import { purpose as store, samePurpose } from '../lib/purpose.svelte'
-  import type { Purpose, RoleId } from '../lib/types'
+  import type { Purpose, AreaId } from '../lib/types'
 
   interface Props {
     value: Purpose | null | undefined
@@ -24,17 +24,17 @@
     /** Close the popover. The host owns whether it is open. */
     onclose?: () => void
     /**
-     * Offer roles only, no goals. What a subscribed calendar takes: a feed
-     * serves a role, and its forty meetings are not each yours to file.
+     * Offer areas only, no goals. What a subscribed calendar takes: a feed
+     * serves an area, and its forty meetings are not each yours to file.
      */
-    rolesOnly?: boolean
+    areasOnly?: boolean
   }
 
-  const { value, onchange, onclose, rolesOnly = false }: Props = $props()
+  const { value, onchange, onclose, areasOnly = false }: Props = $props()
 
   let draft = $state('')
-  /** Which role a newly typed goal would go under. */
-  let under = $state<RoleId | null>(null)
+  /** Which area a newly typed goal would go under. */
+  let under = $state<AreaId | null>(null)
   let busy = $state(false)
 
   // Loaded on open rather than at startup: a vault whose owner never files
@@ -43,14 +43,14 @@
     void store.load()
   })
 
-  const roles = $derived(store.activeRoles)
+  const areas = $derived(store.activeAreas)
   const typed = $derived(draft.trim())
 
-  // The role a new goal lands under: the one explicitly chosen, else the one
+  // The area a new goal lands under: the one explicitly chosen, else the one
   // the current value already belongs to, else the first. Never nothing —
-  // a goal must have a role, and a picker that could not say which would
+  // a goal must have an area, and a picker that could not say which would
   // have to refuse the Enter key.
-  const target = $derived(under ?? store.roleOf(value) ?? roles[0]?.id ?? null)
+  const target = $derived(under ?? store.areaOf(value) ?? areas[0]?.id ?? null)
 
   function choose(next: Purpose | null) {
     onchange(next)
@@ -67,20 +67,20 @@
     choose({ type: 'goal', id: goal.id })
   }
 
-  async function createRole() {
+  async function createArea() {
     if (!typed || busy) return
     busy = true
-    const role = await store.addRole(typed)
+    const area = await store.addArea(typed)
     busy = false
-    if (!role) return
+    if (!area) return
     draft = ''
-    choose({ type: 'role', id: role.id })
+    choose({ type: 'area', id: area.id })
   }
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'Enter') {
       e.preventDefault()
-      void (rolesOnly ? createRole() : createGoal())
+      void (areasOnly ? createArea() : createGoal())
     } else if (e.key === 'Escape') {
       e.preventDefault()
       onclose?.()
@@ -103,25 +103,25 @@
       {#if !value}<Icon name="check" size={13} />{/if}
     </button>
 
-    {#each roles as role (role.id)}
-      {@const chosen = samePurpose(value, { type: 'role', id: role.id })}
+    {#each areas as area (area.id)}
+      {@const chosen = samePurpose(value, { type: 'area', id: area.id })}
       <div class="group">
         <button
-          class="row role"
+          class="row area"
           class:on={chosen}
           role="option"
           aria-selected={chosen}
-          onclick={() => choose({ type: 'role', id: role.id })}
+          onclick={() => choose({ type: 'area', id: area.id })}
         >
-          <span class="swatch" style="background: {role.color}"></span>
-          <span class="glyph">{role.icon}</span>
-          <span class="name">{role.name}</span>
+          <span class="swatch" style="background: {area.color}"></span>
+          <span class="glyph">{area.icon}</span>
+          <span class="name">{area.name}</span>
           {#if chosen}<Icon name="check" size={13} />{/if}
         </button>
 
-        {#if !rolesOnly}
+        {#if !areasOnly}
           {#each store
-            .goalsOf(role.id)
+            .goalsOf(area.id)
             .filter((g) => g.status === 'active' || g.status === 'paused') as goal (goal.id)}
             {@const picked = samePurpose(value, { type: 'goal', id: goal.id })}
             <button
@@ -131,7 +131,7 @@
               aria-selected={picked}
               onclick={() => choose({ type: 'goal', id: goal.id })}
             >
-              <span class="rail" style="background: {role.color}"></span>
+              <span class="rail" style="background: {area.color}"></span>
               <Icon name="target" size={13} />
               <span class="name" class:paused={goal.status === 'paused'}>{goal.title}</span>
               {#if picked}<Icon name="check" size={13} />{/if}
@@ -141,10 +141,10 @@
       </div>
     {/each}
 
-    {#if roles.length === 0 && !store.loading}
+    {#if areas.length === 0 && !store.loading}
       <p class="blank-note">
-        No roles yet. Type a name below to make one — a role is who you are being, like
-        <em>Parent</em> or <em>Work</em>.
+        No areas yet. Type a name below to make one — an area is a part of your life, like
+        <em>Family</em> or <em>Work</em>.
       </p>
     {/if}
   </div>
@@ -157,16 +157,16 @@
       autofocus
       bind:value={draft}
       {onkeydown}
-      placeholder={rolesOnly || roles.length === 0 ? 'New role…' : 'New goal…'}
-      aria-label={rolesOnly || roles.length === 0 ? 'New role' : 'New goal'}
+      placeholder={areasOnly || areas.length === 0 ? 'New area…' : 'New goal…'}
+      aria-label={areasOnly || areas.length === 0 ? 'New area' : 'New goal'}
     />
-    {#if !rolesOnly && roles.length > 0}
-      <!-- Which role the typed goal lands under. Shown only when there is a
-           choice to make: with one role the answer is not interesting. -->
-      {#if roles.length > 1}
-        <select bind:value={under} aria-label="Under which role">
-          {#each roles as role (role.id)}
-            <option value={role.id} selected={role.id === target}>{role.name}</option>
+    {#if !areasOnly && areas.length > 0}
+      <!-- Which area the typed goal lands under. Shown only when there is a
+           choice to make: with one area the answer is not interesting. -->
+      {#if areas.length > 1}
+        <select bind:value={under} aria-label="Under which area">
+          {#each areas as area (area.id)}
+            <option value={area.id} selected={area.id === target}>{area.name}</option>
           {/each}
         </select>
       {/if}
@@ -182,8 +182,8 @@
       <button
         class="go"
         disabled={!typed || busy}
-        onclick={() => void createRole()}
-        title="Add this role (Enter)"
+        onclick={() => void createArea()}
+        title="Add this area (Enter)"
       >
         <Icon name="plus" size={14} />
       </button>
@@ -269,7 +269,7 @@
     background: none;
   }
 
-  /* The goal rows hang off their role's colour rather than repeating the
+  /* The goal rows hang off their area's colour rather than repeating the
      dot, so a column of six goals does not read as six separate things. */
   .rail {
     flex: none;

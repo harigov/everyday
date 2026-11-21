@@ -1,14 +1,14 @@
-//! Roles and goals, as one page.
+//! Areas and goals, as one page.
 //!
 //! ```text
 //!   purpose/
-//!     roles-and-goals.md
+//!     areas-and-goals.md
 //! ```
 //!
-//! One file, not a folder. There are a handful of roles and a few dozen goals
+//! One file, not a folder. There are a handful of areas and a few dozen goals
 //! in a whole life, and splitting them across forty files would be filing for
 //! the sake of it. What they want to be is a page you can read top to bottom
-//! and say "yes, that is what I am trying to do" -- so a role is a heading, a
+//! and say "yes, that is what I am trying to do" -- so an area is a heading, a
 //! goal is a checklist item under it, and the whole thing is one document.
 //!
 //! Every id in this file is the id half the vault points at: a purpose on an
@@ -20,10 +20,10 @@
 use super::doc;
 use crate::text::{FrontMatter, split_front_matter};
 use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
-use karmayoga_core::purpose::{Goal, GoalStatus, Role};
+use karmayoga_core::purpose::{Area, Goal, GoalStatus};
 use karmayoga_core::store::JournalStore;
 use karmayoga_core::store::purpose::{GoalQuery, PurposeStore};
-use karmayoga_core::{GoalId, Result, RoleId};
+use karmayoga_core::{AreaId, GoalId, Result};
 use std::fmt::Write as _;
 
 pub struct PurposePart;
@@ -31,15 +31,15 @@ pub static PURPOSE: PurposePart = PurposePart;
 
 static SPEC: Spec = Spec {
     id: "purpose",
-    label: "Roles and goals",
-    summary: "Who you are being and what you are trying to do — the axis every balance \
-              chart is drawn against, and what the rest of the vault points at.",
-    format: "One Markdown page: a heading per role, a checklist item per goal",
+    label: "Areas and goals",
+    summary: "The areas of your life and what you are trying to do in them — the axis \
+              every balance chart is drawn against, and what the rest of the vault points at.",
+    format: "One Markdown page: a heading per area, a checklist item per goal",
     media: false,
     imports: true,
 };
 
-const PAGE: &str = "roles-and-goals.md";
+const PAGE: &str = "areas-and-goals.md";
 
 impl Portable for PurposePart {
     fn spec(&self) -> &'static Spec {
@@ -48,44 +48,44 @@ impl Portable for PurposePart {
 
     fn tally(&self, store: &dyn JournalStore) -> Result<Option<u64>> {
         let Some(purpose) = store.purpose() else { return Ok(None) };
-        let roles = purpose.list_roles()?.len() as u64;
-        Ok(Some(roles + purpose.list_goals(&GoalQuery::default())?.len() as u64))
+        let areas = purpose.list_areas()?.len() as u64;
+        Ok(Some(areas + purpose.list_goals(&GoalQuery::default())?.len() as u64))
     }
 
     fn export(&self, store: &dyn JournalStore, out: &mut Files<'_>, _opts: &Options) -> Result<()> {
         let Some(purpose) = store.purpose() else { return Ok(()) };
-        let roles = purpose.list_roles()?;
+        let areas = purpose.list_areas()?;
         let goals = purpose.list_goals(&GoalQuery::default())?;
-        if roles.is_empty() && goals.is_empty() {
+        if areas.is_empty() && goals.is_empty() {
             return Ok(());
         }
 
         let mut front = FrontMatter::new();
-        front.always("page", "Roles and goals");
+        front.always("page", "Areas and goals");
         let mut body = front.render();
-        body.push_str("# Roles and goals\n\n");
+        body.push_str("# Areas and goals\n\n");
 
-        for role in &roles {
-            let _ = write!(body, "## {} {}\n\n", role.icon, role.name.trim());
-            let mut hidden = format!("id:{}", role.id);
-            let _ = write!(hidden, "; color:{}", role.color);
-            if role.archived {
+        for area in &areas {
+            let _ = write!(body, "## {} {}\n\n", area.icon, area.name.trim());
+            let mut hidden = format!("id:{}", area.id);
+            let _ = write!(hidden, "; color:{}", area.color);
+            if area.archived {
                 hidden.push_str("; archived:true");
             }
-            let _ = write!(hidden, "; created:{}", doc::stamp(role.created_at));
+            let _ = write!(hidden, "; created:{}", doc::stamp(area.created_at));
             let _ = writeln!(body, "<!-- {hidden} -->\n");
-            if !role.notes.trim().is_empty() {
-                let _ = write!(body, "{}\n\n", role.notes.trim());
+            if !area.notes.trim().is_empty() {
+                let _ = write!(body, "{}\n\n", area.notes.trim());
             }
-            for goal in goals.iter().filter(|g| g.role_id == role.id) {
+            for goal in goals.iter().filter(|g| g.area_id == area.id) {
                 write_goal(&mut body, goal);
             }
             body.push('\n');
         }
 
-        // A goal whose role has gone still says what a year of hours was for.
+        // A goal whose area has gone still says what a year of hours was for.
         let orphans: Vec<&Goal> =
-            goals.iter().filter(|g| !roles.iter().any(|r| r.id == g.role_id)).collect();
+            goals.iter().filter(|g| !areas.iter().any(|r| r.id == g.area_id)).collect();
         if !orphans.is_empty() {
             body.push_str("## Unfiled\n\n");
             for goal in orphans {
@@ -93,14 +93,14 @@ impl Portable for PurposePart {
             }
         }
 
-        out.records(PAGE, body, (roles.len() + goals.len()) as u64)?;
+        out.records(PAGE, body, (areas.len() + goals.len()) as u64)?;
         Ok(())
     }
 
     fn import(&self, store: &dyn JournalStore, src: &Part<'_>, mode: Mode) -> Result<Report> {
         let mut report = Report::new(SPEC.id);
         let Some(purpose) = store.purpose() else {
-            report.problem(SPEC.label, "this vault's backend does not store roles and goals");
+            report.problem(SPEC.label, "this vault's backend does not store areas and goals");
             return Ok(report);
         };
         for (name, source) in src.documents(".md") {
@@ -121,7 +121,7 @@ fn write_goal(body: &mut String, goal: &Goal) {
     if !matches!(goal.status, GoalStatus::Active | GoalStatus::Done) {
         let _ = write!(body, " %{}", goal.status.as_str());
     }
-    let mut hidden = format!("id:{}; role:{}", goal.id, goal.role_id);
+    let mut hidden = format!("id:{}; area:{}", goal.id, goal.area_id);
     let _ = write!(hidden, "; created:{}", doc::stamp(goal.created_at));
     if let Some(done) = goal.completed_at {
         let _ = write!(hidden, "; completed:{}", doc::stamp(done));
@@ -132,9 +132,9 @@ fn write_goal(body: &mut String, goal: &Goal) {
     }
 }
 
-/// One role's block, as it was read off the page.
+/// One area's block, as it was read off the page.
 ///
-/// Buffered rather than written line by line, because a role's notes are the
+/// Buffered rather than written line by line, because an area's notes are the
 /// prose *after* its heading and a goal's notes are the indented lines *after*
 /// its checklist item -- so neither record is complete at the moment its own
 /// line goes past. The first cut of this wrote each one as soon as it was
@@ -189,7 +189,7 @@ fn read_page(
             continue;
         }
         // Anything else is prose: a goal's, if one is open and the line is
-        // indented under it, else the role's own.
+        // indented under it, else the area's own.
         match blocks.last_mut() {
             Some(block) => {
                 let target = match block.goals.last_mut() {
@@ -215,8 +215,8 @@ fn read_page(
     }
 
     let mut goal_order = 0;
-    for (role_order, block) in blocks.iter().enumerate() {
-        let role_id = match read_role(purpose, block, role_order as i32, mode, report) {
+    for (area_order, block) in blocks.iter().enumerate() {
+        let area_id = match read_area(purpose, block, area_order as i32, mode, report) {
             Ok(id) => id,
             Err(e) => {
                 report.problem(PAGE, e);
@@ -224,18 +224,18 @@ fn read_page(
             }
         };
         for goal in &block.goals {
-            write_one(purpose, goal, role_id, goal_order, mode, report);
+            write_one(purpose, goal, area_id, goal_order, mode, report);
             goal_order += 1;
         }
     }
 
-    // Goals on a page that never named a role: a list somebody started by
-    // hand. They need a role to hang from, because every report is drawn
+    // Goals on a page that never named an area: a list somebody started by
+    // hand. They need an area to hang from, because every report is drawn
     // against one.
     if !loose.is_empty() {
-        let role_id = default_role(purpose)?;
+        let area_id = default_area(purpose)?;
         for goal in &loose {
-            write_one(purpose, goal, role_id, goal_order, mode, report);
+            write_one(purpose, goal, area_id, goal_order, mode, report);
             goal_order += 1;
         }
     }
@@ -245,12 +245,12 @@ fn read_page(
 fn write_one(
     purpose: &dyn PurposeStore,
     goal: &Pending,
-    role_id: RoleId,
+    area_id: AreaId,
     order: i32,
     mode: Mode,
     report: &mut Report,
 ) {
-    if let Err(e) = read_goal(purpose, goal, role_id, order, mode, report) {
+    if let Err(e) = read_goal(purpose, goal, area_id, order, mode, report) {
         report.problem(PAGE, e);
     }
 }
@@ -264,42 +264,42 @@ fn goal_line(line: &str) -> Option<(bool, &str)> {
     rest.strip_prefix("[ ] ").map(|r| (false, r))
 }
 
-fn read_role(
+fn read_area(
     purpose: &dyn PurposeStore,
     block: &Block,
     order: i32,
     mode: Mode,
     report: &mut Report,
-) -> Result<RoleId> {
-    let id = block.fields.get("id").and_then(|id| RoleId::parse(id).ok()).unwrap_or_default();
+) -> Result<AreaId> {
+    let id = block.fields.get("id").and_then(|id| AreaId::parse(id).ok()).unwrap_or_default();
     // The heading is "<icon> <name>", and the icon is one grapheme. Splitting
     // on the first space is wrong for an icon that is two code points -- a
     // flag, a profession with a modifier -- so the split is on the first
     // *alphanumeric* run instead.
     let (icon, name) = split_icon(&block.heading);
 
-    let existing = purpose.get_role(id).ok();
-    let mut landing = land(existing, || Role::new(name), mode);
-    let Some(role) = landing.as_mut() else {
+    let existing = purpose.get_area(id).ok();
+    let mut landing = land(existing, || Area::new(name), mode);
+    let Some(area) = landing.as_mut() else {
         report.landed(&landing);
         return Ok(id);
     };
-    role.id = id;
-    role.name = name.to_string();
-    role.notes = block.notes.clone();
+    area.id = id;
+    area.name = name.to_string();
+    area.notes = block.notes.clone();
     if !icon.is_empty() {
-        role.icon = icon.to_string();
+        area.icon = icon.to_string();
     }
     if let Some(color) = block.fields.get("color") {
-        role.color = color.clone();
+        area.color = color.clone();
     }
-    role.archived = block.fields.get("archived").is_some_and(|a| a == "true");
-    role.sort_order = order;
+    area.archived = block.fields.get("archived").is_some_and(|a| a == "true");
+    area.sort_order = order;
     if let Some(created) = block.fields.get("created").and_then(|c| c.parse().ok()) {
-        role.created_at = created;
+        area.created_at = created;
     }
-    role.updated_at = jiff::Timestamp::now();
-    purpose.put_role(role)?;
+    area.updated_at = jiff::Timestamp::now();
+    purpose.put_area(area)?;
     report.landed(&landing);
     Ok(id)
 }
@@ -307,7 +307,7 @@ fn read_role(
 fn read_goal(
     purpose: &dyn PurposeStore,
     pending: &Pending,
-    role_id: RoleId,
+    area_id: AreaId,
     order: i32,
     mode: Mode,
     report: &mut Report,
@@ -332,13 +332,19 @@ fn read_goal(
     }
 
     let existing = purpose.get_goal(id).ok();
-    let mut landing = land(existing, || Goal::new(role_id, title.join(" ")), mode);
+    let mut landing = land(existing, || Goal::new(area_id, title.join(" ")), mode);
     let Some(goal) = landing.as_mut() else {
         report.landed(&landing);
         return Ok(());
     };
     goal.id = id;
-    goal.role_id = fields.get("role").and_then(|r| RoleId::parse(r).ok()).unwrap_or(role_id);
+    // `role:` is how a page exported before areas were renamed from roles
+    // says it.
+    goal.area_id = fields
+        .get("area")
+        .or_else(|| fields.get("role"))
+        .and_then(|r| AreaId::parse(r).ok())
+        .unwrap_or(area_id);
     goal.title = title.join(" ").trim().to_string();
     goal.notes = pending.notes.clone();
     goal.horizon = horizon;
@@ -362,14 +368,14 @@ fn read_goal(
     Ok(())
 }
 
-/// A role for goals that arrived without one.
-fn default_role(purpose: &dyn PurposeStore) -> Result<RoleId> {
-    if let Some(role) = purpose.list_roles()?.into_iter().find(|r| r.name == "Unfiled") {
-        return Ok(role.id);
+/// An area for goals that arrived without one.
+fn default_area(purpose: &dyn PurposeStore) -> Result<AreaId> {
+    if let Some(area) = purpose.list_areas()?.into_iter().find(|r| r.name == "Unfiled") {
+        return Ok(area.id);
     }
-    let role = Role::new("Unfiled");
-    purpose.put_role(&role)?;
-    Ok(role.id)
+    let area = Area::new("Unfiled");
+    purpose.put_area(&area)?;
+    Ok(area.id)
 }
 
 /// `<!-- key:value; key:value -->` as a map.
@@ -422,6 +428,6 @@ mod tests {
     fn a_goal_line_is_recognised_ticked_or_not() {
         assert_eq!(goal_line("- [x] Done thing"), Some((true, "Done thing")));
         assert_eq!(goal_line("- [ ] Open thing"), Some((false, "Open thing")));
-        assert!(goal_line("## A role").is_none());
+        assert!(goal_line("## An area").is_none());
     }
 }

@@ -8,8 +8,8 @@ use support::vault;
 use jiff::Timestamp;
 use karmayoga_core::proposal::{DeclineReason, MAX_PENDING_PROPOSALS, Outcome as ProposalOutcome};
 use karmayoga_core::{
-    BlockSubject, DreamScope, Memory, MemoryOrigin, Note, NoteOrigin, Payload, Project, Proposal,
-    ProposalKind, ProposedRecord, Purpose, Role, Routine, RoutineKind, Skill, Task, TimeBlock,
+    Area, BlockSubject, DreamScope, Memory, MemoryOrigin, Note, NoteOrigin, Payload, Project,
+    Proposal, ProposalKind, ProposedRecord, Purpose, Routine, RoutineKind, Skill, Task, TimeBlock,
     Trigger,
 };
 
@@ -493,14 +493,14 @@ fn accepting_a_skill_delete_of_something_already_gone_is_declined() {
 // ---- accept: block, and a purpose that has gone --------------------------
 
 #[test]
-fn a_block_whose_purpose_role_has_gone_is_declined() {
+fn a_block_whose_purpose_area_has_gone_is_declined() {
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
 
-    let ghost_role = Role::new("never saved").id;
+    let ghost_area = Area::new("never saved").id;
     let start: Timestamp = "2026-09-20T09:00:00Z".parse().unwrap();
     let block = TimeBlock::new(BlockSubject::Adhoc, start, 30, "UTC")
-        .for_purpose(Purpose::Role { id: ghost_role });
+        .for_purpose(Purpose::Area { id: ghost_area });
     let block_id = block.id;
     let proposal = create(ProposedRecord::Block(block), "Plan time");
     vault.save_proposal(&proposal).unwrap();

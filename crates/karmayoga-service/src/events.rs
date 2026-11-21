@@ -192,9 +192,9 @@ pub enum Kind {
     Log,
     Tracker,
     Reading,
-    /// Who you are being. The axis every balance chart is drawn against.
-    Role,
-    /// An outcome under a role.
+    /// A part of a life. The axis every balance chart is drawn against.
+    Area,
+    /// An outcome under an area.
     Goal,
     /// A mailbox provider signed in to. See `karmayoga_core::account`.
     Account,
@@ -320,7 +320,7 @@ impl Kind {
             Kind::Calendar | Kind::Event => Some(Scope::Calendars),
             Kind::Shelf | Kind::Item | Kind::Log => Some(Scope::Library),
             Kind::Tracker | Kind::Reading => Some(Scope::Trackers),
-            Kind::Role | Kind::Goal => Some(Scope::Purpose),
+            Kind::Area | Kind::Goal => Some(Scope::Purpose),
             Kind::Account => Some(Scope::Accounts),
             Kind::Mailbox | Kind::Thread | Kind::Draft => Some(Scope::Mail),
             Kind::Conversation
@@ -381,7 +381,7 @@ impl TryFrom<Kind> for RecordKind {
             Kind::Log => Ok(RecordKind::Log),
             Kind::Tracker => Ok(RecordKind::Tracker),
             Kind::Reading => Ok(RecordKind::Reading),
-            Kind::Role => Ok(RecordKind::Role),
+            Kind::Area => Ok(RecordKind::Area),
             Kind::Goal => Ok(RecordKind::Goal),
             Kind::Account => Ok(RecordKind::Account),
             Kind::Mailbox => Ok(RecordKind::Mailbox),
@@ -456,7 +456,7 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::Log => Ok(Kind::Log),
             RecordKind::Tracker => Ok(Kind::Tracker),
             RecordKind::Reading => Ok(Kind::Reading),
-            RecordKind::Role => Ok(Kind::Role),
+            RecordKind::Area => Ok(Kind::Area),
             RecordKind::Goal => Ok(Kind::Goal),
             RecordKind::Account => Ok(Kind::Account),
             RecordKind::Mailbox => Ok(Kind::Mailbox),
@@ -695,7 +695,7 @@ mod tests {
         Kind::Log,
         Kind::Tracker,
         Kind::Reading,
-        Kind::Role,
+        Kind::Area,
         Kind::Goal,
         Kind::Account,
         Kind::Mailbox,

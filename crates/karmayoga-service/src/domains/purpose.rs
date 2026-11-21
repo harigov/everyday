@@ -1,7 +1,7 @@
-//! Roles, goals, and the reports drawn against them.
+//! Areas, goals, and the reports drawn against them.
 //!
-//! The Overview's own records: who you are being, and what you are pursuing
-//! under each. Everything here is the plain shape -- require the vault, do the
+//! The Overview's own records: the parts of a life, and what you are pursuing
+//! in each. Everything here is the plain shape -- require the vault, do the
 //! work on the blocking pool -- and the two reports at the foot are the only
 //! interesting ones. Their interest is entirely in the SQL they delegate to,
 //! which resolves the whole inheritance chain in one grouped scan over clear
@@ -10,8 +10,8 @@
 //! # Why its own scope
 //!
 //! A purpose is a pointer on almost every record in the vault, so a client
-//! that can read roles and goals can read the *shape* of somebody's life --
-//! which roles exist, how much time each takes -- without reading a single
+//! that can read areas and goals can read the *shape* of somebody's life --
+//! which areas exist, how much time each takes -- without reading a single
 //! entry. That is worth being able to withhold separately, in the way the
 //! shape of a vault is worth withholding from whoever runs its database.
 
@@ -20,21 +20,21 @@ use crate::ctx::Ctx;
 use crate::error::CommandResult;
 use crate::service::{Service, blocking};
 use jiff::civil::Date;
-use karmayoga_core::purpose::{Goal, GoalActivity, PurposeMinutes, Role, RoleEventMinutes};
+use karmayoga_core::purpose::{Area, AreaEventMinutes, Goal, GoalActivity, PurposeMinutes};
 use karmayoga_core::store::purpose::GoalQuery;
-use karmayoga_core::{GoalId, PurposeWindow, RoleId};
+use karmayoga_core::{AreaId, GoalId, PurposeWindow};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::Nothing;
 use super::journals::Named;
 
-/// A role with the two counts the sidebar draws under its name.
+/// An area with the two counts the sidebar draws under its name.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RoleInfo {
+pub struct AreaInfo {
     #[serde(flatten)]
-    pub role: Role,
+    pub area: Area,
     /// Goals under it, in any state.
     pub goals: u64,
     /// Of those, the ones still being pursued.
@@ -51,19 +51,19 @@ pub struct RoleInfo {
 #[serde(rename_all = "camelCase")]
 pub struct BalanceReport {
     pub purposes: Vec<PurposeMinutes>,
-    pub events: Vec<RoleEventMinutes>,
+    pub events: Vec<AreaEventMinutes>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SaveRole {
-    pub role: Role,
+pub struct SaveArea {
+    pub area: Area,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RoleRef {
-    pub id: RoleId,
+pub struct AreaRef {
+    pub id: AreaId,
 }
 
 #[derive(Deserialize)]
@@ -81,7 +81,7 @@ pub struct GoalRef {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewGoal {
-    pub role_id: RoleId,
+    pub area_id: AreaId,
     pub title: String,
 }
 
@@ -104,43 +104,43 @@ pub struct Window {
     pub to: Date,
 }
 
-async fn list_roles(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<RoleInfo>> {
+async fn list_areas(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<AreaInfo>> {
     let vault = svc.require()?;
     blocking(move || {
         let mut out = Vec::new();
-        for role in vault.roles()? {
+        for area in vault.areas()? {
             // Two `COUNT(*)`s over a clear index column, so a sidebar of six
-            // roles decrypts six records and nothing else.
-            let (goals, open) = vault.count_goals(role.id).unwrap_or((0, 0));
-            out.push(RoleInfo { role, goals, open });
+            // areas decrypts six records and nothing else.
+            let (goals, open) = vault.count_goals(area.id).unwrap_or((0, 0));
+            out.push(AreaInfo { area, goals, open });
         }
         Ok(out)
     })
     .await
 }
 
-/// Mint a role. Unsaved: fill it in and pass it to `save_role`.
+/// Mint an area. Unsaved: fill it in and pass it to `save_area`.
 ///
 /// Minted here rather than in a client so the id, the colour and the two
 /// timestamps come from one place, exactly as `new_kind` does.
-async fn new_role(svc: Arc<Service>, _ctx: Ctx, args: Named) -> CommandResult<Role> {
+async fn new_area(svc: Arc<Service>, _ctx: Ctx, args: Named) -> CommandResult<Area> {
     let _ = svc.require()?;
-    Ok(Role::new(args.name.trim()))
+    Ok(Area::new(args.name.trim()))
 }
 
-async fn save_role(svc: Arc<Service>, _ctx: Ctx, args: SaveRole) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.save_role(&args.role)).await
+async fn save_area(svc: Arc<Service>, _ctx: Ctx, args: SaveArea) -> CommandResult<()> {
+    svc.on_vault(move |vault| vault.save_area(&args.area)).await
 }
 
-/// Delete a role. Refused, with a message naming the count, while goals still
+/// Delete an area. Refused, with a message naming the count, while goals still
 /// point at it.
-async fn delete_role(svc: Arc<Service>, _ctx: Ctx, args: RoleRef) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.delete_role(args.id)).await
+async fn delete_area(svc: Arc<Service>, _ctx: Ctx, args: AreaRef) -> CommandResult<()> {
+    svc.on_vault(move |vault| vault.delete_area(args.id)).await
 }
 
-/// Offer a starting set of roles, and answer zero if there are any already.
-async fn seed_roles(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<usize> {
-    svc.on_vault(move |vault| vault.seed_roles()).await
+/// Offer a starting set of areas, and answer zero if there are any already.
+async fn seed_areas(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<usize> {
+    svc.on_vault(move |vault| vault.seed_areas()).await
 }
 
 async fn list_goals(svc: Arc<Service>, _ctx: Ctx, args: Goals) -> CommandResult<Vec<Goal>> {
@@ -151,10 +151,10 @@ async fn get_goal(svc: Arc<Service>, _ctx: Ctx, args: GoalRef) -> CommandResult<
     svc.on_vault(move |vault| vault.goal(args.id)).await
 }
 
-/// Mint a goal under a role. Unsaved.
+/// Mint a goal under an area. Unsaved.
 async fn new_goal(svc: Arc<Service>, _ctx: Ctx, args: NewGoal) -> CommandResult<Goal> {
     let _ = svc.require()?;
-    Ok(Goal::new(args.role_id, args.title.trim()))
+    Ok(Goal::new(args.area_id, args.title.trim()))
 }
 
 async fn save_goal(svc: Arc<Service>, _ctx: Ctx, args: SaveGoal) -> CommandResult<()> {
@@ -179,7 +179,7 @@ async fn time_by_purpose(
         let window = PurposeWindow::new(args.from, args.to);
         Ok(BalanceReport {
             purposes: vault.time_by_purpose(window)?,
-            events: vault.events_by_role(window).unwrap_or_default(),
+            events: vault.events_by_area(window).unwrap_or_default(),
         })
     })
     .await
@@ -191,37 +191,37 @@ async fn goal_activity(svc: Arc<Service>, _ctx: Ctx, args: GoalRef) -> CommandRe
 
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
-        name: "list_roles", scope: Purpose, effect: Read,
-        args: Nothing, returns: "RoleInfo[]", signature: &[],
-        run: list_roles,
+        name: "list_areas", scope: Purpose, effect: Read,
+        args: Nothing, returns: "AreaInfo[]", signature: &[],
+        run: list_areas,
     },
     command! {
-        name: "new_role", scope: Purpose, effect: Read,
-        args: Named, returns: "Role",
+        name: "new_area", scope: Purpose, effect: Read,
+        args: Named, returns: "Area",
         signature: &[("name", "string", true)],
-        run: new_role,
+        run: new_area,
     },
     command! {
-        name: "save_role", scope: Purpose, effect: Write,
-        change: Role / Updated,
-        id: |a: &SaveRole| Some(a.role.id.to_string()),
-        args: SaveRole, returns: "void",
-        signature: &[("role", "Role", true)],
-        run: save_role,
+        name: "save_area", scope: Purpose, effect: Write,
+        change: Area / Updated,
+        id: |a: &SaveArea| Some(a.area.id.to_string()),
+        args: SaveArea, returns: "void",
+        signature: &[("area", "Area", true)],
+        run: save_area,
     },
     command! {
-        name: "delete_role", scope: Purpose, effect: Destructive,
-        change: Role / Deleted,
-        id: |a: &RoleRef| Some(a.id.to_string()),
-        args: RoleRef, returns: "void",
-        signature: &[("id", "RoleId", true)],
-        run: delete_role,
+        name: "delete_area", scope: Purpose, effect: Destructive,
+        change: Area / Deleted,
+        id: |a: &AreaRef| Some(a.id.to_string()),
+        args: AreaRef, returns: "void",
+        signature: &[("id", "AreaId", true)],
+        run: delete_area,
     },
     command! {
-        name: "seed_roles", scope: Purpose, effect: Write,
-        change: Role / Created,
+        name: "seed_areas", scope: Purpose, effect: Write,
+        change: Area / Created,
         args: Nothing, returns: "number", signature: &[],
-        run: seed_roles,
+        run: seed_areas,
     },
     command! {
         name: "list_goals", scope: Purpose, effect: Read,
@@ -238,7 +238,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "new_goal", scope: Purpose, effect: Read,
         args: NewGoal, returns: "Goal",
-        signature: &[("roleId", "RoleId", true), ("title", "string", true)],
+        signature: &[("areaId", "AreaId", true), ("title", "string", true)],
         run: new_goal,
     },
     command! {

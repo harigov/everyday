@@ -68,11 +68,11 @@ pub enum Scope {
     Calendars,
     Library,
     Trackers,
-    /// Roles, goals, and the reports drawn against them.
+    /// Areas, goals, and the reports drawn against them.
     ///
     /// Its own scope rather than a corner of another, because a purpose is a
     /// pointer on almost every record in the vault: a client that can read
-    /// roles and goals can read the *shape* of somebody's life -- which roles
+    /// areas and goals can read the *shape* of somebody's life -- which areas
     /// exist, how much time each takes -- without reading a single entry.
     Purpose,
     /// Accounts: the mailbox providers this vault has been signed in to.

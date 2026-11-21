@@ -1,4 +1,4 @@
-//! Storage for the purpose domain: roles, goals, and the reports that only
+//! Storage for the purpose domain: areas, goals, and the reports that only
 //! exist because everything else points at them.
 //!
 //! # Why this is a fifth trait
@@ -15,19 +15,19 @@
 //! # Two records, and the cascade that is refused
 //!
 //! ```text
-//!   Role ────── Goal
+//!   Area ────── Goal
 //! ```
 //!
-//! Deleting a role with goals under it is **refused**, not cascaded. That is
+//! Deleting an area with goals under it is **refused**, not cascaded. That is
 //! the opposite of every other parent in this vault — a kind takes its
 //! items, a project takes its tasks — and the difference is deliberate. An
 //! item is *made of* its shelf: without the kind it has no fields, no verbs
-//! and nowhere to be drawn. A goal is not made of its role in that way; it
+//! and nowhere to be drawn. A goal is not made of its area in that way; it
 //! is a thing you wanted, with a year of attributed hours behind it, and one
 //! click on a sidebar row is the wrong distance from losing all of that. So
 //! the store returns [`Error::Invalid`](crate::Error::Invalid) naming the
 //! count, and the interface offers archiving instead — which is what
-//! somebody reorganising their roles actually meant.
+//! somebody reorganising their areas actually meant.
 //!
 //! Records pointing at a deleted *goal* are a different matter and are left
 //! dangling on purpose. [`Purpose::from_columns`](crate::purpose::Purpose)
@@ -49,9 +49,9 @@
 //! at ten thousand.
 
 use crate::error::Result;
-use crate::id::{GoalId, RoleId};
+use crate::id::{AreaId, GoalId};
 use crate::purpose::{
-    Goal, GoalActivity, GoalStatus, PurposeDayMinutes, PurposeMinutes, Role, RoleEventMinutes,
+    Area, AreaEventMinutes, Goal, GoalActivity, GoalStatus, PurposeDayMinutes, PurposeMinutes,
 };
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
@@ -63,8 +63,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GoalQuery {
-    /// Restrict to one role. `None` means every role.
-    pub role_id: Option<RoleId>,
+    /// Restrict to one area. `None` means every area. `roleId` is how a
+    /// query from before areas were renamed from roles says it.
+    #[serde(alias = "roleId")]
+    pub area_id: Option<AreaId>,
     /// Empty means any status.
     pub statuses: Vec<GoalStatus>,
     /// Horizon on or before this day. The "what is due this quarter" filter.
@@ -79,16 +81,16 @@ impl GoalQuery {
         Self { statuses: vec![GoalStatus::Active, GoalStatus::Paused], ..Default::default() }
     }
 
-    pub fn under(role: RoleId) -> Self {
-        Self { role_id: Some(role), ..Default::default() }
+    pub fn under(area: AreaId) -> Self {
+        Self { area_id: Some(area), ..Default::default() }
     }
 
     /// Does this goal pass the filters? Backends that cannot express a
     /// filter natively fall back to this, so behaviour stays identical
     /// across backends.
     pub fn matches(&self, goal: &Goal) -> bool {
-        if let Some(role) = self.role_id
-            && goal.role_id != role
+        if let Some(area) = self.area_id
+            && goal.area_id != area
         {
             return false;
         }
@@ -103,7 +105,7 @@ impl GoalQuery {
         true
     }
 
-    /// Filter, sort and cap. Ordered by the role's own ordering first so a
+    /// Filter, sort and cap. Ordered by the area's own ordering first so a
     /// list reads as sections, then by `sort_order`, then by title — the
     /// same three-step the todo app's projects use.
     pub fn apply(&self, mut goals: Vec<Goal>) -> Vec<Goal> {
@@ -150,24 +152,24 @@ impl PurposeWindow {
 
 /// The persistence contract for the purpose domain.
 pub trait PurposeStore: Send + Sync {
-    // ---- roles ----------------------------------------------------------
+    // ---- areas ----------------------------------------------------------
 
-    /// Every role, archived ones included. There are a handful of these, so
+    /// Every area, archived ones included. There are a handful of these, so
     /// filtering is the caller's business.
-    fn list_roles(&self) -> Result<Vec<Role>>;
+    fn list_areas(&self) -> Result<Vec<Area>>;
 
-    fn get_role(&self, id: RoleId) -> Result<Role>;
+    fn get_area(&self, id: AreaId) -> Result<Area>;
 
     /// Insert or replace. Implementations must be idempotent.
-    fn put_role(&self, role: &Role) -> Result<()>;
+    fn put_area(&self, area: &Area) -> Result<()>;
 
-    /// Delete the role, refusing while any goal still points at it.
+    /// Delete the area, refusing while any goal still points at it.
     ///
     /// See the module docs for why this is a refusal rather than a cascade.
     /// Implementations must count first and fail with
     /// [`Error::Invalid`](crate::Error::Invalid) naming the number of goals,
     /// so the interface can say what is in the way.
-    fn delete_role(&self, id: RoleId) -> Result<()>;
+    fn delete_area(&self, id: AreaId) -> Result<()>;
 
     // ---- goals ----------------------------------------------------------
 
@@ -178,7 +180,7 @@ pub trait PurposeStore: Send + Sync {
     fn put_goal(&self, goal: &Goal) -> Result<()>;
 
     /// One write for many goals: what a re-ordered list is, and what moving
-    /// three goals to another role is. Atomic where the backend can be.
+    /// three goals to another area is. Atomic where the backend can be.
     fn put_goals(&self, goals: &[Goal]) -> Result<()> {
         for goal in goals {
             self.put_goal(goal)?;
@@ -190,13 +192,13 @@ pub trait PurposeStore: Send + Sync {
     /// unattributed; see the module docs.
     fn delete_goal(&self, id: GoalId) -> Result<()>;
 
-    /// How many goals point at one role, and how many of those are open.
+    /// How many goals point at one area, and how many of those are open.
     ///
-    /// For the line under a role's name in the sidebar, and for the refusal
-    /// message [`delete_role`](PurposeStore::delete_role) raises. Counted by
+    /// For the line under an area's name in the sidebar, and for the refusal
+    /// message [`delete_area`](PurposeStore::delete_area) raises. Counted by
     /// the backend over the whole vault rather than derived in the
     /// interface, which only ever holds the page it is showing.
-    fn count_goals(&self, role: RoleId) -> Result<(u64, u64)>;
+    fn count_goals(&self, area: AreaId) -> Result<(u64, u64)>;
 
     // ---- the reports ----------------------------------------------------
 
@@ -208,7 +210,7 @@ pub trait PurposeStore: Send + Sync {
     ///
     /// One row per distinct purpose. Ordering is the implementation's
     /// business and callers must not depend on it; the interface groups by
-    /// role and sorts for itself.
+    /// area and sorts for itself.
     fn time_by_purpose(&self, window: PurposeWindow) -> Result<Vec<PurposeMinutes>>;
 
     /// Actual minutes per resolved purpose per day over a window.
@@ -222,13 +224,13 @@ pub trait PurposeStore: Send + Sync {
     /// absent rather than zero. Ordering is the implementation's business.
     fn actual_minutes_by_day(&self, window: PurposeWindow) -> Result<Vec<PurposeDayMinutes>>;
 
-    /// Minutes of subscribed-calendar events per role over a window.
+    /// Minutes of subscribed-calendar events per area over a window.
     ///
-    /// Attributed by the calendar's own `role_id`, because a feed serves a
-    /// role and its individual events are not yours to file. Separate from
+    /// Attributed by the calendar's own `area_id`, because a feed serves an
+    /// area and its individual events are not yours to file. Separate from
     /// [`time_by_purpose`](PurposeStore::time_by_purpose) rather than summed
-    /// into it — see [`RoleEventMinutes`] for why.
-    fn events_by_role(&self, window: PurposeWindow) -> Result<Vec<RoleEventMinutes>>;
+    /// into it — see [`AreaEventMinutes`] for why.
+    fn events_by_area(&self, window: PurposeWindow) -> Result<Vec<AreaEventMinutes>>;
 
     /// Everything recorded against one goal, over all time.
     fn goal_activity(&self, id: GoalId) -> Result<GoalActivity>;
@@ -236,7 +238,11 @@ pub trait PurposeStore: Send + Sync {
 
 /// Associated data bound into a record's ciphertext. See
 /// [`entry_aad`](super::entry_aad) for why records are bound to their id.
-pub fn role_aad(id: RoleId) -> Vec<u8> {
+///
+/// Says `role`, not `area`: areas were roles when the first of them was
+/// sealed, and this label is bound into every one of those ciphertexts. It
+/// can never change -- see `tests/pinned_strings.rs`.
+pub fn area_aad(id: AreaId) -> Vec<u8> {
     format!("everyday.role.v1:{id}").into_bytes()
 }
 
@@ -250,29 +256,29 @@ mod tests {
     use crate::completable::Completable;
     use jiff::civil::date;
 
-    fn goal(role: RoleId, title: &str) -> Goal {
-        Goal::new(role, title)
+    fn goal(area: AreaId, title: &str) -> Goal {
+        Goal::new(area, title)
     }
 
     #[test]
     fn an_empty_query_matches_everything() {
-        assert!(GoalQuery::default().matches(&goal(RoleId::new(), "anything")));
+        assert!(GoalQuery::default().matches(&goal(AreaId::new(), "anything")));
     }
 
     #[test]
     fn the_open_query_keeps_paused_goals_and_drops_finished_ones() {
-        let role = RoleId::new();
+        let area = AreaId::new();
         let q = GoalQuery::open();
 
-        let mut paused = goal(role, "later");
+        let mut paused = goal(area, "later");
         paused.set_status(GoalStatus::Paused);
         assert!(q.matches(&paused), "paused is on the books, just not this month");
 
-        let mut done = goal(role, "finished");
+        let mut done = goal(area, "finished");
         done.set_status(GoalStatus::Done);
         assert!(!q.matches(&done));
 
-        let mut dropped = goal(role, "gave up");
+        let mut dropped = goal(area, "gave up");
         dropped.set_status(GoalStatus::Dropped);
         assert!(!q.matches(&dropped));
     }
@@ -282,18 +288,18 @@ mod tests {
         // A goal with no date is not "due by any date": it is undated, and
         // sweeping it into every quarter's list would drown the ones that
         // actually have a deadline.
-        let role = RoleId::new();
+        let area = AreaId::new();
         let q = GoalQuery { horizon_to: Some(date(2026, 12, 31)), ..Default::default() };
-        assert!(!q.matches(&goal(role, "someday")));
-        assert!(q.matches(&goal(role, "soon").with_horizon(date(2026, 6, 1))));
-        assert!(!q.matches(&goal(role, "later").with_horizon(date(2027, 6, 1))));
-        assert!(q.matches(&goal(role, "on the day").with_horizon(date(2026, 12, 31))));
+        assert!(!q.matches(&goal(area, "someday")));
+        assert!(q.matches(&goal(area, "soon").with_horizon(date(2026, 6, 1))));
+        assert!(!q.matches(&goal(area, "later").with_horizon(date(2027, 6, 1))));
+        assert!(q.matches(&goal(area, "on the day").with_horizon(date(2026, 12, 31))));
     }
 
     #[test]
-    fn a_role_filter_only_keeps_its_own() {
-        let mine = RoleId::new();
-        let theirs = RoleId::new();
+    fn an_area_filter_only_keeps_its_own() {
+        let mine = AreaId::new();
+        let theirs = AreaId::new();
         let q = GoalQuery::under(mine);
         assert!(q.matches(&goal(mine, "x")));
         assert!(!q.matches(&goal(theirs, "y")));
@@ -301,12 +307,12 @@ mod tests {
 
     #[test]
     fn goals_sort_by_order_then_title_and_the_limit_is_applied_last() {
-        let role = RoleId::new();
-        let mut a = goal(role, "Banana");
+        let area = AreaId::new();
+        let mut a = goal(area, "Banana");
         a.sort_order = 1;
-        let mut b = goal(role, "apple");
+        let mut b = goal(area, "apple");
         b.sort_order = 0;
-        let mut c = goal(role, "Cherry");
+        let mut c = goal(area, "Cherry");
         c.sort_order = 0;
 
         let sorted = GoalQuery::default().apply(vec![a.clone(), b.clone(), c.clone()]);
@@ -325,9 +331,9 @@ mod tests {
         // `apply` used to sort and truncate without ever calling `matches`,
         // so a backend that fetched everything and left the filtering to
         // this -- rather than pushing it into its own query -- would hand
-        // back every goal regardless of role or status.
-        let mine = RoleId::new();
-        let theirs = RoleId::new();
+        // back every goal regardless of area or status.
+        let mine = AreaId::new();
+        let theirs = AreaId::new();
         let out = GoalQuery::under(mine).apply(vec![goal(mine, "a"), goal(theirs, "b")]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "a");
@@ -346,12 +352,12 @@ mod tests {
 
     #[test]
     fn the_two_kinds_of_record_are_sealed_under_different_labels() {
-        // The same argument the library's three make: a role's ciphertext
+        // The same argument the library's three make: an area's ciphertext
         // must not be substitutable for a goal's by anyone who can write to
         // the database.
         let uuid = uuid::Uuid::now_v7();
-        assert_ne!(role_aad(RoleId::from(uuid)), goal_aad(GoalId::from(uuid)));
-        assert!(role_aad(RoleId::from(uuid)).starts_with(b"everyday.role."));
+        assert_ne!(area_aad(AreaId::from(uuid)), goal_aad(GoalId::from(uuid)));
+        assert!(area_aad(AreaId::from(uuid)).starts_with(b"everyday.role."));
         assert!(goal_aad(GoalId::from(uuid)).starts_with(b"everyday.goal."));
     }
 }

@@ -167,7 +167,7 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("estimate_minutes", number("Expected effort in minutes.")),
                 ("tags", list("Tags to attach.")),
                 ("goal_id", text("File it under this goal, from list_goals.")),
-                ("role_id", text("Or under this role directly, from list_roles.")),
+                ("area_id", text("Or under this area directly, from list_areas.")),
                 (
                     "remind_time",
                     text(
@@ -220,8 +220,8 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("estimate_minutes", number("Expected effort in minutes.")),
                 ("tags", list("Replaces the tags entirely.")),
                 ("goal_id", text("File it under this goal, from list_goals.")),
-                ("role_id", text("Or under this role directly, from list_roles.")),
-                ("clear_purpose", flag("Unfile it from whatever goal or role it carries.")),
+                ("area_id", text("Or under this area directly, from list_areas.")),
+                ("clear_purpose", flag("Unfile it from whatever goal or area it carries.")),
                 (
                     "remind_time",
                     text(

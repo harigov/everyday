@@ -264,7 +264,7 @@ impl Vault {
             );
         }
 
-        // Time recorded against a goal or a role.
+        // Time recorded against a goal or an area.
         if self.supports_purpose() {
             let mut by_day: BTreeMap<Date, u64> = BTreeMap::new();
             for row in self.actual_minutes_by_day(PurposeWindow::new(from, to))? {
@@ -279,7 +279,7 @@ impl Vault {
                     Deed {
                         kind: DeedKind::Time,
                         label: format!(
-                            "{hours} hour{} on your goals and roles",
+                            "{hours} hour{} on your goals and areas",
                             if hours == 1 { "" } else { "s" }
                         ),
                         points: karma::time_points(minutes),

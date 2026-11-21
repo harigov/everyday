@@ -840,7 +840,7 @@ async fn a_note_is_written_by_topic_and_a_missing_section_asked_for_once() {
 }
 
 #[tokio::test]
-async fn a_calendars_role_becomes_the_notes_purpose() {
+async fn a_calendars_area_becomes_the_notes_purpose() {
     let (_dir, vault) = test_vault();
     let audio = Arc::new(FakeAudio::new());
     let id = seed_recording(&vault, &audio, 1, 0);
@@ -848,8 +848,8 @@ async fn a_calendars_role_becomes_the_notes_purpose() {
     let calendar_id = recording.event.as_ref().unwrap().calendar_id;
     let mut calendar = karmayoga_core::Calendar::subscribed("Work", "https://example.com/w.ics");
     calendar.id = calendar_id;
-    let role = karmayoga_core::RoleId::new();
-    calendar.role_id = Some(role);
+    let area = karmayoga_core::AreaId::new();
+    calendar.area_id = Some(area);
     vault.save_calendar(&calendar).unwrap();
 
     recording.stage = Stage::Summarising;
@@ -861,7 +861,7 @@ async fn a_calendars_role_becomes_the_notes_purpose() {
 
     let recording = vault.recording(id).unwrap();
     let note = vault.note(recording.note_id.unwrap()).unwrap();
-    assert_eq!(note.purpose, Some(karmayoga_core::Purpose::Role { id: role }));
+    assert_eq!(note.purpose, Some(karmayoga_core::Purpose::Area { id: area }));
 }
 
 /// Answers each of the pipeline's requests the way a model would, and keeps

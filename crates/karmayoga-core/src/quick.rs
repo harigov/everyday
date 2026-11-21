@@ -104,7 +104,7 @@ impl QuickApp {
             Self::Journal => "Journal",
             Self::Tracking => "Tracking",
             Self::Notes => "Notes",
-            Self::Purpose => "Roles and goals",
+            Self::Purpose => "Areas and goals",
             Self::Overview => "Overview",
             Self::Data => "Data",
             Self::Assistant => "Assistant",
@@ -550,7 +550,7 @@ fn kind_schema() -> Value {
     })
 }
 
-/// Tags, and which role or goal a record serves.
+/// Tags, and which area or goal a record serves.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelsAnswer {
@@ -592,7 +592,7 @@ fn labels_schema() -> Value {
             },
             "purpose": {
                 "type": ["integer", "null"],
-                "description": "The number of the role or goal this serves, or null if none of them plainly does."
+                "description": "The number of the area or goal this serves, or null if none of them plainly does."
             }
         },
         "required": ["tags", "purpose"],
@@ -1097,11 +1097,11 @@ pub static LIBRARY_IMPORT_MAP: QuickAsk = QuickAsk {
 
 pub static TODO_PURPOSE: QuickAsk = QuickAsk {
     name: "todo.purpose",
-    label: "Suggest a role or goal",
-    blurb: "Sends the task's title and the names of your roles and goals.",
+    label: "Suggest an area or goal",
+    blurb: "Sends the task's title and the names of your areas and goals.",
     app: QuickApp::Todo,
     default_on: true,
-    system: "You say which of somebody's roles or goals a task serves, and \
+    system: "You say which of somebody's areas or goals a task serves, and \
             propose tags for it. Answer null for the purpose unless one \
             plainly fits — most of what anybody does serves no stated goal, and \
             a wrong purpose quietly corrupts the report that counts them.",
@@ -1211,7 +1211,7 @@ pub static JOURNAL_LABELS: QuickAsk = QuickAsk {
     blurb: "Sends the text of the journal entry you just wrote.",
     app: QuickApp::Journal,
     default_on: false,
-    system: "You propose tags for a day's writing, and say which role or \
+    system: "You propose tags for a day's writing, and say which area or \
             goal the day served. Prefer tags already in use over new ones. \
             Answer null for the purpose unless one plainly fits.",
     schema: labels_schema,
@@ -1249,7 +1249,7 @@ pub static NOTES_LABELS: QuickAsk = QuickAsk {
     blurb: "Sends the text of the note.",
     app: QuickApp::Notes,
     default_on: true,
-    system: "You propose tags for a note, and say which role or goal it \
+    system: "You propose tags for a note, and say which area or goal it \
             serves. Prefer tags already in use. Answer null for the purpose \
             unless one plainly fits.",
     schema: labels_schema,
@@ -1286,12 +1286,12 @@ pub static TRACKER_DRAFT: QuickAsk = QuickAsk {
     schema: tracker_schema,
 };
 
-// -- roles and goals --------------------------------------------------
+// -- areas and goals --------------------------------------------------
 
 pub static PURPOSE_GOAL: QuickAsk = QuickAsk {
     name: "purpose.goal",
     label: "Sharpen a goal's wording",
-    blurb: "Sends the goal you typed and the role it sits under.",
+    blurb: "Sends the goal you typed and the area it sits under.",
     app: QuickApp::Purpose,
     default_on: true,
     system: "You rewrite a goal as an outcome somebody could tell they had \
@@ -1318,7 +1318,7 @@ pub static PURPOSE_BACKFILL: QuickAsk = QuickAsk {
 pub static OVERVIEW_WEEK: QuickAsk = QuickAsk {
     name: "overview.week",
     label: "Write the week in a sentence or two",
-    blurb: "Sends this week's totals: hours by role, tasks done, entries written.",
+    blurb: "Sends this week's totals: hours by area, tasks done, entries written.",
     app: QuickApp::Overview,
     default_on: false,
     system: "You write two sentences about somebody's week from its \
@@ -1389,7 +1389,7 @@ pub static ASKS: &[QuickAsk] = &[
 // without anybody reading a tool call first.
 
 use crate::library::{Item, Kind};
-use crate::purpose::{Goal, Role};
+use crate::purpose::{Area, Goal};
 use crate::tracker::Tracker;
 use crate::websearch::SearchResult;
 
@@ -1478,18 +1478,18 @@ pub fn library_import_map(
     Prompt::new(&LIBRARY_IMPORT_MAP, ctx, user)
 }
 
-/// A role-and-goal list, numbered, as every purpose ask offers it.
+/// An area-and-goal list, numbered, as every purpose ask offers it.
 ///
-/// Roles come after goals so that the specific answer is the near one: a
+/// Areas come after goals so that the specific answer is the near one: a
 /// model given "Parent" and "Viya rides without stabilisers" should reach for
-/// the goal when the task is about the bike, and the role only when nothing
+/// the goal when the task is about the bike, and the area only when nothing
 /// narrower fits.
-fn purpose_list(roles: &[Role], goals: &[Goal]) -> String {
+fn purpose_list(areas: &[Area], goals: &[Goal]) -> String {
     numbered(
         goals
             .iter()
             .map(|g| format!("goal: {}", g.title))
-            .chain(roles.iter().map(|r| format!("role: {}", r.name))),
+            .chain(areas.iter().map(|r| format!("area: {}", r.name))),
     )
 }
 
@@ -1497,13 +1497,13 @@ fn purpose_list(roles: &[Role], goals: &[Goal]) -> String {
 pub fn todo_purpose(
     ctx: &QuickContext,
     title: &str,
-    roles: &[Role],
+    areas: &[Area],
     goals: &[Goal],
     known_tags: &[String],
 ) -> Prompt {
     let user = format!(
-        "Task: {title}\n\nTheir roles and goals:\n{}\n\nTags already in use: {}",
-        purpose_list(roles, goals),
+        "Task: {title}\n\nTheir areas and goals:\n{}\n\nTags already in use: {}",
+        purpose_list(areas, goals),
         tag_list(known_tags),
     );
     Prompt::new(&TODO_PURPOSE, ctx, user)
@@ -1583,13 +1583,13 @@ pub fn journal_title(ctx: &QuickContext, text: &str) -> Prompt {
 pub fn journal_labels(
     ctx: &QuickContext,
     text: &str,
-    roles: &[Role],
+    areas: &[Area],
     goals: &[Goal],
     known_tags: &[String],
 ) -> Prompt {
     let user = format!(
-        "Their roles and goals:\n{}\n\nTags already in use: {}\n\nWhat they wrote:\n{}",
-        purpose_list(roles, goals),
+        "Their areas and goals:\n{}\n\nTags already in use: {}\n\nWhat they wrote:\n{}",
+        purpose_list(areas, goals),
         tag_list(known_tags),
         excerpt(text),
     );
@@ -1611,13 +1611,13 @@ pub fn notes_tasks(ctx: &QuickContext, title: &str, text: &str) -> Prompt {
 pub fn notes_labels(
     ctx: &QuickContext,
     text: &str,
-    roles: &[Role],
+    areas: &[Area],
     goals: &[Goal],
     known_tags: &[String],
 ) -> Prompt {
     let user = format!(
-        "Their roles and goals:\n{}\n\nTags already in use: {}\n\nThe note:\n{}",
-        purpose_list(roles, goals),
+        "Their areas and goals:\n{}\n\nTags already in use: {}\n\nThe note:\n{}",
+        purpose_list(areas, goals),
         tag_list(known_tags),
         excerpt(text),
     );
@@ -1640,8 +1640,8 @@ pub fn tracker_draft(ctx: &QuickContext, name: &str, line: &str) -> Prompt {
 }
 
 /// P1 — a goal phrased as an outcome.
-pub fn purpose_goal(ctx: &QuickContext, goal: &str, role: &str) -> Prompt {
-    Prompt::new(&PURPOSE_GOAL, ctx, format!("Role: {role}\nGoal as written: {goal}"))
+pub fn purpose_goal(ctx: &QuickContext, goal: &str, area: &str) -> Prompt {
+    Prompt::new(&PURPOSE_GOAL, ctx, format!("Area: {area}\nGoal as written: {goal}"))
 }
 
 /// P2 — which existing records serve a goal that has just been written.
@@ -2132,15 +2132,15 @@ mod tests {
     }
 
     #[test]
-    fn a_purpose_list_puts_goals_before_roles() {
+    fn a_purpose_list_puts_goals_before_areas() {
         // The specific answer should be the near one: a model given both
         // should reach for the goal when the task is about the goal.
-        let role = Role::new("Parent");
-        let goal = Goal::new(role.id, "Viya rides without stabilisers");
-        let list = purpose_list(std::slice::from_ref(&role), std::slice::from_ref(&goal));
+        let area = Area::new("Parent");
+        let goal = Goal::new(area.id, "Viya rides without stabilisers");
+        let list = purpose_list(std::slice::from_ref(&area), std::slice::from_ref(&goal));
         let goal_at = list.find("goal:").expect("the goal is listed");
-        let role_at = list.find("role:").expect("the role is listed");
-        assert!(goal_at < role_at);
+        let area_at = list.find("area:").expect("the area is listed");
+        assert!(goal_at < area_at);
     }
 
     // ---- reading a page for a research job ---------------------------------

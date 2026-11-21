@@ -1,4 +1,4 @@
-//! Roles and goals: the shape of a life, and what any other record was
+//! Areas and goals: the shape of a life, and what any other record was
 //! *for*.
 
 use serde_json::{Value, json};
@@ -10,7 +10,7 @@ use super::{
 };
 use crate::completable::Completable;
 use crate::error::Result;
-use crate::id::{GoalId, RoleId};
+use crate::id::{AreaId, GoalId};
 use crate::purpose::{Goal, GoalActivity, GoalStatus, Purpose};
 use crate::store::purpose::{GoalQuery, PurposeWindow};
 use crate::timestamped::Timestamped;
@@ -19,13 +19,13 @@ const GOAL_STATUSES: [&str; 4] = ["active", "paused", "done", "dropped"];
 
 pub(super) static TOOLS: &[Tool] = &[
     tool!(
-        "list_roles",
+        "list_areas",
         Read,
         Purpose,
         empty_schema(),
-        "The parts of a life this vault is organised around \u{2014} parent, work, \
-         yourself \u{2014} with how many goals sit under each.",
-        run_list_roles
+        "The areas of a life this vault is organised around \u{2014} family, work, \
+         health, yourself \u{2014} with how many goals sit under each.",
+        run_list_areas
     ),
     tool!(
         "list_goals",
@@ -33,7 +33,7 @@ pub(super) static TOOLS: &[Tool] = &[
         Purpose,
         schema(
             vec![
-                ("role_id", text("From list_roles. Omit for every role.")),
+                ("area_id", text("From list_areas. Omit for every area.")),
                 ("status", one_of("Only goals in this state.", &GOAL_STATUSES)),
                 ("include_activity", flag("Also say what has been recorded against each.")),
                 limit_arg(),
@@ -57,14 +57,14 @@ pub(super) static TOOLS: &[Tool] = &[
         Purpose,
         schema(
             vec![
-                ("role_id", text("From list_roles. Required: every goal sits under one.")),
+                ("area_id", text("From list_areas. Required: every goal sits under one.")),
                 ("title", text("What is wanted.")),
                 ("notes", text("What done would look like.")),
                 ("horizon", day("When it would ideally be true by. Soft; nothing is notified.")),
             ],
-            &["role_id", "title"]
+            &["area_id", "title"]
         ),
-        "Add a goal under a role. To say how it will be measured \u{2014} an hour or \
+        "Add a goal under an area. To say how it will be measured \u{2014} an hour or \
          two a week, twelve a year \u{2014} follow with set_target.",
         run_create_goal
     ),
@@ -79,7 +79,7 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("notes", text("What done would look like.")),
                 ("status", one_of("Where it has got to.", &GOAL_STATUSES)),
                 ("horizon", day("When it would ideally be true by.")),
-                ("role_id", text("Move it under a different role.")),
+                ("area_id", text("Move it under a different area.")),
             ],
             &["goal_id"]
         ),
@@ -114,20 +114,20 @@ pub(super) static TOOLS: &[Tool] = &[
                 ),
                 ("id", text("The record's id, from whichever list tool found it.")),
                 ("goal_id", text("File it under this goal. From list_goals.")),
-                ("role_id", text("Or under this role directly. From list_roles.")),
+                ("area_id", text("Or under this area directly. From list_areas.")),
                 ("clear", flag("Unfile it instead.")),
             ],
             &["kind", "id"]
         ),
-        "Say what a record is for: a goal, or a part of a life directly. Filing a \
+        "Say what a record is for: a goal, or an area of a life directly. Filing a \
          project is worth more than filing its tasks \u{2014} everything under it \
          inherits, so one call attributes the lot, and time logged against it then \
          counts towards the goal's time targets. A tracker filed under a goal is \
-         how that goal is measured. Pass exactly one of goal_id, role_id or clear.",
+         how that goal is measured. Pass exactly one of goal_id, area_id or clear.",
         run_set_purpose
     ),
     tool!(
-        "time_by_role",
+        "time_by_area",
         Read,
         Purpose,
         schema(
@@ -137,10 +137,10 @@ pub(super) static TOOLS: &[Tool] = &[
             ],
             &[]
         ),
-        "Where the hours went over a window, grouped by the part of a life they \
+        "Where the hours went over a window, grouped by the area of a life they \
          served, planned beside recorded. Time filed against nothing is reported \
          as its own row rather than left out.",
-        run_time_by_role
+        run_time_by_area
     ),
 ];
 
@@ -148,26 +148,26 @@ fn describe_delete_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String
     describe_by_id::<GoalId, Goal>(args, "goal_id", "goal", |id| ctx.vault.goal(id), |g| g.title)
 }
 
-fn run_list_roles(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
+fn run_list_areas(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
     let mut rows = Vec::new();
-    for role in ctx.vault.roles()? {
-        if role.archived {
+    for area in ctx.vault.areas()? {
+        if area.archived {
             continue;
         }
-        let (goals, open) = ctx.vault.count_goals(role.id).unwrap_or((0, 0));
+        let (goals, open) = ctx.vault.count_goals(area.id).unwrap_or((0, 0));
         rows.push(json!({
-            "id": role.id.to_string(),
-            "name": role.name,
+            "id": area.id.to_string(),
+            "name": area.name,
             "goals": goals,
             "open_goals": open,
         }));
     }
-    Ok(json!({ "count": rows.len(), "roles": rows }))
+    Ok(json!({ "count": rows.len(), "areas": rows }))
 }
 
 fn goal_json(
     goal: &Goal,
-    role: Option<&str>,
+    area: Option<&str>,
     activity: Option<&GoalActivity>,
     targets: Vec<Value>,
 ) -> Value {
@@ -175,11 +175,11 @@ fn goal_json(
         "id": goal.id.to_string(),
         "title": goal.title,
         "status": goal.status.as_str(),
-        "role_id": goal.role_id.to_string(),
+        "area_id": goal.area_id.to_string(),
     });
     let m = out.as_object_mut().expect("just built an object");
-    if let Some(role) = role {
-        m.insert("role".into(), json!(role));
+    if let Some(area) = area {
+        m.insert("area".into(), json!(area));
     }
     if !goal.notes.is_empty() {
         m.insert("notes".into(), json!(goal.notes));
@@ -229,12 +229,12 @@ fn goal_json(
 
 fn run_list_goals(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut query = GoalQuery { limit: Some(args.limit()), ..Default::default() };
-    query.role_id = args.opt_id("role_id", "role")?;
+    query.area_id = args.opt_area()?;
     if let Some(status) = args.opt_enum::<GoalStatus>("status", &GOAL_STATUSES)? {
         query.statuses = vec![status];
     }
 
-    let roles = ctx.vault.roles()?;
+    let areas = ctx.vault.areas()?;
     let with_activity = args.bool_or("include_activity", false);
     // Every target of every tracker filed under a goal, measured once for
     // the whole list rather than once per goal. A vault without trackers
@@ -262,7 +262,7 @@ fn run_list_goals(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         .goals(&query)?
         .into_iter()
         .map(|goal| {
-            let role = roles.iter().find(|r| r.id == goal.role_id).map(|r| r.name.as_str());
+            let area = areas.iter().find(|r| r.id == goal.area_id).map(|r| r.name.as_str());
             let activity = if with_activity { ctx.vault.goal_activity(goal.id).ok() } else { None };
             let targets = measured
                 .iter()
@@ -277,19 +277,19 @@ fn run_list_goals(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
                     })
                 })
                 .collect();
-            goal_json(&goal, role, activity.as_ref(), targets)
+            goal_json(&goal, area, activity.as_ref(), targets)
         })
         .collect();
     Ok(json!({ "count": rows.len(), "goals": rows }))
 }
 
 fn run_create_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let role_id: RoleId = args.id("role_id", "role")?;
+    let area_id: AreaId = args.area()?;
     let title = args.str("title")?.trim().to_string();
     if title.is_empty() {
         return Err(args.bad("`title` cannot be empty"));
     }
-    let mut goal = Goal::new(role_id, title);
+    let mut goal = Goal::new(area_id, title);
     goal.notes = args.opt_str("notes").unwrap_or_default().to_string();
     goal.horizon = args.opt_date("horizon")?;
     ctx.vault.save_goal(&goal)?;
@@ -309,8 +309,8 @@ fn run_update_goal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(notes) = args.opt_str("notes") {
         goal.notes = notes.to_string();
     }
-    if let Some(role_id) = args.opt_id::<RoleId>("role_id", "role")? {
-        goal.role_id = role_id;
+    if let Some(area_id) = args.opt_area()? {
+        goal.area_id = area_id;
     }
     if let Some(horizon) = args.opt_date("horizon")? {
         goal.horizon = Some(horizon);
@@ -341,17 +341,17 @@ fn run_set_purpose(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let id = args.str("id")?;
     let clear = args.bool_or("clear", false);
     let goal_id = args.opt_id::<GoalId>("goal_id", "goal")?;
-    let role_id = args.opt_id::<RoleId>("role_id", "role")?;
+    let area_id = args.opt_area()?;
 
     // Exactly one. Two would be a silent choice between them, and none
     // would be a call that looks like it worked and did nothing.
     let given =
-        usize::from(clear) + usize::from(goal_id.is_some()) + usize::from(role_id.is_some());
+        usize::from(clear) + usize::from(goal_id.is_some()) + usize::from(area_id.is_some());
     if given != 1 {
-        return Err(args.bad("pass exactly one of `goal_id`, `role_id` or `clear`"));
+        return Err(args.bad("pass exactly one of `goal_id`, `area_id` or `clear`"));
     }
 
-    let purpose = match (goal_id, role_id) {
+    let purpose = match (goal_id, area_id) {
         (Some(id), _) => {
             // Checked before anything is written, so a bad id is a refusal
             // rather than a record filed under nothing.
@@ -359,8 +359,8 @@ fn run_set_purpose(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
             Some(Purpose::Goal { id })
         }
         (_, Some(id)) => {
-            ctx.vault.role(id)?;
-            Some(Purpose::Role { id })
+            ctx.vault.area(id)?;
+            Some(Purpose::Area { id })
         }
         _ => None,
     };
@@ -437,11 +437,11 @@ fn parse_id<T: std::str::FromStr>(
     raw.parse::<T>().map_err(|_| args.bad(format!("`{field}` is not a {kind} id: {raw:?}")))
 }
 
-fn run_time_by_role(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+fn run_time_by_area(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let (from, to) = args.window(ctx, Window::Back(7))?;
 
     let window = PurposeWindow::new(from, to);
-    let roles = ctx.vault.roles()?;
+    let areas = ctx.vault.areas()?;
     let goals = ctx.vault.goals(&GoalQuery::default())?;
 
     /// Recorded, planned, blocks, and somebody else's meetings.
@@ -453,22 +453,22 @@ fn run_time_by_role(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         meetings: u64,
     }
 
-    // Folded to one row per role here rather than in SQL, for the reason the
-    // interface folds it too: a goal's role is inside a sealed payload, and
+    // Folded to one row per area here rather than in SQL, for the reason the
+    // interface folds it too: a goal's area is inside a sealed payload, and
     // asking the database to open every one of them to group a report would
     // undo the whole point of the pointer being a clear column.
     let mut rows: BTreeMap<Option<String>, Row> = BTreeMap::new();
-    let name_of = |role: Option<RoleId>| -> Option<String> {
-        role.and_then(|id| roles.iter().find(|r| r.id == id)).map(|r| r.name.clone())
+    let name_of = |area: Option<AreaId>| -> Option<String> {
+        area.and_then(|id| areas.iter().find(|r| r.id == id)).map(|r| r.name.clone())
     };
 
     for entry in ctx.vault.time_by_purpose(window)? {
-        let role = match entry.purpose {
-            Some(Purpose::Role { id }) => Some(id),
-            Some(Purpose::Goal { id }) => goals.iter().find(|g| g.id == id).map(|g| g.role_id),
+        let area = match entry.purpose {
+            Some(Purpose::Area { id }) => Some(id),
+            Some(Purpose::Goal { id }) => goals.iter().find(|g| g.id == id).map(|g| g.area_id),
             None => None,
         };
-        let slot = rows.entry(name_of(role)).or_default();
+        let slot = rows.entry(name_of(area)).or_default();
         slot.actual += entry.actual_minutes;
         slot.planned += entry.planned_minutes;
         slot.blocks += entry.blocks;
@@ -477,8 +477,8 @@ fn run_time_by_role(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // Meetings are counted apart from the hours and never summed into them:
     // an event is somebody else's claim on an hour and a block is your own
     // record of one, and adding them double-counts every meeting you logged.
-    for entry in ctx.vault.events_by_role(window).unwrap_or_default() {
-        rows.entry(name_of(entry.role_id)).or_default().meetings += entry.minutes;
+    for entry in ctx.vault.events_by_area(window).unwrap_or_default() {
+        rows.entry(name_of(entry.area_id)).or_default().meetings += entry.minutes;
     }
 
     let out: Vec<Value> = rows
@@ -488,7 +488,7 @@ fn run_time_by_role(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
                 // The unattributed row is named rather than left as null:
                 // most of a life is not booked against anything, and a
                 // report that dropped that share would be flattering.
-                "role": name.unwrap_or_else(|| "not filed".into()),
+                "area": name.unwrap_or_else(|| "not filed".into()),
                 "minutes": row.actual,
                 "planned_minutes": row.planned,
                 "blocks": row.blocks,
@@ -500,6 +500,6 @@ fn run_time_by_role(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     Ok(json!({
         "from": from.to_string(),
         "to": to.to_string(),
-        "roles": out,
+        "areas": out,
     }))
 }

@@ -15,7 +15,7 @@
   //
   // Segments are separated by a 2px gap in the surface colour rather than by
   // a stroke -- the same spacer the rest of the application's charts use --
-  // so two neighbouring roles with close hues still read as two.
+  // so two neighbouring areas with close hues still read as two.
 
   interface Slice {
     id: string
@@ -71,7 +71,7 @@
 {#if total === 0}
   <p class="none">{empty}</p>
 {:else}
-  <div class="stack" role="img" aria-label="Share by role">
+  <div class="stack" role="img" aria-label="Share by area">
     {#each shown as slice (slice.id)}
       <span
         class="seg"
@@ -130,7 +130,7 @@
     gap: var(--sp-2);
     font-size: var(--text-sm);
     /* Text tokens throughout. The swatch carries the identity; a name
-       written in a pale role colour would fail contrast on the surface. */
+       written in a pale area colour would fail contrast on the surface. */
     color: var(--fg-muted);
   }
 

@@ -95,16 +95,16 @@ pub struct Capabilities {
     /// not offering it.
     #[serde(default)]
     pub trackers: bool,
-    /// Backend implements [`purpose::PurposeStore`], so the roles you play
+    /// Backend implements [`purpose::PurposeStore`], so the areas you play
     /// and the goals under them have somewhere to live — and so the reports
-    /// that answer "where did my week go, by role" can be asked at all.
+    /// that answer "where did my week go, by area" can be asked at all.
     ///
     /// False hides the Overview app entirely, including the pickers that set
     /// a purpose on a task or a block: offering to file something under a
     /// goal that cannot be stored is worse than not offering it.
     ///
     /// Named for the domain rather than for `Goal`, as every flag here is:
-    /// this one answers for roles and the balance report too, and it was the
+    /// this one answers for areas and the balance report too, and it was the
     /// only one of the eight named after a record.
     #[serde(default)]
     pub purpose: bool,

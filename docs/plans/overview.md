@@ -1,5 +1,12 @@
 # Roles, goals, and the Overview
 
+> **Renamed, November 2026.** Roles are called **areas** now, in the code
+> and the interface alike: `Area`, `AreaId`, `list_areas`, `Purpose::Area`.
+> This plan is kept as it was written. What a vault had already stored kept
+> the old word -- the `roles` table, `goals.role_id`, `purpose_kind = 'role'`,
+> the `everyday.role.v1:` AEAD label, and `roleId` / `"role"` inside sealed
+> payloads, which still read. See `karmayoga_core::purpose`'s module docs.
+
 > **Delivered.** All six phases are built, tested and on this branch. Read
 > this for the reasoning; read the commits for what was actually done. Four
 > things went differently from the plan below, each for a reason worth

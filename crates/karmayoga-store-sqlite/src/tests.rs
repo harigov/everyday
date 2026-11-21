@@ -1191,11 +1191,11 @@ fn a_version_7_database_gains_notes_without_losing_goals() {
     // the profile and the assistant's routines existed, opened by a build
     // that has them.
     let dir = tempfile::tempdir().unwrap();
-    let role = karmayoga_core::purpose::Role::new("this must survive the migration");
+    let area = karmayoga_core::purpose::Area::new("this must survive the migration");
 
     {
         let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
-        store.put_role(&role).unwrap();
+        store.put_area(&area).unwrap();
     }
     // Rewind to the world as version 7 left it: the new tables gone and the
     // recorded version behind.
@@ -1211,7 +1211,7 @@ fn a_version_7_database_gains_notes_without_losing_goals() {
 
     let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
     assert_eq!(
-        store.get_role(role.id).unwrap().name,
+        store.get_area(area.id).unwrap().name,
         "this must survive the migration",
         "migrating must not disturb what was already there"
     );

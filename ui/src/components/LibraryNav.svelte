@@ -3,7 +3,7 @@
   // every shelf, and then the shelves.
   //
   // A shelf -- a `Kind` -- is defined here rather than in Settings, for the
-  // reason the Overview's roles are: a thing is defined where its data is
+  // reason the Overview's areas are: a thing is defined where its data is
   // seen, and a shelf you have to go to Settings for is a shelf you will not
   // rename. Everything one can have done to it is on its right-click menu.
 

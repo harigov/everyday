@@ -129,7 +129,7 @@ of them had to close before the other could open.
 
 Settings has an **About You** tab as well, which is where the assistant learns
 whose vault this is (see [Who it works for](#who-it-works-for)) and where the
-**roles** are defined, and a **Data** tab,
+**areas** are defined, and a **Data** tab,
 which is where the vault is written out as files anything can read and read
 back again — see [leaving with your writing](#leaving-with-your-writing).
 
@@ -163,7 +163,7 @@ start date, priority, effort estimate and tags. There is a **list** view,
 grouped by due date, status, priority or **goal**, and a **kanban board** whose
 columns are the six task statuses. Tags go on projects, tasks and blocks of
 time alike; a *purpose* goes on all three too, which is what the Overview
-counts — see [roles and goals](#roles-goals-and-where-the-week-went).
+counts — see [areas and goals](#areas-goals-and-where-the-week-went).
 
 Capture is the part that had to be fast, so adding a task is one line and one
 Enter, and the line carries its own fields:
@@ -450,7 +450,7 @@ from Zoom, Google Meet, Teams, Webex, a Slack huddle or a dozen other hosts,
 with at least one other attendee — the app asks *"Take notes for Design
 sync?"*. Nothing is recorded until you say yes. That is the **Ask** mode,
 and it is the default. **Always** records every detected call on the
-calendars, or the roles, you choose, without asking, and still shows the
+calendars, or the areas, you choose, without asking, and still shows the
 recording pill the whole time so it is never silent about it. **Off** never
 offers at all. *"Never for this meeting"* turns the offer off for that
 whole series, not just the occurrence that prompted it; *"Not now"* only
@@ -1534,7 +1534,7 @@ Tracking needs a backend that can hold readings, so the interface reads
 that define it — on a backend that cannot. Both shipped backends can; the
 check exists so that the next one need not.
 
-## Roles, goals, and where the week went
+## Areas, goals, and where the week went
 
 Four apps record what happened. None of them can say what it amounted to.
 The todo app knows a project took nine hours and not that the nine hours were
@@ -1546,16 +1546,30 @@ go" is a list of jobs. It is not a life.
 So there are two records above all of that:
 
 ```
-  Role ──── Goal ──── (anything: a project, a task, an hour, an entry)
- (Parent)  (Viya rides without stabilisers)
+  Area ──── Goal ──── (anything: a project, a task, an hour, an entry)
+ (Family)  (Viya rides without stabilisers)
 ```
 
-A **role** is who you are being: parent, engineer, partner, yourself. A
+An **area** is a part of your life: family, work, health, yourself. A
 handful of them, changing about once a year, and they are the axis every
-balance chart is drawn against. A **goal** is an outcome under a role, with a
+balance chart is drawn against. A **goal** is an outcome under an area, with a
 status and a soft horizon. There are as many as you like and they get done or
-dropped. Folding the two together would mean either a permanent goal or a
-role that finishes, and neither is a thing.
+dropped. Folding the two together would mean either a permanent goal or an
+area that finishes, and neither is a thing. A goal moves to another area from
+its menu, from the Area field on its rail, or from the header of its own page.
+
+In the todo app, picking a goal lists the **projects filed under it**, the way
+picking a project lists its tasks; a project picked from there opens its own.
+"What this is all for" is still the page of every goal, grouped by area.
+
+Areas were called **roles** until November 2026. Nothing a vault held was
+rewritten for the rename, so the old word survives wherever it was stored:
+the `roles` table and `goals.role_id`, the `role` in `purposes.purpose_kind`,
+the AEAD label `everyday.role.v1:<id>`, and `roleId` and `"type": "role"`
+inside sealed payloads written before it, which still read. Exports from
+before the rename import as they always did. Schema version 34 marks it, so a
+build from before the rename refuses a vault this one has opened rather than
+half-reading records it has saved since.
 
 **Neither of them is a project.** A project is a body of work with tasks
 under it; a goal is the reason work exists. Most goals have no project at all
@@ -1565,15 +1579,15 @@ in the todo app's tree. Three quarters of them would never reach it.
 
 ### One pointer, on everything, never required
 
-A **purpose** names a goal, or a role directly. The second is not a degraded
-case of the first: a great deal of being a parent serves no particular
-outcome and is still the thing you most want counted. It sits on a project, a
+A **purpose** names a goal, or an area directly. The second is not a degraded
+case of the first: a great deal of family life serves no particular outcome
+and is still the thing you most want counted. It sits on a project, a
 task, a block of time, an entry, a shelf item and a tracker, and it is
 optional on all of them — an interface that demanded one on capture is an
 interface people stop capturing into, which would cost the vault the very
 records the reports are made of.
 
-A subscribed **calendar** takes a role rather than a purpose. A work feed is
+A subscribed **calendar** takes an area rather than a purpose. A work feed is
 work, and the forty meetings on it are not each yours to file; one click there
 attributes a year of somebody else's claims on your time, which is the
 cheapest large win in the whole report.
@@ -1589,8 +1603,8 @@ task under a filed project appears in that project's section.
 
 A goal measures itself through the trackers filed under it, and a tracker
 need not be one anybody records. Its **source** can be *time* — actual minutes
-of blocks whose purpose resolves to the tracker's own goal (or, filed under a
-role, to that role and all its goals) — or *finished*: things got to the end
+of blocks whose purpose resolves to the tracker's own goal (or, filed under an
+area, to that area and all its goals) — or *finished*: things got to the end
 of on a shelf, a re-read included. Those readings are worked out by the core
 at query time, from the blocks and the library's log, through the same
 `tracker_days` every chart already reads; nothing is stored, so nothing goes
@@ -1645,8 +1659,8 @@ Two of the four panes did not become widgets, and both left for a better
 address rather than being dropped. **Goals** are edited in the todo app,
 beside the tasks that make them happen — they had been three panes away from
 the work, so filing something under one meant remembering its name in another
-app. **Roles** are defined in Settings, under About You, with the rest of what
-the vault knows about its owner: a role is not the Overview's data, it is a
+app. **Areas** are defined in Settings, under About You, with the rest of what
+the vault knows about its owner: an area is not the Overview's data, it is a
 standing fact about the person that four different apps file things under, and
 the Overview was only the app that happened to draw it first.
 
@@ -1658,11 +1672,11 @@ machine under the desk. Making it follow you means a record in the vault — a
 table, a migration, two commands, a conformance test — which is a change to
 the storage layer rather than to this app, and nobody has asked for it yet.
 
-The week is drawn as **bars from a common baseline, one row per role** —
+The week is drawn as **bars from a common baseline, one row per area** —
 not a stacked column per day. That is not taste. The question is "how much of
 my week went to each of these", which is a magnitude comparison across
 categories; a stack answers "what was Tuesday made of", which is a different
-and lesser question. It also settles a real accessibility problem: role
+and lesser question. It also settles a real accessibility problem: area
 colours come from the journal palette, and two of its eight hues separate well
 for normal vision and badly for protanopia. In a stack, colour is the only
 identity channel and that would matter. Here every row carries its own name and
@@ -1678,10 +1692,10 @@ every meeting you also logged.
 Two things are drawn that a tidier report would leave out, and both are the
 point. **Time filed against nothing** gets its own row, however large: most of
 a life is not booked, and a chart that dropped that share would be flattering
-rather than useful. And a **role with nothing recorded** keeps its row at zero,
+rather than useful. And an **area with nothing recorded** keeps its row at zero,
 because its absence is the finding.
 
-Which leads to the one thing this app can say that no other can: *a role with
+Which leads to the one thing this app can say that no other can: *an area with
 an open goal and nothing recorded against it for a fortnight.* Working that out
 means reading the journal, the todo app, the calendar and the shelf, and no
 single app sees all four. It is a card of its own — *Gone quiet* — said
@@ -1729,15 +1743,15 @@ The rules are where these cards would otherwise lie:
 
 ### What is refused, and what is not
 
-Deleting a **role** is refused while any goal still points at it. That is the
+Deleting an **area** is refused while any goal still points at it. That is the
 opposite of every other parent in the vault — a shelf takes its items, a
 project takes its tasks — and the difference is deliberate. An item is *made
 of* its shelf: without the kind it has no fields, no verbs and nowhere to be
-drawn. A goal is not made of its role in that way; it is a thing you wanted,
+drawn. A goal is not made of its area in that way; it is a thing you wanted,
 with a year of attributed hours behind it, and one click on a sidebar row is
 the wrong distance from losing all of that. The store counts first and says
 how many are in the way, so archiving can be offered instead — which is what
-somebody reorganising their roles actually meant.
+somebody reorganising their areas actually meant.
 
 Deleting a **goal** is allowed, and what pointed at it is left alone. An
 unresolvable pointer already reads as no purpose at all, so a block whose goal
@@ -1745,7 +1759,7 @@ is gone reports as unattributed; rewriting every task, block, entry and item
 that mentioned it would be a great deal of writing to make one report row
 shorter.
 
-And there are **no default roles**. The library seeds its shelves on unlock,
+And there are **no default areas**. The library seeds its shelves on unlock,
 because a list of what people read is a guess. A list of what a life is made
 of is a claim, and an application that wrote one unasked would be telling
 somebody who they are. The empty screen offers a handful behind a button, and
@@ -1772,8 +1786,8 @@ the reports do.
 `time_by_purpose` then resolves the whole inheritance chain in one grouped
 scan over clear columns, so a year of blocks costs an index scan and opens no
 ciphertext at all. What the file can say is that goal `7f3a…` is active under
-role `91c0…` and took three hours on Tuesday. It cannot say that `91c0…` is
-"parent".
+area `91c0…` and took three hours on Tuesday. It cannot say that `91c0…` is
+"family".
 
 ## Layout
 
@@ -1993,7 +2007,7 @@ was working for.
 live, and a paragraph in your own words. It is read into every conversation and
 every run. The age is worked out here rather than left to the model, which is
 usually right and is occasionally a year out for no reason worth finding out.
-The same tab is where the **roles** are defined, for the same reason: both are
+The same tab is where the **areas** are defined, for the same reason: both are
 standing facts about the person rather than one app's records.
 
 Nothing writes it. Facts that *change* — a move, a new job — are what the
@@ -2188,7 +2202,7 @@ Twenty-two jobs across seven apps. The ones that change how the app feels:
 | **Draft a new shelf** | Type "Wines" and get 🍷, a colour, *To try / Tasting / Tasted*, and Producer, Vintage, Region, Grape. "A kind is data" is this app's best idea and its cost was a form nobody fills in |
 | **Read the day back** | [Tracking](#tracking) opens by naming the problem: *"Slept badly again, took the ibuprofen around eight"* is the sentence you want to write and exactly the sentence nobody can plot. This offers the numbers in it as chips |
 | **Find the tasks in a note** | A page of call notes becomes five tasks, which is the thing people currently do by retyping |
-| **Suggest a role or goal** | The field that makes "where did my week go" answerable is the one least likely to be filled while typing at nine in the morning |
+| **Suggest an area or goal** | The field that makes "where did my week go" answerable is the one least likely to be filled while typing at nine in the morning |
 
 #### The rules it inherits
 
@@ -2267,7 +2281,7 @@ them. A day with nothing in it costs nothing: there is no model call and no
 number on the bar.
 
 The arithmetic is done here, not by the model. A dream is handed a digest —
-tasks finished and rescheduled, hours by role, readings, the calendar, the
+tasks finished and rescheduled, hours by area, readings, the calendar, the
 day's entries, what it proposed before and what you did with it — and opens a
 record only when it decides to. A dream's transcript shows that digest,
 folded, so "what did it look at" has an answer.
@@ -2412,7 +2426,7 @@ An entry declares the scope it needs, the effect it has and the change it
 emits, so authorisation, live refresh and the generated client are all *data*
 rather than code somebody has to remember to extend.
 
-That claim was tested by accident. The Overview, Roles, Goals and Purpose
+That claim was tested by accident. The Overview, Areas, Goals and Purpose
 landed after server mode did, and reaching every client took one module, one
 scope, two change kinds and a regenerated client. Its quick actions became
 four rows in the same action table the keyboard and the bar at the top read. There is
@@ -2764,10 +2778,10 @@ clear. There is no index to build over a single row, and what is in it — a
 name, a birthday, where somebody lives, a paragraph about their family — is
 the most identifying thing in the vault. It goes in the envelope whole.
 
-Roles and goals make the same trade one step up. In the clear: which role a
+Areas and goals make the same trade one step up. In the clear: which area a
 goal is under, its status, its horizon, the ordering — and, in the `purposes`
 table, which record is filed against which. Sealed: every name, title and
-note. So the file says that goal `7f3a…` is active under role `91c0…` and took
+note. So the file says that goal `7f3a…` is active under area `91c0…` and took
 three hours on Tuesday, and never that `91c0…` is "parent". That is what makes
 the balance report one grouped scan rather than a decryption of the vault, and
 it is the same argument every table above makes.
@@ -2794,7 +2808,7 @@ anywhere in it.
 | Calendar | `.ics`, one per subscription, plus a table of where each came from |
 | Library | CSV, one file per shelf, with that shelf's own columns |
 | Tracking | CSV, one file per tracker: date, time, value, note |
-| Roles and goals | one Markdown page, a heading per role and a checklist item per goal |
+| Areas and goals | one Markdown page, a heading per area and a checklist item per goal |
 | Assistant | transcripts as Markdown. **Export only** — see below |
 | You | one short page of what the assistant has been told about you |
 
@@ -3566,14 +3580,14 @@ menu: one panel in the window, opened by whichever row was clicked.
   item       status · rating · favourite · what it is for — in the shelf's
              own words, so a restaurant offers "Been" where a book offers
              "Read"
-  calendar   hide · refresh · colour · which role the feed serves
+  calendar   hide · refresh · colour · which area the feed serves
   reading    the entry it was recorded under · off the calendar
   chip       record it · clear the day · draw it on the calendar
-  role       add a goal · rename · colour · archive · delete
+  area       add a goal · rename · colour · archive · delete
 ```
 
 "What it is for" is one submenu everywhere it appears, built once in
-`ui/src/lib/menus.ts`: the roles, with their live goals nested under each, and
+`ui/src/lib/menus.ts`: the areas, with their live goals nested under each, and
 "Nothing in particular" always first. Two levels rather than one flat list,
 because flattened, "Parent" and "Viya rides without stabilisers" read as peers
 and they are not.
@@ -3600,7 +3614,7 @@ instead.
 
 The core, the SQL backend and both its drivers, the vault lifecycle, search,
 the media pipeline, notes, the todo app, the calendar, the library, tracking,
-roles and goals, accounts, mail, calendars that sign in, the assistant's
+areas and goals, accounts, mail, calendars that sign in, the assistant's
 routines, the Feed, and the CLI are implemented and tested — 1,404 tests, plus the
 shared backend conformance suite (run against SQLite always and against a
 real Postgres server on demand, and covering all thirteen domains)
@@ -3636,7 +3650,7 @@ Supabase-specific parts are the connection string and the pooler warning.
 
 The CLI covers journals only. It is a capture-and-export tool for the journal
 and has not been taught about notes, tasks, calendars, the library, tracking,
-roles and goals, or routines — though `karmayoga do` runs any of the
+areas and goals, or routines — though `karmayoga do` runs any of the
 assistant's tools, and `karmayoga serve --keychain` opens a vault on a machine
 that rebooted.
 

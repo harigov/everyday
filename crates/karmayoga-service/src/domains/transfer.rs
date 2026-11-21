@@ -299,7 +299,7 @@ fn kinds_of(part: &str) -> &'static [Kind] {
         "calendar" => &[Kind::Calendar, Kind::Event],
         "library" => &[Kind::Shelf, Kind::Item, Kind::Log],
         "trackers" => &[Kind::Tracker, Kind::Reading],
-        "purpose" => &[Kind::Role, Kind::Goal],
+        "purpose" => &[Kind::Area, Kind::Goal],
         "assistant" => &[Kind::Conversation, Kind::Routine, Kind::Memory],
         "feed" => &[Kind::NewsSource, Kind::Story],
         "money" => &[Kind::BankAccount, Kind::Txn, Kind::MoneyCategory, Kind::MoneyRule],
