@@ -426,6 +426,11 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
         // Held for the call: `Service::mail_index` hands back an `Arc`, and
         // `mail_search` below borrows from it.
         let mail_index = svc.mail_index();
+        // Likewise the documents' cache and index, for the document tools.
+        let documents = svc
+            .documents()
+            .ok()
+            .map(|state| crate::documents::ToolDocuments { state, vault: vault.clone() });
         let svc_for_rl = svc.clone();
         // Every call through this command is its own "turn" for
         // rate-limiting purposes -- there is no multi-call model turn here,
@@ -481,6 +486,9 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
         // later judges against that same clock.
         let mut ctx = tools::ToolContext::new(&vault, local_date_in(svc.now(), &tz), &tz)
             .with_mail_search(mail_index.as_deref())
+            .with_documents(
+                documents.as_ref().map(|d| d as &dyn karmayoga_core::documents::Documents),
+            )
             .with_mail_rate_limit(&rate_limit)
             .with_after_mail_write(&after_mail_write)
             .with_invite_responder(&invite_responder)

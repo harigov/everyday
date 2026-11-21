@@ -107,6 +107,10 @@ macro_rules! tool {
 
 mod calendar;
 mod conversations;
+// `pub(crate)` for one reader outside the catalogue: `agent::onscreen`, which
+// describes the document open in the reader under the same gate these tools
+// answer to.
+pub(crate) mod documents;
 mod health;
 mod jobs;
 mod journals;
@@ -801,6 +805,10 @@ pub struct ToolContext<'a> {
     /// caller of [`crate::mailsearch::MailSearch::rebuild_needed`] already
     /// has for a derived structure that can always be rebuilt.
     pub mail_search: Option<&'a dyn crate::mailsearch::MailSearch>,
+    /// Documents' text and search index -- `karmayoga_service::documents`'
+    /// own, handed down for the same reason [`ToolContext::mail_search`] is.
+    /// `None` makes the document tools answer "not available right now".
+    pub documents: Option<&'a dyn crate::documents::Documents>,
     /// The provider the assistant is actually configured to use right now,
     /// compared against
     /// [`crate::account::Account::assistant_provider_acknowledged`] by
@@ -920,6 +928,7 @@ impl<'a> ToolContext<'a> {
             caller: None,
             withheld: &[],
             mail_search: None,
+            documents: None,
             assistant_provider: None,
             mail_rate_limit: None,
             after_mail_write: None,
@@ -1003,6 +1012,15 @@ impl<'a> ToolContext<'a> {
         mail_search: Option<&'a dyn crate::mailsearch::MailSearch>,
     ) -> Self {
         self.mail_search = mail_search;
+        self
+    }
+
+    /// Documents' text and index. See [`ToolContext::documents`].
+    pub fn with_documents(
+        mut self,
+        documents: Option<&'a dyn crate::documents::Documents>,
+    ) -> Self {
+        self.documents = documents;
         self
     }
 
@@ -1516,6 +1534,7 @@ fn all() -> &'static [Tool] {
             money::TOOLS,
             screentime::TOOLS,
             files::TOOLS,
+            documents::TOOLS,
             health::TOOLS,
         ]
         .concat()
@@ -2389,6 +2408,7 @@ mod tests {
             caller: None,
             withheld: &[],
             mail_search: None,
+            documents: None,
             assistant_provider: None,
             mail_rate_limit: None,
             after_mail_write: None,

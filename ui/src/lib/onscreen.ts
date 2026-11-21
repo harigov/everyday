@@ -32,7 +32,7 @@
 // shelf, a mailbox goes in `within`, by id, so the service names it from the
 // vault and not from whatever the interface had cached.
 
-import type { OnScreen, OnScreenApp, Shown, ShownKind } from './types'
+import type { OnScreen, OnScreenApp, ReaderAt, Shown, ShownKind } from './types'
 
 /** A record on screen, with what the interface calls it. The label never
  *  leaves the interface; see this module's header. */
@@ -51,6 +51,10 @@ export interface Showing {
   open?: Seen[]
   /** What is typed into the search bar. */
   query?: string | null
+  /** The document open in the reader, and where in it they are -- by file,
+   *  page and block only. Set by `screen.svelte.ts` from the reader's store
+   *  whichever app it was opened from. */
+  reader?: ReaderAt | null
 }
 
 /**
@@ -115,6 +119,7 @@ export function toWire(app: OnScreenApp, showing: Showing): OnScreen {
     within: refs(showing.within),
     open: refs(showing.open),
     query: text(showing.query),
+    reader: showing.reader ?? undefined,
   }
 }
 

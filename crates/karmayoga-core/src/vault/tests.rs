@@ -65,6 +65,7 @@ fn the_assistant_is_offered_only_the_tools_the_backend_can_serve() {
         caller: None,
         withheld: &[],
         mail_search: None,
+        documents: None,
         assistant_provider: None,
         mail_rate_limit: None,
         after_mail_write: None,

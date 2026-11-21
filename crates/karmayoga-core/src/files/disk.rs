@@ -813,7 +813,10 @@ const STAGING_PREFIX: &str = "karmayoga-staging-";
 /// The folder the private places of [`OpenCopies`] and [`UploadStaging`] are
 /// made in: the user's cache directory, or while a test binary runs the
 /// vault's own directory, which a test removes with the rest of its files.
-fn scratch_base(vault: &Path) -> PathBuf {
+/// Also where `karmayoga-service`'s documents keep their parsed text and
+/// their search index, sealed: derived from the files, and never inside the
+/// folder a sync tool may carry to every device.
+pub fn scratch_base(vault: &Path) -> PathBuf {
     if crate::fsutil::under_test() {
         vault.to_path_buf()
     } else {

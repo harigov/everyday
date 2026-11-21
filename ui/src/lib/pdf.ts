@@ -14,10 +14,16 @@
 // for fonts, the window's CSP has no `'unsafe-eval'` for one anyway, and the
 // viewer has no annotation layer, so a document's forms, links and scripts are
 // never put on screen.
+//
+// The one layer there is over a page is its text, so that words can be
+// selected and copied (and, in the reader, handed to the assistant): pdf.js's
+// own `TextLayer`, which makes a `span` for each run and sets its words as
+// `textContent`, never as markup.
 
 import {
   getDocument,
   GlobalWorkerOptions,
+  TextLayer,
   type PDFDocumentLoadingTask,
 } from 'pdfjs-dist/legacy/build/pdf.mjs'
 // Through Vite's worker build, not as a file copied whole (`?url`): that is
@@ -27,6 +33,10 @@ import {
 import worker from 'pdfjs-dist/legacy/build/pdf.worker.mjs?worker&url'
 
 GlobalWorkerOptions.workerSrc = worker
+
+/** The text layer, handed on from here so that the component that draws pages
+ *  need not import pdf.js itself and lose the lazy loading described above. */
+export { TextLayer }
 
 /** Where `scripts/pdfjs-files.mjs` serves pdf.js's CMaps, fonts and image
  *  decoders, under this window's own origin. */

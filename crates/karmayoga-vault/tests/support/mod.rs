@@ -50,6 +50,7 @@ pub fn ctx(vault: &Vault) -> ToolContext<'_> {
         caller: None,
         withheld: &[],
         mail_search: None,
+        documents: None,
         assistant_provider: None,
         mail_rate_limit: None,
         after_mail_write: None,

@@ -49,7 +49,7 @@ use crate::files::{
     valid_property_key,
 };
 use crate::id::{
-    AlbumId, BlobId, ConversationId, EntryId, FileId, HealthDocumentId, MealId, NoteId,
+    AlbumId, BlobId, ConversationId, EntryId, FileId, HealthDocumentId, ItemId, MealId, NoteId,
 };
 use crate::model::{Attachment, MediaKind};
 use crate::note::Note;
@@ -58,6 +58,7 @@ use crate::richtext::{MEDIA_NODE, RichDoc};
 use crate::store::JournalStore;
 use crate::store::agent::ConversationQuery;
 use crate::store::files::FilesStore;
+use crate::store::library::ItemQuery;
 use jiff::civil;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
@@ -532,6 +533,28 @@ impl Vault {
                                 title: meal_title(&m),
                                 when: Some(m.at),
                                 parent: None,
+                            }),
+                            Err(Error::NotFound { .. }) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    RefKind::Item => {
+                        let (Ok(item_id), Some(library)) =
+                            (ItemId::parse(&owner.id), u.store.library())
+                        else {
+                            continue;
+                        };
+                        match library.get_item(item_id) {
+                            // Its shelf's id rides along so the interface can
+                            // open the shelf the item is on.
+                            Ok(i) => uses.push(FileUse {
+                                owner,
+                                title: match i.title.trim() {
+                                    "" => "Untitled item".to_string(),
+                                    t => t.to_string(),
+                                },
+                                when: Some(i.created_at),
+                                parent: Some(i.kind_id.to_string()),
                             }),
                             Err(Error::NotFound { .. }) => {}
                             Err(e) => return Err(e),
@@ -1656,8 +1679,8 @@ impl Vault {
     }
 
     /// Recompute the whole references table from every entry, note,
-    /// assistant message, health document and meal. Answers how many
-    /// references there are.
+    /// assistant message, health document, meal and library item. Answers
+    /// how many references there are.
     pub fn rebuild_file_refs(&self) -> Result<u64> {
         self.writable()?;
         // The exclusive lock, not the shared one: a save landing between
@@ -1700,6 +1723,13 @@ impl Vault {
                 for meal in health.meals(Timestamp::MIN, Timestamp::MAX)? {
                     if let Some(photo) = meal.photo {
                         refs.push((RefOwner::new(RefKind::Meal, meal.id), photo));
+                    }
+                }
+            }
+            if let Some(library) = u.store.library() {
+                for item in library.list_items(&ItemQuery::default())? {
+                    for file in &item.files {
+                        refs.push((RefOwner::new(RefKind::Item, item.id), *file));
                     }
                 }
             }

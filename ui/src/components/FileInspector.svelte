@@ -20,8 +20,15 @@
   //
   // In the full-window viewer this is its information panel, and `onclose`
   // closes that instead of un-describing the file.
+  //
+  // A document -- a PDF, an EPUB, Markdown, text, a web page -- can also be
+  // read (the reader, with its contents and the assistant beside it) and put
+  // on a library shelf, where it becomes an item with the file as its reading
+  // copy. A file that a library item already holds says so under "Used in",
+  // and the line opens the item.
 
   import { untrack } from 'svelte'
+  import { docFormatOf, isReadable } from '../lib/documents'
   import { formatSize } from '../lib/files'
   import { files } from '../lib/files.svelte'
   import {
@@ -43,18 +50,34 @@
     propText,
   } from '../lib/files-ui.svelte'
   import { dateFormat, longDate, relativeTime, timeOfDay } from '../lib/format'
+  import { library } from '../lib/library.svelte'
   import { openExternal } from '../lib/open-external'
   import { panels } from '../lib/panels.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import type { FileEntry, FileUpdate, MediaInfo, PropValue } from '../lib/types'
+  import { app } from '../lib/state.svelte'
+  import type {
+    FileEntry,
+    FileId,
+    FileUpdate,
+    FileUse,
+    Item,
+    ItemId,
+    KindId,
+    MediaInfo,
+    PropValue,
+  } from '../lib/types'
   import FileThumb from './FileThumb.svelte'
   import Icon from './Icon.svelte'
 
   interface Props {
     /** Closes the panel; absent, closing stops describing the file. */
     onclose?: () => void
+    /** Brings down the window the panel is in, when that is not the store's
+     *  own viewer: the one a chat or a journal entry opened. Called as well as
+     *  the store's, before the reader or another app is shown. */
+    onleave?: () => void
   }
-  let { onclose }: Props = $props()
+  let { onclose, onleave }: Props = $props()
 
   /** Ids are unique to this copy: the viewer's information panel and the
    *  pane's rail can be on screen together. */
@@ -297,7 +320,88 @@
    *  other app would open behind it. */
   function leave(): void {
     files.closeViewer()
+    onleave?.()
   }
+
+  // ── Reading, and the library ───────────────────────────────────────
+
+  /** A document the reader can open, and that is there to be opened: not in
+   *  the trash, not missing from the folder. */
+  const readable = $derived(file !== undefined && isReadable(file))
+  /** A PDF or an EPUB is read whatever opens it, so for those "Open" would be
+   *  a second button for the same thing. */
+  const readerOnly = $derived.by(() => {
+    const format = file ? docFormatOf(file) : null
+    return format === 'pdf' || format === 'epub'
+  })
+  /** A library item holds this file already. */
+  const inLibrary = $derived(detail?.uses.some((u) => u.owner.kind === 'item') ?? false)
+
+  function read(f: FileEntry): void {
+    leave()
+    void files.read(f.id)
+  }
+
+  /** The item just made from a file, and the name of the shelf it went on:
+   *  said under the buttons, with a way to open it. */
+  let made = $state<{ file: FileId; item: Item; shelf: string } | null>(null)
+  let making = $state(false)
+
+  async function addToLibrary(f: FileEntry): Promise<void> {
+    if (making) return
+    making = true
+    try {
+      const item = await library.createFromFile(f.id)
+      if (!item) return
+      // The shelves are loaded when the library is opened, and it may not
+      // have been: the name is wanted for the sentence.
+      if (library.kinds.length === 0) await library.refreshKinds()
+      made = {
+        file: f.id,
+        item,
+        shelf: library.kinds.find((k) => k.id === item.kindId)?.name ?? 'your library',
+      }
+    } finally {
+      making = false
+    }
+  }
+
+  /** Open a library item in its own app. A shelf of its own is opened first
+   *  when the library is on another: the panel draws only what the shelf on
+   *  screen holds. The everything view holds it already. */
+  async function openItem(id: ItemId, shelf: KindId | null): Promise<void> {
+    leave()
+    if (!(await app.goTo('library'))) return
+    if (shelf && library.shelf !== null && library.shelf !== shelf) {
+      await library.selectShelf(shelf)
+    }
+    await library.open(id)
+  }
+
+  function openMade(): void {
+    if (made) void openItem(made.item.id, made.item.kindId)
+  }
+
+  /** What a "Used in" line calls the record, for the library by its shelf. */
+  function useLabel(use: FileUse): string {
+    if (use.owner.kind !== 'item') return USE_LABELS[use.owner.kind]
+    const shelf = library.kinds.find((k) => k.id === use.parent)?.name
+    return shelf ? `Library · ${shelf}` : 'Library item'
+  }
+
+  function openUsage(use: FileUse): void {
+    if (use.owner.kind === 'item') void openItem(use.owner.id, use.parent ?? null)
+    else {
+      leave()
+      void openUse(use)
+    }
+  }
+
+  // The shelves' names are wanted for "Used in" when something on a shelf holds
+  // the file, even if the library has not been opened this session.
+  $effect(() => {
+    if (inLibrary && library.kinds.length === 0) void library.refreshKinds()
+  })
 
   const preview = $derived(file?.kind === 'video' || file?.kind === 'audio')
 
@@ -756,14 +860,8 @@
             <ul class="uses">
               {#each detail.uses as usage (`${usage.owner.kind}:${usage.owner.id}`)}
                 <li>
-                  <button
-                    class="use"
-                    onclick={() => {
-                      leave()
-                      void openUse(usage)
-                    }}
-                  >
-                    <span class="use-kind">{USE_LABELS[usage.owner.kind]}</span>
+                  <button class="use" onclick={() => openUsage(usage)}>
+                    <span class="use-kind">{useLabel(usage)}</span>
                     <span class="use-title">{usage.title || 'Untitled'}</span>
                     {#if usage.when}<span class="use-when">{relativeTime(usage.when)}</span>{/if}
                   </button>
@@ -774,9 +872,24 @@
         {/if}
 
         <section class="actions">
-          {#if !onclose}
+          {#if readable}
+            <button class="btn btn-sm btn-primary" onclick={() => read(f)}>
+              <Icon name="book" size={14} /> Read
+            </button>
+          {/if}
+          {#if !onclose && !(readable && readerOnly)}
             <button class="btn btn-sm btn-outline" onclick={() => files.open(f.id)}>
               <Icon name="eye" size={14} /> Open
+            </button>
+          {/if}
+          {#if readable && app.supportsLibrary && !inLibrary && made?.file !== f.id}
+            <button
+              class="btn btn-sm btn-outline"
+              disabled={making}
+              onclick={() => void addToLibrary(f)}
+            >
+              <Icon name="plus" size={14} />
+              {making ? 'Adding…' : 'Add to library'}
             </button>
           {/if}
           {#if files.local}
@@ -800,6 +913,12 @@
               <Icon name="lock" size={14} />
               {f.storage.kind === 'sealed' ? 'Store as a plain file' : 'Encrypt'}
             </button>
+          {/if}
+          {#if made && made.file === f.id}
+            <p class="note made" role="status">
+              Added to {made.shelf}.
+              <button class="link inline" onclick={openMade}>Open it</button>
+            </p>
           {/if}
         </section>
 
@@ -1225,6 +1344,10 @@
     flex-direction: row;
     flex-wrap: wrap;
     gap: var(--sp-2);
+  }
+  /* The sentence after "Add to library" takes the row to itself. */
+  .actions .made {
+    flex: 1 1 100%;
   }
   .foot {
     gap: var(--sp-2);

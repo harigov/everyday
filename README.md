@@ -826,6 +826,33 @@ flickering to the wrong thing and staying there. It is checked in
 `ui/scripts/library.test.mjs`, by making the answers arrive out of order on
 purpose.
 
+## Reading
+
+A PDF, an EPUB, a Markdown or text file or a web page in your files folder
+opens in a reader, with its contents beside it, a search inside it, and the
+assistant on the right. It opens where you left off. A library item can own
+its files — a book's EPUB, an article's PDF — and **Read** on the item opens
+it; **Add to library** on a file makes the item, filled from what the file
+says about itself (an EPUB's title, authors and its own cover; the DOI on a
+paper's first page, looked up with Crossref).
+
+Ask about what you are reading, by typing or by voice. The assistant is told
+which document is open, which pages are in view and what you selected — by
+page and paragraph, never by quoting the page into every message — and reads
+what it needs: the contents, a page range, a chapter, or a search inside the
+book, so "who is Mortimer?" is a search and a read of where it lands rather
+than a read of the whole novel. Its answers cite the page, and the citation
+opens the reader there. A document that is not open works the same way: a
+library item's file, a file found by name, or a search across every indexed
+document.
+
+Only files in the folder you chose in Settings → Files are read, and only that
+folder is indexed — the whole of it, or the folders you name there. Each
+document is parsed once and kept, sealed, in the cache directory, keyed by its
+contents, so a moved or renamed file is not read again. Sealed files open and
+can be asked about, but are not indexed: they have no folder to choose. Office
+documents are not read, as they are not previewed. See `docs/plans/reading.md`.
+
 ## Accounts
 
 An **account** is a vault-level record for a mailbox provider you sign in

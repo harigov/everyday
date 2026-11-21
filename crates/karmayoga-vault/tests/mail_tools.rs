@@ -155,6 +155,7 @@ fn ctx<'a>(vault: &'a Vault, caller: Option<Caller>, provider: Option<&str>) -> 
         caller,
         withheld: &[],
         mail_search: None,
+        documents: None,
         assistant_provider: provider.map(str::to_string),
         mail_rate_limit: None,
         after_mail_write: None,

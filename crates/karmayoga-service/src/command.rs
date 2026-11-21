@@ -668,6 +668,15 @@ mod tests {
             // `finish_upload`, which announces the file it makes.
             "begin_upload",
             "cancel_upload",
+            // Where somebody is in a document, kept in the file's properties
+            // every few seconds while they read. Nothing anybody else draws;
+            // an item whose progress it moves is announced by the command
+            // itself, and only then.
+            "save_reader_position",
+            // Empties the documents' search index, which is derived and read
+            // again by the background pass; nothing drawn changes, and
+            // Settings asks `documents_status` how the pass is going.
+            "reindex_documents",
             // Signs in to an account's outgoing server and sends nothing. A
             // write for its reach, not for a record anybody draws.
             "check_sending",

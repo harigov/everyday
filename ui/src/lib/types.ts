@@ -3335,7 +3335,15 @@ export interface Verbs {
 
 /** Where a shelf's metadata is looked up. Matches `websearch::Source`. */
 export type SearchSource =
-  'web' | 'wikipedia' | 'openLibrary' | 'itunes' | 'tvmaze' | 'musicBrainz' | 'steam' | 'nominatim'
+  | 'web'
+  | 'wikipedia'
+  | 'openLibrary'
+  | 'itunes'
+  | 'tvmaze'
+  | 'musicBrainz'
+  | 'steam'
+  | 'nominatim'
+  | 'crossref'
 
 /** A category of thing you keep track of. Data, not a variant. */
 export interface Kind {
@@ -3427,6 +3435,9 @@ export interface Item {
   /** The shelf's extra fields, keyed by `FieldDef.key`. */
   facts: Record<string, string>
   links: Link[]
+  /** The thing itself, when it is a file: the book's EPUB, the article's
+   *  PDF. The first is the one the reader opens and the assistant reads. */
+  files: FileId[]
   progress?: Progress | null
   favourite: boolean
   /** `YYYY-MM-DD`. Denormalised from the log for the card and the sort. */
@@ -4259,7 +4270,35 @@ export interface OnScreen {
   open?: Shown[]
   /** What they typed into the search bar. */
   query?: string | null
+  /** The document open in the reader, and where in it they are. */
+  reader?: ReaderAt | null
 }
+
+/** Where in a document somebody is reading -- by file, page and block, never
+ *  by a heading's or a passage's words. See `onscreen.rs`' `ReaderAt`. */
+export interface ReaderAt {
+  file: FileId
+  /** The page at the top of the reader, from 1. */
+  page: number
+  /** The last page at least partly in view, when it is not `page`. */
+  lastPage?: number | null
+  /** The first block in view (anything but a PDF). */
+  block?: number | null
+  selection?: ReaderSelection | null
+}
+
+/** A selection in the reader: by blocks where the reader knows them; in a
+ *  PDF, the page and at most `MAX_SELECTION_QUOTE` of the selected words,
+ *  which the service finds in its own copy of the page. */
+export interface ReaderSelection {
+  page: number
+  from?: number | null
+  to?: number | null
+  quote?: string | null
+}
+
+/** The most of a PDF selection's words the reader sends. */
+export const MAX_SELECTION_QUOTE = 400
 
 // ── The quick model ──────────────────────────────────────────────────────
 //
@@ -6226,6 +6265,13 @@ export interface FilesSettings {
   assistantAccess: boolean
   /** Send a photo's coordinates to OpenStreetMap to name the place. */
   namePlaces: boolean
+  /** Read the folder's documents into the search index. On by default. */
+  indexDocuments: boolean
+  /** Folders (relative to the files folder) whose documents are indexed,
+   *  each with everything under it; empty indexes the whole folder. */
+  indexFolders: string[]
+  /** Folders left out of the index even inside an indexed one. */
+  skipFolders: string[]
 }
 
 export type FolderState =
@@ -6319,7 +6365,7 @@ export interface FileUpdate {
   takenAt?: string | null
 }
 
-export type RefKind = 'entry' | 'note' | 'message' | 'healthDocument' | 'meal'
+export type RefKind = 'entry' | 'note' | 'message' | 'healthDocument' | 'meal' | 'item'
 
 export interface RefOwner {
   kind: RefKind
@@ -6415,6 +6461,149 @@ export interface FileDetail {
   file: FileEntry
   uses: FileUse[]
   albums: Album[]
+}
+
+// ── Documents -- docs/plans/reading.md ──────────────────────────────────
+// A PDF, an EPUB, Markdown, text or a web page in the files catalog, read
+// into blocks. A block's index is the address of a place in a document:
+// the reader marks every block it draws with it, the assistant reads by it,
+// a search hit points at it. See `karmayoga-core/src/documents.rs`.
+
+export const DOC_FORMATS = ['pdf', 'epub', 'markdown', 'text', 'html'] as const
+export type DocFormat = (typeof DOC_FORMATS)[number]
+
+export const DOC_BLOCK_KINDS = [
+  'heading',
+  'paragraph',
+  'quote',
+  'listItem',
+  'code',
+  'image',
+  'rule',
+] as const
+export type DocBlockKind = (typeof DOC_BLOCK_KINDS)[number]
+
+/** One entry of a document's table of contents. Its title is the
+ *  document's own words. */
+export interface DocSection {
+  title: string
+  /** 1 for a top-level entry. */
+  level: number
+  page: number
+  /** The block it starts at. */
+  block: number
+  /** The section it is inside, by index; absent at the top level. */
+  parent?: number | null
+}
+
+/** One file of an EPUB's reading order, or the whole of a Markdown, text or
+ *  HTML document: what the reader loads at a time. A PDF has none. */
+export interface DocChapter {
+  firstBlock: number
+  blocks: number
+  href?: string
+}
+
+/** What a document says about itself. Somebody else's words, every one. */
+export interface DocMeta {
+  title: string
+  authors: string[]
+  language: string
+  publisher: string
+  published: string
+  /** With their scheme: `isbn:9780141439518`, `doi:10.1038/nature12373`. */
+  identifiers: string[]
+  description: string
+  subjects: string[]
+  /** An EPUB's cover, as a path inside the file. */
+  cover: string
+}
+
+/** Where somebody left off, kept in the file's properties. */
+export interface ReaderPlace {
+  page: number
+  block?: number | null
+}
+
+/** What the reader opens on: everything about a document but its blocks. */
+export interface DocOutline {
+  file: FileId
+  format: DocFormat
+  pages: number
+  meta: DocMeta
+  sections: DocSection[]
+  chapters: DocChapter[]
+  /** How many blocks it has. */
+  blocks: number
+  words: number
+  warnings: string[]
+  position?: ReaderPlace | null
+  /** Whether it is in the search index now. */
+  indexed: boolean
+}
+
+/** One block as the reader draws it. */
+export interface DocBlockView {
+  index: number
+  kind: DocBlockKind
+  /** A heading's level; absent for anything else. */
+  level?: number
+  page: number
+  /** HTML the service wrote itself from a fixed set of inline elements,
+   *  with the file's own text escaped -- safe to put in the page as it is. */
+  html: string
+  /** A picture as a `data:` address; absent for anything else. */
+  src?: string
+}
+
+/** One chapter's blocks. */
+export interface DocChapterView {
+  file: FileId
+  chapter: number
+  firstBlock: number
+  blocks: DocBlockView[]
+}
+
+/** One place a search found in one document. */
+export interface DocHit {
+  block: number
+  page: number
+  section?: number | null
+  snippet: string
+  score: number
+}
+
+/** One passage the index found, in any document. */
+export interface DocSearchHit {
+  file: FileId
+  block: number
+  page: number
+  /** The innermost section, as the document names it. */
+  section: string
+  snippet: string
+  score: number
+}
+
+export interface DocSearchPage {
+  hits: DocSearchHit[]
+  total: number
+  /** Indexing is still under way, so more may match later. */
+  indexing: boolean
+}
+
+export interface DocFailure {
+  file: FileId
+  reason: string
+}
+
+/** How the documents' search index stands. */
+export interface DocIndexStatus {
+  enabled: boolean
+  indexed: number
+  pending: number
+  failed: DocFailure[]
+  running: boolean
+  lastPass?: string | null
 }
 
 // ── Health -- docs/plans/health.md ───────────────────────────────────────

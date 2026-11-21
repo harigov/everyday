@@ -63,6 +63,14 @@
         </span>
       {/if}
 
+      {#if item.files.length > 0}
+        <!-- It holds a file to read, which is what the progress bar below is
+             measuring: the same corner on every shelf. -->
+        <span class="filed" title="Has a file to read" role="img" aria-label="Has a file to read">
+          <Icon name="file" size={11} weight={2} />
+        </span>
+      {/if}
+
       {#if progress !== null}
         <div class="bar" aria-hidden="true"><span style="width: {progress * 100}%"></span></div>
       {/if}
@@ -166,6 +174,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .filed {
+    position: absolute;
+    top: var(--sp-2);
+    right: var(--sp-2);
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    color: #fff;
+    background: color-mix(in oklab, var(--tint) 88%, black);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
   }
   /* Finished is the one status that should recede: it is the resting state
      of a shelf, and forty bright chips would be a shelf you cannot read. */

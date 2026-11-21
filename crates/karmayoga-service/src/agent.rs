@@ -1289,7 +1289,17 @@ const ORGANIZE_FILES: &str = "organize_files";
 const TRASH_FILES: &str = "trash_files";
 /// The two that work on a file the person handed over whatever the switch
 /// for the rest of their files says.
-const HANDED_FILE_TOOLS: [&str; 2] = [FILE_INFO, READ_FILE];
+const HANDED_FILE_TOOLS: [&str; 5] =
+    [FILE_INFO, READ_FILE, DOCUMENT_OUTLINE, READ_DOCUMENT, SEARCH_DOCUMENT];
+/// The document tools (`agent::tools::documents`): every one hands back a
+/// document's own words -- its title and chapter names, its passages -- so
+/// every one arms the fetch check as `read_file` does; and the three that
+/// work on one document work on one the person handed over, as `read_file`
+/// does. Searching every document needs the switch.
+const DOCUMENT_OUTLINE: &str = "document_outline";
+const READ_DOCUMENT: &str = "read_document";
+const SEARCH_DOCUMENT: &str = "search_document";
+const SEARCH_DOCUMENTS: &str = "search_documents";
 
 /// How much of a page a research job is shown when the quick model cannot
 /// read it for the job -- no quick model, `research.extract` switched off, or
@@ -2674,7 +2684,16 @@ fn reads_strangers_words(name: &str) -> bool {
                     | tools::Domain::Health
                     | tools::Domain::Calendars
                     | tools::Domain::Meetings
-            ) || matches!(t.name, READ_FILE | SEARCH_CONVERSATIONS | READ_CONVERSATION))
+            ) || matches!(
+                t.name,
+                READ_FILE
+                    | DOCUMENT_OUTLINE
+                    | READ_DOCUMENT
+                    | SEARCH_DOCUMENT
+                    | SEARCH_DOCUMENTS
+                    | SEARCH_CONVERSATIONS
+                    | READ_CONVERSATION
+            ))
             // A calendar's name and colour, which the person chose or the
             // account gave it, are not anybody's message.
             && t.name != "list_calendars"
@@ -5158,6 +5177,12 @@ async fn run_tool(
         // borrow from it -- `Service::mail_index` hands back an `Arc`, not
         // a reference, and the `Arc` has to outlive `ctx`.
         let mail_index = meta.service.mail_index();
+        // Likewise the documents' cache and index, for the document tools.
+        let documents = meta
+            .service
+            .documents()
+            .ok()
+            .map(|state| crate::documents::ToolDocuments { state, vault: vault.clone() });
         // Cloned out ahead of the closures below, which otherwise move the
         // whole of `meta` and leave nothing for `ctx` to read afterwards.
         let service = meta.service.clone();
@@ -5205,6 +5230,9 @@ async fn run_tool(
             .with_withheld(withheld_for(meta.job))
             .with_caller(ToolCaller::Assistant { conversation: meta.conversation })
             .with_mail_search(mail_index.as_deref())
+            .with_documents(
+                documents.as_ref().map(|d| d as &dyn karmayoga_core::documents::Documents),
+            )
             .with_assistant_provider(assistant_provider)
             .with_mail_rate_limit(&rate_limit)
             .with_after_mail_write(&after_mail_write)
@@ -6188,10 +6216,21 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     let described = match (&unattended_context, on_screen) {
         (None, Some(screen)) => {
             let zone = zone_name(&settings);
+            // The document in the reader is described by its pages, which the
+            // documents' cache knows; reading them is a tool's job.
+            let documents = screen.reader.as_ref().and_then(|_| {
+                service
+                    .documents()
+                    .ok()
+                    .map(|state| crate::documents::ToolDocuments { state, vault: vault.clone() })
+            });
             let ctx = ToolContext::new(&vault, settings.now().date(), &zone)
                 .with_withheld(withheld_for(job.is_some()))
                 .with_caller(ToolCaller::Assistant { conversation })
-                .with_assistant_provider(access.acknowledgement.clone());
+                .with_assistant_provider(access.acknowledgement.clone())
+                .with_documents(
+                    documents.as_ref().map(|d| d as &dyn karmayoga_core::documents::Documents),
+                );
             Some(karmayoga_core::agent::onscreen::describe(&ctx, &screen))
         }
         _ => None,
@@ -7514,6 +7553,25 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
             };
         }
         FILE_INFO => return str_of("name").to_string(),
+        DOCUMENT_OUTLINE => return str_of("name").to_string(),
+        READ_DOCUMENT => {
+            let page = |key: &str| result.get(key).and_then(Value::as_u64).unwrap_or(0);
+            let (from, to) = (page("fromPage"), page("toPage"));
+            return match (from, to) {
+                (0, _) => str_of("name").to_string(),
+                (from, to) if from == to => format!("{}, page {from}", str_of("name")),
+                (from, to) => format!("{}, pages {from}\u{2013}{to}", str_of("name")),
+            };
+        }
+        SEARCH_DOCUMENT | SEARCH_DOCUMENTS => {
+            let found = result.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
+            let what = if found == 1 { "1 place" } else { "places" };
+            let what = if found == 1 { what.to_string() } else { format!("{found} {what}") };
+            return match str_of("name") {
+                "" => format!("{what} for {:?}", str_of("query")),
+                name => format!("{what} in {name} for {:?}", str_of("query")),
+            };
+        }
         // What was done, in the tool's own words, rather than "organized
         // file 3 files".
         ORGANIZE_FILES => {

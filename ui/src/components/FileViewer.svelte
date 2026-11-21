@@ -16,9 +16,15 @@
   // then, and can gain or lose files before this one.
   //
   // The information panel is the inspector, the same one as in the rail.
+  //
+  // A PDF is looked at here, and any document the reader can open -- a PDF, an
+  // EPUB, Markdown, text, a web page -- can be read instead, with its contents
+  // beside it and the assistant's rail; **Read** goes there. An EPUB cannot be
+  // drawn here at all, so for one it is the only way on.
 
   import { untrack } from 'svelte'
   import { fileUrl, fileVersion, thumbnailUrl } from '../lib/api'
+  import { isReadable } from '../lib/documents'
   import { formatSize, kindIcon, previewOf } from '../lib/files'
   import { files as store } from '../lib/files.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
@@ -209,6 +215,19 @@
       .join(' · ')
   })
 
+  /** Whether the reader can open what is shown: a document that is there, not
+   *  one in the trash or missing from the folder. */
+  const readable = $derived(current !== undefined && isReadable(current))
+
+  /** Open it in the reader. The viewer comes down first, so the reader is not
+   *  opened behind it, and the caller hears of it as of any other close. */
+  function read() {
+    if (!current || !readable) return
+    const id = current.id
+    onclose()
+    void store.read(id)
+  }
+
   function go(by: 1 | -1) {
     const to = position + by
     const next = files[to]
@@ -259,6 +278,7 @@
     if (e.key === 'ArrowLeft') go(-1)
     else if (e.key === 'ArrowRight') go(1)
     else if (e.key === 'i' || e.key === 'I') info = !info
+    else if ((e.key === 'r' || e.key === 'R') && readable) read()
   }
 
   function scrollsSideways(target: EventTarget | null): boolean {
@@ -326,6 +346,16 @@
         <Icon name="chevron" size={17} />
       </button>
     {/if}
+    {#if readable}
+      <button
+        class="tool labelled"
+        title="Read it, with its contents beside it and the assistant (R)"
+        onclick={read}
+      >
+        <Icon name="book" size={16} />
+        Read
+      </button>
+    {/if}
     {#if current}
       <button
         class="tool"
@@ -381,6 +411,11 @@
             >{/if}
           <p>{shown.reason}</p>
           <div class="row">
+            {#if readable}
+              <button class="btn btn-primary" onclick={read}>
+                <Icon name="book" size={15} /> Read
+              </button>
+            {/if}
             {#if shown.restorable && current}
               <button class="btn btn-primary" onclick={() => void store.restore([current.id])}>
                 Put it back
@@ -392,7 +427,11 @@
               </button>
             {/if}
             {#if current && current.status.state === 'present'}
-              <button class="btn btn-primary" onclick={() => void store.exportFiles([current.id])}>
+              <button
+                class="btn"
+                class:btn-primary={!readable}
+                onclick={() => void store.exportFiles([current.id])}
+              >
                 Save
               </button>
             {/if}
@@ -447,7 +486,9 @@
     </div>
 
     {#if info}
-      <aside class="info"><FileInspector onclose={() => (info = false)} /></aside>
+      <aside class="info">
+        <FileInspector onclose={() => (info = false)} onleave={onclose} />
+      </aside>
     {/if}
   </div>
 </div>

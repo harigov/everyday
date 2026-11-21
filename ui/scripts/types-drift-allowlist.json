@@ -306,6 +306,24 @@
     "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/karmayoga-core/src/schema.rs."
   },
   {
+    "type": "FilesSettings",
+    "field": "indexDocuments",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/karmayoga-core/src/schema.rs."
+  },
+  {
+    "type": "FilesSettings",
+    "field": "indexFolders",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/karmayoga-core/src/schema.rs."
+  },
+  {
+    "type": "FilesSettings",
+    "field": "skipFolders",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/karmayoga-core/src/schema.rs."
+  },
+  {
     "type": "Goal",
     "field": "notes",
     "kind": "optionality",
@@ -392,6 +410,12 @@
   {
     "type": "Item",
     "field": "tags",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/karmayoga-core/src/schema.rs."
+  },
+  {
+    "type": "Item",
+    "field": "files",
     "kind": "optionality",
     "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/karmayoga-core/src/schema.rs."
   },

@@ -73,7 +73,12 @@ import type {
   DeclineReason,
   Destination,
   DestinationCheck,
+  DocChapterView,
+  DocHit,
+  DocIndexStatus,
   DocKind,
+  DocOutline,
+  DocSearchPage,
   Dose,
   DoseId,
   Draft,
@@ -480,6 +485,7 @@ export interface Commands {
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
   createEvent: { args: { calendarId: CalendarId; draft: EventDraft }; result: CalendarEvent | null }
   createFolder: { args: { dir?: string; name: string }; result: string }
+  createItemFromFile: { args: { file: FileId; kindId?: KindId }; result: Item }
   createManualAccount: {
     args: { name: string; kind: AccountKind; currency: string }
     result: BankAccount
@@ -553,6 +559,9 @@ export interface Commands {
     args: { calendarId: CalendarId; uid: string; series?: string | null; never: boolean }
     result: void
   }
+  documentChapter: { args: { id: FileId; chapter: number }; result: DocChapterView }
+  documentOutline: { args: { id: FileId }; result: DocOutline }
+  documentsStatus: { args: Record<string, never>; result: DocIndexStatus }
   dosesDue: { args: { date: string; tz: string }; result: DueDose[] }
   downloadDecisionModel: { args: { id: string }; result: void }
   downloadImageModel: { args: { id: string }; result: void }
@@ -916,6 +925,7 @@ export interface Commands {
     result: IngestReport
   }
   refreshNews: { args: { source?: NewsSourceId | null }; result: RefreshReport[] }
+  reindexDocuments: { args: Record<string, never>; result: DocIndexStatus }
   removeChatLink: { args: { id: ChatLinkId }; result: void }
   removeConnection: { args: { id: ConnectionId }; result: ConnectionsView }
   removeFromAlbum: { args: { id: string; files: string[] }; result: void }
@@ -1019,6 +1029,7 @@ export interface Commands {
   }
   saveProfile: { args: { profile: Profile }; result: Profile }
   saveProject: { args: { project: Project }; result: void }
+  saveReaderPosition: { args: { id: FileId; page: number; block?: number }; result: void }
   saveReading: { args: { reading: Reading }; result: void }
   saveRoutine: { args: { routine: Routine }; result: Routine }
   saveScreenApp: { args: { app: ScreenApp }; result: void }
@@ -1043,6 +1054,11 @@ export interface Commands {
   search: {
     args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
     result: SearchHit[]
+  }
+  searchDocument: { args: { id: FileId; query: string; limit?: number }; result: DocHit[] }
+  searchDocuments: {
+    args: { query: string; limit?: number; offset?: number }
+    result: DocSearchPage
   }
   searchFoods: { args: { query: string }; result: FoodHit[] }
   searchMail: {
@@ -1252,6 +1268,7 @@ export const COMMAND_NAMES = {
   conversationMessages: 'conversation_messages',
   createEvent: 'create_event',
   createFolder: 'create_folder',
+  createItemFromFile: 'create_item_from_file',
   createManualAccount: 'create_manual_account',
   decisionModels: 'decision_models',
   declineProposal: 'decline_proposal',
@@ -1316,6 +1333,9 @@ export const COMMAND_NAMES = {
   discoverFeeds: 'discover_feeds',
   dismissFollowUp: 'dismiss_follow_up',
   dismissMeetingOffer: 'dismiss_meeting_offer',
+  documentChapter: 'document_chapter',
+  documentOutline: 'document_outline',
+  documentsStatus: 'documents_status',
   dosesDue: 'doses_due',
   downloadDecisionModel: 'download_decision_model',
   downloadImageModel: 'download_image_model',
@@ -1547,6 +1567,7 @@ export const COMMAND_NAMES = {
   recordHealthPush: 'record_health_push',
   recordScreenTime: 'record_screen_time',
   refreshNews: 'refresh_news',
+  reindexDocuments: 'reindex_documents',
   removeChatLink: 'remove_chat_link',
   removeConnection: 'remove_connection',
   removeFromAlbum: 'remove_from_album',
@@ -1618,6 +1639,7 @@ export const COMMAND_NAMES = {
   savePlaidCredentials: 'save_plaid_credentials',
   saveProfile: 'save_profile',
   saveProject: 'save_project',
+  saveReaderPosition: 'save_reader_position',
   saveReading: 'save_reading',
   saveRoutine: 'save_routine',
   saveScreenApp: 'save_screen_app',
@@ -1637,6 +1659,8 @@ export const COMMAND_NAMES = {
   screenTimeSettings: 'screen_time_settings',
   screenTimeTimeline: 'screen_time_timeline',
   search: 'search',
+  searchDocument: 'search_document',
+  searchDocuments: 'search_documents',
   searchFoods: 'search_foods',
   searchMail: 'search_mail',
   searchSources: 'search_sources',
@@ -1808,6 +1832,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'conversation_messages',
   'create_event',
   'create_folder',
+  'create_item_from_file',
   'create_manual_account',
   'decision_models',
   'decline_proposal',
@@ -1872,6 +1897,9 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'discover_feeds',
   'dismiss_follow_up',
   'dismiss_meeting_offer',
+  'document_chapter',
+  'document_outline',
+  'documents_status',
   'doses_due',
   'download_decision_model',
   'download_image_model',
@@ -2103,6 +2131,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'record_health_push',
   'record_screen_time',
   'refresh_news',
+  'reindex_documents',
   'remove_chat_link',
   'remove_connection',
   'remove_from_album',
@@ -2174,6 +2203,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_plaid_credentials',
   'save_profile',
   'save_project',
+  'save_reader_position',
   'save_reading',
   'save_routine',
   'save_screen_app',
@@ -2193,6 +2223,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'screen_time_settings',
   'screen_time_timeline',
   'search',
+  'search_document',
+  'search_documents',
   'search_foods',
   'search_mail',
   'search_sources',
@@ -2339,6 +2371,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'confirm_tool_call',
   'create_event',
   'create_folder',
+  'create_item_from_file',
   'create_manual_account',
   'decline_proposal',
   'delete_account',
@@ -2450,6 +2483,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'record_health_push',
   'record_screen_time',
   'refresh_news',
+  'reindex_documents',
   'remove_chat_link',
   'remove_connection',
   'remove_from_album',
@@ -2517,6 +2551,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_plaid_credentials',
   'save_profile',
   'save_project',
+  'save_reader_position',
   'save_reading',
   'save_routine',
   'save_screen_app',
@@ -2629,6 +2664,7 @@ export const CHANGE_KINDS = {
   clear_plaid_credentials: 'settings',
   create_event: 'event',
   create_folder: 'file',
+  create_item_from_file: 'item',
   create_manual_account: 'bankAccount',
   decline_proposal: 'proposal',
   delete_account: 'account',

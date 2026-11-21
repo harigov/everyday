@@ -202,6 +202,7 @@ import { FINISHED_POINTS, JOURNAL_POINTS, habitPoints, scoreDay, taskPoints } fr
 import { mockBackup } from './mock-backup'
 import { MOCK_SECTIONS, mockBrief, mockBriefRun } from './mock-brief'
 import { mockConnections } from './mock-connections'
+import { isMockDocumentsCommand, mockDocumentFields, mockDocumentsInvoke } from './mock-documents'
 import { mockMoney } from './mock-money'
 import { mockScreenMinutes, mockScreenTime } from './mock-screentime'
 import { isMockFilesCommand, mockFilesInvoke, mockMadePicture } from './mock-files'
@@ -713,6 +714,7 @@ function seedItem(partial: Partial<Item> & { kindId: string; title: string }): I
     tags: [],
     facts: {},
     links: [],
+    files: [],
     progress: null,
     favourite: false,
     startedOn: null,
@@ -5205,6 +5207,45 @@ export {
   mockOnMeetingStillOn,
 }
 
+/** The Articles shelf, which the mock library does not have until something
+ *  asks for it -- a story sent to the library, or a PDF made into an item --
+ *  and then keeps. */
+function articleShelf(): KindInfo {
+  let shelf = kinds.find((k) => k.slug === 'article')
+  if (!shelf) {
+    shelf = {
+      id: 'k-article',
+      slug: 'article',
+      name: 'Articles',
+      singular: 'Article',
+      icon: '\u{1f4f0}',
+      color: '#0369a1',
+      verbs: verbs('To read', 'Reading', 'Read', 'read'),
+      fields: [
+        field('url', 'Address', 'text'),
+        field('author', 'Author', 'text'),
+        field('publication', 'Publication', 'text'),
+        field('doi', 'DOI', 'text'),
+        field('volume', 'Volume', 'text'),
+        field('issue', 'Issue', 'text'),
+        field('pages', 'Pages', 'text'),
+      ],
+      source: 'none',
+      progressUnit: '',
+      sortOrder: kinds.length,
+      builtin: true,
+      visible: true,
+      revision: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      items: 0,
+      open: 0,
+    }
+    kinds.push(shelf)
+  }
+  return shelf
+}
+
 export const mockInvoke = async <T>(
   cmd: string,
   payload: Record<string, unknown> | Uint8Array = {},
@@ -5225,6 +5266,15 @@ export const mockInvoke = async <T>(
   if (isMockFilesCommand(cmd)) {
     if (cmd !== 'pick_files_folder') requireUnlocked()
     return mockFilesInvoke(cmd, args) as T
+  }
+
+  // Documents -- docs/plans/reading.md. `mock-documents.ts` reads what the
+  // files mock holds into blocks, searches them and remembers where somebody
+  // left off. Making an item from one (`create_item_from_file`) is the
+  // library's, below.
+  if (isMockDocumentsCommand(cmd)) {
+    requireUnlocked()
+    return mockDocumentsInvoke(cmd, args) as T
   }
 
   switch (cmd) {
@@ -6835,6 +6885,36 @@ export const mockInvoke = async <T>(
       return { item, lookedUp: Boolean(hit) } satisfies AddedItem as T
     }
 
+    // An item made from a document in the files catalog, filled from what the
+    // file says about itself: an EPUB goes on Books and anything else on
+    // Articles, unless a shelf is named. One already made from the file is
+    // answered as it is, as the service does.
+    case 'create_item_from_file': {
+      requireUnlocked()
+      const file = str(args.file)
+      const fields = mockDocumentFields(file)
+      const have = items.find((i) => i.files.includes(file))
+      if (have) return have as T
+      const shelf =
+        kinds.find((k) => k.id === str(args.kindId)) ??
+        (fields.format === 'epub' ? kinds.find((k) => k.slug === 'book') : undefined) ??
+        articleShelf()
+      const now = new Date().toISOString()
+      const item = seedItem({
+        kindId: shelf.id,
+        title: fields.title,
+        creator: fields.creator,
+        year: fields.year,
+        summary: fields.summary,
+        files: [file],
+        source: 'file',
+        createdAt: now,
+        updatedAt: now,
+      })
+      items.unshift(item)
+      return item as T
+    }
+
     case 'save_item': {
       requireUnlocked()
       const item = args.item as Item
@@ -7149,6 +7229,7 @@ export const mockInvoke = async <T>(
         { id: 'musicBrainz', label: 'MusicBrainz', hasImages: true },
         { id: 'steam', label: 'Steam', hasImages: true },
         { id: 'nominatim', label: 'OpenStreetMap', hasImages: false },
+        { id: 'crossref', label: 'Crossref', hasImages: false },
       ] satisfies SourceInfo[] as T
 
     case 'apply_metadata': {
@@ -8862,34 +8943,7 @@ export const mockInvoke = async <T>(
     case 'add_story_to_library': {
       requireUnlocked()
       const fromStory = mockStoryForLibrary(str(args.id))
-      let shelf = kinds.find((k) => k.slug === 'article')
-      if (!shelf) {
-        shelf = {
-          id: 'k-article',
-          slug: 'article',
-          name: 'Articles',
-          singular: 'Article',
-          icon: '\u{1f4f0}',
-          color: '#0369a1',
-          verbs: verbs('To read', 'Reading', 'Read', 'read'),
-          fields: [
-            field('url', 'Address', 'text'),
-            field('author', 'Author', 'text'),
-            field('publication', 'Publication', 'text'),
-          ],
-          source: 'none',
-          progressUnit: '',
-          sortOrder: kinds.length,
-          builtin: true,
-          visible: true,
-          revision: 1,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          items: 0,
-          open: 0,
-        }
-        kinds.push(shelf)
-      }
+      const shelf = articleShelf()
       const item = seedItem({
         kindId: shelf.id,
         title: fromStory.title,

@@ -41,6 +41,7 @@ import { humanBytes, plural } from './format'
 import { seen, type Showing } from './onscreen'
 import { notify } from './notify.svelte'
 import { pref } from './prefs'
+import { reader, type ReaderOpenOptions } from './reader.svelte'
 import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { debounce } from './store/debounce'
 import { latest } from './store/latest'
@@ -48,6 +49,8 @@ import type {
   Album,
   AlbumId,
   AlbumView,
+  DocIndexStatus,
+  DocSearchHit,
   FileDetail,
   FileEntry,
   FileId,
@@ -120,6 +123,12 @@ export interface AddOptions {
   encrypted?: boolean
 }
 
+/** A passage the search found inside a document, with the file it is in. */
+export interface DocumentFound {
+  file: FileEntry
+  hit: DocSearchHit
+}
+
 /** Bytes per upload chunk. */
 export const UPLOAD_CHUNK = 4 * 1024 * 1024
 
@@ -128,6 +137,13 @@ export const PAGE_SIZE = 200
 
 /** The most a reload asks for at once to keep a scrolled list where it was. */
 const MAX_KEPT = 1000
+
+/** Passages the search inside documents lists at a time. */
+const DOCUMENT_HITS = 20
+
+/** The fewest characters worth searching inside documents for: one letter
+ *  matches nearly every block of every book. */
+const DOCUMENT_MIN_QUERY = 2
 
 /** How long a failed chunk waits before its one retry. */
 const RETRY_AFTER_MS = 500
@@ -313,6 +329,20 @@ class FilesState {
   /** A rescan, or bringing old attachments in, is running. */
   busy = $state(false)
 
+  // ---- inside documents ----------------------------------------------------
+  /** What the search found inside documents -- `docs/plans/reading.md` -- one
+   *  passage a row, with the file it is in. Empty while the search is shorter
+   *  than `DOCUMENT_MIN_QUERY`, while indexing is off in Settings, and in the
+   *  views that list pictures. */
+  documentHits = $state.raw<DocumentFound[]>([])
+  /** How many passages the index has for it in all. */
+  documentTotal = $state(0)
+  /** The index is still being built, so more may match later. */
+  documentIndexing = $state(false)
+  documentSearching = $state(false)
+  /** How the documents' index stands; null until `refreshIndexStatus` asks. */
+  indexStatus = $state.raw<DocIndexStatus | null>(null)
+
   /** Which load is the current one, per thing loaded. */
   #statusGen = latest()
   #viewGen = latest()
@@ -341,6 +371,11 @@ class FilesState {
   /** Writes sent and not yet answered, so the close handshake can wait. */
   #writes = new Set<Promise<unknown>>()
   #searchDebounce = debounce(() => void this.#loadView(true, false), 250)
+  #documentGen = latest()
+  #documentDebounce = debounce(() => void this.#loadDocumentHits(false), 350)
+  /** How many of the index's passages have been read, found in the catalog
+   *  or not: where the next page starts. */
+  #documentTaken = $state(0)
 
   /** Every file the lists hold, by id. */
   #listed = $derived.by(() => {
@@ -401,6 +436,11 @@ class FilesState {
     if (this.view === 'browse' || (this.view === 'albums' && this.album === null)) return false
     const page = this.page
     return page !== null && page.files.length < page.total
+  }
+
+  /** The search found more inside documents than `documentHits` lists. */
+  get hasMoreDocumentHits(): boolean {
+    return this.#documentTaken < this.documentTotal
   }
 
   /** The files selected, as loaded. */
@@ -625,6 +665,14 @@ class FilesState {
       gen.next()
     }
     this.#searchDebounce.cancel()
+    this.#documentGen.next()
+    this.#documentDebounce.cancel()
+    this.#documentTaken = 0
+    this.documentHits = []
+    this.documentTotal = 0
+    this.documentIndexing = false
+    this.documentSearching = false
+    this.indexStatus = null
     this.#epoch += 1
     this.#cancelled.clear()
     this.#tickets.clear()
@@ -662,8 +710,12 @@ class FilesState {
   /** A `file` or `album` change arrived from elsewhere. Read again only while
    *  Files is the app on screen: it reads fresh when it is opened. */
   changed(): Promise<void> | undefined {
-    if (!this.loaded || app.screen !== 'main' || app.section !== 'files') return undefined
-    return this.reload()
+    // The reader is on the stage over whichever app is open, so the document
+    // in it is looked at whether or not Files is the app on screen.
+    const reading = reader.fileChanged()
+    if (!this.loaded || app.screen !== 'main' || app.section !== 'files') return reading
+    const reloading = this.reload()
+    return reading ? Promise.all([reading, reloading]).then(() => undefined) : reloading
   }
 
   /** The app bar's "+": add files. */
@@ -736,6 +788,7 @@ class FilesState {
   setSearch(text: string): void {
     if (text === this.search) return
     this.search = text
+    this.#searchDocuments()
     if (this.view === 'browse') {
       // The folder is already here: narrow it by name, with nothing to ask.
       this.#searchDebounce.cancel()
@@ -796,6 +849,124 @@ class FilesState {
     }
   }
 
+  // ---- documents -----------------------------------------------------------
+
+  /** Open a document in the reader, at `options`' place or where they left
+   *  off. The one way into it from Files; the reader is the store that does
+   *  it. */
+  read(id: FileId, options: ReaderOpenOptions = {}): Promise<void> {
+    return reader.openFile(id, options)
+  }
+
+  /** The next passages the search found inside documents. */
+  async moreDocumentHits(): Promise<void> {
+    if (this.documentSearching || this.#documentTaken >= this.documentTotal) return
+    await this.#loadDocumentHits(true)
+  }
+
+  /** How the documents' index stands now. Read when Settings is shown, and
+   *  again after it was changed. */
+  async refreshIndexStatus(): Promise<void> {
+    if (!this.supported) return
+    try {
+      this.indexStatus = await api.documentsStatus()
+    } catch (e) {
+      await quietly(e)
+    }
+  }
+
+  /** Empty the index and read every document into it again. */
+  async reindexDocuments(): Promise<void> {
+    if (!this.supported) return
+    try {
+      this.indexStatus = await this.#track(api.reindexDocuments())
+    } catch (e) {
+      await this.#fail(e, 'The documents could not be read again.')
+    }
+  }
+
+  /** Whether what is typed can be looked for inside documents now. */
+  #canSearchDocuments(): boolean {
+    return (
+      this.supported &&
+      this.settings?.indexDocuments === true &&
+      this.search.trim().length >= DOCUMENT_MIN_QUERY &&
+      // Pictures are what these views list; a passage of a book has no place
+      // among them.
+      this.view !== 'photos' &&
+      this.view !== 'albums'
+    )
+  }
+
+  /** Look inside documents for what is typed, a beat after typing stops --
+   *  or drop what was found when it no longer applies. */
+  #searchDocuments(): void {
+    this.#documentDebounce.cancel()
+    if (this.#canSearchDocuments()) {
+      this.#documentDebounce.call()
+      return
+    }
+    this.#documentGen.next()
+    this.#documentTaken = 0
+    this.documentHits = []
+    this.documentTotal = 0
+    this.documentIndexing = false
+    this.documentSearching = false
+  }
+
+  /** One page of what the index found, with the catalog's entry for each
+   *  file: the index knows ids, and a list is drawn from names. A passage
+   *  whose file is not in the catalog any more is left out. */
+  async #loadDocumentHits(more: boolean): Promise<void> {
+    if (!this.#canSearchDocuments()) return
+    const text = this.search.trim()
+    const token = this.#documentGen.next()
+    const offset = more ? this.#documentTaken : 0
+    this.documentSearching = true
+    try {
+      const found = await api.searchDocuments(text, DOCUMENT_HITS, offset)
+      if (!this.#documentGen.isCurrent(token)) return
+      const entries = await this.#entriesOf(found.hits.map((h) => h.file))
+      if (!this.#documentGen.isCurrent(token)) return
+      const rows = found.hits.flatMap((hit) => {
+        const file = entries.get(hit.file)
+        return file ? [{ file, hit }] : []
+      })
+      this.documentHits = more ? [...this.documentHits, ...rows] : rows
+      this.documentTotal = found.total
+      this.documentIndexing = found.indexing
+      this.#documentTaken = offset + found.hits.length
+    } catch (e) {
+      if (!this.#documentGen.isCurrent(token)) return
+      if (!more) this.documentHits = []
+      await quietly(e)
+    } finally {
+      if (this.#documentGen.isCurrent(token)) this.documentSearching = false
+    }
+  }
+
+  /** The catalog's entries for `ids`: what is loaded already, and one read
+   *  for the rest. */
+  async #entriesOf(ids: FileId[]): Promise<Map<FileId, FileEntry>> {
+    const entries = new Map<FileId, FileEntry>()
+    const missing: FileId[] = []
+    for (const id of new Set(ids)) {
+      const known = this.fileById(id)
+      if (known) entries.set(id, known)
+      else missing.push(id)
+    }
+    if (missing.length > 0) {
+      const page = await api.listFiles({
+        ids: missing,
+        status: 'present',
+        includeHidden: true,
+        limit: missing.length,
+      })
+      for (const file of page.files) entries.set(file.id, file)
+    }
+    return entries
+  }
+
   // ---- selection -------------------------------------------------------------
 
   select(id: FileId, mode: SelectMode = 'replace'): void {
@@ -842,7 +1013,9 @@ class FilesState {
     if (id) void this.#loadDetail(id, false)
   }
 
-  /** Open the full-window viewer on a file. */
+  /** Open the full-window viewer on a file. A PDF or an EPUB is passed on to
+   *  the reader by `FilesView`, which sees the viewer open on one; this stays
+   *  the one way into the viewer, which the arrow keys also step through. */
   open(id: FileId): void {
     this.viewing = id
     this.focus(id)
@@ -1311,6 +1484,9 @@ class FilesState {
     this.#statusGen.next()
     try {
       this.status = await this.#track(api.saveFilesSettings(plain))
+      // What is indexed is one of the settings, so the counts beside it are
+      // read again -- when something has asked for them at all.
+      if (this.indexStatus !== null) void this.refreshIndexStatus()
     } catch (e) {
       await this.#fail(e, 'The settings could not be saved.', () => {
         if (before) this.status = before
@@ -1574,6 +1750,9 @@ class FilesState {
     this.#anchor = null
     this.focus(null)
     if (clear) this.page = null
+    // A search typed in one view goes on into the next, so what it found
+    // inside documents is asked again -- or dropped, in a view of pictures.
+    if (this.search.trim() !== '') this.#searchDocuments()
     void this.#loadView(false, false)
     void this.#loadAlbums(true)
     void this.#loadFacets(true)

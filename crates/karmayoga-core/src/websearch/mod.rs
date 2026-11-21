@@ -75,6 +75,9 @@ use std::collections::BTreeMap;
 pub mod images;
 mod sources;
 
+pub use sources::crossref::doi_of;
+pub(crate) use sources::crossref::join_authors;
+use sources::crossref::{SELECT as CROSSREF_SELECT, parse_crossref, path_of};
 pub use sources::duckduckgo::parse_duckduckgo;
 use sources::itunes::parse_itunes;
 use sources::musicbrainz::parse_musicbrainz;
@@ -151,10 +154,20 @@ pub enum Source {
     /// OpenStreetMap's geocoder. Restaurants and places, with an address and
     /// often a cuisine and a telephone number.
     Nominatim,
+    /// Crossref. Journal articles, by their DOI or by their title: who wrote
+    /// them, the journal, volume, issue and pages, the year and the abstract.
+    ///
+    /// Not what any seeded shelf names as its own source -- the Articles shelf
+    /// is mostly pages from the web, which no registry of papers has heard
+    /// of -- but what a DOI is looked up on wherever one is typed or found in
+    /// a file; see [`SearchRequest::for_kind`] and [`doi_of`]. A shelf of
+    /// somebody's own for papers can choose it, and then a title is searched
+    /// here too.
+    Crossref,
 }
 
 impl Source {
-    pub const ALL: [Source; 8] = [
+    pub const ALL: [Source; 9] = [
         Source::Web,
         Source::Wikipedia,
         Source::OpenLibrary,
@@ -163,6 +176,7 @@ impl Source {
         Source::MusicBrainz,
         Source::Steam,
         Source::Nominatim,
+        Source::Crossref,
     ];
 
     /// The stable name a [`Kind`](crate::library::Kind) stores.
@@ -176,6 +190,7 @@ impl Source {
             Source::MusicBrainz => "musicBrainz",
             Source::Steam => "steam",
             Source::Nominatim => "nominatim",
+            Source::Crossref => "crossref",
         }
     }
 
@@ -191,6 +206,7 @@ impl Source {
             Source::MusicBrainz => "MusicBrainz",
             Source::Steam => "Steam",
             Source::Nominatim => "OpenStreetMap",
+            Source::Crossref => "Crossref",
         }
     }
 
@@ -207,6 +223,7 @@ impl Source {
             "musicBrainz" | "musicbrainz" => Source::MusicBrainz,
             "steam" => Source::Steam,
             "nominatim" => Source::Nominatim,
+            "crossref" => Source::Crossref,
             _ => Source::Web,
         }
     }
@@ -217,7 +234,7 @@ impl Source {
     /// room for artwork before anything has been fetched, so the grid does
     /// not reflow under the cursor when the first cover lands.
     pub fn has_images(self) -> bool {
-        !matches!(self, Source::Web | Source::Nominatim)
+        !matches!(self, Source::Web | Source::Nominatim | Source::Crossref)
     }
 
     /// Is this a catalogue of *works* — a thing a shelf collects — rather
@@ -320,6 +337,22 @@ impl Source {
                 ),
                 "application/json",
             ),
+            // Two requests for two questions. A DOI is looked up as the work
+            // it names, and answered with that one record; anything else is
+            // a title, matched by bibliographic similarity -- the author's
+            // name and the year help it, which is what a half-remembered
+            // citation is made of. The list is asked for only the fields
+            // that are read, because a work carries all of its references.
+            Source::Crossref => (
+                match doi_of(query) {
+                    Some(doi) => format!("https://api.crossref.org/works/{}", path_of(&doi)),
+                    None => format!(
+                        "https://api.crossref.org/works?query.bibliographic={q}&rows={limit}\
+                         &select={CROSSREF_SELECT}"
+                    ),
+                },
+                "application/json",
+            ),
         };
         Ok(Request { url, accept, source: self, page: false })
     }
@@ -335,6 +368,7 @@ impl Source {
             Source::MusicBrainz => parse_musicbrainz(body),
             Source::Steam => parse_steam(body),
             Source::Nominatim => parse_nominatim(body),
+            Source::Crossref => parse_crossref(body),
         }
     }
 
@@ -457,7 +491,21 @@ impl SearchRequest {
     /// fallback's position from the first request: it does not know what
     /// kind of thing is wanted, and without the word "Pale Fire" on a Drinks
     /// shelf is Nabokov's novel.
+    ///
+    /// The one exception to "whatever source that kind prefers": a DOI, or
+    /// the address one resolves at, typed onto a shelf that keeps DOIs --
+    /// Articles -- is answered by [`Source::Crossref`], and asked for by
+    /// the bare DOI. A DOI names exactly one article, so that is not a
+    /// search to be guessed at on a general source; and a shelf whose own
+    /// source is the open web would otherwise read the page it resolves to,
+    /// when Crossref has the record the page was made from.
     pub fn for_kind(query: impl Into<String>, kind: &Kind) -> Self {
+        let query = query.into();
+        if reads_dois(kind)
+            && let Some(doi) = doi_of(&query)
+        {
+            return Self::new(doi).on(Source::Crossref).about(kind.slug.clone());
+        }
         let request = Self::new(query).on(Source::from_slug(&kind.source)).about(kind.slug.clone());
         match request.source {
             Source::Wikipedia | Source::Web => Self { query: request.hinted_query(), ..request },
@@ -643,6 +691,11 @@ impl SearchResult {
         if source.is_catalogue() || source == Source::Nominatim {
             return true;
         }
+        // A DOI names one work, so what Crossref found for one is that work
+        // -- whether it was typed bare or as the address it resolves at.
+        if source == Source::Crossref && doi_of(query).is_some() {
+            return true;
+        }
         if is_address(query) {
             return self.url.trim() == query.trim();
         }
@@ -720,11 +773,15 @@ impl<F: Fetcher> WebSearch<F> {
         if !kind.looks_things_up() {
             return Ok(Vec::new());
         }
-        if let Some(page) = SearchResult::for_address(query) {
+        let request = SearchRequest::for_kind(query, kind);
+        // A DOI's address is Crossref's to answer, not a page to be read.
+        if request.source != Source::Crossref
+            && let Some(page) = SearchResult::for_address(query)
+        {
             return Ok(vec![page]);
         }
         let mut last = None;
-        for attempt in SearchRequest::for_kind(query, kind).attempts() {
+        for attempt in request.attempts() {
             match self.search(&attempt) {
                 Ok(hits) if !hits.is_empty() => return Ok(hits),
                 Ok(_) => {}
@@ -764,8 +821,10 @@ pub fn apply(result: &SearchResult, kind: &Kind, item: &mut Item, overwrite: boo
 
     // A title that is only an address is a placeholder -- what somebody
     // pasted to mean "this page" -- and gives way to the page's own name as
-    // an empty one would.
-    if is_address(&item.title) && !result.title.trim().is_empty() {
+    // an empty one would. So does a DOI, which is what somebody typed to
+    // mean "this article".
+    if (is_address(&item.title) || doi_of(&item.title).is_some()) && !result.title.trim().is_empty()
+    {
         item.title = result.title.trim().to_string();
     } else {
         fill(&mut item.title, &result.title);
@@ -861,6 +920,27 @@ pub fn apply_detailed(
     }
     apply(detailed, kind, item, overwrite);
 }
+
+/// Take out of `result` what a shelf can only hold in a shape the value is
+/// not in: a number field takes a number.
+///
+/// What a registry calls "pages" is a range -- "436-444" -- and what the Books
+/// shelf calls it is a count. [`apply`] keeps to the fields a shelf has, by
+/// key, and a key shared between two shelves for two different things is how
+/// a paper's page range ends up as a book's length. Used where a result is
+/// meant for whichever shelf somebody picked, rather than the one its source
+/// is for: an item made from a file.
+pub fn fit_to_shelf(result: &mut SearchResult, kind: &Kind) {
+    result.facts.retain(|key, value| {
+        let counted = kind
+            .fields
+            .iter()
+            .find(|f| &f.key == key)
+            .is_some_and(|f| f.field_type == FieldType::Number);
+        !counted || value.trim().parse::<f64>().is_ok()
+    });
+}
+
 // ── Small helpers ────────────────────────────────────────────────────────
 
 /// Refuse anything that is not an ordinary web address.
@@ -1056,8 +1136,26 @@ fn strip_tags(s: &str) -> String {
     out
 }
 
+/// Markup in, words out: the tags dropped, the entities read, and every run
+/// of white space made one space. For a blurb a source or a file wrote in
+/// HTML and a card shows as a line of text.
+pub(crate) fn plain_text(markup: &str) -> String {
+    squash(&decode_entities(&strip_tags(markup)))
+}
+
+/// Every run of white space made one space, and the ends trimmed.
+pub(crate) fn squash(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Does this shelf keep DOIs -- is it Articles, or has somebody given theirs a
+/// `doi` field? What decides whether a DOI typed onto it is looked up.
+fn reads_dois(kind: &Kind) -> bool {
+    kind.slug == crate::library::ARTICLE_SLUG || kind.fields.iter().any(|f| f.key == "doi")
+}
+
 /// A blurb, cut to something a card can hold without becoming an essay.
-fn trim_summary(text: &str) -> String {
+pub(crate) fn trim_summary(text: &str) -> String {
     const MAX: usize = 480;
     let text = text.trim();
     if text.chars().count() <= MAX {
@@ -1100,7 +1198,7 @@ fn year_from_iso(date: &str) -> Option<i16> {
 /// store has used so far and is not a day, a month or a price. A number
 /// longer than four digits is not a year at all, so a run of five is
 /// skipped rather than truncated.
-fn year_from_text(text: &str) -> Option<i16> {
+pub(crate) fn year_from_text(text: &str) -> Option<i16> {
     let mut rest = text;
     while let Some(start) = rest.find(|c: char| c.is_ascii_digit()) {
         let digits: String = rest[start..].chars().take_while(char::is_ascii_digit).collect();
@@ -1649,6 +1747,208 @@ mod tests {
         assert_eq!(round, req);
         for s in Source::ALL {
             assert_eq!(serde_json::to_string(&s).unwrap(), format!("\"{}\"", s.slug()));
+        }
+    }
+
+    // ---- Crossref -------------------------------------------------------
+
+    use super::sources::crossref::tests::{DEEP_LEARNING, SEARCH};
+    use std::sync::{Arc, Mutex};
+
+    /// Answers every request the same way and remembers what was asked.
+    struct Recorder {
+        asked: Arc<Mutex<Vec<String>>>,
+        answer: &'static str,
+    }
+
+    impl Recorder {
+        fn new(answer: &'static str) -> (Self, Arc<Mutex<Vec<String>>>) {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            (Self { asked: asked.clone(), answer }, asked)
+        }
+    }
+
+    impl Fetcher for Recorder {
+        fn get(&self, request: &Request) -> Result<String> {
+            self.asked.lock().unwrap().push(request.url.clone());
+            Ok(self.answer.to_string())
+        }
+    }
+
+    #[test]
+    fn crossref_is_asked_for_a_work_by_its_doi_and_for_a_title_by_similarity() {
+        let by_doi =
+            Source::Crossref.request(&SearchRequest::new("doi:10.1038/nature14539")).unwrap();
+        assert_eq!(by_doi.url, "https://api.crossref.org/works/10.1038/nature14539");
+        assert!(!by_doi.page, "an endpoint this file chose, not somebody's page");
+
+        let by_title = Source::Crossref
+            .request(&SearchRequest::new("Attention is all you need").limit(5))
+            .unwrap();
+        assert!(
+            by_title.url.starts_with(
+                "https://api.crossref.org/works?query.bibliographic=Attention%20is%20all%20you%20\
+                 need&rows=5&select=DOI,title,"
+            ),
+            "got {}",
+            by_title.url
+        );
+        // Nothing of the person's goes with it: no address to write back to,
+        // which Crossref would use for a faster queue.
+        assert!(!by_title.url.contains("mailto"));
+
+        assert_eq!(Source::from_slug("crossref"), Source::Crossref);
+        assert_eq!(Source::Crossref.label(), "Crossref");
+        assert!(!Source::Crossref.has_images());
+        assert!(Source::Crossref.parse("{}").unwrap().is_empty());
+        assert!(Source::Crossref.parse("not json at all").is_err());
+    }
+
+    #[test]
+    fn a_doi_typed_on_the_articles_shelf_is_looked_up_on_crossref_and_nowhere_else() {
+        let articles = kind("article");
+        for typed in [
+            "10.1038/nature14539",
+            " doi:10.1038/nature14539 ",
+            // The address a DOI resolves at is a page, and not read as one:
+            // Crossref has the record the page was made from.
+            "https://doi.org/10.1038/nature14539",
+        ] {
+            let (fetcher, asked) = Recorder::new(DEEP_LEARNING);
+            let hits = WebSearch::new(fetcher).lookup(typed, &articles).unwrap();
+            assert_eq!(hits.len(), 1, "{typed:?}");
+            assert_eq!(hits[0].title, "Deep learning");
+            assert_eq!(hits[0].source, "crossref");
+            assert!(hits[0].answers(typed), "a DOI names one work, so {typed:?} is answered");
+            assert_eq!(
+                *asked.lock().unwrap(),
+                ["https://api.crossref.org/works/10.1038/nature14539"],
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_doi_typed_on_a_shelf_with_a_doi_field_of_its_own_counts_too() {
+        let mut mine = Kind::new("papers", "Papers", "Paper").with_source("wikipedia");
+        mine.fields = vec![crate::library::FieldDef::new("doi", "DOI", FieldType::Text)];
+        let request = SearchRequest::for_kind("10.1038/nature14539", &mine);
+        assert_eq!(
+            (request.source, request.query.as_str()),
+            (Source::Crossref, "10.1038/nature14539")
+        );
+        // ...and one that keeps none is left to its own source.
+        let plain = Kind::new("papers", "Papers", "Paper").with_source("wikipedia");
+        assert_eq!(
+            SearchRequest::for_kind("10.1038/nature14539", &plain).source,
+            Source::Wikipedia
+        );
+    }
+
+    #[test]
+    fn a_doi_on_any_other_shelf_is_what_it_always_was() {
+        let books = kind("book");
+        assert_eq!(
+            SearchRequest::for_kind("10.1038/nature14539", &books).source,
+            Source::OpenLibrary
+        );
+        // A DOI's address on a book's shelf is a page, as every address is.
+        struct Refuse;
+        impl Fetcher for Refuse {
+            fn get(&self, request: &Request) -> Result<String> {
+                panic!("searched for a pasted address at {}", request.url)
+            }
+        }
+        let hits =
+            WebSearch::new(Refuse).lookup("https://doi.org/10.1038/nature14539", &books).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(Source::from_slug(&hits[0].source), Source::Web);
+    }
+
+    #[test]
+    fn a_title_typed_on_the_articles_shelf_still_goes_to_the_web() {
+        // The shelf is mostly pages from the web, and its own source is that.
+        let request = SearchRequest::for_kind("A post about sourdough", &kind("article"));
+        assert_eq!(request.source, Source::Web);
+        assert_eq!(request.hint, "article");
+    }
+
+    #[test]
+    fn a_doi_crossref_has_never_heard_of_falls_back_to_a_search_for_it() {
+        // A DataCite DOI, say: Crossref has nothing, the web usually has the
+        // page.
+        let hits =
+            WebSearch::new(Empty).lookup("10.5281/zenodo.1234567", &kind("article")).unwrap();
+        assert_eq!(hits.len(), 2, "the web fallback did not run");
+        assert_eq!(hits[0].source, "web");
+    }
+
+    #[test]
+    fn a_crossref_title_answer_is_taken_unseen_only_when_it_names_what_was_typed() {
+        // Crossref answers any words with its best guess, so a title search
+        // is a general source in this respect: "attention is all you need"
+        // is the paper and "All You Need Is LSD" is not.
+        let hits = Source::Crossref.parse(SEARCH).unwrap();
+        assert!(hits[0].answers("attention is all you need"));
+        assert!(hits[1].answers("attention is all you need"));
+        assert!(!hits[2].answers("attention is all you need"));
+        // And a typed title is never taken for a DOI.
+        assert!(!hits[2].answers("10.5040 nothing"));
+    }
+
+    #[test]
+    fn a_page_range_is_not_a_books_length() {
+        let mut hit = Source::Crossref.parse(DEEP_LEARNING).unwrap().remove(0);
+        fit_to_shelf(&mut hit, &kind("book"));
+        assert!(!hit.facts.contains_key("pages"), "a range for a count");
+        assert!(hit.facts.contains_key("author"), "everything else is left");
+        // A number is a number, on any shelf; and a shelf with a text field
+        // for pages keeps the range.
+        hit.facts.insert("pages".into(), "412".into());
+        fit_to_shelf(&mut hit, &kind("book"));
+        assert_eq!(hit.facts["pages"], "412");
+        let mut hit = Source::Crossref.parse(DEEP_LEARNING).unwrap().remove(0);
+        fit_to_shelf(&mut hit, &kind("article"));
+        assert_eq!(hit.facts["pages"], "436-444");
+    }
+
+    #[test]
+    fn a_crossref_result_fills_the_articles_shelf_and_leaves_alone_what_was_typed() {
+        let articles = kind("article");
+        let hit = Source::Crossref.parse(DEEP_LEARNING).unwrap().remove(0);
+
+        let mut item = Item::new(articles.id, "My notes on deep nets");
+        apply(&hit, &articles, &mut item, false);
+        assert_eq!(item.title, "My notes on deep nets", "a typed title is not argued with");
+        assert_eq!(item.creator, "Yann LeCun, Yoshua Bengio, Geoffrey Hinton");
+        assert_eq!(item.year, Some(2015));
+        assert_eq!(item.source, "crossref");
+        for (key, want) in [
+            ("publication", "Nature"),
+            ("doi", "10.1038/nature14539"),
+            ("volume", "521"),
+            ("issue", "7553"),
+            ("pages", "436-444"),
+            ("author", "Yann LeCun, Yoshua Bengio, Geoffrey Hinton"),
+            ("url", "https://doi.org/10.1038/nature14539"),
+        ] {
+            assert_eq!(item.facts.get(key).map(String::as_str), Some(want), "{key}");
+        }
+        assert_eq!(
+            item.links,
+            [Link { label: "Crossref".into(), url: "https://doi.org/10.1038/nature14539".into() }]
+        );
+
+        // An explicit refetch is allowed to replace it.
+        apply(&hit, &articles, &mut item, true);
+        assert_eq!(item.title, "Deep learning");
+
+        // But a DOI typed as the title is only a placeholder for the article's
+        // own, as a pasted address is for a page's.
+        for typed in ["10.1038/nature14539", "https://doi.org/10.1038/nature14539"] {
+            let mut item = Item::new(articles.id, typed);
+            apply(&hit, &articles, &mut item, false);
+            assert_eq!(item.title, "Deep learning", "{typed}");
         }
     }
 }

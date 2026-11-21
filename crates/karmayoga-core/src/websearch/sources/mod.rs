@@ -1,5 +1,6 @@
 // ── Parsers ──────────────────────────────────────────────────────────────
 
+pub(crate) mod crossref;
 pub(crate) mod duckduckgo;
 pub(crate) mod itunes;
 pub(crate) mod musicbrainz;

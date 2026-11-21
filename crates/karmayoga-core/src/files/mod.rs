@@ -547,6 +547,24 @@ pub struct FilesSettings {
     /// it puts where somebody was on the network.
     #[serde(default)]
     pub name_places: bool,
+    /// Whether the documents in the files folder -- PDFs, EPUBs, Markdown,
+    /// text and web pages -- are read into the search index, so the
+    /// assistant can find what any of them says without being told which.
+    /// On unless switched off. Only plain files in the folder are indexed:
+    /// a sealed file has no folder for the two lists below to name, and the
+    /// folder is the one place the app owns. Any document can still be read
+    /// and searched on its own, indexed or not.
+    #[serde(default = "yes")]
+    pub index_documents: bool,
+    /// The folders whose documents are indexed, relative to the files
+    /// folder ("Books", "Work/Papers"), each with everything under it.
+    /// Empty indexes the whole folder.
+    #[serde(default)]
+    pub index_folders: Vec<String>,
+    /// Folders left out of the index even when inside one of
+    /// [`FilesSettings::index_folders`].
+    #[serde(default)]
+    pub skip_folders: Vec<String>,
 }
 
 fn default_trash_days() -> u32 {
@@ -565,7 +583,34 @@ impl Default for FilesSettings {
             trash_days: DEFAULT_TRASH_DAYS,
             assistant_access: true,
             name_places: false,
+            index_documents: true,
+            index_folders: Vec::new(),
+            skip_folders: Vec::new(),
         }
+    }
+}
+
+impl FilesSettings {
+    /// Whether `file` belongs in the documents' search index: a document
+    /// ([`crate::documents::DocFormat::of_file`]), plain, present, not one of
+    /// Health's, with indexing on, under one of
+    /// [`FilesSettings::index_folders`] (or anywhere, when there are none)
+    /// and under none of [`FilesSettings::skip_folders`].
+    pub fn indexes(&self, file: &FileEntry) -> bool {
+        if !self.index_documents
+            || file.origin == FileOrigin::Health
+            || !matches!(file.status, FileStatus::Present)
+            || crate::documents::DocFormat::of_file(file).is_none()
+        {
+            return false;
+        }
+        let Some(path) = file.path() else { return false };
+        let under = |folder: &String| {
+            let folder = folder.trim().trim_matches('/');
+            folder.is_empty() || path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
+        };
+        (self.index_folders.is_empty() || self.index_folders.iter().any(under))
+            && !self.skip_folders.iter().any(under)
     }
 }
 
@@ -828,6 +873,9 @@ pub enum RefKind {
     HealthDocument,
     /// A meal in Health: its photograph.
     Meal,
+    /// A library item: the book's or the article's own files
+    /// ([`crate::library::Item::files`]).
+    Item,
 }
 
 impl RefKind {
@@ -839,13 +887,21 @@ impl RefKind {
             RefKind::Message => "message",
             RefKind::HealthDocument => "health_document",
             RefKind::Meal => "meal",
+            RefKind::Item => "item",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        [RefKind::Entry, RefKind::Note, RefKind::Message, RefKind::HealthDocument, RefKind::Meal]
-            .into_iter()
-            .find(|k| k.as_str() == s)
+        [
+            RefKind::Entry,
+            RefKind::Note,
+            RefKind::Message,
+            RefKind::HealthDocument,
+            RefKind::Meal,
+            RefKind::Item,
+        ]
+        .into_iter()
+        .find(|k| k.as_str() == s)
     }
 }
 

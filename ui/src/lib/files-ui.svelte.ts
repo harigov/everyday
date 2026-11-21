@@ -15,8 +15,10 @@
 
 import { agent } from './agent.svelte'
 import { api } from './api'
+import { isReadable } from './documents'
 import { files } from './files.svelte'
 import { health } from './health.svelte'
+import { library } from './library.svelte'
 import { menu } from './menu.svelte'
 import { SEP, tidyMenu, type MenuItem } from './menu'
 import { notes } from './notes.svelte'
@@ -285,6 +287,8 @@ export function fileMenu(file: FileEntry, hooks: MenuHooks = {}): MenuItem[] {
 
   return tidyMenu([
     !many && { label: 'Open', icon: 'eye', run: () => files.open(file.id) },
+    // The same thing `Open` does for a document, said in the words for it.
+    !many && isReadable(file) && { label: 'Read', icon: 'book', run: () => files.read(file.id) },
     onlyHere && {
       label: 'Open in another program',
       icon: 'share',
@@ -566,6 +570,14 @@ export async function openUse(use: FileUse): Promise<void> {
     case 'healthDocument':
       if (await app.goTo('health')) health.openDocument(use.owner.id)
       return
+    case 'item':
+      // The shelf first: choosing one closes whatever is open on the last.
+      // `parent` is the item's shelf; without it, the everything view.
+      if (await app.goTo('library')) {
+        await library.selectShelf(use.parent ?? null)
+        await library.open(use.owner.id)
+      }
+      return
     case 'meal': {
       // The meal's day: the instant it was eaten, read on this computer's
       // clock. A use that says no time opens on today.
@@ -593,4 +605,5 @@ export const USE_LABELS: Record<FileUse['owner']['kind'], string> = {
   message: 'Assistant conversation',
   healthDocument: 'Health document',
   meal: 'Meal',
+  item: 'Library item',
 }

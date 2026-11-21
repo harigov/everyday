@@ -33,6 +33,16 @@ karmayoga-mail.workspace = true
 # The sealed tantivy index mail sync commits to as bodies arrive, and
 # `sync_status`/`search_mail` read through -- see `mailsync/wiring.rs`.
 karmayoga-mailindex.workspace = true
+# The documents' search index -- see `documents::task`.
+karmayoga-docindex.workspace = true
+# Reading a PDF's text page by page (`documents::parse::pdf`): pure Rust,
+# MIT, on lopdf -- chosen over PDFium (C++, a native library to ship and a
+# crash that would take the process with it) for being reliable to build
+# and to run, at the price of a less perfect reading of some files. lopdf
+# itself, at the version pdf-extract is built on, reads the outline and the
+# information dictionary. Every parse runs under `catch_unwind`.
+pdf-extract = "0.12"
+lopdf = "0.42"
 karmayoga-connect.workspace = true
 # A Gmail thread id (`X-GM-THRID`) is hashed into a deterministic `ThreadId`
 # -- see `mailsync::ingest` -- the same domain-separation technique

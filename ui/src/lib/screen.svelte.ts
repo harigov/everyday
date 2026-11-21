@@ -20,9 +20,10 @@ import { library } from './library.svelte'
 import { mail } from './mail.svelte'
 import { money } from './money.svelte'
 import { notes } from './notes.svelte'
-import type { Showing } from './onscreen'
+import type { Seen, Showing } from './onscreen'
 import { overview } from './overview.svelte'
 import { panels, type SettingsTab } from './panels.svelte'
+import { reader } from './reader.svelte'
 import { screentime } from './screentime.svelte'
 import { app } from './state.svelte'
 import { todo } from './todo.svelte'
@@ -80,12 +81,43 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   vault: 'the Vault tab',
 }
 
+/** `list` with every reference already in `told` taken out, and the rest
+ *  recorded there: one record named by two lists is told once. */
+function untold(list: Seen[] | undefined, told: Set<string>): Seen[] {
+  return (list ?? []).filter((s) => {
+    const key = `${s.kind}:${s.id}`
+    if (told.has(key)) return false
+    told.add(key)
+    return true
+  })
+}
+
+/**
+ * What the app says it shows, with the document in the reader added to it.
+ *
+ * The reader is on the stage over whichever app it was opened from, so it is
+ * not any one app's to describe -- Files, the library and the assistant's own
+ * page all open it. What is open comes first, most specific first: the
+ * document, then whatever the app itself had open. The item it was opened
+ * from goes with what holds it, outermost first, unless the app already has
+ * it open. Where in the document they are rides along as `reader`.
+ */
+function withReader(showing: Showing): Showing {
+  const at = reader.at
+  if (at === null || !reader.shown) return showing
+  const mine = reader.showing
+  const told = new Set<string>()
+  const open = untold([...(mine.open ?? []), ...(showing.open ?? [])], told)
+  const within = untold([...(showing.within ?? []), ...(mine.within ?? [])], told)
+  return { ...showing, open, within, reader: at }
+}
+
 /** Which app is in front of them, and what it shows. */
 export function onScreenNow(): { app: OnScreenApp; showing: Showing } {
   if (panels.settings !== null) {
     return { app: 'settings', showing: { view: SETTINGS_PAGES[panels.settings] } }
   }
-  return { app: app.section, showing: APPS[app.section].onScreen(deps) }
+  return { app: app.section, showing: withReader(APPS[app.section].onScreen(deps)) }
 }
 
 /** What the bar searches: the open app's own search, or `null` -- Settings

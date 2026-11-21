@@ -14,7 +14,8 @@
 use super::Vault;
 use super::session::Domain;
 use crate::error::{Error, Result};
-use crate::id::{ItemId, KindId, LogId};
+use crate::files::{FileOrigin, RefKind, RefOwner};
+use crate::id::{FileId, ItemId, KindId, LogId};
 use crate::library::{
     CONTACT_SLUG, Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds,
     upgrade_kinds,
@@ -62,10 +63,28 @@ impl Vault {
 
     /// Delete the shelf, everything on it and every log row those items had.
     /// Only the shelf itself is recorded as touched -- the cascade has no
-    /// ids in hand here to name individually.
+    /// ids in hand here to name individually. The files its items referred to
+    /// are forgotten by them, though: the ids are read first, since the
+    /// cascade leaves nothing to read them from afterwards.
     pub fn delete_kind(&self, id: KindId) -> Result<()> {
         self.writable()?;
-        self.with_library(|l| l.delete_kind(id))?;
+        let items = self.with_library(|l| {
+            // Housekeeping, not the deletion: a shelf that cannot be listed
+            // is still deleted, and the references are for a rebuild to put
+            // right.
+            let items: Vec<ItemId> = match l.list_items(&ItemQuery::on_shelf(id)) {
+                Ok(items) => items.into_iter().map(|i| i.id).collect(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not list a shelf's items before deleting it");
+                    Vec::new()
+                }
+            };
+            l.delete_kind(id)?;
+            Ok(items)
+        })?;
+        for item in items {
+            self.drop_file_refs(RefOwner::new(RefKind::Item, item));
+        }
         self.wrote(RecordKind::Kind, id);
         Ok(())
     }
@@ -125,6 +144,7 @@ impl Vault {
         if item.rating.is_some_and(|r| r > 100) {
             return Err(Error::Invalid("a rating runs from 0 to 100".into()));
         }
+        self.refuse_health_files(std::slice::from_ref(item))?;
         // An item on a shelf that does not exist has no fields, no verbs and
         // nowhere to be drawn. Checked here rather than by a foreign key so
         // that every backend enforces it, including the ones that have no
@@ -133,6 +153,7 @@ impl Vault {
             l.get_kind(item.kind_id)?;
             l.put_item(item)
         })?;
+        self.track_item_files(item);
         self.wrote(RecordKind::Item, item.id);
         Ok(())
     }
@@ -143,21 +164,61 @@ impl Vault {
         if let Some(bad) = items.iter().find(|i| i.title.trim().is_empty()) {
             return Err(Error::Invalid(format!("item {} has no title", bad.id)));
         }
+        self.refuse_health_files(items)?;
         self.with_library(|l| l.put_items(items))?;
         for item in items {
+            self.track_item_files(item);
             self.wrote(RecordKind::Item, item.id);
         }
         Ok(())
     }
 
-    /// Delete the item and its whole log. Only the item itself is recorded
-    /// as touched -- the cascade has no ids in hand here to name
-    /// individually.
+    /// Delete the item and its whole log, and forget the files it referred to.
+    /// Only the item itself is recorded as touched -- the cascade has no ids in
+    /// hand here to name individually.
     pub fn delete_item(&self, id: ItemId) -> Result<()> {
         self.writable()?;
         self.with_library(|l| l.delete_item(id))?;
+        self.drop_file_refs(RefOwner::new(RefKind::Item, id));
         self.wrote(RecordKind::Item, id);
         Ok(())
+    }
+
+    /// Record that `item` refers to exactly the files it names. A file the
+    /// catalog does not hold stays in [`Item::files`] -- it may be a file
+    /// still arriving from another device -- and is not referenced, as
+    /// [`Vault::set_file_refs`] has it.
+    fn track_item_files(&self, item: &Item) {
+        self.track_file_refs(RefOwner::new(RefKind::Item, item.id), item.files.iter().copied());
+    }
+
+    /// Refuse an item that names one of Health's files.
+    ///
+    /// A clinical document's page or a meal's photograph is reached through
+    /// Health, under Health's own gates, and a shelf is not one of them: a
+    /// book with a lab report as its file would be that report open in the
+    /// reader, and held there by a reference that stops Health letting go of
+    /// it. Checked on every save, so no client has to remember to.
+    ///
+    /// A file that is not in the catalog is let through, as everything else
+    /// about it is, and so is a backend that keeps no catalog.
+    fn refuse_health_files(&self, items: &[Item]) -> Result<()> {
+        let named: Vec<FileId> = items.iter().flat_map(|i| i.files.iter().copied()).collect();
+        if named.is_empty() {
+            return Ok(());
+        }
+        let held = match self.with_files(|s| s.get_files(&named)) {
+            Ok(held) => held,
+            Err(Error::Unsupported(_)) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        match held.iter().find(|f| f.origin == FileOrigin::Health) {
+            Some(file) => Err(Error::Invalid(format!(
+                "{} is one of Health's files, which a library item cannot hold",
+                file.name
+            ))),
+            None => Ok(()),
+        }
     }
 
     pub fn logs(&self, query: &LogQuery) -> Result<Vec<LogEntry>> {

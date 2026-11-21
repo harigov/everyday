@@ -44,6 +44,8 @@
 // end-of-input rather than requiring its closing marker, and the output is
 // always well-formed HTML even when the Markdown is not.
 
+import { parseFileLink, type FileLink } from './documents'
+
 export interface RenderOptions {
   /**
    * Draw a list whose every item opens with `[ ]` or `[x]` as the editor's
@@ -394,19 +396,19 @@ function tableBlock(lines: string[], start: number): [string, number] {
 /** Schemes a link is allowed to have. Everything else is drawn as text. */
 const SAFE_SCHEME = /^(https?:\/\/|mailto:)/i
 
-/**
- * A link to a file in the files catalog, which is how the assistant is told
- * to name one it has found or saved: `[plan.pdf](files:<id>)`. The id is a
- * UUID and nothing else is accepted, so what follows the scheme can never
- * be more than hex digits and hyphens.
- *
- * It is not an address, so it is not drawn as one. An `<a href="files:…">`
- * would be a navigation the webview has nowhere to go with; it is a button
- * that carries the id, and the panel that drew it opens the file when it is
- * pressed (see `ChatThread.svelte`). Anywhere nothing is listening, it does
- * nothing, which is the right thing for it to do.
- */
-const FILE_LINK = /^files:([0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})$/i
+// A link to a file in the files catalog, which is how the assistant is told
+// to name one it has found or saved: `[plan.pdf](files:<id>)`. The id is a
+// UUID and nothing else is accepted, so what follows the scheme can never
+// be more than hex digits and hyphens. A place in a document may follow it
+// -- `files:<id>#p=47` for a page, `files:<id>#b=812` for a block -- and is
+// accepted only as plain digits. `documents.ts` reads the link; this file
+// only draws what it found.
+//
+// It is not an address, so it is not drawn as one. An `<a href="files:…">`
+// would be a navigation the webview has nowhere to go with; it is a button
+// that carries the id and the place, and the panel that drew it opens the
+// file when it is pressed (see `ChatThread.svelte`). Anywhere nothing is
+// listening, it does nothing, which is the right thing for it to do.
 
 /**
  * Emphasis, code, links and the rest, in the one order that works.
@@ -448,7 +450,7 @@ function inline(text: string): string {
 
   out = out.replace(/\[([^\]]*)\]\(([^\s)]+)(?:\s+&quot;[^)]*&quot;)?\)/g, (all, label, href) => {
     const url = decodeEntities(String(href))
-    const file = FILE_LINK.exec(url)?.[1]
+    const file = parseFileLink(url)
     if (file) {
       return `${park(fileChip(file))}${String(label) || 'File'}${park('</button>')}`
     }
@@ -506,15 +508,16 @@ function anchor(url: string): string {
   return `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer noopener">`
 }
 
-/** The opening tag of a link to a file; see `FILE_LINK`. The id has been
- *  checked against a pattern that allows no character HTML treats specially,
- *  and is written the way the catalog writes ids -- lower-case, with hyphens
- *  -- so that it finds the file whichever way the model wrote it. */
-function fileChip(id: string): string {
-  const h = id.replaceAll('-', '').toLowerCase()
-  const parts = [h.slice(0, 8), h.slice(8, 12), h.slice(12, 16), h.slice(16, 20), h.slice(20)]
-  const uuid = parts.join('-')
-  return `<button type="button" class="file-chip" data-file="${uuid}">`
+/** The opening tag of a link to a file; see `fileLink` in `documents.ts`. The
+ *  id has been checked against a pattern that allows no character HTML treats
+ *  specially, and comes back written the way the catalog writes ids --
+ *  lower-case, with hyphens -- so that it finds the file whichever way the
+ *  model wrote it. A page or a block is a run of digits, nothing else. */
+function fileChip({ file, page, block }: FileLink): string {
+  const at =
+    (page !== undefined ? ` data-page="${page}"` : '') +
+    (block !== undefined ? ` data-block="${block}"` : '')
+  return `<button type="button" class="file-chip" data-file="${file}"${at}>`
 }
 
 /** Undo the escaping for a URL, which is compared against a scheme list. */

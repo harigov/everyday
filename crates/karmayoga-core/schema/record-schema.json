@@ -3523,10 +3523,31 @@
           "null"
         ]
       },
+      "indexDocuments": {
+        "default": true,
+        "description": "Whether the documents in the files folder -- PDFs, EPUBs, Markdown,\ntext and web pages -- are read into the search index, so the\nassistant can find what any of them says without being told which.\nOn unless switched off. Only plain files in the folder are indexed:\na sealed file has no folder for the two lists below to name, and the\nfolder is the one place the app owns. Any document can still be read\nand searched on its own, indexed or not.",
+        "type": "boolean"
+      },
+      "indexFolders": {
+        "default": [],
+        "description": "The folders whose documents are indexed, relative to the files\nfolder (\"Books\", \"Work/Papers\"), each with everything under it.\nEmpty indexes the whole folder.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
       "namePlaces": {
         "default": false,
         "description": "Whether a photo's coordinates may be sent to OpenStreetMap\n(Nominatim) to name the place it was taken. Off unless switched on:\nit puts where somebody was on the network.",
         "type": "boolean"
+      },
+      "skipFolders": {
+        "default": [],
+        "description": "Folders left out of the index even when inside one of\n[`FilesSettings::index_folders`].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "trashDays": {
         "default": 30,
@@ -4850,6 +4871,15 @@
         "default": false,
         "description": "Starred. The same affordance a journal entry has, meaning the same\nthing: this one, out of all of them.",
         "type": "boolean"
+      },
+      "files": {
+        "default": [],
+        "description": "The thing itself, when it is a file: the book's EPUB, the article's\nPDF, kept in the files folder like any other file and referred to by\nid. The first is the one the reader opens and the assistant reads\nwhen somebody asks about the item; the rest are other copies or\nwhat came with it. Always written, like `external`.",
+        "items": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "type": "array"
       },
       "finishedOn": {
         "format": "date",
@@ -9838,6 +9868,15 @@
             "default": false,
             "description": "Starred. The same affordance a journal entry has, meaning the same\nthing: this one, out of all of them.",
             "type": "boolean"
+          },
+          "files": {
+            "default": [],
+            "description": "The thing itself, when it is a file: the book's EPUB, the article's\nPDF, kept in the files folder like any other file and referred to by\nid. The first is the one the reader opens and the assistant reads\nwhen somebody asks about the item; the rest are other copies or\nwhat came with it. Always written, like `external`.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
           },
           "finishedOn": {
             "format": "date",

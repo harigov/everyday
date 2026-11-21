@@ -200,6 +200,7 @@ const MIME: Record<string, string> = {
   m4a: 'audio/mp4',
   mp3: 'audio/mpeg',
   pdf: 'application/pdf',
+  epub: 'application/epub+zip',
   md: 'text/markdown',
   txt: 'text/plain',
   csv: 'text/csv',
@@ -218,7 +219,7 @@ function kindOf(mime: string, name: string): FileKind {
   if (major === 'video') return 'video'
   if (major === 'audio') return 'audio'
   if (major === 'text') return 'document'
-  return ['pdf', 'docx', 'doc', 'odt', 'xlsx', 'pptx'].includes(extensionOf(name))
+  return ['pdf', 'epub', 'docx', 'doc', 'odt', 'xlsx', 'pptx'].includes(extensionOf(name))
     ? 'document'
     : 'other'
 }
@@ -864,6 +865,15 @@ const DOCS: Doc[] = [
     caption: 'Renewed in November',
     tags: ['identity'],
   },
+  // Last, so the ids of everything above it stay what they were. The one book
+  // the reader has to read: `mock-documents.ts` has its text.
+  {
+    path: 'Documents/Books/The Hound of the Baskervilles.epub',
+    size: 347_000,
+    at: '2026-09-14T20:15:00Z',
+    caption: 'Read it on the train',
+    tags: ['books'],
+  },
 ]
 
 /** Which of the seed's files something refers to, and what. The rest of the
@@ -1164,6 +1174,9 @@ function build(): Store {
       trashDays: 30,
       assistantAccess: true,
       namePlaces: false,
+      indexDocuments: true,
+      indexFolders: [],
+      skipFolders: [],
     },
     folder,
     legacy: { entries: 9, notes: 3, messages: 4, files: 17, bytes: 96 * MB },

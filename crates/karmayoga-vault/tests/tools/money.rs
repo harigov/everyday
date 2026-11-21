@@ -234,6 +234,7 @@ fn a_bank_line_reaches_the_model_as_a_strangers_words_and_the_persons_own_do_not
         within: Vec::new(),
         open: vec![Shown::Txn(zelle.id)],
         query: None,
+        reader: None,
     };
     let said = describe(&ctx(&vault), &screen);
     assert!(said.quotes_mail, "a bank line on screen is a stranger's words in the context");

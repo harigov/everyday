@@ -54,6 +54,7 @@ pub mod covers;
 pub mod ctx;
 pub mod decision;
 pub(crate) mod delivery;
+pub mod documents;
 pub mod domains;
 pub mod error;
 pub mod events;
