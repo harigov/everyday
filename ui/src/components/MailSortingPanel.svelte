@@ -8,9 +8,11 @@
   // The tab is what the rest of the app understands: Priority, Important,
   // Other, Newsletters, Notifications. See `karmayoga_core::mail::sorting`.
   //
-  // Recent mail is sorted unasked; older mail only from the button at the
-  // bottom, because sorting somebody's whole archive on a settings change is
-  // a bill and a reshuffle nobody agreed to.
+  // Recent mail is sorted unasked; older mail only from the button on its own
+  // tab, because sorting somebody's whole archive on a settings change is a
+  // bill and a reshuffle nobody agreed to. That tab has no Save: its button
+  // does the work and the saved categories are what it uses. It used to sit
+  // under the page's Save, which put the Save in the middle of the scroll.
   //
   // Follow-ups are here too, rather than a pane of their own: the same model,
   // under the same per-account switch, reading the same mail, decides which
@@ -42,6 +44,7 @@
     SortCategory,
   } from '../lib/types'
   import Icon from './Icon.svelte'
+  import SubTabs from './SubTabs.svelte'
 
   /** `MailSorting` as this pane edits it: with its follow-up settings always
    *  there to bind to, the defaults standing in for a record saved before
@@ -58,6 +61,9 @@
   let saving = $state(false)
   let olderDays = $state<number | null>(365)
   let olderAgain = $state(false)
+  /** Categories and Follow-ups are the draft, saved by the one Save at the
+   *  foot of either; Older mail is a button that does the work at once. */
+  let sub = $state<'categories' | 'followups' | 'older'>('categories')
   let olderNotice = $state<string | null>(null)
 
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
@@ -204,12 +210,24 @@
 {:else if !draft}
   <p class="hint">Loading…</p>
 {:else}
+  <SubTabs
+    tabs={[
+      { id: 'categories', label: 'Categories' },
+      { id: 'followups', label: 'Follow-ups' },
+      { id: 'older', label: 'Older mail' },
+    ]}
+    bind:value={sub}
+    label="Mail sorting"
+  />
+
   <div class="panes">
-    <p class="hint lead">
-      Your own categories for mail. A decision model reads each new message and picks the one it
-      fits, going by the descriptions you write here, and the message is filed under that category's
-      inbox tab. You only see the category's name beside the message in the list.
-    </p>
+    {#if sub === 'categories'}
+      <p class="hint lead">
+        Your own categories for mail. A decision model reads each new message and picks the one it
+        fits, going by the descriptions you write here, and the message is filed under that
+        category's inbox tab. You only see the category's name beside the message in the list.
+      </p>
+    {/if}
 
     {#if !sorting.view?.decisionModel}
       <div class="stored">
@@ -220,254 +238,264 @@
         </span>
         <button class="link" onclick={() => panels.openSettings('models')}>Set one up</button>
       </div>
-    {:else}
+    {:else if sub !== 'followups'}
       <p class="hint">Sorting on {sorting.view.decisionModel}.</p>
     {/if}
 
-    <section class="card" aria-labelledby="sorting-categories">
-      <span class="eyebrow" id="sorting-categories">Categories</span>
-      <p class="hint">
-        The model sees each name and description and picks one, so say what belongs and what does
-        not. Keep a catch-all such as Other for mail that fits none of them. A message you file
-        yourself always stays where you put it.
-      </p>
+    {#if sub === 'categories'}
+      <section class="card" aria-labelledby="sorting-categories">
+        <span class="eyebrow" id="sorting-categories">Categories</span>
+        <p class="hint">
+          The model sees each name and description and picks one, so say what belongs and what does
+          not. Keep a catch-all such as Other for mail that fits none of them. A message you file
+          yourself always stays where you put it.
+        </p>
 
-      <ol class="categories">
-        {#each draft.categories as category, i (category.id)}
-          <li class="category">
-            <div class="row">
-              <label class="setting grow">
-                <span>Name</span>
-                <input bind:value={category.name} placeholder="Receipts" spellcheck="false" />
-              </label>
-              <label class="setting">
-                <span>Files under</span>
-                <select
-                  value={category.treatAs}
-                  onchange={(e) => (category.treatAs = e.currentTarget.value as MailCategory)}
-                >
-                  {#each CATEGORY_TABS as tab (tab.key)}
-                    <option value={tab.key}>{tab.label}</option>
-                  {/each}
-                </select>
-              </label>
-              <div class="actions">
-                <button
-                  class="icon-btn"
-                  aria-label="Move {category.name || 'this category'} up"
-                  disabled={i === 0}
-                  onclick={() => move(i, -1)}
-                >
-                  <Icon name="chevron" size={14} />
-                </button>
-                <button
-                  class="icon-btn down"
-                  aria-label="Move {category.name || 'this category'} down"
-                  disabled={i === draft.categories.length - 1}
-                  onclick={() => move(i, 1)}
-                >
-                  <Icon name="chevron" size={14} />
-                </button>
-                <button
-                  class="icon-btn"
-                  aria-label="Remove {category.name || 'this category'}"
-                  disabled={draft.categories.length === 1}
-                  onclick={() => remove(category)}
-                >
-                  <Icon name="trash" size={14} />
-                </button>
-              </div>
-            </div>
-            <label class="setting">
-              <span>What belongs here</span>
-              <textarea
-                bind:value={category.description}
-                rows="2"
-                placeholder="Orders, receipts and invoices. Not: marketing from the same shops."
-              ></textarea>
-            </label>
-            {#if category.treatAs === 'priority'}
-              <p class="hint">Mail sorted here shows under Priority, ahead of everything else.</p>
-            {/if}
-          </li>
-        {/each}
-      </ol>
-      <div class="row-end">
-        <button class="btn" onclick={add}><Icon name="plus" size={14} /> Add a category</button>
-      </div>
-    </section>
-
-    <section class="card" aria-labelledby="sorting-window">
-      <span class="eyebrow" id="sorting-window">Which mail</span>
-      <label class="setting">
-        <span>Sort without asking</span>
-        <select
-          value={draft.windowDays}
-          onchange={(e) => draft && (draft.windowDays = Number(e.currentTarget.value))}
-        >
-          {#each WINDOWS as w (w.days)}
-            <option value={w.days}>{w.label}</option>
-          {/each}
-        </select>
-      </label>
-      <p class="hint">
-        New mail is sorted as it arrives, and anything in your inbox from this far back that has not
-        been sorted yet. Older mail is left alone unless you ask, below. Each account sorts only if
-        you switched on sorting under Settings → Accounts.
-      </p>
-    </section>
-
-    <section class="card" aria-labelledby="sorting-follow-ups">
-      <span class="eyebrow" id="sorting-follow-ups">Follow-ups</span>
-      <label class="switch">
-        <input type="checkbox" bind:checked={draft.followUp.on} />
-        <span class="switch-text">
-          <span class="switch-label">
-            Show mail that needs your reply, and mail to nudge, at the top of the Inbox
-          </span>
-          <span class="switch-blurb">
-            Somebody waiting on an answer from you, and mail you sent that nobody has answered.
-          </span>
-        </span>
-      </label>
-      <div class="row numbers">
-        <label class="setting">
-          <span>Look back</span>
-          <span class="days">
-            <input
-              type="number"
-              min={FOLLOW_UP_MIN_WINDOW_DAYS}
-              max={FOLLOW_UP_MAX_WINDOW_DAYS}
-              step="1"
-              aria-invalid={problems.windowDays !== null}
-              aria-describedby={problems.windowDays ? 'follow-up-window-problem' : undefined}
-              bind:value={draft.followUp.windowDays}
-            />
-            days
-          </span>
-          {#if problems.windowDays}
-            <span class="problem" id="follow-up-window-problem">{problems.windowDays}</span>
-          {/if}
-        </label>
-        <label class="setting">
-          <span>Offer a nudge after</span>
-          <span class="days">
-            <input
-              type="number"
-              min="1"
-              max={Math.max(1, draft.followUp.windowDays - 1)}
-              step="1"
-              aria-invalid={problems.nudgeAfterDays !== null}
-              aria-describedby={problems.nudgeAfterDays ? 'follow-up-nudge-problem' : undefined}
-              bind:value={draft.followUp.nudgeAfterDays}
-            />
-            days
-          </span>
-          {#if problems.nudgeAfterDays}
-            <span class="problem" id="follow-up-nudge-problem">{problems.nudgeAfterDays}</span>
-          {/if}
-        </label>
-      </div>
-      <p class="hint">
-        It runs on the decision model, or on the Small model when none is switched on, for each
-        account whose sorting is switched on under Settings → Accounts. It reads the same parts of a
-        message sorting does, and for a nudge your own last message as well. Cold outreach,
-        newsletters and automated mail are left out: a stranger's pitch ends in a question too, but
-        it is not waiting on you.
-      </p>
-
-      {#if followUps && followUpsOn}
-        {#if followUpBlocked}
-          <div class="stored">
-            <span><Icon name="info" size={14} />{followUpBlocked}</span>
-            <button class="link" onclick={() => panels.openSettings('models')}>Open Models</button>
-          </div>
-        {:else}
-          <div class="follow-status">
-            {#if modelLine}<p class="hint">{modelLine}</p>{/if}
-            {#each followUps.accounts as account (account.accountId)}
-              {#if account.blocked}
-                <div class="stored">
-                  <span><Icon name="info" size={14} />{heldBack(account)}</span>
-                  <button class="link" onclick={() => panels.openSettings('accounts')}>
-                    Open Accounts
+        <ol class="categories">
+          {#each draft.categories as category, i (category.id)}
+            <li class="category">
+              <div class="row">
+                <label class="setting grow">
+                  <span>Name</span>
+                  <input bind:value={category.name} placeholder="Receipts" spellcheck="false" />
+                </label>
+                <label class="setting">
+                  <span>Files under</span>
+                  <select
+                    value={category.treatAs}
+                    onchange={(e) => (category.treatAs = e.currentTarget.value as MailCategory)}
+                  >
+                    {#each CATEGORY_TABS as tab (tab.key)}
+                      <option value={tab.key}>{tab.label}</option>
+                    {/each}
+                  </select>
+                </label>
+                <div class="actions">
+                  <button
+                    class="icon-btn"
+                    aria-label="Move {category.name || 'this category'} up"
+                    disabled={i === 0}
+                    onclick={() => move(i, -1)}
+                  >
+                    <Icon name="chevron" size={14} />
+                  </button>
+                  <button
+                    class="icon-btn down"
+                    aria-label="Move {category.name || 'this category'} down"
+                    disabled={i === draft.categories.length - 1}
+                    onclick={() => move(i, 1)}
+                  >
+                    <Icon name="chevron" size={14} />
+                  </button>
+                  <button
+                    class="icon-btn"
+                    aria-label="Remove {category.name || 'this category'}"
+                    disabled={draft.categories.length === 1}
+                    onclick={() => remove(category)}
+                  >
+                    <Icon name="trash" size={14} />
                   </button>
                 </div>
-              {:else}
-                <p class="hint">
-                  <span class="who">{accountName(account.accountId)}</span>:
-                  {followUpAccountLine(account)}
-                </p>
-                {#if account.error}<p class="hint error">{account.error}</p>{/if}
+              </div>
+              <label class="setting">
+                <span>What belongs here</span>
+                <textarea
+                  bind:value={category.description}
+                  rows="2"
+                  placeholder="Orders, receipts and invoices. Not: marketing from the same shops."
+                ></textarea>
+              </label>
+              {#if category.treatAs === 'priority'}
+                <p class="hint">Mail sorted here shows under Priority, ahead of everything else.</p>
               {/if}
-            {/each}
-          </div>
-        {/if}
-      {/if}
-    </section>
+            </li>
+          {/each}
+        </ol>
+        <div class="row-end">
+          <button class="btn" onclick={add}><Icon name="plus" size={14} /> Add a category</button>
+        </div>
+      </section>
 
+      <section class="card" aria-labelledby="sorting-window">
+        <span class="eyebrow" id="sorting-window">Which mail</span>
+        <label class="setting">
+          <span>Sort without asking</span>
+          <select
+            value={draft.windowDays}
+            onchange={(e) => draft && (draft.windowDays = Number(e.currentTarget.value))}
+          >
+            {#each WINDOWS as w (w.days)}
+              <option value={w.days}>{w.label}</option>
+            {/each}
+          </select>
+        </label>
+        <p class="hint">
+          New mail is sorted as it arrives, and anything in your inbox from this far back that has
+          not been sorted yet. Older mail is left alone unless you ask, under Older mail. Each
+          account sorts only while sorting is switched on for it under Settings → AI features.
+        </p>
+      </section>
+    {:else if sub === 'followups'}
+      <section class="card" aria-labelledby="sorting-follow-ups">
+        <span class="eyebrow" id="sorting-follow-ups">Follow-ups</span>
+        <label class="switch">
+          <input type="checkbox" bind:checked={draft.followUp.on} />
+          <span class="switch-text">
+            <span class="switch-label">
+              Show mail that needs your reply, and mail to nudge, at the top of the Inbox
+            </span>
+            <span class="switch-blurb">
+              Somebody waiting on an answer from you, and mail you sent that nobody has answered.
+            </span>
+          </span>
+        </label>
+        <div class="row numbers">
+          <label class="setting">
+            <span>Look back</span>
+            <span class="days">
+              <input
+                type="number"
+                min={FOLLOW_UP_MIN_WINDOW_DAYS}
+                max={FOLLOW_UP_MAX_WINDOW_DAYS}
+                step="1"
+                aria-invalid={problems.windowDays !== null}
+                aria-describedby={problems.windowDays ? 'follow-up-window-problem' : undefined}
+                bind:value={draft.followUp.windowDays}
+              />
+              days
+            </span>
+            {#if problems.windowDays}
+              <span class="problem" id="follow-up-window-problem">{problems.windowDays}</span>
+            {/if}
+          </label>
+          <label class="setting">
+            <span>Offer a nudge after</span>
+            <span class="days">
+              <input
+                type="number"
+                min="1"
+                max={Math.max(1, draft.followUp.windowDays - 1)}
+                step="1"
+                aria-invalid={problems.nudgeAfterDays !== null}
+                aria-describedby={problems.nudgeAfterDays ? 'follow-up-nudge-problem' : undefined}
+                bind:value={draft.followUp.nudgeAfterDays}
+              />
+              days
+            </span>
+            {#if problems.nudgeAfterDays}
+              <span class="problem" id="follow-up-nudge-problem">{problems.nudgeAfterDays}</span>
+            {/if}
+          </label>
+        </div>
+        <p class="hint">
+          It runs on the decision model, or on the Small model when none is switched on, for each
+          account whose sorting is switched on under Settings → AI features. It reads the same parts
+          of a message sorting does, and for a nudge your own last message as well. Cold outreach,
+          newsletters and automated mail are left out: a stranger's pitch ends in a question too,
+          but it is not waiting on you.
+        </p>
+
+        {#if followUps && followUpsOn}
+          {#if followUpBlocked}
+            <div class="stored">
+              <span><Icon name="info" size={14} />{followUpBlocked}</span>
+              <button class="link" onclick={() => panels.openSettings('models')}>Open Models</button
+              >
+            </div>
+          {:else}
+            <div class="follow-status">
+              {#if modelLine}<p class="hint">{modelLine}</p>{/if}
+              {#each followUps.accounts as account (account.accountId)}
+                {#if account.blocked}
+                  <div class="stored">
+                    <span><Icon name="info" size={14} />{heldBack(account)}</span>
+                    <button class="link" onclick={() => panels.openSettings('accounts')}>
+                      Open Accounts
+                    </button>
+                  </div>
+                {:else}
+                  <p class="hint">
+                    <span class="who">{accountName(account.accountId)}</span>:
+                    {followUpAccountLine(account)}
+                  </p>
+                  {#if account.error}<p class="hint error">{account.error}</p>{/if}
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        {/if}
+      </section>
+    {:else}
+      <section class="card" aria-labelledby="sorting-older">
+        <span class="eyebrow" id="sorting-older">Older mail</span>
+        <p class="hint">
+          Sort inbox mail from further back, a few hundred messages a minute, in the background. It
+          uses the saved categories, so save first.
+        </p>
+        <div class="row">
+          <label class="setting grow">
+            <span>How far back</span>
+            <select
+              value={olderDays == null ? '' : String(olderDays)}
+              onchange={(e) =>
+                (olderDays = e.currentTarget.value === '' ? null : Number(e.currentTarget.value))}
+            >
+              {#each OLDER as o (o.label)}
+                <option value={o.days == null ? '' : String(o.days)}>{o.label}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+        <label class="switch">
+          <input type="checkbox" bind:checked={olderAgain} />
+          <span class="switch-text">
+            <span class="switch-label">Sort again what was already sorted</span>
+            <span class="switch-blurb"
+              >For after you change the categories. Mail you filed yourself is still left alone.</span
+            >
+          </span>
+        </label>
+        <div class="row-end">
+          <button
+            class="btn"
+            onclick={() => void sortOlder()}
+            disabled={!sorting.view?.decisionModel}
+          >
+            Sort older mail
+          </button>
+        </div>
+        {#if olderNotice}<p class="hint error">{olderNotice}</p>{/if}
+        {#each sorting.view?.older ?? [] as older (older.accountId)}
+          <div class="stored">
+            <span>
+              <Icon name="refresh" size={14} />
+              {accountName(older.accountId)}: {plural(older.asked, 'message')} sorted so far, back to
+              {older.since ? longDate(older.since) : 'the beginning'}.
+            </span>
+            <button class="link" onclick={() => void stopOlder(older.accountId)}>Stop</button>
+          </div>
+        {/each}
+      </section>
+    {/if}
+  </div>
+
+  <!-- Under the two tabs that are the draft, and not under Older mail. The
+       draft is this component's, so it is one Save for both: switching tabs
+       keeps what was typed on the other. With the follow-up numbers wrong
+       the button says where, since the reason may be on the other tab. -->
+  {#if sub !== 'older'}
     <div class="save">
       {#if notice}<span class="notice">{notice}</span>{/if}
       <button
         class="btn btn-primary"
         onclick={() => void save()}
         disabled={saving || followUpsWrong}
+        title={followUpsWrong ? 'Put the numbers under Follow-ups right first' : undefined}
       >
         {saving ? 'Saving…' : 'Save'}
       </button>
     </div>
-
-    <section class="card" aria-labelledby="sorting-older">
-      <span class="eyebrow" id="sorting-older">Older mail</span>
-      <p class="hint">
-        Sort inbox mail from further back, a few hundred messages a minute, in the background. It
-        uses the saved categories, so save first.
-      </p>
-      <div class="row">
-        <label class="setting grow">
-          <span>How far back</span>
-          <select
-            value={olderDays == null ? '' : String(olderDays)}
-            onchange={(e) =>
-              (olderDays = e.currentTarget.value === '' ? null : Number(e.currentTarget.value))}
-          >
-            {#each OLDER as o (o.label)}
-              <option value={o.days == null ? '' : String(o.days)}>{o.label}</option>
-            {/each}
-          </select>
-        </label>
-      </div>
-      <label class="switch">
-        <input type="checkbox" bind:checked={olderAgain} />
-        <span class="switch-text">
-          <span class="switch-label">Sort again what was already sorted</span>
-          <span class="switch-blurb"
-            >For after you change the categories. Mail you filed yourself is still left alone.</span
-          >
-        </span>
-      </label>
-      <div class="row-end">
-        <button
-          class="btn"
-          onclick={() => void sortOlder()}
-          disabled={!sorting.view?.decisionModel}
-        >
-          Sort older mail
-        </button>
-      </div>
-      {#if olderNotice}<p class="hint error">{olderNotice}</p>{/if}
-      {#each sorting.view?.older ?? [] as older (older.accountId)}
-        <div class="stored">
-          <span>
-            <Icon name="refresh" size={14} />
-            {accountName(older.accountId)}: {plural(older.asked, 'message')} sorted so far, back to
-            {older.since ? longDate(older.since) : 'the beginning'}.
-          </span>
-          <button class="link" onclick={() => void stopOlder(older.accountId)}>Stop</button>
-        </div>
-      {/each}
-    </section>
-  </div>
+  {/if}
 {/if}
 
 <style>

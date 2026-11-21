@@ -148,7 +148,7 @@ async fn sort_older_mail(
             return Err(CommandError::new(
                 codes::FORBIDDEN,
                 "no account allows its mail to be sorted by the models; switch on sorting under \
-                 Settings → Accounts",
+                 Settings → AI features → Mail",
             ));
         }
         let since = args

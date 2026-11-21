@@ -7,11 +7,14 @@
   // Data, beside it, is the other way out -- the same records unsealed, in
   // formats anything can read -- and the two are different on purpose.
   //
-  // The order is the order the decisions get made: where, then when, then
-  // Save; under that, what has happened since, and how to get a copy back.
-  // Where and When are a draft with a Save, the way Models is, because a
-  // half-typed bucket name must not be where tonight's backup goes. What
-  // happened is read live from the vault and never drafted.
+  // Three tabs, in the order the decisions get made: where, then when, then
+  // what has happened since and how to get a copy back. Where and When are a
+  // draft with a Save, the way Models is, because a half-typed bucket name
+  // must not be where tonight's backup goes; the Save is at the foot of both,
+  // and saves what was changed on either, since the draft is this
+  // component's. What happened is read live from the vault and never
+  // drafted, so its tab has no Save -- it used to sit under one, in a column
+  // so tall the Save landed in the middle of the scroll.
   //
   // Restoring is the command line's for now -- see `karmayoga restore` -- so
   // the last section is the exact command for the destination saved here,
@@ -48,6 +51,7 @@
   import type { BackupSettings, Destination, SnapshotInfo } from '../lib/types'
   import Icon from './Icon.svelte'
   import Meter from './Meter.svelte'
+  import SubTabs from './SubTabs.svelte'
 
   // ── The draft ───────────────────────────────────────────────────────
 
@@ -59,6 +63,7 @@
   let saving = $state(false)
   /** "Another S3-compatible service", open when one is already set. */
   let endpointOpen = $state(false)
+  let sub = $state<'where' | 'when' | 'copies'>('where')
   /**
    * What each kind of destination was last filled in as, so clicking from
    * S3 to a folder and back finds the bucket where it was left. Not drawn,
@@ -323,486 +328,504 @@
   </p>
 {:else}
   {@const d = draft.destination}
+  <SubTabs
+    tabs={[
+      { id: 'where', label: 'Where' },
+      { id: 'when', label: 'When' },
+      { id: 'copies', label: 'Copies' },
+    ]}
+    bind:value={sub}
+    label="Backup"
+  />
+
   <div class="panes">
-    <p class="hint lead">
-      Sealed, date-stamped copies of this vault and of this computer’s settings, made on a schedule
-      to a folder or a bucket. Each copy is complete on its own, and copies share whatever did not
-      change between them, so keeping a week of them costs little more than keeping one. They open
-      with this vault’s password, and with nothing else.
-    </p>
-
-    {#if !view.encrypted}
-      <p class="warning" role="note">
-        This vault has no password, so its backups are no more private than it is: anybody who can
-        read the folder or the bucket they go to can read everything in them.
+    {#if sub === 'where'}
+      <p class="hint lead">
+        Sealed, date-stamped copies of this vault and of this computer’s settings, made on a
+        schedule to a folder or a bucket. Each copy is complete on its own, and copies share
+        whatever did not change between them, so keeping a week of them costs little more than
+        keeping one. They open with this vault’s password, and with nothing else.
       </p>
-    {/if}
 
-    <section aria-labelledby="backup-where">
-      <span class="eyebrow" id="backup-where">Where</span>
-      <div class="segmented" role="group" aria-labelledby="backup-where">
-        {#each DESTINATION_KINDS as k (k.value)}
-          <button
-            class="seg"
-            class:on={kind === k.value}
-            aria-pressed={kind === k.value}
-            onclick={() => pickKind(k.value)}
-          >
-            {k.label}
-          </button>
-        {/each}
-      </div>
-
-      {#if !d}
-        <p class="hint">
-          Nowhere yet. A folder can be another disk, a network share or a folder that syncs; a
-          bucket can be at Amazon, at Google, or at any service that speaks S3.
-        </p>
-      {:else if d.type === 'folder'}
-        <div class="setting">
-          <label class="caption" for="backup-folder">Folder</label>
-          <div class="with-button">
-            <input
-              id="backup-folder"
-              bind:value={d.path}
-              placeholder="/media/you/Backup Disk/Karma Yoga"
-              spellcheck="false"
-              autocomplete="off"
-            />
-            {#if canPick}
-              <button
-                class="btn btn-outline"
-                disabled={picking}
-                onclick={() => void chooseFolder()}
-              >
-                Choose…
-              </button>
-            {/if}
-          </div>
-        </div>
-        {#if pickProblem}<p class="problem">{pickProblem}</p>{/if}
-        <p class="hint">
-          Another disk, a network share, or a folder that syncs somewhere else. A disk that is
-          sometimes unplugged is fine: nothing is written while it is away, backups try again every
-          half hour until it is back, and you are told if it stays away longer than the schedule
-          allows.
-        </p>
-      {:else if d.type === 's3'}
-        <div class="pair">
-          <label class="setting">
-            <span class="caption">Bucket</span>
-            <input
-              bind:value={d.bucket}
-              placeholder="my-backups"
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-          <label class="setting">
-            <span class="caption">Folder inside the bucket</span>
-            <input
-              bind:value={d.prefix}
-              placeholder="karmayoga"
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-        </div>
-        <label class="setting">
-          <span class="caption">Region</span>
-          <input
-            value={d.region ?? ''}
-            oninput={(e) => (d.region = e.currentTarget.value)}
-            placeholder="From your AWS profile"
-            spellcheck="false"
-            autocomplete="off"
-          />
-        </label>
-
-        <details class="more" bind:open={endpointOpen}>
-          <summary>Another S3-compatible service</summary>
-          <div class="more-body">
-            <label class="setting">
-              <span class="caption">Endpoint</span>
-              <input
-                value={d.endpoint ?? ''}
-                oninput={(e) => (d.endpoint = e.currentTarget.value)}
-                placeholder="https://<account>.r2.cloudflarestorage.com"
-                spellcheck="false"
-                autocomplete="off"
-              />
-            </label>
-            <p class="hint">
-              The service’s address: Cloudflare R2, Backblaze B2, MinIO, Wasabi, or Google Cloud
-              Storage with HMAC keys. Leave it empty for Amazon. It has to be https:// unless the
-              service is on this computer.
-            </p>
-          </div>
-        </details>
-
-        <!-- `group` rather than `radiogroup`: the profile and the key fields
-             sit between the two choices they belong to. -->
-        <div class="setting" role="group" aria-labelledby="backup-s3-credentials">
-          <span class="caption" id="backup-s3-credentials">Signed in with</span>
-          <label class="choice">
-            <input
-              type="radio"
-              name="backup-s3-credentials"
-              checked={d.credentials === 'thisComputer'}
-              onchange={() => (d.credentials = 'thisComputer')}
-            />
-            <span>
-              <b>From this computer</b>
-              <small>
-                The <code>AWS_*</code> variables, a profile in <code>~/.aws</code>, or whatever the
-                AWS CLI can export for it — SSO and assumed roles included. Nothing is stored in the
-                vault.
-              </small>
-            </span>
-          </label>
-          {#if d.credentials === 'thisComputer'}
-            <label class="setting nested">
-              <span class="caption">Profile</span>
-              <input
-                value={d.profile ?? ''}
-                oninput={(e) => (d.profile = e.currentTarget.value)}
-                placeholder="default"
-                spellcheck="false"
-                autocomplete="off"
-              />
-            </label>
-          {/if}
-          <label class="choice">
-            <input
-              type="radio"
-              name="backup-s3-credentials"
-              checked={d.credentials === 'stored'}
-              onchange={() => (d.credentials = 'stored')}
-            />
-            <span>
-              <b>An access key</b>
-              <small>
-                Pasted here and sealed in the vault, for a service whose keys are not kept in
-                <code>~/.aws</code>. It cannot be shown again, only replaced.
-              </small>
-            </span>
-          </label>
-          {#if d.credentials === 'stored'}
-            <div class="nested">
-              {#if view.hasKeys}
-                <div class="stored">
-                  <span><Icon name="lock" size={14} /> An access key is stored.</span>
-                  <button class="link" onclick={() => void removeKeys()}>Remove</button>
-                </div>
-              {/if}
-              <div class="pair">
-                <label class="setting">
-                  <span class="caption">{view.hasKeys ? 'New access key ID' : 'Access key ID'}</span
-                  >
-                  <input
-                    bind:value={accessKeyId}
-                    placeholder="AKIA…"
-                    spellcheck="false"
-                    autocomplete="off"
-                  />
-                </label>
-                <label class="setting">
-                  <span class="caption">Secret access key</span>
-                  <input
-                    type="password"
-                    bind:value={secretAccessKey}
-                    spellcheck="false"
-                    autocomplete="off"
-                  />
-                </label>
-              </div>
-            </div>
-          {/if}
-        </div>
-      {:else}
-        <div class="pair">
-          <label class="setting">
-            <span class="caption">Bucket</span>
-            <input
-              bind:value={d.bucket}
-              placeholder="my-backups"
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-          <label class="setting">
-            <span class="caption">Folder inside the bucket</span>
-            <input
-              bind:value={d.prefix}
-              placeholder="karmayoga"
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-        </div>
-        <label class="setting">
-          <span class="caption">Key file</span>
-          <input
-            value={d.credentialsFile ?? ''}
-            oninput={(e) => (d.credentialsFile = e.currentTarget.value)}
-            placeholder="Optional"
-            spellcheck="false"
-            autocomplete="off"
-          />
-        </label>
-        <p class="hint">
-          Signs in as this computer’s Google account: run
-          <code>gcloud auth application-default login</code> once. Name a key file — a service account’s
-          JSON key — to sign in with that instead.
+      {#if !view.encrypted}
+        <p class="warning" role="note">
+          This vault has no password, so its backups are no more private than it is: anybody who can
+          read the folder or the bucket they go to can read everything in them.
         </p>
       {/if}
 
-      {#if d}
-        <div class="test">
-          <button class="btn btn-outline" disabled={checking} onclick={() => void test()}>
-            {checking ? 'Trying…' : 'Test'}
-          </button>
-          {#if shownCheck}
-            <p class="check" class:ok={shownCheck.ok} class:bad={!shownCheck.ok} role="status">
-              {sentence(shownCheck.message)}
-            </p>
-          {:else}
-            <p class="hint">
-              Writes a small file there, reads it back and deletes it. Nothing is saved.
-            </p>
-          {/if}
+      <section aria-labelledby="backup-where">
+        <span class="eyebrow" id="backup-where">Where</span>
+        <div class="segmented" role="group" aria-labelledby="backup-where">
+          {#each DESTINATION_KINDS as k (k.value)}
+            <button
+              class="seg"
+              class:on={kind === k.value}
+              aria-pressed={kind === k.value}
+              onclick={() => pickKind(k.value)}
+            >
+              {k.label}
+            </button>
+          {/each}
         </div>
-        {#if keyApplies && keyTyped}
+
+        {#if !d}
           <p class="hint">
-            A test signs with the key already stored. Save to try the one typed above.
+            Nowhere yet. A folder can be another disk, a network share or a folder that syncs; a
+            bucket can be at Amazon, at Google, or at any service that speaks S3.
+          </p>
+        {:else if d.type === 'folder'}
+          <div class="setting">
+            <label class="caption" for="backup-folder">Folder</label>
+            <div class="with-button">
+              <input
+                id="backup-folder"
+                bind:value={d.path}
+                placeholder="/media/you/Backup Disk/Karma Yoga"
+                spellcheck="false"
+                autocomplete="off"
+              />
+              {#if canPick}
+                <button
+                  class="btn btn-outline"
+                  disabled={picking}
+                  onclick={() => void chooseFolder()}
+                >
+                  Choose…
+                </button>
+              {/if}
+            </div>
+          </div>
+          {#if pickProblem}<p class="problem">{pickProblem}</p>{/if}
+          <p class="hint">
+            Another disk, a network share, or a folder that syncs somewhere else. A disk that is
+            sometimes unplugged is fine: nothing is written while it is away, backups try again
+            every half hour until it is back, and you are told if it stays away longer than the
+            schedule allows.
+          </p>
+        {:else if d.type === 's3'}
+          <div class="pair">
+            <label class="setting">
+              <span class="caption">Bucket</span>
+              <input
+                bind:value={d.bucket}
+                placeholder="my-backups"
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </label>
+            <label class="setting">
+              <span class="caption">Folder inside the bucket</span>
+              <input
+                bind:value={d.prefix}
+                placeholder="karmayoga"
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </label>
+          </div>
+          <label class="setting">
+            <span class="caption">Region</span>
+            <input
+              value={d.region ?? ''}
+              oninput={(e) => (d.region = e.currentTarget.value)}
+              placeholder="From your AWS profile"
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+
+          <details class="more" bind:open={endpointOpen}>
+            <summary>Another S3-compatible service</summary>
+            <div class="more-body">
+              <label class="setting">
+                <span class="caption">Endpoint</span>
+                <input
+                  value={d.endpoint ?? ''}
+                  oninput={(e) => (d.endpoint = e.currentTarget.value)}
+                  placeholder="https://<account>.r2.cloudflarestorage.com"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+              </label>
+              <p class="hint">
+                The service’s address: Cloudflare R2, Backblaze B2, MinIO, Wasabi, or Google Cloud
+                Storage with HMAC keys. Leave it empty for Amazon. It has to be https:// unless the
+                service is on this computer.
+              </p>
+            </div>
+          </details>
+
+          <!-- `group` rather than `radiogroup`: the profile and the key fields
+             sit between the two choices they belong to. -->
+          <div class="setting" role="group" aria-labelledby="backup-s3-credentials">
+            <span class="caption" id="backup-s3-credentials">Signed in with</span>
+            <label class="choice">
+              <input
+                type="radio"
+                name="backup-s3-credentials"
+                checked={d.credentials === 'thisComputer'}
+                onchange={() => (d.credentials = 'thisComputer')}
+              />
+              <span>
+                <b>From this computer</b>
+                <small>
+                  The <code>AWS_*</code> variables, a profile in <code>~/.aws</code>, or whatever
+                  the AWS CLI can export for it — SSO and assumed roles included. Nothing is stored
+                  in the vault.
+                </small>
+              </span>
+            </label>
+            {#if d.credentials === 'thisComputer'}
+              <label class="setting nested">
+                <span class="caption">Profile</span>
+                <input
+                  value={d.profile ?? ''}
+                  oninput={(e) => (d.profile = e.currentTarget.value)}
+                  placeholder="default"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+              </label>
+            {/if}
+            <label class="choice">
+              <input
+                type="radio"
+                name="backup-s3-credentials"
+                checked={d.credentials === 'stored'}
+                onchange={() => (d.credentials = 'stored')}
+              />
+              <span>
+                <b>An access key</b>
+                <small>
+                  Pasted here and sealed in the vault, for a service whose keys are not kept in
+                  <code>~/.aws</code>. It cannot be shown again, only replaced.
+                </small>
+              </span>
+            </label>
+            {#if d.credentials === 'stored'}
+              <div class="nested">
+                {#if view.hasKeys}
+                  <div class="stored">
+                    <span><Icon name="lock" size={14} /> An access key is stored.</span>
+                    <button class="link" onclick={() => void removeKeys()}>Remove</button>
+                  </div>
+                {/if}
+                <div class="pair">
+                  <label class="setting">
+                    <span class="caption"
+                      >{view.hasKeys ? 'New access key ID' : 'Access key ID'}</span
+                    >
+                    <input
+                      bind:value={accessKeyId}
+                      placeholder="AKIA…"
+                      spellcheck="false"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label class="setting">
+                    <span class="caption">Secret access key</span>
+                    <input
+                      type="password"
+                      bind:value={secretAccessKey}
+                      spellcheck="false"
+                      autocomplete="off"
+                    />
+                  </label>
+                </div>
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <div class="pair">
+            <label class="setting">
+              <span class="caption">Bucket</span>
+              <input
+                bind:value={d.bucket}
+                placeholder="my-backups"
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </label>
+            <label class="setting">
+              <span class="caption">Folder inside the bucket</span>
+              <input
+                bind:value={d.prefix}
+                placeholder="karmayoga"
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </label>
+          </div>
+          <label class="setting">
+            <span class="caption">Key file</span>
+            <input
+              value={d.credentialsFile ?? ''}
+              oninput={(e) => (d.credentialsFile = e.currentTarget.value)}
+              placeholder="Optional"
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          <p class="hint">
+            Signs in as this computer’s Google account: run
+            <code>gcloud auth application-default login</code> once. Name a key file — a service account’s
+            JSON key — to sign in with that instead.
           </p>
         {/if}
-      {/if}
-    </section>
 
-    <section aria-labelledby="backup-when">
-      <span class="eyebrow" id="backup-when">When</span>
-      <label class="toggle" class:disabled={!d}>
-        <input type="checkbox" bind:checked={draft.enabled} disabled={!d} />
-        <span>
-          <b>Back up automatically</b>
-          <small>
-            {#if !d}
-              Choose where copies go first.
+        {#if d}
+          <div class="test">
+            <button class="btn btn-outline" disabled={checking} onclick={() => void test()}>
+              {checking ? 'Trying…' : 'Test'}
+            </button>
+            {#if shownCheck}
+              <p class="check" class:ok={shownCheck.ok} class:bad={!shownCheck.ok} role="status">
+                {sentence(shownCheck.message)}
+              </p>
             {:else}
-              While the vault is open here. One that comes due while this computer is asleep or the
-              vault is locked is made as soon as it can be.
+              <p class="hint">
+                Writes a small file there, reads it back and deletes it. Nothing is saved.
+              </p>
             {/if}
-          </small>
-        </span>
-      </label>
-
-      <div class="pair">
-        <label class="setting">
-          <span class="caption">How often</span>
-          <select bind:value={draft.everyHours}>
-            {#each FREQUENCY_CHOICES as f (f.value)}
-              <option value={f.value}>{f.label}</option>
-            {/each}
-          </select>
-        </label>
-        <div class="setting">
-          <label class="caption" for="backup-keep">How many</label>
-          <span class="inline">
-            Keep the last
-            <input
-              id="backup-keep"
-              class="count"
-              type="number"
-              min="1"
-              max={MAX_KEEP}
-              step="1"
-              bind:value={draft.keep}
-            />
-            {pluralWord(draft.keep, 'copy', 'copies')}
+          </div>
+          {#if keyApplies && keyTyped}
+            <p class="hint">
+              A test signs with the key already stored. Save to try the one typed above.
+            </p>
+          {/if}
+        {/if}
+      </section>
+    {:else if sub === 'when'}
+      <section aria-labelledby="backup-when">
+        <span class="eyebrow" id="backup-when">When</span>
+        <label class="toggle" class:disabled={!d}>
+          <input type="checkbox" bind:checked={draft.enabled} disabled={!d} />
+          <span>
+            <b>Back up automatically</b>
+            <small>
+              {#if !d}
+                Choose where copies go first.
+              {:else}
+                While the vault is open here. One that comes due while this computer is asleep or
+                the vault is locked is made as soon as it can be.
+              {/if}
+            </small>
           </span>
+        </label>
+
+        <div class="pair">
+          <label class="setting">
+            <span class="caption">How often</span>
+            <select bind:value={draft.everyHours}>
+              {#each FREQUENCY_CHOICES as f (f.value)}
+                <option value={f.value}>{f.label}</option>
+              {/each}
+            </select>
+          </label>
+          <div class="setting">
+            <label class="caption" for="backup-keep">How many</label>
+            <span class="inline">
+              Keep the last
+              <input
+                id="backup-keep"
+                class="count"
+                type="number"
+                min="1"
+                max={MAX_KEEP}
+                step="1"
+                bind:value={draft.keep}
+              />
+              {pluralWord(draft.keep, 'copy', 'copies')}
+            </span>
+          </div>
         </div>
-      </div>
-      <p class="hint">
-        When a new copy is made, the oldest beyond that is let go of — and only what no other copy
-        shares goes with it.
-      </p>
+        <p class="hint">
+          When a new copy is made, the oldest beyond that is let go of — and only what no other copy
+          shares goes with it.
+        </p>
 
-      <label class="toggle">
-        <input type="checkbox" bind:checked={draft.includeConfig} />
-        <span>
-          <b>Include this computer’s settings</b>
-          <small>
-            Everything in <code>{view.configDir}</code>: the devices you have paired, the server’s
-            certificate, the MCP token. Sealed like everything else. Downloaded models and the mail
-            search index are never copied — they are downloaded or rebuilt instead.
-          </small>
-        </span>
-      </label>
-    </section>
+        <label class="toggle">
+          <input type="checkbox" bind:checked={draft.includeConfig} />
+          <span>
+            <b>Include this computer’s settings</b>
+            <small>
+              Everything in <code>{view.configDir}</code>: the devices you have paired, the server’s
+              certificate, the MCP token. Sealed like everything else. Downloaded models and the
+              mail search index are never copied — they are downloaded or rebuilt instead.
+            </small>
+          </span>
+        </label>
+      </section>
+    {:else}
+      <section aria-labelledby="backup-status">
+        <span class="eyebrow" id="backup-status">Last backup</span>
+        {#if !savedDestination || !status}
+          <p class="hint">
+            None yet. Choose where copies go under Where and save, and Back up now makes the first
+            one.
+          </p>
+          <div class="row">
+            <button class="btn btn-outline" disabled>Back up now</button>
+          </div>
+        {:else}
+          <div class="facts">
+            <div>
+              <span>To</span>
+              <b class="mono">{status.destination ?? destinationUrl(savedDestination)}</b>
+            </div>
+            <div>
+              <span>Made</span>
+              {#if status.lastSuccess}
+                <b title={whenLabel(status.lastSuccess)}>{relativeTime(status.lastSuccess)}</b>
+              {:else}
+                <b>Not yet</b>
+              {/if}
+            </div>
+            {#if report}
+              <div>
+                <span>Sent</span>
+                <b>
+                  {reportSummary(report)}
+                  <small>{reportDetail(report)}</small>
+                </b>
+              </div>
+            {/if}
+            <div>
+              <span>Next</span>
+              {#if running}
+                <b>Now</b>
+              {:else if view.nextDue}
+                <b title={whenLabel(view.nextDue)}>{nextDueLabel(view.nextDue)}</b>
+              {:else}
+                <b>When you ask — automatic backups are off</b>
+              {/if}
+            </div>
+          </div>
 
+          {#if report && report.skipped.length > 0}
+            <p class="hint">
+              {plural(report.skipped.length, 'file')} went away while that copy was being made — an attachment
+              tidied up, mail repacked — and {report.skipped.length === 1 ? 'is' : 'are'} not in it.
+            </p>
+          {/if}
+
+          {#if status.lastError}
+            <div class="error failing" role="alert">
+              <b>
+                {status.failingSince
+                  ? `Failing since ${whenLabel(status.failingSince)}`
+                  : 'The last backup failed'}
+              </b>
+              <span>{sentence(status.lastError)}</span>
+            </div>
+          {/if}
+
+          {#if running}
+            <div class="model-progress">
+              <Meter
+                label={running.manual
+                  ? phaseLabel(running.phase)
+                  : `${phaseLabel(running.phase)} · on schedule`}
+                value={progressValue(running)}
+                note={progressNote(running)}
+              />
+              <button class="btn" onclick={() => void stop()}>Stop</button>
+            </div>
+            <p class="hint">
+              Stopping keeps what was sent, and the next backup starts from there. A scheduled one
+              waits until its next turn rather than starting again.
+            </p>
+          {:else}
+            <div class="row">
+              <button class="btn btn-outline" disabled={starting} onclick={() => void runNow()}>
+                {starting ? 'Starting…' : 'Back up now'}
+              </button>
+              {#if dirty}
+                <span class="hint"
+                  >To where it was last saved, not the changes under Where and When.</span
+                >
+              {/if}
+            </div>
+          {/if}
+        {/if}
+        {#if statusNotice}<p class="problem">{statusNotice}</p>{/if}
+      </section>
+
+      {#if savedDestination}
+        <section aria-labelledby="backup-copies">
+          <span class="eyebrow" id="backup-copies">Copies kept</span>
+          {#if !shownList?.copies}
+            <div class="row">
+              <button class="btn btn-outline" disabled={listing} onclick={() => void loadCopies()}>
+                {listing ? 'Looking…' : 'Show the copies kept'}
+              </button>
+            </div>
+          {:else if shownList.copies.length === 0}
+            <p class="hint">None yet.</p>
+          {:else}
+            <ul class="copies" aria-label="Copies kept, newest first">
+              {#each shownList.copies as c, i (c.name)}
+                <li>
+                  <label class="copy">
+                    <input
+                      type="radio"
+                      name="backup-copy"
+                      checked={i === 0 ? chosen === null : chosen === c.name}
+                      onchange={() => (chosen = i === 0 ? null : c.name)}
+                    />
+                    <span class="copy-when">{whenLabel(c.created)}</span>
+                    {#if i === 0}<span class="newest">Newest</span>{/if}
+                    <code class="copy-name">{c.name}</code>
+                  </label>
+                </li>
+              {/each}
+            </ul>
+            <div>
+              <button class="link" disabled={listing} onclick={() => void loadCopies()}>
+                {listing ? 'Looking…' : 'Look again'}
+              </button>
+            </div>
+          {/if}
+          {#if shownList?.error}<p class="problem">{sentence(shownList.error)}</p>{/if}
+
+          <p class="hint">
+            Restoring is done on the command line for now. This lays {chosenCopy
+              ? 'the copy chosen above'
+              : 'the newest copy'} down as a vault in a new folder, and that folder opens in Karma Yoga
+            with this vault’s password:
+          </p>
+          <div class="command">
+            <code>{command}</code>
+            <button class="btn btn-sm" onclick={() => void copyCommand()}>
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <p class="hint">
+            The folder has to be empty or not there yet; change <code>{RESTORE_INTO}</code> to
+            wherever it should go. Add <code>--snapshot</code> and a copy’s name for an older one —
+            choosing one above does that — and <code>--config</code> to bring this computer’s settings
+            back too, never over a file that is already there.
+          </p>
+          {#if usesStoredKey(savedDestination)}
+            <p class="hint">
+              The access key is kept in the vault, and the vault is what is being restored: on that
+              computer, set <code>AWS_ACCESS_KEY_ID</code> and <code>AWS_SECRET_ACCESS_KEY</code> first.
+            </p>
+          {/if}
+        </section>
+      {/if}
+    {/if}
+  </div>
+
+  {#if sub !== 'copies'}
     <div class="save">
       {#if notice}<span class="notice" role="status">{notice}</span>{/if}
       <button class="btn btn-primary" onclick={() => void save()} disabled={saving || !dirty}>
         {saving ? 'Saving…' : 'Save'}
       </button>
     </div>
-
-    <section aria-labelledby="backup-status">
-      <span class="eyebrow" id="backup-status">Last backup</span>
-      {#if !savedDestination || !status}
-        <p class="hint">
-          None yet. Choose where copies go and save, and Back up now makes the first one.
-        </p>
-        <div class="row">
-          <button class="btn btn-outline" disabled>Back up now</button>
-        </div>
-      {:else}
-        <div class="facts">
-          <div>
-            <span>To</span>
-            <b class="mono">{status.destination ?? destinationUrl(savedDestination)}</b>
-          </div>
-          <div>
-            <span>Made</span>
-            {#if status.lastSuccess}
-              <b title={whenLabel(status.lastSuccess)}>{relativeTime(status.lastSuccess)}</b>
-            {:else}
-              <b>Not yet</b>
-            {/if}
-          </div>
-          {#if report}
-            <div>
-              <span>Sent</span>
-              <b>
-                {reportSummary(report)}
-                <small>{reportDetail(report)}</small>
-              </b>
-            </div>
-          {/if}
-          <div>
-            <span>Next</span>
-            {#if running}
-              <b>Now</b>
-            {:else if view.nextDue}
-              <b title={whenLabel(view.nextDue)}>{nextDueLabel(view.nextDue)}</b>
-            {:else}
-              <b>When you ask — automatic backups are off</b>
-            {/if}
-          </div>
-        </div>
-
-        {#if report && report.skipped.length > 0}
-          <p class="hint">
-            {plural(report.skipped.length, 'file')} went away while that copy was being made — an attachment
-            tidied up, mail repacked — and {report.skipped.length === 1 ? 'is' : 'are'} not in it.
-          </p>
-        {/if}
-
-        {#if status.lastError}
-          <div class="error failing" role="alert">
-            <b>
-              {status.failingSince
-                ? `Failing since ${whenLabel(status.failingSince)}`
-                : 'The last backup failed'}
-            </b>
-            <span>{sentence(status.lastError)}</span>
-          </div>
-        {/if}
-
-        {#if running}
-          <div class="model-progress">
-            <Meter
-              label={running.manual
-                ? phaseLabel(running.phase)
-                : `${phaseLabel(running.phase)} · on schedule`}
-              value={progressValue(running)}
-              note={progressNote(running)}
-            />
-            <button class="btn" onclick={() => void stop()}>Stop</button>
-          </div>
-          <p class="hint">
-            Stopping keeps what was sent, and the next backup starts from there. A scheduled one
-            waits until its next turn rather than starting again.
-          </p>
-        {:else}
-          <div class="row">
-            <button class="btn btn-outline" disabled={starting} onclick={() => void runNow()}>
-              {starting ? 'Starting…' : 'Back up now'}
-            </button>
-            {#if dirty}
-              <span class="hint">To where it was last saved, not the changes above.</span>
-            {/if}
-          </div>
-        {/if}
-      {/if}
-      {#if statusNotice}<p class="problem">{statusNotice}</p>{/if}
-    </section>
-
-    {#if savedDestination}
-      <section aria-labelledby="backup-copies">
-        <span class="eyebrow" id="backup-copies">Copies kept</span>
-        {#if !shownList?.copies}
-          <div class="row">
-            <button class="btn btn-outline" disabled={listing} onclick={() => void loadCopies()}>
-              {listing ? 'Looking…' : 'Show the copies kept'}
-            </button>
-          </div>
-        {:else if shownList.copies.length === 0}
-          <p class="hint">None yet.</p>
-        {:else}
-          <ul class="copies" aria-label="Copies kept, newest first">
-            {#each shownList.copies as c, i (c.name)}
-              <li>
-                <label class="copy">
-                  <input
-                    type="radio"
-                    name="backup-copy"
-                    checked={i === 0 ? chosen === null : chosen === c.name}
-                    onchange={() => (chosen = i === 0 ? null : c.name)}
-                  />
-                  <span class="copy-when">{whenLabel(c.created)}</span>
-                  {#if i === 0}<span class="newest">Newest</span>{/if}
-                  <code class="copy-name">{c.name}</code>
-                </label>
-              </li>
-            {/each}
-          </ul>
-          <div>
-            <button class="link" disabled={listing} onclick={() => void loadCopies()}>
-              {listing ? 'Looking…' : 'Look again'}
-            </button>
-          </div>
-        {/if}
-        {#if shownList?.error}<p class="problem">{sentence(shownList.error)}</p>{/if}
-
-        <p class="hint">
-          Restoring is done on the command line for now. This lays {chosenCopy
-            ? 'the copy chosen above'
-            : 'the newest copy'} down as a vault in a new folder, and that folder opens in Karma Yoga
-          with this vault’s password:
-        </p>
-        <div class="command">
-          <code>{command}</code>
-          <button class="btn btn-sm" onclick={() => void copyCommand()}>
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-        </div>
-        <p class="hint">
-          The folder has to be empty or not there yet; change <code>{RESTORE_INTO}</code> to
-          wherever it should go. Add <code>--snapshot</code> and a copy’s name for an older one —
-          choosing one above does that — and <code>--config</code> to bring this computer’s settings back
-          too, never over a file that is already there.
-        </p>
-        {#if usesStoredKey(savedDestination)}
-          <p class="hint">
-            The access key is kept in the vault, and the vault is what is being restored: on that
-            computer, set <code>AWS_ACCESS_KEY_ID</code> and <code>AWS_SECRET_ACCESS_KEY</code> first.
-          </p>
-        {/if}
-      </section>
-    {/if}
-  </div>
+  {/if}
 {/if}
 
 <style>
