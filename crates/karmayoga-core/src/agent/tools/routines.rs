@@ -6,6 +6,7 @@ use super::{
     Args, Built, Tool, ToolContext, delete_built, describe_by_id, done, empty_schema, flag,
     limit_arg, list, load_by_id, number, one_of, run_delete, schema, text,
 };
+use crate::brief::{BriefKind, BriefSection};
 use crate::error::{Error, Result};
 use crate::id::RoutineId;
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
@@ -138,6 +139,52 @@ pub(super) static TOOLS: &[Tool] = &[
          what you said at the end of it. Use this to answer \"what did you do this \
          morning\".",
         run_list_runs
+    ),
+    tool!(
+        "set_brief",
+        Write,
+        Routines,
+        schema(
+            vec![
+                (
+                    "kind",
+                    one_of(
+                        "Which brief: morning (the day ahead), evening (the day's close and \
+                         tomorrow) or weekly (Sunday mornings: today and the week ahead).",
+                        &["morning", "evening", "weekly"]
+                    )
+                ),
+                ("on", flag("True to switch it on, false to switch it off.")),
+            ],
+            &["kind", "on"]
+        ),
+        "Switch one of the person's daily briefs on or off. A brief is set up by the app, \
+         not written as a routine: use this rather than create_routine when they ask for a \
+         morning, evening or weekly brief. Its time, where it is sent and its routine id come \
+         back; change the time or delivery with update_routine, and what it covers in \
+         Settings \u{2192} Briefs.",
+        run_set_brief
+    ),
+    tool!(
+        "get_brief",
+        Read,
+        Routines,
+        schema(
+            vec![(
+                "kind",
+                one_of(
+                    "Which brief: the morning one, the evening one, or the weekly one \
+                     (Sundays: today and the week ahead). Omit for the newest of any.",
+                    &["morning", "evening", "weekly"]
+                )
+            )],
+            &[]
+        ),
+        "The person's latest daily brief, as written: the headline and each section, with \
+         the day it was made. Use it to answer \"what's on my brief\" or a question about \
+         something in it. If it is from an earlier day, say so. To have it read out in a \
+         spoken conversation, use read_brief instead.",
+        run_get_brief
     ),
 ];
 
@@ -547,11 +594,20 @@ fn build_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built>
 /// A dream cannot be deleted by hand, in either mode: it is set up by the
 /// application when dreaming is switched on, and the way to remove it is to
 /// switch dreaming off, not to delete one of the three routines it made.
+///
+/// A brief likewise: it is switched on and off in Settings, under Briefs.
 fn refuse_delete_if_dream(routine: &Routine) -> Result<()> {
     if routine.kind.is_dream() {
         return Err(Error::Invalid(
             "a dream is set up by the application when dreaming is switched on and cannot be \
              deleted on its own; turn dreaming off in Settings to remove it."
+                .into(),
+        ));
+    }
+    if routine.kind.brief().is_some() {
+        return Err(Error::Invalid(
+            "a brief is set up by the application and cannot be deleted; switch it off in \
+             Settings \u{2192} Briefs instead."
                 .into(),
         ));
     }
@@ -612,6 +668,82 @@ fn run_run_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         "id": run.id.to_string(),
         "note": "it will start within a minute; you will not see the result in this reply",
     }))
+}
+
+fn run_set_brief(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let kind = args
+        .opt_str("kind")
+        .and_then(BriefKind::parse)
+        .ok_or_else(|| Error::Invalid("set_brief: kind is morning, evening or weekly.".into()))?;
+    let on = args.opt_bool("on").ok_or_else(|| Error::Invalid("set_brief: say on.".into()))?;
+    let routine = ctx.vault.set_brief(kind, on)?;
+    let mut out = done(
+        if on { "switched on" } else { "switched off" },
+        "routine",
+        &routine.name,
+        routine.id.to_string(),
+    )?;
+    if let Some(map) = out.as_object_mut() {
+        map.insert("when".into(), json!(routine.trigger.describe()));
+        if kind == BriefKind::Weekly && on {
+            map.insert(
+                "note".into(),
+                json!("on its day it takes the morning brief's place, so there is one brief"),
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// The newest brief, or the newest of one kind. Withheld from a caller kept
+/// from any private domain, as a run's own words are in `list_runs`: a brief
+/// quotes mail, meetings and targets.
+fn run_get_brief(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    if !ctx.withheld.is_empty() {
+        return Err(Error::Invalid(
+            "get_brief: the brief is not available to background work.".into(),
+        ));
+    }
+    let kind = match args.opt_str("kind") {
+        Some(k) => Some(BriefKind::parse(k).ok_or_else(|| {
+            Error::Invalid("get_brief: kind is \"morning\", \"evening\" or \"weekly\".".into())
+        })?),
+        None => None,
+    };
+    let Some(run) = ctx.vault.briefs(kind, 1)?.into_iter().next() else {
+        let which = kind.map(|k| k.name().to_lowercase()).unwrap_or_else(|| "brief".into());
+        return Err(Error::Invalid(format!(
+            "get_brief: there is no {which} yet. Briefs are switched on in Settings \u{2192} \
+             Briefs; one that is on can be made now with run_routine."
+        )));
+    };
+    let mut brief = run.brief.clone().expect("briefs() keeps only runs with one");
+    // Its mail section names who wrote and about what, so it reaches no
+    // caller that could not read that mail itself -- a model the person has
+    // not shared their mail with, or an MCP client without mail.
+    let may_read_mail = super::mail::offered_to(
+        ctx.vault,
+        "read_thread",
+        ctx.caller.as_ref(),
+        ctx.assistant_provider.as_deref(),
+    );
+    let mut note = None;
+    if !may_read_mail && brief.parts.iter().any(|p| p.section == Some(BriefSection::Mail)) {
+        brief.parts.retain(|p| p.section != Some(BriefSection::Mail));
+        note = Some("Its mail section is left out: mail is not shared with you.");
+    }
+    let mut out = json!({
+        "kind": brief.kind.as_str(),
+        "day": brief.day.to_string(),
+        "made_at": run.finished_at.unwrap_or(run.started_at).to_string(),
+        "today": brief.day == ctx.today,
+        "headline": brief.headline,
+        "brief": brief.markdown(),
+    });
+    if let (Some(note), Some(map)) = (note, out.as_object_mut()) {
+        map.insert("note".into(), json!(note));
+    }
+    Ok(out)
 }
 
 fn run_list_runs(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {

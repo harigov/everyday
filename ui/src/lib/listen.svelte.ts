@@ -38,6 +38,7 @@ function savedSpeed(): number {
 /** Whether two sources are the same thing to read. */
 function sameSource(a: ListenSource, b: ListenSource): boolean {
   if (a.type === 'mailThread') return b.type === 'mailThread' && a.threadId === b.threadId
+  if (a.type === 'brief') return b.type === 'brief' && a.runId === b.runId
   return b.type === 'story' && a.storyId === b.storyId
 }
 

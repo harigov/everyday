@@ -1573,6 +1573,30 @@
       "title": "Forget"
     },
     {
+      "domain": "routines",
+      "effect": "read",
+      "name": "get_brief",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "Which brief: the morning one, the evening one, or the weekly one (Sundays: today and the week ahead). Omit for the newest of any.",
+            "enum": [
+              "morning",
+              "evening",
+              "weekly"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Get brief"
+    },
+    {
       "domain": "journals",
       "effect": "read",
       "name": "get_entry",
@@ -3969,6 +3993,37 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "Send draft"
+    },
+    {
+      "domain": "routines",
+      "effect": "write",
+      "name": "set_brief",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "Which brief: morning (the day ahead), evening (the day's close and tomorrow) or weekly (Sunday mornings: today and the week ahead).",
+            "enum": [
+              "morning",
+              "evening",
+              "weekly"
+            ],
+            "type": "string"
+          },
+          "on": {
+            "description": "True to switch it on, false to switch it off.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "on"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Set brief"
     },
     {
       "domain": "money",

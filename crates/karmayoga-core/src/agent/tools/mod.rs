@@ -660,6 +660,7 @@ pub const NOT_OVER_MCP: &[&str] = &[
     "update_routine",
     "delete_routine",
     "run_routine",
+    "set_brief",
     // Background work.
     "start_research",
     "start_watch",

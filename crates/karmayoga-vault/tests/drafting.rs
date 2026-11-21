@@ -261,6 +261,7 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     // Asking a routine to run right now is an action, not a record to
     // propose.
     "run_routine",
+    "set_brief",
     // Starting an hour of research is an action with a cost, not a record to
     // propose, and a dream starting one on its own account is exactly the
     // loop nobody asked for. Stopping one is the person's call, not a

@@ -162,6 +162,14 @@ export const NEEDS = [
    * heatmap is the same year with its older weeks left undrawn.
    */
   'karma',
+  /**
+   * The daily briefs: the routines behind them and what they last wrote.
+   * Not one of the reads `refresh`'s `Promise.all` fetches, for the reason
+   * `proposals` is not: the briefs store loads and reloads itself, since the
+   * Brief page and Settings → Briefs draw from it too. Declaring the need is
+   * what makes "Today's brief" ask it to.
+   */
+  'brief',
 ] as const
 export type Need = (typeof NEEDS)[number]
 
@@ -216,6 +224,20 @@ export interface WidgetSpec {
  */
 export const WIDGETS = {
   // ── Today ──────────────────────────────────────────────────────────
+  //
+  // The brief first: it is the one card that is already a reading of the
+  // others -- the day, who is on it, what is due, what is waiting -- and the
+  // way into the Brief page, where the whole of it is.
+  brief: {
+    label: "Today's brief",
+    note: 'The newest brief the assistant wrote: the day in a sentence, its counts and timeline, and a way to read or hear the rest.',
+    group: 'Today',
+    app: 'assistant',
+    icon: 'newspaper',
+    size: 'large',
+    sizes: ['medium', 'large'],
+    needs: ['brief'],
+  },
   karma: {
     label: 'Karma',
     note: 'What each day came to, a square a day: earned for what you did, lost for the habits you are breaking.',
@@ -732,15 +754,17 @@ export interface Widget {
  * cost of ignoring the tab. Adding is the easy direction; the Overview's Add
  * button exists to make it two clicks.
  *
- * Ordered as the page you open to see what matters right now reads: what is
- * on and what is due, side by side; then the mail that is waiting on you,
- * three narrow cards to a row; then what you are in the middle of. Each row
- * closes on six columns, so nothing on a first run is stretched to fill a
- * gap -- but for the last card, which is alone on its row on purpose and
- * takes the width (`fillRows`).
+ * Ordered as the page you open to see what matters right now reads: the
+ * brief, which says it in a sentence; what is on and what is due, side by
+ * side; then the mail that is waiting on you, three narrow cards to a row;
+ * then what you are in the middle of. Each row closes on six columns, so
+ * nothing on a first run is stretched to fill a gap -- but for the last
+ * card, which is alone on its row on purpose and takes the width
+ * (`fillRows`).
  */
 export function defaultLayout(): Widget[] {
   return [
+    widget('brief'),
     widget('karma'),
     widget('todayEvents'),
     widget('todayTasks'),
@@ -806,7 +830,9 @@ export function addWidget(
  *
  * The nine after "What's going on" arrived together, Karma first, as the
  * cards that make the Overview a home page -- and in the order listed, which is the order
- * they land in at the top of the page: see `introduce`.
+ * they land in at the top of the page: see `introduce`. "Today's brief"
+ * came after them, with the briefs themselves, so it lands alone on top of
+ * a page that has already seen the rest.
  */
 export const INTRODUCED: WidgetType[] = [
   'whatsGoingOn',
@@ -819,6 +845,7 @@ export const INTRODUCED: WidgetType[] = [
   'readingNow',
   'watchingNow',
   'playingNow',
+  'brief',
 ]
 
 /**

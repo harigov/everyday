@@ -767,6 +767,7 @@ async fn execute(
         about_job: None,
         max_steps: Some(executor.max_steps()),
         tier: None,
+        read_only: false,
         // Most jobs ask nobody: they are refused what they would need somebody
         // for. A project may ask the person in their chat, when one is
         // running. What a job's final reply is sent to is not said here: its

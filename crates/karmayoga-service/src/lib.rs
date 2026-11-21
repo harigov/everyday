@@ -43,6 +43,7 @@ pub mod accountcal;
 pub mod agent;
 pub mod arrivals;
 pub mod backup;
+pub mod brief;
 pub mod browser;
 pub mod calendar_refresh;
 pub mod chat;

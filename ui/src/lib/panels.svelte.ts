@@ -46,6 +46,10 @@ export const SETTINGS_TABS = [
   // `assistant.svelte.ts`'s `Pane`, which is these four by name.
   'runs',
   'routines',
+  // The morning, evening and weekly briefs: routines the application owns,
+  // edited here rather than in Routines -- see BriefSettingsPanel and
+  // `docs/plans/briefs.md`.
+  'briefs',
   'memory',
   'proposals',
   // Not one of `assistant.svelte.ts`'s four panes -- skills are managed only

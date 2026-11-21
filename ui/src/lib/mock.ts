@@ -74,6 +74,7 @@ import type {
   Entry,
   Note,
   Profile,
+  BriefKind,
   Routine,
   RoutineInfo,
   RoutineRun,
@@ -199,6 +200,7 @@ import {
 } from './mock-feed'
 import { FINISHED_POINTS, JOURNAL_POINTS, habitPoints, scoreDay, taskPoints } from './karma'
 import { mockBackup } from './mock-backup'
+import { MOCK_SECTIONS, mockBrief, mockBriefRun } from './mock-brief'
 import { mockConnections } from './mock-connections'
 import { mockMoney } from './mock-money'
 import { mockScreenMinutes, mockScreenTime } from './mock-screentime'
@@ -2090,15 +2092,33 @@ function ahead(days: number): string {
  * show what the switch looks like.
  */
 const routines: Routine[] = [
+  // The morning brief: a routine the application owns, made when it was
+  // switched on in Settings → Briefs. See docs/plans/briefs.md.
   {
     id: 'ro-brief',
     name: 'Morning brief',
-    instructions:
-      'Look at what is due today and overdue, what is on the calendar, and any habit or goal target I am behind on. Write me a short note with the three or four things that actually matter.',
+    instructions: '',
     trigger: { type: 'schedule', at: '07:00', days: ['mon', 'tue', 'wed', 'thu', 'fri'] },
-    graceMinutes: 60,
+    graceMinutes: 240,
     enabled: true,
+    kind: { type: 'brief', brief: 'morning', sections: MOCK_SECTIONS.morning, length: 'standard' },
+    delivery: { ask: false },
+    maxSteps: 8,
     lastRunAt: iso(1),
+    createdAt: iso(30),
+    updatedAt: iso(30),
+  },
+  // The weekly brief, Sunday mornings: today and the week ahead.
+  {
+    id: 'ro-brief-weekly',
+    name: 'Weekly brief',
+    instructions: '',
+    trigger: { type: 'schedule', at: '08:00', days: ['sun'] },
+    graceMinutes: 360,
+    enabled: true,
+    kind: { type: 'brief', brief: 'weekly', sections: MOCK_SECTIONS.weekly, length: 'long' },
+    delivery: { ask: false },
+    maxSteps: 8,
     createdAt: iso(30),
     updatedAt: iso(30),
   },
@@ -2115,7 +2135,38 @@ const routines: Routine[] = [
   },
 ]
 
+/** Eight in the morning on the most recent Sunday, today included. */
+function lastSunday(): Date {
+  const at = new Date()
+  at.setDate(at.getDate() - at.getDay())
+  at.setHours(8, 0, 0, 0)
+  return at
+}
+
+/** This morning, at seven: when today's brief in the demo was made. */
+function sevenToday(): Date {
+  const at = new Date()
+  at.setHours(7, 0, 0, 0)
+  return at
+}
+
 const runs: RoutineRun[] = [
+  // Today's brief, already looked at so the count on the app bar stays the
+  // demo's one unseen run. What the Overview's Brief page opens on.
+  {
+    ...mockBriefRun('run-brief-today', 'ro-brief', mockBrief('morning'), sevenToday()),
+    seen: true,
+  },
+  // Last Sunday's weekly brief, so the page has a week ahead to show.
+  {
+    ...mockBriefRun(
+      'run-brief-weekly',
+      'ro-brief-weekly',
+      mockBrief('weekly', lastSunday()),
+      lastSunday(),
+    ),
+    seen: true,
+  },
   {
     id: 'run-1',
     routineId: 'ro-brief',
@@ -2200,15 +2251,9 @@ function nextSlot(t: Extract<Trigger, { type: 'schedule' }>): string {
   return next.toISOString()
 }
 
+// No morning brief here: the briefs are the application's own, in Settings →
+// Briefs, as in `domains::routines::templates`.
 const TEMPLATES: RoutineTemplate[] = [
-  {
-    name: 'Morning brief',
-    instructions:
-      'Look at what is due today and overdue, what is on the calendar, and any habit or goal target I am behind on. Write me a short note with the three or four things that actually matter, and say plainly if there is nothing much on.',
-    trigger: { type: 'schedule', at: '07:00', days: ['mon', 'tue', 'wed', 'thu', 'fri'] },
-    note: 'What is on today, before you open anything.',
-    available: true,
-  },
   {
     name: 'Weekly review',
     instructions:
@@ -5451,6 +5496,12 @@ export const mockInvoke = async <T>(
           'a dream belongs to the application; turn dreaming off in Settings instead',
         )
       }
+      if (routines.find((r) => r.id === args.id)?.kind?.type === 'brief') {
+        throw new VaultError(
+          'invalid',
+          'a brief belongs to the application; switch it on or off in Settings → Briefs instead',
+        )
+      }
       const at = routines.findIndex((r) => r.id === args.id)
       if (at >= 0) routines.splice(at, 1)
       for (let i = runs.length - 1; i >= 0; i -= 1) {
@@ -5459,10 +5510,73 @@ export const mockInvoke = async <T>(
       return undefined as T
     }
 
+    case 'set_brief': {
+      requireUnlocked()
+      const kind = args.kind as BriefKind
+      let routine = routines.find((r) => r.kind?.type === 'brief' && r.kind.brief === kind)
+      if (!routine) {
+        routine = {
+          id: `ro-${nextId++}`,
+          name: { morning: 'Morning brief', evening: 'Evening brief', weekly: 'Weekly brief' }[
+            kind
+          ],
+          instructions: '',
+          trigger:
+            kind === 'weekly'
+              ? { type: 'schedule', at: '08:00', days: ['sun'] }
+              : { type: 'schedule', at: kind === 'morning' ? '07:00' : '20:00', days: [] },
+          graceMinutes: kind === 'evening' ? 180 : kind === 'weekly' ? 360 : 240,
+          enabled: false,
+          kind: {
+            type: 'brief',
+            brief: kind,
+            sections: MOCK_SECTIONS[kind],
+            length: kind === 'weekly' ? 'long' : 'standard',
+          },
+          delivery: { ask: false },
+          maxSteps: 8,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        routines.push(routine)
+      }
+      routine.enabled = args.on === true
+      routine.updatedAt = new Date().toISOString()
+      return { ...routine } as T
+    }
+
+    case 'briefs': {
+      requireUnlocked()
+      const kind = (args.kind ?? null) as BriefKind | null
+      const limit = typeof args.limit === 'number' ? args.limit : 14
+      return runs
+        .filter((r) => r.brief && (kind === null || r.brief.kind === kind))
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .slice(0, limit) as T
+    }
+
     case 'run_routine': {
       requireUnlocked()
       const routine = routines.find((r) => r.id === args.id)
       if (!routine) throw new VaultError('not_found', 'no such routine')
+      // A brief writes a brief: the demo's own day, made now.
+      if (routine.kind?.type === 'brief') {
+        const made = mockBriefRun(
+          `run-${nextId++}`,
+          routine.id,
+          mockBrief(routine.kind.brief),
+          new Date(),
+        )
+        made.brief!.digest.sections = routine.kind.sections
+        made.brief!.parts = made.brief!.parts.filter(
+          (p) =>
+            !p.section ||
+            routine.kind?.type !== 'brief' ||
+            routine.kind.sections.includes(p.section),
+        )
+        runs.unshift(made)
+        return made as T
+      }
       // The real one queues and lets the scheduler do it. There is no
       // scheduler here, so this finishes at once and says something plausible
       // -- the demo build has no model to ask.

@@ -10,8 +10,8 @@
 use crate::error::CommandResult;
 use crate::service::Service;
 use crate::speech::listen::{ListenLink, PieceStream};
-use karmayoga_core::StoryId;
 use karmayoga_core::id::{MailMessageId, ThreadId};
+use karmayoga_core::{RoutineRunId, StoryId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -28,6 +28,9 @@ pub enum ListenSource {
         #[serde(default)]
         as_written: bool,
     },
+    /// A daily brief, as it was written to be heard. Nothing is sent to a
+    /// model: the spoken brief was written when the brief was.
+    Brief { run_id: RoutineRunId },
 }
 
 /// What a spoken conversation reads out in full when the assistant is asked
@@ -41,6 +44,8 @@ pub enum ReadAloud {
     /// One mail message -- a newsletter in the inbox -- in full, made fit to
     /// hear the same way.
     Message(MailMessageId),
+    /// A daily brief's spoken version, kept on the run that wrote it.
+    Brief(RoutineRunId),
 }
 
 /// A session under way, and what it is reading, for the player to show.
@@ -82,6 +87,10 @@ impl Service {
                 let opened = crate::news::listen::open(self, story_id, as_written).await?;
                 (opened.title, opened.pieces, opened.notice)
             }
+            ListenSource::Brief { run_id } => {
+                let (title, pieces) = self.brief_pieces(run_id).await?;
+                (title, pieces, None)
+            }
         };
 
         let service = self.clone();
@@ -104,11 +113,41 @@ impl Service {
         let opened = match what {
             ReadAloud::Story(story_id) => crate::news::listen::open(self, story_id, false).await?,
             ReadAloud::Message(message) => crate::news::listen::open_message(self, message).await?,
+            ReadAloud::Brief(run_id) => return Ok(self.brief_pieces(run_id).await?.1),
         };
         let Some(notice) = opened.notice else { return Ok(opened.pieces) };
         // Its own part, so it is a sentence of its own before the first.
         let said = futures::stream::once(async move { Ok(Piece { text: notice, part: 0 }) });
         let rest = opened.pieces.map(|piece| piece.map(|p| Piece { part: p.part + 1, ..p }));
         Ok(said.chain(rest).boxed())
+    }
+
+    /// A brief's spoken version as pieces to read, a paragraph to a part, and
+    /// what the player calls it.
+    async fn brief_pieces(
+        self: &Arc<Self>,
+        run_id: RoutineRunId,
+    ) -> CommandResult<(String, PieceStream)> {
+        use crate::speech::listen::Piece;
+        use futures::StreamExt;
+
+        let vault = self.require()?;
+        let run = crate::service::blocking(move || Ok(vault.run(run_id)?)).await?;
+        let Some(brief) = run.brief else {
+            return Err(crate::error::CommandError::new(
+                crate::error::codes::INVALID,
+                "that run did not write a brief",
+            ));
+        };
+        let title = format!("{}, {}", brief.kind.name(), brief.day.strftime("%A %-d %B"));
+        let pieces: Vec<CommandResult<Piece>> = brief
+            .spoken
+            .split("\n\n")
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .enumerate()
+            .map(|(part, text)| Ok(Piece { text: text.replace('\n', " "), part: part as u32 }))
+            .collect();
+        Ok((title, futures::stream::iter(pieces).boxed()))
     }
 }

@@ -2,10 +2,11 @@
 
 use super::Vault;
 use super::session::Domain;
+use crate::brief::BriefKind;
 use crate::error::{Error, Result};
 use crate::id::{RoutineId, RoutineRunId};
 use crate::record::RecordKind;
-use crate::routine::{DreamScope, Routine, RoutineRun, Trigger};
+use crate::routine::{DreamScope, Outcome, Routine, RoutineKind, RoutineRun, Trigger};
 use crate::store::routines::{RoutineStore, RunQuery};
 use crate::timestamped::Timestamped;
 
@@ -16,6 +17,23 @@ use crate::timestamped::Timestamped;
 /// Settings, not this form.
 const DREAM_IS_THE_APPLICATIONS: &str =
     "a dream belongs to the application; turn dreaming off in Settings instead";
+
+/// The same for a brief: made by switching it on in Settings → Briefs, and
+/// removed by switching it off there.
+const BRIEF_IS_THE_APPLICATIONS: &str =
+    "a brief belongs to the application; switch it on or off in Settings \u{2192} Briefs instead";
+
+/// Held while [`Vault::set_brief`] looks for a brief's routine and saves it.
+static SET_BRIEF: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The refusal for making, unmaking or deleting `kind` by hand.
+fn owned_refusal(kind: &RoutineKind) -> Error {
+    if kind.brief().is_some() {
+        Error::Invalid(BRIEF_IS_THE_APPLICATIONS.into())
+    } else {
+        Error::Invalid(DREAM_IS_THE_APPLICATIONS.into())
+    }
+}
 
 impl Vault {
     /// Does this vault's backend hold routines at all?
@@ -47,15 +65,21 @@ impl Vault {
     /// changing an existing routine's kind in either direction. A dream's
     /// schedule, grace and instructions (the person's own paragraph, added to
     /// the app's prompt) are ordinary edits and go through unchanged.
+    ///
+    /// A brief is the same: made only by [`Vault::set_brief`], and its kind
+    /// may not change -- though what it covers and how long it is, which ride
+    /// on its kind, are the person's to change like its schedule.
     pub fn save_routine(&self, routine: &Routine) -> Result<()> {
         self.writable()?;
         let previous_kind = self.routine(routine.id).ok().map(|r| r.kind);
         match previous_kind {
-            None if routine.kind.is_dream() => {
-                return Err(Error::Invalid(DREAM_IS_THE_APPLICATIONS.into()));
-            }
-            Some(previous) if previous != routine.kind => {
-                return Err(Error::Invalid(DREAM_IS_THE_APPLICATIONS.into()));
+            None if routine.kind.is_owned() => return Err(owned_refusal(&routine.kind)),
+            Some(previous) if !previous.same_owner(&routine.kind) => {
+                return Err(owned_refusal(if previous.is_owned() {
+                    &previous
+                } else {
+                    &routine.kind
+                }));
             }
             _ => {}
         }
@@ -88,8 +112,8 @@ impl Vault {
     pub fn delete_routine(&self, id: RoutineId) -> Result<()> {
         self.writable()?;
         let routine = self.routine(id)?;
-        if routine.kind.is_dream() {
-            return Err(Error::Invalid(DREAM_IS_THE_APPLICATIONS.into()));
+        if routine.kind.is_owned() {
+            return Err(owned_refusal(&routine.kind));
         }
         let runs = self.with_routines(|r| r.list_runs(&RunQuery::for_routine(id)))?;
         for run in &runs {
@@ -133,6 +157,59 @@ impl Vault {
             self.put_routine_unchecked(&routine)?;
             out.push(routine);
         }
+        Ok(out)
+    }
+
+    /// Switch a brief on or off, and hand back its routine as saved.
+    ///
+    /// The first time, makes the routine -- see [`Routine::brief`] for its
+    /// schedule and what it covers -- through the one path that may give a
+    /// routine a `Brief` kind. Every time after, only `enabled` moves: the
+    /// rest is the person's, edited through [`Vault::save_routine`].
+    pub fn set_brief(&self, kind: BriefKind, on: bool) -> Result<Routine> {
+        self.writable()?;
+        // Read and written under one lock, so two first calls at once -- a
+        // double click, the switch and "make one now" together -- cannot each
+        // find no routine and make one apiece: an owned routine cannot be
+        // deleted, so a second would run every day for ever.
+        let _held = SET_BRIEF.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut routine = self.brief_routine(kind)?.unwrap_or_else(|| Routine::brief(kind));
+        routine.enabled = on;
+        routine.touch();
+        self.put_routine_unchecked(&routine)?;
+        Ok(routine)
+    }
+
+    /// The routine behind one brief, if it has ever been switched on.
+    pub fn brief_routine(&self, kind: BriefKind) -> Result<Option<Routine>> {
+        Ok(self.routines()?.into_iter().find(|r| r.kind.brief_kind() == Some(kind)))
+    }
+
+    /// The briefs written so far, newest first: the finished runs of the
+    /// brief routines that kept one. `kind` narrows to one brief.
+    pub fn briefs(&self, kind: Option<BriefKind>, limit: u32) -> Result<Vec<RoutineRun>> {
+        let routines: Vec<Routine> = self
+            .routines()?
+            .into_iter()
+            .filter(|r| r.kind.brief_kind().is_some_and(|k| kind.is_none_or(|want| want == k)))
+            .collect();
+        let mut out = Vec::new();
+        for routine in routines {
+            // The newest runs whatever became of them, with room for a few that
+            // failed or were skipped: a filter on the outcome is finished
+            // outside the store, which would then unseal the whole log -- and
+            // a brief's run carries its digest.
+            let runs = self.runs(&RunQuery {
+                routine_id: Some(routine.id),
+                limit: Some(limit.saturating_mul(2).max(10)),
+                ..Default::default()
+            })?;
+            out.extend(
+                runs.into_iter().filter(|r| r.outcome == Outcome::Done && r.brief.is_some()),
+            );
+        }
+        out.sort_by_key(|r| std::cmp::Reverse(r.started_at));
+        out.truncate(limit as usize);
         Ok(out)
     }
 

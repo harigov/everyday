@@ -818,7 +818,263 @@ export const DREAM_SCOPES = ['day', 'week', 'month'] as const
 /** How far back a dream reads: yesterday, the week, the month. */
 export type DreamScope = (typeof DREAM_SCOPES)[number]
 
-export type RoutineKind = { type: 'custom' } | { type: 'dream'; scope: DreamScope }
+export type RoutineKind =
+  | { type: 'custom' }
+  | { type: 'dream'; scope: DreamScope }
+  /** A daily brief the application owns -- see `docs/plans/briefs.md`. */
+  | ({ type: 'brief' } & BriefSpec)
+
+// ── Briefs ───────────────────────────────────────────────────────────────
+//
+// The morning brief and the evening one: a routine the application owns,
+// whose run keeps the brief it wrote. Mirrors `karmayoga_core::brief`.
+
+export const BRIEF_KINDS = ['morning', 'evening', 'weekly'] as const
+/** Which brief: before the day, at the end of it, or the week ahead (Sundays). */
+export type BriefKind = (typeof BRIEF_KINDS)[number]
+
+export const BRIEF_SECTIONS = [
+  'review',
+  'week',
+  'schedule',
+  'people',
+  'tasks',
+  'mail',
+  'weather',
+  'goals',
+  'tidbit',
+  'occasions',
+  'reading',
+] as const
+/** One part of a brief the person can switch on or off and put in order. */
+export type BriefSection = (typeof BRIEF_SECTIONS)[number]
+
+export const BRIEF_LENGTHS = ['short', 'standard', 'long'] as const
+/** How long a brief is: about 1½, 3½ or 7 minutes to hear. */
+export type BriefLength = (typeof BRIEF_LENGTHS)[number]
+
+/** What a brief routine is set to, held on its kind. */
+export interface BriefSpec {
+  brief: BriefKind
+  /** In the order they appear. */
+  sections: BriefSection[]
+  length: BriefLength
+}
+
+/** A brief, as kept on the run that wrote it. */
+export interface Brief {
+  kind: BriefKind
+  /** The day it was made on, `2026-11-21`. */
+  day: string
+  /** The shape of the day, in one sentence. May hold **bold**. */
+  headline: string
+  /** The written brief, a section at a time. */
+  parts: BriefPart[]
+  /** The same brief written to be heard. */
+  spoken: string
+  /** What it was written from: what the pictures are drawn from. */
+  digest: BriefDigest
+}
+
+/** One section of a written brief. `body` is Markdown. */
+export interface BriefPart {
+  section?: BriefSection | null
+  title: string
+  body: string
+}
+
+/** The facts a brief was written from. Every list may be empty. */
+export interface BriefDigest {
+  kind: BriefKind
+  day?: string | null
+  /** The day the schedule, tasks and weather are about: today in the
+   *  morning and the weekly brief, tomorrow in the evening. */
+  ahead?: string | null
+  /** The weekly brief's last day: the window is `day` to `until`. */
+  until?: string | null
+  /** The weekly brief's days ahead, one per day after today. */
+  week: BriefDay[]
+  zone: string
+  madeAt?: string | null
+  firstName: string
+  sections: BriefSection[]
+  events: BriefEvent[]
+  blocks: BriefBlock[]
+  free: FreeStretch[]
+  people: BriefPerson[]
+  due: BriefTask[]
+  overdue: BriefTask[]
+  overdueCount: number
+  done: BriefTask[]
+  met: string[]
+  karmaToday?: number | null
+  mail: BriefThread[]
+  unreadImportant: number
+  weather?: BriefWeather | null
+  goals: BriefGoal[]
+  activeGoals: string[]
+  occasions: BriefOccasion[]
+  stories: BriefStory[]
+  previous?: string | null
+  /** Why a section asked for has nothing in it. */
+  gaps: string[]
+}
+
+export interface BriefEvent {
+  id: EventId
+  calendarId: CalendarId
+  title: string
+  start: string
+  end: string
+  allDay: boolean
+  location: string
+  /** The calendar's colour. */
+  color: string
+  calendar: string
+  guests: string[]
+  organizer: string
+  busy: boolean
+  video: boolean
+  clash: boolean
+}
+
+export interface BriefBlock {
+  title: string
+  start: string
+  end: string
+  purpose: string
+}
+
+export interface FreeStretch {
+  start: string
+  end: string
+  minutes: number
+}
+
+export interface BriefPerson {
+  name: string
+  email: string
+  meetings: string[]
+  nextAt?: string | null
+  relationship: string
+  company: string
+  circle: string
+  lastContact?: string | null
+  lastNote?: BriefNoteRef | null
+  waitingOnYou: boolean
+}
+
+export interface BriefNoteRef {
+  title: string
+  day: string
+  excerpt: string
+}
+
+export interface BriefTask {
+  id: TaskId
+  title: string
+  due?: string | null
+  dueTime?: string | null
+  priority: Priority
+  purpose: string
+  estimateMinutes?: number | null
+}
+
+/** Which way a thread is waiting. */
+export type MailWaiting = 'onYou' | 'onThem' | 'unread'
+
+export interface BriefThread {
+  threadId: ThreadId
+  subject: string
+  with: string
+  waiting: MailWaiting
+  since: string
+}
+
+export interface BriefWeather {
+  place: string
+  temperatureUnit: string
+  windUnit: string
+  precipitationUnit: string
+  now?: number | null
+  nowCondition: string
+  condition: string
+  high?: number | null
+  low?: number | null
+  rainChance?: number | null
+  rain?: number | null
+  wind?: number | null
+  gusts?: number | null
+  sunrise: string
+  sunset: string
+  /** The weekly brief's days ahead. Empty for the others. */
+  outlook: BriefWeatherDay[]
+}
+
+/** One day of a week's forecast, as the weekly brief keeps it. */
+export interface BriefWeatherDay {
+  date: string
+  condition: string
+  high?: number | null
+  low?: number | null
+  rainChance?: number | null
+}
+
+/** One day of the week ahead, for the weekly brief. */
+export interface BriefDay {
+  date: string
+  /** Timed, busy events, and the minutes they take. */
+  meetings: number
+  minutes: number
+  /** All-day events: a trip, a holiday. */
+  allDay: string[]
+  /** The day's timed events, in order, at most five. */
+  events: BriefDayEvent[]
+  /** Task titles due that day. */
+  due: string[]
+}
+
+export interface BriefDayEvent {
+  title: string
+  start: string
+  end: string
+  guests: number
+  location: string
+  color: string
+}
+
+export interface BriefGoal {
+  trackerId: TrackerId
+  name: string
+  color: string
+  icon: string
+  target: string
+  value: number
+  aim?: number | null
+  limit: boolean
+  from: string
+  to: string
+  standing: 'short' | 'within' | 'over'
+  onPace?: number | null
+}
+
+export interface BriefOccasion {
+  name: string
+  what: 'birthday' | 'catchUp'
+  date?: string | null
+  lastContact?: string | null
+  daysOver: number
+  circle: string
+}
+
+export interface BriefStory {
+  storyId: StoryId
+  title: string
+  source: string
+  url: string
+  publishedAt: string
+  summary: string
+}
 
 /** How a run ended. */
 export type Outcome = 'running' | 'done' | 'failed' | 'skipped'
@@ -848,6 +1104,8 @@ export interface RoutineRun {
   /** Where the result was sent besides the app. Absent when it went nowhere
    *  else. */
   delivered?: Delivered[]
+  /** What a brief's run wrote, taken apart. Only a brief's finished run has one. */
+  brief?: Brief | null
 }
 
 export interface RunQuery {
@@ -4887,6 +5145,8 @@ export type ListenSource =
   | { type: 'mailThread'; threadId: ThreadId }
   /** `asWritten` reads the article as it is, without the model. */
   | { type: 'story'; storyId: StoryId; asWritten?: boolean }
+  /** A daily brief's spoken version, kept on its run. */
+  | { type: 'brief'; runId: RoutineRunId }
 
 /** What a listening session is doing --
  *  `karmayoga_service::speech::listen::ListenState`. */

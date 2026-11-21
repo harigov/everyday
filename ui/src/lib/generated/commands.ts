@@ -42,6 +42,7 @@ import type {
   BlockKind,
   BlockQuery,
   BlockSubject,
+  BriefKind,
   Calendar,
   CalendarEvent,
   CalendarId,
@@ -440,6 +441,7 @@ export interface Commands {
   }
   benchmarkDecisionModel: { args: { id: string }; result: DecisionBenchmark }
   benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
+  briefs: { args: { kind?: BriefKind | null; limit?: number | null }; result: RoutineRun[] }
   bringInAttachments: { args: Record<string, never>; result: LegacyReport }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
   cancelAppleImport: { args: Record<string, never>; result: boolean }
@@ -1074,6 +1076,7 @@ export interface Commands {
   }
   setAutoLock: { args: { seconds: number }; result: void }
   setBackupKeys: { args: { accessKeyId: string; secretAccessKey: string }; result: BackupView }
+  setBrief: { args: { kind: BriefKind; on: boolean }; result: Routine }
   setChatTrustedDevices: { args: { id: ChatLinkId; devices: string[] }; result: ChatLinkView }
   setConnectionSecrets: {
     args: {
@@ -1213,6 +1216,7 @@ export const COMMAND_NAMES = {
   beginUpload: 'begin_upload',
   benchmarkDecisionModel: 'benchmark_decision_model',
   benchmarkSpeechModel: 'benchmark_speech_model',
+  briefs: 'briefs',
   bringInAttachments: 'bring_in_attachments',
   calendarProviders: 'calendar_providers',
   cancelAppleImport: 'cancel_apple_import',
@@ -1642,6 +1646,7 @@ export const COMMAND_NAMES = {
   setAgentAccess: 'set_agent_access',
   setAutoLock: 'set_auto_lock',
   setBackupKeys: 'set_backup_keys',
+  setBrief: 'set_brief',
   setChatTrustedDevices: 'set_chat_trusted_devices',
   setConnectionSecrets: 'set_connection_secrets',
   setConnectionToolPolicy: 'set_connection_tool_policy',
@@ -1767,6 +1772,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'begin_upload',
   'benchmark_decision_model',
   'benchmark_speech_model',
+  'briefs',
   'bring_in_attachments',
   'calendar_providers',
   'cancel_apple_import',
@@ -2195,6 +2201,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_agent_access',
   'set_auto_lock',
   'set_backup_keys',
+  'set_brief',
   'set_chat_trusted_devices',
   'set_connection_secrets',
   'set_connection_tool_policy',
@@ -2529,6 +2536,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_agent_access',
   'set_auto_lock',
   'set_backup_keys',
+  'set_brief',
   'set_chat_trusted_devices',
   'set_connection_secrets',
   'set_connection_tool_policy',
@@ -2803,6 +2811,7 @@ export const CHANGE_KINDS = {
   set_agent_access: 'account',
   set_auto_lock: 'settings',
   set_backup_keys: 'settings',
+  set_brief: 'routine',
   set_chat_trusted_devices: 'settings',
   set_connection_secrets: 'settings',
   set_connection_tool_policy: 'settings',

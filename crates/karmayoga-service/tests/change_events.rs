@@ -1567,6 +1567,9 @@ async fn every_offline_write_announces_what_was_written_down() {
     let run_id = queued_run["id"].clone();
     run(&svc, &h, "mark_runs_seen", json!({ "ids": [run_id] })).await;
 
+    // A brief: switched on, which makes its routine the first time.
+    run(&svc, &h, "set_brief", json!({ "kind": "morning", "on": true })).await;
+
     // ---- jobs ------------------------------------------------------------------
     //
     // `start_research` only queues -- see `domains::jobs`: the worker picks a

@@ -43,6 +43,7 @@ use crate::events::{Change, Kind, Notification, Op};
 use crate::service::{Service, blocking};
 use jiff::Timestamp;
 use karmayoga_core::agent::tools::Drafting;
+use karmayoga_core::brief::{BriefDigest, BriefKind, BriefSpec};
 use karmayoga_core::dream;
 use karmayoga_core::meeting::{Recording, Stage, identify};
 use karmayoga_core::proposal::{ProposalSource, max_per_run};
@@ -457,9 +458,15 @@ pub async fn tick(service: &Arc<Service>) {
             run_dream(service, &vault, &routine, None, scope, Some(run)).await;
             continue;
         }
+        // A brief likewise: its digest, its read-only turn, and its answer
+        // kept on the run.
+        if let Some(spec) = routine.kind.brief().cloned() {
+            run_brief(service, &vault, &routine, None, spec, Some(run)).await;
+            continue;
+        }
         let prompt = routine.instructions.clone();
         let hold = Some(routine.id);
-        carry_out(service, &vault, &routine, run, prompt, hold).await;
+        carry_out(service, &vault, &routine, run, prompt, hold, Mode::Routine).await;
     }
 }
 
@@ -753,7 +760,7 @@ async fn about(service: &Arc<Service>, vault: &Arc<Vault>, routine: &Routine, su
     let prompt = about.instructions.clone();
     // Not held in flight: its subject is what stops a second run about the
     // same meeting, and a second meeting is a second run.
-    carry_out(service, vault, &about, run, prompt, None).await;
+    carry_out(service, vault, &about, run, prompt, None, Mode::Routine).await;
 }
 
 /// Everything about one run, from the row to the notification.
@@ -765,6 +772,10 @@ async fn execute(
 ) {
     if let Some(scope) = routine.kind.dream_scope() {
         run_dream(service, vault, routine, slot, scope, None).await;
+        return;
+    }
+    if let Some(spec) = routine.kind.brief().cloned() {
+        run_brief(service, vault, routine, slot, spec, None).await;
         return;
     }
 
@@ -780,7 +791,7 @@ async fn execute(
     .await;
     let Ok(run) = saved else { return };
     let prompt = routine.instructions.clone();
-    carry_out(service, vault, routine, run, prompt, Some(routine.id)).await;
+    carry_out(service, vault, routine, run, prompt, Some(routine.id), Mode::Routine).await;
 }
 
 /// Carry out a person's routine's run, whose row is already saved: here, in
@@ -796,17 +807,147 @@ async fn carry_out(
     run: RoutineRun,
     prompt: String,
     hold: Option<karmayoga_core::RoutineId>,
+    mode: Mode,
 ) {
     if !may_wait(service, routine) {
-        resume(service, vault, routine, run, prompt, None).await;
+        resume(service, vault, routine, run, prompt, mode).await;
         return;
     }
     let claim = service.claim_run(run.id.to_string());
     let (svc, vault, routine) = (service.clone(), vault.clone(), routine.clone());
     service.detach_run(hold, async move {
         let _claim = claim;
-        resume(&svc, &vault, &routine, run, prompt, None).await;
+        resume(&svc, &vault, &routine, run, prompt, mode).await;
     });
+}
+
+/// What kind of run [`resume`] is carrying out, beyond the routine itself.
+enum Mode {
+    /// A person's routine: the whole catalogue, the result delivered.
+    Routine,
+    /// A dream: everything it writes becomes a proposal, and nothing is
+    /// delivered. See `docs/plans/dreaming.md`.
+    Dream(Drafting),
+    /// A brief: a read-only turn, and its answer taken apart and kept on the
+    /// run before it is delivered. Carries the digest it was written from.
+    /// See `docs/plans/briefs.md`.
+    Brief(Box<BriefDigest>),
+}
+
+/// Everything about a brief's run: the digest, the prompt, and the read-only
+/// turn, which [`resume`] finishes by keeping the brief on the run. Ordinary
+/// routines never reach this function.
+///
+/// `queued` is the row "run now" already wrote, when that is how this brief
+/// was asked for. A skip then closes that row rather than writing a second.
+async fn run_brief(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    routine: &Routine,
+    slot: Option<jiff::Timestamp>,
+    spec: BriefSpec,
+    queued: Option<RoutineRun>,
+) {
+    let settings = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.agent_settings().unwrap_or_default())
+    })
+    .await
+    .unwrap_or_default();
+    let now = settings.now();
+    let tier = routine.model.unwrap_or(karmayoga_core::llm::ModelTier::Medium);
+    // Whether there is a model to write it before anything is gathered: the
+    // forecast leaves the machine, and is not worth asking for a brief that
+    // cannot be written. Skipped with the same reason `resume` would give.
+    let unusable = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.agent_credentials(tier).map(|_| ()).map_err(|e| e.to_string()))
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    if let Err(reason) = unusable {
+        match queued {
+            Some(run) => skip_queued(service, vault, run, &reason).await,
+            None => skip_dream(service, vault, routine, slot, &reason).await,
+        }
+        return;
+    }
+    // On a day the weekly brief runs, it covers the day as well as the week,
+    // so the morning brief steps aside rather than say the same day twice --
+    // unless the weekly brief has already failed or been skipped today, when
+    // the morning brief is the only one the day will get. Only a scheduled
+    // one: "make one now" is somebody asking for it.
+    if spec.brief == BriefKind::Morning && queued.is_none() {
+        let today = now.date();
+        let zone = now.time_zone().clone();
+        let weekly = blocking({
+            let vault = vault.clone();
+            move || {
+                let Some(weekly) = vault.brief_routine(BriefKind::Weekly)? else {
+                    return Ok(false);
+                };
+                if !weekly.runs_on(today) {
+                    return Ok(false);
+                }
+                let runs = vault.runs(&RunQuery {
+                    routine_id: Some(weekly.id),
+                    limit: Some(5),
+                    ..Default::default()
+                })?;
+                let let_down = runs.iter().any(|r| {
+                    r.started_at.to_zoned(zone.clone()).date() == today
+                        && matches!(r.outcome, Outcome::Failed | Outcome::Skipped)
+                });
+                Ok(!let_down)
+            }
+        })
+        .await
+        .unwrap_or(false);
+        if weekly {
+            skip_dream(service, vault, routine, slot, "today's weekly brief covers the day").await;
+            return;
+        }
+    }
+    let ahead = match spec.brief {
+        BriefKind::Morning | BriefKind::Weekly => now.date(),
+        BriefKind::Evening => now.date().tomorrow().unwrap_or(now.date()),
+    };
+    let extras = crate::brief::extras(service, vault, &spec, tier, ahead).await;
+    let digest = blocking({
+        let vault = vault.clone();
+        let spec = spec.clone();
+        let now = now.clone();
+        move || Ok(karmayoga_core::brief::digest(&vault, &spec, &now, extras)?)
+    })
+    .await;
+    let Ok(digest) = digest else {
+        let reason = "could not gather what the brief is written from";
+        match queued {
+            Some(run) => skip_queued(service, vault, run, reason).await,
+            None => skip_dream(service, vault, routine, slot, reason).await,
+        }
+        return;
+    };
+
+    let saved = match queued {
+        Some(run) => Ok(run),
+        None => {
+            blocking({
+                let vault = vault.clone();
+                let routine = routine.clone();
+                move || {
+                    let run = RoutineRun::new(&routine, slot);
+                    vault.save_run(&run)?;
+                    Ok(run)
+                }
+            })
+            .await
+        }
+    };
+    let Ok(run) = saved else { return };
+    let prompt = crate::brief::prompt(&spec, &routine.instructions, &digest);
+    let mode = Mode::Brief(Box::new(digest));
+    carry_out(service, vault, routine, run, prompt, Some(routine.id), mode).await;
 }
 
 /// Everything about a dream's run: whether it may start at all, the digest
@@ -923,7 +1064,7 @@ async fn run_dream(
         max_proposals: Some(max_per_run(scope)),
     };
 
-    resume(service, vault, routine, run, prompt, Some(drafting)).await;
+    resume(service, vault, routine, run, prompt, Mode::Dream(drafting)).await;
 
     let vault = vault.clone();
     let _ = blocking(move || {
@@ -1068,8 +1209,13 @@ async fn resume(
     routine: &Routine,
     mut run: RoutineRun,
     prompt: String,
-    drafting: Option<Drafting>,
+    mode: Mode,
 ) {
+    let (drafting, read_only) = match &mode {
+        Mode::Routine => (None, false),
+        Mode::Dream(drafting) => (Some(drafting.clone()), false),
+        Mode::Brief(_) => (None, true),
+    };
     // Claimed for as long as this call is on the stack, so the sweep above can
     // tell a run this process is carrying out from one a dead process left.
     let _claim = service.claim_run(run.id.to_string());
@@ -1154,6 +1300,7 @@ async fn resume(
         // one, and the assistant's otherwise.
         max_steps: routine.max_steps,
         tier: Some(tier),
+        read_only,
     };
 
     let mut wrote = Vec::new();
@@ -1161,7 +1308,21 @@ async fn resume(
         Some(Ok(turned)) => {
             run.steps = turned.steps;
             wrote = turned.wrote;
-            run.finish(Outcome::Done, turned.text);
+            match mode {
+                // Taken apart and kept before anything is delivered, so the
+                // chat and the email get the written brief without its
+                // section marks, and a call gets the spoken one.
+                Mode::Brief(digest) => {
+                    match crate::brief::keep(*digest, &turned.text, service.now()) {
+                        Some(brief) => {
+                            run.finish(Outcome::Done, brief.markdown());
+                            run.brief = Some(Box::new(brief));
+                        }
+                        None => run.fail("it finished without writing the brief"),
+                    }
+                }
+                _ => run.finish(Outcome::Done, turned.text),
+            }
         }
         Some(Err(e)) => run.fail(e.to_string()),
         None => run.fail(format!(

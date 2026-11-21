@@ -11,6 +11,7 @@
 pub mod accounts;
 pub mod assistant;
 pub mod backup;
+pub mod briefs;
 pub mod calendars;
 pub mod chat;
 pub mod connections;
@@ -109,6 +110,7 @@ pub fn catalog() -> &'static [&'static Command] {
             karma::COMMANDS,
             purpose::COMMANDS,
             routines::COMMANDS,
+            briefs::COMMANDS,
             jobs::COMMANDS,
             proposals::COMMANDS,
             signin::COMMANDS,

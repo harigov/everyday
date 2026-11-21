@@ -1200,6 +1200,15 @@ const END_VOICE_MODE: &str = crate::voice::END_TOOL;
 const SUMMARIZE_THREAD: &str = "summarize_thread";
 /// Offered to a spoken turn alone -- see [`read_aloud_tool`].
 const READ_ALOUD: &str = "read_aloud";
+/// The tools declared in this file that change nothing, and so may be offered
+/// to a turn that may only read ([`Turn::read_only`]). Every other tool
+/// declared here is kept from one.
+const READ_ONLY_HERE: &[&str] = &[SUMMARIZE_THREAD];
+
+/// Read the person's daily brief out in a spoken turn. Declared here, beside
+/// [`READ_ALOUD`], because like it the reading happens in the voice session
+/// after the reply -- see [`read_aloud_of`].
+const READ_BRIEF: &str = "read_brief";
 /// Offered wherever somebody is there to say a word was said wrong -- see
 /// [`pronunciation_tool`]. Named in the core, whose note to a spoken turn
 /// tells the model about it. One of the tools whose work is kept: see
@@ -1830,7 +1839,8 @@ impl ConfirmGate {
             let is_connection_read = crate::connections::tools::is_tool(event.tool_name);
             // And so do a summary of somebody's mail and the name of what is
             // read aloud: both are written from what a stranger wrote.
-            let is_mail_retold = matches!(event.tool_name, SUMMARIZE_THREAD | READ_ALOUD);
+            let is_mail_retold =
+                matches!(event.tool_name, SUMMARIZE_THREAD | READ_ALOUD | READ_BRIEF);
             // And so does anything the vault holds that the assistant or the
             // meeting pipeline wrote: a transcript, a research note, a
             // routine's report, a page of the assistant's own journal, what
@@ -2685,8 +2695,11 @@ fn reads_strangers_words(name: &str) -> bool {
 /// fetch check through the same entry -- nothing more to name for the four
 /// tools that started and changed jobs, which hand back only what the model
 /// itself sent and the job's rules in words.
-const READS_BACK_WHAT_WAS_SAVED: [&str; 4] =
-    [JOB_STATUS, "list_runs", "get_proposal", "list_proposals"];
+///
+/// `get_brief` likewise: a brief is written from invitations, mail headers and
+/// stories other people wrote.
+const READS_BACK_WHAT_WAS_SAVED: [&str; 5] =
+    [JOB_STATUS, "list_runs", "get_brief", "get_proposal", "list_proposals"];
 
 /// What is added to the one line a thread keeps of a call whose answer armed
 /// the taint through [`reads_back_saved_words`] -- a note a meeting wrote, a
@@ -2796,6 +2809,7 @@ fn names_strangers_words(name: &str) -> bool {
                 | GET_ITEM
                 | SUMMARIZE_THREAD
                 | READ_ALOUD
+                | READ_BRIEF
         )
         || crate::browser::is_tool(name)
         || crate::connections::tools::is_tool(name)
@@ -2992,6 +3006,9 @@ struct TurnMeta {
     /// Set when this turn is being talked -- see [`Turn::spoken`]. Read by
     /// [`build`], which offers [`END_VOICE_MODE`] only then.
     spoken: bool,
+    /// Set when this turn may only read -- see [`Turn::read_only`]. Read by
+    /// [`build`], which offers it reading tools and nothing that reaches out.
+    read_only: bool,
 }
 
 /// Whether `tool` is offered given whether the person has let the assistant
@@ -3190,6 +3207,7 @@ fn build(
             .into_iter()
             .filter(|tool| jobs.offers(tool))
             .filter(|tool| files_offered(tool, may_look_at_files))
+            .filter(|tool| !meta.read_only || tool.effect == tools::Effect::Read)
             .collect();
     let can_remember = available.iter().any(|t| t.name == "remember");
     // Mail is the one domain a person has to open to the assistant account
@@ -3253,7 +3271,11 @@ fn build(
     // doc's "the tools that are not in the catalogue". The seven that reach
     // the web are one switch, because to the person they are one decision:
     // whether the assistant may talk to strangers' computers at all.
-    let web = !is_dream && settings.web;
+    // A turn that may only read is kept to the vault: a brief is written
+    // from its digest, and the web is where a stranger's words in it could
+    // be carried out to.
+    let reaches_out = !is_dream && !meta.read_only;
+    let web = reaches_out && settings.web;
     if web {
         offered.push(web_search_tool());
         offered.push(read_web_page_tool());
@@ -3280,7 +3302,7 @@ fn build(
     // writes, and kept in Files -- so only in a vault with Files, and not in
     // a dream, which writes one note and nothing else. A routine or a job
     // keeps them where its other files go.
-    let pictures = (!is_dream && vault.supports_files()).then(|| {
+    let pictures = (reaches_out && vault.supports_files()).then(|| {
         use crate::images::tools;
         let origin = if meta.job || meta.unattended {
             karmayoga_core::FileOrigin::Jobs
@@ -3310,7 +3332,7 @@ fn build(
     // is offered only the connections the person allowed unattended, and
     // with nobody to ask, a tool that would ask is refused -- see
     // `ConfirmGate::connection_call`.
-    let connections = if is_dream {
+    let connections = if !reaches_out {
         Vec::new()
     } else {
         crate::connections::tools::offered(&vault, meta.unattended)
@@ -3318,7 +3340,7 @@ fn build(
     if !connections.is_empty() {
         offered.extend(crate::connections::tools::tools(vault.clone(), meta.unattended));
     }
-    let planning = !is_dream;
+    let planning = reaches_out;
     if planning {
         offered.push(update_plan_tool());
     }
@@ -3355,6 +3377,11 @@ fn build(
             assistant_provider.clone(),
         ));
     }
+    // The brief, read out in full -- "read me my brief" -- wherever somebody
+    // is talking, a call included.
+    if meta.spoken && reaches_out && vault.supports_routines() {
+        offered.push(read_brief_tool(vault.clone()));
+    }
     // Reading something out in full, only where something reads aloud: a
     // spoken turn, whose session reads it after the reply.
     if meta.spoken && !is_dream && (mail_offered || feed_offered) {
@@ -3368,9 +3395,9 @@ fn build(
 
     preamble.push_str(
         &Guidance {
-            web: match (is_dream, web) {
-                (true, _) => None,
-                (false, on) => Some(on),
+            web: match (reaches_out, web) {
+                (false, _) => None,
+                (true, on) => Some(on),
             },
             // A dream reads what it is given and has nobody to tell where a
             // switch is, so it hears about mail only when it has some.
@@ -3410,6 +3437,18 @@ fn build(
     if let Some(context) = context.map(str::trim).filter(|c| !c.is_empty()) {
         preamble.push_str("\n\n");
         preamble.push_str(context);
+    }
+
+    // A turn that may only read is held to it here as well as above, by what
+    // each tool is rather than by which were left out: anything not in the
+    // core catalogue as a read, nor one of the few declared here that only
+    // read, is taken away -- so a writing tool added to this function later
+    // cannot turn up in a brief that runs unattended every morning.
+    if meta.read_only {
+        offered.retain(|tool| {
+            tools::find(tool.name())
+                .map_or(READ_ONLY_HERE.contains(&tool.name()), |t| t.effect == tools::Effect::Read)
+        });
     }
 
     let builder = AgentBuilder::new(client.completion_model(&model.model))
@@ -4833,6 +4872,69 @@ fn read_aloud_tool(
     )
 }
 
+/// The person's daily brief, read out by the voice session after the reply,
+/// as it was written to be heard. See `docs/plans/briefs.md`.
+fn read_brief_tool(vault: Arc<Vault>) -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        READ_BRIEF,
+        "Read the person's daily brief out to them in full, in your voice, when they ask to \
+         hear it (\"read me my brief\", \"how does my day look\"). It is read after your \
+         reply, as it was written to be heard, and they can stop it by talking. Give kind to \
+         choose the morning, evening or weekly brief; omit it for the newest. After calling it, \
+         say only a few words saying what you are about to read -- nothing of what it says. \
+         If there is none yet today, say so and offer to make one (run_routine on the \
+         brief's routine; it takes a minute or two).",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["morning", "evening", "weekly"],
+                    "description": "Which brief; the weekly one covers the week ahead. Omit for the newest."
+                }
+            },
+            "additionalProperties": false
+        }),
+        move |arguments: serde_json::Value| {
+            let vault = vault.clone();
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    let kind = match arguments.get("kind").and_then(|k| k.as_str()) {
+                        Some(k) => Some(karmayoga_core::brief::BriefKind::parse(k).ok_or_else(
+                            || ToolExecutionError::invalid_args("read_brief: kind is morning, evening or weekly."),
+                        )?),
+                        None => None,
+                    };
+                    let run = vault
+                        .briefs(kind, 1)
+                        .map_err(|e| ToolExecutionError::other(e.to_string()))?
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| {
+                            ToolExecutionError::invalid_args(
+                                "read_brief: there is no brief yet. Switch one on in Settings \
+                                 \u{2192} Briefs, or make one now with run_routine.",
+                            )
+                        })?;
+                    let brief = run.brief.as_deref().expect("briefs() keeps only runs with one");
+                    let today = vault.agent_settings().unwrap_or_default().now().date();
+                    Ok(ToolOutput::json(serde_json::json!({
+                        "kind": "brief",
+                        "id": run.id.to_string(),
+                        "title": format!("{} for {}", brief.kind.name(), brief.day.strftime("%A %-d %B")),
+                        "today": brief.day == today,
+                        "note": "It is read out in full after your reply. Say in a few words \
+                                 what it is -- and if it is not today's, say which day's -- \
+                                 and nothing of what it says.",
+                    })))
+                })
+                .await
+                .map_err(|e| ToolExecutionError::other(format!("it did not finish: {e}")))?
+            })
+        },
+    )
+}
+
 /// Which message of a thread is read when the person asks to hear it: the
 /// newest somebody else wrote -- what was sent to them, not their own answer
 /// to it -- or, in a thread of only their own, the newest that was sent.
@@ -4861,12 +4963,14 @@ fn to_hear(
 fn read_aloud_of(ran: &[Ran]) -> Vec<crate::listen::ReadAloud> {
     use crate::listen::ReadAloud;
     ran.iter()
-        .filter(|r| r.call.name == READ_ALOUD && matches!(r.outcome, Some(Ok(_))))
+        .filter(|r| matches!(r.call.name.as_str(), READ_ALOUD | READ_BRIEF))
+        .filter(|r| matches!(r.outcome, Some(Ok(_))))
         .filter_map(|r| {
             let id = r.ids.first()?;
             match r.saved_kind.as_deref()? {
                 "message" => id.parse().ok().map(ReadAloud::Message),
                 "story" => id.parse().ok().map(ReadAloud::Story),
+                "brief" => id.parse().ok().map(ReadAloud::Brief),
                 _ => None,
             }
         })
@@ -5287,6 +5391,13 @@ pub struct Turn {
     ///
     /// [`Routine::model`]: karmayoga_core::Routine::model
     pub tier: Option<ModelTier>,
+    /// Set when this turn may only read: a brief's run. It is offered the
+    /// core tools that change nothing and none of those declared here that
+    /// reach beyond the vault -- the web, the browser, pictures, connections
+    /// -- so a brief that runs every morning with nobody watching reads the
+    /// vault, writes its answer, and does nothing else. See
+    /// `docs/plans/briefs.md`.
+    pub read_only: bool,
 }
 
 /// The most jobs [`background_note`] lists. The note is sent with every turn,
@@ -5864,6 +5975,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         about_job,
         max_steps,
         tier,
+        read_only,
     } = turn;
     // The application's own words never come with a picture, or a file.
     let (pictures, files) =
@@ -6132,6 +6244,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         drafting,
         asker: reach.asker.clone(),
         spoken,
+        read_only,
     };
     let agent =
         build(&meta, vault.clone(), &settings, &access, context.as_deref(), history_trimmed)?;
@@ -7263,7 +7376,7 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
         }
         // The card's own words say it; the note is for the model.
         END_VOICE_MODE => return String::new(),
-        SUMMARIZE_THREAD | READ_ALOUD => {
+        SUMMARIZE_THREAD | READ_ALOUD | READ_BRIEF => {
             return str_of("title").trim().chars().take(120).collect();
         }
         REMEMBER_PRONUNCIATION => {
@@ -9934,7 +10047,7 @@ mod tests {
     fn what_a_job_a_routine_or_a_proposal_said_arms_the_taint_when_it_returns_anything() {
         assert_eq!(
             READS_BACK_WHAT_WAS_SAVED,
-            ["job_status", "list_runs", "get_proposal", "list_proposals"]
+            ["job_status", "list_runs", "get_brief", "get_proposal", "list_proposals"]
         );
         for name in READS_BACK_WHAT_WAS_SAVED {
             let tool = tools::find(name).unwrap_or_else(|| panic!("{name} is not a core tool"));

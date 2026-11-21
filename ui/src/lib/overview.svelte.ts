@@ -26,6 +26,7 @@
 import { accounts } from './accounts.svelte'
 import { api } from './api'
 import { byArea, neglected, type AreaTotals } from './balance'
+import { briefs } from './brief.svelte'
 import { calendar } from './calendar.svelte'
 import {
   activityWindows,
@@ -124,6 +125,32 @@ const layoutPref = pref<Widget[]>(
   (widgets) => JSON.stringify($state.snapshot(widgets)),
 )
 
+/**
+ * The Overview's two pages: Home, the cards somebody arranged, and Brief,
+ * the newest brief written out in full with its pictures. Not a card on the
+ * page, because a brief is read top to bottom and wants the whole width and
+ * height to be read in, which a card in a grid of them never has.
+ */
+export const OVERVIEW_PAGES = ['home', 'brief'] as const
+export type OverviewPage = (typeof OVERVIEW_PAGES)[number]
+
+/**
+ * Where the page last picked is kept, on this device. Written out here
+ * rather than through `prefs.ts`, whose keys are a closed list of their own
+ * -- the same arrangement `listen.svelte.ts` keeps its speed under.
+ */
+const PAGE_KEY = 'karmayoga.overview.page'
+
+/** The page kept from last time, or Home. */
+function savedPage(): OverviewPage {
+  try {
+    const kept = localStorage.getItem(PAGE_KEY)
+    return OVERVIEW_PAGES.find((p) => p === kept) ?? 'home'
+  } catch {
+    return 'home'
+  }
+}
+
 /** Which of `INTRODUCED` this page has already been shown -- see `introduce`. */
 const introducedPref = pref<string[]>(
   'karmayoga.overview.introduced',
@@ -210,6 +237,31 @@ class OverviewState {
   widgets = $state<Widget[]>([])
   /** Whether the cards are showing their handles. Off on every fresh mount. */
   editing = $state(false)
+
+  #page = $state<OverviewPage>(savedPage())
+
+  /**
+   * Which page is showing. Remembered, so the window opens on the one left
+   * open -- somebody who reads the brief first thing every morning should
+   * not have to ask for it every morning. Set from outside too: the brief
+   * card's Read, and Settings → Briefs' "Open in Overview", put the Brief
+   * page up with `overview.page = 'brief'`.
+   */
+  get page(): OverviewPage {
+    return this.#page
+  }
+
+  set page(page: OverviewPage) {
+    this.#page = page
+    // Leaving Home ends arranging it: the handles belong to cards that are
+    // no longer on screen.
+    if (page !== 'home') this.editing = false
+    try {
+      localStorage.setItem(PAGE_KEY, page)
+    } catch {
+      // Not kept; this session still has it.
+    }
+  }
   /** Any day in the week being shown. The widgets resolve it to a Monday. */
   anchor = $state(todayIso())
   /**
@@ -340,6 +392,9 @@ class OverviewState {
    * have, and is said as such.
    */
   get showing(): Showing {
+    if (this.page === 'brief') {
+      return { view: 'the Brief page: the newest brief written out, with its timeline and figures' }
+    }
     const cards = this.widgets.map((w) => specOf(w.type).label.toLowerCase()).slice(0, 8)
     return {
       view:
@@ -615,6 +670,11 @@ class OverviewState {
     // why this is idempotent -- so "Plan for tomorrow" only has to ask once,
     // the same as every other app view does on its own way in.
     if (needs.has('proposals') && !proposals.loaded) await proposals.refresh()
+    // The briefs store is the same kind of thing: it keeps itself current
+    // (a routine or run change reloads it) and the Brief page and Settings
+    // read it too. Not awaited -- its own `loading` is what the card reads,
+    // and nothing else on the page waits on it.
+    if (needs.has('brief')) void briefs.start()
     // The Weather widget redraws itself every fifteen minutes on its own,
     // independent of whatever else makes this page refresh -- see
     // `pollWeather`. Started or stopped here so adding or removing the

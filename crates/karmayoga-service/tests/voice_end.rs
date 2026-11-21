@@ -242,6 +242,7 @@ async fn a_typed_turn_is_not_offered_it() {
         about_job: None,
         max_steps: None,
         tier: None,
+        read_only: false,
     })
     .await
     .unwrap();
