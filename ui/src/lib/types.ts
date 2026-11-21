@@ -3806,6 +3806,20 @@ export interface Companion {
   markings?: string
 }
 
+/**
+ * How every voice says one word or name -- in a conversation, mail read aloud
+ * and Listen. Mirrors `karmayoga_core::speech::Pronunciation`.
+ */
+export interface Pronunciation {
+  /** The word as written: found whole, whatever its case. */
+  word: string
+  /**
+   * How it sounds, in plain letters: syllables split by hyphens, the stressed
+   * one in capitals ("shiv-AWN").
+   */
+  say: string
+}
+
 export interface AgentSettings {
   /** Off until somebody turns it on, and off in a new vault. */
   enabled: boolean
@@ -3840,6 +3854,13 @@ export interface AgentSettings {
    * Absent when empty.
    */
   safeSites?: string[]
+  /**
+   * How the voices say words they would otherwise say wrong. Changed only
+   * with `setPronunciation` / `removePronunciation` (and by the assistant's
+   * `remember_pronunciation`): `saveAgentSettings` keeps whatever is stored.
+   * Absent when empty.
+   */
+  pronunciations?: Pronunciation[]
   /** Model turns one request may take before the loop gives up. */
   maxSteps: number
   /** Whether the assistant may write memories. */

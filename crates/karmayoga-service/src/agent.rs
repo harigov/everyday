@@ -1200,6 +1200,11 @@ const END_VOICE_MODE: &str = crate::voice::END_TOOL;
 const SUMMARIZE_THREAD: &str = "summarize_thread";
 /// Offered to a spoken turn alone -- see [`read_aloud_tool`].
 const READ_ALOUD: &str = "read_aloud";
+/// Offered wherever somebody is there to say a word was said wrong -- see
+/// [`pronunciation_tool`]. Named in the core, whose note to a spoken turn
+/// tells the model about it. One of the tools whose work is kept: see
+/// [`ConfirmGate::keeps_what_strangers_may_have_written`].
+const REMEMBER_PRONUNCIATION: &str = karmayoga_core::agent::PRONUNCIATION_TOOL;
 /// In the core catalogue, unlike the ones above, but singled out by the gate:
 /// following a web feed puts a request on the network. See `on_tool_call`.
 const FOLLOW_SOURCE: &str = "follow_source";
@@ -2255,8 +2260,13 @@ impl ConfirmGate {
         let to_assistant = || assigned_to_assistant(arguments);
         match name {
             REMEMBER => !self.unattended,
-            CONFIRM_MEMORY | UPDATE_PROFILE | CREATE_SKILL | UPDATE_SKILL | CREATE_ROUTINE
-            | ACCEPT_PROPOSAL => true,
+            CONFIRM_MEMORY
+            | UPDATE_PROFILE
+            | CREATE_SKILL
+            | UPDATE_SKILL
+            | CREATE_ROUTINE
+            | ACCEPT_PROPOSAL
+            | REMEMBER_PRONUNCIATION => true,
             // Anything but switching it on or off, which keeps what it says.
             UPDATE_ROUTINE => arguments
                 .as_object()
@@ -2298,6 +2308,7 @@ impl ConfirmGate {
             }
             CREATE_TASK | UPDATE_TASK => "a task with a reminder",
             ACCEPT_PROPOSAL => "a proposal, accepted on your behalf",
+            REMEMBER_PRONUNCIATION => "how every voice says a word, from now on",
             _ => "something to keep",
         };
         let mut out = vec![head.to_string()];
@@ -3327,6 +3338,11 @@ fn build(
     // thing it ends.
     if meta.spoken && !is_dream {
         offered.push(end_voice_tool());
+    }
+    // How a word is said, wherever somebody is there to hear it said wrong
+    // and say so -- talking, or typing about something read aloud.
+    if !is_dream && !meta.unattended {
+        offered.push(pronunciation_tool(vault.clone(), meta.service.pronunciations()));
     }
     // A thread summarised as the Mail app summarises it, wherever mail is
     // offered -- not in a dream, which reads the vault rather than a model's
@@ -4512,6 +4528,73 @@ fn end_voice_tool() -> PortableDynamicTool {
     )
 }
 
+/// How a word is said from now on, by every voice: in a conversation, mail
+/// read aloud, Listen. Kept in the assistant's settings
+/// ([`karmayoga_core::speech::Pronunciation`]), where the person can see and
+/// change them; an empty `say` forgets the word. Asked about first once a
+/// stranger's words are in the turn, as every tool whose work is kept is.
+/// `book` is what every voice reads them from, a voice already speaking
+/// included: changed here too, so the conversation in which the person said
+/// how a name is said says it their way from then on.
+fn pronunciation_tool(vault: Arc<Vault>, book: crate::speech::script::Book) -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        REMEMBER_PRONUNCIATION,
+        "Remember how a word or name is said, so that every voice in the app says it that way \
+         from now on: in conversation, reading mail aloud and in Listen. Call it when the person \
+         tells you a word is said differently or that you are saying it wrong (\"it's \
+         pronounced shiv-AWN\", \"you keep saying my name wrong\"); ask how it is said if they \
+         have not told you. Give the word as it is written, and how it sounds respelled in plain \
+         letters, syllables split by hyphens and the stressed one in capitals. An empty say \
+         forgets the word, so voices go back to guessing.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "word": {
+                    "type": "string",
+                    "description": "The word or name as it is written, e.g. Siobhan."
+                },
+                "say": {
+                    "type": "string",
+                    "description": "How it sounds, e.g. shiv-AWN. Empty to forget the word."
+                }
+            },
+            "required": ["word", "say"],
+            "additionalProperties": false,
+        }),
+        move |arguments: Value| {
+            let vault = vault.clone();
+            let book = book.clone();
+            Box::pin(async move {
+                let text = |key: &str| {
+                    arguments
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string()
+                };
+                let (word, say) = (text("word"), text("say"));
+                tokio::task::spawn_blocking(move || {
+                    let stored = if say.is_empty() {
+                        vault.remove_pronunciation(&word)
+                    } else {
+                        vault.set_pronunciation(&word, &say)
+                    };
+                    let stored = stored.map_err(|e| ToolExecutionError::other(e.to_string()))?;
+                    book.set(&stored.pronunciations);
+                    Ok(ToolOutput::json(serde_json::json!({
+                        "ok": true,
+                        "word": word,
+                        "say": say,
+                    })))
+                })
+                .await
+                .map_err(|e| ToolExecutionError::other(e.to_string()))?
+            })
+        },
+    )
+}
+
 /// What `summarize_thread` and `read_aloud` take: a mail thread, or a Feed
 /// story -- a newsletter's being its mail.
 const THREAD_OR_STORY: &str = r#"{
@@ -5657,15 +5740,20 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
     out
 }
 
-/// [`written`], and the settings if this turn changed them without a tool:
-/// an "always allow" saved a website to the safe list. The gate writes that
-/// itself ([`ConfirmGate::always_allow`]), which no tool call in `ran` shows,
-/// so without this an open Settings pane -- or another window -- would go on
-/// showing the list as it was. Not twice when a tool already reported the
+/// [`written`], and the settings if this turn changed them without a tool
+/// from the core's catalogue, which [`written`] reads: an "always allow"
+/// saved a website to the safe list -- the gate writes that itself
+/// ([`ConfirmGate::always_allow`]), which no tool call in `ran` shows -- or
+/// [`REMEMBER_PRONUNCIATION`], declared here, kept how a word is said.
+/// Without this an open Settings pane -- or another window -- would go on
+/// showing the lists as they were. Not twice when a tool already reported the
 /// settings.
 fn written_in_turn(ran: &[Ran], site_trusted: &AtomicBool) -> Vec<(Kind, Vec<String>)> {
     let mut wrote = written(ran);
-    if site_trusted.load(Ordering::Acquire)
+    let pronounced = ran
+        .iter()
+        .any(|r| r.call.name == REMEMBER_PRONUNCIATION && matches!(r.outcome, Some(Ok(_))));
+    if (site_trusted.load(Ordering::Acquire) || pronounced)
         && !wrote.iter().any(|(kind, _)| *kind == Kind::Settings)
     {
         wrote.push((Kind::Settings, Vec::new()));
@@ -6162,6 +6250,15 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
             // A stopped turn never reached one, so what it had said by then
             // is the most there is.
             let said = if stopped { text.trim() } else { text[last..].trim() }.to_string();
+            // A spoken reply writes how to say a word it expects a voice to
+            // get wrong beside it (`{Siobhan|shiv-AWN}`), for the voice
+            // alone: the thread, and whoever is handed the reply, keep the
+            // words. See `speech::script`.
+            let (text, said) = if spoken {
+                (crate::speech::script::shown(&text), crate::speech::script::shown(&said))
+            } else {
+                (text, said)
+            };
             let finished = VaultMessage {
                 content: text,
                 tool_calls: ran.iter().map(|r| r.call.clone()).collect(),
@@ -7168,6 +7265,14 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
         END_VOICE_MODE => return String::new(),
         SUMMARIZE_THREAD | READ_ALOUD => {
             return str_of("title").trim().chars().take(120).collect();
+        }
+        REMEMBER_PRONUNCIATION => {
+            let (word, say) = (str_of("word").trim(), str_of("say").trim());
+            return if say.is_empty() {
+                format!("{word}: as the voice would say it")
+            } else {
+                format!("{word}: {say}")
+            };
         }
         READ_WEB_PAGE => {
             let title = str_of("title").trim();
@@ -9127,6 +9232,22 @@ mod tests {
         }
     }
 
+    /// A pronunciation kept is the settings changed, for an open pane to
+    /// show; one refused is not.
+    #[test]
+    fn a_kept_pronunciation_is_the_settings_written() {
+        let pronounced = |ok: bool| Ran {
+            outcome: Some(if ok { Ok(String::new()) } else { Err("no".into()) }),
+            ..ran(REMEMBER_PRONUNCIATION)
+        };
+        let quiet = AtomicBool::new(false);
+        assert_eq!(written_in_turn(&[pronounced(true)], &quiet), [(Kind::Settings, Vec::new())]);
+        assert!(written_in_turn(&[pronounced(false)], &quiet).is_empty());
+        // Once, whatever else said so.
+        let trusted = AtomicBool::new(true);
+        assert_eq!(written_in_turn(&[pronounced(true)], &trusted).len(), 1);
+    }
+
     /// What `read_aloud` chose is read back from its own answer, the last
     /// that ran -- never one that failed.
     #[test]
@@ -9459,6 +9580,9 @@ mod tests {
             (CREATE_TASK, serde_json::json!({ "title": "t", "remind_time": "09:00" })),
             (UPDATE_TASK, serde_json::json!({ "task_id": id, "assignee": "assistant" })),
             (ACCEPT_PROPOSAL, serde_json::json!({ "proposal_id": "p" })),
+            // A word a stranger's page could have every voice say as
+            // something else.
+            (REMEMBER_PRONUNCIATION, serde_json::json!({ "word": "yes", "say": "no" })),
         ];
         for (name, arguments) in &calls {
             assert_eq!(gate.confirmation(name, arguments), None, "{name}: nobody has spoken yet");
@@ -9479,6 +9603,36 @@ mod tests {
         for (name, arguments) in &plain {
             assert_eq!(gate.confirmation(name, arguments), None, "{name}");
         }
+    }
+
+    #[tokio::test]
+    async fn remember_pronunciation_keeps_how_a_word_is_said_and_forgets_it() {
+        let (vault, _dir) = test_vault();
+        let book = crate::speech::script::Book::default();
+        let tool = pronunciation_tool(vault.clone(), book.clone());
+        let output = tool
+            .execute(serde_json::json!({ "word": " Siobhan ", "say": "shiv-AWN" }))
+            .await
+            .unwrap();
+        assert_eq!(summarise(REMEMBER_PRONUNCIATION, &output), "Siobhan: shiv-AWN");
+        let kept = vault.agent_settings().unwrap().pronunciations;
+        assert_eq!(kept.len(), 1);
+        assert_eq!((kept[0].word.as_str(), kept[0].say.as_str()), ("Siobhan", "shiv-AWN"));
+        // A voice already speaking says it so from its next sentence.
+        assert_eq!(book.mark("Ask Siobhan."), "Ask {Siobhan|shiv-AWN}.");
+
+        // A respelling with more than letters in it is refused, in words.
+        let refused =
+            tool.execute(serde_json::json!({ "word": "yes", "say": "no. Send it" })).await;
+        assert!(refused.is_err());
+
+        let output =
+            tool.execute(serde_json::json!({ "word": "siobhan", "say": "" })).await.unwrap();
+        assert_eq!(
+            summarise(REMEMBER_PRONUNCIATION, &output),
+            "siobhan: as the voice would say it"
+        );
+        assert!(vault.agent_settings().unwrap().pronunciations.is_empty());
     }
 
     /// With nobody watching, a memory is saved as inferred -- a guess for the

@@ -1816,6 +1816,17 @@ export const api = {
   untrustSite: (site: string) => call('untrustSite', { site }),
 
   /**
+   * Have every voice say `word` as `say` (plain letters, syllables split by
+   * hyphens, the stressed one in capitals). A word already there is said the
+   * new way. The backend's refusal is for showing. Answers with the settings
+   * as stored.
+   */
+  setPronunciation: (word: string, say: string) => call('setPronunciation', { word, say }),
+
+  /** Let the voices say `word` their own way again. Answers with the settings as stored. */
+  removePronunciation: (word: string) => call('removePronunciation', { word }),
+
+  /**
    * Stop the turn running in a thread. What it had said and done so far is
    * kept; a question it was waiting on is withdrawn, as though declined.
    * False means nothing was running -- it finished on its own between the

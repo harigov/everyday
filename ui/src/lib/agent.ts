@@ -544,6 +544,25 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
         text: running ? 'Getting ready to read' : 'Read aloud',
         detail: null,
       }
+    // How every voice says a word from now on; an empty `say` forgets it.
+    case 'remember_pronunciation': {
+      const word = arg(args, 'word')
+      const forgets = !arg(args, 'say')
+      return {
+        text: forgets
+          ? running
+            ? 'Forgetting how to say'
+            : done
+              ? 'Forgot how to say'
+              : 'Forget how to say'
+          : running
+            ? 'Remembering how to say'
+            : done
+              ? 'Remembered how to say'
+              : 'Remember how to say',
+        detail: word,
+      }
+    }
     // The spoken conversation ends once the goodbye has been heard; the
     // thread stays.
     case 'end_voice_mode':

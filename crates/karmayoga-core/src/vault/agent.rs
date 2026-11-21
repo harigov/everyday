@@ -99,6 +99,30 @@ impl Vault {
         })
     }
 
+    /// Have every voice say `word` as `say` -- see
+    /// [`Pronunciation`](crate::speech::Pronunciation) -- and answer with the
+    /// settings as stored. A word already there is said the new way.
+    pub fn set_pronunciation(&self, word: &str, say: &str) -> Result<AgentSettings> {
+        let pronunciation = crate::speech::Pronunciation::new(word, say)?;
+        self.update_agent_settings(|settings| {
+            let list = &mut settings.pronunciations;
+            match list.iter_mut().find(|p| p.is_for(&pronunciation.word)) {
+                Some(kept) => *kept = pronunciation,
+                None => list.push(pronunciation),
+            }
+            crate::speech::validate_pronunciations(list)
+        })
+    }
+
+    /// Let the voices say `word` as they would by themselves again, and
+    /// answer with the settings as stored. Not there is not an error.
+    pub fn remove_pronunciation(&self, word: &str) -> Result<AgentSettings> {
+        self.update_agent_settings(|settings| {
+            settings.pronunciations.retain(|p| !p.is_for(word));
+            Ok(())
+        })
+    }
+
     /// The settings and the model a turn runs on, for the one kind of caller
     /// that needs both: an assistant turn about to be taken.
     ///

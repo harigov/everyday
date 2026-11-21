@@ -42,6 +42,8 @@
     voiceEndpointOf,
   } from '../lib/accounts'
   import { isLoopback } from '../lib/agent'
+  import { agent } from '../lib/agent.svelte'
+  import { errorMessage, handle, isLocked } from '../lib/errors'
   import { humanBytes } from '../lib/format'
   import { meetings } from '../lib/meetings.svelte'
   import { LOCAL_RECOGNISERS, formatRealtimeFactor, isTooSlow } from '../lib/meetings-format'
@@ -576,6 +578,55 @@
 
   let tryingVoice = $state(false)
   let voiceTried = $state<string | null>(null)
+
+  // ── Pronunciations ───────────────────────────────────────────────────
+  //
+  // How every voice says a word it would say wrong. Kept with the
+  // assistant's settings, not in this pane's draft: the list changes on its
+  // own -- the assistant saves one when you tell it a word is said
+  // differently -- so what is drawn is what the store last heard, and each
+  // button saves at once, as the safe websites do in the assistant's pane.
+  void agent.loadSettings()
+  const pronunciations = $derived(agent.settings?.pronunciations ?? [])
+  let sayWord = $state('')
+  let saySound = $state('')
+  let sayError = $state<string | null>(null)
+  let sayBusy = $state(false)
+
+  async function addPronunciation() {
+    const word = sayWord.trim()
+    const say = saySound.trim()
+    if (!word || !say || sayBusy) return
+    sayBusy = true
+    sayError = null
+    try {
+      await agent.setPronunciation(word, say)
+      sayWord = ''
+      saySound = ''
+    } catch (e) {
+      // A locked vault goes to the lock screen; anything else is the
+      // backend's own sentence, beside the boxes it is about, and what was
+      // typed stays so it can be put right.
+      if (isLocked(e)) await handle(e)
+      else sayError = errorMessage(e)
+    } finally {
+      sayBusy = false
+    }
+  }
+
+  async function removePronunciation(word: string) {
+    if (sayBusy) return
+    sayBusy = true
+    sayError = null
+    try {
+      await agent.removePronunciation(word)
+    } catch (e) {
+      if (isLocked(e)) await handle(e)
+      else sayError = errorMessage(e)
+    } finally {
+      sayBusy = false
+    }
+  }
 
   /** Say a sentence in the saved voice, and wait until it has been said. */
   async function tryVoice() {
@@ -1528,6 +1579,66 @@
           </div>
         {/if}
       </section>
+
+      <section class="card" aria-labelledby="model-pronunciations">
+        <div class="head">
+          <span class="eyebrow" id="model-pronunciations">Pronunciations</span>
+        </div>
+        <p class="hint">
+          Words every voice says your way: names, places, brands. Spell how each sounds in plain
+          letters, with hyphens between the syllables and the stressed one in capitals, like
+          “shiv-AWN” for Siobhan. You can also tell the assistant, while you talk, that it said
+          something wrong. Saved as soon as you add or remove one.
+        </p>
+        {#if pronunciations.length > 0}
+          <ul class="sayings">
+            {#each pronunciations as p (p.word)}
+              <li>
+                <span class="saying"><b>{p.word}</b> <span class="said">{p.say}</span></span>
+                <button
+                  class="btn btn-sm btn-ghost-danger"
+                  aria-label="Stop saying {p.word} as {p.say}"
+                  disabled={sayBusy}
+                  onclick={() => void removePronunciation(p.word)}
+                >
+                  Remove
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="hint">None yet.</p>
+        {/if}
+        <div class="say-add">
+          <input
+            bind:value={sayWord}
+            placeholder="Siobhan"
+            aria-label="The word, as it is written"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <input
+            bind:value={saySound}
+            placeholder="shiv-AWN"
+            aria-label="How it sounds"
+            autocomplete="off"
+            spellcheck="false"
+            onkeydown={(e) => {
+              if (e.key !== 'Enter' || e.isComposing) return
+              e.preventDefault()
+              void addPronunciation()
+            }}
+          />
+          <button
+            class="btn btn-sm btn-outline"
+            disabled={sayBusy || !sayWord.trim() || !saySound.trim()}
+            onclick={() => void addPronunciation()}
+          >
+            Add
+          </button>
+        </div>
+        {#if sayError}<p class="error" role="alert">{sayError}</p>{/if}
+      </section>
     {/if}
 
     {#if sub === 'image'}
@@ -1765,6 +1876,51 @@
     border-color: var(--accent);
     background: var(--bg-selected);
     color: var(--fg);
+  }
+
+  /* The pronunciations: each word with how it is said and a way to take it
+     off, then one row to add another. As the safe websites in the assistant's
+     pane are drawn; a long one wraps rather than widening the pane. */
+  .sayings {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .sayings li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    min-width: 0;
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+  }
+  .saying {
+    min-width: 0;
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+  }
+  .said {
+    margin-left: var(--sp-2);
+    color: var(--fg-muted);
+  }
+  .say-add {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .say-add input {
+    flex: 1;
+    min-width: 0;
+  }
+  .say-add .btn {
+    flex: none;
   }
 
   /* The label wrapped around a caption and an input -- not the global

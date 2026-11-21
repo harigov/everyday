@@ -159,6 +159,9 @@ pub struct Service {
     /// [`Service::close`] exactly as the summary cache is: it is somebody's
     /// correspondence.
     listen_briefings: std::sync::Mutex<std::collections::HashMap<ThreadId, (u32, String)>>,
+    /// How the person wants words said, as every voice built here reads them
+    /// -- see [`Service::pronunciations`].
+    pronunciations: crate::speech::script::Book,
     /// Karma's book being settled off the caller's thread -- see
     /// [`Service::start_refreshers`] -- each holding the vault until done.
     /// [`Service::close`] waits for them: one still running kept the vault's
@@ -195,6 +198,7 @@ impl Service {
             events: RwLock::new(Arc::new(Silent)),
             supervisor: RwLock::new(Arc::new(Supervisor::new(Arc::new(Silent)))),
             pending: Arc::default(),
+            pronunciations: crate::speech::script::Book::default(),
             idempotency: Idempotency::default(),
             transfers: Arc::default(),
             calendar_sync: std::sync::Mutex::default(),
@@ -655,6 +659,16 @@ impl Service {
 
     pub fn pending(&self) -> Arc<Pending> {
         self.pending.clone()
+    }
+
+    /// The person's pronunciations, shared by every voice built here
+    /// ([`Service::speech_synthesiser`]): filled from the vault as each voice
+    /// is built, and changed at once when a pronunciation is saved or
+    /// removed, so a voice in use -- a conversation in which the person has
+    /// just said how a name is said -- says it their way from its next
+    /// sentence.
+    pub fn pronunciations(&self) -> crate::speech::script::Book {
+        self.pronunciations.clone()
     }
 
     pub fn transfers(&self) -> Arc<Transfers> {

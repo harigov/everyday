@@ -1258,6 +1258,8 @@ async fn every_offline_write_announces_what_was_written_down() {
     // spelling of it.
     run(&svc, &h, "trust_site", json!({ "site": "https://www.Docs.example/guide?page=2" })).await;
     run(&svc, &h, "untrust_site", json!({ "site": "docs.example" })).await;
+    run(&svc, &h, "set_pronunciation", json!({ "word": "Siobhan", "say": "shiv-AWN" })).await;
+    run(&svc, &h, "remove_pronunciation", json!({ "word": "siobhan" })).await;
 
     // ---- the models -----------------------------------------------------------
     let models = karmayoga_core::llm::ModelSettings::default();

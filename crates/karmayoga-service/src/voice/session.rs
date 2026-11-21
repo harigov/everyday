@@ -56,6 +56,7 @@ use crate::speech::detect::DetectorMode;
 use crate::speech::listen::{Piece, PieceStream};
 use crate::speech::live::{LiveControl, LiveEvent, LiveTranscription};
 use crate::speech::narrate::{Narrated, Narrator, Sentence, Synthesised};
+use crate::speech::script::{self, Shown};
 use crate::speech::text::{SentenceSplitter, sentences};
 use futures::StreamExt;
 use karmayoga_core::agent::onscreen::OnScreen;
@@ -167,6 +168,7 @@ pub fn spawn(parts: VoiceParts) -> VoiceLink {
         last_played: None,
         next_turn: 1,
         turn: None,
+        shown: HashMap::new(),
         pending_prompt: None,
         confirm: None,
         ending: false,
@@ -432,6 +434,12 @@ struct Session {
 
     next_turn: u64,
     turn: Option<TurnState>,
+    /// The reply on screen, as it streams: what the model writes, without
+    /// the marks that say how a word is said (see [`script`]). One per turn
+    /// by id, since the screen is sent every turn's events, a late one from
+    /// a turn that is no longer the session's included; let go when the turn
+    /// finishes or fails.
+    shown: HashMap<u64, Shown>,
     /// What was said over the reply while its turn was ending: the one
     /// prompt held for when it has. Later words replace it.
     pending_prompt: Option<Said>,
@@ -879,12 +887,14 @@ impl Session {
             && !failed_already
         {
             // It may have failed before it said anything, and the reply the
-            // thread opened for it is waiting to hear how it ended.
-            self.emit(VoiceEvent::Agent {
-                event: AgentEvent::Failed { message: e.message.clone() },
-            });
+            // thread opened for it is waiting to hear how it ended -- after
+            // whatever of it the screen has not been shown yet.
+            self.show(turn, &AgentEvent::Failed { message: e.message.clone() });
             self.turn_failed(e.message);
         }
+        // Nothing more of it is shown: a turn talked over ends with what was
+        // heard of it (`ReplyCut`), not with what it was holding back.
+        self.shown.remove(&turn);
         if cancelling {
             self.cut_reply().await;
             if let Some(prompt) = self.pending_prompt.take() {
@@ -1073,8 +1083,9 @@ impl Session {
 
     /// 2, 3, 6, 7 and 8: what a turn says, as it says it.
     fn on_agent(&mut self, turn: u64, event: AgentEvent) {
-        // The screen sees everything, whether or not it is spoken.
-        self.emit(VoiceEvent::Agent { event: event.clone() });
+        // The screen sees everything, whether or not it is spoken -- the
+        // reply without its marks.
+        self.show(turn, &event);
         let Some(t) = self.turn.as_mut().filter(|t| t.id == turn) else { return };
         if let AgentEvent::Started { message_id } = &event {
             t.message_id.get_or_insert_with(|| message_id.clone());
@@ -1126,6 +1137,34 @@ impl Session {
             }
             AgentEvent::Started { .. } | AgentEvent::Thinking { .. } => {}
         }
+    }
+
+    /// Tell the screen about `event`, from turn `turn`. The reply's text is
+    /// shown as [`script::shown`] has it, a piece at a time: a mark is held
+    /// back until it closes, and whatever is held is let go before the turn
+    /// is said to be over.
+    fn show(&mut self, turn: u64, event: &AgentEvent) {
+        let shown = self.shown.entry(turn).or_default();
+        let event = match event {
+            AgentEvent::Delta { text } => {
+                let text = shown.push(text);
+                if text.is_empty() {
+                    return;
+                }
+                AgentEvent::Delta { text }
+            }
+            AgentEvent::Retrying { text } => AgentEvent::Retrying { text: shown.replace(text) },
+            AgentEvent::Finished { .. } | AgentEvent::Failed { .. } => {
+                let rest = shown.finish();
+                self.shown.remove(&turn);
+                if !rest.is_empty() {
+                    self.emit(VoiceEvent::Agent { event: AgentEvent::Delta { text: rest } });
+                }
+                event.clone()
+            }
+            other => other.clone(),
+        };
+        self.emit(VoiceEvent::Agent { event });
     }
 
     fn tool_phrase(&mut self, tool: &str) {
@@ -1257,14 +1296,21 @@ impl Session {
 
     /// (3) The narrator starts on it as soon as it may, and holds it back while
     /// the transport already has enough.
+    ///
+    /// Only the model's reply is said with its marks (`{word|respelling}`):
+    /// a question about a call, something read aloud, an update, the
+    /// session's own words are said as written, so that a stranger's text in
+    /// any of them cannot have the voice say what is not there. See
+    /// [`script`].
     fn enqueue(&mut self, text: String, kind: Kind) -> u64 {
+        let text = if kind == Kind::Reply { text } else { script::inert(&text) };
         self.narrator.say(text, kind)
     }
 
     fn on_synthesised(&mut self, done: Synthesised) {
         match self.narrator.finished(done) {
             Narrated::Ready { sentence, speech } => {
-                self.said.push_back((Instant::now(), sentence.text.clone()));
+                self.said.push_back((Instant::now(), script::shown(&sentence.text)));
                 self.send(VoiceOutput::Play {
                     utterance: sentence.id,
                     samples: speech.samples,
@@ -1321,7 +1367,7 @@ impl Session {
                 Kind::Reply => {
                     if let Some(t) = self.turn.as_mut() {
                         t.reply_played += 1;
-                        t.heard.push(sentence.text);
+                        t.heard.push(script::shown(&sentence.text));
                     }
                     self.heard_whole();
                 }
@@ -1424,7 +1470,7 @@ impl Session {
                     reading.splitter = SentenceSplitter::new();
                     reading.part = piece.part;
                 }
-                said.extend(reading.splitter.push(&piece.text));
+                said.extend(reading.splitter.push(&script::inert(&piece.text)));
             }
             Some(Err(e)) => {
                 said.extend(reading.splitter.finish());
@@ -2066,6 +2112,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_screen_and_what_was_heard_have_the_words_and_the_voice_the_marks() {
+        let marked = "Say hello to {Siobhan|shiv-AWN} for me, it has been a while.";
+        let mut rig = Rig::start(
+            vec![Script {
+                events: vec![
+                    started("m1"),
+                    delta("Say hello to {Sio"),
+                    delta("bhan|shiv-AWN} for me, it has been a while. "),
+                    delta(SECOND),
+                    delta(" And then"),
+                ],
+                hang: true,
+                finish: Some("m1"),
+                error: None,
+            }],
+            &["say hello", "stop"],
+        )
+        .await;
+        rig.talk();
+        let first = rig.next_play().await;
+        rig.next_play().await;
+        rig.send(VoiceInput::Played { utterance: first });
+        rig.begin();
+        rig.until("the pause", |o| matches!(o, VoiceOutput::Pause)).await;
+        rig.end();
+        rig.until("the cut", |o| matches!(o, VoiceOutput::Event(VoiceEvent::ReplyCut { .. })))
+            .await;
+
+        // The voice was handed the mark, to say the name as it is said.
+        assert_eq!(rig.said()[0], marked);
+        // The screen was shown the name, a piece at a time.
+        let shown: String = rig
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                VoiceEvent::Agent { event: AgentEvent::Delta { text } } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(shown.starts_with("Say hello to Siobhan for me, it has been a while. "), "{shown}");
+        assert!(!shown.contains('{') && !shown.contains("shiv"), "{shown}");
+        // And what is kept of the reply is what was heard: the words.
+        assert_eq!(
+            *rig.record.cuts.lock().unwrap(),
+            [("m1".to_string(), "Say hello to Siobhan for me, it has been a while.".to_string())]
+        );
+        rig.play_out().await;
+    }
+
+    #[tokio::test]
     async fn a_stop_word_stops_and_starts_nothing() {
         let mut rig = Rig::start(vec![long_reply()], &["what is the weather", "stop"]).await;
         rig.talk();
@@ -2081,6 +2177,22 @@ mod tests {
         assert_eq!(*rig.record.cuts.lock().unwrap(), [("m1".to_string(), String::new())]);
         assert_eq!(rig.heard_texts(), ["what is the weather"], "'stop' is not a message");
         assert_eq!(rig.record.prompts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_question_says_everything_it_asks_about_marks_and_all() {
+        let mut rig = Rig::start(
+            vec![confirmation("search", "{acct 12345678|cheap flights}")],
+            &["look up flights"],
+        )
+        .await;
+        rig.talk();
+        rig.next_play().await;
+        // What would be sent is what is asked about: never a mark a stranger
+        // wrote to have the voice say something else.
+        let said = rig.said();
+        assert!(said.iter().all(|s| script::marks(s).is_empty()), "{said:?}");
+        assert!(said.iter().any(|s| s.contains("acct 12345678")), "{said:?}");
     }
 
     #[tokio::test]
@@ -2235,7 +2347,8 @@ mod tests {
             "This is your **Morning brief**.\n\nThree things are due today.".into(),
         ));
         rig.play_out().await;
-        assert_eq!(rig.said(), ["This is your Morning brief.", "Three things are due today."]);
+        // The voice is handed the line's end, which it pauses longer after.
+        assert_eq!(rig.said(), ["This is your Morning brief.¶", "Three things are due today."]);
         assert!(rig.record.prompts.lock().unwrap().is_empty(), "no turn was run for it");
     }
 

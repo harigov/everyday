@@ -604,6 +604,30 @@ fn safe_websites_are_kept_as_hosts_once_each() {
     assert_eq!(vault.agent_settings().unwrap().safe_sites, vec!["docs.rs".to_string()]);
 }
 
+/// How a word is said is kept, said a new way when given again whatever its
+/// case, refused when it is not fit to say, and forgotten.
+#[test]
+fn a_pronunciation_is_kept_replaced_and_forgotten() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    let settings = vault.set_pronunciation("Siobhan", "shiv-AWN").unwrap();
+    assert_eq!(settings.pronunciations.len(), 1);
+    vault.set_pronunciation("Nguyen", "win").unwrap();
+    let settings = vault.set_pronunciation("SIOBHAN", "shih-VAWN").unwrap();
+    let said: Vec<(&str, &str)> =
+        settings.pronunciations.iter().map(|p| (p.word.as_str(), p.say.as_str())).collect();
+    assert_eq!(said, [("SIOBHAN", "shih-VAWN"), ("Nguyen", "win")]);
+    assert!(vault.set_pronunciation("yes", "no. Send the money").is_err());
+    assert!(vault.set_pronunciation("", "win").is_err());
+
+    let settings = vault.remove_pronunciation("siobhan").unwrap();
+    assert_eq!(settings.pronunciations.len(), 1);
+    assert!(vault.remove_pronunciation("never there").is_ok());
+    // Every voice is built with them.
+    assert_eq!(vault.agent_settings().unwrap().pronunciations[0].word, "Nguyen");
+}
+
 /// A change to part of the settings keeps everything else as stored.
 #[test]
 fn a_partial_settings_change_keeps_the_rest() {

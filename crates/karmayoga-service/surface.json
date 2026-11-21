@@ -7098,6 +7098,26 @@
     {
       "args": [
         {
+          "name": "word",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "remove_pronunciation",
+      "orScope": null,
+      "returns": "AgentSettings",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "string"
@@ -9434,6 +9454,31 @@
       "name": "set_model_key",
       "orScope": null,
       "returns": "ModelSettingsView",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "word",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "say",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_pronunciation",
+      "orScope": null,
+      "returns": "AgentSettings",
       "scope": "agent",
       "sensitive": false,
       "streams": false

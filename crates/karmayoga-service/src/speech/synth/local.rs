@@ -76,6 +76,7 @@ mod engine {
     use crate::local::files as models;
     use crate::local::resident::Resident;
     use crate::speech::pcm::sample_to_i16;
+    use crate::speech::script;
     use crate::speech::synth::{Speech, Synthesiser, nothing_to_say};
     use crate::speech::tempo::stretch;
     use crate::speech::transcribe::BoxFuture;
@@ -234,7 +235,12 @@ mod engine {
         }
 
         /// Blocking, as is everything that runs the model.
+        ///
+        /// Phonon reads letters and nothing else: a marked word is handed
+        /// over as its respelling, and a dash as a comma, since Phonon reads
+        /// a dash as a space and a comma is how it is asked to pause.
         fn speak(&self, text: &str) -> CommandResult<Speech> {
+            let text = script::dashes_as_commas(&script::as_read(text));
             if text.trim().is_empty() {
                 return Err(nothing_to_say());
             }
@@ -243,7 +249,7 @@ mod engine {
             let (pcm, sample_rate) = {
                 let tts = engine.tts.lock().unwrap_or_else(|e| e.into_inner());
                 let pcm = tts
-                    .say_with(text, &options)
+                    .say_with(&text, &options)
                     .map_err(|e| failed("the voice on this computer could not say that", e))?;
                 engine.primed(self.speaker);
                 (pcm, tts.sample_rate())
