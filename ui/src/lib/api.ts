@@ -177,6 +177,13 @@ import type {
   SkillId,
   StoryId,
   StoryQuery,
+  ConsumedQuery,
+  ConsumptionId,
+  ContentRef,
+  FeedSettings,
+  ProgressReport,
+  QueueEntryId,
+  QueuePlace,
   Task,
   TaskId,
   TaskQuery,
@@ -2282,6 +2289,49 @@ export const api = {
   /** Who sent newsletters to this vault's inboxes over the last `days`. */
   newsletterSenders: (days: number) => call('newsletterSenders', { days }),
 
+  // ── The Feed: podcasts, Up Next, and what was read and heard ─────────
+  //
+  // See `docs/plans/podcasts.md`. The directory is read over the service's
+  // public client, never the person's network; downloads put an episode in
+  // the files folder; Up Next, progress and the consumption record are
+  // `upnext.svelte.ts`'s and `player.svelte.ts`'s to call.
+
+  searchPodcasts: (query: string, limit?: number | null) =>
+    call('searchPodcasts', { query, limit }),
+  /** The charts, or a genre's; `genre` is a `PodcastGenre.id`. */
+  topPodcasts: (genre?: number | null, limit?: number | null) =>
+    call('topPodcasts', { genre, limit }),
+  podcastGenres: () => call('podcastGenres', {}),
+  /** Feeds by name -- RSS search, not podcasts. */
+  searchFeeds: (query: string, limit?: number | null) => call('searchFeeds', { query, limit }),
+
+  /** Ask for an episode's file in the files folder. Answers before it is there. */
+  downloadEpisode: (id: StoryId) => call('downloadEpisode', { id }),
+  cancelDownload: (id: StoryId) => call('cancelDownload', { id }),
+  /** Move a downloaded episode's file to the files trash. */
+  removeEpisodeDownload: (id: StoryId) => call('removeEpisodeDownload', { id }),
+  /** Episodes downloading, waiting, or failed. */
+  listDownloads: () => call('listDownloads', {}),
+
+  listQueue: () => call('listQueue', {}),
+  addToQueue: (what: ContentRef, place?: QueuePlace) => call('addToQueue', { what, place }),
+  removeFromQueue: (ids: QueueEntryId[]) => call('removeFromQueue', { ids }),
+  /** Just before `before`, or to the end. */
+  moveInQueue: (id: QueueEntryId, before?: QueueEntryId | null) =>
+    call('moveInQueue', { id, before }),
+
+  recordProgress: (progress: ProgressReport) => call('recordProgress', { progress }),
+  getConsumption: (what: ContentRef) => call('getConsumption', { what }),
+  listConsumed: (query: ConsumedQuery) => call('listConsumed', { query }),
+  forgetConsumption: (id: ConsumptionId) => call('forgetConsumption', { id }),
+
+  feedSettings: () => call('feedSettings', {}),
+  saveFeedSettings: (settings: FeedSettings) => call('saveFeedSettings', { settings }),
+  recommended: (limit?: number | null) => call('recommended', { limit }),
+  rankingStatus: () => call('rankingStatus', {}),
+  /** Forget every rank and start again; answers before it is done. */
+  rerank: () => call('rerank', {}),
+
   // ── Money ──────────────────────────────────────────────────────────
   //
   // Linked banks, accounts kept by hand, their transactions, categories,
@@ -2824,6 +2874,17 @@ export function fileUrl(id: string, version = ''): string {
   return `${base}/file/${id}${v}`
 }
 
+/**
+ * Where the player plays a file from. The same address as `fileUrl` -- the
+ * files protocol answers `Range`, so a long episode seeks without being read
+ * whole -- except in the mock, which has no sound to serve and answers a
+ * silent recording as long as the file says it is.
+ */
+export function playUrl(id: string, version = ''): string {
+  if (MOCK) return mockPlayUrl(id)
+  return fileUrl(id, version)
+}
+
 /** What `fileUrl` is versioned by. */
 export function fileVersion(file: { hash: string; modifiedAt: string }): string {
   return file.hash || file.modifiedAt
@@ -2860,6 +2921,11 @@ if (MOCK) {
   const { mockFileUrl: f, mockUploadChunk: u } = await import('./mock-files')
   mockFileUrl = f
   mockUploadChunk = u
+}
+
+let mockPlayUrl: (id: string) => string = () => ''
+if (MOCK) {
+  mockPlayUrl = (await import('./mock-feed')).mockPlayUrl
 }
 
 let mockMediaUrl: (blob: string) => string = () => ''

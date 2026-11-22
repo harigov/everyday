@@ -14,7 +14,7 @@
 // between two modules that both construct things when they load.
 
 import type { FeedFilter, FeedFolder, FeedScope, FeedSort } from './feed.svelte'
-import type { HnList, NewsSource, SourceSummary, Story } from './types'
+import type { FeedSettings, HnList, NewsSource, RankingStatus, SourceSummary, Story } from './types'
 
 // ── Words ────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,45 @@ export function isWebUrl(url: string): boolean {
   return /^https?:\/\//i.test(url.trim()) && hostOf(url) !== ''
 }
 
+/**
+ * An address as it is compared: without its scheme, a leading `www.`, a
+ * trailing slash or the case of its host. `http://example.com/feed/` and
+ * `https://www.Example.com/feed` are one feed, and the directory and the
+ * sidebar do not always spell it the same way.
+ */
+export function feedKey(url: string): string {
+  const raw = url.trim()
+  if (!raw) return ''
+  try {
+    const parsed = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`)
+    const path = parsed.pathname.replace(/\/+$/, '')
+    return `${parsed.host.toLowerCase().replace(/^www\./, '')}${path}${parsed.search}`
+  } catch {
+    return raw.toLowerCase()
+  }
+}
+
+/** Whether two addresses are the same feed -- see {@link feedKey}. */
+export function sameFeedAddress(a: string, b: string): boolean {
+  const key = feedKey(a)
+  return key !== '' && key === feedKey(b)
+}
+
+/**
+ * Does what was typed look like an address rather than words to search for?
+ *
+ * A web address, or something shaped like one -- a host with a dot and a
+ * suffix, no spaces. A guess, and a cheap one to get wrong: it only decides
+ * whether the directory also offers to look for a feed *at* the text, beside
+ * the search it runs either way.
+ */
+export function looksLikeAddress(text: string): boolean {
+  const typed = text.trim()
+  if (!typed || /\s/.test(typed)) return false
+  if (isWebUrl(typed)) return true
+  return /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/?#]\S*)?$/i.test(typed)
+}
+
 /** The page a source belongs to, for "Open site". Empty for mail, which has none. */
 export function siteOf(source: NewsSource): string {
   const kind = source.kind
@@ -104,6 +143,16 @@ function compareText(a: string, b: string): number {
   return a.localeCompare(b, undefined, { sensitivity: 'base' }) || (a < b ? -1 : a > b ? 1 : 0)
 }
 
+/** Is this source a show? A web feed whose items turned out to be episodes. */
+export function isPodcastSource(source: NewsSource | undefined | null): boolean {
+  return !!source?.podcast
+}
+
+/** The shows among `sources`, in the order they were given. */
+export function podcastSources(sources: SourceSummary[]): SourceSummary[] {
+  return sources.filter((s) => isPodcastSource(s.source))
+}
+
 /**
  * Sources folded into the sidebar's folders.
  *
@@ -112,10 +161,14 @@ function compareText(a: string, b: string): number {
  * case. Within a folder the sources keep the order they were given in, which
  * is the order they were put in (`sortOrder`), not an alphabetical one -- how
  * somebody arranged their sidebar is theirs to keep.
+ *
+ * Shows are left out: the sidebar lists them in a group of their own, and a
+ * show that was in a folder as well would be the same row twice.
  */
 export function groupFolders(sources: SourceSummary[]): FeedFolder[] {
   const byName = new Map<string, FeedFolder>()
   for (const summary of sources) {
+    if (isPodcastSource(summary.source)) continue
     const name = summary.source.folder.trim()
     let folder = byName.get(name)
     if (!folder) {
@@ -142,6 +195,9 @@ export function folderNames(sources: SourceSummary[]): string[] {
 /** What the list's heading says for `scope`. */
 export function scopeTitle(scope: FeedScope, sources: SourceSummary[]): string {
   if (scope.kind === 'all') return 'All'
+  if (scope.kind === 'upnext') return 'Up Next'
+  if (scope.kind === 'recommended') return 'Recommended'
+  if (scope.kind === 'podcasts') return 'Podcasts'
   if (scope.kind === 'folder') return scope.name.trim() || UNFILED
   const found = sources.find((s) => s.source.id === scope.id)
   return found ? sourceLabel(found.source) : 'Feed'
@@ -152,8 +208,19 @@ export function scopeUnread(scope: FeedScope, sources: SourceSummary[]): number 
   if (scope.kind === 'source') {
     return sources.find((s) => s.source.id === scope.id)?.unread ?? 0
   }
+  // Up Next and Recommended are lists of their own, counted by what they hold.
+  if (scope.kind === 'upnext' || scope.kind === 'recommended') return 0
+  if (scope.kind === 'podcasts') {
+    return podcastSources(sources).reduce((n, s) => n + s.unread, 0)
+  }
+  // A folder holds no shows -- they have a group of their own (see
+  // `groupFolders`) -- so a show filed in one is not counted in it.
   return sources
-    .filter((s) => scope.kind === 'all' || s.source.folder.trim() === scope.name.trim())
+    .filter(
+      (s) =>
+        scope.kind === 'all' ||
+        (!isPodcastSource(s.source) && s.source.folder.trim() === scope.name.trim()),
+    )
     .reduce((n, s) => n + s.unread, 0)
 }
 
@@ -167,7 +234,9 @@ export function unfollowDetail(source: NewsSource): string {
   const kept =
     source.kind.type === 'mail' || source.kind.type === 'newsletters'
       ? 'The messages stay in Mail.'
-      : 'Anything you added to the Library stays there.'
+      : isPodcastSource(source)
+        ? 'Episodes already downloaded stay in your files, and so does anything you added to the Library.'
+        : 'Anything you added to the Library stays there.'
   return `Its stories are removed from this device, saved ones included. ${kept}`
 }
 
@@ -338,6 +407,63 @@ const CUT_OFF =
 export function looksCutOff(html: string): boolean {
   const text = plainText(html)
   return text.length > 0 && CUT_OFF.test(text.slice(-160))
+}
+
+// ── Recommended ──────────────────────────────────────────────────────────
+
+/** The one line under Recommended's heading about how it is ordered. */
+export interface RankingNote {
+  /**
+   * What is the matter. `off`, `criteria` and `judge` are things Settings →
+   * Feed can put right, so the view links there; the rest is only said.
+   */
+  kind: 'off' | 'criteria' | 'judge' | 'problem' | 'working' | 'ready'
+  text: string
+}
+
+/**
+ * What to tell somebody about how Recommended is ordered, or `null` while
+ * nothing is known yet.
+ *
+ * The three reasons it is plain newest-first come first, because they are the
+ * ones with something to do about them -- no list can be ranked by nothing, or
+ * with nobody to judge -- and each is said as what is true and what follows
+ * ("newest first"), not as a fault. Settings are checked before the status
+ * because they are known the moment the page opens and the status is not.
+ */
+export function rankingNote(
+  status: RankingStatus | null | undefined,
+  settings: FeedSettings | null | undefined,
+): RankingNote | null {
+  const ranking = settings?.ranking
+  if (ranking && !ranking.enabled) {
+    return {
+      kind: 'off',
+      text: 'Ranking is switched off, so Recommended is newest first. Switch it on in',
+    }
+  }
+  if (ranking && ranking.criteria.length === 0 && !ranking.goals) {
+    return {
+      kind: 'criteria',
+      text: 'There is nothing to rank by yet, so Recommended is newest first. Say what you like to read and hear in',
+    }
+  }
+  if (!status) return null
+  if (!status.judge) {
+    return {
+      kind: 'judge',
+      text: 'There is no model to rank with yet, so Recommended is newest first. Set one up in',
+    }
+  }
+  if (status.problem) return { kind: 'problem', text: status.problem }
+  const judge = status.judge === 'small' ? 'the Small model' : 'the decision model'
+  if (status.waiting > 0) {
+    return {
+      kind: 'working',
+      text: `Ranking with ${judge}: ${status.ranked.toLocaleString()} done, ${status.waiting.toLocaleString()} to go.`,
+    }
+  }
+  return { kind: 'ready', text: `Ranked by your criteria with ${judge}.` }
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────

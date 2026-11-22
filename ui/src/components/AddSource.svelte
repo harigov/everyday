@@ -2,7 +2,9 @@
   // Following something: four ways in, one sheet.
   //
   //   Address       paste any address -- a feed, or a page that has one -- and
-  //                 pick from what is found there
+  //                 pick from what is found there; or leave for Browse, the
+  //                 directory of podcasts and feeds, for when there is no
+  //                 address to paste
   //   Hacker News   one of its lists, optionally above a score
   //   From your mail  a sender whose newsletters already arrive in Mail
   //   Import OPML   what another reader exported, and the way back out
@@ -166,6 +168,12 @@
     if (next === 'mail' && senders === null) void loadSenders()
   }
 
+  /** The directory is a dialog of its own: this sheet is put away for it, not left under it. */
+  function browse() {
+    feed.closeAdd()
+    feed.openDirectory()
+  }
+
   // ── OPML ─────────────────────────────────────────────────────────────
 
   let file = $state<HTMLInputElement | null>(null)
@@ -318,6 +326,10 @@
       <p class="hint under">
         A site's address is enough: its feed is found from the page. Substack, YouTube, Mastodon,
         GitHub and most blogs and news sites have one.
+      </p>
+      <p class="hint under">
+        No address to hand?
+        <button class="link" onclick={browse}>Browse podcasts and feeds</button>
       </p>
 
       {#if found !== null}

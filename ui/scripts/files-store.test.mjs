@@ -851,6 +851,7 @@ app.section = 'files'
     'meal',
     'message',
     'note',
+    'story',
   ])
   assert.equal(USE_LABELS.healthDocument, 'Health document')
   assert.equal(USE_LABELS.meal, 'Meal')

@@ -236,6 +236,30 @@ export const ICONS = {
   // Stop. A square, so the pair reads as a transport control.
   stop: '<rect width="12" height="12" x="6" y="6" rx="2"/>',
 
+  // Pause: two bars, the play triangle's partner in the player.
+  pause:
+    '<rect width="4" height="14" x="6" y="5" rx="1"/><rect width="4" height="14" x="14" y="5" rx="1"/>',
+
+  // Skip back and forward: an arc turning the way time goes, the way every
+  // podcast player draws "15 seconds back" and "30 forward".
+  'skip-back': '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>',
+  'skip-forward': '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>',
+
+  // A podcast: a microphone in a broadcast arc, so it is not the plain mic
+  // voice mode uses.
+  podcast:
+    '<path d="M12 13v8"/><circle cx="12" cy="9" r="3"/>' +
+    '<path d="M5.6 15.4a9 9 0 1 1 12.8 0"/><path d="M8.5 12.5a5 5 0 1 1 7 0"/>',
+
+  // Add to Up Next: a list with a plus where its last line would be.
+  'queue-add':
+    '<path d="M4 6h12"/><path d="M4 11h12"/><path d="M4 16h7"/><path d="M17 14v6"/><path d="M14 17h6"/>',
+
+  // Volume, and volume off.
+  volume:
+    '<path d="M11 5 6 9H3v6h3l5 4Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>',
+  'volume-off': '<path d="M11 5 6 9H3v6h3l5 4Z"/><path d="m16 9 5 6"/><path d="m21 9-5 6"/>',
+
   // Refresh: an arc with an arrowhead, not a closed circle -- a closed one
   // reads as "loading" and this is something you press.
   refresh: '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/>' + '<path d="M20.5 4.5V10H15"/>',

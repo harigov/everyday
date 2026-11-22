@@ -27,7 +27,7 @@ impl Vault {
         self.with_news(|_| Ok(())).is_ok()
     }
 
-    fn with_news<T>(&self, f: impl FnOnce(&dyn NewsStore) -> Result<T>) -> Result<T> {
+    pub(super) fn with_news<T>(&self, f: impl FnOnce(&dyn NewsStore) -> Result<T>) -> Result<T> {
         self.with_domain(Domain::News, |s| s.news().map(f))
     }
 
@@ -249,7 +249,19 @@ impl Vault {
                 .iter()
                 .map(|s| ExpiryRule { source_id: s.id, retention: s.retention() })
                 .collect();
-            n.expire(&rules, now)
+            // What is in Up Next is kept until it is played or taken out.
+            let keep: Vec<StoryId> = match n.queue() {
+                Ok(queue) => queue
+                    .iter()
+                    .filter_map(|e| match e.what {
+                        crate::news::ContentRef::Story(id) => Some(id),
+                        _ => None,
+                    })
+                    .collect(),
+                Err(Error::Unsupported(_)) => Vec::new(),
+                Err(e) => return Err(e),
+            };
+            n.expire_except(&rules, &keep, now)
         })
     }
 }

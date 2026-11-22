@@ -28,7 +28,10 @@
 //! refuse private and loopback addresses.
 
 pub mod canonical;
+pub mod consumed;
+pub mod directory;
 pub mod discover;
+pub mod downloads;
 pub mod extract;
 pub mod fetch;
 pub mod hn;
@@ -36,6 +39,8 @@ pub mod listen;
 pub mod newsletters;
 pub mod opml;
 pub mod parse;
+pub mod queue;
+pub mod rank;
 pub mod refresh;
 pub mod sanitize;
 pub mod view;
@@ -44,12 +49,29 @@ use crate::service::Service;
 use jiff::Timestamp;
 use karmayoga_core::Vault;
 use karmayoga_core::id::NewsSourceId;
-use karmayoga_core::news::BodyOrigin;
+use karmayoga_core::news::{BodyOrigin, Enclosure};
 use serde::Serialize;
 use std::sync::Arc;
 
 /// The supervisor key of the one refresher task.
 pub const TASK_KEY: &str = "news";
+
+/// What podcasts, Up Next and Recommended keep in memory while the vault is
+/// unlocked: the downloads under way and the ranker's pacing. One per
+/// [`Service`] (`Service::listening`). See `docs/plans/podcasts.md`.
+#[derive(Default)]
+pub struct Listening {
+    pub downloads: downloads::Downloads,
+    pub ranker: rank::Ranker,
+}
+
+impl Listening {
+    /// The vault locked: forget everything.
+    pub fn clear(&self) {
+        self.downloads.clear();
+        self.ranker.clear();
+    }
+}
 
 /// One item as a parser read it, before it is a [`karmayoga_core::Story`]:
 /// no id, no key, nothing sanitised. What [`parse::parse_feed`] and
@@ -84,6 +106,9 @@ pub struct Incoming {
     pub discussion_url: String,
     /// Where `content` came from, if there is any.
     pub origin: BodyOrigin,
+    /// The episode this item is, when it carries something to hear or watch:
+    /// a playable enclosure, with what the feed said about it. Absolute.
+    pub media: Option<Enclosure>,
 }
 
 /// A whole feed, as [`parse::parse_feed`] read it.
@@ -96,6 +121,14 @@ pub struct ParsedFeed {
     pub items: Vec<Incoming>,
     /// RSS `<ttl>`, or `sy:updatePeriod` x `sy:updateFrequency`, in minutes.
     pub ttl_minutes: Option<u32>,
+    /// A podcast: the items carry playable enclosures, or the feed's
+    /// `itunes:` tags say it is one.
+    pub podcast: bool,
+    /// The feed's own picture (`itunes:image`, else its logo), absolute.
+    /// Empty when it had none.
+    pub image_url: String,
+    /// `itunes:author`, else the feed's author. Empty when it named none.
+    pub author: String,
 }
 
 /// A feed found at an address somebody pasted.

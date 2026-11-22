@@ -13,14 +13,31 @@
 //! for the refresher to cut down to a plain line. Titles and author names
 //! come out as plain text: publishers put entities and even tags in them,
 //! and a row in a list is no place to draw either.
+//!
+//! # Podcasts
+//!
+//! An item that carries something to hear or watch -- an RSS `<enclosure>`,
+//! an Atom `rel="enclosure"` link, a JSON Feed attachment, a `media:content`
+//! -- comes out with an [`Enclosure`] in [`Incoming::media`], and the feed as
+//! a whole says whether it is a podcast ([`ParsedFeed::podcast`]). `feed-rs`
+//! reads most of what an episode says, but not all of it, and gets one thing
+//! wrong that matters: an `itunes:duration` of `45:12` (minutes and seconds,
+//! which is how most shows write it) is read as forty-five seconds. An RSS or
+//! Atom feed that has anything podcast-shaped in it is therefore read a
+//! second time, with `roxmltree`, for exactly what `feed-rs` loses -- the
+//! duration, episode and season numbers, every transcript, the show's
+//! picture and author -- and each episode's is matched to `feed-rs`'s by its
+//! enclosure's address. A feed the second reading cannot make sense of keeps
+//! what `feed-rs` said.
 
 use super::{Incoming, ParsedFeed, canonical};
 use feed_rs::model::{Content, Entry, Feed, FeedType, Link, Text};
 use feed_rs::parser::{self, ParseErrorKind, ParseFeedError};
 use jiff::Timestamp;
-use karmayoga_core::news::BodyOrigin;
+use karmayoga_core::news::{BodyOrigin, Enclosure};
 use reqwest::Url;
-use std::collections::HashSet;
+use roxmltree::{Document, Node, ParsingOptions};
+use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// The most items kept from one feed. A feed that lists more than this
@@ -61,7 +78,14 @@ pub fn parse_feed(bytes: &[u8], feed_url: &str) -> Result<ParsedFeed, String> {
         Ok(Err(error)) => return Err(explain(&error)),
         Err(_) => return Err("The feed could not be read.".into()),
     };
-    Ok(convert(feed, base.as_ref(), feed_url))
+    // Contained for the same reason, and only for the formats that are XML:
+    // a JSON Feed's attachments are all `feed-rs` has to be asked for.
+    let podcasting = if matches!(feed.feed_type, FeedType::JSON) {
+        None
+    } else {
+        catch_unwind(AssertUnwindSafe(|| read_podcasting(bytes, base.as_ref()))).ok().flatten()
+    };
+    Ok(convert(feed, base.as_ref(), feed_url, podcasting.as_ref()))
 }
 
 /// The sentence for a parse that failed.
@@ -80,7 +104,12 @@ fn explain(error: &ParseFeedError) -> String {
     }
 }
 
-fn convert(feed: Feed, base: Option<&Url>, feed_url: &str) -> ParsedFeed {
+fn convert(
+    feed: Feed,
+    base: Option<&Url>,
+    feed_url: &str,
+    podcasting: Option<&Podcasting>,
+) -> ParsedFeed {
     // Atom and JSON Feed say what kind of text a field holds, so their
     // plain text is plain. RSS says nothing, and what `feed-rs` calls plain
     // in an RSS feed is in practice HTML with its angle brackets escaped.
@@ -89,6 +118,8 @@ fn convert(feed: Feed, base: Option<&Url>, feed_url: &str) -> ParsedFeed {
     let title = feed.title.as_ref().map(|t| title_text(t, plain_is_text)).unwrap_or_default();
     let site_url = page_link(&feed.links).map(|l| absolute(base, &l.href)).unwrap_or_default();
     let ttl_minutes = feed.ttl.filter(|&minutes| minutes > 0);
+    let image_url = feed_image(&feed, base, podcasting);
+    let author = feed_author(&feed, podcasting);
 
     // Two entries that are one story -- the same guid republished with a
     // corrected title, say -- are one item here, the first listed (feeds list
@@ -99,7 +130,7 @@ fn convert(feed: Feed, base: Option<&Url>, feed_url: &str) -> ParsedFeed {
         .into_iter()
         .filter_map(|entry| {
             let guid = entry.id.trim().to_string();
-            item(entry, base, feed_url, plain_is_text).map(|incoming| (guid, incoming))
+            item(entry, base, feed_url, plain_is_text, podcasting).map(|incoming| (guid, incoming))
         })
         .collect();
     distinguish_shared_links(&mut items);
@@ -111,7 +142,55 @@ fn convert(feed: Feed, base: Option<&Url>, feed_url: &str) -> ParsedFeed {
         .collect();
     keep_newest(&mut items);
 
-    ParsedFeed { title, site_url, items, ttl_minutes }
+    let declared = podcasting.is_some_and(|p| p.declared);
+    let podcast = is_podcast(&items, declared);
+    ParsedFeed { title, site_url, items, ttl_minutes, podcast, image_url, author }
+}
+
+/// Whether a feed is a podcast: its items carry something to hear or watch,
+/// or, while it has no items yet, its `itunes:` tags say it will.
+///
+/// One audio attachment in a blog's hundred posts does not make the blog a
+/// podcast, which would have every post of it downloaded: it takes at least
+/// half of the items, or the feed's own `itunes:` declaration with at least
+/// one of them.
+fn is_podcast(items: &[Incoming], declared: bool) -> bool {
+    if items.is_empty() {
+        return declared;
+    }
+    let playable = items.iter().filter(|item| item.media.is_some()).count();
+    playable > 0 && (declared || playable * 2 >= items.len())
+}
+
+/// The feed's own picture: `itunes:image`, which is the square one shows are
+/// asked to provide, else the feed's logo or icon.
+fn feed_image(feed: &Feed, base: Option<&Url>, podcasting: Option<&Podcasting>) -> String {
+    podcasting
+        .map(|p| p.image.clone())
+        .filter(|image| !image.is_empty())
+        .or_else(|| {
+            [feed.logo.as_ref(), feed.icon.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(|image| absolute(base, &image.uri))
+                .find(|url| !url.is_empty())
+        })
+        .unwrap_or_default()
+}
+
+/// `itunes:author`, else the first author the feed names, as plain text.
+fn feed_author(feed: &Feed, podcasting: Option<&Podcasting>) -> String {
+    podcasting
+        .map(|p| p.author.clone())
+        .filter(|author| !author.is_empty())
+        .or_else(|| {
+            feed.authors
+                .iter()
+                .filter_map(|person| person.name.as_deref())
+                .map(plain)
+                .find(|name| !name.is_empty())
+        })
+        .unwrap_or_default()
 }
 
 /// An address several items of one feed share is not any one item's
@@ -144,7 +223,13 @@ fn incoming_url_identity(incoming: &Incoming) -> String {
     canonical::canonicalise(&incoming.url).unwrap_or_default()
 }
 
-fn item(entry: Entry, base: Option<&Url>, feed_url: &str, plain_is_text: bool) -> Option<Incoming> {
+fn item(
+    entry: Entry,
+    base: Option<&Url>,
+    feed_url: &str,
+    plain_is_text: bool,
+    podcasting: Option<&Podcasting>,
+) -> Option<Incoming> {
     let url = item_link(&entry.links).map(|l| absolute(base, &l.href)).unwrap_or_default();
     // What a relative address inside the item resolves against: the item
     // itself, where a reader following the link would be standing; failing
@@ -186,6 +271,7 @@ fn item(entry: Entry, base: Option<&Url>, feed_url: &str, plain_is_text: bool) -
         content,
         base_url: if url.is_empty() { feed_url.to_string() } else { url.clone() },
         image_url: lead_image(&entry, item_base.as_ref()),
+        media: episode(&entry, base, podcasting),
         url,
         origin: BodyOrigin::Feed,
         ..Incoming::default()
@@ -253,6 +339,342 @@ fn lead_image(entry: &Entry, base: Option<&Url>) -> String {
         .map(|href| absolute(base, href))
         .find(|url| !url.is_empty())
         .unwrap_or_default()
+}
+
+/// What `feed-rs` leaves out of a podcast, or gets wrong, found by reading
+/// the feed's XML a second time. See the module doc.
+#[derive(Debug, Default)]
+struct Podcasting {
+    /// The channel carries `itunes:` tags of its own: it was written for
+    /// podcast directories, whatever its items turn out to hold.
+    declared: bool,
+    /// `itunes:image`, absolute.
+    image: String,
+    /// `itunes:author`, as plain text.
+    author: String,
+    /// What each item said about its episode, by the address of the file it
+    /// names, as [`absolute`] writes it.
+    episodes: HashMap<String, Episode>,
+}
+
+/// What an item says about its episode in `itunes:` and `podcast:` tags.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Episode {
+    duration_ms: Option<u64>,
+    episode: Option<u32>,
+    season: Option<u32>,
+    /// The best transcript offered: its address and its type.
+    transcript: Option<(String, String)>,
+}
+
+impl Episode {
+    /// What this reading says about an enclosure, over what `feed-rs` said:
+    /// the second reading is the more careful one, so wherever it found
+    /// something it is that which stands.
+    fn apply(&self, media: &mut Enclosure) {
+        if self.duration_ms.is_some() {
+            media.duration_ms = self.duration_ms;
+        }
+        if self.episode.is_some() {
+            media.episode = self.episode;
+        }
+        if self.season.is_some() {
+            media.season = self.season;
+        }
+        if let Some((url, mime)) = &self.transcript {
+            media.transcript_url = url.clone();
+            media.transcript_mime = mime.clone();
+        }
+    }
+}
+
+/// The namespaces whose tags matter here, as [`in_namespace`] compares them.
+const ITUNES_NS: &str = "www.itunes.com/dtds/podcast-1.0.dtd";
+const PODCAST_NS: &str = "podcastindex.org/namespace/1.0";
+const MEDIA_NS: &str = "search.yahoo.com/mrss";
+
+/// Whether `node` is in `namespace`, ignoring what publishers get differently
+/// from one another: the scheme, a trailing slash, and the case -- Apple's
+/// own documentation spells the `itunes` address in lower case and a great
+/// many feeds in `DTDs/Podcast`.
+fn in_namespace(node: &Node, namespace: &str) -> bool {
+    node.tag_name().namespace().is_some_and(|ns| {
+        let ns = ns.trim().trim_end_matches('/');
+        let ns = ns.strip_prefix("https://").or_else(|| ns.strip_prefix("http://")).unwrap_or(ns);
+        ns.eq_ignore_ascii_case(namespace)
+    })
+}
+
+/// Read a feed's XML for what `feed-rs` loses of a podcast. `None` when the
+/// feed has nothing podcast-shaped in it, is not UTF-8, or is not XML that
+/// `roxmltree` accepts -- in each of which `feed-rs`'s own reading stands.
+fn read_podcasting(bytes: &[u8], base: Option<&Url>) -> Option<Podcasting> {
+    let text = xml_text(bytes)?;
+    let text = text.trim_start_matches('\u{feff}');
+    // A feed with none of these words cannot have anything to find, which is
+    // nearly every feed, and a second pass over a few megabytes of blog is
+    // not worth making to learn it.
+    if !["itunes", "enclosure", "podcastindex"].iter().any(|word| text.contains(word)) {
+        return None;
+    }
+    // A DTD is allowed for the reason OPML's reader allows one: old feeds
+    // carry one, and `roxmltree` fetches nothing from it. The node limit is
+    // what keeps a hostile file's memory in check.
+    let options =
+        ParsingOptions { allow_dtd: true, nodes_limit: 1_000_000, ..ParsingOptions::default() };
+    let doc = Document::parse_with_options(text, options).ok()?;
+    let root = doc.root_element();
+
+    let mut podcasting = Podcasting::default();
+    // RSS 2.0 keeps the show's own tags in `<channel>`; Atom keeps them in
+    // `<feed>`, which is the root.
+    let channel = root
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == "channel")
+        .unwrap_or(root);
+    for tag in channel.children().filter(|node| node.is_element() && in_namespace(node, ITUNES_NS))
+    {
+        podcasting.declared = true;
+        match tag.tag_name().name() {
+            "image" => {
+                if let Some(href) = tag.attribute("href") {
+                    podcasting.image = absolute(base, href);
+                }
+            }
+            "author" => podcasting.author = text_of(&tag),
+            _ => {}
+        }
+    }
+
+    for item in doc
+        .descendants()
+        .filter(|node| node.is_element() && matches!(node.tag_name().name(), "item" | "entry"))
+    {
+        let (addresses, episode) = read_episode(&item, base);
+        for address in addresses {
+            podcasting.episodes.entry(address).or_insert_with(|| episode.clone());
+        }
+    }
+    Some(podcasting)
+}
+
+/// The feed as text, for a second reading: as it is when it is UTF-8, and
+/// otherwise in the encoding its XML declaration names, which for an older
+/// feed is `ISO-8859-1` or `windows-1252` as often as not. `None` when it
+/// names none, names one that is not a text encoding for this, or is not
+/// written in the one it names.
+fn xml_text(bytes: &[u8]) -> Option<std::borrow::Cow<'_, str>> {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Some(text.into());
+    }
+    // The declaration is ASCII and the first thing in the file.
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]);
+    let declared = head.split_once("encoding=")?.1;
+    let quote = declared.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+    let label = declared[1..].split(quote).next()?;
+    let encoding = encoding_rs::Encoding::for_label(label.trim().as_bytes())?;
+    if encoding == encoding_rs::UTF_8 || encoding.output_encoding() != encoding {
+        return None;
+    }
+    encoding.decode_without_bom_handling_and_without_replacement(bytes)
+}
+
+/// One item's addresses for a file -- an `<enclosure>`, an Atom
+/// `rel="enclosure"` link, a `media:content` -- and what it says about the
+/// episode.
+fn read_episode(item: &Node, base: Option<&Url>) -> (Vec<String>, Episode) {
+    let mut addresses = Vec::new();
+    let mut episode = Episode::default();
+    // The `podcast:` spellings of the numbers only count when the item has no
+    // `itunes:` one, which is the one most players read.
+    let (mut itunes_episode, mut podcast_episode) = (None, None);
+    let (mut itunes_season, mut podcast_season) = (None, None);
+    let mut transcripts = Vec::new();
+
+    for tag in item.children().filter(Node::is_element) {
+        let name = tag.tag_name().name();
+        if in_namespace(&tag, ITUNES_NS) {
+            match name {
+                "duration" => episode.duration_ms = parse_duration_ms(&text_of(&tag)),
+                "episode" => itunes_episode = whole_number(&text_of(&tag)),
+                "season" => itunes_season = whole_number(&text_of(&tag)),
+                _ => {}
+            }
+        } else if in_namespace(&tag, PODCAST_NS) {
+            match name {
+                "episode" => podcast_episode = whole_number(&text_of(&tag)),
+                "season" => podcast_season = whole_number(&text_of(&tag)),
+                "transcript" => {
+                    if let (Some(url), Some(mime)) = (tag.attribute("url"), tag.attribute("type")) {
+                        transcripts.push((absolute(base, url), mime.to_string()));
+                    }
+                }
+                _ => {}
+            }
+        } else if in_namespace(&tag, MEDIA_NS) {
+            // `media:content` is either the item's own or inside a
+            // `media:group`.
+            let contents = if name == "group" {
+                tag.children().filter(Node::is_element).collect()
+            } else {
+                vec![tag]
+            };
+            for content in contents.iter().filter(|c| c.tag_name().name() == "content") {
+                addresses.extend(content.attribute("url").map(|url| absolute(base, url)));
+            }
+        } else if name == "enclosure" {
+            addresses.extend(tag.attribute("url").map(|url| absolute(base, url)));
+        } else if name == "link" && tag.attribute("rel").is_some_and(is_enclosure_rel) {
+            addresses.extend(tag.attribute("href").map(|href| absolute(base, href)));
+        }
+    }
+
+    episode.episode = itunes_episode.or(podcast_episode);
+    episode.season = itunes_season.or(podcast_season);
+    episode.transcript = best_transcript(transcripts);
+    addresses.retain(|address| !address.is_empty());
+    (addresses, episode)
+}
+
+fn is_enclosure_rel(rel: &str) -> bool {
+    rel.trim().eq_ignore_ascii_case("enclosure")
+}
+
+/// An element's text, as plain text.
+fn text_of(node: &Node) -> String {
+    plain(&node.descendants().filter(Node::is_text).filter_map(|n| n.text()).collect::<String>())
+}
+
+/// `itunes:duration`, in milliseconds: seconds (`3600`), minutes and seconds
+/// (`45:12`), or hours, minutes and seconds (`1:02:03`), the last of them
+/// with a fraction if the publisher wrote one. `None` for anything else, and
+/// for no time at all.
+fn parse_duration_ms(text: &str) -> Option<u64> {
+    let parts: Vec<&str> = text.trim().split(':').collect();
+    if parts.len() > 3 {
+        return None;
+    }
+    let mut seconds = 0.0_f64;
+    for part in parts {
+        let part: f64 = part.trim().parse().ok()?;
+        if !part.is_finite() || part < 0.0 {
+            return None;
+        }
+        seconds = seconds * 60.0 + part;
+    }
+    let millis = (seconds * 1000.0).round();
+    (millis > 0.0 && millis < 1e12).then_some(millis as u64)
+}
+
+/// An episode or season number, which publishers write as `7`, or as `7.0`.
+fn whole_number(text: &str) -> Option<u32> {
+    let text = text.trim();
+    text.parse().ok().or_else(|| text.parse::<f32>().ok().and_then(whole))
+}
+
+/// `number` as a count, when it is one.
+fn whole(number: f32) -> Option<u32> {
+    (number.is_finite() && number >= 0.0 && number.fract() == 0.0).then_some(number as u32)
+}
+
+/// Milliseconds in `duration`, when there are any.
+fn millis(duration: std::time::Duration) -> Option<u64> {
+    u64::try_from(duration.as_millis()).ok().filter(|&millis| millis > 0)
+}
+
+/// The transcript to prefer of the ones an episode offers, as (address,
+/// type): WebVTT, then SubRip, then JSON, then HTML, then plain text. Those
+/// are the ones that can be read with times; one of any other type is not
+/// offered, and of two of one type the first listed is.
+fn best_transcript(
+    offered: impl IntoIterator<Item = (String, String)>,
+) -> Option<(String, String)> {
+    offered
+        .into_iter()
+        .filter(|(url, _)| !url.is_empty())
+        .filter_map(|(url, mime)| {
+            let mime = essence(&mime).to_ascii_lowercase();
+            let rank = match mime.as_str() {
+                "text/vtt" => 0,
+                "application/x-subrip" | "application/srt" | "application/x-srt" | "text/srt" => 1,
+                "application/json" => 2,
+                "text/html" => 3,
+                "text/plain" => 4,
+                _ => return None,
+            };
+            Some((rank, url, mime))
+        })
+        .min_by_key(|(rank, ..)| *rank)
+        .map(|(_, url, mime)| (url, mime))
+}
+
+/// The episode an item is, if it carries something to hear or watch: the
+/// first playable file it names -- a `media:content`, an RSS enclosure, an
+/// Atom `rel="enclosure"` link, a JSON Feed attachment -- with what the feed
+/// said about it. A file that is a picture, or a PDF, is no episode; it is
+/// [`lead_image`]'s, or nobody's.
+fn episode(
+    entry: &Entry,
+    base: Option<&Url>,
+    podcasting: Option<&Podcasting>,
+) -> Option<Enclosure> {
+    let named = entry.media.iter().flat_map(|m| m.content.iter()).filter_map(|content| {
+        let href = content.url.as_ref()?.as_str();
+        let mime = content.content_type.as_ref().map(ToString::to_string).unwrap_or_default();
+        Some((href, mime, content.size, content.duration))
+    });
+    let linked = entry
+        .links
+        .iter()
+        .filter(|link| {
+            link.rel.as_deref().is_some_and(is_enclosure_rel)
+                || link.media_type.as_deref().is_some_and(is_playable_type)
+        })
+        .map(|link| {
+            (link.href.as_str(), link.media_type.clone().unwrap_or_default(), link.length, None)
+        });
+
+    let mut media = named.chain(linked).find_map(|(href, mime, length, duration)| {
+        let enclosure = Enclosure {
+            url: absolute(base, href),
+            mime: essence(&mime).to_ascii_lowercase(),
+            length: length.filter(|&bytes| bytes > 0),
+            duration_ms: duration.and_then(millis),
+            transcript_url: String::new(),
+            transcript_mime: String::new(),
+            episode: None,
+            season: None,
+        };
+        (!enclosure.url.is_empty() && enclosure.is_playable()).then_some(enclosure)
+    })?;
+
+    // What `feed-rs` read of the episode itself. It folds `itunes:` and
+    // `podcast:` tags into the item's media, so these are what a feed that
+    // `roxmltree` could not read still says.
+    media.duration_ms =
+        media.duration_ms.or_else(|| entry.media.iter().find_map(|m| m.duration).and_then(millis));
+    media.episode =
+        entry.media.iter().find_map(|m| m.episode.as_ref()).and_then(|e| whole(e.number));
+    media.season = entry.media.iter().find_map(|m| m.season.as_ref()).map(|s| s.number);
+    let transcripts = entry
+        .media
+        .iter()
+        .flat_map(|m| m.transcripts.iter())
+        .map(|t| (absolute(base, t.url.as_str()), t.content_type.to_string()));
+    if let Some((url, mime)) = best_transcript(transcripts) {
+        media.transcript_url = url;
+        media.transcript_mime = mime;
+    }
+
+    if let Some(said) = podcasting.and_then(|p| p.episodes.get(&media.url)) {
+        said.apply(&mut media);
+    }
+    Some(media)
+}
+
+fn is_playable_type(mime: &str) -> bool {
+    let mime = essence(mime);
+    mime.starts_with("audio/") || mime.starts_with("video/")
 }
 
 /// The first author who has a name, as plain text.
@@ -772,5 +1194,354 @@ mod tests {
         let feed = parse(r#"<rss version="2.0"><channel><title>Quiet</title></channel></rss>"#, "");
         assert_eq!(feed.title, "Quiet");
         assert!(feed.items.is_empty());
+        assert!(!feed.podcast);
+    }
+
+    // ── podcasts ─────────────────────────────────────────────────────────
+
+    /// A show as a publisher writes one: the `itunes` namespace spelled the way
+    /// most feeds spell it (`DTDs/Podcast`), the `podcast` one over `http`,
+    /// durations in the three shapes they come in, and an episode whose
+    /// enclosure says nothing of its type.
+    const PODCAST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"
+             xmlns:itunes="http://www.itunes.com/DTDs/Podcast-1.0.dtd"
+             xmlns:podcast="http://podcastindex.org/namespace/1.0"
+             xmlns:content="http://purl.org/rss/1.0/modules/content/">
+          <channel>
+            <title>Build Times</title>
+            <link>https://build.example/</link>
+            <description>Forty minutes at a time.</description>
+            <image><url>https://build.example/small.png</url><title>Build Times</title></image>
+            <itunes:author>Rhea &amp; Amit</itunes:author>
+            <itunes:image href="https://build.example/art/3000.jpg"/>
+            <itunes:category text="Technology"/>
+            <item>
+              <title>12. The sound of compilers</title>
+              <link>https://build.example/episodes/12</link>
+              <guid isPermaLink="false">build-12</guid>
+              <pubDate>Fri, 02 Oct 2026 06:00:00 GMT</pubDate>
+              <description>Forty minutes on build times.</description>
+              <enclosure url="https://cdn.example/12.mp3" length="38211000" type="audio/mpeg"/>
+              <itunes:duration>45:12</itunes:duration>
+              <itunes:episode>12</itunes:episode>
+              <itunes:season>2</itunes:season>
+              <podcast:transcript url="https://build.example/12.html" type="text/html"/>
+              <podcast:transcript url="/12.srt" type="application/x-subrip"/>
+              <podcast:transcript url="https://build.example/12.vtt" type="text/vtt"/>
+              <podcast:transcript url="https://build.example/12.pdf" type="application/pdf"/>
+            </item>
+            <item>
+              <title>11. Linkers</title>
+              <link>https://build.example/episodes/11</link>
+              <guid isPermaLink="false">build-11</guid>
+              <pubDate>Fri, 25 Sep 2026 06:00:00 GMT</pubDate>
+              <enclosure url="https://cdn.example/11.mp3?token=a&amp;b=1" length="0"/>
+              <itunes:duration>01:02:03</itunes:duration>
+              <podcast:episode>11</podcast:episode>
+            </item>
+            <item>
+              <title>10. Show notes only</title>
+              <link>https://build.example/episodes/10</link>
+              <guid isPermaLink="false">build-10</guid>
+              <pubDate>Fri, 18 Sep 2026 06:00:00 GMT</pubDate>
+              <enclosure url="https://cdn.example/10-notes.pdf" length="900" type="application/pdf"/>
+              <itunes:duration>3600</itunes:duration>
+            </item>
+          </channel>
+        </rss>"#;
+
+    #[test]
+    fn a_podcasts_enclosure_carries_what_the_episode_says() {
+        let feed = parse(PODCAST, "https://build.example/feed.xml");
+        assert!(feed.podcast);
+        assert_eq!(feed.items.len(), 3);
+
+        let media = feed.items[0].media.as_ref().expect("an episode");
+        assert_eq!(media.url, "https://cdn.example/12.mp3");
+        assert_eq!(media.mime, "audio/mpeg");
+        assert_eq!(media.length, Some(38_211_000));
+        // `45:12` is minutes and seconds, not forty-five seconds.
+        assert_eq!(media.duration_ms, Some((45 * 60 + 12) * 1000));
+        assert_eq!((media.episode, media.season), (Some(12), Some(2)));
+        // WebVTT over SubRip over HTML, and a PDF is no transcript.
+        assert_eq!(media.transcript_url, "https://build.example/12.vtt");
+        assert_eq!(media.transcript_mime, "text/vtt");
+        // The item itself is an ordinary story.
+        assert_eq!(feed.items[0].title, "12. The sound of compilers");
+        assert_eq!(feed.items[0].url, "https://build.example/episodes/12");
+        assert_eq!(feed.items[0].image_url, "");
+    }
+
+    #[test]
+    fn a_podcasts_picture_and_author_are_the_itunes_ones() {
+        let feed = parse(PODCAST, "https://build.example/feed.xml");
+        // Not the `<image>` that is smaller, and the entity is decoded.
+        assert_eq!(feed.image_url, "https://build.example/art/3000.jpg");
+        assert_eq!(feed.author, "Rhea & Amit");
+        assert_eq!(feed.title, "Build Times");
+    }
+
+    #[test]
+    fn an_enclosure_with_no_type_is_judged_by_its_address_and_the_podcast_namespace_fills_in() {
+        let feed = parse(PODCAST, "https://build.example/feed.xml");
+        let media = feed.items[1].media.as_ref().expect("an episode");
+        assert_eq!(media.url, "https://cdn.example/11.mp3?token=a&b=1");
+        assert_eq!(media.mime, "");
+        assert_eq!(media.length, None, "a length of nought is not a length");
+        assert_eq!(media.duration_ms, Some((3600 + 2 * 60 + 3) * 1000));
+        assert_eq!((media.episode, media.season), (Some(11), None));
+        assert_eq!(media.transcript_url, "");
+    }
+
+    #[test]
+    fn a_file_that_is_not_audio_or_video_is_not_an_episode() {
+        let feed = parse(PODCAST, "https://build.example/feed.xml");
+        assert_eq!(feed.items[2].media, None);
+        // Nor is a picture, and neither is the lead picture of anything.
+        let feed = parse(RSS2, "https://quiet.example/feed.xml");
+        assert_eq!(feed.items[1].media, None);
+        assert_eq!(feed.items[1].image_url, "https://quiet.example/img/week41.jpg");
+    }
+
+    #[test]
+    fn one_audio_attachment_does_not_make_a_blog_a_podcast() {
+        let feed = parse(RSS2, "https://quiet.example/feed.xml");
+        let media = feed.items[2].media.as_ref().expect("the one episode");
+        assert_eq!(media.url, "https://quiet.example/audio/12.mp3");
+        assert_eq!(media.kind(), karmayoga_core::news::EnclosureKind::Audio);
+        assert!(!feed.podcast);
+        assert_eq!(feed.image_url, "");
+        assert_eq!(feed.author, "");
+        assert!(feed.items[..2].iter().all(|item| item.media.is_none()));
+    }
+
+    #[test]
+    fn a_feed_that_says_it_is_a_podcast_with_one_episode_among_posts_is_one() {
+        let xml = r#"<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+            <channel><title>Mostly words</title><itunes:owner><itunes:name>Me</itunes:name></itunes:owner>
+            <item><title>A post</title><link>https://m.example/1</link></item>
+            <item><title>Another</title><link>https://m.example/2</link></item>
+            <item><title>An episode</title><link>https://m.example/3</link>
+              <enclosure url="https://m.example/3.m4a" type="audio/x-m4a"/></item>
+            </channel></rss>"#;
+        assert!(parse(xml, "https://m.example/feed").podcast);
+        // Without the declaration it is the blog it looks like.
+        let plain = xml.replace("<itunes:owner><itunes:name>Me</itunes:name></itunes:owner>", "");
+        assert!(!parse(&plain, "https://m.example/feed").podcast);
+    }
+
+    #[test]
+    fn a_new_show_with_no_episodes_yet_is_a_podcast_by_its_declaration() {
+        let xml = r#"<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+            <channel><title>Soon</title><itunes:category text="News"/></channel></rss>"#;
+        let feed = parse(xml, "https://soon.example/feed");
+        assert!(feed.podcast);
+        assert!(feed.items.is_empty());
+    }
+
+    #[test]
+    fn an_atom_enclosure_link_is_the_episode() {
+        let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+            <title>Atom Radio</title>
+            <author><name>The Station</name></author>
+            <entry><id>tag:radio.example,2026:2</id><title>Two</title>
+              <link rel="alternate" href="https://radio.example/2"/>
+              <link rel="enclosure" type="audio/ogg" length="5000" href="/audio/2.ogg"/>
+              <link rel="enclosure" type="image/png" href="/art/2.png"/>
+              <updated>2026-10-02T10:00:00Z</updated></entry>
+            <entry><id>tag:radio.example,2026:1</id><title>One</title>
+              <link rel="alternate" href="https://radio.example/1"/>
+              <link rel="enclosure" type="video/mp4" href="https://radio.example/video/1.mp4"/>
+              <updated>2026-10-01T10:00:00Z</updated></entry>
+            </feed>"#;
+        let feed = parse(xml, "https://radio.example/feed.atom");
+        assert!(feed.podcast);
+        assert_eq!(feed.author, "The Station");
+        let two = feed.items[0].media.as_ref().expect("an episode");
+        assert_eq!(two.url, "https://radio.example/audio/2.ogg");
+        assert_eq!(two.mime, "audio/ogg");
+        assert_eq!(two.length, Some(5000));
+        assert_eq!(two.kind(), karmayoga_core::news::EnclosureKind::Audio);
+        // The page is still the page, and the picture still the picture.
+        assert_eq!(feed.items[0].url, "https://radio.example/2");
+        assert_eq!(feed.items[0].image_url, "https://radio.example/art/2.png");
+        let one = feed.items[1].media.as_ref().expect("an episode");
+        assert_eq!(one.kind(), karmayoga_core::news::EnclosureKind::Video);
+    }
+
+    #[test]
+    fn a_json_feed_attachment_is_the_episode() {
+        let json = r#"{
+          "version": "https://jsonfeed.org/version/1.1",
+          "title": "Voice Notes",
+          "icon": "https://notes.example/icon.png",
+          "authors": [{ "name": "Ines" }],
+          "items": [
+            { "id": "2", "url": "https://notes.example/2", "title": "Two",
+              "attachments": [
+                { "url": "https://notes.example/2.mp3", "mime_type": "audio/mpeg",
+                  "size_in_bytes": 1234 } ] },
+            { "id": "1", "url": "https://notes.example/1", "title": "One",
+              "attachments": [
+                { "url": "https://notes.example/1.png", "mime_type": "image/png" },
+                { "url": "https://notes.example/1.m4a", "mime_type": "audio/mp4" } ] }
+          ]
+        }"#;
+        let feed = parse(json, "https://notes.example/feed.json");
+        assert!(feed.podcast);
+        assert_eq!(feed.image_url, "https://notes.example/icon.png");
+        assert_eq!(feed.author, "Ines");
+        let two = feed.items[0].media.as_ref().expect("an episode");
+        assert_eq!(two.url, "https://notes.example/2.mp3");
+        assert_eq!((two.mime.as_str(), two.length), ("audio/mpeg", Some(1234)));
+        let one = feed.items[1].media.as_ref().expect("an episode");
+        assert_eq!(one.url, "https://notes.example/1.m4a", "the picture is not the episode");
+        assert_eq!(feed.items[1].image_url, "https://notes.example/1.png");
+        // The ordinary JSON Feed has nothing to play.
+        let plain = parse(JSON, "https://weeknotes.example/feed.json");
+        assert!(!plain.podcast);
+        assert!(plain.items.iter().all(|item| item.media.is_none()));
+    }
+
+    #[test]
+    fn a_media_content_that_is_audio_is_an_episode_and_one_that_is_flash_is_not() {
+        let xml = r#"<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+            <channel><title>Mixed</title>
+            <item><title>Audio</title><link>https://x.example/a</link>
+              <media:content url="https://x.example/a.mp3" type="audio/mpeg" fileSize="999"
+                  duration="90"/></item>
+            <item><title>Flash</title><link>https://x.example/f</link>
+              <media:content url="https://x.example/v" type="application/x-shockwave-flash"/></item>
+            </channel></rss>"#;
+        let feed = parse(xml, "https://x.example/feed");
+        let media = feed.items[0].media.as_ref().expect("an episode");
+        assert_eq!(media.url, "https://x.example/a.mp3");
+        assert_eq!((media.length, media.duration_ms), (Some(999), Some(90_000)));
+        assert_eq!(feed.items[1].media, None);
+    }
+
+    #[test]
+    fn a_feed_with_a_doctype_is_still_read_for_its_episodes() {
+        let xml = r#"<?xml version="1.0"?>
+            <!DOCTYPE rss [<!ENTITY unused "Old Show">]>
+            <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+            <channel><title>Old Show</title>
+            <item><title>One</title><link>https://old.example/1</link>
+              <enclosure url="https://old.example/1.mp3" type="audio/mpeg"/>
+              <itunes:duration>12:34</itunes:duration></item>
+            </channel></rss>"#;
+        let feed = parse(xml, "https://old.example/feed");
+        assert_eq!(feed.title, "Old Show");
+        let media = feed.items[0].media.as_ref().expect("an episode");
+        assert_eq!(media.duration_ms, Some((12 * 60 + 34) * 1000));
+    }
+
+    #[test]
+    fn durations_are_read_in_the_shapes_publishers_write_them() {
+        let cases = [
+            ("3600", Some(3_600_000)),
+            ("45:12", Some(2_712_000)),
+            ("1:02:03", Some(3_723_000)),
+            ("01:02:03.5", Some(3_723_500)),
+            ("  12:34 ", Some(754_000)),
+            ("90.5", Some(90_500)),
+            ("0", None),
+            ("0:00", None),
+            ("", None),
+            ("soon", None),
+            ("1:2:3:4", None),
+            ("-5", None),
+            ("1:-5", None),
+            ("inf", None),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(parse_duration_ms(text), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn episode_and_season_numbers_are_whole_numbers() {
+        assert_eq!(whole_number(" 7 "), Some(7));
+        assert_eq!(whole_number("7.0"), Some(7));
+        assert_eq!(whole_number("7.5"), None);
+        assert_eq!(whole_number("-1"), None);
+        assert_eq!(whole_number("bonus"), None);
+    }
+
+    #[test]
+    fn the_best_transcript_is_the_one_that_keeps_its_times() {
+        let offered = |types: &[&str]| {
+            types
+                .iter()
+                .enumerate()
+                .map(|(at, mime)| (format!("https://t.example/{at}"), mime.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let best = |types: &[&str]| best_transcript(offered(types)).map(|(_, mime)| mime);
+        assert_eq!(best(&["text/plain", "text/html", "text/vtt"]), Some("text/vtt".into()));
+        assert_eq!(
+            best(&["text/html", "application/json", "application/srt"]),
+            Some("application/srt".into())
+        );
+        assert_eq!(
+            best(&["text/plain", "text/html", "application/json"]),
+            Some("application/json".into())
+        );
+        assert_eq!(best(&["text/plain", "text/html"]), Some("text/html".into()));
+        assert_eq!(best(&["text/plain; charset=utf-8"]), Some("text/plain".into()));
+        // Of two of a kind, the first listed.
+        let two = vec![
+            ("https://t.example/a".to_string(), "text/vtt".to_string()),
+            ("https://t.example/b".to_string(), "TEXT/VTT".to_string()),
+        ];
+        assert_eq!(best_transcript(two).unwrap().0, "https://t.example/a");
+        assert_eq!(best(&["application/pdf", "audio/mpeg"]), None);
+        assert_eq!(best(&[]), None);
+        assert_eq!(best_transcript([(String::new(), "text/vtt".to_string())]), None);
+    }
+
+    #[test]
+    fn a_feed_in_an_older_encoding_is_read_for_its_episodes_too() {
+        let mut xml = br#"<?xml version="1.0" encoding="ISO-8859-1"?>
+            <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+            <channel><title>Caf"#
+            .to_vec();
+        xml.push(0xE9);
+        xml.extend_from_slice(
+            br#"</title>
+            <item><title>One</title><link>https://c.example/1</link>
+              <enclosure url="https://c.example/1.mp3" type="audio/mpeg"/>
+              <itunes:duration>12:34</itunes:duration></item>
+            </channel></rss>"#,
+        );
+        let feed = parse_feed(&xml, "https://c.example/feed").expect("a feed");
+        assert_eq!(feed.title, "Caf\u{e9}");
+        let media = feed.items[0].media.as_ref().expect("an episode");
+        assert_eq!(media.url, "https://c.example/1.mp3");
+        assert_eq!(media.duration_ms, Some((12 * 60 + 34) * 1000));
+        assert!(feed.podcast);
+    }
+
+    #[test]
+    fn a_feed_the_second_reading_cannot_make_sense_of_keeps_feed_rss_reading() {
+        // An entity no DTD defines is something `feed-rs` lets pass and
+        // `roxmltree` does not, so the second reading is skipped and what the
+        // first made of the episode -- here with an `itunes:summary`, which
+        // is what makes it keep the rest -- stands.
+        let xml = r#"<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+            <channel><title>Odd</title>
+            <item><title>One</title><link>https://o.example/1</link>
+              <description>Wait&hellip;</description>
+              <enclosure url="https://o.example/1.mp3" type="audio/mpeg"/>
+              <itunes:summary>What it is.</itunes:summary>
+              <itunes:duration>3600</itunes:duration><itunes:episode>4</itunes:episode></item>
+            </channel></rss>"#;
+        let feed = parse(xml, "https://o.example/feed");
+        let media = feed.items[0].media.as_ref().expect("an episode");
+        assert_eq!(media.url, "https://o.example/1.mp3");
+        assert_eq!(media.duration_ms, Some(3_600_000));
+        assert_eq!(media.episode, Some(4));
+        assert!(feed.podcast);
     }
 }

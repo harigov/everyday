@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use karmayoga_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 34;
+pub const SCHEMA_VERSION: i64 = 35;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -123,6 +123,71 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v32(d),
         v33(d),
         v34(),
+        v35(d),
+    ]
+}
+
+/// Version 35: podcasts, Up Next, and the Feed's memory of what was read
+/// and heard -- see `docs/plans/podcasts.md` and
+/// `karmayoga_core::news::listening`.
+///
+/// - `news_story_files`: the stories that link files (an episode downloaded,
+///   a transcript, an article kept), one row each, with whether one of them
+///   is the downloaded episode -- what clean-up looks at. Clear, so the references
+///   table and clean-up can find them without decrypting every story, and so
+///   expiry can leave them alone. A side table rather than a column on
+///   `news_stories` for [`v6`]'s reason: `ADD COLUMN` cannot be written
+///   idempotently in SQL both engines accept.
+/// - `feed_settings`: one sealed row, on [`v32`]'s pattern.
+/// - `feed_queue`, `feed_consumed`, `feed_ranks`: one row per thing, keyed
+///   in the clear by `karmayoga_core::news::ContentRef::key` (`story:<id>`,
+///   `file:<id>`, `item:<id>` -- an id and nothing else). The queue's order
+///   and a consumption's last time are clear for their `ORDER BY`.
+///
+/// Additive.
+fn v35(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS news_story_files (
+                 story_id    TEXT    PRIMARY KEY NOT NULL,
+                 media       {boolean} NOT NULL DEFAULT {f}
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS feed_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS feed_queue (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 target      TEXT    NOT NULL UNIQUE,
+                 sort_order  {int} NOT NULL,
+                 added_us    {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS feed_queue_by_order ON feed_queue (sort_order, added_us)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS feed_consumed (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 target      TEXT    NOT NULL UNIQUE,
+                 last_us     {int} NOT NULL,
+                 finished    {boolean} NOT NULL DEFAULT {f},
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS feed_consumed_by_time ON feed_consumed (last_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS feed_ranks (
+                 target      TEXT    PRIMARY KEY NOT NULL,
+                 ranked_us   {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
     ]
 }
 

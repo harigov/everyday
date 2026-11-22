@@ -131,6 +131,10 @@ typed_id!(LogId, "log");
 // name at the crate root. See `crate::news`.
 typed_id!(NewsSourceId, "news_source");
 typed_id!(StoryId, "story");
+// Up Next, and the Feed's memory of what was read and heard. See
+// `crate::news::listening`.
+typed_id!(QueueEntryId, "queue_entry");
+typed_id!(ConsumptionId, "consumption");
 
 // Money: one sign-in at a bank, an account it brought (or one kept by hand),
 // a transaction in it, and the categories and rules that sort them. `Txn`

@@ -1,12 +1,18 @@
 //! The Feed half of the conformance suite: sources, fetch state, stories,
-//! bodies, expiry, and a newsletter story's read state read through mail.
+//! bodies, expiry, a newsletter story's read state read through mail, a
+//! story's files, the Feed's settings, Up Next, what was consumed, and ranks.
 
 use super::*;
-use crate::id::{AccountId, MailMessageId, NewsSourceId, PackId, StoryId, ThreadId};
+use crate::id::{
+    AccountId, ConsumptionId, FileId, ItemId, MailMessageId, NewsSourceId, PackId, QueueEntryId,
+    StoryId, ThreadId,
+};
 use crate::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
 use crate::news::{
-    Also, BodyOrigin, ExpireReport, ExpiryRule, FetchState, HnList, NewsImage, NewsSource,
-    Retention, SourceKind, Story, StoryBody,
+    AddedBy, Also, BodyOrigin, ConsumeMode, ConsumedQuery, Consumption, ContentRef, Criterion,
+    DownloadPolicy, Enclosure, ExpireReport, ExpiryRule, FeedSettings, FetchState, HnList,
+    KeepPolicy, NewsImage, NewsSource, QueueEntry, Rank, RankAnswer, Ranking, Retention,
+    SourceKind, Span, Story, StoryBody, StoryFiles, TranscribePolicy,
 };
 use crate::packstore::PackRef as MailPackRef;
 use crate::store::mail::IngestMessage;
@@ -44,6 +50,17 @@ pub fn run_news_suite(store: &dyn JournalStore) {
     blob_refs_name_icons_and_cached_pictures(store);
     newsletter_stories_follow_their_message(store);
     unicode_survives_a_news_round_trip(news);
+
+    files_are_written_only_by_set_story_files(news);
+    a_story_with_files_or_in_up_next_is_never_expired(news);
+    feed_settings_round_trip_and_are_replaced_whole(news);
+    up_next_is_ordered_and_holds_one_entry_per_thing(news);
+    deleting_from_up_next_ignores_what_is_not_there(news);
+    consumption_is_one_record_per_thing(news);
+    consumption_queries_filter_and_come_newest_first(news);
+    ranks_are_replaced_by_thing_and_cleared_by_age(news);
+    deleting_a_source_takes_its_queue_entries_and_ranks_but_not_what_was_consumed(news);
+    a_list_longer_than_one_chunk_reaches_every_table(news);
 
     news_cleanup(news);
     eprintln!("--- news suite passed ---");
@@ -161,6 +178,11 @@ fn news_starts_empty(news: &dyn NewsStore) {
     assert!(news.due_sources(now()).unwrap().is_empty());
     assert_eq!(news.next_due().unwrap(), None);
     assert!(news.blob_refs().unwrap().is_empty());
+    assert!(news.stories_with_files().unwrap().is_empty());
+    assert_eq!(news.feed_settings().unwrap(), None, "settings are None until first saved");
+    assert!(news.queue().unwrap().is_empty(), "a fresh store has nothing in Up Next");
+    assert!(news.consumptions(&everything()).unwrap().is_empty());
+    assert_eq!(news.clear_ranks(None).unwrap(), 0, "a fresh store has ranked nothing");
 }
 
 fn news_cleanup(news: &dyn NewsStore) {
@@ -172,6 +194,10 @@ fn news_cleanup(news: &dyn NewsStore) {
     assert!(news.counts().unwrap().is_empty(), "cleanup left counts behind");
     assert_eq!(news.next_due().unwrap(), None, "cleanup left fetch state behind");
     assert!(news.blob_refs().unwrap().is_empty(), "cleanup left blob references behind");
+    assert!(news.stories_with_files().unwrap().is_empty(), "cleanup left files behind");
+    assert!(news.queue().unwrap().is_empty(), "cleanup left Up Next entries behind");
+    assert!(news.consumptions(&everything()).unwrap().is_empty(), "cleanup left history behind");
+    assert_eq!(news.clear_ranks(None).unwrap(), 0, "cleanup left ranks behind");
 }
 
 fn missing_news_records_are_not_found(news: &dyn NewsStore) {
@@ -318,9 +344,30 @@ fn a_story_round_trips_every_field(news: &dyn NewsStore) {
     }];
     story.read = true;
     story.saved = true;
+    story.media = Some(Enclosure {
+        url: "https://cdn.example/episode-12.mp3".into(),
+        mime: "audio/mpeg".into(),
+        length: Some(48_000_000),
+        duration_ms: Some(3_005_000),
+        transcript_url: "https://cdn.example/episode-12.vtt".into(),
+        transcript_mime: "text/vtt".into(),
+        episode: Some(12),
+        season: Some(2),
+    });
+    story.files = StoryFiles {
+        media: Some(FileId::new()),
+        transcript: Some(FileId::new()),
+        text: Some(FileId::new()),
+        audio: Some(FileId::new()),
+    };
     assert_eq!(insert(news, &[&story]), vec![story.id]);
 
     assert_eq!(news.get_story(story.id).unwrap(), story, "a story must survive unchanged");
+    assert_eq!(
+        news.stories_with_files().unwrap(),
+        vec![story.clone()],
+        "a story inserted with files says so in its clear column"
+    );
     assert_eq!(news.get_stories(&[story.id]).unwrap(), vec![story.clone()]);
     assert_eq!(news.story_by_key("k-full").unwrap(), Some(story.clone()));
     assert_eq!(list(news, &StoryQuery::default()), vec![story.clone()]);
@@ -1173,4 +1220,528 @@ fn unicode_survives_a_news_round_trip(news: &dyn NewsStore) {
     assert_eq!(news.story_by_key("k-unicode").unwrap().unwrap().title, story.title);
 
     forget(news, &[&source]);
+}
+
+// ---- a story's files ------------------------------------------------------
+
+fn files_of(media: bool, transcript: bool) -> StoryFiles {
+    StoryFiles {
+        media: media.then(FileId::new),
+        transcript: transcript.then(FileId::new),
+        ..Default::default()
+    }
+}
+
+fn files_are_written_only_by_set_story_files(news: &dyn NewsStore) {
+    let source = followed(news, "show");
+    let story = new_story(&source, "k-ep", "Episode 1", ago(1));
+    assert_eq!(insert(news, &[&story]), vec![story.id]);
+    assert!(news.stories_with_files().unwrap().is_empty(), "no files, no entry");
+
+    // What the story already has -- a state, a body -- is not disturbed by
+    // linking a file to it.
+    news.set_read(&[story.id], true).unwrap();
+    news.set_saved(&[story.id], true).unwrap();
+    news.put_body(&body_of(&story, "<p>Show notes.</p>")).unwrap();
+
+    let files = files_of(true, true);
+    news.set_story_files(story.id, &files).expect("set_story_files");
+    let back = news.get_story(story.id).unwrap();
+    assert_eq!(back.files, files);
+    assert!(back.read && back.saved && back.has_body, "the rest of the story is as stored");
+    assert_eq!(back.title, "Episode 1");
+    assert_eq!(news.stories_with_files().unwrap(), vec![back.clone()]);
+    assert_eq!(listed_ids(news, &StoryQuery::default()), vec![story.id]);
+
+    // A refresh holding a copy read before the download finished -- no
+    // files -- or one carrying files of its own: the stored ones stay.
+    let mut stale = story.clone();
+    stale.score = Some(77);
+    news.update_story(&stale).expect("update_story");
+    assert_eq!(news.get_story(story.id).unwrap().files, files, "a refresh must not unlink");
+    assert_eq!(news.get_story(story.id).unwrap().score, Some(77), "but it still updates the rest");
+    let mut meddling = story.clone();
+    meddling.files = files_of(false, true);
+    news.update_story(&meddling).unwrap();
+    assert_eq!(news.get_story(story.id).unwrap().files, files, "whatever the record says");
+    assert_eq!(news.stories_with_files().unwrap().len(), 1);
+
+    // Replaced, not merged.
+    let replacement = StoryFiles { text: Some(FileId::new()), ..Default::default() };
+    news.set_story_files(story.id, &replacement).unwrap();
+    assert_eq!(news.get_story(story.id).unwrap().files, replacement);
+    assert_eq!(news.stories_with_files().unwrap().len(), 1);
+
+    // Emptied, the story leaves the list, and a refresh does not bring the
+    // files back.
+    news.set_story_files(story.id, &StoryFiles::default()).unwrap();
+    assert!(news.get_story(story.id).unwrap().files.is_empty());
+    assert!(news.stories_with_files().unwrap().is_empty());
+    news.update_story(&meddling).unwrap();
+    assert!(news.get_story(story.id).unwrap().files.is_empty());
+    assert!(news.stories_with_files().unwrap().is_empty());
+
+    // Only a story that exists and is live has files to set.
+    super::assert_not_found(news.set_story_files(StoryId::new(), &files));
+    let old = new_story(&source, "k-old", "Old", ago(200));
+    insert(news, &[&old]);
+    assert_eq!(news.expire(&[], now()).unwrap(), ExpireReport { expired: 1, removed: 0 });
+    super::assert_not_found(news.set_story_files(old.id, &files));
+    assert!(news.get_story(old.id).unwrap().files.is_empty(), "a tombstone stays one");
+
+    forget(news, &[&source]);
+}
+
+fn a_story_with_files_or_in_up_next_is_never_expired(news: &dyn NewsStore) {
+    let source = followed(news, "ephemeral");
+    let rules = [ExpiryRule {
+        source_id: source.id,
+        retention: Retention { read_days: 10, unread_days: 10 },
+    }];
+    let old = |key: &str| new_story(&source, key, key, ago(100));
+    let (with_files, queued, plain) = (old("with-files"), old("queued"), old("plain"));
+    let mut saved = old("saved");
+    saved.saved = true;
+    insert(news, &[&with_files, &queued, &saved, &plain]);
+    news.set_story_files(with_files.id, &files_of(true, false)).unwrap();
+
+    // Nothing in `keep` is expired, nor is a story with files; saved ones
+    // never are, and the plain one goes.
+    let report = news.expire_except(&rules, &[queued.id], now()).unwrap();
+    assert_eq!(report, ExpireReport { expired: 1, removed: 0 });
+    assert!(news.get_story(plain.id).unwrap().expired);
+    for kept in [&with_files, &queued, &saved] {
+        assert!(!news.get_story(kept.id).unwrap().expired, "{}", kept.key);
+    }
+
+    // `expire` is `expire_except` with nothing to keep: the story that was
+    // in Up Next is now just an old one, and the one with files still is not.
+    let report = news.expire(&rules, now()).unwrap();
+    assert_eq!(report, ExpireReport { expired: 1, removed: 0 });
+    assert!(news.get_story(queued.id).unwrap().expired);
+    assert!(!news.get_story(with_files.id).unwrap().expired, "expire spares files too");
+    assert_eq!(news.expire(&rules, now()).unwrap(), ExpireReport::default());
+
+    // With its files gone, it ages out like any other.
+    news.set_story_files(with_files.id, &StoryFiles::default()).unwrap();
+    assert_eq!(news.expire(&rules, now()).unwrap(), ExpireReport { expired: 1, removed: 0 });
+    assert!(news.get_story(with_files.id).unwrap().expired);
+    assert!(!news.get_story(saved.id).unwrap().expired);
+
+    forget(news, &[&source]);
+}
+
+// ---- the Feed's settings ----------------------------------------------------
+
+fn feed_settings_round_trip_and_are_replaced_whole(news: &dyn NewsStore) {
+    assert_eq!(news.feed_settings().unwrap(), None);
+
+    let mut settings = FeedSettings::default();
+    settings.podcasts.download = DownloadPolicy::All;
+    settings.podcasts.keep = KeepPolicy::Newest { count: 5 };
+    settings.podcasts.queue_new = true;
+    settings.podcasts.transcribe = TranscribePolicy::WhenDownloaded;
+    settings.ranking.criteria = vec![
+        Criterion { id: "ai".into(), text: "about building software with AI".into(), weight: 3 },
+        Criterion { id: "ads".into(), text: "mostly an advertisement".into(), weight: -2 },
+    ];
+    settings.ranking.goals = true;
+    settings.ranking.window_days = 14;
+    settings.keep_read = false;
+    settings.autofill = Some(8);
+    settings.autoplay = false;
+    settings.skip_back_s = 10;
+    settings.skip_forward_s = 45;
+    news.put_feed_settings(&settings).expect("put_feed_settings");
+    assert_eq!(news.feed_settings().unwrap(), Some(settings.clone()), "every field survives");
+
+    // Saved whole: what is not in the new copy is not kept from the old.
+    let plain = FeedSettings::default();
+    news.put_feed_settings(&plain).unwrap();
+    assert_eq!(news.feed_settings().unwrap(), Some(plain), "replaced, not merged");
+
+    // There is no way to unset them, so the suite leaves the defaults, which
+    // is what a vault that never saved any behaves as.
+}
+
+// ---- Up Next ------------------------------------------------------------------
+
+/// An entry added `added` seconds past [`NOW`], so ties in `sort_order` are
+/// broken by something the test chose.
+fn entry(what: ContentRef, title: &str, order: i64, added: i64) -> QueueEntry {
+    let mut entry = QueueEntry::new(what, title, order);
+    entry.added_at = at(NOW + added);
+    entry
+}
+
+fn queued(news: &dyn NewsStore) -> Vec<QueueEntryId> {
+    news.queue().expect("queue").iter().map(|e| e.id).collect()
+}
+
+fn up_next_is_ordered_and_holds_one_entry_per_thing(news: &dyn NewsStore) {
+    let (a, b, c, d) = (
+        ContentRef::Story(StoryId::new()),
+        ContentRef::File(FileId::new()),
+        ContentRef::Item(ItemId::new()),
+        ContentRef::Story(StoryId::new()),
+    );
+
+    // Every field survives, and the order is `sort_order` then `added_at`,
+    // whatever order they went in.
+    let mut first = entry(a, "The first", 10, 0);
+    first.source = "A Show".into();
+    first.mode = ConsumeMode::Listen;
+    first.duration_ms = Some(1_800_000);
+    first.added_by = AddedBy::Recommended;
+    let tie_early = entry(b, "Tie, added early", 20, 5);
+    let tie_late = entry(c, "Tie, added late", 20, 9);
+    let before_all = entry(d, "Before all", -5, 99);
+    for e in [&tie_late, &before_all, &first, &tie_early] {
+        news.put_queue_entry(e).expect("put_queue_entry");
+    }
+    assert_eq!(queued(news), [before_all.id, first.id, tie_early.id, tie_late.id]);
+    assert_eq!(news.queue().unwrap()[1], first, "an entry survives unchanged");
+
+    // The same id is replaced, and can move.
+    let mut moved = first.clone();
+    moved.sort_order = 30;
+    moved.title = "The first, retitled".into();
+    news.put_queue_entry(&moved).unwrap();
+    assert_eq!(queued(news), [before_all.id, tie_early.id, tie_late.id, first.id]);
+    assert_eq!(news.queue().unwrap()[3].title, "The first, retitled");
+
+    // The same thing under another id replaces the entry that held it: one
+    // entry per thing.
+    let again = entry(b, "The file, queued again", 0, 50);
+    news.put_queue_entry(&again).unwrap();
+    assert_eq!(queued(news), [before_all.id, again.id, tie_late.id, first.id]);
+    assert!(!queued(news).contains(&tie_early.id), "the older entry for it is gone");
+    assert_eq!(news.queue().unwrap().len(), 4);
+
+    // An entry may be re-pointed at something else; the thing it left is
+    // free, and the thing it took loses its old entry.
+    let mut repointed = again.clone();
+    repointed.what = d;
+    news.put_queue_entry(&repointed).unwrap();
+    let after = news.queue().unwrap();
+    assert_eq!(after.len(), 3, "taking d's place removed d's entry");
+    assert!(after.iter().all(|e| e.id != before_all.id));
+    assert!(after.iter().any(|e| e.id == again.id && e.what == d));
+    let reuse = entry(b, "The file, once more", 1, 60);
+    news.put_queue_entry(&reuse).unwrap();
+    assert_eq!(news.queue().unwrap().len(), 4);
+
+    news.delete_queue_entries(&queued(news)).unwrap();
+    assert!(news.queue().unwrap().is_empty());
+}
+
+fn deleting_from_up_next_ignores_what_is_not_there(news: &dyn NewsStore) {
+    let things: Vec<ContentRef> = (0..4).map(|_| ContentRef::Story(StoryId::new())).collect();
+    let entries: Vec<QueueEntry> = things
+        .iter()
+        .enumerate()
+        .map(|(i, what)| entry(*what, &format!("Entry {i}"), i as i64, 0))
+        .collect();
+    for e in &entries {
+        news.put_queue_entry(e).unwrap();
+    }
+
+    // By entry id: the unknown one, and an empty list, are no trouble.
+    news.delete_queue_entries(&[]).unwrap();
+    news.delete_queue_entries(&[QueueEntryId::new(), entries[0].id]).unwrap();
+    assert_eq!(queued(news), [entries[1].id, entries[2].id, entries[3].id]);
+
+    // By thing, whatever the entry's id; things that are not queued are
+    // ignored.
+    news.delete_queue_for(&[]).unwrap();
+    news.delete_queue_for(&[
+        things[2],
+        things[0],
+        ContentRef::File(FileId::new()),
+        ContentRef::Item(ItemId::new()),
+    ])
+    .unwrap();
+    assert_eq!(queued(news), [entries[1].id, entries[3].id]);
+
+    news.delete_queue_for(&[things[1], things[3]]).unwrap();
+    assert!(news.queue().unwrap().is_empty());
+}
+
+// ---- what was read, heard and watched -----------------------------------------
+
+fn everything() -> ConsumedQuery {
+    ConsumedQuery { limit: 500, ..Default::default() }
+}
+
+/// Something consumed, last touched `last` seconds past [`NOW`].
+fn consumed(what: ContentRef, title: &str, last: i64) -> Consumption {
+    let mut consumption = Consumption::new(what, title, ConsumeMode::Listen);
+    consumption.first_at = at(NOW + last - 600);
+    consumption.last_at = at(NOW + last);
+    consumption
+}
+
+fn consumed_ids(found: &[Consumption]) -> Vec<ConsumptionId> {
+    found.iter().map(|c| c.id).collect()
+}
+
+fn forget_consumed(news: &dyn NewsStore, all: &[&Consumption]) {
+    for c in all {
+        news.delete_consumption(c.id).expect("delete_consumption");
+    }
+}
+
+fn consumption_is_one_record_per_thing(news: &dyn NewsStore) {
+    let episode = ContentRef::Story(StoryId::new());
+    let film = ContentRef::File(FileId::new());
+    assert_eq!(news.consumption(&episode).unwrap(), None);
+    assert!(news.consumptions_for(&[episode, film]).unwrap().is_empty());
+
+    // Every field survives.
+    let mut heard = consumed(episode, "Episode 12", 100);
+    heard.source = "A Show".into();
+    heard.url = "https://show.example/12".into();
+    heard.progress = 0.75;
+    heard.finished = true;
+    heard.finished_at = Some(at(NOW + 90));
+    heard.position_ms = Some(2_250_000);
+    heard.duration_ms = Some(3_000_000);
+    heard.heard = vec![
+        Span { start_ms: 0, end_ms: 1_000_000 },
+        Span { start_ms: 1_500_000, end_ms: 2_250_000 },
+    ];
+    heard.text_file = Some(FileId::new());
+    heard.media_file = Some(FileId::new());
+    news.put_consumption(&heard).expect("put_consumption");
+    assert_eq!(news.consumption(&episode).unwrap(), Some(heard.clone()));
+    assert_eq!(news.consumptions_for(&[episode, film]).unwrap(), vec![heard.clone()]);
+    assert_eq!(news.consumptions(&everything()).unwrap(), vec![heard.clone()]);
+
+    // The same id is replaced, and `last_at` -- a clear column -- moves with
+    // it; coming back to something widens it rather than adding a row.
+    let mut again = heard.clone();
+    again.progress = 1.0;
+    again.last_at = at(NOW + 200);
+    again.finished = false;
+    news.put_consumption(&again).unwrap();
+    assert_eq!(news.consumption(&episode).unwrap(), Some(again.clone()));
+    assert_eq!(news.consumptions(&everything()).unwrap().len(), 1);
+    let unfinished = ConsumedQuery { finished_only: true, ..everything() };
+    assert!(news.consumptions(&unfinished).unwrap().is_empty(), "the column follows the record");
+
+    // Another id for the same thing replaces the one that held it.
+    let mut other = consumed(episode, "Episode 12, from elsewhere", 300);
+    other.mode = ConsumeMode::Watch;
+    news.put_consumption(&other).unwrap();
+    assert_eq!(news.consumptions(&everything()).unwrap(), vec![other.clone()]);
+    assert_eq!(news.consumption(&episode).unwrap(), Some(other.clone()));
+
+    // A neighbour is not disturbed, and many can be asked for at once.
+    let watched = consumed(film, "A film", 50);
+    news.put_consumption(&watched).unwrap();
+    let mut pair =
+        news.consumptions_for(&[film, episode, ContentRef::Item(ItemId::new())]).unwrap();
+    pair.sort_by_key(|c| c.id);
+    let mut expected = vec![other.clone(), watched.clone()];
+    expected.sort_by_key(|c| c.id);
+    assert_eq!(pair, expected, "what has none is skipped");
+
+    // Forgetting one is one record; an unknown id is ignored.
+    news.delete_consumption(ConsumptionId::new()).unwrap();
+    news.delete_consumption(other.id).unwrap();
+    assert_eq!(news.consumption(&episode).unwrap(), None);
+    assert_eq!(news.consumption(&film).unwrap(), Some(watched.clone()));
+    forget_consumed(news, &[&watched]);
+    assert!(news.consumptions(&everything()).unwrap().is_empty());
+}
+
+fn consumption_queries_filter_and_come_newest_first(news: &dyn NewsStore) {
+    let day = 86_400;
+    let mut all: Vec<Consumption> = (1..=5)
+        .map(|n| {
+            consumed(ContentRef::Story(StoryId::new()), &format!("Touched {n} days ago"), -n * day)
+        })
+        .collect();
+    // The second and fourth newest were read to the end.
+    for i in [1, 3] {
+        all[i].finished = true;
+        all[i].finished_at = Some(all[i].last_at);
+    }
+    // Put in a scrambled order, so the order asked for is the store's doing.
+    for i in [2, 0, 4, 1, 3] {
+        news.put_consumption(&all[i]).unwrap();
+    }
+    let ids = |range: std::ops::Range<usize>| consumed_ids(&all[range]);
+    let found = |query: &ConsumedQuery| consumed_ids(&news.consumptions(query).unwrap());
+
+    assert_eq!(found(&everything()), ids(0..5), "newest last-touched first");
+    assert_eq!(found(&ConsumedQuery::default()), ids(0..5), "no limit means the default one");
+
+    // `since` is inclusive and `until` is not; both together are a window.
+    let since = ConsumedQuery { since: Some(all[2].last_at), ..everything() };
+    assert_eq!(found(&since), ids(0..3), "touched at or after");
+    let until = ConsumedQuery { until: Some(all[2].last_at), ..everything() };
+    assert_eq!(found(&until), ids(3..5), "touched before");
+    let window =
+        ConsumedQuery { since: Some(all[3].last_at), until: Some(all[1].last_at), ..everything() };
+    assert_eq!(found(&window), ids(2..4));
+
+    let finished = ConsumedQuery { finished_only: true, ..everything() };
+    assert_eq!(found(&finished), vec![all[1].id, all[3].id]);
+    let both = ConsumedQuery { finished_only: true, since: Some(all[2].last_at), ..everything() };
+    assert_eq!(found(&both), vec![all[1].id], "the filters are ANDed");
+
+    // The limit keeps the newest.
+    assert_eq!(found(&ConsumedQuery { limit: 2, ..Default::default() }), ids(0..2));
+    assert_eq!(
+        found(&ConsumedQuery { limit: 1, finished_only: true, ..Default::default() }),
+        [all[1].id]
+    );
+    assert!(found(&ConsumedQuery { since: Some(at(NOW + 1)), ..everything() }).is_empty());
+
+    forget_consumed(news, &all.iter().collect::<Vec<_>>());
+    assert!(news.consumptions(&everything()).unwrap().is_empty());
+}
+
+// ---- ranks ----------------------------------------------------------------------
+
+fn rank_of(what: ContentRef, score: f32, seconds: i64) -> Rank {
+    Rank {
+        what,
+        score,
+        answers: vec![
+            RankAnswer { criterion: "ai".into(), yes: 0.75 },
+            RankAnswer { criterion: Ranking::GOALS.into(), yes: 0.25 },
+        ],
+        fingerprint: "0123456789abcdef".into(),
+        at: at(NOW + seconds),
+    }
+}
+
+fn ranked(news: &dyn NewsStore, what: &[ContentRef]) -> Vec<Rank> {
+    let mut found = news.ranks(what).expect("ranks");
+    found.sort_by_key(|r| r.what);
+    found
+}
+
+fn sorted_ranks(mut ranks: Vec<Rank>) -> Vec<Rank> {
+    ranks.sort_by_key(|r| r.what);
+    ranks
+}
+
+fn ranks_are_replaced_by_thing_and_cleared_by_age(news: &dyn NewsStore) {
+    let (a, b, c) = (
+        ContentRef::Story(StoryId::new()),
+        ContentRef::Story(StoryId::new()),
+        ContentRef::Item(ItemId::new()),
+    );
+    assert!(news.ranks(&[]).unwrap().is_empty());
+    assert!(news.ranks(&[a]).unwrap().is_empty());
+    news.put_ranks(&[]).expect("an empty list is nothing to do");
+
+    // Every field survives, and what has no rank is skipped.
+    let (ra, rb, rc) = (rank_of(a, 0.5, -300), rank_of(b, -0.25, -200), rank_of(c, 1.0, -100));
+    news.put_ranks(&[ra.clone(), rb.clone(), rc.clone()]).expect("put_ranks");
+    assert_eq!(ranked(news, &[a, b, c]), sorted_ranks(vec![ra.clone(), rb.clone(), rc.clone()]));
+    assert_eq!(ranked(news, &[b, ContentRef::Story(StoryId::new())]), vec![rb.clone()]);
+
+    // Replaced by thing, not added: one rank per thing, and the age -- a
+    // clear column -- is the new one's.
+    let ra_again = rank_of(a, -1.0, -50);
+    news.put_ranks(std::slice::from_ref(&ra_again)).unwrap();
+    assert_eq!(ranked(news, &[a]), vec![ra_again.clone()]);
+    assert_eq!(ranked(news, &[a, b, c]).len(), 3);
+    // Twice in one call: the later one stands.
+    let (first, second) = (rank_of(b, 0.1, -10), rank_of(b, 0.9, -10));
+    news.put_ranks(&[first, second.clone()]).unwrap();
+    assert_eq!(ranked(news, &[b]), vec![second.clone()]);
+
+    // Cleared by age, strictly before; the count is what went.
+    assert_eq!(news.clear_ranks(Some(at(NOW - 100))).unwrap(), 0, "nothing is older than that");
+    assert_eq!(news.clear_ranks(Some(at(NOW - 99))).unwrap(), 1, "only c, at -100");
+    assert!(ranked(news, &[c]).is_empty());
+    assert_eq!(ranked(news, &[a, b]), sorted_ranks(vec![ra_again, second]));
+    assert_eq!(news.clear_ranks(None).unwrap(), 2, "every one, when no time is given");
+    assert!(news.ranks(&[a, b, c]).unwrap().is_empty());
+    assert_eq!(news.clear_ranks(None).unwrap(), 0);
+}
+
+fn deleting_a_source_takes_its_queue_entries_and_ranks_but_not_what_was_consumed(
+    news: &dyn NewsStore,
+) {
+    let doomed = followed(news, "unfollowed");
+    let spared = followed(news, "kept");
+    let gone = new_story(&doomed, "d-1", "Going", ago(1));
+    let gone_too = new_story(&doomed, "d-2", "Going too", ago(2));
+    let stays = new_story(&spared, "s-1", "Staying", ago(1));
+    insert(news, &[&gone, &gone_too, &stays]);
+    let (gone, gone_too, stays) =
+        (ContentRef::Story(gone.id), ContentRef::Story(gone_too.id), ContentRef::Story(stays.id));
+    let file = ContentRef::File(FileId::new());
+
+    let queue =
+        [entry(gone, "Going", 1, 0), entry(file, "A file", 2, 0), entry(stays, "Staying", 3, 0)];
+    for e in &queue {
+        news.put_queue_entry(e).unwrap();
+    }
+    news.put_ranks(&[rank_of(gone, 0.1, 0), rank_of(gone_too, 0.2, 0), rank_of(stays, 0.3, 0)])
+        .unwrap();
+    let history = [consumed(gone, "Read before it went", -10), consumed(stays, "Read, kept", -20)];
+    for c in &history {
+        news.put_consumption(c).unwrap();
+    }
+
+    news.delete_source(doomed.id).expect("delete_source");
+
+    assert_eq!(queued(news), [queue[1].id, queue[2].id], "its stories' entries go, nobody else's");
+    assert_eq!(
+        ranked(news, &[gone, gone_too, stays]).iter().map(|r| r.what).collect::<Vec<_>>(),
+        vec![stays]
+    );
+    let found = news.consumptions(&everything()).unwrap();
+    assert_eq!(found.len(), 2, "what was read is remembered after the source is gone");
+    assert_eq!(news.consumption(&gone).unwrap().as_ref(), Some(&history[0]));
+    assert_eq!(news.consumption(&stays).unwrap().as_ref(), Some(&history[1]));
+
+    forget(news, &[&spared]);
+    assert_eq!(queued(news), [queue[1].id], "and so the other source's, when it goes");
+    assert_eq!(news.consumptions(&everything()).unwrap().len(), 2, "still never a consumption");
+
+    news.delete_queue_entries(&[queue[1].id]).unwrap();
+    news.clear_ranks(None).unwrap();
+    forget_consumed(news, &history.iter().collect::<Vec<_>>());
+}
+
+fn a_list_longer_than_one_chunk_reaches_every_table(news: &dyn NewsStore) {
+    // Far more things than any statement may name at once, of which a few
+    // are real: the lookups and deletes must split the list without losing
+    // what is in a later piece of it.
+    const N: usize = 1_200;
+    let things: Vec<ContentRef> = (0..N).map(|_| ContentRef::Item(ItemId::new())).collect();
+    let real = [things[3], things[600], things[N - 1]];
+
+    for (i, what) in real.iter().enumerate() {
+        news.put_queue_entry(&entry(*what, "queued", i as i64, 0)).unwrap();
+        news.put_consumption(&consumed(*what, "consumed", i as i64)).unwrap();
+        news.put_ranks(&[rank_of(*what, 0.5, i as i64)]).unwrap();
+    }
+    assert_eq!(news.consumptions_for(&things).unwrap().len(), 3);
+    assert_eq!(news.ranks(&things).unwrap().len(), 3);
+
+    // Taken out by thing, from a list longer than a chunk.
+    news.delete_queue_for(&things).unwrap();
+    assert!(news.queue().unwrap().is_empty());
+
+    // By entry id, too.
+    for (i, what) in real.iter().enumerate() {
+        news.put_queue_entry(&entry(*what, "queued", i as i64, 0)).unwrap();
+    }
+    let mut ids = queued(news);
+    ids.extend((0..N).map(|_| QueueEntryId::new()));
+    news.delete_queue_entries(&ids).unwrap();
+    assert!(news.queue().unwrap().is_empty());
+
+    let all = news.consumptions(&everything()).unwrap();
+    forget_consumed(news, &all.iter().collect::<Vec<_>>());
+    assert_eq!(news.clear_ranks(None).unwrap(), 3);
 }

@@ -12,21 +12,51 @@
 // putting words in its mouth, and the only thing these need to be is
 // plausible.
 //
+// Two more, for the podcasts: an audio show with two episodes already in the
+// files folder, and a video show with one coming down and one that failed.
+// Behind them are Up Next and Recommended, what has been heard, the
+// downloads, the directory and Settings → Feed -- see `docs/plans/podcasts.md`.
+//
 // Nothing here runs at module load but building the seed: no timers, so
 // loading this file cannot hold a test process open. A refresh is a function
 // call that adds the next story from a short script rather than a timer that
-// does it on its own.
+// does it on its own, and a download moves along each time the list of
+// downloads is asked for, not on a clock.
 
+import { mockCatalogFile, mockFilesInvoke } from './mock-files'
 import type {
+  AddedBy,
+  ConsumedQuery,
+  ConsumeMode,
+  Consumption,
+  ContentRef,
+  DownloadState,
+  DownloadStatus,
+  Enclosure,
+  FeedHit,
+  FeedSettings,
+  FilePage,
+  FileId,
   FoundFeed,
   HnList,
+  Item,
   OpmlImportReport,
   NewSource,
   NewsSource,
   NewsSourceId,
   NewsletterSender,
+  PodcastGenre,
+  PodcastHit,
+  ProgressReport,
+  QueueEntry,
+  QueueItem,
+  QueuePlace,
+  QueueView,
+  RankingStatus,
+  Recommendation,
   RefreshReport,
   SourceSummary,
+  Span,
   Story,
   StoryId,
   StoryPage,
@@ -67,6 +97,8 @@ const LONGFORM = 'src-longform'
 const SHIPYARD = 'src-shipyard'
 const HACKER = 'src-hn'
 const RADIO = 'src-radio'
+const SLOW = 'src-slowhour'
+const FRAME = 'src-frame'
 
 function source(
   partial: Partial<NewsSource> & Pick<NewsSource, 'id' | 'kind' | 'title'>,
@@ -122,6 +154,33 @@ const sources: NewsSource[] = [
     images: false,
     sortOrder: 3,
   }),
+  // An audio show: two episodes are kept in the files folder, new ones go
+  // straight into Up Next, and it plays a little quicker than normal.
+  source({
+    id: SLOW,
+    kind: { type: 'web', url: 'https://slowhour.example/feed.xml' },
+    title: 'The Slow Hour',
+    siteUrl: 'https://slowhour.example',
+    sortOrder: 4,
+    podcast: {
+      author: 'Nadia Frost',
+      directoryId: '1450001',
+      download: { type: 'newest', count: 2 },
+      keep: { type: 'afterPlayed', days: 7 },
+      queueNew: true,
+      speed: 1.2,
+      skipIntroS: 12,
+    },
+  }),
+  // A video show on every default.
+  source({
+    id: FRAME,
+    kind: { type: 'web', url: 'https://framebyframe.example/video.xml' },
+    title: 'Frame by Frame',
+    siteUrl: 'https://framebyframe.example',
+    sortOrder: 5,
+    podcast: { author: 'Okonkwo and Lee', directoryId: '1450002' },
+  }),
 ]
 
 const fetched = new Map<NewsSourceId, Fetched>([
@@ -132,6 +191,8 @@ const fetched = new Map<NewsSourceId, Fetched>([
     RADIO,
     { lastOk: ago(24 * 9), lastError: 'The server answered 404 Not Found.', nextAt: ago(-6) },
   ],
+  [SLOW, { lastOk: ago(1), lastError: null, nextAt: ago(-2) }],
+  [FRAME, { lastOk: ago(3), lastError: null, nextAt: ago(-1) }],
 ])
 
 // ── Stories ──────────────────────────────────────────────────────────────
@@ -159,6 +220,24 @@ function story(
 }
 
 const hnItem = (n: number) => `https://news.ycombinator.com/item?id=${n}`
+
+/** What a feed names for an episode: the file, how long, and nothing it did not say. */
+function enclosure(partial: Partial<Enclosure> & Pick<Enclosure, 'url'>): Enclosure {
+  return {
+    mime: 'audio/mpeg',
+    length: null,
+    durationMs: null,
+    transcriptUrl: '',
+    transcriptMime: '',
+    episode: null,
+    season: null,
+    ...partial,
+  }
+}
+
+const MINUTE = 60_000
+/** The file an episode was downloaded to, as the files folder would name it. */
+const episodeFileOf = (id: StoryId): FileId => `file-ep-${id}`
 
 const stories: Story[] = [
   story({
@@ -350,6 +429,115 @@ const stories: Story[] = [
     summary: 'Fishing line, a drop of glue and an evening. The pulleys are the hard part.',
     read: true,
   }),
+  // The Slow Hour. The two newest are downloaded, as its policy says.
+  story({
+    id: 'st-17',
+    sourceId: SLOW,
+    title: 'Episode 41: The people who wind the clocks',
+    url: 'https://slowhour.example/41',
+    author: 'Nadia Frost',
+    publishedAt: ago(4),
+    summary:
+      'A cathedral clock, a ship’s chronometer and the retired watchmaker who still visits both on Sundays.',
+    hasBody: true,
+    media: enclosure({
+      url: 'https://cdn.slowhour.example/ep41.mp3',
+      length: 7_900_000,
+      durationMs: 8 * MINUTE + 14_000,
+      episode: 41,
+      season: 3,
+    }),
+    files: { media: episodeFileOf('st-17') },
+  }),
+  story({
+    id: 'st-18',
+    sourceId: SLOW,
+    title: 'Episode 40: Night trains',
+    url: 'https://slowhour.example/40',
+    author: 'Nadia Frost',
+    publishedAt: ago(50),
+    summary: 'Eight minutes on the last sleeper out of the city, and who is awake on it.',
+    hasBody: true,
+    media: enclosure({
+      url: 'https://cdn.slowhour.example/ep40.mp3',
+      length: 8_600_000,
+      durationMs: 9 * MINUTE,
+      episode: 40,
+      season: 3,
+    }),
+    files: { media: episodeFileOf('st-18') },
+  }),
+  story({
+    id: 'st-19',
+    sourceId: SLOW,
+    title: 'Episode 39: A listening walk',
+    url: 'https://slowhour.example/39',
+    author: 'Nadia Frost',
+    publishedAt: ago(24 * 6),
+    summary:
+      'Seven minutes of a street, recorded on foot. What there is to hear when you stop talking.',
+    hasBody: true,
+    read: true,
+    media: enclosure({
+      url: 'https://cdn.slowhour.example/ep39.mp3',
+      length: 6_700_000,
+      durationMs: 7 * MINUTE,
+      episode: 39,
+      season: 3,
+    }),
+  }),
+  story({
+    id: 'st-20',
+    sourceId: SLOW,
+    title: 'Episode 38: What the sea archive holds',
+    url: 'https://slowhour.example/38',
+    author: 'Nadia Frost',
+    publishedAt: ago(24 * 13),
+    summary: 'A cellar of logbooks, a volunteer with a lamp, and a storm nobody wrote down.',
+    hasBody: true,
+    media: enclosure({
+      url: 'https://cdn.slowhour.example/ep38.mp3',
+      length: 9_300_000,
+      durationMs: 9 * MINUTE + 45_000,
+      episode: 38,
+      season: 3,
+      transcriptUrl: 'https://slowhour.example/38.vtt',
+      transcriptMime: 'text/vtt',
+    }),
+  }),
+  // Frame by Frame. One is on its way, one could not be had.
+  story({
+    id: 'st-21',
+    sourceId: FRAME,
+    title: 'Reading the room: a lighting primer',
+    url: 'https://framebyframe.example/lighting',
+    author: 'Okonkwo and Lee',
+    publishedAt: ago(8),
+    summary: 'Three lamps, one window and nine minutes on why a face looks kind or tired.',
+    hasBody: true,
+    media: enclosure({
+      url: 'https://cdn.framebyframe.example/lighting.mp4',
+      mime: 'video/mp4',
+      length: 183_000_000,
+      durationMs: 9 * MINUTE,
+    }),
+  }),
+  story({
+    id: 'st-22',
+    sourceId: FRAME,
+    title: 'Why the long take works',
+    url: 'https://framebyframe.example/long-take',
+    author: 'Okonkwo and Lee',
+    publishedAt: ago(24 * 3),
+    summary: 'A single shot of eight minutes, and what the cut would have taken from it.',
+    hasBody: true,
+    media: enclosure({
+      url: 'https://cdn.framebyframe.example/long-take.mp4',
+      mime: 'video/mp4',
+      length: 164_000_000,
+      durationMs: 8 * MINUTE + 30_000,
+    }),
+  }),
 ]
 
 // ── Bodies ───────────────────────────────────────────────────────────────
@@ -388,8 +576,19 @@ function articleBody(item: Story, count: number): string {
   return `<p><strong>${escapeHtml(item.summary)}</strong></p>${picture}${paragraphs.join('')}`
 }
 
+/** An episode's body is its show notes, which carry no photograph. */
+function showNotes(item: Story): string {
+  return (
+    `<p>${escapeHtml(item.summary)}</p><h3>In this episode</h3>` +
+    `<ul><li>Opening, and what the week held</li><li>The main piece</li>` +
+    `<li>Listeners’ letters</li></ul><p>Music by a friend of the show.</p>`
+  )
+}
+
 const bodies = new Map<StoryId, string>()
-for (const s of stories) if (s.hasBody) bodies.set(s.id, articleBody(s, 3))
+for (const s of stories) {
+  if (s.hasBody) bodies.set(s.id, s.media ? showNotes(s) : articleBody(s, 3))
+}
 
 function escapeHtml(text: string): string {
   return text
@@ -594,6 +793,25 @@ function build(input: NewSource, order: number, now: string): NewsSource {
         updatedAt: now,
       })
     }
+    case 'podcast': {
+      const parsed = parseAddress(input.url)
+      if (sources.some((s) => s.kind.type === 'web' && s.kind.url === parsed.href)) {
+        throw new VaultError('invalid', 'You already follow that feed.')
+      }
+      return source({
+        id: nextId('src'),
+        kind: { type: 'web', url: parsed.href },
+        title: input.title?.trim() || hostOf(parsed.href),
+        folder,
+        siteUrl: parsed.origin,
+        sortOrder: order,
+        createdAt: now,
+        updatedAt: now,
+        // Followed from the directory: with what it said, and every setting
+        // following the Feed's defaults.
+        podcast: { author: input.author ?? '', directoryId: input.directoryId ?? null },
+      })
+    }
     case 'hackerNews': {
       const minPoints = input.minPoints ?? 0
       const followed = sources.some(
@@ -710,6 +928,25 @@ const FRESH: Record<NewsSourceId, { title: string; summary: string; author: stri
         'No pull requests, no features: five days of reading what we had written, and what we learned from it.',
     },
   ],
+  [SLOW]: [
+    {
+      title: 'Episode 42: The lamplighter’s apprentice',
+      author: 'Nadia Frost',
+      summary: 'Nine minutes with the last person trained to light a street by hand.',
+    },
+    {
+      title: 'Episode 43: A year of quiet mornings',
+      author: 'Nadia Frost',
+      summary: 'Listeners write in about the hour before everybody wakes.',
+    },
+  ],
+  [FRAME]: [
+    {
+      title: 'The window as a light source',
+      author: 'Okonkwo and Lee',
+      summary: 'North light, south light and the curtain that fixes both.',
+    },
+  ],
   [HACKER]: [
     {
       title: 'Show HN: I built a clock that only tells you the time when you ask twice',
@@ -742,6 +979,14 @@ function addFresh(src: NewsSource, hoursAgo: number): Story {
   }
   const hn = src.kind.type === 'hackerNews'
   const id = nextId('story')
+  const episode = src.podcast
+    ? enclosure({
+        url: `https://cdn.${hostOf(src.siteUrl || 'https://example.com')}/${id}.${src.id === FRAME ? 'mp4' : 'mp3'}`,
+        mime: src.id === FRAME ? 'video/mp4' : 'audio/mpeg',
+        length: src.id === FRAME ? 120_000_000 : 8_000_000,
+        durationMs: (6 + (n % 4)) * MINUTE,
+      })
+    : null
   const made = story({
     id,
     sourceId: src.id,
@@ -756,10 +1001,14 @@ function addFresh(src: NewsSource, hoursAgo: number): Story {
     discussionUrl: hn ? hnItem(41_300_000 + seq) : '',
     // A newsletter issue points at the message it is.
     mailMessage: src.kind.type === 'mail' || src.kind.type === 'newsletters' ? nextId('msg') : null,
+    media: episode,
     hasBody: !hn,
   })
   stories.push(made)
-  if (made.hasBody) bodies.set(id, articleBody(made, 3))
+  // A story the judge has not seen yet.
+  unranked.push(id)
+  if (made.hasBody) bodies.set(id, made.media ? showNotes(made) : articleBody(made, 3))
+  if (made.media && src.podcast) newEpisode(made, src.podcast.queueNew === true)
   return made
 }
 
@@ -872,4 +1121,951 @@ export function mockNewsletterSenders(days: number): NewsletterSender[] {
     messages: Math.max(1, Math.round(n.messages * scale)),
     followed: sources.some((s) => s.kind.type === 'mail' && s.kind.sender === n.email),
   }))
+}
+
+// ── Podcasts, Up Next, and what was read and heard ───────────────────────
+//
+// Everything below answers the commands of `docs/plans/podcasts.md`. State is
+// the module's own and is made when first asked for where it needs the files
+// mock (the voice memo Up Next plays), so that loading this file does not
+// build the catalog.
+
+/** `story:<id>`, the way the service keys a thing. */
+function refKey(what: ContentRef): string {
+  return `${what.type}:${what.id}`
+}
+
+function sameRef(a: ContentRef, b: ContentRef): boolean {
+  return a.type === b.type && a.id === b.id
+}
+
+/** A small stable number out of text, for what a mock has to make up. */
+function hashOf(text: string): number {
+  let hash = 0
+  for (const ch of text) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+  return hash
+}
+
+/** A library item and the shelf it is on, for an Up Next entry that is one. */
+export type MockItemLookup = (id: string) => { item: Item; shelf: string } | undefined
+
+let itemLookup: MockItemLookup | null = null
+
+/** `mock.ts` says where the library's items are; this file cannot import them. */
+export function mockSetItemLookup(lookup: MockItemLookup): void {
+  itemLookup = lookup
+}
+
+/** The episodes that have a file, and how long each is: what the player is given to play. */
+const episodeFiles = new Map<FileId, { durationMs: number }>()
+for (const s of stories) {
+  if (s.files?.media) episodeFiles.set(s.files.media, { durationMs: s.media?.durationMs ?? 60_000 })
+}
+
+// ── Playing ──────────────────────────────────────────────────────────────
+
+/** Silent recordings by length in seconds, as the object addresses the browser made for them. */
+const silences = new Map<number, string>()
+
+/** A recording of nothing, `seconds` long, as a WAV the media element can play and seek. */
+function silentWav(seconds: number): string {
+  const kept = silences.get(seconds)
+  if (kept !== undefined) return kept
+  const rate = 8000
+  const bytes = seconds * rate
+  const wav = new Uint8Array(44 + bytes)
+  const view = new DataView(wav.buffer)
+  const text = (at: number, word: string) => {
+    for (let i = 0; i < word.length; i++) wav[at + i] = word.charCodeAt(i)
+  }
+  text(0, 'RIFF')
+  view.setUint32(4, 36 + bytes, true)
+  text(8, 'WAVE')
+  text(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true) // PCM
+  view.setUint16(22, 1, true) // mono
+  view.setUint32(24, rate, true)
+  view.setUint32(28, rate, true) // bytes a second
+  view.setUint16(32, 1, true) // bytes a sample, all channels
+  view.setUint16(34, 8, true)
+  text(36, 'data')
+  view.setUint32(40, bytes, true)
+  wav.fill(128, 44) // unsigned 8-bit silence
+  // An object address and not a data one: a ten-minute recording is several
+  // megabytes, which a `src` attribute should not have to carry.
+  const url =
+    typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+      ? URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }))
+      : ''
+  silences.set(seconds, url)
+  return url
+}
+
+/**
+ * Where the mock's player plays a file from: nothing audible, but as long as
+ * the file says it is, so that seeking, progress and the end can all be tried.
+ * `api.playUrl` asks for it in the mock instead of `fileUrl`, whose answer for
+ * a recording is the picture Files draws it with.
+ */
+export function mockPlayUrl(id: string): string {
+  const ms = episodeFiles.get(id)?.durationMs ?? mockCatalogFile(id)?.media.durationMs ?? 60_000
+  // No more than twenty minutes: every second is eight kilobytes.
+  return silentWav(Math.min(1200, Math.max(1, Math.ceil(ms / 1000))))
+}
+
+// ── Settings ─────────────────────────────────────────────────────────────
+
+let settings: FeedSettings = {
+  podcasts: {
+    download: { type: 'newest', count: 1 },
+    keep: { type: 'afterPlayed', days: 7 },
+    queueNew: false,
+    transcribe: 'whenPlayed',
+  },
+  ranking: {
+    enabled: true,
+    criteria: [
+      { id: 'learn', text: 'Something I can learn from', weight: 2 },
+      { id: 'sea', text: 'About the sea, ships or islands', weight: 1 },
+      { id: 'finish', text: 'From a show I always finish', weight: 2 },
+      { id: 'gossip', text: 'Mostly gossip or celebrity news', weight: -3 },
+    ],
+    goals: true,
+    windowDays: 14,
+  },
+  keepRead: true,
+  autofill: null,
+  autoplay: true,
+  skipBackS: 15,
+  skipForwardS: 30,
+}
+
+export function mockFeedSettings(): FeedSettings {
+  return structuredClone(settings)
+}
+
+/** What the ranking asks and how much each answer counts: when it changes, every rank is stale. */
+function fingerprint(s: FeedSettings): string {
+  return JSON.stringify([s.ranking.enabled, s.ranking.criteria, s.ranking.goals])
+}
+
+export function mockSaveFeedSettings(next: FeedSettings): FeedSettings {
+  const stale = fingerprint(next) !== fingerprint(settings)
+  settings = {
+    ...structuredClone(next),
+    ranking: {
+      ...structuredClone(next.ranking),
+      criteria: next.ranking.criteria.map((c) => ({
+        ...c,
+        weight: Math.min(3, Math.max(-3, Math.round(c.weight))),
+      })),
+    },
+  }
+  if (stale) unranked = candidates().map((s) => s.id)
+  return mockFeedSettings()
+}
+
+// ── What was read, heard and watched ─────────────────────────────────────
+
+const consumptions = new Map<string, Consumption>()
+
+function seedConsumption(
+  what: ContentRef,
+  title: string,
+  source: string,
+  mode: ConsumeMode,
+  more: Partial<Consumption>,
+): void {
+  consumptions.set(refKey(what), {
+    id: nextId('cons'),
+    what,
+    title,
+    source,
+    url: '',
+    mode,
+    firstAt: ago(30),
+    lastAt: ago(30),
+    progress: 0,
+    finished: false,
+    ...more,
+  })
+}
+
+// Half-way through an episode, one heard to the end, and an article read.
+seedConsumption(
+  { type: 'story', id: 'st-18' },
+  'Episode 40: Night trains',
+  'The Slow Hour',
+  'listen',
+  {
+    lastAt: ago(20),
+    progress: 0.33,
+    positionMs: 3 * MINUTE,
+    durationMs: 9 * MINUTE,
+    heard: [{ startMs: 0, endMs: 3 * MINUTE }],
+    url: 'https://slowhour.example/40',
+  },
+)
+seedConsumption(
+  { type: 'story', id: 'st-19' },
+  'Episode 39: A listening walk',
+  'The Slow Hour',
+  'listen',
+  {
+    firstAt: ago(24 * 5),
+    lastAt: ago(24 * 4),
+    progress: 1,
+    finished: true,
+    finishedAt: ago(24 * 4),
+    positionMs: 7 * MINUTE,
+    durationMs: 7 * MINUTE,
+    heard: [{ startMs: 0, endMs: 7 * MINUTE }],
+    url: 'https://slowhour.example/39',
+  },
+)
+seedConsumption(
+  { type: 'story', id: 'st-3' },
+  'A short history of the pencil sharpener',
+  'Longform Weekly',
+  'read',
+  {
+    firstAt: ago(24 * 3),
+    lastAt: ago(24 * 3),
+    progress: 1,
+    finished: true,
+    finishedAt: ago(24 * 3),
+    url: 'https://longform.example/pencil-sharpener',
+  },
+)
+
+/** How much of `duration` the spans cover, 0 to 1. */
+function covered(spans: Span[], duration: number): number {
+  if (duration <= 0) return 0
+  const heard = spans.reduce((n, s) => n + Math.max(0, Math.min(s.endMs, duration) - s.startMs), 0)
+  return Math.min(1, heard / duration)
+}
+
+/** `spans` with `add` folded in: sorted, and every two that touch made one. */
+function mergeSpans(spans: Span[], add: Span): Span[] {
+  const all = [...spans, add]
+    .filter((s) => s.endMs > s.startMs)
+    .sort((a, b) => a.startMs - b.startMs)
+  const out: Span[] = []
+  for (const span of all) {
+    const last = out.at(-1)
+    if (last && span.startMs <= last.endMs + 500) last.endMs = Math.max(last.endMs, span.endMs)
+    else out.push({ ...span })
+  }
+  return out
+}
+
+/** What the service puts on a record about a thing: its title, where it is from, and its address. */
+function describe(what: ContentRef): {
+  title: string
+  source: string
+  url: string
+  mode: ConsumeMode
+  durationMs: number | null
+} {
+  if (what.type === 'story') {
+    const s = find(what.id)
+    const video = s.media?.mime.startsWith('video') ?? false
+    return {
+      title: s.title,
+      source: sources.find((x) => x.id === s.sourceId)?.title ?? '',
+      url: s.url,
+      mode: s.media ? (video ? 'watch' : 'listen') : 'read',
+      durationMs: s.media?.durationMs ?? null,
+    }
+  }
+  if (what.type === 'file') {
+    const f = mockCatalogFile(what.id)
+    if (!f) throw new VaultError('not_found', 'That file is no longer in Files.')
+    const folder = f.storage.kind === 'plain' ? f.storage.path.split('/').slice(0, -1).at(-1) : ''
+    return {
+      title: f.name,
+      source: folder || 'Files',
+      url: '',
+      mode: f.kind === 'video' ? 'watch' : f.kind === 'audio' ? 'listen' : 'read',
+      durationMs: f.media.durationMs ?? null,
+    }
+  }
+  const found = itemLookup?.(what.id)
+  if (!found) throw new VaultError('not_found', 'That item is no longer in the Library.')
+  return {
+    title: found.item.title,
+    source: found.shelf,
+    url: '',
+    mode: 'read',
+    durationMs: null,
+  }
+}
+
+export function mockRecordProgress(p: ProgressReport): Consumption {
+  ensureQueue()
+  const key = refKey(p.what)
+  const now = new Date().toISOString()
+  const before = consumptions.get(key)
+  const c: Consumption =
+    before ??
+    (() => {
+      const d = describe(p.what)
+      return {
+        id: nextId('cons'),
+        what: p.what,
+        title: d.title,
+        source: d.source,
+        url: d.url,
+        mode: p.mode,
+        firstAt: now,
+        lastAt: now,
+        progress: 0,
+        finished: false,
+      }
+    })()
+  c.lastAt = now
+  c.mode = p.mode
+  if (p.durationMs != null) c.durationMs = p.durationMs
+  if (p.positionMs != null) c.positionMs = p.positionMs
+  if (p.heard) c.heard = mergeSpans(c.heard ?? [], p.heard)
+  if (p.progress != null) {
+    c.progress = Math.min(1, Math.max(0, p.progress))
+  } else if (c.durationMs) {
+    // What was heard, or how far along it is when nothing says what was.
+    const along = c.heard?.length
+      ? covered(c.heard, c.durationMs)
+      : (c.positionMs ?? 0) / c.durationMs
+    c.progress = Math.min(1, Math.max(c.progress, along))
+  }
+  // Nine tenths is the end, as the service counts it; a button says so too.
+  const finished = p.finished ?? (c.finished || c.progress >= 0.9)
+  if (finished && !c.finished) c.finishedAt = now
+  if (!finished) c.finishedAt = null
+  c.finished = finished
+  if (p.finished === true) c.progress = 1
+  consumptions.set(key, c)
+  if (finished) {
+    // Finishing takes it out of Up Next, and out of the unread.
+    removeFromQueue((e) => sameRef(e.what, p.what))
+    if (p.what.type === 'story') {
+      const s = stories.find((x) => x.id === p.what.id)
+      if (s) s.read = true
+    }
+  }
+  return structuredClone(c)
+}
+
+export function mockGetConsumption(what: ContentRef): Consumption | null {
+  const c = consumptions.get(refKey(what))
+  return c ? structuredClone(c) : null
+}
+
+export function mockListConsumed(query: ConsumedQuery): Consumption[] {
+  const since = query.since ? Date.parse(query.since) : null
+  const until = query.until ? Date.parse(query.until) : null
+  const limit = Math.min(500, query.limit && query.limit > 0 ? query.limit : 50)
+  return structuredClone(
+    [...consumptions.values()]
+      .filter((c) => {
+        const at = Date.parse(c.lastAt)
+        if (since !== null && at < since) return false
+        if (until !== null && at >= until) return false
+        return !query.finishedOnly || c.finished
+      })
+      .sort((a, b) => Date.parse(b.lastAt) - Date.parse(a.lastAt))
+      .slice(0, limit),
+  )
+}
+
+export function mockForgetConsumption(id: string): void {
+  for (const [key, c] of consumptions) if (c.id === id) consumptions.delete(key)
+}
+
+// ── Downloads ────────────────────────────────────────────────────────────
+
+interface Fetching {
+  state: DownloadState
+  received: number
+  total: number
+  error: string | null
+}
+
+const fetching = new Map<StoryId, Fetching>()
+
+// One is coming down and one could not be had, so both can be seen.
+fetching.set('st-21', {
+  state: 'downloading',
+  received: 48_000_000,
+  total: 183_000_000,
+  error: null,
+})
+fetching.set('st-22', {
+  state: 'failed',
+  received: 0,
+  total: 164_000_000,
+  error: 'The server answered 404 Not Found.',
+})
+
+function waitingTurn(): void {
+  const busy = [...fetching.values()].some((f) => f.state === 'downloading')
+  if (busy) return
+  const next = [...fetching.values()].find((f) => f.state === 'waiting')
+  if (next) next.state = 'downloading'
+}
+
+/** Ask for an episode's file: now if nothing else is coming down, else in turn. */
+function requestDownload(id: StoryId): void {
+  const s = find(id)
+  if (!s.media) throw new VaultError('invalid', 'That story has no episode to download.')
+  if (s.files?.media) return
+  const known = fetching.get(id)
+  if (known && known.state !== 'failed') return
+  fetching.set(id, {
+    state: 'waiting',
+    received: 0,
+    total: s.media.length ?? 40_000_000,
+    error: null,
+  })
+  waitingTurn()
+}
+
+/** The file is there: the story links it, and the player can play it. */
+function arrived(id: StoryId): void {
+  const s = find(id)
+  fetching.delete(id)
+  s.files = { ...s.files, media: episodeFileOf(id) }
+  episodeFiles.set(episodeFileOf(id), { durationMs: s.media?.durationMs ?? 60_000 })
+  waitingTurn()
+}
+
+export function mockDownloadEpisode(id: StoryId): void {
+  requestDownload(id)
+}
+
+export function mockCancelDownload(id: StoryId): void {
+  fetching.delete(id)
+  waitingTurn()
+}
+
+export function mockRemoveEpisodeDownload(id: StoryId): void {
+  const s = find(id)
+  const file = s.files?.media
+  if (file) episodeFiles.delete(file)
+  s.files = { ...s.files, media: null }
+}
+
+/** What is waiting, coming down or failed. Asking moves what is coming down along, as a clock would. */
+export function mockListDownloads(): DownloadStatus[] {
+  for (const [id, f] of [...fetching]) {
+    if (f.state !== 'downloading') continue
+    f.received = Math.min(f.total, f.received + Math.max(1_000_000, Math.round(f.total * 0.22)))
+    if (f.received >= f.total) arrived(id)
+  }
+  return [...fetching].map(([id, f]) => ({
+    storyId: id,
+    title: find(id).title,
+    state: f.state,
+    received: f.received,
+    total: f.total,
+    ...(f.error ? { error: f.error } : {}),
+  }))
+}
+
+/** A refresh found an episode: shows that say so put it in Up Next, and the policy fetches it. */
+function newEpisode(made: Story, queueNew: boolean): void {
+  const src = sources.find((s) => s.id === made.sourceId)
+  const policy = src?.podcast?.download ?? settings.podcasts.download
+  if (policy.type !== 'off') requestDownload(made.id)
+  if (queueNew) {
+    ensureQueue()
+    queue.push(makeEntry({ type: 'story', id: made.id }, 'show'))
+    renumber()
+  }
+}
+
+// ── Up Next ──────────────────────────────────────────────────────────────
+
+const queue: QueueEntry[] = []
+let queueSeeded = false
+
+function renumber(): void {
+  queue.forEach((e, i) => (e.sortOrder = (i + 1) * 1024))
+}
+
+function makeEntry(what: ContentRef, addedBy: AddedBy): QueueEntry {
+  const d = describe(what)
+  return {
+    id: nextId('queue'),
+    what,
+    title: d.title,
+    source: d.source,
+    mode: d.mode,
+    durationMs: d.durationMs,
+    addedBy,
+    addedAt: new Date().toISOString(),
+    sortOrder: 0,
+  }
+}
+
+/** The queue as a first visit finds it: episodes, an article, a recording from Files. */
+function ensureQueue(): void {
+  if (queueSeeded) return
+  queueSeeded = true
+  const memo = (
+    mockFilesInvoke('list_files', { query: { kinds: ['audio'], text: 'ideas' } }) as FilePage
+  ).files[0]
+  const first: [ContentRef, AddedBy][] = [
+    [{ type: 'story', id: 'st-18' }, 'show'],
+    [{ type: 'story', id: 'st-17' }, 'show'],
+    [{ type: 'story', id: 'st-1' }, 'person'],
+    [{ type: 'story', id: 'st-21' }, 'recommended'],
+  ]
+  if (memo) first.splice(3, 0, [{ type: 'file', id: memo.id }, 'person'])
+  for (const [what, by] of first) queue.push(makeEntry(what, by))
+  renumber()
+  if (memo) {
+    seedConsumption({ type: 'file', id: memo.id }, memo.name, 'Voice memos', 'listen', {
+      lastAt: ago(24 * 2),
+      progress: 0.33,
+      positionMs: 31_000,
+      durationMs: memo.media.durationMs ?? 94_000,
+      heard: [{ startMs: 0, endMs: 31_000 }],
+    })
+  }
+}
+
+function removeFromQueue(match: (e: QueueEntry) => boolean): void {
+  for (let i = queue.length - 1; i >= 0; i--) if (match(queue[i]!)) queue.splice(i, 1)
+  renumber()
+}
+
+function itemOf(entry: QueueEntry): QueueItem {
+  const what = entry.what
+  const consumption = consumptions.get(refKey(what))
+  const item: QueueItem = {
+    entry: structuredClone(entry),
+    sourceTitle: entry.source,
+    downloading: false,
+  }
+  if (consumption) item.consumption = structuredClone(consumption)
+  const resume = consumption && !consumption.finished ? (consumption.positionMs ?? null) : null
+  if (what.type === 'story') {
+    const s = stories.find((x) => x.id === what.id)
+    if (s) {
+      item.story = structuredClone(s)
+      item.sourceTitle = sources.find((x) => x.id === s.sourceId)?.title ?? entry.source
+      const file = s.files?.media
+      if (s.media && file) {
+        const intro = (sources.find((x) => x.id === s.sourceId)?.podcast?.skipIntroS ?? 0) * 1000
+        item.play = {
+          fileId: file,
+          kind: s.media.mime.startsWith('video') ? 'video' : 'audio',
+          durationMs: s.media.durationMs ?? null,
+          startMs: resume ?? (intro > 0 ? intro : null),
+        }
+      }
+      const f = fetching.get(s.id)
+      item.downloading = !!f && f.state !== 'failed'
+    }
+  } else if (what.type === 'file') {
+    const f = mockCatalogFile(what.id)
+    if (f) {
+      item.file = structuredClone(f)
+      if (f.kind === 'audio' || f.kind === 'video') {
+        item.play = {
+          fileId: f.id,
+          kind: f.kind,
+          durationMs: f.media.durationMs ?? null,
+          startMs: resume,
+        }
+      }
+    }
+  } else {
+    const found = itemLookup?.(what.id)
+    if (found) {
+      item.item = structuredClone(found.item)
+      item.sourceTitle = found.shelf
+    }
+  }
+  return item
+}
+
+export function mockListQueue(): QueueView {
+  ensureQueue()
+  return { items: queue.map(itemOf) }
+}
+
+export function mockAddToQueue(what: ContentRef, place: QueuePlace | undefined): QueueEntry {
+  ensureQueue()
+  const kept = queue.find((e) => sameRef(e.what, what))
+  const entry = kept ?? makeEntry(what, 'person')
+  // An episode with no file is asked for as it is queued, so it can play when its turn comes.
+  if (!kept && what.type === 'story') {
+    const s = find(what.id)
+    if (s.media && !s.files?.media) requestDownload(what.id)
+  }
+  if (kept) queue.splice(queue.indexOf(kept), 1)
+  const at =
+    place?.type === 'next'
+      ? 0
+      : place?.type === 'before'
+        ? queue.findIndex((e) => e.id === place.id)
+        : -1
+  queue.splice(at < 0 ? queue.length : at, 0, entry)
+  renumber()
+  return structuredClone(entry)
+}
+
+export function mockRemoveFromQueue(ids: string[]): void {
+  ensureQueue()
+  removeFromQueue((e) => ids.includes(e.id))
+}
+
+export function mockMoveInQueue(id: string, before: string | null): void {
+  ensureQueue()
+  const at = queue.findIndex((e) => e.id === id)
+  if (at < 0) throw new VaultError('not_found', 'That is no longer in Up Next.')
+  const [moved] = queue.splice(at, 1)
+  const to = before ? queue.findIndex((e) => e.id === before) : -1
+  queue.splice(to < 0 ? queue.length : to, 0, moved!)
+  renumber()
+}
+
+// ── Recommended ──────────────────────────────────────────────────────────
+
+/** What the mock's judge thought of some stories, so the page opens on a believable order. */
+const RANKED: Record<StoryId, number> = {
+  'st-5': 0.74,
+  'st-17': 0.61,
+  'st-1': 0.52,
+  'st-9': 0.4,
+  'st-10': 0.18,
+  'st-14': -0.12,
+}
+
+/** Stories the judge has not got to, in the order it will. */
+let unranked: StoryId[] = []
+
+/** Unread, unqueued, unfinished, and inside the window: what Recommended is made of. */
+function candidates(): Story[] {
+  ensureQueue()
+  const cut = Date.now() - settings.ranking.windowDays * 24 * HOUR
+  return stories
+    .filter(
+      (s) =>
+        !s.read &&
+        !s.expired &&
+        Date.parse(s.publishedAt) >= cut &&
+        !queue.some((e) => e.what.type === 'story' && e.what.id === s.id) &&
+        !consumptions.get(`story:${s.id}`)?.finished,
+    )
+    .sort(newestFirst)
+}
+
+/** Whether there is a judge to ask: the ranking is on and has something to ask. */
+function judging(): boolean {
+  const r = settings.ranking
+  return r.enabled && (r.goals || r.criteria.some((c) => c.text.trim() !== ''))
+}
+
+function scoreOf(s: Story): number {
+  const fixed = RANKED[s.id]
+  if (fixed !== undefined) return fixed
+  return Math.round((-0.3 + ((hashOf(s.id) % 1000) / 1000) * 1.2) * 100) / 100
+}
+
+/** The criteria a story answered yes to: the ones with weight for it, picked the way a model would, by feel. */
+function reasonsOf(s: Story): string[] {
+  const score = scoreOf(s)
+  if (score <= 0) return []
+  return settings.ranking.criteria
+    .filter((c) => c.weight > 0 && hashOf(`${s.id}${c.id}`) % 3 !== 0)
+    .slice(0, 3)
+    .map((c) => c.text)
+}
+
+export function mockRecommended(limit: number | null | undefined): Recommendation[] {
+  const pending = new Set(unranked)
+  const ranked = judging()
+  const rows = candidates().map((s): Recommendation => {
+    const scored = ranked && !pending.has(s.id)
+    const progress = consumptions.get(`story:${s.id}`)?.progress
+    return {
+      story: structuredClone(s),
+      sourceTitle: sources.find((x) => x.id === s.sourceId)?.title ?? '',
+      score: scored ? scoreOf(s) : null,
+      reasons: scored ? reasonsOf(s) : [],
+      queued: false,
+      progress: progress && progress > 0 ? progress : null,
+    }
+  })
+  // Best first, then newest; what has not been ranked follows what has.
+  rows.sort(
+    (a, b) =>
+      (b.score ?? Number.NEGATIVE_INFINITY) - (a.score ?? Number.NEGATIVE_INFINITY) ||
+      newestFirst(a.story, b.story),
+  )
+  return typeof limit === 'number' && limit > 0 ? rows.slice(0, limit) : rows
+}
+
+/** Where the judge is. Asking lets it get through a few more, as a worker would while the page waited. */
+export function mockRankingStatus(): RankingStatus {
+  const live = candidates().map((s) => s.id)
+  unranked = unranked.filter((id) => live.includes(id))
+  if (!judging()) return { judge: null, ranked: 0, waiting: 0, problem: null }
+  unranked.splice(0, 3)
+  return {
+    judge: 'decision',
+    ranked: live.length - unranked.length,
+    waiting: unranked.length,
+    problem: null,
+  }
+}
+
+export function mockRerank(): void {
+  unranked = candidates().map((s) => s.id)
+}
+
+// ── The directory ────────────────────────────────────────────────────────
+
+/** Apple's genres, as the charts take them. */
+const GENRES: PodcastGenre[] = [
+  { id: 1301, name: 'Arts' },
+  { id: 1321, name: 'Business' },
+  { id: 1303, name: 'Comedy' },
+  { id: 1304, name: 'Education' },
+  { id: 1487, name: 'History' },
+  { id: 1512, name: 'Health & Fitness' },
+  { id: 1489, name: 'News' },
+  { id: 1533, name: 'Science' },
+  { id: 1324, name: 'Society & Culture' },
+  { id: 1318, name: 'Technology' },
+  { id: 1309, name: 'TV & Film' },
+]
+
+interface Show {
+  id: string
+  title: string
+  author: string
+  feed: string
+  genre: number
+  episodes: number
+  explicit?: boolean
+}
+
+/** The shows the mock's directory knows, best first, none of them real. */
+const SHOWS: Show[] = [
+  {
+    id: '1450001',
+    title: 'The Slow Hour',
+    author: 'Nadia Frost',
+    feed: 'https://slowhour.example/feed.xml',
+    genre: 1301,
+    episodes: 43,
+  },
+  {
+    id: '1450101',
+    title: 'Deep Water',
+    author: 'Marta Okoye',
+    feed: 'https://deepwater.example/rss',
+    genre: 1533,
+    episodes: 112,
+  },
+  {
+    id: '1450102',
+    title: 'Ten Minutes of History',
+    author: 'Hugh Penrose',
+    feed: 'https://tenminutes.example/feed',
+    genre: 1487,
+    episodes: 380,
+  },
+  {
+    id: '1450002',
+    title: 'Frame by Frame',
+    author: 'Okonkwo and Lee',
+    feed: 'https://framebyframe.example/video.xml',
+    genre: 1309,
+    episodes: 58,
+  },
+  {
+    id: '1450103',
+    title: 'The Small Business Hour',
+    author: 'Ruth Adeyemi',
+    feed: 'https://smallbiz.example/rss',
+    genre: 1321,
+    episodes: 204,
+  },
+  {
+    id: '1450104',
+    title: 'Bytes and Bolts',
+    author: 'Sam Varga',
+    feed: 'https://bytesandbolts.example/podcast.xml',
+    genre: 1318,
+    episodes: 91,
+  },
+  {
+    id: '1450105',
+    title: 'Nothing Much Happened',
+    author: 'The Wrens',
+    feed: 'https://nothingmuch.example/feed',
+    genre: 1303,
+    episodes: 150,
+    explicit: true,
+  },
+  {
+    id: '1450106',
+    title: 'Weather Words',
+    author: 'Ines Calder',
+    feed: 'https://weatherwords.example/rss',
+    genre: 1304,
+    episodes: 64,
+  },
+  {
+    id: '1450107',
+    title: 'Morning Rounds',
+    author: 'Dr. Priya Nair',
+    feed: 'https://morningrounds.example/feed.xml',
+    genre: 1512,
+    episodes: 77,
+  },
+  {
+    id: '1450108',
+    title: 'The Evening Edition',
+    author: 'Colm Brady',
+    feed: 'https://eveningedition.example/rss',
+    genre: 1489,
+    episodes: 910,
+  },
+  {
+    id: '1450109',
+    title: 'Other People’s Kitchens',
+    author: 'Leila Haddad',
+    feed: 'https://kitchens.example/feed',
+    genre: 1324,
+    episodes: 129,
+  },
+]
+
+/** A stand-in for artwork: a tile in a colour that follows the name, with its first letter. */
+function artwork(title: string): string {
+  const hue = hashOf(title) % 360
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">` +
+    `<rect width="300" height="300" fill="hsl(${hue} 45% 38%)"/>` +
+    `<text x="150" y="195" font-family="sans-serif" font-size="150" text-anchor="middle" ` +
+    `fill="hsl(${hue} 60% 88%)">${escapeHtml(title.charAt(0).toUpperCase())}</text></svg>`
+  return `data:image/svg+xml;base64,${btoa(svg)}`
+}
+
+function followedFeed(url: string): boolean {
+  const href = (() => {
+    try {
+      return new URL(url).href
+    } catch {
+      return url
+    }
+  })()
+  return sources.some((s) => s.kind.type === 'web' && s.kind.url === href)
+}
+
+function hitFor(show: Show): PodcastHit {
+  return {
+    directoryId: show.id,
+    title: show.title,
+    author: show.author,
+    feedUrl: show.feed,
+    artwork: artwork(show.title),
+    genre: GENRES.find((g) => g.id === show.genre)?.name ?? '',
+    episodes: show.episodes,
+    explicit: show.explicit ?? false,
+    followed: followedFeed(show.feed),
+  }
+}
+
+/** Does every word of `query` appear in `text`? */
+function matches(query: string, text: string): boolean {
+  const hay = text.toLowerCase()
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((word) => hay.includes(word))
+}
+
+export function mockSearchPodcasts(query: string, limit: number | null | undefined): PodcastHit[] {
+  const q = query.trim()
+  if (!q) return []
+  // An address that says so is how the unreachable state can be seen.
+  if (/unreachable|offline/i.test(q)) {
+    throw new VaultError('network', 'The podcast directory could not be reached.')
+  }
+  const genre = (id: number) => GENRES.find((g) => g.id === id)?.name ?? ''
+  return SHOWS.filter((s) => matches(q, `${s.title} ${s.author} ${genre(s.genre)}`))
+    .slice(0, limit && limit > 0 ? limit : 25)
+    .map(hitFor)
+}
+
+export function mockTopPodcasts(
+  genre: number | null | undefined,
+  limit: number | null | undefined,
+): PodcastHit[] {
+  return SHOWS.filter((s) => genre == null || s.genre === genre)
+    .slice(0, limit && limit > 0 ? limit : 25)
+    .map(hitFor)
+}
+
+export function mockPodcastGenres(): PodcastGenre[] {
+  return structuredClone(GENRES)
+}
+
+const FEEDS: Omit<FeedHit, 'followed'>[] = [
+  {
+    feedUrl: 'https://longform.example/feed.xml',
+    title: 'Longform Weekly',
+    siteUrl: 'https://longform.example',
+    description: 'One long piece, every week, about something that took somebody years.',
+    subscribers: 18_400,
+    icon: '',
+  },
+  {
+    feedUrl: 'https://tidewatch.example/rss',
+    title: 'Tidewatch',
+    siteUrl: 'https://tidewatch.example',
+    description: 'Notes from the people who keep harbours, lights and tide gauges.',
+    subscribers: 2_150,
+    icon: '',
+  },
+  {
+    feedUrl: 'https://deskset.example/atom.xml',
+    title: 'Desk Set',
+    siteUrl: 'https://deskset.example',
+    description: 'What people keep on their desks, and why it is there.',
+    subscribers: 9_020,
+    icon: '',
+  },
+  {
+    feedUrl: 'https://smallmachines.example/feed',
+    title: 'Small Machines',
+    siteUrl: 'https://smallmachines.example',
+    description: 'Clocks, typewriters, music boxes: how they work and how they break.',
+    subscribers: 5_730,
+    icon: '',
+  },
+  {
+    feedUrl: 'https://quietnews.example/rss',
+    title: 'The Quiet News',
+    siteUrl: 'https://quietnews.example',
+    description: 'A morning digest with the volume turned down.',
+    subscribers: 31_000,
+    icon: '',
+  },
+]
+
+export function mockSearchFeeds(query: string, limit: number | null | undefined): FeedHit[] {
+  const q = query.trim()
+  if (!q) return []
+  return FEEDS.filter((f) => matches(q, `${f.title} ${f.description} ${f.siteUrl}`))
+    .slice(0, limit && limit > 0 ? limit : 25)
+    .map((f) => ({ ...f, icon: artwork(f.title), followed: followedFeed(f.feedUrl) }))
 }

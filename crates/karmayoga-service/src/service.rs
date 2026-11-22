@@ -101,6 +101,9 @@ pub struct Service {
     /// outage is reported once rather than once per attempt -- the courtesy
     /// [`crate::trouble`] extends to a calendar.
     reported_news: RwLock<HashSet<karmayoga_core::id::NewsSourceId>>,
+    /// Podcasts' downloads and the ranker's pacing -- see
+    /// [`crate::news::Listening`].
+    pub(crate) listening: crate::news::Listening,
     /// Accounts whose sync has stopped, and what has been said about them.
     /// See [`crate::trouble`].
     sync_trouble: crate::trouble::SyncTrouble,
@@ -207,6 +210,7 @@ impl Service {
             transfers: Arc::default(),
             calendar_sync: std::sync::Mutex::default(),
             reported_news: RwLock::new(HashSet::new()),
+            listening: crate::news::Listening::default(),
             sync_trouble: crate::trouble::SyncTrouble::default(),
             upcoming_alerts: std::sync::Mutex::default(),
             routines: RoutineRuntime::default(),
@@ -736,6 +740,8 @@ impl Service {
         let Some(vault) = self.get() else { return };
         if vault.is_unlocked() && vault.is_writable() {
             crate::news::ensure_task(self, &vault);
+            crate::news::downloads::ensure_task(self, &vault);
+            crate::news::rank::ensure_task(self, &vault);
             crate::calendar_refresh::ensure_task(self, &vault);
             crate::money::ensure_task(self, &vault);
             crate::backup::task::ensure_task(self, &vault);
@@ -973,6 +979,7 @@ impl Service {
         self.token_cache.try_clear();
         self.calendar_sync.lock().unwrap().clear();
         self.reported_news.write().unwrap().clear();
+        self.listening.clear();
         self.sync_trouble.clear();
         self.upcoming_alerts.lock().unwrap().clear();
         self.routines.on_lock();

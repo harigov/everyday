@@ -21,6 +21,12 @@
   // In the full-window viewer this is its information panel, and `onclose`
   // closes that instead of un-describing the file.
   //
+  // A recording or a film is played in the window's one player, from here as
+  // from the viewer and the menus, and a recording, a film or a document can
+  // be put in Up Next. A film's picture is the player's panel, which the
+  // viewer would cover, so playing one from the viewer's information panel
+  // brings the viewer down first, as Read does.
+  //
   // A document -- a PDF, an EPUB, Markdown, text, a web page -- can also be
   // read (the reader, with its contents and the assistant beside it) and put
   // on a library shelf, where it becomes an item with the file as its reading
@@ -53,9 +59,13 @@
   import { library } from '../lib/library.svelte'
   import { openExternal } from '../lib/open-external'
   import { panels } from '../lib/panels.svelte'
+  import { player } from '../lib/player.svelte'
+  import { playRequestForFile } from '../lib/podcast'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { app } from '../lib/state.svelte'
+  import { upnext } from '../lib/upnext.svelte'
   import type {
+    ContentRef,
     FileEntry,
     FileId,
     FileUpdate,
@@ -340,6 +350,39 @@
   function read(f: FileEntry): void {
     leave()
     void files.read(f.id)
+  }
+
+  // ── Playing, and Up Next ───────────────────────────────────────────
+
+  /** What the player would play for the file: absent for anything that is not
+   *  a recording or a film, or not there to be played. */
+  const request = $derived(file ? playRequestForFile(file) : null)
+  const what = $derived<ContentRef | null>(file ? { type: 'file', id: file.id } : null)
+  const loaded = $derived(what !== null && player.isCurrent(what))
+  const playing = $derived(what !== null && player.isPlaying(what))
+  /** Up Next takes recordings, films and documents that are there. */
+  const queueable = $derived(
+    file !== undefined && file.status.state === 'present' && (request !== null || readable),
+  )
+  const queued = $derived(what !== null && upnext.isQueued(what))
+
+  /** Play it, or pause it. A film's picture is the panel's, so for one the
+   *  viewer comes down and the panel opens. */
+  function play(): void {
+    if (!request) return
+    if (request.kind === 'video') {
+      leave()
+      if (!loaded) void player.play(request)
+      else if (!player.playing) player.resume()
+      player.expanded = true
+    } else if (loaded) player.toggle()
+    else void player.play(request)
+  }
+
+  function toggleQueued(): void {
+    if (!what) return
+    if (queued) void upnext.removeFor(what)
+    else void upnext.add(what)
   }
 
   /** The item just made from a file, and the name of the shelf it went on:
@@ -872,9 +915,26 @@
         {/if}
 
         <section class="actions">
+          {#if request}
+            <button class="btn btn-sm btn-primary" onclick={play}>
+              <Icon name={playing ? 'pause' : 'play'} size={14} filled />
+              {playing ? 'Pause' : request.kind === 'video' && loaded ? 'Show the player' : 'Play'}
+            </button>
+          {/if}
           {#if readable}
             <button class="btn btn-sm btn-primary" onclick={() => read(f)}>
               <Icon name="book" size={14} /> Read
+            </button>
+          {/if}
+          {#if queueable}
+            <button
+              class="btn btn-sm btn-outline"
+              aria-pressed={queued}
+              title={queued ? 'In Up Next: remove it' : 'Add it to Up Next'}
+              onclick={toggleQueued}
+            >
+              <Icon name="queue-add" size={14} />
+              {queued ? 'In Up Next' : 'Add to Up Next'}
             </button>
           {/if}
           {#if !onclose && !(readable && readerOnly)}

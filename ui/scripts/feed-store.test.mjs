@@ -8,8 +8,9 @@
 // open story that has to stay put through a reload, the folder that has to
 // show nothing and not everything.
 //
-// Written against the mock's seed (four sources, sixteen stories, ten of
-// them unread), so a change to the seed will need these numbers changing.
+// Written against the mock's seed (six sources, two of them podcasts;
+// twenty-two stories, fifteen of them unread), so a change to the seed will
+// need these numbers changing.
 
 import assert from 'node:assert/strict'
 import { load, stubBrowser } from './harness.mjs'
@@ -84,16 +85,32 @@ assert.equal(app.supportsNews, true, 'and carry the news domain')
 // ── start ────────────────────────────────────────────────────────────
 
 await feed.start()
-assert.equal(feed.sources.length, 4, 'the mock follows four sources')
+assert.equal(feed.sources.length, 6, 'the mock follows six sources')
 assert.equal(feed.loading, false, 'loading settles back to false once the load lands')
 assert.equal(feed.filter, 'unread', 'Unread is the chip a feed opens on')
 assert.deepEqual(
   ids(feed.stories),
-  ['st-9', 'st-1', 'st-5', 'st-10', 'st-11', 'st-2', 'st-13', 'st-14', 'st-6', 'st-8'],
+  [
+    'st-9',
+    'st-1',
+    'st-17',
+    'st-5',
+    'st-10',
+    'st-21',
+    'st-11',
+    'st-2',
+    'st-13',
+    'st-14',
+    'st-18',
+    'st-6',
+    'st-22',
+    'st-8',
+    'st-20',
+  ],
   'Unread shows only what is unread, newest first',
 )
-assert.equal(feed.next, null, 'ten stories is one page')
-assert.equal(feed.unreadTotal, 10, 'the sidebar total is the sum of the sources')
+assert.equal(feed.next, null, 'fifteen stories is one page')
+assert.equal(feed.unreadTotal, 15, 'the sidebar total is the sum of the sources')
 
 assert.deepEqual(
   feed.folders.map((f) => [f.name, f.unread]),
@@ -110,7 +127,7 @@ assert.equal(feed.accent, '#0369a1', 'the Feed has an accent of its own')
 // ── the chip, and remembering it ─────────────────────────────────────
 
 await feed.setFilter('all')
-assert.equal(feed.stories.length, 16, 'All is every story')
+assert.equal(feed.stories.length, 22, 'All is every story')
 assert.equal(
   globalThis.localStorage.getItem('karmayoga.feed.filter'),
   'all',
@@ -135,7 +152,7 @@ await feed.select({ kind: 'folder', name: 'Nowhere' })
 assert.equal(feed.stories.length, 0, 'a folder with nothing in it shows nothing, not everything')
 
 await feed.select({ kind: 'all' })
-assert.equal(feed.stories.length, 16)
+assert.equal(feed.stories.length, 22)
 
 // A stale answer never lands: two selections in the air, the second wins.
 {
@@ -162,7 +179,7 @@ await feed.select({ kind: 'all' })
 feed.setQuery('lighthouse')
 assert.deepEqual(ids(feed.visible), ['st-1'], 'the bar narrows what is loaded')
 feed.setQuery('')
-assert.equal(feed.visible.length, 16)
+assert.equal(feed.visible.length, 22)
 
 // ── pages ────────────────────────────────────────────────────────────
 
@@ -195,7 +212,7 @@ await until('the count settles on the vault’s own', () => longform().unread ==
 // The point of keeping it: a reload with the Unread chip up would otherwise
 // drop the row the pane is showing, and `j` would not know where "below" was.
 await feed.reload()
-assert.deepEqual(ids(feed.stories).slice(0, 3), ['st-9', 'st-1', 'st-5'], 'it stays in its place')
+assert.deepEqual(ids(feed.stories).slice(0, 3), ['st-9', 'st-1', 'st-17'], 'it stays in its place')
 assert.equal(feed.story?.id, 'st-1', 'and the pane still has it')
 
 feed.close()
@@ -300,11 +317,11 @@ assert.equal((await api.story('st-2')).saved, false)
 {
   const before = feed.stories.length
   const reports = await feed.refresh()
-  assert.equal(reports.length, 4, 'one report for every source')
+  assert.equal(reports.length, 6, 'one report for every source')
   assert.ok(reports.find((r) => r.sourceId === 'src-radio').error, 'the dead feed reports why')
   assert.equal(feed.refreshing, false)
-  assert.equal(feed.stories.length, before + 3, 'the three that answered each brought one')
-  assert.match(feed.note, /3 new stories, and 1 source could not be reached/)
+  assert.equal(feed.stories.length, before + 5, 'the five that answered each brought one')
+  assert.match(feed.note, /5 new stories, and 1 source could not be reached/)
 
   // A folder's menu asks for each of its sources at once, and the spinner
   // has to last until the last of them, not the first.
@@ -385,7 +402,7 @@ assert.equal((await api.story('st-2')).saved, false)
   assert.ok(!feed.stories.some((s) => s.sourceId === letter.id))
   await feed.deleteSource(added.id)
   // The first delete's reload can land after the second's optimistic removal.
-  await until('the vault agrees', () => feed.sources.length === 4)
+  await until('the vault agrees', () => feed.sources.length === 6)
 
   // A rename reaches the vault and the sidebar.
   const original = sourceNamed('Shipyard Notes').source
@@ -459,7 +476,7 @@ assert.equal((await api.story('st-2')).saved, false)
 
   const again = await feed.importOpml(xml)
   assert.equal(again.added, 0, 'reading back what is followed adds nothing')
-  assert.equal(again.skipped, 3)
+  assert.equal(again.skipped, 5)
 
   const report = await feed.importOpml(
     '<opml version="2.0"><body><outline text="Fold">' +

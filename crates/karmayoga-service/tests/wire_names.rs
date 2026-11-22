@@ -138,6 +138,8 @@ fn assert_every_kind_is_named(k: Kind) {
         | Kind::Voiceprint
         | Kind::NewsSource
         | Kind::Story
+        | Kind::Queue
+        | Kind::Consumption
         | Kind::BankLink
         | Kind::BankAccount
         | Kind::Txn

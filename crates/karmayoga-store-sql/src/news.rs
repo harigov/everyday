@@ -49,20 +49,49 @@
 //! of them. Its `created_us` is the story's `fetched_at`: when it first
 //! arrived, which is what [`story_by_key`](NewsStore::story_by_key) means by
 //! "the first one's row".
+//!
+//! # A story's files
+//!
+//! `news_story_files` is a clear side table kept in step with the sealed
+//! [`Story::files`]: a story with files is never expired, and the references
+//! table is rebuilt from the stories that have them, so both ask a question
+//! an index answers without decrypting every story to find out. The files are
+//! written only by [`set_story_files`](NewsStore::set_story_files), in one
+//! transaction that reads the stored copy, replaces the files and reseals it
+//! -- and [`update_story`](NewsStore::update_story) copies the stored files
+//! over whatever it was handed, which is what stops a refresh that read a
+//! story before a download finished from unlinking the episode.
+//!
+//! # Up Next, what was consumed, and ranks
+//!
+//! Three small tables on one pattern: a clear `target` -- [`ContentRef::key`],
+//! an id and nothing else -- that makes "one per thing" a `UNIQUE` index
+//! rather than a rule to remember, the one or two columns an `ORDER BY` or a
+//! filter needs (`sort_order` and `added_us`; `last_us` and `finished`;
+//! `ranked_us`), and the record sealed. A queue entry and a consumption are
+//! sealed under their own ids and a rank under its target, so a row cannot be
+//! passed off as another. Putting one for a thing that already has a row
+//! under another id deletes that row first, in the same transaction.
+//!
+//! Deleting a source takes its stories' queue entries and ranks with it, and
+//! never a consumption: what was read is remembered after the source is gone.
 
 use jiff::Timestamp;
 use karmayoga_core::error::{Error, Result};
-use karmayoga_core::id::{BlobId, MailMessageId, NewsSourceId, StoryId};
+use karmayoga_core::id::{
+    BlobId, ConsumptionId, MailMessageId, NewsSourceId, QueueEntryId, StoryId,
+};
 use karmayoga_core::news::{
-    ExpireReport, ExpiryRule, FetchState, NewsSource, Retention, SourceCount, Story, StoryBody,
+    ConsumedQuery, Consumption, ContentRef, ExpireReport, ExpiryRule, FeedSettings, FetchState,
+    NewsSource, QueueEntry, Rank, Retention, SourceCount, Story, StoryBody, StoryFiles,
     TOMBSTONE_DAYS,
 };
 use karmayoga_core::record::RecordKind;
 use karmayoga_core::store::news::{
-    NewsStore, StoryCursor, StoryPage, StoryQuery, fetch_state_aad, source_aad, story_aad,
-    story_body_aad,
+    NewsStore, StoryCursor, StoryPage, StoryQuery, consumption_aad, feed_settings_aad,
+    fetch_state_aad, queue_entry_aad, rank_aad, source_aad, story_aad, story_body_aad,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
 
@@ -155,12 +184,19 @@ impl SqlStore {
     }
 
     /// Turn one source's stories older than `keep` into tombstones and
-    /// return how many. Skips saved stories, and stories already expired.
+    /// return how many. Skips saved stories, stories already expired, stories
+    /// with files, and any story in `spare` (what is in Up Next).
     ///
     /// Selected and rewritten on the writer inside one transaction, so a
     /// story saved a moment ago cannot be selected as unsaved and then
-    /// expired anyway.
-    fn tombstone_source(&self, source: NewsSourceId, keep: Retention, now_us: i64) -> Result<u32> {
+    /// expired anyway -- nor one a download has just linked a file to.
+    fn tombstone_source(
+        &self,
+        source: NewsSourceId,
+        keep: Retention,
+        spare: &HashSet<String>,
+        now_us: i64,
+    ) -> Result<u32> {
         let read_before = now_us.saturating_sub(i64::from(keep.read_days).saturating_mul(DAY_US));
         let unread_before =
             now_us.saturating_sub(i64::from(keep.unread_days).saturating_mul(DAY_US));
@@ -171,13 +207,18 @@ impl SqlStore {
             &format!(
                 "SELECT s.id, s.dedupe_key, s.published_us, s.created_us FROM {STORY_FROM}
                  WHERE s.source_id = ?1 AND s.expired = ?2 AND s.saved = ?3
+                   AND s.id NOT IN (SELECT story_id FROM news_story_files)
                    AND ((({READ}) = 1 AND s.published_us < ?4)
                      OR (({READ}) = 0 AND s.published_us < ?5))"
             ),
             &vals![source.to_string(), false, false, read_before, unread_before],
         )?;
+        let mut expired = 0u32;
         for row in &rows {
             let id: StoryId = id_of(&row.text(0)?)?;
+            if spare.contains(&id.to_string()) {
+                continue;
+            }
             let mut tombstone = Story::new(source, row.text(1)?, "", from_us(row.i64(2)?));
             tombstone.id = id;
             tombstone.fetched_at = from_us(row.i64(3)?);
@@ -188,9 +229,33 @@ impl SqlStore {
                 &vals![id.to_string(), data, true],
             )?;
             tx.execute("DELETE FROM news_bodies WHERE story_id = ?1", &vals![id.to_string()])?;
+            expired += 1;
         }
         tx.commit()?;
-        Ok(u32::try_from(rows.len()).unwrap_or(u32::MAX))
+        Ok(expired)
+    }
+
+    /// `DELETE FROM <table> WHERE <column> IN (...)` over these values, a
+    /// chunk at a time in one transaction. Values that match nothing are
+    /// ignored, as the trait promises. `table` and `column` are this file's
+    /// own words, never a caller's.
+    fn delete_each(&self, table: &str, column: &str, values: &[String]) -> Result<()> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        for chunk in values.chunks(IN_CHUNK) {
+            let args: Vec<Value> = chunk.iter().cloned().map(Value::Text).collect();
+            tx.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE {column} IN ({})",
+                    placeholders(1, chunk.len())
+                ),
+                &args,
+            )?;
+        }
+        tx.commit()
     }
 }
 
@@ -230,10 +295,12 @@ impl NewsStore for SqlStore {
     }
 
     fn delete_source(&self, id: NewsSourceId) -> Result<()> {
-        // The same reasoning as `delete_kind`: four indexed statements do not
-        // depend on a foreign-key pragma staying switched on, and the bodies
-        // have to go through the stories to be reached at all -- a body row
-        // carries no source of its own.
+        // The same reasoning as `delete_kind`: indexed statements do not
+        // depend on a foreign-key pragma staying switched on, and the bodies,
+        // queue entries and ranks have to go through the stories to be
+        // reached at all -- none of them carries a source of its own. What
+        // was consumed is left: it carries its own title and address, and
+        // outlives the source it came from.
         let mut conn = self.write();
         let mut tx = conn.begin()?;
         tx.execute(
@@ -241,6 +308,20 @@ impl NewsStore for SqlStore {
              WHERE story_id IN (SELECT id FROM news_stories WHERE source_id = ?1)",
             &vals![id.to_string()],
         )?;
+        tx.execute(
+            "DELETE FROM news_story_files
+             WHERE story_id IN (SELECT id FROM news_stories WHERE source_id = ?1)",
+            &vals![id.to_string()],
+        )?;
+        for table in ["feed_queue", "feed_ranks"] {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE target IN
+                        (SELECT 'story:' || id FROM news_stories WHERE source_id = ?1)"
+                ),
+                &vals![id.to_string()],
+            )?;
+        }
         tx.execute("DELETE FROM news_stories WHERE source_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM news_fetch WHERE source_id = ?1", &vals![id.to_string()])?;
         tx.execute("DELETE FROM news_sources WHERE id = ?1", &vals![id.to_string()])?;
@@ -346,6 +427,13 @@ impl NewsStore for SqlStore {
             if landed == 0 {
                 continue;
             }
+            if !story.files.is_empty() {
+                tx.execute(
+                    "INSERT INTO news_story_files (story_id, media) VALUES (?1, ?2)
+                     ON CONFLICT (story_id) DO UPDATE SET media = ?2",
+                    &vals![story.id.to_string(), story.files.media.is_some()],
+                )?;
+            }
             if let Some(body) = body {
                 tx.execute(
                     "INSERT INTO news_bodies (story_id, data) VALUES (?1, ?2)
@@ -389,11 +477,12 @@ impl NewsStore for SqlStore {
         // would put a title back into a row whose whole point is to hold
         // none.
         //
-        // Nor is `has_body` taken from the caller. A refresh updating a
-        // story's points holds a copy read before an extraction may have
-        // stored a body, and resealing that copy as it stands would say the
-        // body is not there. It is answered by the body row itself, inside
-        // the same transaction as the write.
+        // Nor are `has_body` and `files` taken from the caller. A refresh
+        // updating a story's points holds a copy read before an extraction
+        // may have stored a body or a download linked an episode, and
+        // resealing that copy as it stands would say neither is there. Both
+        // are answered by what is stored, read inside the same transaction as
+        // the write: the body by its row, the files by the stored copy's own.
         let mut conn = self.write();
         let mut tx = conn.begin()?;
         let has_body = !tx
@@ -401,6 +490,28 @@ impl NewsStore for SqlStore {
             .is_empty();
         let mut story = story.clone();
         story.has_body = has_body;
+        // The stored copy is read for its files only when the index says it
+        // has any: a Hacker News refresh rewrites hundreds of stories, almost
+        // none of which link a file, and each would otherwise pay a sealed
+        // read and a decrypt under the write lock for nothing.
+        let linked = !tx
+            .query(
+                "SELECT 1 FROM news_story_files WHERE story_id = ?1",
+                &vals![story.id.to_string()],
+            )?
+            .is_empty();
+        story.files = if linked {
+            let stored = tx
+                .sealed(
+                    "SELECT data FROM news_stories WHERE id = ?1 AND expired = ?2",
+                    &vals![story.id.to_string(), false],
+                )?
+                .ok_or_else(|| Error::not_found(RecordKind::Story.not_found_noun(), story.id))?;
+            let stored: Story = self.unseal(&story_aad(story.id), &stored)?;
+            stored.files
+        } else {
+            StoryFiles::default()
+        };
         let data = self.seal(&story_aad(story.id), &story)?;
         let changed = tx.execute(
             "UPDATE news_stories SET data = ?2 WHERE id = ?1 AND expired = ?3",
@@ -609,8 +720,18 @@ impl NewsStore for SqlStore {
     }
 
     fn expire(&self, rules: &[ExpiryRule], now: Timestamp) -> Result<ExpireReport> {
+        self.expire_except(rules, &[], now)
+    }
+
+    fn expire_except(
+        &self,
+        rules: &[ExpiryRule],
+        keep: &[StoryId],
+        now: Timestamp,
+    ) -> Result<ExpireReport> {
         let rules: HashMap<NewsSourceId, Retention> =
             rules.iter().map(|r| (r.source_id, r.retention)).collect();
+        let spare: HashSet<String> = keep.iter().map(|id| id.to_string()).collect();
         let now_us = to_us(now);
 
         // Every source that has a live story, whether or not it came with a
@@ -626,7 +747,7 @@ impl NewsStore for SqlStore {
         let mut report = ExpireReport::default();
         for source in sources {
             let keep = rules.get(&source).copied().unwrap_or_default();
-            report.expired += self.tombstone_source(source, keep, now_us)?;
+            report.expired += self.tombstone_source(source, keep, &spare, now_us)?;
         }
 
         // Then the tombstones that have outlived their purpose. By the date
@@ -655,6 +776,259 @@ impl NewsStore for SqlStore {
         let bodies: Vec<StoryBody> = self.collect(rows, story_body_aad)?;
         refs.extend(bodies.iter().flat_map(|b| b.images.iter().filter_map(|i| i.cached_blob)));
         Ok(refs)
+    }
+
+    // ---- a story's files ------------------------------------------------
+
+    fn set_story_files(&self, id: StoryId, files: &StoryFiles) -> Result<()> {
+        self.change_story_files(id, &mut |f| *f = files.clone()).map(|_| ())
+    }
+
+    fn change_story_files(
+        &self,
+        id: StoryId,
+        change: &mut dyn FnMut(&mut StoryFiles),
+    ) -> Result<Story> {
+        // Read on the writer, changed and resealed in the same transaction:
+        // a copy read on a pooled reader could be a write behind, and
+        // resealing it would revert whatever that write was -- a body just
+        // stored, a score just refreshed, another file just linked. A
+        // tombstone has no files to link.
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        let sealed = tx
+            .sealed(
+                "SELECT data FROM news_stories WHERE id = ?1 AND expired = ?2",
+                &vals![id.to_string(), false],
+            )?
+            .ok_or_else(|| Error::not_found(RecordKind::Story.not_found_noun(), id))?;
+        let mut story: Story = self.unseal(&story_aad(id), &sealed)?;
+        change(&mut story.files);
+        tx.execute(
+            "UPDATE news_stories SET data = ?2 WHERE id = ?1",
+            &vals![id.to_string(), self.seal(&story_aad(id), &story)?],
+        )?;
+        if story.files.is_empty() {
+            tx.execute("DELETE FROM news_story_files WHERE story_id = ?1", &vals![id.to_string()])?;
+        } else {
+            tx.execute(
+                "INSERT INTO news_story_files (story_id, media) VALUES (?1, ?2)
+                 ON CONFLICT (story_id) DO UPDATE SET media = ?2",
+                &vals![id.to_string(), story.files.media.is_some()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(story)
+    }
+
+    fn stories_with_files(&self) -> Result<Vec<Story>> {
+        // Not narrowed by `SHOWN`: this feeds the references table, and a
+        // newsletter story whose message has left Mail still has its files,
+        // which must go on being referenced even while it is not listed.
+        let rows = self.read().query(
+            &format!(
+                "{} WHERE s.expired = ?1 AND s.id IN (SELECT story_id FROM news_story_files)
+                 ORDER BY s.published_us DESC, s.id DESC",
+                story_select()
+            ),
+            &vals![false],
+        )?;
+        rows.iter().map(|row| self.story_of(row)).collect()
+    }
+
+    fn stories_with_media(&self) -> Result<Vec<Story>> {
+        let rows = self.read().query(
+            &format!(
+                "{} WHERE s.expired = ?1
+                   AND s.id IN (SELECT story_id FROM news_story_files WHERE media = ?2)
+                 ORDER BY s.published_us DESC, s.id DESC",
+                story_select()
+            ),
+            &vals![false, true],
+        )?;
+        rows.iter().map(|row| self.story_of(row)).collect()
+    }
+
+    // ---- the Feed's settings ----------------------------------------------
+
+    fn feed_settings(&self) -> Result<Option<FeedSettings>> {
+        let sealed = self.read().sealed("SELECT data FROM feed_settings WHERE id = 1", &[])?;
+        sealed.map(|sealed| self.unseal(&feed_settings_aad(), &sealed)).transpose()
+    }
+
+    fn put_feed_settings(&self, settings: &FeedSettings) -> Result<()> {
+        let data = self.seal(&feed_settings_aad(), settings)?;
+        self.write().execute(
+            "INSERT INTO feed_settings (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        Ok(())
+    }
+
+    // ---- Up Next ----------------------------------------------------------
+
+    fn queue(&self) -> Result<Vec<QueueEntry>> {
+        let rows = self
+            .read()
+            .records("SELECT id, data FROM feed_queue ORDER BY sort_order, added_us, id", &[])?;
+        self.collect(rows, queue_entry_aad)
+    }
+
+    fn put_queue_entry(&self, entry: &QueueEntry) -> Result<()> {
+        let data = self.seal(&queue_entry_aad(entry.id), entry)?;
+        let target = entry.what.key();
+
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        // Whatever else is queued for this thing goes first -- `target` is
+        // `UNIQUE`, so leaving it would fail the insert, not replace it.
+        tx.execute(
+            "DELETE FROM feed_queue WHERE target = ?1 AND id <> ?2",
+            &vals![target, entry.id.to_string()],
+        )?;
+        tx.execute(
+            "INSERT INTO feed_queue (id, target, sort_order, added_us, data)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (id) DO UPDATE SET target = ?2, sort_order = ?3, added_us = ?4, data = ?5",
+            &vals![entry.id.to_string(), target, entry.sort_order, to_us(entry.added_at), data],
+        )?;
+        tx.commit()
+    }
+
+    fn delete_queue_entries(&self, ids: &[QueueEntryId]) -> Result<()> {
+        let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+        self.delete_each("feed_queue", "id", &ids)
+    }
+
+    fn delete_queue_for(&self, what: &[ContentRef]) -> Result<()> {
+        let keys: Vec<String> = what.iter().map(ContentRef::key).collect();
+        self.delete_each("feed_queue", "target", &keys)
+    }
+
+    // ---- what was read, heard and watched ----------------------------------
+
+    fn consumption(&self, what: &ContentRef) -> Result<Option<Consumption>> {
+        Ok(self.consumptions_for(std::slice::from_ref(what))?.into_iter().next())
+    }
+
+    fn consumptions_for(&self, what: &[ContentRef]) -> Result<Vec<Consumption>> {
+        let mut out = Vec::with_capacity(what.len());
+        for chunk in what.chunks(IN_CHUNK) {
+            let args: Vec<Value> = chunk.iter().map(|w| Value::Text(w.key())).collect();
+            let rows = self.read().records(
+                &format!(
+                    "SELECT id, data FROM feed_consumed WHERE target IN ({})",
+                    placeholders(1, chunk.len())
+                ),
+                &args,
+            )?;
+            out.extend(self.collect::<Consumption, ConsumptionId>(rows, consumption_aad)?);
+        }
+        Ok(out)
+    }
+
+    fn consumptions(&self, query: &ConsumedQuery) -> Result<Vec<Consumption>> {
+        let mut w = Where::new();
+        if let Some(since) = query.since {
+            w = w.gte("last_us", to_us(since));
+        }
+        if let Some(until) = query.until {
+            w = w.lt("last_us", to_us(until));
+        }
+        if query.finished_only {
+            w = w.eq("finished", true);
+        }
+        let (where_sql, args) = w.finish();
+        let mut sql = format!("SELECT id, data FROM feed_consumed WHERE {where_sql}");
+        self.page(&mut sql, "last_us DESC, id DESC", Some(query.limit()), 0);
+        let rows = self.read().records(&sql, &args)?;
+        self.collect(rows, consumption_aad)
+    }
+
+    fn put_consumption(&self, consumption: &Consumption) -> Result<()> {
+        let data = self.seal(&consumption_aad(consumption.id), consumption)?;
+        let target = consumption.what.key();
+
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        tx.execute(
+            "DELETE FROM feed_consumed WHERE target = ?1 AND id <> ?2",
+            &vals![target, consumption.id.to_string()],
+        )?;
+        tx.execute(
+            "INSERT INTO feed_consumed (id, target, last_us, finished, data)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (id) DO UPDATE
+                SET target = ?2, last_us = ?3, finished = ?4, data = ?5",
+            &vals![
+                consumption.id.to_string(),
+                target,
+                to_us(consumption.last_at),
+                consumption.finished,
+                data
+            ],
+        )?;
+        tx.commit()
+    }
+
+    fn delete_consumption(&self, id: ConsumptionId) -> Result<()> {
+        self.write().execute("DELETE FROM feed_consumed WHERE id = ?1", &vals![id.to_string()])?;
+        Ok(())
+    }
+
+    // ---- ranks --------------------------------------------------------------
+
+    fn ranks(&self, what: &[ContentRef]) -> Result<Vec<Rank>> {
+        let mut out = Vec::with_capacity(what.len());
+        for chunk in what.chunks(IN_CHUNK) {
+            let args: Vec<Value> = chunk.iter().map(|w| Value::Text(w.key())).collect();
+            let rows = self.read().records(
+                &format!(
+                    "SELECT target, data FROM feed_ranks WHERE target IN ({})",
+                    placeholders(1, chunk.len())
+                ),
+                &args,
+            )?;
+            for (target, sealed) in rows {
+                let what = ContentRef::parse_key(&target)
+                    .ok_or_else(|| Error::Invalid(format!("a rank is held for {target:?}")))?;
+                out.push(self.unseal(&rank_aad(&what), &sealed)?);
+            }
+        }
+        Ok(out)
+    }
+
+    fn put_ranks(&self, ranks: &[Rank]) -> Result<()> {
+        if ranks.is_empty() {
+            return Ok(());
+        }
+        // Sealed before the writer is taken, as `insert_stories` does: a
+        // ranking pass can hand over a few hundred at once.
+        let mut sealed = Vec::with_capacity(ranks.len());
+        for rank in ranks {
+            sealed.push((rank, self.seal(&rank_aad(&rank.what), rank)?));
+        }
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        for (rank, data) in sealed {
+            tx.execute(
+                "INSERT INTO feed_ranks (target, ranked_us, data) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (target) DO UPDATE SET ranked_us = ?2, data = ?3",
+                &vals![rank.what.key(), to_us(rank.at), data],
+            )?;
+        }
+        tx.commit()
+    }
+
+    fn clear_ranks(&self, before: Option<Timestamp>) -> Result<u32> {
+        let cleared = match before {
+            Some(before) => self
+                .write()
+                .execute("DELETE FROM feed_ranks WHERE ranked_us < ?1", &vals![to_us(before)])?,
+            None => self.write().execute("DELETE FROM feed_ranks", &[])?,
+        };
+        Ok(u32::try_from(cleared).unwrap_or(u32::MAX))
     }
 }
 

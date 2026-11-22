@@ -64,6 +64,10 @@ import type {
   ConnectionValues,
   ConnectionView,
   ConnectionsView,
+  ConsumedQuery,
+  Consumption,
+  ConsumptionId,
+  ContentRef,
   Conversation,
   ConversationId,
   ConversationSummary,
@@ -81,6 +85,7 @@ import type {
   DocSearchPage,
   Dose,
   DoseId,
+  DownloadStatus,
   Draft,
   DraftCheckReport,
   DraftId,
@@ -96,6 +101,8 @@ import type {
   EventScope,
   ExportChunk,
   ExportHandle,
+  FeedHit,
+  FeedSettings,
   FileDetail,
   FileEntry,
   FileId,
@@ -231,7 +238,10 @@ import type {
   PersonDue,
   PlaidEnvironment,
   PlaidSetup,
+  PodcastGenre,
+  PodcastHit,
   Profile,
+  ProgressReport,
   Project,
   ProjectId,
   Proposal,
@@ -240,6 +250,10 @@ import type {
   ProposedRecord,
   ProviderInfo,
   PushHeaders,
+  QueueEntry,
+  QueueEntryId,
+  QueuePlace,
+  QueueView,
   QuickAskRow,
   QuickBackfillPick,
   QuickEventDraft,
@@ -250,10 +264,12 @@ import type {
   QuickReading,
   QuickTaskDraft,
   QuickTrackerDraft,
+  RankingStatus,
   Reading,
   ReadingId,
   ReadingQuery,
   RecategorizeResult,
+  Recommendation,
   Recording,
   RecordingId,
   RecordingQuery,
@@ -389,6 +405,7 @@ export interface Commands {
   addNewsSource: { args: { source: NewSource }; result: NewsSource }
   addStoryToLibrary: { args: { id: StoryId }; result: ItemId }
   addToAlbum: { args: { id: string; files: string[] }; result: void }
+  addToQueue: { args: { what: ContentRef; place?: QueuePlace | null }; result: QueueEntry }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
   allowRemoteImages: {
     args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }
@@ -454,6 +471,7 @@ export interface Commands {
   cancelBankLink: { args: { session: string }; result: void }
   cancelConnectionSignIn: { args: { signInId: string }; result: void }
   cancelDecisionModelDownload: { args: { id: string }; result: void }
+  cancelDownload: { args: { id: StoryId }; result: void }
   cancelImageModelDownload: { args: { id: string }; result: void }
   cancelJob: { args: { id: JobId }; result: Job }
   cancelOauthSignIn: { args: { signInId: string }; result: void }
@@ -564,6 +582,7 @@ export interface Commands {
   documentsStatus: { args: Record<string, never>; result: DocIndexStatus }
   dosesDue: { args: { date: string; tz: string }; result: DueDose[] }
   downloadDecisionModel: { args: { id: string }; result: void }
+  downloadEpisode: { args: { id: StoryId }; result: void }
   downloadImageModel: { args: { id: string }; result: void }
   downloadSpeechModel: { args: { id: string }; result: void }
   downloadVoiceModel: { args: { id: string }; result: void }
@@ -590,6 +609,7 @@ export interface Commands {
     args: { id: HealthDocumentId; text?: string | null }
     result: HealthDocument
   }
+  feedSettings: { args: Record<string, never>; result: FeedSettings }
   fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
   fetchFullArticle: { args: { id: StoryId }; result: Story }
   fetchImage: { args: { url: string }; result: string }
@@ -598,10 +618,12 @@ export interface Commands {
   finishRecording: { args: { id: RecordingId }; result: Recording }
   finishUpload: { args: { upload: string }; result: FileEntry }
   flush: { args: Record<string, never>; result: void }
+  forgetConsumption: { args: { id: ConsumptionId }; result: void }
   forgetMissingFiles: { args: { ids: string[] }; result: number }
   forgetScreenItem: { args: { key: string }; result: number }
   generateImage: { args: { prompt: string; shape?: ImageShape | null }; result: GeneratedImage }
   getAccount: { args: { id: AccountId }; result: AccountView }
+  getConsumption: { args: { what: ContentRef }; result: Consumption | null }
   getEntry: { args: { id: EntryId }; result: Entry }
   getEvent: { args: { id: EventId }; result: CalendarEvent }
   getFile: { args: { id: string }; result: FileDetail }
@@ -699,6 +721,7 @@ export interface Commands {
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
   listConditions: { args: Record<string, never>; result: Condition[] }
+  listConsumed: { args: { query: ConsumedQuery }; result: Consumption[] }
   listConversations: {
     args: { limit?: number | null; includeRuns?: boolean }
     result: ConversationSummary[]
@@ -707,6 +730,7 @@ export interface Commands {
     args: { from: string; to: string; medicationId?: MedicationId | null }
     result: Dose[]
   }
+  listDownloads: { args: Record<string, never>; result: DownloadStatus[] }
   listDrafts: { args: { account: AccountId }; result: Draft[] }
   listEntries: { args: { query: EntryQuery }; result: EntrySummary[] }
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
@@ -734,6 +758,7 @@ export interface Commands {
   listPeopleDue: { args: Record<string, never>; result: PersonDue[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listProposals: { args: { query?: ProposalQuery }; result: Proposal[] }
+  listQueue: { args: Record<string, never>; result: QueueView }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
   listRecordings: { args: { query?: RecordingQuery }; result: Recording[] }
   listRemoteImageAllowances: { args: Record<string, never>; result: RemoteImageSettings }
@@ -823,6 +848,7 @@ export interface Commands {
   moveDraft: { args: { draft: Draft; account: AccountId; identity: string }; result: Draft }
   moveFiles: { args: { ids: string[]; dir?: string }; result: FileEntry[] }
   moveFolder: { args: { path: string; into?: string }; result: string }
+  moveInQueue: { args: { id: QueueEntryId; before?: QueueEntryId | null }; result: void }
   moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
   nameSpeaker: {
     args: { noteId: NoteId; speakerKey: number; name: string; email?: string | null }
@@ -865,6 +891,7 @@ export interface Commands {
   noteTags: { args: Record<string, never>; result: NoteTag[] }
   outbox: { args: { account?: AccountId | null }; result: OutboxItem[] }
   plaidSetup: { args: Record<string, never>; result: PlaidSetup }
+  podcastGenres: { args: Record<string, never>; result: PodcastGenre[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   preparePicture: { args: { blob: string; filename?: string }; result: Attachment }
   previewAttachment: {
@@ -912,14 +939,17 @@ export interface Commands {
   quickTaskLabels: { args: { title: string }; result: QuickLabels }
   quickTrackerDraft: { args: { name: string; line?: string }; result: QuickTrackerDraft | null }
   quickWeekNote: { args: { thisWeek: string; lastWeek?: string }; result: string }
+  rankingStatus: { args: Record<string, never>; result: RankingStatus }
   readExport: { args: { handle: string; offset: number }; result: ExportChunk }
   readImport: { args: { handle: string }; result: ArchiveManifest }
   rebuildMailIndex: { args: { id?: AccountId }; result: void }
   recategorizeMail: { args: { account?: AccountId | null }; result: RecategorizeResult }
+  recommended: { args: { limit?: number | null }; result: Recommendation[] }
   recordHealthPush: {
     args: { sourceId: HealthSourceId; headers: PushHeaders; body: unknown }
     result: HealthIngestReport
   }
+  recordProgress: { args: { progress: ProgressReport }; result: Consumption }
   recordScreenTime: {
     args: { device: string; collector: string; beats: Heartbeat[] }
     result: IngestReport
@@ -928,7 +958,9 @@ export interface Commands {
   reindexDocuments: { args: Record<string, never>; result: DocIndexStatus }
   removeChatLink: { args: { id: ChatLinkId }; result: void }
   removeConnection: { args: { id: ConnectionId }; result: ConnectionsView }
+  removeEpisodeDownload: { args: { id: StoryId }; result: void }
   removeFromAlbum: { args: { id: string; files: string[] }; result: void }
+  removeFromQueue: { args: { ids: QueueEntryId[] }; result: void }
   removePronunciation: { args: { word: string }; result: AgentSettings }
   renameFile: { args: { id: string; name: string }; result: FileEntry }
   renameFolder: { args: { path: string; name: string }; result: string }
@@ -945,6 +977,7 @@ export interface Commands {
     args: { template: Template; date?: string | null; journalId?: JournalId | null }
     result: RenderedTemplate
   }
+  rerank: { args: Record<string, never>; result: void }
   rescanFiles: { args: Record<string, never>; result: ScanReport }
   respondToInvite: {
     args: { messageId: MailMessageId; response: string; comment?: string | null }
@@ -992,6 +1025,7 @@ export interface Commands {
   saveDraft: { args: { draft: Draft }; result: void }
   saveEntry: { args: { entry: Entry; expect?: string | null }; result: void }
   saveEntryForce: { args: { entry: Entry }; result: void }
+  saveFeedSettings: { args: { settings: FeedSettings }; result: FeedSettings }
   saveFilesSettings: { args: { settings: FilesSettings }; result: FilesStatus }
   saveFood: { args: { food: Food }; result: Food }
   saveGoal: { args: { goal: Goal }; result: void }
@@ -1060,6 +1094,7 @@ export interface Commands {
     args: { query: string; limit?: number; offset?: number }
     result: DocSearchPage
   }
+  searchFeeds: { args: { query: string; limit?: number | null }; result: FeedHit[] }
   searchFoods: { args: { query: string }; result: FoodHit[] }
   searchMail: {
     args: {
@@ -1070,6 +1105,7 @@ export interface Commands {
     }
     result: SearchMailResult
   }
+  searchPodcasts: { args: { query: string; limit?: number | null }; result: PodcastHit[] }
   searchSources: { args: Record<string, never>; result: SourceInfo[] }
   seedAreas: { args: Record<string, never>; result: number }
   sendDraft: {
@@ -1167,6 +1203,7 @@ export interface Commands {
     result: ThreadId[]
   }
   timeByPurpose: { args: { from: string; to: string }; result: BalanceReport }
+  topPodcasts: { args: { genre?: number | null; limit?: number | null }; result: PodcastHit[] }
   touch: { args: Record<string, never>; result: void }
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
   trash: { args: { threads: ThreadId[] }; result: Op[] }
@@ -1211,6 +1248,7 @@ export const COMMAND_NAMES = {
   addNewsSource: 'add_news_source',
   addStoryToLibrary: 'add_story_to_library',
   addToAlbum: 'add_to_album',
+  addToQueue: 'add_to_queue',
   agentSettings: 'agent_settings',
   allowRemoteImages: 'allow_remote_images',
   answerChatVerification: 'answer_chat_verification',
@@ -1240,6 +1278,7 @@ export const COMMAND_NAMES = {
   cancelBankLink: 'cancel_bank_link',
   cancelConnectionSignIn: 'cancel_connection_sign_in',
   cancelDecisionModelDownload: 'cancel_decision_model_download',
+  cancelDownload: 'cancel_download',
   cancelImageModelDownload: 'cancel_image_model_download',
   cancelJob: 'cancel_job',
   cancelOauthSignIn: 'cancel_oauth_sign_in',
@@ -1338,6 +1377,7 @@ export const COMMAND_NAMES = {
   documentsStatus: 'documents_status',
   dosesDue: 'doses_due',
   downloadDecisionModel: 'download_decision_model',
+  downloadEpisode: 'download_episode',
   downloadImageModel: 'download_image_model',
   downloadSpeechModel: 'download_speech_model',
   downloadVoiceModel: 'download_voice_model',
@@ -1351,6 +1391,7 @@ export const COMMAND_NAMES = {
   estimateMealPhoto: 'estimate_meal_photo',
   exportOpml: 'export_opml',
   extractHealthDocument: 'extract_health_document',
+  feedSettings: 'feed_settings',
   fetchAttachment: 'fetch_attachment',
   fetchFullArticle: 'fetch_full_article',
   fetchImage: 'fetch_image',
@@ -1359,10 +1400,12 @@ export const COMMAND_NAMES = {
   finishRecording: 'finish_recording',
   finishUpload: 'finish_upload',
   flush: 'flush',
+  forgetConsumption: 'forget_consumption',
   forgetMissingFiles: 'forget_missing_files',
   forgetScreenItem: 'forget_screen_item',
   generateImage: 'generate_image',
   getAccount: 'get_account',
+  getConsumption: 'get_consumption',
   getEntry: 'get_entry',
   getEvent: 'get_event',
   getFile: 'get_file',
@@ -1423,8 +1466,10 @@ export const COMMAND_NAMES = {
   listCalendars: 'list_calendars',
   listCommands: 'list_commands',
   listConditions: 'list_conditions',
+  listConsumed: 'list_consumed',
   listConversations: 'list_conversations',
   listDoses: 'list_doses',
+  listDownloads: 'list_downloads',
   listDrafts: 'list_drafts',
   listEntries: 'list_entries',
   listEvents: 'list_events',
@@ -1452,6 +1497,7 @@ export const COMMAND_NAMES = {
   listPeopleDue: 'list_people_due',
   listProjects: 'list_projects',
   listProposals: 'list_proposals',
+  listQueue: 'list_queue',
   listReadings: 'list_readings',
   listRecordings: 'list_recordings',
   listRemoteImageAllowances: 'list_remote_image_allowances',
@@ -1506,6 +1552,7 @@ export const COMMAND_NAMES = {
   moveDraft: 'move_draft',
   moveFiles: 'move_files',
   moveFolder: 'move_folder',
+  moveInQueue: 'move_in_queue',
   moveToMailbox: 'move_to_mailbox',
   nameSpeaker: 'name_speaker',
   needsReply: 'needs_reply',
@@ -1531,6 +1578,7 @@ export const COMMAND_NAMES = {
   noteTags: 'note_tags',
   outbox: 'outbox',
   plaidSetup: 'plaid_setup',
+  podcastGenres: 'podcast_genres',
   pollAutoLock: 'poll_auto_lock',
   preparePicture: 'prepare_picture',
   previewAttachment: 'preview_attachment',
@@ -1560,22 +1608,28 @@ export const COMMAND_NAMES = {
   quickTaskLabels: 'quick_task_labels',
   quickTrackerDraft: 'quick_tracker_draft',
   quickWeekNote: 'quick_week_note',
+  rankingStatus: 'ranking_status',
   readExport: 'read_export',
   readImport: 'read_import',
   rebuildMailIndex: 'rebuild_mail_index',
   recategorizeMail: 'recategorize_mail',
+  recommended: 'recommended',
   recordHealthPush: 'record_health_push',
+  recordProgress: 'record_progress',
   recordScreenTime: 'record_screen_time',
   refreshNews: 'refresh_news',
   reindexDocuments: 'reindex_documents',
   removeChatLink: 'remove_chat_link',
   removeConnection: 'remove_connection',
+  removeEpisodeDownload: 'remove_episode_download',
   removeFromAlbum: 'remove_from_album',
+  removeFromQueue: 'remove_from_queue',
   removePronunciation: 'remove_pronunciation',
   renameFile: 'rename_file',
   renameFolder: 'rename_folder',
   renderIllustration: 'render_illustration',
   renderTemplate: 'render_template',
+  rerank: 'rerank',
   rescanFiles: 'rescan_files',
   respondToInvite: 'respond_to_invite',
   restoreDraft: 'restore_draft',
@@ -1608,6 +1662,7 @@ export const COMMAND_NAMES = {
   saveDraft: 'save_draft',
   saveEntry: 'save_entry',
   saveEntryForce: 'save_entry_force',
+  saveFeedSettings: 'save_feed_settings',
   saveFilesSettings: 'save_files_settings',
   saveFood: 'save_food',
   saveGoal: 'save_goal',
@@ -1661,8 +1716,10 @@ export const COMMAND_NAMES = {
   search: 'search',
   searchDocument: 'search_document',
   searchDocuments: 'search_documents',
+  searchFeeds: 'search_feeds',
   searchFoods: 'search_foods',
   searchMail: 'search_mail',
+  searchPodcasts: 'search_podcasts',
   searchSources: 'search_sources',
   seedAreas: 'seed_areas',
   sendDraft: 'send_draft',
@@ -1721,6 +1778,7 @@ export const COMMAND_NAMES = {
   testTranscriber: 'test_transcriber',
   threadsListed: 'threads_listed',
   timeByPurpose: 'time_by_purpose',
+  topPodcasts: 'top_podcasts',
   touch: 'touch',
   trackerDays: 'tracker_days',
   trash: 'trash',
@@ -1775,6 +1833,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'add_news_source',
   'add_story_to_library',
   'add_to_album',
+  'add_to_queue',
   'agent_settings',
   'allow_remote_images',
   'answer_chat_verification',
@@ -1804,6 +1863,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_bank_link',
   'cancel_connection_sign_in',
   'cancel_decision_model_download',
+  'cancel_download',
   'cancel_image_model_download',
   'cancel_job',
   'cancel_oauth_sign_in',
@@ -1902,6 +1962,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'documents_status',
   'doses_due',
   'download_decision_model',
+  'download_episode',
   'download_image_model',
   'download_speech_model',
   'download_voice_model',
@@ -1915,6 +1976,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'estimate_meal_photo',
   'export_opml',
   'extract_health_document',
+  'feed_settings',
   'fetch_attachment',
   'fetch_full_article',
   'fetch_image',
@@ -1923,10 +1985,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'finish_recording',
   'finish_upload',
   'flush',
+  'forget_consumption',
   'forget_missing_files',
   'forget_screen_item',
   'generate_image',
   'get_account',
+  'get_consumption',
   'get_entry',
   'get_event',
   'get_file',
@@ -1987,8 +2051,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_calendars',
   'list_commands',
   'list_conditions',
+  'list_consumed',
   'list_conversations',
   'list_doses',
+  'list_downloads',
   'list_drafts',
   'list_entries',
   'list_events',
@@ -2016,6 +2082,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_people_due',
   'list_projects',
   'list_proposals',
+  'list_queue',
   'list_readings',
   'list_recordings',
   'list_remote_image_allowances',
@@ -2070,6 +2137,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'move_draft',
   'move_files',
   'move_folder',
+  'move_in_queue',
   'move_to_mailbox',
   'name_speaker',
   'needs_reply',
@@ -2095,6 +2163,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'note_tags',
   'outbox',
   'plaid_setup',
+  'podcast_genres',
   'poll_auto_lock',
   'prepare_picture',
   'preview_attachment',
@@ -2124,22 +2193,28 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'quick_task_labels',
   'quick_tracker_draft',
   'quick_week_note',
+  'ranking_status',
   'read_export',
   'read_import',
   'rebuild_mail_index',
   'recategorize_mail',
+  'recommended',
   'record_health_push',
+  'record_progress',
   'record_screen_time',
   'refresh_news',
   'reindex_documents',
   'remove_chat_link',
   'remove_connection',
+  'remove_episode_download',
   'remove_from_album',
+  'remove_from_queue',
   'remove_pronunciation',
   'rename_file',
   'rename_folder',
   'render_illustration',
   'render_template',
+  'rerank',
   'rescan_files',
   'respond_to_invite',
   'restore_draft',
@@ -2172,6 +2247,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_draft',
   'save_entry',
   'save_entry_force',
+  'save_feed_settings',
   'save_files_settings',
   'save_food',
   'save_goal',
@@ -2225,8 +2301,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'search',
   'search_document',
   'search_documents',
+  'search_feeds',
   'search_foods',
   'search_mail',
+  'search_podcasts',
   'search_sources',
   'seed_areas',
   'send_draft',
@@ -2284,6 +2362,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'test_transcriber',
   'threads_listed',
   'time_by_purpose',
+  'top_podcasts',
   'touch',
   'tracker_days',
   'trash',
@@ -2332,6 +2411,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_news_source',
   'add_story_to_library',
   'add_to_album',
+  'add_to_queue',
   'allow_remote_images',
   'answer_chat_verification',
   'answer_job',
@@ -2352,6 +2432,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_bank_link',
   'cancel_connection_sign_in',
   'cancel_decision_model_download',
+  'cancel_download',
   'cancel_image_model_download',
   'cancel_job',
   'cancel_oauth_sign_in',
@@ -2435,6 +2516,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'dismiss_follow_up',
   'dismiss_meeting_offer',
   'download_decision_model',
+  'download_episode',
   'download_image_model',
   'download_speech_model',
   'download_voice_model',
@@ -2449,6 +2531,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'finish_recording',
   'finish_upload',
   'flush',
+  'forget_consumption',
   'forget_missing_files',
   'forget_screen_item',
   'import_apple_health',
@@ -2473,6 +2556,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'move_draft',
   'move_files',
   'move_folder',
+  'move_in_queue',
   'move_to_mailbox',
   'name_speaker',
   'new_draft',
@@ -2481,15 +2565,19 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'rebuild_mail_index',
   'recategorize_mail',
   'record_health_push',
+  'record_progress',
   'record_screen_time',
   'refresh_news',
   'reindex_documents',
   'remove_chat_link',
   'remove_connection',
+  'remove_episode_download',
   'remove_from_album',
+  'remove_from_queue',
   'remove_pronunciation',
   'rename_file',
   'rename_folder',
+  'rerank',
   'rescan_files',
   'respond_to_invite',
   'restore_draft',
@@ -2520,6 +2608,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_draft',
   'save_entry',
   'save_entry_force',
+  'save_feed_settings',
   'save_files_settings',
   'save_food',
   'save_goal',
@@ -2640,6 +2729,7 @@ export const CHANGE_KINDS = {
   add_news_source: 'newsSource',
   add_story_to_library: 'item',
   add_to_album: 'album',
+  add_to_queue: 'queue',
   allow_remote_images: 'settings',
   answer_job: 'job',
   apply_condition_template: 'condition',
@@ -2726,6 +2816,7 @@ export const CHANGE_KINDS = {
   discard_recording: 'recording',
   dismiss_follow_up: 'thread',
   download_decision_model: 'settings',
+  download_episode: 'story',
   download_image_model: 'settings',
   download_speech_model: 'settings',
   download_voice_model: 'settings',
@@ -2737,6 +2828,7 @@ export const CHANGE_KINDS = {
   fetch_full_article: 'story',
   finish_recording: 'recording',
   finish_upload: 'file',
+  forget_consumption: 'consumption',
   forget_missing_files: 'file',
   forget_screen_item: 'screenSpan',
   import_apple_health: 'healthSample',
@@ -2760,15 +2852,19 @@ export const CHANGE_KINDS = {
   move_draft: 'draft',
   move_files: 'file',
   move_folder: 'file',
+  move_in_queue: 'queue',
   move_to_mailbox: 'thread',
   name_speaker: 'transcript',
   new_draft: 'draft',
   record_health_push: 'healthSample',
+  record_progress: 'consumption',
   record_screen_time: 'screenSpan',
   refresh_news: 'story',
   remove_chat_link: 'settings',
   remove_connection: 'settings',
+  remove_episode_download: 'story',
   remove_from_album: 'album',
+  remove_from_queue: 'queue',
   remove_pronunciation: 'settings',
   rename_file: 'file',
   rename_folder: 'file',
@@ -2797,6 +2893,7 @@ export const CHANGE_KINDS = {
   save_draft: 'draft',
   save_entry: 'entry',
   save_entry_force: 'entry',
+  save_feed_settings: 'settings',
   save_files_settings: 'settings',
   save_food: 'food',
   save_goal: 'goal',

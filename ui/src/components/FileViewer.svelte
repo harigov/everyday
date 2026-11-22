@@ -15,6 +15,15 @@
   // as the attachment viewer holds it by part: the list is read again now and
   // then, and can gain or lose files before this one.
   //
+  // A recording or a film is not played by the viewer: every one in Files goes
+  // through the window's one player (`player.svelte.ts`), so what is playing
+  // goes on when the viewer is closed or another file is stepped to, and no
+  // two copies of the same sound can start. The viewer shows an audio file's
+  // play and pause, where it is and a slider to move it, since the player's
+  // own bar is under the viewer; for a film it offers **Play**, which closes
+  // the viewer and opens the player's panel, where the picture is. **Up Next**
+  // queues a recording, a film or a document.
+  //
   // The information panel is the inspector, the same one as in the rail.
   //
   // A PDF is looked at here, and any document the reader can open -- a PDF, an
@@ -28,7 +37,10 @@
   import { formatSize, kindIcon, previewOf } from '../lib/files'
   import { files as store } from '../lib/files.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
-  import type { FileEntry } from '../lib/types'
+  import { player } from '../lib/player.svelte'
+  import { formatDuration, playRequestForFile } from '../lib/podcast'
+  import type { ContentRef, FileEntry } from '../lib/types'
+  import { upnext } from '../lib/upnext.svelte'
   import FileInspector from './FileInspector.svelte'
   import Icon from './Icon.svelte'
   import PdfView from './PdfView.svelte'
@@ -79,7 +91,7 @@
     | { state: 'loading' }
     | { state: 'failed'; reason: string; restorable?: boolean }
     | { state: 'image'; url: string; note?: string }
-    | { state: 'media'; url: string; video: boolean }
+    | { state: 'media'; video: boolean }
     | { state: 'pdf'; data: Uint8Array }
     | { state: 'text'; text: string; truncated: boolean }
   let shown = $state.raw<Shown>({ state: 'loading' })
@@ -156,7 +168,7 @@
               break
             case 'video':
             case 'audio':
-              next = { state: 'media', url, video: previewOf(f) === 'video' }
+              next = { state: 'media', video: previewOf(f) === 'video' }
               break
             case 'pdf':
               next = { state: 'pdf', data: new Uint8Array(await bytes(url)) }
@@ -228,6 +240,46 @@
     void store.read(id)
   }
 
+  // ── Playing, and Up Next ───────────────────────────────────────────
+
+  /** What the player would play for this file: absent for anything that is
+   *  not a recording or a film, or that is not there to be played. */
+  const request = $derived(current ? playRequestForFile(current) : null)
+  const what = $derived<ContentRef | null>(current ? { type: 'file', id: current.id } : null)
+  /** This file is what the player has loaded, playing or paused. */
+  const loaded = $derived(what !== null && player.isCurrent(what))
+  const playing = $derived(what !== null && player.isPlaying(what))
+  /** What Up Next takes from Files: recordings, films and documents. */
+  const queueable = $derived(
+    current !== undefined && current.status.state === 'present' && (request !== null || readable),
+  )
+  const queued = $derived(what !== null && upnext.isQueued(what))
+  /** Where a recording is, for the slider and the clock beside it. */
+  const length = $derived(player.durationMs || request?.durationMs || 0)
+
+  function toggleQueued() {
+    if (!what) return
+    if (queued) void upnext.removeFor(what)
+    else void upnext.add(what)
+  }
+
+  /** A recording: play it, or pause it, in the player. */
+  function playOrPause() {
+    if (!request) return
+    if (loaded) player.toggle()
+    else void player.play(request)
+  }
+
+  /** A film: it plays in the player's panel, which the viewer would cover, so
+   *  the viewer comes down first -- as for Read -- and the panel opens. */
+  function watch() {
+    if (!request) return
+    onclose()
+    if (!loaded) void player.play(request)
+    else if (!player.playing) player.resume()
+    player.expanded = true
+  }
+
   function go(by: 1 | -1) {
     const to = position + by
     const next = files[to]
@@ -260,10 +312,10 @@
       onclose()
       return
     }
-    // A film's own controls seek with the arrows, a PDF zoomed wider than the
-    // window scrolls sideways with them, and a field takes every key.
+    // A slider (a recording's position) moves with the arrows, a PDF zoomed
+    // wider than the window scrolls sideways with them, and a field takes
+    // every key.
     if (
-      e.target instanceof HTMLMediaElement ||
       e.target instanceof HTMLInputElement ||
       e.target instanceof HTMLTextAreaElement ||
       e.target instanceof HTMLSelectElement ||
@@ -279,6 +331,17 @@
     else if (e.key === 'ArrowRight') go(1)
     else if (e.key === 'i' || e.key === 'I') info = !info
     else if ((e.key === 'r' || e.key === 'R') && readable) read()
+    // A recording is played and paused with the space bar, as anywhere --
+    // unless a button has the keyboard, which takes the space bar for itself.
+    else if (
+      e.key === ' ' &&
+      shown.state === 'media' &&
+      !shown.video &&
+      !(e.target instanceof HTMLButtonElement)
+    ) {
+      e.preventDefault()
+      playOrPause()
+    }
   }
 
   function scrollsSideways(target: EventTarget | null): boolean {
@@ -354,6 +417,18 @@
       >
         <Icon name="book" size={16} />
         Read
+      </button>
+    {/if}
+    {#if queueable}
+      <button
+        class="tool"
+        class:on={queued}
+        aria-label={queued ? 'Remove from Up Next' : 'Add to Up Next'}
+        aria-pressed={queued}
+        title={queued ? 'In Up Next: remove it' : 'Add to Up Next'}
+        onclick={toggleQueued}
+      >
+        <Icon name="queue-add" size={16} />
       </button>
     {/if}
     {#if current}
@@ -449,28 +524,75 @@
           {#if shown.note}<p class="quiet small">{shown.note}</p>{/if}
         </div>
       {:else if shown.state === 'media'}
-        {#if shown.video}
-          <!-- A stranger's film comes with no captions to offer. -->
-          <!-- svelte-ignore a11y_media_has_caption -->
-          <video
-            class="film"
-            src={shown.url}
-            controls
-            preload="metadata"
-            onerror={() => failed("This video can't be played here.")}
-          ></video>
-        {:else}
-          <div class="recording">
-            <Icon name="mic" size={28} />
-            <span class="file">{name}</span>
-            <audio
-              src={shown.url}
-              controls
-              preload="metadata"
-              onerror={() => failed("This recording can't be played here.")}
-            ></audio>
-          </div>
-        {/if}
+        <div class="recording">
+          {#if shown.video}
+            <!-- The picture a film has been given, if the catalog drew one;
+                 the film itself is the player's. -->
+            {#if current && thumbnailUrl(current)}
+              <img class="picture poster" src={thumbnailUrl(current)} alt="" draggable="false" />
+            {:else}
+              <span class="kind"><Icon name="film" size={30} weight={1.3} /></span>
+            {/if}
+          {:else}
+            <span class="kind"><Icon name="mic" size={28} /></span>
+          {/if}
+          <span class="file">{name}</span>
+          {#if !request}
+            <p class="quiet">This {shown.video ? 'video' : 'recording'} can't be played here.</p>
+          {:else if shown.video}
+            <div class="row">
+              <button class="btn btn-primary" onclick={watch}>
+                <Icon name="play" size={15} filled />
+                {loaded ? 'Show the player' : 'Play'}
+              </button>
+              {#if current && store.local}
+                <button class="btn" onclick={() => void store.openExternally(current.id)}>
+                  Open in another program
+                </button>
+              {/if}
+            </div>
+          {:else}
+            <div class="row">
+              <button
+                class="btn btn-primary"
+                aria-label={playing ? 'Pause' : 'Play'}
+                title="Play or pause (Space)"
+                onclick={playOrPause}
+              >
+                <Icon name={playing ? 'pause' : 'play'} size={15} filled />
+                {playing ? 'Pause' : 'Play'}
+              </button>
+              {#if loaded}
+                <span class="clock">
+                  {formatDuration(player.positionMs)}{length > 0
+                    ? ` / ${formatDuration(length)}`
+                    : ''}
+                </span>
+              {/if}
+              {#if current && store.local}
+                <button class="btn" onclick={() => void store.openExternally(current.id)}>
+                  Open in another program
+                </button>
+              {/if}
+            </div>
+            {#if loaded && length > 0}
+              <input
+                class="seek"
+                type="range"
+                min="0"
+                max={length}
+                step="1000"
+                value={Math.min(player.positionMs, length)}
+                aria-label="Position"
+                aria-valuetext={formatDuration(player.positionMs)}
+                onchange={(e) => player.seek(Number(e.currentTarget.value))}
+              />
+            {/if}
+            {#if loaded && player.error}
+              <p class="quiet small" role="alert">{player.error}</p>
+            {/if}
+          {/if}
+        </div>
       {:else if shown.state === 'pdf'}
         <div class="reader">
           <PdfView data={shown.data} onfail={failed} />
@@ -615,7 +737,8 @@
     justify-content: center;
     gap: 8px;
   }
-  .failed .btn:not(.btn-primary) {
+  .failed .btn:not(.btn-primary),
+  .recording .btn:not(.btn-primary) {
     color: inherit;
     border: 1px solid rgb(255 255 255 / 0.3);
   }
@@ -628,8 +751,7 @@
     max-height: 100%;
     min-height: 0;
   }
-  .picture,
-  .film {
+  .picture {
     max-width: 100%;
     max-height: 100%;
     min-height: 0;
@@ -648,8 +770,27 @@
     gap: 14px;
     max-width: 100%;
   }
-  .recording audio {
+  .recording .row {
+    align-items: center;
+  }
+  .recording .kind {
+    display: flex;
+    color: rgb(255 255 255 / 0.6);
+  }
+  /* A film's own picture is shown smaller than a photograph would be: it is
+     the doorway to the player, not what is looked at. */
+  .poster {
+    max-width: min(560px, 80vw);
+    max-height: 50vh;
+  }
+  .clock {
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    color: rgb(255 255 255 / 0.7);
+  }
+  .seek {
     width: min(480px, 80vw);
+    accent-color: currentColor;
   }
   .reader {
     align-self: stretch;

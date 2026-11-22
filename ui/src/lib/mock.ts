@@ -109,6 +109,11 @@ import type {
   WeatherReport,
   OnScreen,
   Shown,
+  ConsumedQuery,
+  ContentRef,
+  FeedSettings,
+  ProgressReport,
+  QueuePlace,
 } from './types'
 import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
 import type {
@@ -181,22 +186,44 @@ import {
 } from './mock-jobs'
 import {
   mockAddNewsSource,
+  mockAddToQueue,
+  mockCancelDownload,
   mockDeleteNewsSource,
   mockDiscoverFeeds,
+  mockDownloadEpisode,
   mockExportOpml,
+  mockFeedSettings,
   mockFetchFullArticle,
+  mockForgetConsumption,
+  mockGetConsumption,
   mockGetStory,
   mockImportOpml,
+  mockListConsumed,
+  mockListDownloads,
   mockListNewsSources,
+  mockListQueue,
   mockListStories,
   mockMarkAllStoriesRead,
   mockMarkStoriesRead,
+  mockMoveInQueue,
   mockNewsletterSenders,
+  mockPodcastGenres,
+  mockRankingStatus,
+  mockRecommended,
+  mockRecordProgress,
   mockRefreshNews,
+  mockRemoveEpisodeDownload,
+  mockRemoveFromQueue,
+  mockRerank,
+  mockSaveFeedSettings,
   mockSaveNewsSource,
   mockSaveStories,
+  mockSearchFeeds,
+  mockSearchPodcasts,
+  mockSetItemLookup,
   mockStoryBody,
   mockStoryForLibrary,
+  mockTopPodcasts,
 } from './mock-feed'
 import { FINISHED_POINTS, JOURNAL_POINTS, habitPoints, scoreDay, taskPoints } from './karma'
 import { mockBackup } from './mock-backup'
@@ -981,6 +1008,12 @@ const items: Item[] = [
     createdAt: iso(330),
   }),
 ]
+
+// Where Up Next, which `mock-feed.ts` keeps, finds a library item to name.
+mockSetItemLookup((id) => {
+  const item = items.find((i) => i.id === id)
+  return item ? { item, shelf: kinds.find((k) => k.id === item.kindId)?.name ?? '' } : undefined
+})
 
 const logs: LogEntry[] = [
   {
@@ -8777,6 +8810,91 @@ export const mockInvoke = async <T>(
     case 'mock_story_body':
       requireUnlocked()
       return mockStoryBody(str(args.id)) as T
+
+    // ── Podcasts, Up Next, and what was read and heard ──────────────────
+    //
+    // `docs/plans/podcasts.md`. `mock-feed.ts` keeps all of it: the
+    // directory, the downloads (which move along each time they are asked
+    // for, not on a clock), Up Next, Recommended and the record of what was
+    // heard. Same shape as the cases above.
+
+    case 'search_podcasts':
+      requireUnlocked()
+      return mockSearchPodcasts(str(args.query), args.limit as number | null | undefined) as T
+    case 'top_podcasts':
+      requireUnlocked()
+      return mockTopPodcasts(
+        args.genre as number | null | undefined,
+        args.limit as number | null | undefined,
+      ) as T
+    case 'podcast_genres':
+      requireUnlocked()
+      return mockPodcastGenres() as T
+    case 'search_feeds':
+      requireUnlocked()
+      return mockSearchFeeds(str(args.query), args.limit as number | null | undefined) as T
+
+    case 'download_episode':
+      requireUnlocked()
+      mockDownloadEpisode(str(args.id))
+      return undefined as T
+    case 'cancel_download':
+      requireUnlocked()
+      mockCancelDownload(str(args.id))
+      return undefined as T
+    case 'remove_episode_download':
+      requireUnlocked()
+      mockRemoveEpisodeDownload(str(args.id))
+      return undefined as T
+    case 'list_downloads':
+      requireUnlocked()
+      return mockListDownloads() as T
+
+    case 'list_queue':
+      requireUnlocked()
+      return mockListQueue() as T
+    case 'add_to_queue':
+      requireUnlocked()
+      return mockAddToQueue(args.what as ContentRef, args.place as QueuePlace | undefined) as T
+    case 'remove_from_queue':
+      requireUnlocked()
+      mockRemoveFromQueue(strArray(args.ids))
+      return undefined as T
+    case 'move_in_queue':
+      requireUnlocked()
+      mockMoveInQueue(str(args.id), typeof args.before === 'string' ? args.before : null)
+      return undefined as T
+
+    case 'record_progress':
+      requireUnlocked()
+      return mockRecordProgress(args.progress as ProgressReport) as T
+    case 'get_consumption':
+      requireUnlocked()
+      return mockGetConsumption(args.what as ContentRef) as T
+    case 'list_consumed':
+      requireUnlocked()
+      return mockListConsumed((args.query as ConsumedQuery | undefined) ?? {}) as T
+    case 'forget_consumption':
+      requireUnlocked()
+      mockForgetConsumption(str(args.id))
+      return undefined as T
+
+    case 'feed_settings':
+      requireUnlocked()
+      return mockFeedSettings() as T
+    case 'save_feed_settings':
+      requireUnlocked()
+      return mockSaveFeedSettings(args.settings as FeedSettings) as T
+    case 'recommended':
+      requireUnlocked()
+      return mockRecommended(args.limit as number | null | undefined) as T
+    case 'ranking_status':
+      requireUnlocked()
+      return mockRankingStatus() as T
+    case 'rerank':
+      requireUnlocked()
+      mockRerank()
+      return undefined as T
 
     // ── Money -- docs/plans/money.md ────────────────────────────────────
     //

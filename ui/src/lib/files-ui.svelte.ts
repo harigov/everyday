@@ -16,6 +16,7 @@
 import { agent } from './agent.svelte'
 import { api } from './api'
 import { isReadable } from './documents'
+import { feed } from './feed.svelte'
 import { files } from './files.svelte'
 import { health } from './health.svelte'
 import { library } from './library.svelte'
@@ -23,9 +24,13 @@ import { menu } from './menu.svelte'
 import { SEP, tidyMenu, type MenuItem } from './menu'
 import { notes } from './notes.svelte'
 import { notify } from './notify.svelte'
+import { player } from './player.svelte'
+import { playRequestForFile } from './podcast'
 import { app } from './state.svelte'
 import { isoDate, todayIso } from './time'
+import { upnext } from './upnext.svelte'
 import type {
+  ContentRef,
   FileEntry,
   FileId,
   FileKind,
@@ -284,11 +289,40 @@ export function fileMenu(file: FileEntry, hooks: MenuHooks = {}): MenuItem[] {
   const onlyHere = !many && files.local
   /** One archive, in a vault that keeps Health: it may be Apple's export. */
   const maybeExport = !many && app.supportsHealth && /\.zip$/i.test(file.name)
+  /** What the player plays for this file, when it is a recording or a film. */
+  const request = !many ? playRequestForFile(file) : null
+  const refOf = (f: FileEntry): ContentRef => ({ type: 'file', id: f.id })
+  /** What can go in Up Next: anything to hear, watch or read. */
+  const queueable = targets.filter(
+    (f) => f.status.state === 'present' && (playRequestForFile(f) !== null || isReadable(f)),
+  )
+  const allQueued = queueable.length > 0 && queueable.every((f) => upnext.isQueued(refOf(f)))
+  const playing = !many && player.isPlaying(refOf(file))
 
   return tidyMenu([
     !many && { label: 'Open', icon: 'eye', run: () => files.open(file.id) },
     // The same thing `Open` does for a document, said in the words for it.
     !many && isReadable(file) && { label: 'Read', icon: 'book', run: () => files.read(file.id) },
+    request && {
+      label: playing ? 'Pause' : 'Play',
+      icon: playing ? 'pause' : 'play',
+      run: () => {
+        if (player.isCurrent(refOf(file))) player.toggle()
+        else void player.play(request)
+        // A film is watched in the player's panel.
+        if (request.kind === 'video') player.expanded = true
+      },
+    },
+    queueable.length > 0 && {
+      label: allQueued ? 'Remove from Up Next' : 'Add to Up Next',
+      icon: 'queue-add',
+      run: async () => {
+        for (const f of queueable) {
+          if (allQueued) await upnext.removeFor(refOf(f))
+          else await upnext.add(refOf(f))
+        }
+      },
+    },
     onlyHere && {
       label: 'Open in another program',
       icon: 'share',
@@ -450,6 +484,7 @@ export const ORIGIN_LABELS: Record<FileOrigin, string> = {
   mail: 'Mail',
   jobs: 'Background jobs',
   health: 'Health',
+  feed: 'Feed',
 }
 
 /** A film's or recording's length: `2:05`, `1:02:05`. */
@@ -578,6 +613,14 @@ export async function openUse(use: FileUse): Promise<void> {
         await library.open(use.owner.id)
       }
       return
+    case 'story':
+      // `parent` is the story's source: open it there, so the list beside it
+      // is the show's or the feed's.
+      if (await app.goTo('feed')) {
+        if (use.parent) await feed.select({ kind: 'source', id: use.parent })
+        await feed.open(use.owner.id)
+      }
+      return
     case 'meal': {
       // The meal's day: the instant it was eaten, read on this computer's
       // clock. A use that says no time opens on today.
@@ -606,4 +649,5 @@ export const USE_LABELS: Record<FileUse['owner']['kind'], string> = {
   healthDocument: 'Health document',
   meal: 'Meal',
   item: 'Library item',
+  story: 'Feed story',
 }

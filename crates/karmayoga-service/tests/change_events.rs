@@ -316,6 +316,8 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("extract_health_document", "asks the large model to read the document's pages"),
     ("fetch_attachment", "needs a message's raw bytes from a real synced pack"),
     ("fetch_full_article", "fetches the page a story links to over the network"),
+    ("download_episode", "fetches a podcast episode over the network"),
+    ("remove_episode_download", "needs an episode already downloaded, which needs the network"),
     ("fetch_image", "fetches a remote image over HTTP"),
     ("finish_recording", "moves the recording into the transcription pipeline: background work"),
     (
@@ -785,6 +787,26 @@ async fn every_offline_write_announces_what_was_written_down() {
     .await;
     run(&svc, &h, "refresh_news", json!({ "source": source_id })).await;
     run(&svc, &h, "add_story_to_library", json!({ "id": first })).await;
+
+    // Up Next, what was read, and Settings → Feed. A story with no episode,
+    // so nothing is downloaded; stopping a download that is not under way
+    // and ranking again with no model both change nothing anybody draws.
+    let what = json!({ "type": "story", "id": second });
+    let queued = run(&svc, &h, "add_to_queue", json!({ "what": what })).await;
+    let queued_id = queued["id"].clone();
+    run(&svc, &h, "move_in_queue", json!({ "id": queued_id })).await;
+    run(&svc, &h, "remove_from_queue", json!({ "ids": [queued_id] })).await;
+    run(
+        &svc,
+        &h,
+        "record_progress",
+        json!({ "progress": { "what": what, "mode": "read", "progress": 0.4 } }),
+    )
+    .await;
+    let settings = svc.call(Ctx::local(), "feed_settings", json!({})).await.unwrap();
+    run(&svc, &h, "save_feed_settings", json!({ "settings": settings })).await;
+    run(&svc, &h, "cancel_download", json!({ "id": second })).await;
+    run(&svc, &h, "rerank", json!({})).await;
     run(&svc, &h, "import_opml", json!({ "xml": OPML })).await;
     run(&svc, &h, "delete_news_source", json!({ "id": source_id })).await;
 

@@ -203,10 +203,17 @@ pub enum FileOrigin {
     /// somebody stays in the vault), and out of the assistant's file tools,
     /// which have Health's own gates to answer to instead.
     Health,
+    /// Kept by the Feed: a podcast episode downloaded, its transcript, an
+    /// article kept as Markdown once it was read, an article turned into
+    /// audio, the daily podcast. Under `Feed/` (see
+    /// [`crate::news::podcast::FEED_DIR`]). Its documents are always indexed
+    /// while indexing is on, whatever folders are chosen: they are the Feed's
+    /// memory of what was read and heard.
+    Feed,
 }
 
 impl FileOrigin {
-    pub const ALL: [FileOrigin; 9] = [
+    pub const ALL: [FileOrigin; 10] = [
         FileOrigin::Files,
         FileOrigin::Found,
         FileOrigin::Journal,
@@ -216,6 +223,7 @@ impl FileOrigin {
         FileOrigin::Mail,
         FileOrigin::Jobs,
         FileOrigin::Health,
+        FileOrigin::Feed,
     ];
 
     /// The word stored in the catalog's clear `origin` column.
@@ -230,6 +238,7 @@ impl FileOrigin {
             FileOrigin::Mail => "mail",
             FileOrigin::Jobs => "jobs",
             FileOrigin::Health => "health",
+            FileOrigin::Feed => "feed",
         }
     }
 
@@ -254,6 +263,7 @@ impl FileOrigin {
             // Only where one is written out of the vault: Health seals what
             // it keeps.
             FileOrigin::Health => "Health".to_string(),
+            FileOrigin::Feed => crate::news::podcast::FEED_DIR.to_string(),
         }
     }
 }
@@ -609,7 +619,10 @@ impl FilesSettings {
             let folder = folder.trim().trim_matches('/');
             folder.is_empty() || path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
         };
-        (self.index_folders.is_empty() || self.index_folders.iter().any(under))
+        // The Feed's memory is searched whatever folders were chosen.
+        (file.origin == FileOrigin::Feed
+            || self.index_folders.is_empty()
+            || self.index_folders.iter().any(under))
             && !self.skip_folders.iter().any(under)
     }
 }
@@ -876,6 +889,9 @@ pub enum RefKind {
     /// A library item: the book's or the article's own files
     /// ([`crate::library::Item::files`]).
     Item,
+    /// A story in the Feed: its episode, transcript, kept article and audio
+    /// ([`crate::news::Story::files`]).
+    Story,
 }
 
 impl RefKind {
@@ -888,6 +904,7 @@ impl RefKind {
             RefKind::HealthDocument => "health_document",
             RefKind::Meal => "meal",
             RefKind::Item => "item",
+            RefKind::Story => "story",
         }
     }
 
@@ -899,6 +916,7 @@ impl RefKind {
             RefKind::HealthDocument,
             RefKind::Meal,
             RefKind::Item,
+            RefKind::Story,
         ]
         .into_iter()
         .find(|k| k.as_str() == s)

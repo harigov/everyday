@@ -14,6 +14,13 @@
   // dark theme -- see `feed.loadBody`, which is why nothing here themes it a
   // second time: a page that has been themed once reads as having colours of
   // its own, and a second pass would paint it white.
+  //
+  // An episode is the same pane with a different head: the show's artwork, the
+  // length and how far along, and what can be done with it as something to
+  // hear (`EpisodeActions`), over its show notes -- which are the body, drawn
+  // exactly as an article's is. What only makes sense for an article is left
+  // off it: Listen reads the page aloud, and there is no article to fetch
+  // behind a recording.
 
   import { untrack } from 'svelte'
   import { feed } from '../lib/feed.svelte'
@@ -26,10 +33,14 @@
     looksCutOff,
     sourceLabel,
   } from '../lib/feed'
+  import { mediaUrl } from '../lib/api'
   import { dateFormat } from '../lib/format'
   import { applyPlatformOrigin } from '../lib/mailview'
   import { openExternal } from '../lib/open-external'
+  import { episodeProgress, formatDuration } from '../lib/podcast'
+  import { upnext } from '../lib/upnext.svelte'
   import type { Story } from '../lib/types'
+  import EpisodeActions from './EpisodeActions.svelte'
   import Icon from './Icon.svelte'
   import SourceIcon from './SourceIcon.svelte'
   import SourceSettings from './SourceSettings.svelte'
@@ -53,6 +64,28 @@
       hour: 'numeric',
       minute: '2-digit',
     }).format(at)
+  })
+
+  // ── An episode ────────────────────────────────────────────────────────
+
+  const media = $derived(story.media)
+  const length = $derived(media?.durationMs ?? null)
+  /** "Season 2 · Episode 5", for a show that numbers them. */
+  const numbering = $derived.by(() => {
+    const parts: string[] = []
+    if (media?.season) parts.push(`Season ${media.season}`)
+    if (media?.episode) parts.push(`Episode ${media.episode}`)
+    return parts.join(' · ')
+  })
+  const progress = $derived(
+    media ? episodeProgress(upnext.progressOf({ type: 'story', id: story.id }), length) : null,
+  )
+  /** The show's own picture, when the first refresh found one; its initials otherwise. */
+  const artwork = $derived(source?.source.icon ? mediaUrl(source.source.icon) : null)
+  let artBroken = $state(false)
+  $effect(() => {
+    void artwork
+    artBroken = false
   })
 
   // ── The body ──────────────────────────────────────────────────────────
@@ -134,6 +167,7 @@
   const canFetch = $derived(
     story.url !== '' &&
       !story.mailMessage &&
+      !story.media &&
       !story.expired &&
       (!story.hasBody || (body !== null && looksCutOff(body.html))),
   )
@@ -230,7 +264,10 @@
       <Icon name="book" size={15} />
       {shelved.has(story.id) ? 'In the Library' : 'Add to Library'}
     </button>
-    {#if listening.available && !story.expired}
+    {#if !story.media}
+      <EpisodeActions {story} />
+    {/if}
+    {#if listening.available && !story.expired && !story.media}
       <button
         class="btn btn-outline"
         class:on={reading}
@@ -270,46 +307,89 @@
     <div class="scroll">
       <div class="column">
         <header class="subject-block">
-          <h1>{story.title.trim() || host || 'Untitled'}</h1>
-          <p class="meta">
-            {#if source}
-              <span class="from">
-                <SourceIcon source={source.source} size={18} />
-                {sourceName}
+          <div class="head">
+            {#if media}
+              <span class="art">
+                {#if artwork && !artBroken}
+                  <img src={artwork} alt="" decoding="async" onerror={() => (artBroken = true)} />
+                {:else if source}
+                  <SourceIcon source={source.source} size={88} />
+                {/if}
               </span>
             {/if}
-            {#if author}
-              <span class="sep">·</span>
-              <span>{author}</span>
-            {/if}
-            {#if published}
-              <span class="sep">·</span>
-              <span>{published}</span>
-            {/if}
-            {#if host}
-              <span class="sep">·</span>
-              <span class="host" title={story.url}>{host}</span>
-            {/if}
-          </p>
-          {#if also.length > 0}
-            <p class="also">
-              <span>Also on</span>
-              {#each also as place, i (i)}
-                {#if i > 0}<span class="sep">·</span>{/if}
-                {#if place.url}
-                  <button class="link" onclick={() => void openExternal(place.url)}>
-                    {place.name}
-                  </button>
-                {:else}
-                  <b>{place.name}</b>
+            <div class="head-text">
+              <h1>{story.title.trim() || host || 'Untitled'}</h1>
+              <p class="meta">
+                {#if source}
+                  <span class="from">
+                    <SourceIcon source={source.source} size={18} />
+                    {sourceName}
+                  </span>
                 {/if}
-                {#if place.detail}<span>{place.detail}</span>{/if}
-              {/each}
-            </p>
+                {#if author}
+                  <span class="sep">·</span>
+                  <span>{author}</span>
+                {/if}
+                {#if published}
+                  <span class="sep">·</span>
+                  <span>{published}</span>
+                {/if}
+                {#if length}
+                  <span class="sep">·</span>
+                  <span>{formatDuration(length)}</span>
+                {/if}
+                {#if numbering}
+                  <span class="sep">·</span>
+                  <span>{numbering}</span>
+                {/if}
+                {#if host && !media}
+                  <span class="sep">·</span>
+                  <span class="host" title={story.url}>{host}</span>
+                {/if}
+              </p>
+              {#if also.length > 0}
+                <p class="also">
+                  <span>Also on</span>
+                  {#each also as place, i (i)}
+                    {#if i > 0}<span class="sep">·</span>{/if}
+                    {#if place.url}
+                      <button class="link" onclick={() => void openExternal(place.url)}>
+                        {place.name}
+                      </button>
+                    {:else}
+                      <b>{place.name}</b>
+                    {/if}
+                    {#if place.detail}<span>{place.detail}</span>{/if}
+                  {/each}
+                </p>
+              {/if}
+            </div>
+          </div>
+
+          {#if media}
+            <div class="episode">
+              <EpisodeActions {story} />
+              {#if progress}
+                <div class="along">
+                  <div
+                    class="bar"
+                    role="progressbar"
+                    aria-label="How much has been played"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow={Math.round(progress.fraction * 100)}
+                  >
+                    <span style:width="{progress.fraction * 100}%"></span>
+                  </div>
+                  <span class="along-label">{progress.label}</span>
+                </div>
+              {/if}
+            </div>
           {/if}
         </header>
 
         <div class="reading">
+          {#if media && !story.expired}<h2 class="notes-title">Show notes</h2>{/if}
           {#if story.expired}
             <p class="loading">
               This story is past its age, so its text was removed. The original may still be there.
@@ -422,6 +502,70 @@
     line-height: var(--leading-tight);
     overflow-wrap: anywhere;
     user-select: text;
+  }
+  /* An episode's artwork beside its title; an article has no picture, and the
+     text takes the whole width. */
+  .head {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-4);
+  }
+  .head-text {
+    flex: 1;
+    min-width: 0;
+  }
+  .art {
+    flex: none;
+    display: flex;
+    width: 88px;
+    height: 88px;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .art img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .episode {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    margin-top: var(--sp-4);
+  }
+  .along {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    max-width: 360px;
+    font-size: var(--text-xs);
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+  .bar {
+    flex: 1;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .bar > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
+  .along-label {
+    flex: none;
+  }
+  .notes-title {
+    margin: var(--sp-2) 0 var(--sp-3);
+    font-size: var(--text-xs);
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
   }
   .meta,
   .also {

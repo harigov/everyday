@@ -288,6 +288,31 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "what",
+          "required": true,
+          "type": "ContentRef"
+        },
+        {
+          "name": "place",
+          "required": false,
+          "type": "QueuePlace | null"
+        }
+      ],
+      "changes": {
+        "kind": "queue",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "add_to_queue",
+      "orScope": null,
+      "returns": "QueueEntry",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -900,6 +925,23 @@
       "orScope": null,
       "returns": "void",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "StoryId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "cancel_download",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -2886,6 +2928,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "StoryId"
+        }
+      ],
+      "changes": {
+        "kind": "story",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "download_episode",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "string"
         }
       ],
@@ -3145,6 +3207,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "feed_settings",
+      "orScope": null,
+      "returns": "FeedSettings",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "messageId",
@@ -3279,6 +3352,26 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "ConsumptionId"
+        }
+      ],
+      "changes": {
+        "kind": "consumption",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "forget_consumption",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "ids",
           "required": true,
           "type": "string[]"
@@ -3352,6 +3445,23 @@
       "orScope": null,
       "returns": "AccountView",
       "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "what",
+          "required": true,
+          "type": "ContentRef"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_consumption",
+      "orScope": null,
+      "returns": "Consumption | null",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -4495,6 +4605,23 @@
     {
       "args": [
         {
+          "name": "query",
+          "required": true,
+          "type": "ConsumedQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_consumed",
+      "orScope": null,
+      "returns": "Consumption[]",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "limit",
           "required": false,
           "type": "number | null"
@@ -4538,6 +4665,17 @@
       "orScope": null,
       "returns": "Dose[]",
       "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_downloads",
+      "orScope": null,
+      "returns": "DownloadStatus[]",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -4930,6 +5068,17 @@
       "orScope": null,
       "returns": "Proposal[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_queue",
+      "orScope": null,
+      "returns": "QueueView",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -5955,6 +6104,31 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "QueueEntryId"
+        },
+        {
+          "name": "before",
+          "required": false,
+          "type": "QueueEntryId | null"
+        }
+      ],
+      "changes": {
+        "kind": "queue",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "move_in_queue",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "threads",
           "required": true,
           "type": "ThreadId[]"
@@ -6421,6 +6595,17 @@
       "orScope": null,
       "returns": "PlaidSetup",
       "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "podcast_genres",
+      "orScope": null,
+      "returns": "PodcastGenre[]",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -6975,6 +7160,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "ranking_status",
+      "orScope": null,
+      "returns": "RankingStatus",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "handle",
@@ -7050,6 +7246,23 @@
     {
       "args": [
         {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "recommended",
+      "orScope": null,
+      "returns": "Recommendation[]",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "sourceId",
           "required": true,
           "type": "HealthSourceId"
@@ -7074,6 +7287,26 @@
       "orScope": null,
       "returns": "HealthIngestReport",
       "scope": "healthIngest",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "progress",
+          "required": true,
+          "type": "ProgressReport"
+        }
+      ],
+      "changes": {
+        "kind": "consumption",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "record_progress",
+      "orScope": null,
+      "returns": "Consumption",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -7183,6 +7416,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "StoryId"
+        }
+      ],
+      "changes": {
+        "kind": "story",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "remove_episode_download",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "string"
         },
         {
@@ -7200,6 +7453,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "QueueEntryId[]"
+        }
+      ],
+      "changes": {
+        "kind": "queue",
+        "op": "deleted"
+      },
+      "effect": "write",
+      "name": "remove_from_queue",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -7329,6 +7602,17 @@
       "orScope": null,
       "returns": "RenderedTemplate",
       "scope": "templates",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "write",
+      "name": "rerank",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -7994,6 +8278,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "settings",
+          "required": true,
+          "type": "FeedSettings"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_feed_settings",
+      "orScope": null,
+      "returns": "FeedSettings",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -9109,6 +9413,28 @@
           "name": "query",
           "required": true,
           "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "search_feeds",
+      "orScope": null,
+      "returns": "FeedHit[]",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
         }
       ],
       "changes": null,
@@ -9149,6 +9475,28 @@
       "orScope": null,
       "returns": "SearchMailResult",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "search_podcasts",
+      "orScope": null,
+      "returns": "PodcastHit[]",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },
@@ -10433,6 +10781,28 @@
       "orScope": null,
       "returns": "BalanceReport",
       "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "genre",
+          "required": false,
+          "type": "number | null"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "top_podcasts",
+      "orScope": null,
+      "returns": "PodcastHit[]",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },

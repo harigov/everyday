@@ -55,6 +55,8 @@ export type TemplateId = string
 export type ChatLinkId = string
 export type NewsSourceId = string
 export type StoryId = string
+export type QueueEntryId = string
+export type ConsumptionId = string
 export type BankLinkId = string
 export type BankAccountId = string
 export type TxnId = string
@@ -5484,6 +5486,8 @@ export interface NewsSource {
   sortOrder: number
   /** Followed by the assistant: fetched from the internet only. Absent for the person's own. */
   addedByAssistant?: boolean
+  /** A podcast: its own say over downloads and keeping. Absent for anything else. */
+  podcast?: PodcastSettings | null
   createdAt: string
   updatedAt: string
 }
@@ -5528,6 +5532,10 @@ export interface Story {
   also: Also[]
   /** Newsletters: the mail message this story is. */
   mailMessage?: MailMessageId | null
+  /** A podcast episode: the file the feed named. */
+  media?: Enclosure | null
+  /** What it has in the files folder. Absent when nothing. */
+  files?: StoryFiles
   read: boolean
   saved: boolean
   /** A body is stored: the feed carried content, or an article was extracted. */
@@ -5563,6 +5571,14 @@ export interface StoryPage {
 /** What `add_news_source` is asked to follow. */
 export type NewSource =
   | { type: 'web'; url: string; title?: string; folder?: string }
+  | {
+      type: 'podcast'
+      url: string
+      title?: string
+      folder?: string
+      directoryId?: string
+      author?: string
+    }
   | { type: 'hackerNews'; list: HnList; minPoints?: number; folder?: string }
   | { type: 'mail'; sender: string; title?: string; folder?: string }
   | { type: 'newsletters'; folder?: string }
@@ -5595,6 +5611,253 @@ export interface NewsletterSender {
   name: string
   messages: number
   followed: boolean
+}
+
+// ── Podcasts, Up Next, and what was read and heard ───────────────────────
+//
+// `karmayoga_core::news::{podcast, listening, settings}` and the wire types of
+// `domains/{podcasts,downloads,upnext,ranking}.rs`. See
+// `docs/plans/podcasts.md`.
+
+/** The file a story carries: a podcast episode's audio or video. */
+export interface Enclosure {
+  url: string
+  /** As the feed said, lower-cased. Empty when it said nothing. */
+  mime: string
+  length?: number | null
+  durationMs?: number | null
+  /** The publisher's own transcript. Empty when none. */
+  transcriptUrl: string
+  transcriptMime: string
+  episode?: number | null
+  season?: number | null
+}
+
+export type EnclosureKind = 'audio' | 'video'
+
+/** A story's files in the files folder. */
+export interface StoryFiles {
+  /** The episode, downloaded. */
+  media?: FileId | null
+  /** What was said in it, as Markdown with times. */
+  transcript?: FileId | null
+  /** The article kept as Markdown once read or heard. */
+  text?: FileId | null
+  /** The article turned into audio. */
+  audio?: FileId | null
+}
+
+export type DownloadPolicy = { type: 'off' } | { type: 'newest'; count: number } | { type: 'all' }
+
+export type KeepPolicy =
+  { type: 'forever' } | { type: 'afterPlayed'; days: number } | { type: 'newest'; count: number }
+
+export type TranscribePolicy = 'off' | 'whenDownloaded' | 'whenPlayed'
+
+/** One show's overrides. Every field absent or `null` follows the Feed's defaults. */
+export interface PodcastSettings {
+  download?: DownloadPolicy | null
+  keep?: KeepPolicy | null
+  queueNew?: boolean | null
+  transcribe?: TranscribePolicy | null
+  /** Playback speed for this show. */
+  speed?: number | null
+  skipIntroS?: number | null
+  author: string
+  directoryId?: string | null
+}
+
+/** What every show downloads and keeps unless it says otherwise. */
+export interface PodcastDefaults {
+  download: DownloadPolicy
+  keep: KeepPolicy
+  queueNew: boolean
+  transcribe: TranscribePolicy
+}
+
+/** One yes/no question the ranking asks, with a weight from -3 to 3. */
+export interface Criterion {
+  id: string
+  text: string
+  weight: number
+}
+
+export interface Ranking {
+  enabled: boolean
+  criteria: Criterion[]
+  /** Also ask whether a story helps with an active goal. */
+  goals: boolean
+  /** How far back Recommended looks, in days. */
+  windowDays: number
+}
+
+/** Settings → Feed. */
+export interface FeedSettings {
+  podcasts: PodcastDefaults
+  ranking: Ranking
+  /** Keep every article read or heard as Markdown under Feed/Articles. */
+  keepRead: boolean
+  /** Keep Up Next at least this long from Recommended. Absent: never. */
+  autofill?: number | null
+  /** Play the next thing when one ends. */
+  autoplay: boolean
+  skipBackS: number
+  skipForwardS: number
+}
+
+/** Something to read, hear or watch. */
+export type ContentRef =
+  { type: 'story'; id: StoryId } | { type: 'file'; id: FileId } | { type: 'item'; id: ItemId }
+
+export type ConsumeMode = 'read' | 'listen' | 'watch'
+
+export type AddedBy = 'person' | 'show' | 'recommended' | 'daily' | 'assistant'
+
+/** Where a new entry goes in Up Next. */
+export type QueuePlace = { type: 'end' } | { type: 'next' } | { type: 'before'; id: QueueEntryId }
+
+export interface QueueEntry {
+  id: QueueEntryId
+  what: ContentRef
+  title: string
+  source: string
+  mode: ConsumeMode
+  durationMs?: number | null
+  addedBy: AddedBy
+  addedAt: string
+  sortOrder: number
+}
+
+/** A stretch of a recording, in ms from its start. */
+export interface Span {
+  startMs: number
+  endMs: number
+}
+
+/** Something read, heard or watched, and how much of it. */
+export interface Consumption {
+  id: ConsumptionId
+  what: ContentRef
+  title: string
+  source: string
+  url: string
+  mode: ConsumeMode
+  firstAt: string
+  lastAt: string
+  /** 0 to 1. */
+  progress: number
+  finished: boolean
+  finishedAt?: string | null
+  positionMs?: number | null
+  durationMs?: number | null
+  heard?: Span[]
+  textFile?: FileId | null
+  mediaFile?: FileId | null
+}
+
+export interface ConsumedQuery {
+  since?: string | null
+  until?: string | null
+  finishedOnly?: boolean
+  /** 0 or absent: 50. At most 500. */
+  limit?: number
+}
+
+/** What a player, the reader or Listen reports. */
+export interface ProgressReport {
+  what: ContentRef
+  mode: ConsumeMode
+  positionMs?: number | null
+  durationMs?: number | null
+  /** The stretch played since the last report. */
+  heard?: Span | null
+  /** 0 to 1, for what has no clock. */
+  progress?: number | null
+  finished?: boolean | null
+}
+
+/** What the player plays for an Up Next entry. */
+export interface Playable {
+  fileId: FileId
+  kind: EnclosureKind
+  durationMs?: number | null
+  startMs?: number | null
+}
+
+export interface QueueItem {
+  entry: QueueEntry
+  story?: Story | null
+  sourceTitle: string
+  file?: FileEntry | null
+  item?: Item | null
+  consumption?: Consumption | null
+  /** Absent for an article: heard through Listen, or read. */
+  play?: Playable | null
+  downloading: boolean
+}
+
+export interface QueueView {
+  items: QueueItem[]
+}
+
+/** One show the podcast directory knows. */
+export interface PodcastHit {
+  directoryId: string
+  title: string
+  author: string
+  feedUrl: string
+  /** An address the webview may load. Empty when none. */
+  artwork: string
+  genre: string
+  episodes?: number | null
+  explicit: boolean
+  followed: boolean
+}
+
+export interface PodcastGenre {
+  id: number
+  name: string
+}
+
+/** One feed a search found. */
+export interface FeedHit {
+  feedUrl: string
+  title: string
+  siteUrl: string
+  description: string
+  subscribers?: number | null
+  icon: string
+  followed: boolean
+}
+
+export type DownloadState = 'waiting' | 'downloading' | 'failed'
+
+export interface DownloadStatus {
+  storyId: StoryId
+  title: string
+  state: DownloadState
+  received: number
+  total?: number | null
+  error?: string | null
+}
+
+/** One story Recommended offers. */
+export interface Recommendation {
+  story: Story
+  sourceTitle: string
+  /** -1 to 1; absent until ranked against the current criteria. */
+  score?: number | null
+  /** The criteria it answered yes to. */
+  reasons: string[]
+  queued: boolean
+  progress?: number | null
+}
+
+export interface RankingStatus {
+  judge?: 'decision' | 'small' | null
+  ranked: number
+  waiting: number
+  problem?: string | null
 }
 
 // ── Money ────────────────────────────────────────────────────────────────
@@ -6167,6 +6430,8 @@ export type FileOrigin =
   | 'jobs'
   /** A clinical document's page or a meal's photograph, sealed by Health. */
   | 'health'
+  /** Kept by the Feed: episodes, transcripts, articles kept, the daily podcast. */
+  | 'feed'
 
 export type FileStatus =
   | { state: 'present' }
@@ -6365,7 +6630,7 @@ export interface FileUpdate {
   takenAt?: string | null
 }
 
-export type RefKind = 'entry' | 'note' | 'message' | 'healthDocument' | 'meal' | 'item'
+export type RefKind = 'entry' | 'note' | 'message' | 'healthDocument' | 'meal' | 'item' | 'story'
 
 export interface RefOwner {
   kind: RefKind

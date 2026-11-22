@@ -683,6 +683,13 @@ mod tests {
             // again by the background pass; nothing drawn changes, and
             // Settings asks `documents_status` how the pass is going.
             "reindex_documents",
+            // Stops an episode's download, which is a note in this process's
+            // memory until it lands; `list_downloads` is polled while any is
+            // under way, and a finished one announces its story.
+            "cancel_download",
+            // Forgets every rank; the background pass ranks again and
+            // announces what it ranked then.
+            "rerank",
             // Signs in to an account's outgoing server and sends nothing. A
             // write for its reach, not for a record anybody draws.
             "check_sending",

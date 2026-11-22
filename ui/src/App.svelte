@@ -18,6 +18,8 @@
   import { library } from './lib/library.svelte'
   import './lib/mail.svelte'
   import { feed } from './lib/feed.svelte'
+  import './lib/player.svelte'
+  import './lib/upnext.svelte'
   import { money } from './lib/money.svelte'
   import { screentime } from './lib/screentime.svelte'
   import { files } from './lib/files.svelte'
@@ -67,6 +69,7 @@
   import ChatPanel from './components/ChatPanel.svelte'
   import Icon from './components/Icon.svelte'
   import MeetingOfferBanner from './components/MeetingOfferBanner.svelte'
+  import PlayerHost from './components/PlayerHost.svelte'
   import SettingsView from './components/SettingsView.svelte'
   import ShortcutsHelp from './components/ShortcutsHelp.svelte'
   import TopBar from './components/TopBar.svelte'
@@ -480,6 +483,12 @@
         {/if}
       </div>
     </div>
+
+    <!-- The window's one media element, and the player's panel: outside the
+         pane switch, so changing app never takes it down and what is playing
+         goes on. Only here, once the vault is open -- what it plays is files
+         from it -- and gone with the lock, which stops it. -->
+    <PlayerHost />
 
     <!-- Over everything, and outside the pane switch: the shortcut sheet is
          the window's, not any one app's. Settings used to be drawn here

@@ -35,13 +35,27 @@
 //!   source, key, date -- with its sealed content cleared and its body
 //!   deleted, and is never listed or counted again. A saved story never
 //!   expires. A tombstone older than [`TOMBSTONE_DAYS`] is deleted outright.
+//! - **A story's files are written only by [`NewsStore::set_story_files`].**
+//!   [`NewsStore::update_story`] keeps whatever [`Story::files`] the stored
+//!   copy has, whatever the record passed in says -- a refresh holding a copy
+//!   read before a download finished must not unlink the episode. A clear
+//!   index of which stories have files follows them (`news_story_files` in
+//!   the SQL stores), and a story with files never expires
+//!   (nor does one in `keep`, which the caller fills with what is in Up Next).
+//! - **Up Next holds one entry per thing.** Putting an entry for something
+//!   already queued under another id replaces that one. Deleting a source
+//!   takes its stories' queue entries and ranks with it, but never a
+//!   [`Consumption`]: what was read is remembered after the source is gone.
+//! - **One consumption per thing,** keyed by [`ContentRef::key`] in the
+//!   clear, as a queue entry and a rank are.
 //!
 //! [`TOMBSTONE_DAYS`]: crate::news::TOMBSTONE_DAYS
 
-use crate::error::Result;
-use crate::id::{BlobId, MailMessageId, NewsSourceId, StoryId};
+use crate::error::{Error, Result};
+use crate::id::{BlobId, ConsumptionId, MailMessageId, NewsSourceId, QueueEntryId, StoryId};
 use crate::news::{
-    ExpireReport, ExpiryRule, FetchState, NewsSource, SourceCount, Story, StoryBody,
+    ConsumedQuery, Consumption, ContentRef, ExpireReport, ExpiryRule, FeedSettings, FetchState,
+    NewsSource, QueueEntry, Rank, SourceCount, Story, StoryBody, StoryFiles,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -211,9 +225,150 @@ pub trait NewsStore: Send + Sync {
     /// Saved stories are never expired.
     fn expire(&self, rules: &[ExpiryRule], now: Timestamp) -> Result<ExpireReport>;
 
+    /// [`NewsStore::expire`], except that nothing in `keep` is expired --
+    /// what is in Up Next -- and neither is a story with files.
+    fn expire_except(
+        &self,
+        rules: &[ExpiryRule],
+        keep: &[StoryId],
+        now: Timestamp,
+    ) -> Result<ExpireReport> {
+        let _ = keep;
+        self.expire(rules, now)
+    }
+
     /// Every blob a source or a body holds -- source icons and cached
     /// pictures -- for [`JournalStore::collect_garbage`](super::JournalStore::collect_garbage).
     fn blob_refs(&self) -> Result<Vec<BlobId>>;
+
+    // ---- a story's files ------------------------------------------------
+
+    /// Replace a story's [`Story::files`], leaving the rest of it as stored,
+    /// and keep the clear index of stories with files in step. In one
+    /// transaction: read, change, seal.
+    fn set_story_files(&self, id: StoryId, files: &StoryFiles) -> Result<()> {
+        let _ = (id, files);
+        Err(unsupported())
+    }
+
+    /// Change a story's [`Story::files`] with `change`, inside the
+    /// transaction that reads and reseals it, so two writers linking
+    /// different files to one story cannot undo each other. Answers the story
+    /// as it now is.
+    fn change_story_files(
+        &self,
+        id: StoryId,
+        change: &mut dyn FnMut(&mut StoryFiles),
+    ) -> Result<Story> {
+        let _ = (id, change);
+        Err(unsupported())
+    }
+
+    /// Every live story with files, for the references table.
+    fn stories_with_files(&self) -> Result<Vec<Story>> {
+        Err(unsupported())
+    }
+
+    /// Every live story whose files include a downloaded episode
+    /// ([`StoryFiles::media`]), for clean-up -- which never needs to read the
+    /// many that keep only a transcript or an article.
+    fn stories_with_media(&self) -> Result<Vec<Story>> {
+        Err(unsupported())
+    }
+
+    // ---- the Feed's settings ----------------------------------------------
+
+    /// `None` until they are first saved.
+    fn feed_settings(&self) -> Result<Option<FeedSettings>> {
+        Err(unsupported())
+    }
+
+    fn put_feed_settings(&self, settings: &FeedSettings) -> Result<()> {
+        let _ = settings;
+        Err(unsupported())
+    }
+
+    // ---- Up Next ----------------------------------------------------------
+
+    /// Every entry, by `sort_order` then `added_at`.
+    fn queue(&self) -> Result<Vec<QueueEntry>> {
+        Err(unsupported())
+    }
+
+    /// Insert or replace by id; an entry for the same thing under another id
+    /// is replaced.
+    fn put_queue_entry(&self, entry: &QueueEntry) -> Result<()> {
+        let _ = entry;
+        Err(unsupported())
+    }
+
+    /// Unknown ids are ignored.
+    fn delete_queue_entries(&self, ids: &[QueueEntryId]) -> Result<()> {
+        let _ = ids;
+        Err(unsupported())
+    }
+
+    /// Take these things out of Up Next, whatever their entries' ids.
+    fn delete_queue_for(&self, what: &[ContentRef]) -> Result<()> {
+        let _ = what;
+        Err(unsupported())
+    }
+
+    // ---- what was read, heard and watched ----------------------------------
+
+    fn consumption(&self, what: &ContentRef) -> Result<Option<Consumption>> {
+        let _ = what;
+        Err(unsupported())
+    }
+
+    /// Many at once, in no particular order; what has none is skipped.
+    fn consumptions_for(&self, what: &[ContentRef]) -> Result<Vec<Consumption>> {
+        let _ = what;
+        Err(unsupported())
+    }
+
+    /// Newest `last_at` first.
+    fn consumptions(&self, query: &ConsumedQuery) -> Result<Vec<Consumption>> {
+        let _ = query;
+        Err(unsupported())
+    }
+
+    /// Insert or replace by id; one for the same thing under another id is
+    /// replaced.
+    fn put_consumption(&self, consumption: &Consumption) -> Result<()> {
+        let _ = consumption;
+        Err(unsupported())
+    }
+
+    fn delete_consumption(&self, id: ConsumptionId) -> Result<()> {
+        let _ = id;
+        Err(unsupported())
+    }
+
+    // ---- ranks --------------------------------------------------------------
+
+    /// The ranks held for these things, in no particular order.
+    fn ranks(&self, what: &[ContentRef]) -> Result<Vec<Rank>> {
+        let _ = what;
+        Err(unsupported())
+    }
+
+    /// Insert or replace, by thing.
+    fn put_ranks(&self, ranks: &[Rank]) -> Result<()> {
+        let _ = ranks;
+        Err(unsupported())
+    }
+
+    /// Delete ranks worked out before `before` (every one when `None`).
+    /// Returns how many went.
+    fn clear_ranks(&self, before: Option<Timestamp>) -> Result<u32> {
+        let _ = before;
+        Err(unsupported())
+    }
+}
+
+fn unsupported() -> Error {
+    Error::Unsupported("this backend keeps no podcasts, Up Next or reading history")
 }
 
 /// Associated data bound into a record's ciphertext. See
@@ -235,6 +390,24 @@ pub fn story_body_aad(id: StoryId) -> Vec<u8> {
 /// Fetch state is keyed by its source's id, under a label of its own.
 pub fn fetch_state_aad(id: NewsSourceId) -> Vec<u8> {
     format!("everyday.news_fetch.v1:{id}").into_bytes()
+}
+
+/// The Feed's settings: one row, one label.
+pub fn feed_settings_aad() -> Vec<u8> {
+    b"karmayoga.feed_settings.v1".to_vec()
+}
+
+pub fn queue_entry_aad(id: QueueEntryId) -> Vec<u8> {
+    format!("karmayoga.queue_entry.v1:{id}").into_bytes()
+}
+
+pub fn consumption_aad(id: ConsumptionId) -> Vec<u8> {
+    format!("karmayoga.consumption.v1:{id}").into_bytes()
+}
+
+/// A rank is keyed by the thing it ranks ([`ContentRef::key`]).
+pub fn rank_aad(what: &ContentRef) -> Vec<u8> {
+    format!("karmayoga.rank.v1:{}", what.key()).into_bytes()
 }
 
 #[cfg(test)]
