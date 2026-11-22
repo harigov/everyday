@@ -1,15 +1,33 @@
 <script lang="ts">
+  // The detail panel of one library item: what it is, where you are in it,
+  // your notes and history, and what it was looked up as.
+  //
+  // An item can hold files -- a book's EPUB, an article's PDF -- and then it
+  // is read from here: **Read** opens the first of them in the reader, **Ask**
+  // opens it with the assistant's rail beside it, and progress the reader
+  // keeps (the page you are at) is shown under them. The first file is the
+  // reading copy; any other can be made it. Files are never copied in: they
+  // are chosen from the files folder (see `docs/plans/reading.md`).
+
   import { tick } from 'svelte'
   import { api } from '../lib/api'
+  import { formatName, isReadable } from '../lib/documents'
+  import { lookupFiles } from '../lib/file-lookup'
+  import { formatSize } from '../lib/files'
+  import { files } from '../lib/files.svelte'
   import { friendlyDate, plural, pluralWord } from '../lib/format'
   import { ask, quick, slot } from '../lib/quick.svelte'
   import { focusOnMount } from '../lib/focus'
   import { coverRatio, library } from '../lib/library.svelte'
   import { ratingLabel } from '../lib/rating'
+  import { reader } from '../lib/reader.svelte'
+  import { app } from '../lib/state.svelte'
   import { looksThingsUp, sourceLabel } from '../lib/websearch'
   import { ITEM_STATUSES, VIAS } from '../lib/types'
   import type {
     FieldDef,
+    FileEntry,
+    FileId,
     Item,
     ItemId,
     KindInfo,
@@ -29,6 +47,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Cover from './Cover.svelte'
   import CoverSearch from './CoverSearch.svelte'
+  import FilePicker from './FilePicker.svelte'
   import Icon from './Icon.svelte'
   import Rating from './Rating.svelte'
   import Suggestions from './Suggestions.svelte'
@@ -42,6 +61,8 @@
   } = $props()
 
   const color = $derived(kind?.color ?? 'var(--accent)')
+  /** What the shelf calls one of these, for a sentence. */
+  const noun = $derived(kind?.singular.toLowerCase() ?? 'item')
   const unit = $derived(item.progress?.unit || kind?.progressUnit || '')
   /** A person, whose log is catch-ups and who may be due one. */
   const person = $derived(isContactShelf(kind))
@@ -88,6 +109,103 @@
     if (!url) return
     coverUrlDraft = null
     await library.chooseCover(item.id, url)
+  }
+
+  // ── its files, and reading it ────────────────────────────────────────
+  //
+  // `item.files` is ids; what a row says -- a name, a size, whether it is
+  // still there -- is the catalog's, asked for again whenever the list
+  // changes. A file that is no longer in the catalog is said to be gone
+  // rather than left out, so it can still be taken off.
+
+  /** The catalog's record of each file the item holds, by id. */
+  let held = $state.raw<Record<FileId, FileEntry>>({})
+  /** The record above is for the files the item holds now. */
+  let heldReady = $state(false)
+  let picking = $state(false)
+
+  $effect(() => {
+    const ids = [...item.files]
+    heldReady = false
+    if (ids.length === 0) {
+      held = {}
+      return
+    }
+    let stale = false
+    lookupFiles(ids, { fresh: true })
+      .then((found) => {
+        if (stale) return
+        held = Object.fromEntries(found.map((f) => [f.id, f]))
+        heldReady = true
+      })
+      .catch(() => {
+        // The catalog could not be asked: the rows say what they can.
+        if (!stale) heldReady = true
+      })
+    return () => {
+      stale = true
+    }
+  })
+
+  const readableFile = (id: FileId): boolean => {
+    const file = held[id]
+    return file !== undefined && isReadable(file)
+  }
+  /** The file Read opens: the reading copy, or -- if that is not something
+   *  the reader can open -- the first that is. Until the catalog has said,
+   *  the reading copy, which is what it will be nearly always. */
+  const readingFile = $derived(heldReady ? item.files.find(readableFile) : item.files[0])
+
+  /** Where the reader left off, in the shelf's own unit: "Page 47 of 312". */
+  const readerProgress = $derived.by(() => {
+    const p = item.progress
+    if (!p || p.position <= 0 || item.files.length === 0) return ''
+    const word = p.unit ? p.unit.charAt(0).toUpperCase() + p.unit.slice(1) : ''
+    return `${word ? word + ' ' : ''}${p.position}${p.total ? ` of ${p.total}` : ''}`
+  })
+
+  function read(id: FileId | undefined = readingFile) {
+    if (id) void reader.openFile(id, { item: item.id })
+  }
+
+  /** Open it with the assistant's rail beside it, ready for a question. */
+  function askAbout() {
+    const id = readingFile
+    if (id) void reader.openFile(id, { item: item.id }).then(() => reader.ask())
+  }
+
+  function factsOf(file: FileEntry): string {
+    return [
+      formatName(file),
+      formatSize(file.size),
+      file.status.state === 'trashed' ? 'In the trash' : '',
+      file.status.state === 'missing' ? 'Missing from the folder' : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
+
+  function attach(picked: FileEntry[]) {
+    picking = false
+    if (picked.length > 0) {
+      void library.attachFiles(
+        item.id,
+        picked.map((f) => f.id),
+      )
+    }
+  }
+
+  /** Move a file to the front: it is the one Read opens and the assistant
+   *  reads. Saved as any other edit to the item is. */
+  function makeReadingCopy(id: FileId) {
+    edit(() => (item.files = [id, ...item.files.filter((f) => f !== id)]))
+  }
+
+  /** Show it in Files, where a missing or trashed file can be put back. */
+  async function showInFiles(id: FileId) {
+    if (!(await app.goTo('files'))) return
+    await files.start()
+    files.focus(id)
   }
 
   // ── re-looking something up ──────────────────────────────────────────
@@ -500,6 +618,28 @@
             </span>
           </div>
         {/each}
+
+        {#if readingFile}
+          <!-- Reading it, when it has a file the reader can open: Read, or
+               ask about it, and where the reader left off. -->
+          <div class="reading">
+            <button
+              class="btn btn-sm btn-primary"
+              title="Read it, with its contents beside it"
+              onclick={() => read()}
+            >
+              <Icon name="book" size={14} /> Read
+            </button>
+            <button
+              class="btn btn-sm btn-outline"
+              title="Read it with the assistant beside it, ready for a question"
+              onclick={askAbout}
+            >
+              <Icon name="sparkle" size={14} /> Ask
+            </button>
+          </div>
+          {#if readerProgress}<span class="read-at">{readerProgress}</span>{/if}
+        {/if}
       </div>
     </div>
 
@@ -603,6 +743,79 @@
           </div>
         {/if}
       </section>
+    {/if}
+
+    {#if files.supported}
+      {#if item.files.length > 0}
+        <section>
+          <div class="head-row">
+            <h3>Files</h3>
+            <button class="mini" onclick={() => (picking = true)}>
+              <Icon name="paperclip" size={12} /> Attach a file…
+            </button>
+          </div>
+          <ul class="held">
+            {#each item.files as id, i (id)}
+              {@const file = held[id]}
+              <li class="held-row" class:gone={heldReady && !file}>
+                <span class="held-icon"><Icon name="file" size={15} /></span>
+                <span class="held-text">
+                  {#if file && readableFile(id)}
+                    <button class="held-name" title="Read it" onclick={() => read(id)}>
+                      {file.name}
+                    </button>
+                  {:else}
+                    <span class="held-name">
+                      {file ? file.name : heldReady ? 'No longer in your files' : '…'}
+                    </span>
+                  {/if}
+                  <span class="held-facts">
+                    {#if i === 0}<span class="copy">Reading copy</span>{/if}
+                    {file ? factsOf(file) : ''}
+                  </span>
+                </span>
+                <span class="held-acts">
+                  {#if i > 0}
+                    <button
+                      class="held-act"
+                      title="Make it the reading copy"
+                      aria-label="Make {file?.name ?? 'this file'} the reading copy"
+                      onclick={() => makeReadingCopy(id)}
+                    >
+                      <Icon name="book" size={12} />
+                    </button>
+                  {/if}
+                  <button
+                    class="held-act"
+                    title="Show it in Files"
+                    aria-label="Show {file?.name ?? 'this file'} in Files"
+                    onclick={() => void showInFiles(id)}
+                  >
+                    <Icon name="folder" size={12} />
+                  </button>
+                  <button
+                    class="held-act"
+                    title="Take it off this {noun}. The file stays in Files."
+                    aria-label="Take {file?.name ?? 'this file'} off"
+                    onclick={() => void library.detachFile(item.id, id)}
+                  >
+                    <Icon name="close" size={12} />
+                  </button>
+                </span>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {:else}
+        <!-- Nothing attached, so only a way to: most shelves never hold a file,
+             and an empty heading on every film would be asking a question that
+             does not apply. -->
+        <div class="add-lists">
+          <button class="mini" onclick={() => (picking = true)}>
+            <Icon name="paperclip" size={12} /> Attach a file…
+          </button>
+        </div>
+      {/if}
     {/if}
 
     <section>
@@ -905,6 +1118,18 @@
   </div>
 </aside>
 
+{#if picking}
+  <FilePicker
+    title="Attach a file"
+    note="Choose documents from your files. The first is the reading copy: the one Read opens."
+    multiple
+    confirm="Attach"
+    taken={item.files}
+    onchoose={attach}
+    onclose={() => (picking = false)}
+  />
+{/if}
+
 {#if confirming}
   <ConfirmDialog
     title={'Delete “' + item.title + '”?'}
@@ -1167,6 +1392,19 @@
     color: var(--fg-faint);
   }
 
+  /* Read and Ask, under the rating, with where the reader left off. */
+  .reading {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+    margin-top: var(--sp-2);
+  }
+  .read-at {
+    font-size: var(--text-xs);
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+
   .statuses {
     display: flex;
     flex-wrap: wrap;
@@ -1333,6 +1571,86 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--sp-1);
+  }
+
+  /* The files an item holds: one line each, its actions shown when the row is
+     pointed at or focused -- as the history's are. */
+  .held {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .held-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--radius-sm);
+    background: var(--bg-hover);
+  }
+  .held-icon {
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--fg-faint);
+  }
+  .held-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .held-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    font-size: var(--text-sm);
+    font-weight: 550;
+    color: var(--fg);
+  }
+  button.held-name:hover {
+    color: var(--tint);
+    text-decoration: underline;
+  }
+  .held-row.gone .held-name {
+    font-style: italic;
+    font-weight: 400;
+    color: var(--fg-faint);
+  }
+  .held-facts {
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
+  .copy {
+    margin-right: var(--sp-1);
+    font-weight: 600;
+    color: var(--tint);
+  }
+  .held-acts {
+    flex: none;
+    display: flex;
+    opacity: 0;
+    transition: opacity var(--fast) var(--ease);
+  }
+  .held-row:hover .held-acts,
+  .held-row:focus-within .held-acts {
+    opacity: 1;
+  }
+  .held-act {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-subtle);
+  }
+  .held-act:hover {
+    background: var(--bg-active);
+    color: var(--fg);
   }
   .notes:focus,
   .list:focus,

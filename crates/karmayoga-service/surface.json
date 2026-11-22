@@ -1416,6 +1416,31 @@
     {
       "args": [
         {
+          "name": "file",
+          "required": true,
+          "type": "FileId"
+        },
+        {
+          "name": "kindId",
+          "required": false,
+          "type": "KindId"
+        }
+      ],
+      "changes": {
+        "kind": "item",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "create_item_from_file",
+      "orScope": null,
+      "returns": "Item",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "name",
           "required": true,
           "type": "string"
@@ -2761,6 +2786,56 @@
       "orScope": null,
       "returns": "void",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "FileId"
+        },
+        {
+          "name": "chapter",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "document_chapter",
+      "orScope": null,
+      "returns": "DocChapterView",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "FileId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "document_outline",
+      "orScope": null,
+      "returns": "DocOutline",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "documents_status",
+      "orScope": null,
+      "returns": "DocIndexStatus",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -7053,6 +7128,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "write",
+      "name": "reindex_documents",
+      "orScope": null,
+      "returns": "DocIndexStatus",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "id",
@@ -8559,6 +8645,33 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "FileId"
+        },
+        {
+          "name": "page",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "block",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "save_reader_position",
+      "orScope": null,
+      "returns": "void",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "reading",
           "required": true,
           "type": "Reading"
@@ -8933,6 +9046,60 @@
       "orScope": "notes",
       "returns": "SearchHit[]",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "FileId"
+        },
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "search_document",
+      "orScope": null,
+      "returns": "DocHit[]",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "search_documents",
+      "orScope": null,
+      "returns": "DocSearchPage",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },

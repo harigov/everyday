@@ -13,6 +13,7 @@ members = [
     "crates/karmayoga-cli",
     "crates/karmayoga-mail",
     "crates/karmayoga-mailindex",
+    "crates/karmayoga-docindex",
     "crates/karmayoga-chat",
     "crates/karmayoga-focus",
     "crates/karmayoga-connect",
@@ -37,6 +38,7 @@ default-members = [
     "crates/karmayoga-cli",
     "crates/karmayoga-mail",
     "crates/karmayoga-mailindex",
+    "crates/karmayoga-docindex",
     "crates/karmayoga-chat",
     "crates/karmayoga-focus",
     "crates/karmayoga-connect",
@@ -61,6 +63,7 @@ karmayoga-service = { path = "crates/karmayoga-service" }
 karmayoga-server = { path = "crates/karmayoga-server" }
 karmayoga-mail = { path = "crates/karmayoga-mail" }
 karmayoga-mailindex = { path = "crates/karmayoga-mailindex" }
+karmayoga-docindex = { path = "crates/karmayoga-docindex" }
 karmayoga-chat = { path = "crates/karmayoga-chat" }
 karmayoga-focus = { path = "crates/karmayoga-focus" }
 karmayoga-connect = { path = "crates/karmayoga-connect" }

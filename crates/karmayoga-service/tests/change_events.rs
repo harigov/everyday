@@ -339,6 +339,10 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("begin_connection_sign_in", "OAuth: discovers a real server and opens a loopback"),
     ("await_connection_sign_in", "OAuth: waits for a browser to come back"),
     ("save_mail_part_to_files", "needs a message whose attachment is in a real synced pack"),
+    (
+        "save_reader_position",
+        "keeps a reader's place in the file's properties and announces nothing of its own",
+    ),
     ("send_message", "streams: true, unreachable through Service::call at all"),
     ("settle_writing_assist", "needs an assist, which needs a model; announces nothing either"),
     ("sort_older_mail", "refuses without a decision model, which would be asked over the network"),
@@ -1413,6 +1417,12 @@ async fn every_offline_write_announces_what_was_written_down() {
             .await;
         run(&svc, &h, "rename_folder", json!({ "path": "Trips/2026", "name": "Summer" })).await;
         run(&svc, &h, "move_folder", json!({ "path": "Trips/Summer", "into": "" })).await;
+
+        // Read: the text file made into a library item, and the documents'
+        // index emptied to be read again. Neither waits for the index task,
+        // which this test never starts.
+        run(&svc, &h, "create_item_from_file", json!({ "file": notes_id })).await;
+        run(&svc, &h, "reindex_documents", json!({})).await;
         run(
             &svc,
             &h,

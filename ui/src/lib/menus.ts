@@ -19,6 +19,7 @@ import { calendar, DEFAULT_BLOCK_MINUTES, type Slot } from './calendar.svelte'
 import { panels } from './panels.svelte'
 import { matchPreset, presetsFor } from './recurrence'
 import { library } from './library.svelte'
+import { reader } from './reader.svelte'
 import { tracking } from './tracking.svelte'
 import { purpose, samePurpose } from './purpose.svelte'
 import { todo } from './todo.svelte'
@@ -726,6 +727,13 @@ export function itemMenu(item: Item, hooks: ItemMenuHooks): MenuItem[] {
       label: showing ? 'Close' : 'Open',
       icon: 'book',
       run: () => (showing ? library.close() : library.open(item.id)),
+    },
+    // The first of its files is the one the reader opens, and the item it was
+    // opened from is told what they got to.
+    item.files.length > 0 && {
+      label: 'Read',
+      icon: 'file',
+      run: () => reader.openFile(item.files[0]!, { item: item.id }),
     },
     {
       label: item.favourite ? 'Remove from favourites' : 'Add to favourites',

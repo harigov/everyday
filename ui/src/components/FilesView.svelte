@@ -18,9 +18,16 @@
   // `File`s and goes up in chunks like any upload; what a drop of files
   // already in the catalog does is the grid's and the sidebar's, onto a
   // folder.
+  //
+  // A PDF or an EPUB opens in the reader rather than the viewer, and a
+  // search in the toolbar also looks inside the documents that are indexed:
+  // what it finds is listed above the files, each place opening the reader
+  // at that paragraph. See `docs/plans/reading.md`.
 
+  import { untrack } from 'svelte'
+  import { docFormatOf, isReadable } from '../lib/documents'
   import { formatSize } from '../lib/files'
-  import { files } from '../lib/files.svelte'
+  import { files, placeKey, type DocumentFound } from '../lib/files.svelte'
   import { dragIsFromOutside, droppedFiles, folderName } from '../lib/files-ui.svelte'
   import { plural } from '../lib/format'
   import { panels } from '../lib/panels.svelte'
@@ -61,6 +68,30 @@
     own && files.viewing !== null ? list.findIndex((f) => f.id === files.viewing) : -1,
   )
 
+  // A PDF or an EPUB is read, not previewed: opening one -- a double-click,
+  // Enter, "Open" anywhere in Files -- goes to the reader, whose contents,
+  // search and assistant are the point of a document. The viewer keeps what
+  // it is good for: pictures, films, recordings, and Markdown, text and web
+  // pages (which it offers to read). Only the opening is redirected: stepping
+  // with the arrow keys from a note onto a PDF stays in the viewer, where
+  // somebody is already flicking through the folder.
+  let viewerWasOpen = false
+  $effect.pre(() => {
+    const id = files.viewing
+    const opening = id !== null && !viewerWasOpen
+    viewerWasOpen = id !== null
+    if (!opening) return
+    untrack(() => {
+      const file = list.find((f) => f.id === id)
+      // A file in the trash or missing is not readable: the viewer says so.
+      const format = file && isReadable(file) ? docFormatOf(file) : null
+      if (file && (format === 'pdf' || format === 'epub')) {
+        files.closeViewer()
+        void files.read(file.id)
+      }
+    })
+  })
+
   // ── Nothing to show ────────────────────────────────────────────────
 
   const listed = $derived(view === 'browse' ? files.listing !== null : files.page !== null)
@@ -70,6 +101,41 @@
       (view !== 'browse' || (files.listing?.folders.length ?? 0) === 0),
   )
   const searching = $derived(files.search.trim() !== '')
+
+  // ── Found inside documents ─────────────────────────────────────────
+  //
+  // The store searches the index as well as the catalog, whatever the search
+  // is for; a query that matched only the words of a document has no file
+  // named like it, and this is how it is found.
+
+  const inside = $derived(searching && own ? files.documentHits : [])
+  /** No file matched the search: the passages are the whole answer. */
+  const nothingElse = $derived(empty && inside.length > 0)
+  /** A few at first: the files are what was asked for, and a long run of
+   *  passages would push them off the screen. */
+  const FEW = 5
+  let allInside = $state(false)
+  const shownInside = $derived(allInside || nothingElse ? inside : inside.slice(0, FEW))
+  /** Held and not drawn. */
+  const hiddenInside = $derived(inside.length - shownInside.length)
+  /** More to show: what is held and not drawn, or -- once all of it is -- what
+   *  the index has beyond what was asked for. */
+  const moreInside = $derived(hiddenInside > 0 || files.hasMoreDocumentHits)
+
+  function showMoreInside(): void {
+    if (hiddenInside > 0) allInside = true
+    else void files.moreDocumentHits()
+  }
+
+  // A new search starts with the short list again.
+  $effect(() => {
+    void files.search
+    untrack(() => (allInside = false))
+  })
+
+  function openHit(found: DocumentFound): void {
+    void files.read(found.file.id, { block: found.hit.block })
+  }
 
   const EMPTY: Record<string, { lead: string; note: string }> = {
     browse: {
@@ -139,6 +205,38 @@
     })
   }
 </script>
+
+<!-- What the search found inside documents: where each passage is, and the
+     passage itself as plain text -- a document's words are never drawn as
+     markup here. A click opens the reader at that paragraph. -->
+{#snippet found()}
+  <section class="inside scroll" class:alone={nothingElse} aria-label="Found inside documents">
+    <h2 class="eyebrow">Found inside documents</h2>
+    <ul>
+      {#each shownInside as hit (placeKey(hit))}
+        <li>
+          <button class="list-row hit" onclick={() => openHit(hit)}>
+            <span class="hit-where">
+              <span class="hit-file">{hit.file.name}</span>
+              <span class="hit-place">
+                Page {hit.hit.page}{hit.hit.section ? ` · ${hit.hit.section}` : ''}
+              </span>
+            </span>
+            <span class="hit-snippet">{hit.hit.snippet}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+    {#if moreInside}
+      <button class="btn btn-sm more" disabled={files.documentSearching} onclick={showMoreInside}>
+        {hiddenInside > 0 ? `Show ${hiddenInside} more` : 'Show more'}
+      </button>
+    {/if}
+    {#if files.documentIndexing}
+      <p class="indexing">Still reading your documents, so more may turn up.</p>
+    {/if}
+  </section>
+{/snippet}
 
 <main class="files" style:--tint={files.accent}>
   {#if !files.supported}
@@ -237,9 +335,14 @@
         <p class="loading" role="status">Loading…</p>
       {:else if empty}
         {@const words = EMPTY[view] ?? EMPTY.browse!}
-        {#if searching}
+        {#if nothingElse}
+          {@render found()}
+        {:else if searching}
           <EmptyState lead="No files match.">
-            {#snippet note()}Nothing was found for “{files.search.trim()}”.{/snippet}
+            {#snippet note()}
+              Nothing was found for “{files.search.trim()}”.
+              {#if files.documentSearching}Looking inside documents too…{/if}
+            {/snippet}
             {#snippet action()}
               <button class="btn" onclick={() => files.setSearch('')}>Clear the search</button>
             {/snippet}
@@ -261,10 +364,13 @@
             {/snippet}
           </EmptyState>
         {/if}
-      {:else if files.layout === 'list'}
-        <FilesList />
       {:else}
-        <FilesGrid />
+        {#if inside.length > 0}{@render found()}{/if}
+        {#if files.layout === 'list'}
+          <FilesList />
+        {:else}
+          <FilesGrid />
+        {/if}
       {/if}
 
       {#if dropping}
@@ -364,6 +470,74 @@
   .loading {
     margin: var(--sp-6);
     font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
+
+  /* What the search found inside documents: a short list above the files
+     themselves, or the whole answer when no file matched. */
+  .inside {
+    flex: none;
+    max-height: 42%;
+    padding: var(--sp-2) 0 var(--sp-3);
+    border-bottom: 1px solid var(--border);
+  }
+  .inside.alone {
+    flex: 1;
+    max-height: none;
+    border-bottom: 0;
+  }
+  .inside .eyebrow {
+    margin: 0;
+    padding: var(--sp-2) var(--sp-4) var(--sp-1);
+  }
+  .inside ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .hit {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  .hit-where {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .hit-file {
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .hit-place {
+    flex: none;
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .hit-snippet {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: var(--text-sm);
+    line-height: var(--leading-snug);
+    color: var(--fg-muted);
+  }
+  .more {
+    margin: var(--sp-1) var(--sp-4) 0;
+  }
+  .indexing {
+    margin: var(--sp-2) var(--sp-4) 0;
+    font-size: var(--text-xs);
     color: var(--fg-subtle);
   }
 

@@ -60,10 +60,21 @@
 //! every time you opened the app. See [`crate::websearch`] for the fetch,
 //! and note that the webview's content security policy does not permit the
 //! alternative even if this changed its mind.
+//!
+//! # When there is a file
+//!
+//! "Nothing here stores a book" has one exception, and it is a reference: an
+//! item can name the files that *are* the thing -- a book's EPUB, an article's
+//! PDF -- in [`Item::files`], and the files app keeps them. The first is the
+//! one the reader opens and the assistant reads. [`item_from_document`] makes
+//! an item from one, filled in from what the file says about itself, and
+//! [`shelf_for_document`] picks the shelf it goes on.
 
-use crate::id::{BlobId, EntryId, EventId, ItemId, KindId, LogId, TaskId, ThreadId};
+use crate::documents::{DocFormat, DocMeta};
+use crate::id::{BlobId, EntryId, EventId, FileId, ItemId, KindId, LogId, TaskId, ThreadId};
 use crate::purpose::Purpose;
 use crate::timestamped::Timestamped;
+use crate::websearch::{doi_of, join_authors, plain_text, trim_summary, year_from_text};
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -466,15 +477,7 @@ pub fn default_kinds() -> Vec<Kind> {
                 FieldDef::new("developer", "Developer", FieldType::Text),
                 FieldDef::new("platform", "Platform", FieldType::Text),
             ]),
-        Kind::new("article", "Articles", "Article")
-            .with_icon("\u{1f4f0}")
-            .with_verbs(Verbs::new("To read", "Reading", "Read", "read"))
-            .with_source("web")
-            .with_fields(vec![
-                FieldDef::new("publication", "Publication", FieldType::Text),
-                FieldDef::new("author", "Author", FieldType::Text),
-                FieldDef::new("url", "Address", FieldType::Url),
-            ]),
+        articles_kind(),
         Kind::new("podcast", "Podcasts", "Episode")
             .with_icon("\u{1f3a7}")
             .with_verbs(Verbs::new("To hear", "Listening", "Heard", "listened to"))
@@ -537,6 +540,42 @@ fn place_type_field() -> FieldDef {
             "Viewpoint",
             "Zoo",
         ])
+}
+
+/// Articles: a story somebody sent you, a post worth keeping, a paper.
+///
+/// Looked up on the plain web, which is what most of them are -- except a DOI,
+/// which names a journal article exactly and is looked up on Crossref wherever
+/// it is typed; see [`crate::websearch::SearchRequest::for_kind`]. So the
+/// shelf is a web page's three facts first, and what a paper is cited by
+/// after them: its DOI, volume, issue and pages. The journal is the
+/// publication.
+fn articles_kind() -> Kind {
+    Kind::new(ARTICLE_SLUG, "Articles", "Article")
+        .with_icon("\u{1f4f0}")
+        .with_verbs(Verbs::new("To read", "Reading", "Read", "read"))
+        .with_source("web")
+        .with_fields(
+            [
+                FieldDef::new("publication", "Publication", FieldType::Text),
+                FieldDef::new("author", "Author", FieldType::Text),
+                FieldDef::new("url", "Address", FieldType::Url),
+            ]
+            .into_iter()
+            .chain(citation_fields())
+            .collect(),
+        )
+}
+
+/// What a journal article is cited by, beyond where and by whom: the fields
+/// the Articles shelf gained at revision 4.
+fn citation_fields() -> [FieldDef; 4] {
+    [
+        FieldDef::new("doi", "DOI", FieldType::Text).with_placeholder("10.1038/nature14539"),
+        FieldDef::new("volume", "Volume", FieldType::Text),
+        FieldDef::new("issue", "Issue", FieldType::Text),
+        FieldDef::new("pages", "Pages", FieldType::Text).with_placeholder("436-444"),
+    ]
 }
 
 /// Recipes: what a dish is, and how to make it.
@@ -658,6 +697,19 @@ fn drink_type_field() -> FieldDef {
 /// shelf has to be called underneath for it to be read.
 pub const CONTACT_SLUG: &str = "contact";
 
+/// The slug of the shelf of articles: what the Feed files a story on, and where
+/// a PDF that carries a DOI is put.
+pub const ARTICLE_SLUG: &str = "article";
+
+/// The slug of the shelf of books: where a document of no other kind is put.
+pub const BOOK_SLUG: &str = "book";
+
+/// [`Item::source`] for an item made from a file in the files folder, whose
+/// title, authors and blurb are what the file says about itself. Not a
+/// [`Source`](crate::websearch::Source): nothing was looked up, and it is not
+/// the person's own writing either -- a file may have come from anywhere.
+pub const FILE_SOURCE: &str = "file";
+
 fn circle_field() -> FieldDef {
     use crate::keepintouch as k;
     FieldDef::new(k::FACT_CIRCLE, "Circle", FieldType::Text)
@@ -722,7 +774,9 @@ fn contacts_kind() -> Kind {
 ///    Drinks shelf was added.
 /// 3. Contacts gained what keeping in touch asks of a card: a circle, how often
 ///    if not the circle's, other names, what they celebrate, and dates of theirs.
-pub const LIBRARY_REVISION: u32 = 3;
+/// 4. Articles gained what a journal article is cited by: its DOI, volume,
+///    issue and pages.
+pub const LIBRARY_REVISION: u32 = 4;
 
 /// Bring an existing library's shelves up to [`LIBRARY_REVISION`]. Returns
 /// the shelves to write — every one, stamped — or nothing when the library
@@ -805,6 +859,20 @@ pub fn upgrade_kinds(mut kinds: Vec<Kind>) -> Vec<Kind> {
                 }
             }
             for field in [aliases_field(), celebrates_field(), key_dates_field()] {
+                if !kind.fields.iter().any(|f| f.key == field.key) {
+                    kind.fields.push(field);
+                }
+            }
+        }
+    }
+
+    if revision < 4 {
+        // The four a paper is cited by, after whatever the shelf already has.
+        // A field somebody already added under the same key is theirs and
+        // stays. A shelf that is not Articles, or not seeded, is not touched:
+        // there is nothing to add to one somebody deleted.
+        for kind in kinds.iter_mut().filter(|k| k.builtin && k.slug == ARTICLE_SLUG) {
+            for field in citation_fields() {
                 if !kind.fields.iter().any(|f| f.key == field.key) {
                     kind.fields.push(field);
                 }
@@ -1027,6 +1095,13 @@ pub struct Item {
     pub facts: BTreeMap<String, String>,
     #[serde(default)]
     pub links: Vec<Link>,
+    /// The thing itself, when it is a file: the book's EPUB, the article's
+    /// PDF, kept in the files folder like any other file and referred to by
+    /// id. The first is the one the reader opens and the assistant reads
+    /// when somebody asks about the item; the rest are other copies or
+    /// what came with it. Always written, like `external`.
+    #[serde(default)]
+    pub files: Vec<FileId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
     /// Starred. The same affordance a journal entry has, meaning the same
@@ -1076,6 +1151,7 @@ impl Item {
             purpose: None,
             facts: BTreeMap::new(),
             links: Vec::new(),
+            files: Vec::new(),
             progress: None,
             favourite: false,
             started_on: None,
@@ -1183,6 +1259,137 @@ impl Timestamped for Item {
     fn touch(&mut self) {
         self.updated_at = Timestamp::now();
     }
+}
+
+// ── Items from files ─────────────────────────────────────────────────────
+
+/// The longest title taken from a file's own metadata, in characters. A PDF's
+/// information dictionary is whatever a tool wrote there, and one of them wrote
+/// an abstract.
+const MAX_FILE_TITLE_CHARS: usize = 300;
+
+/// Which shelf a document goes on when nobody said.
+///
+/// A PDF that carries a DOI is a journal article, so it goes to Articles; an
+/// EPUB is a book, and so is anything else, which is the shelf a person
+/// reading for its own sake most often means. Shelves are found by what they
+/// are underneath -- the slug, or the name a person gave it by hand before
+/// there was a built-in one, as [`upgrade_kinds`] finds a Drinks shelf -- and
+/// a library that has none of them puts the document on its first visible
+/// shelf, rather than refusing: it is somebody's own arrangement, and a shelf
+/// that says "no" is more trouble than one that is not quite right.
+///
+/// `kinds` is in sidebar order, as [`Vault::kinds`](crate::Vault::kinds)
+/// gives it.
+pub fn shelf_for_document<'a>(
+    kinds: &'a [Kind],
+    format: DocFormat,
+    meta: &DocMeta,
+) -> Option<&'a Kind> {
+    let article = format == DocFormat::Pdf && doi_in(meta).is_some();
+    let wanted: &[(&str, &str)] = if article {
+        &[(ARTICLE_SLUG, "articles"), (BOOK_SLUG, "books")]
+    } else {
+        &[(BOOK_SLUG, "books")]
+    };
+    wanted
+        .iter()
+        .find_map(|(slug, plural)| {
+            kinds.iter().find(|k| {
+                k.slug == *slug || k.slug == *plural || k.name.eq_ignore_ascii_case(plural)
+            })
+        })
+        .or_else(|| kinds.iter().find(|k| k.visible))
+        .or_else(|| kinds.first())
+}
+
+/// An identifier of `scheme` in what a file says about itself: `isbn` in
+/// `isbn:9780141439518`, without the scheme.
+fn identifier<'a>(meta: &'a DocMeta, scheme: &str) -> Option<&'a str> {
+    meta.identifiers.iter().find_map(|id| {
+        let (head, value) = id.split_once(':')?;
+        (head.trim().eq_ignore_ascii_case(scheme) && !value.trim().is_empty())
+            .then_some(value.trim())
+    })
+}
+
+/// The DOI a file names, if it names one. Read as a DOI is read anywhere else
+/// ([`doi_of`]), so an identifier that is not one is not.
+pub fn doi_in(meta: &DocMeta) -> Option<String> {
+    identifier(meta, "doi").and_then(doi_of)
+}
+
+/// A title a program left behind rather than somebody wrote: what a word
+/// processor puts in a PDF it was never told the title of.
+fn is_placeholder_title(title: &str) -> bool {
+    let lower = title.trim().to_lowercase();
+    lower.is_empty()
+        || matches!(lower.as_str(), "untitled" | "untitled document" | "title" | "document")
+        || lower.starts_with("microsoft word")
+        || lower.starts_with("microsoft powerpoint")
+        || [".doc", ".docx", ".pdf", ".tex", ".dvi", ".indd", ".ppt", ".pptx", ".odt"]
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+}
+
+/// A document's file name without its extension, for what has no title of its
+/// own. A name that does not end in one of the formats read is left whole:
+/// "Dr. Strangelove" has no extension to take off.
+fn file_stem(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() && DocFormat::of_name(name).is_some() => stem,
+        _ => name,
+    }
+}
+
+/// A new item for a document in the files folder, filled in from what the
+/// document says about itself -- an EPUB's package metadata, a PDF's
+/// information and the DOI printed on its first page. Not saved, and without
+/// a cover: finding one is the caller's, which has the file's bytes.
+///
+/// The title is the file's own, unless it is empty or a program's leftover
+/// ([`is_placeholder_title`]), in which case it is the file's name without its
+/// extension. Authors are joined as a lookup joins them. Only the facts `kind`
+/// has a field for are kept -- an ISBN on Books, a DOI on Articles -- for the
+/// reason [`websearch::apply`](crate::websearch::apply) gives. The item is on
+/// the wishlist with nothing read, and names `file` first in
+/// [`Item::files`], which is the copy the reader opens.
+///
+/// Its [`source`](Item::source) is [`FILE_SOURCE`]: everything here is
+/// somebody else's writing, and the assistant is told so when it reads the item.
+pub fn item_from_document(kind: &Kind, file: FileId, file_name: &str, meta: &DocMeta) -> Item {
+    let own = plain_text(&meta.title);
+    let title: String = if is_placeholder_title(&own) {
+        match file_stem(file_name).trim() {
+            "" => "Untitled document".to_string(),
+            stem => stem.chars().take(MAX_FILE_TITLE_CHARS).collect(),
+        }
+    } else {
+        own.chars().take(MAX_FILE_TITLE_CHARS).collect()
+    };
+
+    let mut item = Item::new(kind.id, title);
+    let authors: Vec<String> =
+        meta.authors.iter().map(|a| plain_text(a)).filter(|a| !a.is_empty()).collect();
+    item.creator = join_authors(&authors);
+    item.year = year_from_text(&meta.published);
+    item.summary = trim_summary(&plain_text(&meta.description));
+    item.files = vec![file];
+    item.source = FILE_SOURCE.to_string();
+
+    let isbn = identifier(meta, "isbn").map(|v| v.replace(['-', ' '], ""));
+    for (key, value) in [
+        ("author", Some(item.creator.clone())),
+        ("publisher", Some(plain_text(&meta.publisher))),
+        ("isbn", isbn),
+        ("doi", doi_in(meta)),
+    ] {
+        let Some(value) = value.filter(|v| !v.trim().is_empty()) else { continue };
+        if kind.fields.iter().any(|f| f.key == key) {
+            item.facts.insert(key.to_string(), value);
+        }
+    }
+    item
 }
 
 // ── The log ──────────────────────────────────────────────────────────────
@@ -1493,13 +1700,20 @@ mod tests {
         assert!(upgrade_kinds(kinds).is_empty());
     }
 
-    /// The shelves as a build at revision 1 left them: no Drinks, and a
-    /// recipe that was a name, a source, a size and a time.
+    /// What the Articles shelf gained at revision 4.
+    const CITATION_KEYS: [&str; 4] = ["doi", "volume", "issue", "pages"];
+
+    /// The shelves as a build at revision 1 left them: no Drinks, a recipe
+    /// that was a name, a source, a size and a time, and Articles that
+    /// were only a web page's three facts.
     fn revision_one() -> Vec<Kind> {
         let mut kinds: Vec<Kind> =
             default_kinds().into_iter().filter(|k| k.slug != "drink").collect();
         for kind in &mut kinds {
             kind.revision = 1;
+            if kind.slug == ARTICLE_SLUG {
+                kind.fields.retain(|f| !CITATION_KEYS.contains(&f.key.as_str()));
+            }
             if kind.slug == "recipe" {
                 kind.fields = vec![
                     FieldDef::new("source", "From", FieldType::Text),
@@ -1558,6 +1772,86 @@ mod tests {
         assert!(upgraded.iter().all(|k| k.revision == LIBRARY_REVISION));
     }
 
+    #[test]
+    fn a_new_library_has_articles_that_keep_what_a_paper_is_cited_by() {
+        let kinds = default_kinds();
+        let articles = by_slug(&kinds, ARTICLE_SLUG);
+        // One shelf of articles, as the Feed finds it: the web's three facts
+        // first, and the web as its source.
+        assert_eq!(kinds.iter().filter(|k| k.slug == ARTICLE_SLUG).count(), 1);
+        assert_eq!(articles.name, "Articles");
+        assert_eq!(articles.source, "web");
+        assert_eq!(
+            keys(articles),
+            ["publication", "author", "url", "doi", "volume", "issue", "pages"]
+        );
+        assert!(articles.fields.iter().all(|f| f.field_type != FieldType::Number));
+        assert_eq!(articles.field_label("doi"), "DOI");
+        assert_eq!(articles.field_label("publication"), "Publication");
+    }
+
+    #[test]
+    fn articles_gain_their_citation_fields_in_revision_four_and_nothing_else_changes() {
+        let mut kinds = default_kinds();
+        for kind in &mut kinds {
+            kind.revision = 3;
+            if kind.slug == ARTICLE_SLUG {
+                kind.fields.retain(|f| !CITATION_KEYS.contains(&f.key.as_str()));
+                // The shelf as somebody had changed it: a label of their own,
+                // and a volume field they added before there was one.
+                kind.fields[0].label = "Where".into();
+                kind.fields.push(FieldDef::new("volume", "Vol.", FieldType::Number));
+            }
+        }
+        let before = kinds.clone();
+        let upgraded = upgrade_kinds(kinds);
+        assert_eq!(upgraded.len(), before.len(), "no shelf was added or lost");
+
+        let articles = by_slug(&upgraded, ARTICLE_SLUG);
+        assert_eq!(
+            keys(articles),
+            ["publication", "author", "url", "volume", "doi", "issue", "pages"],
+            "theirs where they put it, the rest after"
+        );
+        assert_eq!(articles.field_label("publication"), "Where");
+        assert_eq!(articles.field_label("volume"), "Vol.");
+        assert_eq!(articles.fields[3].field_type, FieldType::Number, "their field stays theirs");
+        assert_eq!(articles.fields[4].placeholder, "10.1038/nature14539");
+
+        for (was, now) in before.iter().zip(&upgraded) {
+            assert_eq!(now.revision, LIBRARY_REVISION, "{} was not stamped", was.slug);
+            if was.slug != ARTICLE_SLUG {
+                assert_eq!(was.fields, now.fields, "{} changed", was.slug);
+            }
+        }
+        assert!(upgrade_kinds(upgraded).is_empty(), "a second run should do nothing");
+    }
+
+    #[test]
+    fn an_articles_shelf_somebody_made_or_deleted_is_not_argued_with() {
+        // Made in the sidebar: not seeded, so not the application's to extend.
+        let mut kinds = default_kinds();
+        for kind in &mut kinds {
+            kind.revision = 3;
+            if kind.slug == ARTICLE_SLUG {
+                kind.builtin = false;
+                kind.fields.retain(|f| !CITATION_KEYS.contains(&f.key.as_str()));
+            }
+        }
+        let upgraded = upgrade_kinds(kinds);
+        assert_eq!(keys(by_slug(&upgraded, ARTICLE_SLUG)), ["publication", "author", "url"]);
+
+        // Deleted: said, and not put back.
+        let mut kinds: Vec<Kind> =
+            default_kinds().into_iter().filter(|k| k.slug != ARTICLE_SLUG).collect();
+        for kind in &mut kinds {
+            kind.revision = 3;
+        }
+        let upgraded = upgrade_kinds(kinds);
+        assert!(upgraded.iter().all(|k| k.slug != ARTICLE_SLUG));
+        assert!(upgraded.iter().all(|k| k.revision == LIBRARY_REVISION));
+    }
+
     fn by_slug<'a>(kinds: &'a [Kind], slug: &str) -> &'a Kind {
         kinds.iter().find(|k| k.slug == slug).unwrap()
     }
@@ -1573,9 +1867,10 @@ mod tests {
         let contacts = by_slug(&upgraded, "contact");
         assert!(contacts.builtin);
         assert!(!contacts.looks_things_up());
-        // Both later steps run on a library that missed both.
+        // Every later step runs on a library that missed them all.
         assert!(by_slug(&upgraded, "drink").builtin);
         assert!(keys(by_slug(&upgraded, "recipe")).contains(&"ingredients"));
+        assert!(keys(by_slug(&upgraded, ARTICLE_SLUG)).contains(&"doi"));
         // Added at the foot of the sidebar, not on top of Books, and in the
         // order the steps added them.
         let added = ["contact", "drink"];
@@ -1613,10 +1908,16 @@ mod tests {
         let recipe = by_slug(&upgraded, "recipe");
         assert_eq!(recipe.fields[6].field_type, FieldType::List);
 
+        // Articles gain what a paper is cited by, after what they had.
+        assert_eq!(
+            keys(by_slug(&upgraded, ARTICLE_SLUG)),
+            ["publication", "author", "url", "doi", "volume", "issue", "pages"]
+        );
+
         // Nothing else was touched: the other shelves are as they were, but
         // stamped.
         for (before, after) in revision_one().iter().zip(&upgraded) {
-            if before.slug != "recipe" {
+            if !matches!(before.slug.as_str(), "recipe" | "article") {
                 assert_eq!(before.fields, after.fields, "{} changed", before.slug);
                 assert_eq!(before.name, after.name);
             }
@@ -1904,5 +2205,175 @@ mod tests {
         for _ in 0..16 {
             assert_eq!(serde_json::to_vec(&item).unwrap(), once);
         }
+    }
+
+    // ---- Items from files ------------------------------------------------
+
+    fn meta(title: &str, authors: &[&str], identifiers: &[&str]) -> DocMeta {
+        DocMeta {
+            title: title.into(),
+            authors: authors.iter().map(|a| a.to_string()).collect(),
+            identifiers: identifiers.iter().map(|i| i.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn shelf_slug(kinds: &[Kind], format: DocFormat, meta: &DocMeta) -> Option<String> {
+        shelf_for_document(kinds, format, meta).map(|k| k.slug.clone())
+    }
+
+    #[test]
+    fn an_epub_goes_on_books_and_a_pdf_with_a_doi_on_articles() {
+        let kinds = default_kinds();
+        let plain = meta("", &[], &[]);
+        let with_doi = meta("", &[], &["doi:10.1038/nature14539"]);
+        assert_eq!(shelf_slug(&kinds, DocFormat::Epub, &plain).as_deref(), Some("book"));
+        // A book with a DOI is still a book.
+        assert_eq!(shelf_slug(&kinds, DocFormat::Epub, &with_doi).as_deref(), Some("book"));
+        assert_eq!(shelf_slug(&kinds, DocFormat::Pdf, &with_doi).as_deref(), Some("article"));
+        assert_eq!(shelf_slug(&kinds, DocFormat::Pdf, &plain).as_deref(), Some("book"));
+        assert_eq!(shelf_slug(&kinds, DocFormat::Markdown, &plain).as_deref(), Some("book"));
+        // An ISBN is not a DOI, and neither is a DOI-shaped scrap of text.
+        let isbn = meta("", &[], &["isbn:9780141439518", "doi:not a doi"]);
+        assert_eq!(shelf_slug(&kinds, DocFormat::Pdf, &isbn).as_deref(), Some("book"));
+    }
+
+    #[test]
+    fn a_shelf_is_found_by_what_it_is_called_underneath_or_by_hand() {
+        let mut kinds =
+            vec![Kind::new("films", "Films", "Film"), Kind::new("misc", "Papers", "Paper")];
+        kinds.push(Kind::new("custom", "Books", "Book"));
+        // Made by hand before there was a built-in one: its name says it.
+        assert_eq!(
+            shelf_slug(&kinds, DocFormat::Epub, &meta("", &[], &[])).as_deref(),
+            Some("custom")
+        );
+        // No Books at all: the first shelf that is showing, not a refusal;
+        // and a hidden one is passed over.
+        let mut kinds =
+            vec![Kind::new("films", "Films", "Film"), Kind::new("music", "Music", "Album")];
+        kinds[0].visible = false;
+        assert_eq!(
+            shelf_slug(&kinds, DocFormat::Epub, &meta("", &[], &[])).as_deref(),
+            Some("music")
+        );
+        kinds[1].visible = false;
+        assert_eq!(
+            shelf_slug(&kinds, DocFormat::Epub, &meta("", &[], &[])).as_deref(),
+            Some("films")
+        );
+        assert!(shelf_for_document(&[], DocFormat::Epub, &meta("", &[], &[])).is_none());
+        // A PDF with a DOI and no Articles shelf takes Books.
+        let kinds: Vec<Kind> =
+            default_kinds().into_iter().filter(|k| k.slug != "article").collect();
+        let paper = meta("", &[], &["doi:10.1038/nature14539"]);
+        assert_eq!(shelf_slug(&kinds, DocFormat::Pdf, &paper).as_deref(), Some("book"));
+    }
+
+    #[test]
+    fn a_book_is_made_from_what_its_file_says_about_itself() {
+        let kinds = default_kinds();
+        let books = by_slug(&kinds, "book");
+        let file = FileId::new();
+        let mut about = meta(
+            "Pride and Prejudice",
+            &["Jane Austen", "  "],
+            &["isbn:978-0-14-143951-8", "uuid:1234"],
+        );
+        about.published = "1813-01-28T00:00:00Z".into();
+        about.publisher = "Penguin &amp; Co".into();
+        about.description = "<p>A <em>novel</em> of manners.</p>\n<p>Hertfordshire.</p>".into();
+        about.subjects = vec!["Fiction".into()];
+
+        let item = item_from_document(books, file, "pride-and-prejudice.epub", &about);
+        assert_eq!(item.kind_id, books.id);
+        assert_eq!(item.title, "Pride and Prejudice");
+        assert_eq!(item.creator, "Jane Austen");
+        assert_eq!(item.year, Some(1813));
+        assert_eq!(item.summary, "A novel of manners. Hertfordshire.");
+        assert_eq!(item.status, ItemStatus::Wishlist);
+        assert_eq!(item.progress, None);
+        assert_eq!(item.files, vec![file], "the file is the reading copy");
+        assert_eq!(item.source, FILE_SOURCE);
+        let fact = |key: &str| item.facts.get(key).map(String::as_str);
+        assert_eq!(fact("author"), Some("Jane Austen"));
+        assert_eq!(fact("isbn"), Some("9780141439518"), "hyphens are not part of it");
+        assert_eq!(fact("publisher"), Some("Penguin & Co"));
+        assert_eq!(fact("doi"), None, "Books has no DOI field to put one in");
+    }
+
+    #[test]
+    fn a_paper_is_made_with_its_doi_and_only_on_a_shelf_that_has_a_place_for_it() {
+        let kinds = default_kinds();
+        let articles = by_slug(&kinds, ARTICLE_SLUG);
+        let about = meta(
+            "Deep learning",
+            &["Yann LeCun", "Yoshua Bengio", "Geoffrey Hinton"],
+            &["doi:https://doi.org/10.1038/nature14539"],
+        );
+        let item = item_from_document(articles, FileId::new(), "nature14539.pdf", &about);
+        assert_eq!(item.creator, "Yann LeCun, Yoshua Bengio, Geoffrey Hinton");
+        assert_eq!(item.facts.get("doi").map(String::as_str), Some("10.1038/nature14539"));
+        assert_eq!(doi_in(&about).as_deref(), Some("10.1038/nature14539"));
+
+        // On Books, the same file keeps the author and drops the DOI.
+        let item = item_from_document(by_slug(&kinds, "book"), FileId::new(), "x.pdf", &about);
+        assert!(item.facts.contains_key("author") && !item.facts.contains_key("doi"));
+    }
+
+    #[test]
+    fn a_file_with_no_title_of_its_own_is_called_by_its_name() {
+        let kinds = default_kinds();
+        let books = by_slug(&kinds, "book");
+        for (title, name, want) in [
+            ("", "Moby Dick.epub", "Moby Dick"),
+            ("   ", "notes.v2.md", "notes.v2"),
+            ("Microsoft Word - Document1.docx", "thesis.pdf", "thesis"),
+            ("untitled", "scan0042.pdf", "scan0042"),
+            ("report.doc", "q3.pdf", "q3"),
+            // No extension, or something that is not one.
+            ("", "README", "README"),
+            ("", "a file with a dot. and then words", "a file with a dot. and then words"),
+            // A real title is kept whatever the file is called.
+            ("Moby-Dick; or, The Whale", "scan0042.pdf", "Moby-Dick; or, The Whale"),
+        ] {
+            let item = item_from_document(books, FileId::new(), name, &meta(title, &[], &[]));
+            assert_eq!(item.title, want, "{title:?} in {name:?}");
+        }
+        // A hidden file is all extension, and an item still has to have a title.
+        let item = item_from_document(books, FileId::new(), ".md", &meta("", &[], &[]));
+        assert_eq!(item.title, ".md");
+        let item = item_from_document(books, FileId::new(), "", &meta("", &[], &[]));
+        assert_eq!(item.title, "Untitled document");
+    }
+
+    #[test]
+    fn what_a_file_says_about_itself_is_cut_to_what_a_card_holds() {
+        let kinds = default_kinds();
+        let books = by_slug(&kinds, "book");
+        let mut about = meta(&"T".repeat(1000), &[], &[]);
+        about.description = "word ".repeat(400);
+        let item = item_from_document(books, FileId::new(), "x.epub", &about);
+        assert_eq!(item.title.chars().count(), MAX_FILE_TITLE_CHARS);
+        assert!(item.summary.chars().count() <= 481);
+        assert!(item.summary.ends_with('\u{2026}'));
+        let many: Vec<&str> = vec!["A", "B", "C", "D", "E", "F", "G"];
+        let item = item_from_document(books, FileId::new(), "x.epub", &meta("T", &many, &[]));
+        assert_eq!(item.creator, "A, B, C, D, E et al.");
+    }
+
+    #[test]
+    fn a_new_item_names_its_file_in_its_json_and_an_old_one_has_none() {
+        let mut item = Item::new(KindId::new(), "Dune");
+        assert_eq!(serde_json::to_value(&item).unwrap()["files"], serde_json::json!([]));
+        let file = FileId::new();
+        item.files = vec![file];
+        let round: Item = serde_json::from_slice(&serde_json::to_vec(&item).unwrap()).unwrap();
+        assert_eq!(round.files, vec![file]);
+        // An item written before there were files has no such key.
+        let mut json = serde_json::to_value(Item::new(KindId::new(), "Dune")).unwrap();
+        json.as_object_mut().unwrap().remove("files");
+        let old: Item = serde_json::from_value(json).unwrap();
+        assert!(old.files.is_empty());
     }
 }

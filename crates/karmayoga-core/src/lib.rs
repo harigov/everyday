@@ -88,6 +88,7 @@ pub mod chat;
 pub mod completable;
 pub mod connection;
 pub mod crypto;
+pub mod documents;
 pub mod dream;
 pub mod error;
 pub mod files;

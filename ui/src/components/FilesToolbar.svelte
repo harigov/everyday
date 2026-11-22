@@ -17,6 +17,7 @@
 
   import { untrack } from 'svelte'
   import { api } from '../lib/api'
+  import { isReadable } from '../lib/documents'
   import { formatSize } from '../lib/files'
   import { files, type FilesView } from '../lib/files.svelte'
   import {
@@ -139,6 +140,8 @@
   const allFavourite = $derived(chosen.length > 0 && chosen.every((f) => f.favourite))
   const allSealed = $derived(chosen.length > 0 && chosen.every((f) => f.storage.kind === 'sealed'))
   const one = $derived(ids.length === 1 ? chosen[0] : undefined)
+  /** The one file is a document the reader can open, and is there to open. */
+  const readable = $derived(one !== undefined && isReadable(one))
 
   function rateMenu(e: MouseEvent) {
     const rated = one?.rating ?? 0
@@ -183,6 +186,9 @@
       e.currentTarget as HTMLElement,
       tidyMenu([
         one && { label: 'Open', icon: 'eye', run: () => files.open(one.id) },
+        // A document is also read, in the reader with its contents beside it.
+        // For a PDF or an EPUB "Open" goes there too, and this is the same.
+        one && readable && { label: 'Read', icon: 'book', run: () => files.read(one.id) },
         one &&
           files.local && {
             label: 'Open in another program',

@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 
 use super::tools::{Domain, ToolContext, mail as mail_tools};
 use crate::account::{Account, Permission};
+use crate::documents::DocFormat;
 use crate::files::{FileKind, FileStatus};
 use crate::id::{
     AccountId, AlbumId, AreaId, BlockId, CalendarId, DraftId, EntryId, EventId, FileId, GoalId,
@@ -239,7 +240,54 @@ pub struct OnScreen {
     /// What they typed into the search bar, if the list is narrowed by it.
     #[serde(default)]
     pub query: Option<String>,
+    /// The document open in the reader, and where in it they are. By file,
+    /// page and block, never by a heading's words: see
+    /// [`crate::documents`]' module docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader: Option<ReaderAt>,
 }
+
+/// Where in a document somebody is reading, as the reader sends it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReaderAt {
+    pub file: FileId,
+    /// The page at the top of the reader, from 1.
+    pub page: u32,
+    /// The last page at least partly in view, when it is not `page`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_page: Option<u32>,
+    /// The first block in view, for a document the reader draws block by
+    /// block (anything but a PDF).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<u32>,
+    /// What they have selected, if anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ReaderSelection>,
+}
+
+/// A selection in the reader.
+///
+/// By blocks where the reader knows them. In a PDF, whose text pdf.js draws,
+/// it knows only the page and the words -- so it sends at most
+/// [`MAX_SELECTION_QUOTE`] of them as `quote`, and the service finds them in
+/// its own copy of the page ([`crate::documents::DocText::find_quote`]). The
+/// quote itself never reaches the model: the model is told which blocks, and
+/// reads them through `read_document` like anything else in the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReaderSelection {
+    pub page: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+}
+
+/// The most of a PDF selection's words the reader sends to have it found.
+pub const MAX_SELECTION_QUOTE: usize = 400;
 
 impl OnScreen {
     /// Read what the interface sent, keeping whatever of it this build
@@ -261,12 +309,14 @@ impl OnScreen {
             list.iter().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect()
         };
         let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_string);
+        let reader = value.get("reader").and_then(|r| serde_json::from_value(r.clone()).ok());
         Some(OnScreen {
             app,
             view: text("view"),
             within: refs("within"),
             open: refs("open"),
             query: text("query"),
+            reader,
         })
     }
 }
@@ -322,6 +372,11 @@ pub fn describe(ctx: &ToolContext<'_>, screen: &OnScreen) -> Described {
             add("Open", said, &mut lines);
         }
     }
+    if let Some(reader) = &screen.reader
+        && let Some(said) = reading(ctx, reader)
+    {
+        add("Reading", said, &mut lines);
+    }
 
     let mut text = String::from(
         "What is on their screen as they send this. \"This\", \"here\", \"that one\" and \
@@ -361,6 +416,138 @@ impl Said {
     fn stranger(text: String) -> Option<Said> {
         Some(Said { text, has_id: true, quotes_mail: true })
     }
+}
+
+/// Describe the document open in the reader, or `None` to leave it out:
+/// which file, which pages are in view, which section by number, and which
+/// blocks are selected -- never a heading's or a passage's words, which are
+/// the document's and reach the model only through the document tools. Left
+/// out on the terms `read_document` refuses on.
+fn reading(ctx: &ToolContext<'_>, reader: &ReaderAt) -> Option<Said> {
+    // The terms a file on screen is described on (see `Shown::File`): not with
+    // the assistant shut out of their files, not one of Health's, and nothing
+    // the document tools would refuse -- a file that is gone or in the trash,
+    // or one that is not a document at all.
+    if !may_look_at_files(ctx) {
+        return None;
+    }
+    let file = ctx.vault.file(reader.file).ok()?;
+    if file.origin == crate::files::FileOrigin::Health
+        || !matches!(file.status, FileStatus::Present)
+    {
+        return None;
+    }
+    let format = DocFormat::of_file(&file)?;
+    let id = file.id;
+
+    // The document's own structure is what puts a block in a section and a
+    // selected passage on blocks. Without it -- no documents handed down, or
+    // one that cannot be read now -- the page is still worth saying.
+    let doc = ctx.documents.and_then(|documents| documents.text(&file).ok());
+    let doc = doc.as_deref();
+
+    let page = reader.page.max(1);
+    let mut said = format!(
+        "the document {} (id {id}), {}, which they have open in the reader. They are on page \
+         {page}",
+        q(&file.name),
+        format.phrase()
+    );
+    if let Some(pages) = doc.map(|d| d.pages).filter(|&pages| pages > 0) {
+        said.push_str(&format!(" of {pages}"));
+    }
+    let last = reader.last_page.filter(|&last| last > page);
+    if let Some(last) = last {
+        said.push_str(&format!(" (pages {page} to {last} are in view)"));
+    }
+    said.push('.');
+
+    // Where the top of their window is, and the section it is in -- by the
+    // number `document_outline` lists it under, never by its heading's words,
+    // which are the document's. A PDF has no block to report, so the first
+    // block on its page stands in, when the page has any.
+    const BY_NUMBER: &str = "of the document's contents (document_outline lists the sections \
+                             by number)";
+    let section_of = |block: usize| doc?.blocks.get(block)?.section;
+    if let Some(block) = reader.block {
+        said.push_str(&format!(" The first block in view is block {block}"));
+        if let Some(section) = section_of(block as usize) {
+            said.push_str(&format!(", in section {section} {BY_NUMBER}"));
+        }
+        said.push('.');
+    } else if let Some(d) = doc {
+        let on_page = d.blocks_on_pages(page, page);
+        if !on_page.is_empty()
+            && let Some(section) = section_of(on_page.start)
+        {
+            said.push_str(&format!(" The top of the page is in section {section} {BY_NUMBER}."));
+        }
+    }
+
+    // What they have selected: blocks where the reader knew them, else the
+    // words it sent, found again in the service's own copy of the page. The
+    // words themselves go no further than this function.
+    let selected = reader.selection.as_ref().and_then(|selection| {
+        let range = match (selection.from, selection.to) {
+            (Some(a), Some(b)) => Some((a.min(b), a.max(b))),
+            (Some(one), None) | (None, Some(one)) => Some((one, one)),
+            (None, None) => None,
+        };
+        if let Some((from, to)) = range {
+            let outside = doc.is_some_and(|d| to as usize >= d.blocks.len());
+            return Some((selection.page, (!outside).then_some((from, to))));
+        }
+        let words: String = selection.quote.as_deref()?.chars().take(MAX_SELECTION_QUOTE).collect();
+        if words.trim().is_empty() {
+            return None;
+        }
+        let found = doc.and_then(|d| d.find_quote(selection.page, &words)).map(|blocks| {
+            // A range of blocks ends before its end; what is said ends on it.
+            (blocks.start as u32, blocks.end.saturating_sub(1).max(blocks.start) as u32)
+        });
+        Some((selection.page, found))
+    });
+    let mut selected_blocks = None;
+    if let Some((at, found)) = selected {
+        match found {
+            Some((from, to)) if from == to => {
+                said.push_str(&format!(" They have selected block {from} on page {at}."));
+                selected_blocks = Some((from, to));
+            }
+            Some((from, to)) => {
+                said.push_str(&format!(
+                    " They have selected blocks {from}\u{2013}{to} on page {at}."
+                ));
+                selected_blocks = Some((from, to));
+            }
+            None if doc.is_some() => said.push_str(&format!(
+                " They have selected a passage on page {at}, which could not be found in the \
+                 document's text."
+            )),
+            None => said.push_str(&format!(" They have selected a passage on page {at}.")),
+        }
+    }
+
+    // Said last, so it is what the model carries away: the tool that reads
+    // what is on their screen, and with which arguments.
+    let on_screen = match last {
+        Some(last) => format!("{page}-{last}"),
+        None => page.to_string(),
+    };
+    said.push_str(&format!(
+        " read_document with pages \"{on_screen}\" reads exactly what is on their screen"
+    ));
+    match selected_blocks {
+        Some((from, to)) if from == to => {
+            said.push_str(&format!(", and with blocks \"{from}\" what they have selected"));
+        }
+        Some((from, to)) => {
+            said.push_str(&format!(", and with blocks \"{from}-{to}\" what they have selected"));
+        }
+        None => {}
+    }
+    said.push('.');
+    Said::with_id(said)
 }
 
 /// Describe one record, or `None` to leave it out. See [`describe`].

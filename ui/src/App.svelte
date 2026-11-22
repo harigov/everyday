@@ -26,6 +26,7 @@
   import { proposals } from './lib/proposals.svelte'
   import { purpose } from './lib/purpose.svelte'
   import { quick } from './lib/quick.svelte'
+  import { reader } from './lib/reader.svelte'
   import { tracking } from './lib/tracking.svelte'
   import { agent } from './lib/agent.svelte'
   import { live } from './lib/live.svelte'
@@ -53,6 +54,7 @@
   import FilesView from './components/FilesView.svelte'
   import HealthView from './components/HealthView.svelte'
   import OverviewView from './components/OverviewView.svelte'
+  import ReaderView from './components/ReaderView.svelte'
   import AssistantView from './components/AssistantView.svelte'
   import LockScreen from './components/LockScreen.svelte'
   import Setup from './components/Setup.svelte'
@@ -409,7 +411,12 @@
           <!-- The open app, on the stage: one panel of the frame, the
                sidebar beside it another. See `.shell-stage` in app.css. -->
           <div class="shell-stage">
-            {#if app.section === 'assistant'}
+            <!-- A document being read stands in the place of the open app's
+                 view: the sidebar and the assistant's rail stay either side
+                 of it. -->
+            {#if reader.open && app.section === reader.host}
+              <ReaderView />
+            {:else if app.section === 'assistant'}
               <AssistantView />
             {:else if app.section === 'notes'}
               <NotesView />

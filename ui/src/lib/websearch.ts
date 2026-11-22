@@ -76,6 +76,8 @@ export function sourceLabel(slug: string): string {
       return 'Steam'
     case 'nominatim':
       return 'OpenStreetMap'
+    case 'crossref':
+      return 'Crossref'
     default:
       return 'the web'
   }

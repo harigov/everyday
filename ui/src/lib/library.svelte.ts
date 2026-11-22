@@ -33,6 +33,7 @@ import { guardedRefresh } from './store/refresh'
 import { web, type SearchOutcome } from './websearch'
 import { isContactShelf } from './keepintouch'
 import type {
+  FileId,
   ImageResult,
   Item,
   ItemId,
@@ -631,6 +632,83 @@ class LibraryState {
       onSuccess: () => void this.refreshCounts(),
       rollback: () => this.refresh(),
     })
+  }
+
+  // ── files ────────────────────────────────────────────────────────────
+
+  /**
+   * Put files on an item: the thing itself, when it is a file -- a book's
+   * EPUB, an article's PDF. They go on the end, in the order given, and one
+   * the item already has is not added twice. The first of an item's files is
+   * the one the reader opens.
+   */
+  async attachFiles(itemId: ItemId, fileIds: FileId[]) {
+    await this.#changeFiles(itemId, (have) => [...new Set([...have, ...fileIds])])
+  }
+
+  /** Take a file off an item. The file stays in the folder: only the
+   *  item's claim on it goes. */
+  async detachFile(itemId: ItemId, fileId: FileId) {
+    await this.#changeFiles(itemId, (have) => have.filter((f) => f !== fileId))
+  }
+
+  /**
+   * Save an item with its `files` changed.
+   *
+   * On the shelf on screen it is the usual in-place edit, written a beat
+   * later like any other, and awaited here so a caller that goes on to read
+   * the item -- the reader, opening its file -- finds it written. An item
+   * that is not in the list (a reader opened from a search result, say) is
+   * read, changed and written whole.
+   */
+  async #changeFiles(id: ItemId, next: (have: FileId[]) => FileId[]) {
+    try {
+      const loaded = this.items.find((i) => i.id === id)
+      const item = loaded ?? (await api.item(id))
+      const files = next(item.files)
+      if (files.length === item.files.length && files.every((f, i) => f === item.files[i])) return
+      if (loaded) {
+        this.patch(id, { files })
+        await this.flush()
+      } else {
+        await api.saveItems([{ ...$state.snapshot(item), files }])
+      }
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /**
+   * Put a document on a shelf, filled from what the file says about itself --
+   * its title, its authors, its year -- and select it. `kindId` is the
+   * shelf; left out, the service chooses the one that fits the file.
+   * Answers the item, or null when it could not be made.
+   *
+   * One backend call, as `add` is, and the same care about what is on
+   * screen: the card is drawn only if the filters would show it, and said in
+   * words if they would not.
+   */
+  async createFromFile(fileId: FileId, kindId?: KindId): Promise<Item | null> {
+    if (!app.supportsLibrary) return null
+    try {
+      const item = await api.createItemFromFile(fileId, kindId)
+      const shown = this.wouldShow(item)
+      const at = this.items.findIndex((i) => i.id === item.id)
+      if (at >= 0) this.items[at] = item
+      else if (shown) this.items = [item, ...this.items]
+      this.note = shown
+        ? null
+        : `Added to ${this.kinds.find((k) => k.id === item.kindId)?.name ?? 'the library'}, which this filter does not show.`
+      void this.refreshCounts()
+      // A shelf made for it -- the first PDF makes Articles -- is not in the
+      // list yet.
+      if (!this.kinds.some((k) => k.id === item.kindId)) await this.refreshKinds()
+      await this.open(item.id)
+      return item
+    } catch (e) {
+      await handle(e)
+      return null
+    }
   }
 
   // ── the log ──────────────────────────────────────────────────────────

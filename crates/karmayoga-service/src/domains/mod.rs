@@ -15,6 +15,7 @@ pub mod briefs;
 pub mod calendars;
 pub mod chat;
 pub mod connections;
+pub mod documents;
 pub mod files;
 pub mod health;
 pub mod images;
@@ -102,6 +103,7 @@ pub fn catalog() -> &'static [&'static Command] {
             money::COMMANDS,
             screentime::COMMANDS,
             files::COMMANDS,
+            documents::COMMANDS,
             health::COMMANDS,
             meetings::COMMANDS,
             notes::COMMANDS,

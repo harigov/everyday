@@ -47,6 +47,7 @@ import { money } from './money.svelte'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
+import { reader } from './reader.svelte'
 import { screentime } from './screentime.svelte'
 import { files } from './files.svelte'
 import { sidebar } from './sidebar.svelte'
@@ -82,10 +83,13 @@ export function focusSearch() {
  * it, so while it is open the app underneath is not actually on screen even
  * though `app.section` still names it. Without this a bare `s` left focused
  * on a Settings tab button -- not a field, so `isTyping` would not catch it
- * -- could star a journal entry nobody can see.
+ * -- could star a journal entry nobody can see. The reader is the same: it
+ * takes the app's stage while a document is open in it, so the app's own
+ * bare keys stay quiet behind it.
  */
 function inApp(section: Section): () => boolean {
-  return () => app.screen === 'main' && app.section === section && panels.settings === null
+  return () =>
+    app.screen === 'main' && app.section === section && panels.settings === null && !reader.shown
 }
 
 /**

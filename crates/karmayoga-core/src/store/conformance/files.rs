@@ -1566,6 +1566,9 @@ fn settings_default_until_saved_and_round_trip(files: &dyn FilesStore) {
         trash_days: 7,
         assistant_access: false,
         name_places: true,
+        index_documents: false,
+        index_folders: vec!["Books".into()],
+        skip_folders: vec!["Books/Old".into()],
     };
     files.put_files_settings(&custom).unwrap();
     assert_eq!(files.files_settings().unwrap(), custom);

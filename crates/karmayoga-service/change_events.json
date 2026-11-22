@@ -2116,6 +2116,22 @@
       ]
     },
     {
+      "command": "create_item_from_file",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "item",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "reindex_documents",
+      "events": []
+    },
+    {
       "command": "update_files",
       "events": [
         {
@@ -2731,6 +2747,13 @@
           "kind": "backgroundTask",
           "op": "updated",
           "origin": null
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "backgroundTask",
+          "op": "updated",
+          "origin": null
         }
       ]
     }
@@ -2887,6 +2910,10 @@
     {
       "name": "save_mail_part_to_files",
       "reason": "needs a message whose attachment is in a real synced pack"
+    },
+    {
+      "name": "save_reader_position",
+      "reason": "keeps a reader's place in the file's properties and announces nothing of its own"
     },
     {
       "name": "send_message",

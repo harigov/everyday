@@ -414,6 +414,13 @@
             "description": "The shelf's own fields, by the keys list_shelves gives: an author, a cuisine, an ABV. A list field -- a recipe's or a cocktail's ingredients and method -- takes one entry per line. An empty string clears one.",
             "type": "object"
           },
+          "files": {
+            "description": "Files from the files folder to keep with it, by id: the book's EPUB, the article's PDF. The first is the one that opens when it is read. From find_files, or a file handed over in the conversation.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "image_url": {
             "description": "A picture for its cover: the image_url of a look_up_item or search_images result, or an address they gave you, exactly as written. It is downloaded and kept with the item.",
             "type": "string"
@@ -1228,6 +1235,27 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "Discard draft"
+    },
+    {
+      "domain": "files",
+      "effect": "read",
+      "name": "document_outline",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The file's id, from find_files, a library item or one they handed you.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "Document outline"
     },
     {
       "domain": "health",
@@ -3550,6 +3578,43 @@
     {
       "domain": "files",
       "effect": "read",
+      "name": "read_document",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "blocks": {
+            "description": "Blocks to read, like \"812\" or \"812-818\", inclusive: the numbers a search_document hit and the screen context give.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The file's id, from find_files, a library item or one they handed you.",
+            "type": "string"
+          },
+          "pages": {
+            "description": "Pages to read: one, like \"47\", or a range, like \"47-49\". A PDF's own page numbers; for a book or other document, the made-up pages document_outline counts, which are the ones the reader shows.",
+            "type": "string"
+          },
+          "section": {
+            "description": "A section to read, with everything under it, by its index in document_outline's contents.",
+            "type": "integer"
+          },
+          "start": {
+            "description": "A block to start at, to carry on after a read that was `truncated`: pass its `nextBlock`. Used on its own it reads on from there; given with `pages`, `section` or `blocks` it carries on within that same range.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "Read document"
+    },
+    {
+      "domain": "files",
+      "effect": "read",
       "name": "read_file",
       "parameters": {
         "additionalProperties": false,
@@ -3943,6 +4008,69 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Search conversations"
+    },
+    {
+      "domain": "files",
+      "effect": "read",
+      "name": "search_document",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The file's id, from find_files, a library item or one they handed you.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most places to return. Defaults to 10, capped at 30.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Words to look for, any case and accents aside; every word counts and a place with all of them comes first. Put exact wording in double quotes. A name on its own is a good query.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "query"
+        ],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "Search document"
+    },
+    {
+      "domain": "files",
+      "effect": "read",
+      "name": "search_documents",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "folder": {
+            "description": "Only documents in this folder of their files folder or any folder under it, like \"Books\". Leave out for every document that is searched.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most places to return. Defaults to 10, capped at 30.",
+            "type": "integer"
+          },
+          "offset": {
+            "description": "Skip this many passages, to read on from a page that said `more`.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Words to look for in the documents' text, any case and accents aside; every word counts. Put exact wording in double quotes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "Search documents"
     },
     {
       "domain": "mail",
@@ -4866,6 +4994,13 @@
             },
             "description": "The shelf's own fields, by the keys list_shelves gives: an author, a cuisine, an ABV. A list field -- a recipe's or a cocktail's ingredients and method -- takes one entry per line. An empty string clears one.",
             "type": "object"
+          },
+          "files": {
+            "description": "Replaces the files kept with it, by id; the first is the one that opens when it is read. An empty list keeps none. From find_files, or a file handed over in the conversation.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "finished_on": {
             "description": "The day you finished. Format: YYYY-MM-DD.",

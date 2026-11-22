@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
+  import { files } from '../lib/files.svelte'
   import { article } from '../lib/format'
   import { library } from '../lib/library.svelte'
   import { menu } from '../lib/menu.svelte'
@@ -7,8 +8,9 @@
   import { onOffPref } from '../lib/prefs'
   import { app } from '../lib/state.svelte'
   import { looksThingsUp, web, type LiveOutcome } from '../lib/websearch'
-  import type { KindInfo, SearchResult } from '../lib/types'
+  import type { FileEntry, KindInfo, SearchResult } from '../lib/types'
   import Cover from './Cover.svelte'
+  import FilePicker from './FilePicker.svelte'
   import Icon from './Icon.svelte'
   import Rating from './Rating.svelte'
 
@@ -165,6 +167,31 @@
     }
   }
 
+  // ── from a file ──────────────────────────────────────────────────────
+  //
+  // A document in the files folder -- a paper's PDF, a book's EPUB -- is a
+  // thing to put on a shelf as it is: the item is made from what the file
+  // says about itself, and holds the file as its reading copy. On the
+  // Articles shelf this is the natural way in; a journal article has no
+  // title worth searching for until it has been read.
+
+  let picking = $state(false)
+
+  async function addFromFile(picked: FileEntry[]) {
+    picking = false
+    const file = picked[0]
+    if (!file || busy) return
+    busy = true
+    try {
+      // The store opens what it makes, so that what the file said about
+      // itself can be seen and put right.
+      await library.createFromFile(file.id, kind.id)
+    } finally {
+      busy = false
+      field?.focus()
+    }
+  }
+
   function onKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {
       if (open) {
@@ -242,10 +269,31 @@
       </button>
     {/if}
 
+    {#if files.supported}
+      <button
+        class="from-file"
+        title="From a file in Files…"
+        aria-label="Add from a file in Files"
+        disabled={busy}
+        onclick={() => (picking = true)}
+      >
+        <Icon name="file" size={14} />
+      </button>
+    {/if}
+
     <button class="go" disabled={!draft.trim() || busy} onclick={addTyped} title="Add (Enter)">
       <Icon name="plus" size={15} />
     </button>
   </div>
+
+  {#if picking}
+    <FilePicker
+      title="Add from a file"
+      note="Choose a document in your files. It goes on the {kind.name} shelf, filled in from what the file says about itself."
+      onchoose={addFromFile}
+      onclose={() => (picking = false)}
+    />
+  {/if}
 
   {#if open && (searching || hits.length > 0 || searchError)}
     <div class="results" role="listbox" aria-label="Suggestions">
@@ -364,6 +412,7 @@
   }
 
   .toggle,
+  .from-file,
   .go {
     display: grid;
     place-items: center;
@@ -377,6 +426,7 @@
       color var(--fast) var(--ease);
   }
   .toggle:hover,
+  .from-file:not(:disabled):hover,
   .go:not(:disabled):hover {
     background: var(--bg-hover);
     color: var(--fg);
@@ -384,7 +434,8 @@
   .toggle.on {
     color: var(--journal-accent, var(--accent));
   }
-  .go:disabled {
+  .go:disabled,
+  .from-file:disabled {
     opacity: 0.35;
   }
 

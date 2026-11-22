@@ -2412,6 +2412,31 @@ export const api = {
   // Available when `status.capabilities.files` is true. Named as the
   // commands are, bar the shell's own at the end.
 
+  // ── Documents ──────────────────────────────────────────────────────
+  //
+  // A PDF, an EPUB, Markdown, text or a web page in the files catalog, read
+  // into blocks -- see `docs/plans/reading.md`. Scope Files.
+
+  /** What the reader opens on: format, pages, contents, where they left off. */
+  documentOutline: (id: FileId) => call('documentOutline', { id }),
+  /** One chapter's blocks, pictures as `data:` addresses. */
+  documentChapter: (id: FileId, chapter: number) => call('documentChapter', { id, chapter }),
+  /** Search one document. */
+  searchDocument: (id: FileId, query: string, limit?: number) =>
+    call('searchDocument', { id, query, limit }),
+  /** Search every indexed document. */
+  searchDocuments: (query: string, limit?: number, offset?: number) =>
+    call('searchDocuments', { query, limit, offset }),
+  /** Remember where they are, so it opens there next time. */
+  saveReaderPosition: (id: FileId, page: number, block?: number | null) =>
+    call('saveReaderPosition', { id, page, block: block ?? undefined }),
+  documentsStatus: () => call('documentsStatus', {}),
+  /** Empty the index and read every document into it again. */
+  reindexDocuments: () => call('reindexDocuments', {}),
+  /** Put a document on a shelf, filled from what the file says about itself. */
+  createItemFromFile: (file: FileId, kindId?: KindId) =>
+    call('createItemFromFile', { file, kindId }),
+
   filesStatus: () => call('filesStatus', {}),
   saveFilesSettings: (settings: FilesSettings) => call('saveFilesSettings', { settings }),
   /** Set the folder up at `path` (absolute), or at the default when absent. */

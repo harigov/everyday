@@ -7,6 +7,7 @@
 mod support;
 
 mod calendar;
+mod documents;
 mod health;
 mod jobs;
 mod journals;

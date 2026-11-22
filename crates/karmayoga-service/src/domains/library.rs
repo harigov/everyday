@@ -16,12 +16,20 @@
 use crate::command;
 use crate::covers;
 use crate::ctx::{Ctx, Scope};
+use crate::documents::parse::{Resource, read_resource};
+use crate::documents::{DocumentsState, readable};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::websearch;
-use karmayoga_core::id::BlobId;
+use karmayoga_core::Vault;
+use karmayoga_core::documents::{DocFormat, DocMeta, DocText};
+use karmayoga_core::files::{FileEntry, FileOrigin, FileStatus};
+use karmayoga_core::id::{BlobId, FileId};
 use karmayoga_core::keepintouch::{KeepInTouchSettings, PassReport, PersonDue, note_from_journal};
-use karmayoga_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent};
+use karmayoga_core::library::{
+    Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent, doi_in, item_from_document,
+    shelf_for_document,
+};
 use karmayoga_core::model::{system_tz, today_local};
 use karmayoga_core::store::library::{ItemQuery, LogQuery};
 use karmayoga_core::{ItemId, KindId, LogId};
@@ -513,7 +521,249 @@ async fn library_stats(
     blocking(move || Ok(vault.library_stats(year)?)).await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemFromFile {
+    pub file: FileId,
+    /// The shelf; left out, an EPUB goes to Books, a PDF with a DOI to
+    /// Articles, and anything else to Books.
+    #[serde(default)]
+    pub kind_id: Option<KindId>,
+}
+
+/// The largest EPUB read whole to take its cover out. A book is a few
+/// megabytes and an illustrated one tens of them; past this, the item is
+/// made without a cover rather than a vault holding a quarter of a gigabyte
+/// in memory for one picture.
+const MAX_COVER_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
+
+/// A new item, not yet saved, with what is still to be done about it: the
+/// shelf it is for, the DOI the file names if it names one, and the cover
+/// picture if it has one.
+struct Made {
+    item: Item,
+    kind: Kind,
+    doi: Option<String>,
+    cover: Option<Vec<u8>>,
+}
+
+/// What reading a file for an item settled, before anything is fetched.
+enum FromFile {
+    /// An item for this file is already on the shelf. Boxed, as the other
+    /// answer is: both are large, and only one is ever made.
+    Held(Box<Item>),
+    /// A new one: an item, its shelf and what to fetch for it.
+    Made(Box<Made>),
+}
+
+/// The file, checked to be one an item may be made from: not one of
+/// Health's, there and not in the trash, and in a format that is read.
+fn document_file(vault: &Vault, id: FileId) -> CommandResult<(FileEntry, DocFormat)> {
+    let file = vault.file(id)?;
+    // Whoever is asking, and whatever else they may reach: a lab report is
+    // not a book, and an item holding one would be that report open in the
+    // reader. The vault refuses to save it either way.
+    if file.origin == FileOrigin::Health {
+        return Err(CommandError::new(
+            codes::FORBIDDEN,
+            "that file is one of Health's, which a library item cannot hold",
+        ));
+    }
+    if !matches!(file.status, FileStatus::Present) {
+        return Err(CommandError::new(
+            codes::INVALID,
+            "that file is missing or in the trash, so there is nothing to make an item from",
+        ));
+    }
+    match DocFormat::of_file(&file) {
+        Some(format) => Ok((file, format)),
+        None => Err(CommandError::new(
+            codes::UNSUPPORTED,
+            "that file is not a document this app reads -- a PDF, an EPUB, Markdown, text or a \
+             web page -- so there is nothing to make an item from",
+        )),
+    }
+}
+
+/// The item already on `kind`'s shelf that names `file`, if there is one.
+fn held_on(vault: &Vault, kind: KindId, file: FileId) -> CommandResult<Option<Item>> {
+    let on_shelf = vault.items(&ItemQuery::on_shelf(kind))?;
+    Ok(on_shelf.into_iter().find(|item| item.files.contains(&file)))
+}
+
+/// Did reading `file` fail on what is in it, rather than on getting at it?
+///
+/// Asked after a read has failed. A file that is still a document that may be
+/// read, and whose bytes are there to be counted, was got at: what went wrong
+/// was inside it -- more than a document is read up to, a scan with no text, a
+/// PDF the parser cannot make sense of. A refusal (Health's, in the trash, not
+/// a document) or a file that cannot be reached (the folder is away, it has
+/// gone from the disk, the vault is locked) is not that, and stays the
+/// failure it was.
+fn failed_on_its_contents(vault: &Vault, file: &FileEntry) -> bool {
+    readable(file).is_ok() && vault.file_len(file.id).is_ok()
+}
+
+/// What the file says about itself, or `None` when it could be got at and not
+/// read as a document: such a file is still a thing a person wants on a shelf,
+/// and an item made from its name is better than none. Blocking: a document's
+/// first read is a parse.
+fn read_text(
+    vault: &Vault,
+    documents: &DocumentsState,
+    file: &FileEntry,
+) -> CommandResult<Option<Arc<DocText>>> {
+    match documents.text(vault, file) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if failed_on_its_contents(vault, file) => {
+            tracing::info!(error = %e, "making an item from a file's name: it could not be read");
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Read the document and settle everything about the item that needs the
+/// vault and the file but not the network. Blocking: a document's first read
+/// is a parse.
+///
+/// A document that cannot be read is made from nothing but its name -- an empty
+/// [`DocMeta`], the shelf chosen from its format alone, and no cover and no
+/// DOI to look up.
+fn read_for_item(
+    vault: &Vault,
+    documents: &DocumentsState,
+    file: &FileEntry,
+    format: DocFormat,
+    wanted: Option<KindId>,
+) -> CommandResult<FromFile> {
+    let text = read_text(vault, documents, file)?;
+    let unread = DocMeta::default();
+    let meta = text.as_deref().map_or(&unread, |t| &t.meta);
+    let kind = match wanted {
+        Some(id) => vault.kind(id)?,
+        None => {
+            let kinds = vault.kinds()?;
+            shelf_for_document(&kinds, format, meta).cloned().ok_or_else(|| {
+                CommandError::new(
+                    codes::NOT_FOUND,
+                    "there is no shelf to put it on; make one in the library first",
+                )
+            })?
+        }
+    };
+    if let Some(held) = held_on(vault, kind.id, file.id)? {
+        return Ok(FromFile::Held(Box::new(held)));
+    }
+
+    let item = item_from_document(&kind, file.id, &file.name, meta);
+    let cover = (format == DocFormat::Epub && !meta.cover.trim().is_empty())
+        .then(|| epub_cover(vault, file, &meta.cover))
+        .flatten();
+    Ok(FromFile::Made(Box::new(Made { item, kind, doi: doi_in(meta), cover })))
+}
+
+/// An EPUB's cover picture, as the bytes of a picture this app can make a
+/// cover of; `None` for anything else, which is a book without a cover and
+/// no worse.
+fn epub_cover(vault: &Vault, file: &FileEntry, path: &str) -> Option<Vec<u8>> {
+    let len = vault.file_len(file.id).ok().filter(|len| *len <= MAX_COVER_SOURCE_BYTES)?;
+    let book = vault.read_file_range(file.id, 0, len).ok()?;
+    read_resource(DocFormat::Epub, &book, path).filter(is_cover_picture).map(|r| r.bytes)
+}
+
+/// Is this a picture a cover can be made from? By what the bytes are, not by
+/// what the book calls them: a vector cover, or one in a format nothing here
+/// decodes, would be stored as it came and drawn as a broken picture.
+fn is_cover_picture(resource: &Resource) -> bool {
+    matches!(
+        karmayoga_core::media::sniff_mime(&resource.bytes),
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+    )
+}
+
+/// Put a document from the files folder on a shelf: a new item filled from
+/// what the file says about itself -- an EPUB's title, authors, identifiers
+/// and its own cover; a PDF's information and the DOI on its first page,
+/// looked up -- with the file as its [`Item::files`]. Needs `Files` as well
+/// as `Library`.
+///
+/// The DOI is looked up on Crossref when the connection may reach the web,
+/// and what Crossref says replaces what the file says about itself: a PDF's
+/// title is whatever a word processor left in it, and a DOI is the one thing
+/// that names the article. Best-effort, like every lookup here: a network
+/// that is off or a DOI Crossref has never heard of leaves the item as the
+/// file made it.
+///
+/// An item for this file already on the shelf is returned as it is, so
+/// pressing the button twice is one item.
+async fn create_item_from_file(
+    svc: Arc<Service>,
+    ctx: Ctx,
+    args: ItemFromFile,
+) -> CommandResult<Item> {
+    // The command is the library's, and reads a file: it needs the scope for
+    // both, or a library-only connection could read any document by naming
+    // it.
+    ctx.require(Scope::Files)?;
+    let vault = svc.require_unlocked()?;
+
+    let (file, format) = {
+        let (vault, id) = (vault.clone(), args.file);
+        blocking(move || document_file(&vault, id)).await?
+    };
+    let documents = svc.documents()?;
+    let prepared = {
+        let vault = vault.clone();
+        let (file, wanted) = (file.clone(), args.kind_id);
+        blocking(move || read_for_item(&vault, &documents, &file, format, wanted)).await?
+    };
+    let Made { mut item, kind, doi, cover } = match prepared {
+        FromFile::Held(item) => return Ok(*item),
+        FromFile::Made(made) => *made,
+    };
+
+    if let Some(doi) = doi
+        && ctx.holds(Scope::Web)
+    {
+        match websearch::lookup_doi(&doi).await {
+            Ok(Some(mut hit)) => {
+                karmayoga_core::websearch::fit_to_shelf(&mut hit, &kind);
+                // Over what the file said: the DOI is the better witness.
+                karmayoga_core::websearch::apply(&hit, &kind, &mut item, true);
+            }
+            Ok(None) => {}
+            Err(e) => tracing::info!(error = %e, "could not look up the DOI a file names"),
+        }
+    }
+    if let Some(bytes) = cover {
+        match covers::store(&vault, bytes).await {
+            Ok(blob) => item.cover = Some(blob),
+            Err(e) => tracing::warn!(error = %e, "could not store a book's own cover"),
+        }
+    }
+
+    let (kind_id, file_id) = (kind.id, file.id);
+    blocking(move || {
+        // Looked at again where the write is: a second press that began
+        // while the first was fetching has not seen the first's item.
+        if let Some(held) = held_on(&vault, kind_id, file_id)? {
+            return Ok(held);
+        }
+        vault.save_item(&item)?;
+        Ok(item)
+    })
+    .await
+}
+
 pub static COMMANDS: &[crate::command::Command] = &[
+    command! {
+        name: "create_item_from_file", scope: Library, effect: Write,
+        change: Item / Created,
+        args: ItemFromFile, returns: "Item",
+        signature: &[("file", "FileId", true), ("kindId", "KindId", false)],
+        run: create_item_from_file,
+    },
     command! {
         name: "list_kinds", scope: Library, effect: Read,
         args: Nothing, returns: "KindInfo[]", signature: &[],
@@ -672,3 +922,111 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: library_stats,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use karmayoga_core::files::ImportOptions;
+
+    fn test_vault() -> (Arc<Vault>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = karmayoga_vault::create(
+            dir.path(),
+            karmayoga_core::VaultConfig { password: None, ..Default::default() },
+        )
+        .unwrap();
+        vault.seed_library().unwrap();
+        (Arc::new(vault), dir)
+    }
+
+    /// A file in the catalog, sealed so that no files folder is needed.
+    fn sealed(vault: &Vault, name: &str, bytes: &[u8], origin: FileOrigin) -> FileEntry {
+        let opts = ImportOptions { encrypted: Some(true), ..ImportOptions::new(origin) };
+        vault.import_bytes(bytes, name, &opts).unwrap()
+    }
+
+    #[test]
+    fn only_a_document_that_is_there_and_not_healths_may_be_made_an_item() {
+        let (vault, _dir) = test_vault();
+
+        let notes = sealed(&vault, "notes.md", b"# Notes", FileOrigin::Files);
+        let (found, format) = document_file(&vault, notes.id).unwrap();
+        assert_eq!((found.id, format), (notes.id, DocFormat::Markdown));
+
+        // One of Health's, though it is a PDF: refused whoever asks.
+        let labs = sealed(&vault, "labs.pdf", b"%PDF-1.4 labs", FileOrigin::Health);
+        let err = document_file(&vault, labs.id).unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN, "{}", err.message);
+        assert!(err.message.contains("Health"), "{}", err.message);
+
+        // A picture is not a document.
+        let picture = sealed(&vault, "boat.png", b"\x89PNG\r\n\x1a\nnot really", FileOrigin::Files);
+        let err = document_file(&vault, picture.id).unwrap_err();
+        assert_eq!(err.code, codes::UNSUPPORTED, "{}", err.message);
+
+        // In the trash, and not in the catalog at all.
+        let old = sealed(&vault, "old.md", b"# Old", FileOrigin::Files);
+        vault.trash_files(&[old.id]).unwrap();
+        let err = document_file(&vault, old.id).unwrap_err();
+        assert_eq!(err.code, codes::INVALID, "{}", err.message);
+        let err = document_file(&vault, FileId::new()).unwrap_err();
+        assert_eq!(err.code, codes::NOT_FOUND, "{}", err.message);
+    }
+
+    #[test]
+    fn a_failed_read_is_the_files_own_only_when_the_file_was_got_at_and_may_be_read() {
+        let (vault, _dir) = test_vault();
+
+        // A document that is there: whatever went wrong was in its contents.
+        let scan = sealed(&vault, "scan.pdf", b"not a pdf at all", FileOrigin::Files);
+        assert!(failed_on_its_contents(&vault, &scan));
+
+        // A refusal stays one: Health's, not a document, in the trash.
+        let labs = sealed(&vault, "labs.pdf", b"%PDF-1.4 labs", FileOrigin::Health);
+        assert!(!failed_on_its_contents(&vault, &labs));
+        let boat = sealed(&vault, "boat.png", b"\x89PNG\r\n\x1a\nnot really", FileOrigin::Files);
+        assert!(!failed_on_its_contents(&vault, &boat));
+        let old = sealed(&vault, "old.md", b"# Old", FileOrigin::Files);
+        let trashed = vault.trash_files(&[old.id]).unwrap().remove(0);
+        assert!(!failed_on_its_contents(&vault, &trashed));
+
+        // And so does a file that cannot be got at: one the catalog knows and
+        // the vault cannot count, which is what a missing record looks like.
+        let mut ghost = scan.clone();
+        ghost.id = FileId::new();
+        assert!(!failed_on_its_contents(&vault, &ghost));
+    }
+
+    #[test]
+    fn the_item_already_on_a_shelf_for_a_file_is_the_one_found() {
+        let (vault, _dir) = test_vault();
+        let kinds = vault.kinds().unwrap();
+        let shelf = |slug: &str| kinds.iter().find(|k| k.slug == slug).unwrap().id;
+        let epub = sealed(&vault, "dune.epub", b"PK", FileOrigin::Files);
+        let other = sealed(&vault, "other.epub", b"PK2", FileOrigin::Files);
+
+        let mut dune = Item::new(shelf("book"), "Dune");
+        dune.files = vec![other.id, epub.id];
+        vault.save_item(&dune).unwrap();
+
+        let held = held_on(&vault, shelf("book"), epub.id).unwrap().unwrap();
+        assert_eq!(held.id, dune.id, "named anywhere in its files, not only first");
+        // The same file on another shelf is another item's to make.
+        assert!(held_on(&vault, shelf("article"), epub.id).unwrap().is_none());
+        let unnamed = sealed(&vault, "third.epub", b"PK3", FileOrigin::Files);
+        assert!(held_on(&vault, shelf("book"), unnamed.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn only_a_picture_a_cover_can_be_made_of_is_taken_from_a_book() {
+        let resource = |bytes: &[u8]| Resource { mime: "image/x".into(), bytes: bytes.to_vec() };
+        assert!(is_cover_picture(&resource(b"\x89PNG\r\n\x1a\n....")));
+        assert!(is_cover_picture(&resource(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10])));
+        assert!(is_cover_picture(&resource(b"GIF89a....")));
+        // Whatever the book says it is: a vector cover would be stored as it
+        // came and drawn as a broken picture, and so would a page of text.
+        assert!(!is_cover_picture(&resource(b"<svg xmlns='http://www.w3.org/2000/svg'/>")));
+        assert!(!is_cover_picture(&resource(b"<html>a cover page</html>")));
+        assert!(!is_cover_picture(&resource(b"")));
+    }
+}

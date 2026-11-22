@@ -142,6 +142,10 @@ pub struct Service {
     /// [`Service::open_mail`]/[`Service::close_mail`] for the two moments
     /// that open and drop the state inside it.
     mail: MailRuntime,
+    /// Documents' session state: the sealed cache of parsed text and the
+    /// search index, opened for the vault on first use and dropped at lock.
+    /// See [`crate::documents`].
+    pub(crate) documents: crate::documents::Slot,
     /// The meeting watcher's and the spool's session state -- which offers
     /// have already been raised, when each recording last had a chunk
     /// appended, and which expiring recordings have already been warned
@@ -216,6 +220,7 @@ impl Service {
                 Self::MAIL_SORT_PER_MINUTE,
             ),
             clock: RwLock::new(clock),
+            documents: crate::documents::Slot::default(),
             meetings: MeetingRuntime::default(),
             chat: crate::chat::ChatHub::default(),
             jobs: crate::jobs::JobRuntime::default(),
@@ -710,6 +715,7 @@ impl Service {
         // still mid-batch is a bug this ordering exists to make impossible
         // rather than a race to get right twice.
         self.close_mail();
+        self.documents.close();
         // The decrypted copies of sealed files opened in other programs are
         // gone too, but not by anything here: `Vault::lock`, which every path
         // that reaches this has just called, deletes them.
@@ -734,6 +740,7 @@ impl Service {
             crate::money::ensure_task(self, &vault);
             crate::backup::task::ensure_task(self, &vault);
             crate::files::task::ensure_task(self, &vault);
+            crate::documents::task::ensure_task(self, &vault);
             // Karma's book: started on the first of these, and the days old
             // enough to settle settled -- the only writes Karma makes, kept
             // out of the report, which is a read. Off the caller's thread,
@@ -976,6 +983,7 @@ impl Service {
         self.meetings.on_lock();
         self.supervisor().stop_all().await;
         self.close_mail();
+        self.documents.close();
         self.mail.on_lock();
         self.listen_briefings.lock().unwrap().clear();
         let settling = std::mem::take(&mut *self.karma_settling.lock().unwrap());

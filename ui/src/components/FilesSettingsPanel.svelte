@@ -17,11 +17,33 @@
   // that holds the vault (`files.local`): anywhere else the picker would offer
   // the wrong machine's folders. A browser or a paired desktop sets the
   // suggested place up and leaves the rest to the vault's own computer.
+  //
+  // Documents: whether the assistant can search inside the PDFs, EPUBs,
+  // Markdown, text and web pages in the folder, and which folders that covers.
+  // Only the files folder is ever read for it, so the two lists are paths
+  // inside it, relative to it, picked from its own subfolders or typed. The
+  // index's state is shown, and refreshed every few seconds while -- and only
+  // while -- a pass is running and this panel is on screen (it is not drawn
+  // when another tab of Settings is). See `docs/plans/reading.md`.
 
+  import { onDestroy } from 'svelte'
+  import { api } from '../lib/api'
+  import { lookupFiles } from '../lib/file-lookup'
   import { files } from '../lib/files.svelte'
+  import { crumbsOf } from '../lib/files-ui.svelte'
   import { formatSize } from '../lib/files'
   import { plural, relativeTime } from '../lib/format'
-  import type { FileKind, FileOrigin, FilesSettings, ScanReport } from '../lib/types'
+  import { quietly } from '../lib/state.svelte'
+  import { latest } from '../lib/store/latest'
+  import type {
+    DocIndexStatus,
+    FileId,
+    FileKind,
+    FileOrigin,
+    FilesSettings,
+    FolderInfo,
+    ScanReport,
+  } from '../lib/types'
   import Icon from './Icon.svelte'
 
   // The panel needs the status and nothing else, whether or not Files was
@@ -93,6 +115,178 @@
       .join(', ')
   }
 
+  // ── Documents ──────────────────────────────────────────────────────
+
+  type FolderList = 'indexFolders' | 'skipFolders'
+
+  /** The index as the service last said: counts, what could not be read, and
+   *  whether a pass is running. Null until the first answer. */
+  const index = $derived(files.indexStatus)
+  /** The first answer has been asked for, so a null `index` means it failed. */
+  let asked = $state(false)
+  let rebuilding = $state(false)
+
+  async function loadIndex(): Promise<void> {
+    await files.refreshIndexStatus()
+    asked = true
+  }
+  if (files.supported) void loadIndex()
+
+  // Polled only while a pass is running, and not while the window is hidden.
+  const running = $derived(index?.running === true)
+  $effect(() => {
+    if (!running) return
+    const timer = setInterval(() => {
+      if (!document.hidden) void loadIndex()
+    }, 3000)
+    return () => clearInterval(timer)
+  })
+
+  // Changing what is indexed starts a pass in the service, which is not yet
+  // running when the save returns: look again a moment later, and the poll
+  // above takes over for as long as it is.
+  let soon: ReturnType<typeof setTimeout> | null = null
+  onDestroy(() => {
+    if (soon) clearTimeout(soon)
+  })
+
+  async function saveDocuments(patch: Partial<FilesSettings>): Promise<void> {
+    if (!settings) return
+    await files.saveSettings({ ...$state.snapshot(settings), ...patch })
+    await loadIndex()
+    if (soon) clearTimeout(soon)
+    soon = setTimeout(() => void loadIndex(), 1500)
+  }
+
+  async function rebuild(): Promise<void> {
+    if (rebuilding) return
+    rebuilding = true
+    try {
+      await files.reindexDocuments()
+    } finally {
+      rebuilding = false
+    }
+  }
+
+  /** What could not be read, by file name: asked for once per set of files. */
+  const failedIds = $derived(
+    (index?.failed ?? [])
+      .slice(0, 20)
+      .map((f) => f.file)
+      .join(','),
+  )
+  let failedNames = $state.raw<Record<FileId, string>>({})
+  $effect(() => {
+    const ids = failedIds ? failedIds.split(',') : []
+    if (ids.length === 0) return
+    let stale = false
+    lookupFiles(ids)
+      .then((found) => {
+        if (!stale) failedNames = Object.fromEntries(found.map((f) => [f.id, f.name]))
+      })
+      .catch(() => {})
+    return () => {
+      stale = true
+    }
+  })
+
+  /** The index in a line: how much is in it, and what is not. */
+  function indexLine(s: DocIndexStatus): string {
+    return [
+      plural(s.indexed, 'document') + ' searchable',
+      s.pending > 0 ? `${s.pending.toLocaleString()} waiting` : '',
+      s.failed.length > 0 ? `${s.failed.length.toLocaleString()} could not be read` : '',
+    ]
+      .filter(Boolean)
+      .join(', ')
+  }
+
+  // The two lists of folders, and the one box that adds to either.
+
+  /** Which list a folder is being added to, if any. */
+  let adding = $state<FolderList | null>(null)
+  /** The folder the browser is looking into, relative to the files folder;
+   *  empty is the top. */
+  let looking = $state('')
+  let subfolders = $state.raw<FolderInfo[]>([])
+  /** The listing of `looking` has arrived. */
+  let listed = $state(false)
+  let typed = $state('')
+  let problem = $state<string | null>(null)
+  const listing = latest()
+
+  async function look(dir: string): Promise<void> {
+    const token = listing.next()
+    looking = dir
+    listed = false
+    try {
+      const answer = await api.listFolder(dir)
+      if (!listing.isCurrent(token)) return
+      subfolders = answer.folders
+    } catch (e) {
+      if (!listing.isCurrent(token)) return
+      subfolders = []
+      await quietly(e)
+    }
+    listed = true
+  }
+
+  function startAdding(list: FolderList): void {
+    adding = list
+    typed = ''
+    problem = null
+    void look('')
+  }
+
+  /** A path as the settings keep it: relative to the files folder, with `/`
+   *  and no slash at either end. The folder's own full path, pasted, is
+   *  shortened to what is inside it. Null, with `problem` saying why, if it
+   *  is not a place inside that folder. */
+  function relativeFolder(raw: string): string | null {
+    const text = raw.trim().replace(/\\/g, '/')
+    const root = folder && folder.state !== 'notSetUp' ? folder.path : ''
+    const base = root.replace(/\\/g, '/').replace(/\/+$/, '')
+    let path = text
+    if (base && (text === base || text.startsWith(`${base}/`))) {
+      path = text.slice(base.length)
+    } else if (/^([A-Za-z]:)?\//.test(text)) {
+      problem = 'That is outside the files folder. Give a path inside it, like Reading/Papers.'
+      return null
+    }
+    path = path.replace(/^\/+|\/+$/g, '')
+    if (path === '') {
+      problem = 'That is the whole folder. To cover all of it, take every folder off the list.'
+      return null
+    }
+    if (path.split('/').some((part) => part === '..' || part === '.')) {
+      problem = 'A path inside the folder cannot go up with “..”.'
+      return null
+    }
+    return path
+  }
+
+  /** Save one of the two lists. */
+  function saveFolders(list: FolderList, paths: string[]): void {
+    void saveDocuments(list === 'indexFolders' ? { indexFolders: paths } : { skipFolders: paths })
+  }
+
+  function addFolder(list: FolderList, raw: string): void {
+    if (!settings) return
+    problem = null
+    const path = relativeFolder(raw)
+    if (path === null) return
+    adding = null
+    if (!settings[list].includes(path)) saveFolders(list, [...settings[list], path])
+  }
+
+  function dropFolder(list: FolderList, path: string): void {
+    if (settings)
+      saveFolders(
+        list,
+        settings[list].filter((p) => p !== path),
+      )
+  }
+
   const scanning = $derived(files.busy || status?.scanning === true)
   const reachable = $derived(folder?.state === 'available')
   const legacy = $derived(status?.legacy ?? null)
@@ -101,6 +295,103 @@
     [...(usage?.byKind ?? [])].filter((k) => k.files > 0).sort((a, b) => b.bytes - a.bytes),
   )
 </script>
+
+<!-- Escape puts the folder browser away, and does not also leave Settings. -->
+<svelte:window
+  onkeydown={(e: KeyboardEvent) => {
+    if (adding && e.key === 'Escape') {
+      e.stopPropagation()
+      adding = null
+    }
+  }}
+/>
+
+<!-- One of the two lists of folders: what is on it, and a way to add -- by
+     going down through the files folder's own subfolders, or by typing a
+     path. Both are paths inside the files folder, never anywhere else. -->
+{#snippet folderList(list: FolderList, label: string, words: string, none: string)}
+  <div class="fact">
+    <span class="fact-label">{label}</span>
+    <p class="hint">{words}</p>
+    {#if settings}
+      <ul class="paths">
+        {#each settings[list] as path (path)}
+          <li>
+            <span class="path-icon"><Icon name="folder" size={14} /></span>
+            <code class="path-text">{path}</code>
+            <button
+              class="path-x"
+              title="Take it off the list"
+              aria-label="Take {path} off the list"
+              onclick={() => dropFolder(list, path)}
+            >
+              <Icon name="close" size={12} />
+            </button>
+          </li>
+        {:else}
+          <li class="none">{none}</li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if adding === list}
+      <div class="browser" role="group" aria-label="Choose a folder">
+        <nav class="crumbs" aria-label="Where you are in the files folder">
+          <button class="crumb" onclick={() => void look('')}>Files folder</button>
+          {#each crumbsOf(looking) as crumb (crumb.path)}
+            <span class="sep" aria-hidden="true">/</span>
+            <button class="crumb" onclick={() => void look(crumb.path)}>{crumb.name}</button>
+          {/each}
+        </nav>
+        <div class="dirs scroll">
+          {#each subfolders as sub (sub.path)}
+            <button class="side-row" onclick={() => void look(sub.path)}>
+              <span class="side-icon"><Icon name="folder" size={14} /></span>
+              <span class="side-text">{sub.name}</span>
+              <span class="side-count">{sub.items.toLocaleString()}</span>
+            </button>
+          {:else}
+            <p class="hint">{listed ? 'No folders inside this one.' : 'Looking…'}</p>
+          {/each}
+        </div>
+        <div class="buttons">
+          <button
+            class="btn btn-sm btn-primary"
+            disabled={looking === ''}
+            onclick={() => addFolder(list, looking)}
+          >
+            {looking === '' ? 'Open a folder below first' : `Use “${looking}”`}
+          </button>
+        </div>
+        <form
+          class="typed"
+          onsubmit={(e) => {
+            e.preventDefault()
+            addFolder(list, typed)
+          }}
+        >
+          <input
+            class="field small"
+            bind:value={typed}
+            placeholder="Or type a path, like Reading/Papers"
+            aria-label="Path of a folder inside the files folder"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn btn-sm" type="submit" disabled={!typed.trim()}>Add</button>
+        </form>
+        {#if problem}<p class="error">{problem}</p>{/if}
+        <div class="buttons">
+          <button class="btn btn-sm" onclick={() => (adding = null)}>Cancel</button>
+        </div>
+      </div>
+    {:else}
+      <button class="btn btn-sm btn-outline add" onclick={() => startAdding(list)}>
+        <Icon name="plus" size={12} /> Add a folder
+      </button>
+    {/if}
+  </div>
+{/snippet}
 
 <div class="panes">
   {#if !files.supported}
@@ -291,6 +582,93 @@
           </small>
         </span>
       </label>
+    </section>
+
+    <section aria-labelledby="fs-docs">
+      <span class="eyebrow" id="fs-docs">Documents</span>
+
+      <label class="toggle">
+        <input
+          type="checkbox"
+          checked={settings.indexDocuments}
+          onchange={(e) => void saveDocuments({ indexDocuments: e.currentTarget.checked })}
+        />
+        <span>
+          <b>Let the assistant search inside documents</b>
+          <small>
+            The words of the PDFs, EPUBs, Markdown and text files and web pages in the folder are
+            read into a search index, so it can find a passage across all of them. Without it, a
+            document can still be opened in the reader and asked about: it is only not searched
+            along with the others.
+          </small>
+        </span>
+      </label>
+      <p class="hint">
+        Only documents in the files folder are read. Encrypted files are read when you open them,
+        but are not indexed: they have no folder to choose.
+        {#if settings.indexDocuments && !settings.assistantAccess}
+          The assistant cannot search them while “Let the assistant find and read your files” is
+          off.
+        {/if}
+      </p>
+
+      {#if settings.indexDocuments}
+        {@render folderList(
+          'indexFolders',
+          'Folders to index',
+          'Each with everything under it. None on the list means the whole folder.',
+          'The whole folder',
+        )}
+        {@render folderList(
+          'skipFolders',
+          'Folders to leave out',
+          'Left out even when they are inside a folder above.',
+          'None',
+        )}
+
+        <div class="fact">
+          <span class="fact-label">The index</span>
+          {#if !index}
+            <p class="hint">
+              {asked ? 'The index could not be looked at just now.' : 'Looking…'}
+            </p>
+          {:else}
+            <p class="state">
+              {#if index.running}<Icon name="refresh" size={14} /> Reading documents…{/if}
+              {indexLine(index)}
+            </p>
+            {#if index.lastPass && !index.running}
+              <p class="hint">Last pass {relativeTime(index.lastPass)}.</p>
+            {/if}
+            {#if index.failed.length > 0}
+              <details class="problems">
+                <summary>{plural(index.failed.length, 'document')} could not be read</summary>
+                <ul>
+                  {#each index.failed.slice(0, 20) as failure (failure.file)}
+                    <li>{failedNames[failure.file] ?? 'A document'}: {failure.reason}</li>
+                  {/each}
+                </ul>
+              </details>
+            {/if}
+          {/if}
+        </div>
+
+        <div class="row-setting scan">
+          <span>
+            <b>Rebuild the index</b>
+            <small>
+              Empties it and reads every document again. Searching finds less until it is done.
+            </small>
+          </span>
+          <button
+            class="btn btn-outline"
+            disabled={rebuilding || !reachable}
+            onclick={() => void rebuild()}
+          >
+            {rebuilding ? 'Starting…' : 'Rebuild the index'}
+          </button>
+        </div>
+      {/if}
     </section>
 
     <section aria-labelledby="fs-old">
@@ -490,6 +868,105 @@
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 16%, transparent);
+  }
+
+  /* The two lists of folders for the document index. */
+  .paths {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .paths li {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+    padding: 2px var(--sp-1) 2px var(--sp-2);
+    border-radius: var(--radius-sm);
+    background: var(--bg-sunken);
+  }
+  .paths li.none {
+    padding: var(--sp-1) var(--sp-2);
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+    background: none;
+  }
+  .path-icon {
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--fg-faint);
+  }
+  .path-text {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    background: none;
+  }
+  .path-x {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    color: var(--fg-faint);
+  }
+  .path-x:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .add {
+    align-self: flex-start;
+  }
+  .browser {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-sunken);
+  }
+  .crumbs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+    font-size: var(--text-sm);
+  }
+  .crumb {
+    padding: 1px var(--sp-1);
+    border-radius: var(--radius-sm);
+    color: var(--accent);
+    font-weight: 550;
+  }
+  .crumb:hover {
+    background: var(--bg-hover);
+  }
+  .sep {
+    color: var(--fg-faint);
+  }
+  .dirs {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(var(--side-row-h) * 6);
+  }
+  .dirs .hint {
+    padding: var(--sp-2) var(--sp-3);
+  }
+  .typed {
+    display: flex;
+    gap: var(--sp-2);
+  }
+  .typed .field {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    font-size: var(--text-sm);
   }
 
   .state {

@@ -285,6 +285,11 @@ pub fn scan_now(svc: &Arc<Service>, vault: &Arc<Vault>) -> ScanReport {
         scans().entry(vault.path().to_path_buf()).or_default().last =
             Some((Timestamp::now(), report.clone()));
     }
+    // What the documents' index is built from has changed: it has a pass to
+    // make. A pass that found nothing new does not ring it.
+    if report.added + report.changed + report.moved + report.missing + report.returned > 0 {
+        crate::documents::task::wake();
+    }
     report
 }
 

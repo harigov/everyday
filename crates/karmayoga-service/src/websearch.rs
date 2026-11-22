@@ -42,6 +42,7 @@
 //! which is the check that survives somebody later forgetting the reason.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use karmayoga_core::id::BlobId;
 use karmayoga_core::websearch::images::{ImageResult, ImageSource, MAX_IMAGES};
@@ -55,6 +56,39 @@ pub use karmayoga_core::websearch::DEFAULT_LIMIT;
 
 use crate::error::{CommandError, CommandResult, codes};
 use crate::{covers, http, webpage};
+
+/// The least time between two requests to Crossref. Its public pool allows
+/// five a second and one at a time, and asks to be treated that way: a shelf
+/// of papers added in a row is the one thing here that could ask more often.
+const CROSSREF_GAP: Duration = Duration::from_millis(250);
+
+/// When the last Crossref request finished, held across the next one so that
+/// two calls running at once take turns -- the way `crate::maps` keeps to
+/// Nominatim's policy.
+static CROSSREF_TURN: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::const_new(None);
+
+/// A place in line for Crossref. Dropped, it records when the request ended,
+/// whether it answered or failed, so the next one is spaced from that.
+struct Turn(tokio::sync::MutexGuard<'static, Option<Instant>>);
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        *self.0 = Some(Instant::now());
+    }
+}
+
+/// Wait for Crossref's turn: after any request in flight, and at least
+/// [`CROSSREF_GAP`] after the last one.
+async fn crossref_turn() -> Turn {
+    let last = CROSSREF_TURN.lock().await;
+    if let Some(at) = *last {
+        let since = at.elapsed();
+        if since < CROSSREF_GAP {
+            tokio::time::sleep(CROSSREF_GAP - since).await;
+        }
+    }
+    Turn(last)
+}
 
 /// Run one search: build the request in the core, fetch it here, parse it in
 /// the core.
@@ -90,13 +124,18 @@ pub async fn lookup(query: &str, kind: &Kind, limit: u32) -> CommandResult<Vec<S
     if !kind.looks_things_up() {
         return Ok(Vec::new());
     }
+    let request = SearchRequest::for_kind(query, kind).limit(limit);
     // A pasted address is answered with itself, and nothing is searched for
-    // it: the person has already said which page they mean.
-    if let Some(page) = SearchResult::for_address(query) {
+    // it: the person has already said which page they mean. The exception is
+    // a DOI's, which is Crossref's to answer and not a page to be read; the
+    // core's `WebSearch::lookup` makes the same one.
+    if request.source != Source::Crossref
+        && let Some(page) = SearchResult::for_address(query)
+    {
         return Ok(vec![page]);
     }
     let mut last: Option<CommandError> = None;
-    for attempt in SearchRequest::for_kind(query, kind).limit(limit).attempts() {
+    for attempt in request.attempts() {
         match search(&attempt).await {
             Ok(hits) if !hits.is_empty() => return Ok(hits),
             Ok(_) => {}
@@ -113,8 +152,27 @@ pub async fn lookup(query: &str, kind: &Kind, limit: u32) -> CommandResult<Vec<S
     }
 }
 
+/// Look a DOI up on Crossref: the one record it names, or `None` when
+/// Crossref has no such work.
+///
+/// For a file that says what its DOI is -- see `create_item_from_file` --
+/// where the answer is better than what the file says about itself. The
+/// caller decides whether going to the network is allowed and what a failure
+/// costs; this only asks. Over the shared client, which says who this is in
+/// its `User-Agent` (the app and its address, no one's email), and in
+/// Crossref's turn.
+pub(crate) async fn lookup_doi(doi: &str) -> CommandResult<Option<SearchResult>> {
+    let request = SearchRequest::new(doi).on(Source::Crossref).limit(1);
+    Ok(search(&request).await?.into_iter().next())
+}
+
 /// GET one prepared request and return the body as text.
 async fn get(request: &Request) -> CommandResult<String> {
+    // Held until the answer is in, or has failed.
+    let _turn = match request.source {
+        Source::Crossref => Some(crossref_turn().await),
+        _ => None,
+    };
     let response = http::client()?
         .get(&request.url)
         .header(reqwest::header::ACCEPT, request.accept)
@@ -621,6 +679,29 @@ mod tests {
         let mut proposed = json!({ "ok": true, "action": "proposed" });
         settle_cover(&vault, Some(CoverFetch::Fetched { url: url.into(), blob }), &mut proposed);
         assert!(proposed.get("cover").is_none(), "got {proposed}");
+    }
+
+    #[tokio::test]
+    async fn crossref_requests_wait_their_turn_and_are_spaced() {
+        // The first may have to wait for another test's request; the second
+        // never goes before the gap after the first.
+        drop(crossref_turn().await);
+        let ended = Instant::now();
+        let second = crossref_turn().await;
+        assert!(
+            ended.elapsed() >= CROSSREF_GAP - Duration::from_millis(20),
+            "only {:?} after the one before",
+            ended.elapsed()
+        );
+        drop(second);
+
+        // Two at once are not at once: the second cannot start while the
+        // first holds the turn.
+        let first = crossref_turn().await;
+        let blocked =
+            tokio::time::timeout(Duration::from_millis(50), crossref_turn()).await.is_err();
+        assert!(blocked, "took a turn that was not free");
+        drop(first);
     }
 
     #[tokio::test]

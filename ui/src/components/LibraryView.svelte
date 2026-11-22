@@ -7,6 +7,7 @@
   // they only ever search. The list is one keystroke away for when a shelf has
   // grown past the point where pictures help.
 
+  import { files } from '../lib/files.svelte'
   import { article, plural } from '../lib/format'
   import { FILTERS, coverRatio, library, type Filter } from '../lib/library.svelte'
   import { menu } from '../lib/menu.svelte'
@@ -271,6 +272,10 @@
               Type a title in the box above and press Enter. With the
               <Icon name="sparkle" size={12} /> on, the cover and the details are looked up for you; with
               it off, exactly what you type is what you get.
+              {#if files.supported}
+                A PDF or an EPUB from your files can go on a shelf too: the
+                <Icon name="file" size={12} /> button picks one.
+              {/if}
             {/snippet}
             {#snippet action()}
               <button class="btn btn-primary" onclick={() => library.focusCapture()}>
@@ -321,7 +326,15 @@
                 />
               </span>
               <span class="cell name">
-                <span class="t">{row.title}</span>
+                <span class="t">
+                  {row.title}
+                  {#if row.files.length > 0}
+                    <!-- A file to read: Read opens it from the panel. -->
+                    <span class="filed" title="Has a file to read">
+                      <Icon name="file" size={12} />
+                    </span>
+                  {/if}
+                </span>
                 {#if due && due.daysOver >= -7}
                   <span class="c">{lateness(due)}</span>
                 {:else if row.creator}<span class="c">{row.creator}</span>{/if}
@@ -439,9 +452,10 @@
   }
   /* Wide enough for the field to stay a field -- at the icons-only floor it
      was a shelf picker and two buttons with nowhere to type. The status tabs
-     scroll to make the room. */
+     scroll to make the room. A third button, for adding from a file, takes
+     what the field would have had. */
   .toolbar-end.right {
-    min-width: 220px;
+    min-width: 250px;
   }
 
   .capture {
@@ -644,6 +658,12 @@
   .name .c {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .filed {
+    display: inline-flex;
+    margin-left: var(--sp-1);
+    vertical-align: -2px;
+    color: var(--fg-faint);
   }
   .shelf {
     width: 100px;

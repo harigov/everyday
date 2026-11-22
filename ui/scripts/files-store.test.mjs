@@ -195,7 +195,7 @@ assert.equal(files.listing.files.length, 0, 'a sealed file is in no folder')
 assert.equal(files.visibleFiles.length, 0)
 assert.equal(files.albums.length, 2)
 const usage = files.status.usage
-assert.equal(usage.files, 56)
+assert.equal(usage.files, 57)
 assert.equal(usage.sealedFiles, 1)
 assert.equal(usage.trashedFiles, 2)
 assert.equal(usage.missingFiles, 1)
@@ -327,7 +327,7 @@ files.clearSelection()
 files.setView('recent')
 await loaded()
 assert.equal(files.view, 'recent')
-assert.equal(files.page.total, 54, 'present, not hidden, not in the trash')
+assert.equal(files.page.total, 55, 'present, not hidden, not in the trash')
 assert.equal(files.visibleFiles[0].name, 'IMG_7741.jpg', 'newest added first')
 for (let i = 1; i < files.visibleFiles.length; i++) {
   assert.ok(files.visibleFiles[i - 1].addedAt >= files.visibleFiles[i].addedAt, 'in order added')
@@ -847,6 +847,7 @@ app.section = 'files'
   assert.deepEqual(Object.keys(USE_LABELS).sort(), [
     'entry',
     'healthDocument',
+    'item',
     'meal',
     'message',
     'note',

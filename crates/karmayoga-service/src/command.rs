@@ -306,6 +306,12 @@ impl Command {
             #[cfg(any(debug_assertions, test))]
             assert_declared_matches_touched(self.name, kind, &touched, out.id.as_deref(), &out.ids);
             svc.events().changed(Change { kind, op, id: out.id, ids: out.ids, origin });
+            // A file added, moved, renamed or trashed by hand is the documents'
+            // index's business too; the reconciler wakes it for what arrives
+            // on disk by itself.
+            if kind == crate::events::Kind::File {
+                crate::documents::task::wake();
+            }
         }
         Ok(out.value)
     }
@@ -668,6 +674,15 @@ mod tests {
             // `finish_upload`, which announces the file it makes.
             "begin_upload",
             "cancel_upload",
+            // Where somebody is in a document, kept in the file's properties
+            // every few seconds while they read. Nothing anybody else draws;
+            // an item whose progress it moves is announced by the command
+            // itself, and only then.
+            "save_reader_position",
+            // Empties the documents' search index, which is derived and read
+            // again by the background pass; nothing drawn changes, and
+            // Settings asks `documents_status` how the pass is going.
+            "reindex_documents",
             // Signs in to an account's outgoing server and sends nothing. A
             // write for its reach, not for a record anybody draws.
             "check_sending",

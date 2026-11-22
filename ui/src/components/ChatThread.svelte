@@ -36,6 +36,7 @@
   import { APPS } from '../lib/apps'
   import { clipboardPicture, mayBePicture } from '../lib/clipboard-picture'
   import { lookOf } from '../lib/companion'
+  import { isReadable } from '../lib/documents'
   import { splitDigest } from '../lib/dream'
   import { lookupFiles, whyNotAdded } from '../lib/file-lookup'
   import { addFiles } from '../lib/files'
@@ -45,6 +46,7 @@
   import { notify } from '../lib/notify.svelte'
   import { headline, toWire } from '../lib/onscreen'
   import { panels } from '../lib/panels.svelte'
+  import { reader, type ReaderPlaceRequest } from '../lib/reader.svelte'
   import { onScreenNow } from '../lib/screen.svelte'
   import { app, handle } from '../lib/state.svelte'
   import type { Attachment, FileEntry, FileId, Job } from '../lib/types'
@@ -375,13 +377,16 @@
   }
 
   /** A `files:` link in a reply, which `renderMarkdown` draws as a button
-   *  carrying the id. Looked up afresh: what is wanted is the file as it is
-   *  now, and it may have been trashed since it was named. */
-  async function openLinked(id: FileId) {
+   *  carrying the id -- and, when the assistant cited a place in a document,
+   *  the page or the block. Looked up afresh: what is wanted is the file as
+   *  it is now, and it may have been trashed since it was named. A document
+   *  opens in the reader, at the place cited; anything else in the viewer. */
+  async function openLinked(id: FileId, place: ReaderPlaceRequest = {}) {
     try {
       const [file] = await lookupFiles([id], { fresh: true })
-      if (file) viewer = { files: [file], index: 0 }
-      else notify.warn('That file is no longer in Files.')
+      if (!file) notify.warn('That file is no longer in Files.')
+      else if (isReadable(file)) await reader.openFile(id, place)
+      else viewer = { files: [file], index: 0 }
     } catch (e) {
       await handle(e)
     }
@@ -394,9 +399,16 @@
     const onclick = (e: MouseEvent) => {
       const chip = e.target instanceof Element ? e.target.closest<HTMLElement>('.file-chip') : null
       const id = chip?.dataset.file
-      if (!id) return
+      if (!chip || !id) return
       e.preventDefault()
-      void openLinked(id)
+      // A place cited in a document, as digits; a chip without one has none
+      // of these, and `Number(undefined)` is not a place.
+      const place: ReaderPlaceRequest = {}
+      const page = Number(chip.dataset.page)
+      const block = Number(chip.dataset.block)
+      if (page >= 1) place.page = page
+      if (block >= 0) place.block = block
+      void openLinked(id, place)
     }
     node.addEventListener('click', onclick)
     return { destroy: () => node.removeEventListener('click', onclick) }

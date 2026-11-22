@@ -362,6 +362,9 @@ async fn save_files_settings(
     // A new folder is a folder to watch and to look through; a different
     // trash period is nothing to wait five minutes for.
     files::task::wake();
+    // And what is indexed -- on or off, which folders -- is in these settings:
+    // the documents' index has a pass to make now, not in five minutes.
+    crate::documents::task::wake();
     Ok(status)
 }
 
