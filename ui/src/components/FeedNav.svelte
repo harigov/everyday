@@ -12,9 +12,17 @@
   // The same three menu layers as every other sidebar list: the blank space,
   // a folder, a source. What a source's menu offers is what has a command
   // behind it; the rest of what can be changed is in its settings.
+  //
+  // Above the following, two places that are lists of their own and not
+  // sources: Up Next, what is lined up to read, hear and watch, and
+  // Recommended, what the Feed would pick from everything unread. Shows sit
+  // in a group below the folders, headed by a row that opens every episode
+  // at once: a podcast is a feed, but it is not read the way a blog is, and a
+  // show filed in a folder beside articles is a show nobody finds again.
 
   import { feed, type FeedFolder, type FeedScope } from '../lib/feed.svelte'
   import { siteOf, sourceLabel, unfollowDetail } from '../lib/feed'
+  import { upnext } from '../lib/upnext.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { openExternal } from '../lib/open-external'
@@ -51,20 +59,32 @@
 
   function toggleFolder(name: string) {
     const next = new Set(closed)
-    if (folderOpen(name)) next.add(name)
+    if (name === PODCASTS ? showsOpen : folderOpen(name)) next.add(name)
     else next.delete(name)
     closed = next
     closedPref.set([...next])
   }
+
+  /**
+   * The Podcasts group's own entry in the same list of shut things. A name no
+   * folder can have -- a NUL is not something anyone types -- so a folder
+   * that happens to be called "Podcasts" is not folded with it.
+   */
+  const PODCASTS = '\u0000podcasts'
+
+  const shows = $derived(feed.podcastSources)
+  const showsUnread = $derived(shows.reduce((n, s) => n + s.unread, 0))
+  /** Open unless shut, and always while one of its shows is the open source. */
+  const showsOpen = $derived(!closed.has(PODCASTS) || !!feed.source?.source.podcast)
 
   // ── What the rows show ────────────────────────────────────────────────
 
   /** Is this the place the list is showing? */
   function isScope(scope: FeedScope): boolean {
     const now = feed.scope
-    if (scope.kind === 'all') return now.kind === 'all'
     if (scope.kind === 'folder') return now.kind === 'folder' && now.name === scope.name
-    return now.kind === 'source' && now.id === scope.id
+    if (scope.kind === 'source') return now.kind === 'source' && now.id === scope.id
+    return now.kind === scope.kind
   }
 
   function rowTitle(summary: SourceSummary): string {
@@ -72,6 +92,8 @@
     const state = summary.source.paused ? ' (paused)' : ''
     return summary.unread > 0 ? `${name}${state} — ${summary.unread} unread` : `${name}${state}`
   }
+
+  const upNextCount = $derived(upnext.items.length)
 
   // ── What a right-click offers ─────────────────────────────────────────
 
@@ -142,10 +164,44 @@
     ])
   }
 
+  /** The Podcasts heading: open them, refresh them, fold them. */
+  function showsMenu(): MenuItem[] {
+    const scope: FeedScope = { kind: 'podcasts' }
+    return tidyMenu([
+      {
+        label: 'Open',
+        icon: 'podcast',
+        disabled: isScope(scope),
+        run: () => void feed.select(scope),
+      },
+      {
+        label: 'Refresh',
+        icon: 'refresh',
+        run: () => {
+          for (const s of shows) void feed.refresh(s.source.id)
+        },
+      },
+      {
+        label: 'Mark all read',
+        icon: 'tick',
+        disabled: showsUnread === 0,
+        hint: showsUnread > 0 ? String(showsUnread) : undefined,
+        run: () => void markScopeRead(scope),
+      },
+      SEP,
+      {
+        label: showsOpen ? 'Fold' : 'Unfold',
+        icon: 'chevron',
+        run: () => toggleFolder(PODCASTS),
+      },
+    ])
+  }
+
   /** The blank space, and the heading: nothing in either is about one source. */
   function navMenu(): MenuItem[] {
     return tidyMenu([
       { label: 'Follow something…', icon: 'plus', run: () => feed.openAdd() },
+      { label: 'Browse podcasts and feeds…', icon: 'compass', run: () => feed.openDirectory() },
       feed.sources.length > 0 && {
         label: 'Refresh everything',
         icon: 'refresh',
@@ -173,8 +229,37 @@
     {#if feed.unreadTotal > 0}<span class="side-count strong">{feed.unreadTotal}</span>{/if}
   </button>
 
+  <button
+    class="side-row"
+    class:sel={isScope({ kind: 'upnext' })}
+    title={upNextCount > 0 ? `Up Next — ${upNextCount} lined up` : 'Up Next'}
+    onclick={() => void feed.select({ kind: 'upnext' })}
+  >
+    <span class="side-icon"><Symbol name="play" size={17} /></span>
+    <span class="side-text">Up Next</span>
+    {#if upNextCount > 0}<span class="side-count">{upNextCount}</span>{/if}
+  </button>
+
+  <button
+    class="side-row"
+    class:sel={isScope({ kind: 'recommended' })}
+    title="Recommended"
+    onclick={() => void feed.select({ kind: 'recommended' })}
+  >
+    <span class="side-icon"><Symbol name="sparkle" size={17} /></span>
+    <span class="side-text">Recommended</span>
+  </button>
+
   <div class="side-head">
     <span class="eyebrow">Following</span>
+    <button
+      class="side-add"
+      title="Browse podcasts and feeds"
+      aria-label="Browse podcasts and feeds"
+      onclick={() => feed.openDirectory()}
+    >
+      <Icon name="compass" size={15} />
+    </button>
     <button
       class="side-add"
       title="Follow something"
@@ -251,6 +336,36 @@
       {/if}
     {/if}
   {/each}
+
+  {#if shows.length > 0}
+    <!-- The group's header is a folder's: a chevron that folds, and a name that
+         opens everything under it. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="folder" oncontextmenu={(e) => menu.show(e, showsMenu())}>
+      <button
+        class="fold"
+        aria-expanded={showsOpen}
+        aria-label="{showsOpen ? 'Fold' : 'Unfold'} Podcasts"
+        onclick={() => toggleFolder(PODCASTS)}
+      >
+        <span class="chev" class:down={showsOpen}><Icon name="chevron" size={12} /></span>
+      </button>
+      <button
+        class="side-row folder-name"
+        class:sel={isScope({ kind: 'podcasts' })}
+        title={showsUnread > 0 ? `Podcasts — ${showsUnread} unread` : 'Podcasts'}
+        onclick={() => void feed.select({ kind: 'podcasts' })}
+      >
+        <span class="side-text">Podcasts</span>
+        {#if !showsOpen && showsUnread > 0}<span class="side-count">{showsUnread}</span>{/if}
+      </button>
+    </div>
+    {#if showsOpen}
+      {#each shows as summary (summary.source.id)}
+        {@render sourceRow(summary, true)}
+      {/each}
+    {/if}
+  {/if}
 </nav>
 
 {#if editing}

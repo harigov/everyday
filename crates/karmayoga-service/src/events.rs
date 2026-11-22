@@ -234,6 +234,12 @@ pub enum Kind {
     /// A story in the Feed. A refresh raises one with no id, meaning
     /// "reload the list", as a mail sync pass does for threads.
     Story,
+    /// Up Next changed. Something added in the background (a show's new
+    /// episode, a top-up from Recommended) raises one with no id.
+    Queue,
+    /// Something was read, heard or watched -- progress recorded or
+    /// forgotten.
+    Consumption,
     /// A linked bank. Its sync state is not announced on its own: a sync
     /// that changed anything raises [`Kind::Txn`].
     BankLink,
@@ -331,7 +337,7 @@ impl Kind {
             | Kind::Memory
             | Kind::Skill => Some(Scope::Agent),
             Kind::Recording | Kind::Transcript | Kind::Voiceprint => Some(Scope::Meetings),
-            Kind::NewsSource | Kind::Story => Some(Scope::News),
+            Kind::NewsSource | Kind::Story | Kind::Queue | Kind::Consumption => Some(Scope::News),
             Kind::BankLink
             | Kind::BankAccount
             | Kind::Txn
@@ -399,6 +405,7 @@ impl TryFrom<Kind> for RecordKind {
             Kind::Voiceprint => Ok(RecordKind::Voiceprint),
             Kind::NewsSource => Ok(RecordKind::NewsSource),
             Kind::Story => Ok(RecordKind::Story),
+            Kind::Queue | Kind::Consumption => Err(()),
             Kind::BankLink => Ok(RecordKind::BankLink),
             Kind::BankAccount => Ok(RecordKind::BankAccount),
             Kind::Txn => Ok(RecordKind::Txn),

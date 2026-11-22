@@ -6,13 +6,24 @@
   // Until there is something followed there is nothing to list, so the whole
   // pane says how to start instead of showing an empty column beside an empty
   // page.
+  //
+  // Which list is in the column follows the sidebar. A source, a folder, the
+  // podcasts and All are stories, newest first: `StoryList`. Recommended is
+  // stories too, but chosen and ordered by the Feed: the same two panes, with
+  // its own column. Up Next is not a list of stories at all -- it is
+  // episodes, files and articles in the order they will be taken in -- so it
+  // is a page of its own, whole width, with nothing to read beside it.
 
   import { feed } from '../lib/feed.svelte'
+  import { upnext } from '../lib/upnext.svelte'
   import AddSource from './AddSource.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import PodcastDirectory from './PodcastDirectory.svelte'
+  import RecommendedView from './RecommendedView.svelte'
   import StoryList from './StoryList.svelte'
   import StoryView from './StoryView.svelte'
+  import UpNextView from './UpNextView.svelte'
 
   // Loaded when the view appears rather than when the store is imported, so a
   // vault whose owner never opens this app never reads a source. `start` is
@@ -23,9 +34,12 @@
   // read is a flash of the wrong sentence.
   let ready = $state(false)
   void feed.start().finally(() => (ready = true))
+  // Up Next's count is in the sidebar, which is there before any page is.
+  void upnext.load()
 
   const empty = $derived(ready && feed.sources.length === 0)
   const story = $derived(feed.story)
+  const scope = $derived(feed.scope.kind)
 
   let followingHackerNews = $state(false)
 
@@ -38,17 +52,23 @@
   }
 </script>
 
-{#if empty}
+{#if scope === 'upnext'}
+  <!-- Whether or not anything is followed: files and library items queue too. -->
+  <UpNextView />
+{:else if empty}
   <main class="main">
     <EmptyState lead="Nothing followed yet.">
       {#snippet icon()}<Icon name="rss" size={30} weight={1.3} />{/snippet}
       {#snippet note()}
-        Follow a site, Hacker News, or the newsletters already arriving in your mail. Everything is
-        kept on this device and can be read with no network.
+        Follow a site, a podcast, Hacker News, or the newsletters already arriving in your mail.
+        Everything is kept on this device and can be read with no network.
       {/snippet}
       {#snippet action()}
         <div class="actions">
           <button class="btn btn-primary" onclick={() => feed.openAdd()}>Add a feed</button>
+          <button class="btn" onclick={() => feed.openDirectory('podcasts')}>
+            Browse podcasts
+          </button>
           <button
             class="btn"
             disabled={followingHackerNews}
@@ -61,13 +81,21 @@
     </EmptyState>
   </main>
 {:else}
-  <StoryList />
+  {#if scope === 'recommended'}
+    <RecommendedView />
+  {:else}
+    <StoryList />
+  {/if}
   <main class="main">
     {#if story}
       <StoryView {story} />
     {:else}
       <EmptyState lead="Select a story">
-        {#snippet note()}j and k move, Enter opens.{/snippet}
+        {#snippet note()}
+          {scope === 'recommended'
+            ? 'The arrow keys move, Enter opens.'
+            : 'j and k move, Enter opens.'}
+        {/snippet}
       </EmptyState>
     {/if}
   </main>
@@ -75,6 +103,10 @@
 
 {#if feed.adding}
   <AddSource />
+{/if}
+
+{#if feed.directoryOpen}
+  <PodcastDirectory />
 {/if}
 
 <style>

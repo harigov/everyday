@@ -50,6 +50,7 @@ use crate::files::{
 };
 use crate::id::{
     AlbumId, BlobId, ConversationId, EntryId, FileId, HealthDocumentId, ItemId, MealId, NoteId,
+    StoryId,
 };
 use crate::model::{Attachment, MediaKind};
 use crate::note::Note;
@@ -533,6 +534,28 @@ impl Vault {
                                 title: meal_title(&m),
                                 when: Some(m.at),
                                 parent: None,
+                            }),
+                            Err(Error::NotFound { .. }) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    RefKind::Story => {
+                        let (Ok(story_id), Some(news)) =
+                            (StoryId::parse(&owner.id), u.store.news())
+                        else {
+                            continue;
+                        };
+                        match news.get_story(story_id) {
+                            // Its source's id rides along so the interface
+                            // can open the story where it is in the Feed.
+                            Ok(st) => uses.push(FileUse {
+                                owner,
+                                title: match st.title.trim() {
+                                    "" => "Untitled story".to_string(),
+                                    t => t.to_string(),
+                                },
+                                when: Some(st.published_at),
+                                parent: Some(st.source_id.to_string()),
                             }),
                             Err(Error::NotFound { .. }) => {}
                             Err(e) => return Err(e),
@@ -1731,6 +1754,19 @@ impl Vault {
                     for file in &item.files {
                         refs.push((RefOwner::new(RefKind::Item, item.id), *file));
                     }
+                }
+            }
+            if let Some(news) = u.store.news() {
+                match news.stories_with_files() {
+                    Ok(stories) => {
+                        for story in stories {
+                            for file in story.files.all() {
+                                refs.push((RefOwner::new(RefKind::Story, story.id), file));
+                            }
+                        }
+                    }
+                    Err(Error::Unsupported(_)) => {}
+                    Err(e) => return Err(e),
                 }
             }
             // Only files the catalog holds, as `set_file_refs` keeps.

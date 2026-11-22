@@ -8,6 +8,10 @@
   // keeps (the page you are at) is shown under them. The first file is the
   // reading copy; any other can be made it. Files are never copied in: they
   // are chosen from the files folder (see `docs/plans/reading.md`).
+  //
+  // Any item can be put in **Up Next**, the Feed's queue of what to read and
+  // hear next -- an article saved with nothing but its link included, which
+  // Up Next opens where it lives; the button says when it is already there.
 
   import { tick } from 'svelte'
   import { api } from '../lib/api'
@@ -22,6 +26,7 @@
   import { ratingLabel } from '../lib/rating'
   import { reader } from '../lib/reader.svelte'
   import { app } from '../lib/state.svelte'
+  import { upnext } from '../lib/upnext.svelte'
   import { looksThingsUp, sourceLabel } from '../lib/websearch'
   import { ITEM_STATUSES, VIAS } from '../lib/types'
   import type {
@@ -163,6 +168,16 @@
     const word = p.unit ? p.unit.charAt(0).toUpperCase() + p.unit.slice(1) : ''
     return `${word ? word + ' ' : ''}${p.position}${p.total ? ` of ${p.total}` : ''}`
   })
+
+  /** The item is in Up Next. Up Next is loaded with the window (`PlayerHost`),
+   *  so this is right on the first draw. */
+  const queued = $derived(upnext.isQueued({ type: 'item', id: item.id }))
+
+  function toggleQueued() {
+    const what = { type: 'item' as const, id: item.id }
+    if (queued) void upnext.removeFor(what)
+    else void upnext.add(what)
+  }
 
   function read(id: FileId | undefined = readingFile) {
     if (id) void reader.openFile(id, { item: item.id })
@@ -619,10 +634,11 @@
           </div>
         {/each}
 
-        {#if readingFile}
-          <!-- Reading it, when it has a file the reader can open: Read, or
-               ask about it, and where the reader left off. -->
-          <div class="reading">
+        <!-- Reading it, when it has a file the reader can open: Read, or
+             ask about it; and putting it in Up Next, whatever it is --
+             then where the reader left off. -->
+        <div class="reading">
+          {#if readingFile}
             <button
               class="btn btn-sm btn-primary"
               title="Read it, with its contents beside it"
@@ -637,9 +653,18 @@
             >
               <Icon name="sparkle" size={14} /> Ask
             </button>
-          </div>
-          {#if readerProgress}<span class="read-at">{readerProgress}</span>{/if}
-        {/if}
+          {/if}
+          <button
+            class="btn btn-sm btn-outline"
+            aria-pressed={queued}
+            title={queued ? 'In Up Next: take it out' : 'Add it to Up Next'}
+            onclick={toggleQueued}
+          >
+            <Icon name="queue-add" size={14} />
+            {queued ? 'In Up Next' : 'Add to Up Next'}
+          </button>
+        </div>
+        {#if readingFile && readerProgress}<span class="read-at">{readerProgress}</span>{/if}
       </div>
     </div>
 

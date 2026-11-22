@@ -16,6 +16,7 @@ pub mod calendars;
 pub mod chat;
 pub mod connections;
 pub mod documents;
+pub mod downloads;
 pub mod files;
 pub mod health;
 pub mod images;
@@ -39,9 +40,11 @@ pub mod money;
 pub mod news;
 pub mod newsmail;
 pub mod notes;
+pub mod podcasts;
 pub mod proposals;
 pub mod purpose;
 pub mod quick;
+pub mod ranking;
 pub mod routines;
 pub mod screentime;
 pub mod signin;
@@ -51,6 +54,7 @@ pub mod templates;
 pub mod trackers;
 pub mod transcripts;
 pub mod transfer;
+pub mod upnext;
 pub mod vault;
 pub mod voice;
 pub mod weather;
@@ -100,6 +104,10 @@ pub fn catalog() -> &'static [&'static Command] {
             mailwrite::COMMANDS,
             news::COMMANDS,
             newsmail::COMMANDS,
+            podcasts::COMMANDS,
+            downloads::COMMANDS,
+            upnext::COMMANDS,
+            ranking::COMMANDS,
             money::COMMANDS,
             screentime::COMMANDS,
             files::COMMANDS,

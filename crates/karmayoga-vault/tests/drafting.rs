@@ -318,6 +318,11 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     // the person's reading, not records to propose.
     "follow_source",
     "unfollow_source",
+    "follow_podcast",
+    // Up Next is what the person means to hear next; a dream choosing it
+    // would be choosing for them.
+    "add_to_up_next",
+    "remove_from_up_next",
     "mark_stories_read",
     "save_story",
     // How the person sorts and budgets their money is theirs to decide: a

@@ -87,6 +87,37 @@
       "title": "Add lab result"
     },
     {
+      "domain": "news",
+      "effect": "write",
+      "name": "add_to_up_next",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "file_id": {
+            "description": "An audio, video or document file from the person's files.",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "An item on one of the person's library shelves.",
+            "type": "string"
+          },
+          "next": {
+            "description": "Put it at the front, to play next, instead of at the end. Defaults to false.",
+            "type": "boolean"
+          },
+          "story_id": {
+            "description": "A story from list_stories: an episode or an article.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "Add to up next"
+    },
+    {
       "domain": "mail",
       "effect": "write",
       "name": "archive_thread",
@@ -1541,6 +1572,35 @@
     {
       "domain": "news",
       "effect": "write",
+      "name": "follow_podcast",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "folder": {
+            "description": "A folder to file it under in the Feed's sidebar.",
+            "type": "string"
+          },
+          "title": {
+            "description": "What to call it. Defaults to the site's host name, until the Feed learns the show's own.",
+            "type": "string"
+          },
+          "url": {
+            "description": "The show's own RSS feed address, starting with https://. Not the show's web page and not a link to one episode.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "Follow podcast"
+    },
+    {
+      "domain": "news",
+      "effect": "write",
       "name": "follow_source",
       "parameters": {
         "additionalProperties": false,
@@ -2348,6 +2408,37 @@
       "title": "List labs"
     },
     {
+      "domain": "news",
+      "effect": "read",
+      "name": "list_listening_history",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "finished_only": {
+            "description": "Only what the person finished: heard or read to the end.",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "since": {
+            "description": "Only what was last read, heard or watched on or after this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "until": {
+            "description": "Only what was last read, heard or watched on or before this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "List listening history"
+    },
+    {
       "domain": "library",
       "effect": "read",
       "name": "list_logs",
@@ -2940,6 +3031,25 @@
       "scope": "trackers",
       "sensitivity": "ordinary",
       "title": "List trackers"
+    },
+    {
+      "domain": "news",
+      "effect": "read",
+      "name": "list_up_next",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "List up next"
     },
     {
       "domain": "health",
@@ -3768,6 +3878,27 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Remember"
+    },
+    {
+      "domain": "news",
+      "effect": "write",
+      "name": "remove_from_up_next",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "entry_id": {
+            "description": "An entry's id, from list_up_next.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry_id"
+        ],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "Remove from up next"
     },
     {
       "domain": "jobs",

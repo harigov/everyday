@@ -43,6 +43,7 @@ mod keepintouch;
 mod keys;
 mod library;
 mod lifecycle;
+mod listening;
 mod llm;
 mod mail;
 mod maintenance;
@@ -62,10 +63,12 @@ mod templates;
 mod tests;
 pub mod touched;
 mod trackers;
+pub mod upnext_entry;
 mod writing;
 
 pub use backup::BACKUP_STAGING_DIRNAME;
 pub use header::VaultHeader;
+pub use listening::{MAX_AUTOFILL, MAX_CRITERIA, MAX_CRITERION_CHARS, QueuePlace};
 
 /// Unwrap `header`'s data key with `password`, without a vault: what
 /// [`Vault::unlock`] does first, and all a restore from a backup has to go on

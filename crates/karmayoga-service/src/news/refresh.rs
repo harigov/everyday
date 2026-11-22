@@ -9,15 +9,17 @@
 //! source's [`FetchState`]: the validators for next time, when to ask again,
 //! and why it failed if it did.
 //!
-//! The refresher never writes a [`NewsSource`] itself, with one exception
-//! that has its own doc (`pause`, below). A rename made while a fetch is in flight
-//! is therefore never overwritten by it.
+//! The refresher never writes a [`NewsSource`] itself, with two exceptions
+//! that have their own docs (`pause` and `learn`, below). A rename made while a
+//! fetch is in flight is therefore never overwritten by either: both read the
+//! source afresh and change only the one thing they are for.
 //!
 //! A story is built only for what is new. What was stored before is left
 //! exactly as it is -- the store sees to `read` and `saved` -- except that a
-//! Hacker News story's points and comments are brought up to date, and that
+//! Hacker News story's points and comments are brought up to date, that
 //! an article the same address brought from two sources becomes one row
-//! that says so ([`Story::also`]).
+//! that says so ([`Story::also`]), and that an episode stored before its feed
+//! was known to be a podcast's is given the file it names.
 //!
 //! # The loop
 //!
@@ -29,7 +31,9 @@
 //! than to fail.
 
 use super::fetch::{self, FetchError, Fetched};
-use super::{Incoming, RefreshReport, extract, hn, newsletters, parse, sanitize};
+use super::{
+    Incoming, RefreshReport, directory, downloads, extract, hn, newsletters, parse, rank, sanitize,
+};
 use crate::ctx::Scope;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Notification, Op};
@@ -42,7 +46,7 @@ use karmayoga_core::Vault;
 use karmayoga_core::id::{NewsSourceId, StoryId};
 use karmayoga_core::news::schedule::{self, Attempt, Hints};
 use karmayoga_core::news::{
-    Also, BodyOrigin, FetchState, HnList, NewsSource, SourceKind, Story, StoryBody,
+    Also, BodyOrigin, FetchState, HnList, NewsSource, PodcastSettings, SourceKind, Story, StoryBody,
 };
 use karmayoga_core::timestamped::Timestamped;
 use rand::Rng;
@@ -84,8 +88,9 @@ const UNTITLED_CHARS: usize = 80;
 /// beyond the report.
 struct Turn {
     report: RefreshReport,
-    /// The source began failing, stopped, failed for a different reason, or
-    /// was paused: something the sidebar draws beside it changed.
+    /// The source began failing, stopped, failed for a different reason, was
+    /// paused, or was found to be a podcast: something the sidebar draws
+    /// beside it changed.
     health_changed: bool,
 }
 
@@ -105,11 +110,21 @@ struct Arrived {
     fresh: bool,
     hints: Hints,
     published: Vec<Timestamp>,
+    /// The source itself changed -- it was found to be a podcast, or took
+    /// the show's picture -- which the sidebar draws.
+    source_changed: bool,
 }
 
 impl Arrived {
     fn unchanged(hints: Hints) -> Self {
-        Self { inserted: 0, not_modified: true, fresh: false, hints, published: Vec::new() }
+        Self {
+            inserted: 0,
+            not_modified: true,
+            fresh: false,
+            hints,
+            published: Vec::new(),
+            source_changed: false,
+        }
     }
 }
 
@@ -122,6 +137,26 @@ struct Stored {
     wants_article: Vec<StoryId>,
     published: Vec<Timestamp>,
     ttl_minutes: Option<u32>,
+    /// What a feed said about itself, for [`learn`]. `None` for a source
+    /// that is not a feed.
+    feed: Option<FeedFacts>,
+}
+
+/// What a feed said about itself that the refresher acts on: whether it is a
+/// podcast, and the show's own picture and site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FeedFacts {
+    podcast: bool,
+    author: String,
+    image_url: String,
+    site_url: String,
+}
+
+/// What a payload turned out to hold.
+struct Decoded {
+    items: Vec<Incoming>,
+    ttl_minutes: Option<u32>,
+    feed: Option<FeedFacts>,
 }
 
 /// What a fetch handed to the blocking pool to be read and stored.
@@ -399,8 +434,10 @@ async fn refresh_one(
     let jitter: f64 = rand::rng().random_range(-1.0..=1.0);
     let mut pausing = false;
     let mut failure = None;
+    let mut source_changed = false;
     let report = match result {
         Ok(arrived) => {
+            source_changed = arrived.source_changed;
             state.last_ok = Some(finished);
             state.last_error = None;
             state.failing_since = None;
@@ -472,7 +509,7 @@ async fn refresh_one(
         }
     }
 
-    Turn { report, health_changed: paused || state.last_error != before }
+    Turn { report, health_changed: paused || source_changed || state.last_error != before }
 }
 
 /// How far a source's own address may reach: anywhere for one the person
@@ -500,13 +537,23 @@ async fn attempt(
                 state.etag = etag;
                 state.last_modified = last_modified;
                 hints.ttl_minutes = stored.ttl_minutes;
-                Ok(settle(vault, source, state, stored, hints).await)
+                // Before the episodes are handed on: what a show's download
+                // policy is begins with whether it is a show.
+                let learned = match &stored.feed {
+                    Some(feed) => learn(vault, source, feed, state.last_ok.is_none()).await,
+                    None => false,
+                };
+                announce_stored(svc, source, &stored);
+                let mut arrived = settle(vault, source, state, stored, hints).await;
+                arrived.source_changed = learned;
+                Ok(arrived)
             }
         },
         SourceKind::HackerNews { list, min_points } => {
             let json = fetch::json(&hn::url(*list, *min_points)).await?;
             let payload = Payload::HackerNews { json, list: *list, min_points: *min_points };
             let stored = store(vault, source, payload, now).await?;
+            announce_stored(svc, source, &stored);
             Ok(settle(vault, source, state, stored, Hints::default()).await)
         }
         SourceKind::Mail { .. } | SourceKind::Newsletters => {
@@ -514,12 +561,16 @@ async fn attempt(
                 newsletters::refresh(svc, vault, source, state).await.map_err(|message| {
                     FetchError { message: http::strip_url(&message), hints: Hints::default() }
                 })?;
+            if inserted > 0 {
+                rank::wake(svc);
+            }
             Ok(Arrived {
                 inserted,
                 not_modified: false,
                 fresh: inserted > 0,
                 hints: Hints::default(),
                 published: Vec::new(),
+                source_changed: false,
             })
         }
     }
@@ -547,6 +598,90 @@ async fn settle(
         fresh: !stored.inserted.is_empty() || state.last_ok.is_none(),
         hints,
         published: stored.published,
+        source_changed: false,
+    }
+}
+
+/// Hand what a refresh stored to the two things that act on new stories: the
+/// downloads, which apply the show's policies to new episodes, and the
+/// ranker, which wants to score what is new. Both only queue work.
+fn announce_stored(svc: &Arc<Service>, source: &NewsSource, stored: &Stored) {
+    if stored.inserted.is_empty() {
+        return;
+    }
+    downloads::after_refresh(svc, source.id, &stored.inserted);
+    rank::wake(svc);
+}
+
+/// A feed that turned out to be a podcast is one from then on, and a show
+/// takes its own picture for its icon and its own site, if it has none: the
+/// host of a show's feed is a podcast host's, and its favicon is no icon for
+/// the show. True if the source was changed.
+///
+/// The second place the refresher writes a [`NewsSource`], and why it is
+/// allowed: somebody followed a feed and the feed turned out to be episodes,
+/// and everything the Feed does for a show -- downloading, Up Next, the
+/// player -- waits on the source saying so. Nothing a person chose is
+/// touched. The source is read afresh before it is written, as `pause` does,
+/// so a rename or a folder move made during the fetch is kept; `podcast` is
+/// set only from `None`, so a show's own settings are never replaced by empty
+/// ones; and the icon and the site are taken only by a source with none, the
+/// icon only on the first read, so a picture somebody gave it is theirs.
+async fn learn(vault: &Arc<Vault>, source: &NewsSource, feed: &FeedFacts, first: bool) -> bool {
+    let id = source.id;
+    let becomes = feed.podcast && source.podcast.is_none();
+    let is_show = feed.podcast || source.podcast.is_some();
+    let wants_icon = first && is_show && source.icon.is_none() && !feed.image_url.is_empty();
+    let wants_site = is_show && source.site_url.is_empty() && !feed.site_url.is_empty();
+    if !becomes && !wants_icon && !wants_site {
+        return false;
+    }
+    // Slow, so before the source is read afresh: a rename made while it is
+    // downloading is then still there to be kept.
+    let icon =
+        if wants_icon { directory::artwork_icon(vault, &feed.image_url).await } else { None };
+
+    let changed = blocking({
+        let vault = vault.clone();
+        let feed = feed.clone();
+        move || {
+            let mut stored = match vault.news_source(id) {
+                Ok(stored) => stored,
+                // Unfollowed while the feed was being read.
+                Err(karmayoga_core::Error::NotFound { .. }) => return Ok(false),
+                Err(e) => return Err(e.into()),
+            };
+            let mut changed = false;
+            if feed.podcast && stored.podcast.is_none() {
+                let author = feed.author.clone();
+                stored.podcast = Some(PodcastSettings { author, ..PodcastSettings::default() });
+                changed = true;
+            }
+            let is_show = stored.podcast.is_some();
+            if let Some(icon) = icon
+                && stored.icon.is_none()
+            {
+                stored.icon = Some(icon);
+                changed = true;
+            }
+            if is_show && stored.site_url.is_empty() && !feed.site_url.is_empty() {
+                stored.site_url = feed.site_url.clone();
+                changed = true;
+            }
+            if changed {
+                stored.touch();
+                vault.save_news_source(&stored)?;
+            }
+            Ok(changed)
+        }
+    })
+    .await;
+    match changed {
+        Ok(changed) => changed,
+        Err(e) => {
+            tracing::warn!(source = %id, error = %e, "could not record what a feed said about itself");
+            false
+        }
     }
 }
 
@@ -561,9 +696,11 @@ async fn store(
     let vault = vault.clone();
     let source = source.clone();
     blocking(move || {
-        let (items, ttl_minutes) =
+        let Decoded { items, ttl_minutes, feed } =
             decode(payload).map_err(|message| CommandError::new(codes::UNREADABLE, message))?;
-        store_items(&vault, &source, items, ttl_minutes, now)
+        let mut stored = store_items(&vault, &source, items, ttl_minutes, now)?;
+        stored.feed = feed;
+        Ok(stored)
     })
     .await
     .map_err(|e| FetchError { message: http::strip_url(&e.message), hints: Hints::default() })
@@ -576,14 +713,21 @@ async fn store(
 /// Contained for the reason `mailsync` contains reading a message: a parser
 /// handed a stranger's bytes that panics must cost this source one failed
 /// turn, not the task.
-fn decode(payload: Payload) -> Result<(Vec<Incoming>, Option<u32>), String> {
+fn decode(payload: Payload) -> Result<Decoded, String> {
     std::panic::catch_unwind(AssertUnwindSafe(|| match payload {
-        Payload::Feed { bytes, base } => {
-            parse::parse_feed(&bytes, &base).map(|feed| (feed.items, feed.ttl_minutes))
-        }
+        Payload::Feed { bytes, base } => parse::parse_feed(&bytes, &base).map(|feed| Decoded {
+            items: feed.items,
+            ttl_minutes: feed.ttl_minutes,
+            feed: Some(FeedFacts {
+                podcast: feed.podcast,
+                author: feed.author,
+                image_url: feed.image_url,
+                site_url: feed.site_url,
+            }),
+        }),
         Payload::HackerNews { json, list, min_points } => hn::parse(&json).map(|mut items| {
             items.retain(|item| hn::keep(list, min_points, item));
-            (items, None)
+            Decoded { items, ttl_minutes: None, feed: None }
         }),
     }))
     .unwrap_or_else(|_| Err("what the site sent could not be read".to_string()))
@@ -600,6 +744,12 @@ fn store_items(
     now: Timestamp,
 ) -> CommandResult<Stored> {
     let hacker_news = matches!(source.kind, SourceKind::HackerNews { .. });
+    // Stories stored before the Feed knew about episodes -- or before this
+    // feed was known to be a show -- have no file. Only until the source is
+    // a podcast: after that, the stories it stores are born with theirs, and
+    // looking each listed episode up again at every refresh would be
+    // two hundred reads to find nothing to do.
+    let backfill = source.podcast.is_none();
     let mut known: HashSet<String> = vault.story_keys(source.id)?.into_iter().collect();
     let mut batch: Vec<(Story, Option<StoryBody>)> = Vec::new();
     let mut published = Vec::new();
@@ -618,6 +768,9 @@ fn store_items(
         if known.contains(&key) {
             if hacker_news {
                 refresh_points(vault, source, &key, &item)?;
+            }
+            if backfill && item.media.is_some() {
+                give_file(vault, source, &key, &item)?;
             }
             continue;
         }
@@ -650,7 +803,7 @@ fn store_items(
         })
         .map(|(story, _)| story.id)
         .collect();
-    Ok(Stored { inserted, wants_article, published, ttl_minutes })
+    Ok(Stored { inserted, wants_article, published, ttl_minutes, feed: None })
 }
 
 /// What a row calls an item: its title with the whitespace tidied. A post
@@ -693,6 +846,7 @@ fn build(
     story.fetched_at = now;
     story.author = item.author.trim().to_string();
     story.image_url = item.image_url;
+    story.media = item.media;
     story.score = item.score;
     story.comments = item.comments;
     story.discussion_url = item.discussion_url;
@@ -734,6 +888,19 @@ fn refresh_points(
     }
     stored.score = score;
     stored.comments = comments;
+    vault.update_story(&stored)?;
+    Ok(())
+}
+
+/// Give a stored story the file its feed names, when it has none: an episode
+/// from before the Feed knew about episodes. Its downloads, if it has any,
+/// are `Story::files`, which this does not touch.
+fn give_file(vault: &Vault, source: &NewsSource, key: &str, item: &Incoming) -> CommandResult<()> {
+    let Some(mut stored) = vault.story_by_key(key)? else { return Ok(()) };
+    if stored.source_id != source.id || stored.media.is_some() {
+        return Ok(());
+    }
+    stored.media = item.media.clone();
     vault.update_story(&stored)?;
     Ok(())
 }
@@ -932,6 +1099,7 @@ mod tests {
             comments: Some(3),
             discussion_url: "https://news.ycombinator.com/item?id=1".into(),
             origin: BodyOrigin::Feed,
+            media: None,
         };
         let now = at("2026-10-11T12:00:00Z");
         let (story, body) = build(&source, "key".into(), "Post".into(), item, now);

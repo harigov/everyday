@@ -20,7 +20,7 @@
 
 import { accounts } from './accounts.svelte'
 import { api, callCommand, isMock, isWeb } from './api'
-import { filterStories, groupFolders, sortStories } from './feed'
+import { filterStories, groupFolders, isWebUrl, sameFeedAddress, sortStories } from './feed'
 import { allowWebOrigin, applyBodyTheme, bodyDocument } from './mailview'
 import { mediaBase } from './web'
 import { notify } from './notify.svelte'
@@ -32,7 +32,9 @@ import { debounce } from './store/debounce'
 import { latest } from './store/latest'
 import { optimisticRemove } from './store/optimistic-remove'
 import { guardedRefresh } from './store/refresh'
+import { upnext } from './upnext.svelte'
 import type {
+  FeedHit,
   FoundFeed,
   OpmlImportReport,
   ItemId,
@@ -40,6 +42,9 @@ import type {
   NewsSource,
   NewsSourceId,
   NewsletterSender,
+  PodcastGenre,
+  PodcastHit,
+  PodcastSettings,
   RefreshReport,
   SourceSummary,
   Story,
@@ -57,9 +62,24 @@ const MOST = 500
 /** What the Feed tints the window with: the palette's blue, the default accent being orange. */
 const FEED_ACCENT = '#0369a1'
 
-/** What the sidebar has selected. */
+/**
+ * What the sidebar has selected.
+ *
+ * `upnext` and `recommended` are not lists of stories this store loads: they
+ * are the queue and the ranking, which `upnext.svelte.ts` holds, and selecting
+ * one asks it to load. `podcasts` is every episode of every podcast followed,
+ * newest first, narrowed by the chips like any other list.
+ */
 export type FeedScope =
-  { kind: 'all' } | { kind: 'folder'; name: string } | { kind: 'source'; id: NewsSourceId }
+  | { kind: 'all' }
+  | { kind: 'folder'; name: string }
+  | { kind: 'source'; id: NewsSourceId }
+  | { kind: 'upnext' }
+  | { kind: 'recommended' }
+  | { kind: 'podcasts' }
+
+/** How many hits a directory search asks for. */
+const DIRECTORY_LIMIT = 40
 
 /** The chips over the list. Unread first: a feed is read to the end. */
 export const FEED_FILTERS = ['unread', 'all', 'saved'] as const
@@ -177,10 +197,24 @@ class FeedState {
   /** A line under the list after something happened. Cleared on navigation. */
   note = $state<string | null>(null)
 
+  // -- the directory: podcasts and feeds to follow ----------------------
+  /** The directory sheet is open. */
+  directoryOpen = $state(false)
+  directoryTab = $state<'podcasts' | 'feeds'>('podcasts')
+  podcastHits = $state<PodcastHit[]>([])
+  feedHits = $state<FeedHit[]>([])
+  /** The directory's genres, for the charts. Empty until `loadGenres`. */
+  genres = $state<PodcastGenre[]>([])
+  directoryLoading = $state(false)
+  /** Why the last search or chart could not be had. Said beside the results. */
+  directoryError = $state<string | null>(null)
+
   /** Which list load is the current one. See `#load`. */
   #generation = latest()
   /** The same for the sources, which are reloaded after almost every write. */
   #sourcesGeneration = latest()
+  /** The same for the directory: a slow chart must not land over a newer search. */
+  #directoryGeneration = latest()
   /** Which page-on-its-way is the current one; a reload retires it. */
   #paging = latest()
   /** A page is being fetched. */
@@ -204,6 +238,11 @@ class FeedState {
     // be added again each time the app is switched back to.
     app.onLock(() => this.reset())
     app.onFlush(() => this.flush())
+    // An episode arrived in the files folder or was removed from it, by a
+    // download finishing or a button: those stories' files changed. Patched
+    // in place rather than by reloading the list, which could land over a
+    // selection or a chip somebody changed while the download ran.
+    upnext.onEpisodeChange((ids) => void this.#refetch(ids))
     this.filter = filterPref.get()
   }
 
@@ -222,6 +261,8 @@ class FeedState {
     if (!app.supportsNews) return
     await this.#loadSources(false)
     await this.#load(false)
+    // Which episodes are on their way, for the buttons on a show's rows.
+    if (this.podcastSources.length > 0) void upnext.refreshDownloads()
     // After the list, not before it: following reads a month of mail.
     this.following = this.#followNewslettersOnce()
   }
@@ -281,6 +322,16 @@ class FeedState {
     this.note = null
     this.#detached = null
     this.#refreshes = 0
+    // The directory's answers are public, but which of them are already
+    // followed is not, and a sheet left open should not greet the next vault.
+    this.#directoryGeneration.next()
+    this.directoryOpen = false
+    this.directoryTab = 'podcasts'
+    this.podcastHits = []
+    this.feedHits = []
+    this.genres = []
+    this.directoryLoading = false
+    this.directoryError = null
   }
 
   /**
@@ -367,6 +418,7 @@ class FeedState {
       const have = new Set(this.stories.map((s) => s.id))
       this.stories = [...this.stories, ...page.stories.filter((s) => !have.has(s.id))]
       this.next = page.next ?? null
+      this.#knowEpisodes(page.stories)
     } catch (e) {
       await quietly(e)
     } finally {
@@ -675,7 +727,7 @@ class FeedState {
       await this.#track(api.saveNewsSource($state.snapshot(source)))
       await this.#loadSources(true)
       // A source moved into or out of the folder on screen changes the list.
-      if (this.scope.kind === 'folder') await this.#load(false)
+      if (this.scope.kind === 'folder' || this.scope.kind === 'podcasts') await this.#load(false)
     } catch (e) {
       await handle(e)
     }
@@ -732,7 +784,204 @@ class FeedState {
     }
   }
 
+  // ── podcasts ─────────────────────────────────────────────────────────
+
+  /** Whether a source is a podcast: a feed whose items are episodes. */
+  isPodcast(source: SourceSummary | NewsSource): boolean {
+    const record = 'source' in source ? source.source : source
+    return !!record.podcast
+  }
+
+  /**
+   * Change one show's own say over downloads and keeping. `null` takes every
+   * override away -- the show follows the Feed's defaults again -- and keeps it
+   * a podcast, with what the directory said about it.
+   */
+  async savePodcastSettings(
+    sourceId: NewsSourceId,
+    settings: PodcastSettings | null,
+  ): Promise<void> {
+    const found = this.sources.find((s) => s.source.id === sourceId)?.source
+    if (!found) return
+    const before = found.podcast
+    const podcast: PodcastSettings = settings
+      ? $state.snapshot(settings)
+      : { author: before?.author ?? '', directoryId: before?.directoryId ?? null }
+    await this.saveSource({ ...$state.snapshot(found), podcast })
+  }
+
+  // ── the directory ────────────────────────────────────────────────────
+
+  /**
+   * Open the sheet that finds podcasts and feeds to follow. Opening it asks the
+   * directory for its charts and genres: it is asked for, on purpose, and the
+   * answer is public.
+   */
+  openDirectory(tab?: 'podcasts' | 'feeds'): void {
+    if (tab) this.directoryTab = tab
+    this.directoryOpen = true
+    this.directoryError = null
+    void this.loadGenres()
+    if (this.directoryTab === 'podcasts' && this.podcastHits.length === 0) {
+      void this.topPodcasts(null)
+    }
+  }
+
+  closeDirectory(): void {
+    this.directoryOpen = false
+    // A search still on its way has nobody to land for.
+    this.#directoryGeneration.next()
+    this.directoryLoading = false
+  }
+
+  /** Podcasts matching `query`, best first. Nothing typed is the charts. */
+  async searchPodcasts(query: string): Promise<void> {
+    const text = query.trim()
+    if (!text) {
+      await this.topPodcasts(null)
+      return
+    }
+    await this.#lookUp(
+      () => api.searchPodcasts(text, DIRECTORY_LIMIT),
+      (hits) => (this.podcastHits = hits ?? []),
+    )
+  }
+
+  /** The charts, overall or in one genre (`PodcastGenre.id`). */
+  async topPodcasts(genre: number | null): Promise<void> {
+    await this.#lookUp(
+      () => api.topPodcasts(genre, DIRECTORY_LIMIT),
+      (hits) => (this.podcastHits = hits ?? []),
+    )
+  }
+
+  /** The directory's genres, once. */
+  async loadGenres(): Promise<void> {
+    if (this.genres.length > 0 || !app.supportsNews) return
+    try {
+      this.genres = await api.podcastGenres()
+    } catch (e) {
+      // Only a row of chips is missing.
+      await quietly(e)
+    }
+  }
+
+  /**
+   * Feeds matching `query`. An address pasted goes through discovery, which
+   * reads the page for the feeds it advertises, rather than to a search that
+   * knows only names.
+   */
+  async searchFeeds(query: string): Promise<void> {
+    const text = query.trim()
+    if (!text) {
+      this.#directoryGeneration.next()
+      this.feedHits = []
+      this.directoryError = null
+      this.directoryLoading = false
+      return
+    }
+    await this.#lookUp(
+      async () => {
+        // A whole address is looked up for the feeds it names; words are searched.
+        if (!isWebUrl(text)) return api.searchFeeds(text, DIRECTORY_LIMIT)
+        return (await api.discoverFeeds(text)).map((f) => this.#hitFor(f))
+      },
+      (hits) => (this.feedHits = hits ?? []),
+    )
+  }
+
+  /** Follow a show the directory found. Stays where it is: the sheet is for finding. */
+  async followPodcast(hit: PodcastHit): Promise<NewsSource | null> {
+    const followed = await this.#follow({
+      type: 'podcast',
+      url: hit.feedUrl,
+      title: hit.title,
+      directoryId: hit.directoryId,
+      author: hit.author,
+    })
+    if (followed) {
+      this.podcastHits = this.podcastHits.map((h) =>
+        h.feedUrl === hit.feedUrl ? { ...h, followed: true } : h,
+      )
+    }
+    return followed
+  }
+
+  /** Follow a feed a search found. */
+  async followFeed(hit: FeedHit): Promise<NewsSource | null> {
+    const followed = await this.#follow({ type: 'web', url: hit.feedUrl, title: hit.title })
+    if (followed) {
+      this.feedHits = this.feedHits.map((h) =>
+        h.feedUrl === hit.feedUrl ? { ...h, followed: true } : h,
+      )
+    }
+    return followed
+  }
+
+  /** A feed discovery found, drawn as a search hit: all it knows is the address. */
+  #hitFor(found: FoundFeed): FeedHit {
+    return {
+      feedUrl: found.url,
+      title: found.title,
+      siteUrl: '',
+      description: '',
+      icon: '',
+      followed: this.sources.some(
+        (s) => s.source.kind.type === 'web' && sameFeedAddress(s.source.kind.url, found.url),
+      ),
+    }
+  }
+
+  /** Add a source and ask for its first stories, without leaving the sheet. */
+  async #follow(input: NewSource): Promise<NewsSource | null> {
+    try {
+      const added = await this.#track(api.addNewsSource(input))
+      await this.#loadSources(true)
+      // A reload that was already on its way may have answered first, without
+      // the new source; the sheet marks a hit followed by finding it here.
+      if (!this.sources.some((s) => s.source.id === added.id)) await this.#loadSources(true)
+      // Nothing is in it yet, and the refresher's own timer could be minutes away.
+      void this.refresh(added.id)
+      return added
+    } catch (e) {
+      await handle(e)
+      return null
+    }
+  }
+
+  /**
+   * One directory request, numbered like the list is: only the newest lands,
+   * a failure is said beside the results and not over the window, and what was
+   * showing is cleared (`land(null)`) so an error never sits under stale
+   * answers.
+   */
+  async #lookUp<T>(fetch: () => Promise<T>, land: (result: T | null) => void): Promise<void> {
+    if (!app.supportsNews) return
+    this.directoryError = null
+    const token = this.#directoryGeneration.next()
+    this.directoryLoading = true
+    try {
+      const result = await fetch()
+      if (this.#directoryGeneration.isCurrent(token)) land(result)
+    } catch (e) {
+      if (!this.#directoryGeneration.isCurrent(token)) return
+      if (isLocked(e)) {
+        await handle(e)
+        return
+      }
+      land(null)
+      this.directoryError = errorMessage(e)
+    } finally {
+      if (this.#directoryGeneration.isCurrent(token)) this.directoryLoading = false
+    }
+  }
+
   // ── derived ──────────────────────────────────────────────────────────
+
+  /** Every podcast followed. */
+  get podcastSources(): SourceSummary[] {
+    return this.sources.filter((s) => this.isPodcast(s))
+  }
 
   /** The open story. */
   get story(): Story | null {
@@ -796,9 +1045,19 @@ class FeedState {
               seen('newsSource', s.source.id, s.source.title),
             )
           : []
+    // Up Next and Recommended are not narrowed by the chips, which say nothing there.
+    const chips = scope.kind !== 'upnext' && scope.kind !== 'recommended'
     const words = [
+      scope.kind === 'upnext'
+        ? 'Up Next'
+        : scope.kind === 'recommended'
+          ? 'Recommended'
+          : scope.kind === 'podcasts'
+            ? 'Podcasts'
+            : null,
       scope.kind === 'folder' ? 'a folder' : null,
-      this.filter === 'unread' ? 'unread only' : this.filter === 'saved' ? 'saved' : null,
+      chips && this.filter === 'unread' ? 'unread only' : null,
+      chips && this.filter === 'saved' ? 'saved' : null,
       this.sort === 'points' ? 'by points' : null,
     ].filter(Boolean)
     const story = this.story
@@ -876,14 +1135,21 @@ class FeedState {
   /** The sources in a folder. Compared trimmed, as the sidebar groups them. */
   #inFolder(name: string): SourceSummary[] {
     const wanted = name.trim()
-    return this.sources.filter((s) => s.source.folder.trim() === wanted)
+    // A podcast keeps its own group in the sidebar, whatever folder it was
+    // filed in: Podcasts is where its episodes are.
+    return this.sources.filter((s) => !this.isPodcast(s) && s.source.folder.trim() === wanted)
   }
 
   /** The sources the scope on screen covers, for a service call that takes them by id. */
   #scopeSourceIds(): NewsSourceId[] {
     const scope = this.scope
     if (scope.kind === 'source') return [scope.id]
-    const covered = scope.kind === 'folder' ? this.#inFolder(scope.name) : this.sources
+    const covered =
+      scope.kind === 'folder'
+        ? this.#inFolder(scope.name)
+        : scope.kind === 'podcasts'
+          ? this.podcastSources
+          : this.sources
     return covered.map((s) => s.source.id)
   }
 
@@ -892,7 +1158,8 @@ class FeedState {
    *
    * A folder with no sources in it is nothing, not everything: sent as an
    * empty list the service would read it as "every source", which is the
-   * opposite of what a folder somebody has just emptied should show.
+   * opposite of what a folder somebody has just emptied should show. The same
+   * goes for Podcasts when none is followed.
    */
   #queryFor(before: StoryCursor | null, limit: number): StoryQuery | null {
     const query: StoryQuery = { limit }
@@ -952,11 +1219,21 @@ class FeedState {
     await guardedRefresh(
       this.#generation,
       async (isCurrent) => {
+        const scope = this.scope
+        if (scope.kind === 'upnext' || scope.kind === 'recommended') {
+          // Not stories: the queue and the ranking, which have a store of
+          // their own. The list is empty so nothing from the last scope shows.
+          this.#land([], null)
+          if (scope.kind === 'upnext') await upnext.load()
+          else await upnext.loadRecommended()
+          return
+        }
         const covering = fresh ? PAGE : Math.min(MOST, Math.max(PAGE, this.stories.length))
         const query = this.#queryFor(null, covering)
         const page: StoryPage = query ? await api.stories(query) : { stories: [], next: null }
         if (!isCurrent()) return
         this.#land(page.stories, page.next ?? null)
+        this.#knowEpisodes(page.stories)
       },
       { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
     )
@@ -984,6 +1261,16 @@ class FeedState {
     this.stories = list
     this.next = next
     this.#detached = detached
+  }
+
+  /**
+   * Episodes on screen show how far they were taken, which only the record of
+   * what was heard knows; Up Next and Recommended carry theirs, but a plain
+   * row of a show does not. So a list with episodes in it asks for the recent
+   * record once -- a few hundred small rows, which the store throttles.
+   */
+  #knowEpisodes(stories: Story[]): void {
+    if (stories.some((s) => s.media)) void upnext.loadConsumed()
   }
 
   /** Both halves, after something that could have changed either. */
@@ -1027,6 +1314,19 @@ class FeedState {
    * In place for a listed one, so a row and the pane redraw from one object;
    * replaced whole for the detached copy, which is raw.
    */
+  /** Read these stories again and patch what changed in place, if they are shown. */
+  async #refetch(ids: StoryId[]): Promise<void> {
+    for (const id of ids) {
+      if (!this.#find(id)) continue
+      try {
+        const fresh = await api.story(id)
+        this.#patch(id, { files: fresh.files, hasBody: fresh.hasBody })
+      } catch (e) {
+        await quietly(e)
+      }
+    }
+  }
+
   #patch(id: StoryId, changes: Partial<Story>): void {
     const listed = this.stories.find((s) => s.id === id)
     if (listed) {

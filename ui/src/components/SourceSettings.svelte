@@ -10,8 +10,16 @@
   // this dialog opened with: a refresh can have given the source its icon
   // while the dialog was open, and writing the old copy back would take it
   // away again.
+  //
+  // A podcast has a section more. Each of its choices is either "use the
+  // Feed's default" -- saved as no choice at all, so the show goes on
+  // following the defaults if they change -- or a choice of its own, and the
+  // default is named in the option so nobody has to go to Settings → Feed to
+  // learn what "default" is. A show is listed apart from the folders, so it is
+  // not asked which folder it is in, and the article fetching a feed of
+  // links needs means nothing for a recording.
 
-  import { untrack } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import { feed } from '../lib/feed.svelte'
   import {
     DEFAULT_RETENTION,
@@ -24,6 +32,17 @@
     unfollowDetail,
   } from '../lib/feed'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { PLAYER_SPEEDS } from '../lib/player.svelte'
+  import {
+    downloadPolicyLabel,
+    keepPolicyLabel,
+    podcastForm,
+    podcastFromForm,
+    speedLabel,
+    transcribePolicyLabel,
+    type PodcastForm,
+  } from '../lib/podcast'
+  import { upnext } from '../lib/upnext.svelte'
   import type { NewsSource } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
 
@@ -52,10 +71,25 @@
   const isWeb = kind.type === 'web'
   const isMail = kind.type === 'mail' || kind.type === 'newsletters'
 
+  // ── A podcast's own say ────────────────────────────────────────────────
+
+  const show = original.podcast ?? null
+  const isShow = show !== null
+  let form = $state<PodcastForm>(podcastForm(show ?? { author: '' }))
+
+  // The defaults the options name. Loaded if the Feed's settings have not
+  // been yet; until they are, the option says only that it is the default.
+  onMount(() => {
+    if (isShow && !upnext.settings) void upnext.loadSettings()
+  })
+  const defaults = $derived(upnext.settings?.podcasts ?? null)
+  const useDefault = (label: string | null) =>
+    label ? `Use the Feed's default (${label})` : "Use the Feed's default"
+
   /** Where it comes from, in words, so the dialog says what it is about. */
   const following =
     kind.type === 'web'
-      ? kind.url
+      ? [show?.author.trim(), kind.url].filter(Boolean).join(' · ')
       : kind.type === 'mail'
         ? `Newsletters from ${kind.sender}, read in Mail`
         : kind.type === 'newsletters'
@@ -92,6 +126,16 @@
       paused,
     }
     await feed.saveSource(next)
+    // After the source, and only if it changed: the show's settings are their
+    // own write, over what the store holds now.
+    const stored = current.podcast ?? show
+    if (stored) {
+      const wanted = podcastFromForm(stored, form)
+      const before = podcastFromForm(stored, podcastForm(stored))
+      if (JSON.stringify(wanted) !== JSON.stringify(before)) {
+        await feed.savePodcastSettings(original.id, wanted)
+      }
+    }
     saving = false
     onclose()
   }
@@ -130,20 +174,22 @@
     use:focusOnMount
   />
 
-  <label class="field-label spaced" for="src-folder">Folder</label>
-  <input
-    id="src-folder"
-    class="field"
-    list="src-folders"
-    placeholder="None"
-    autocomplete="off"
-    bind:value={folder}
-  />
-  <datalist id="src-folders">
-    {#each folders as name (name)}
-      <option value={name}></option>
-    {/each}
-  </datalist>
+  {#if !isShow}
+    <label class="field-label spaced" for="src-folder">Folder</label>
+    <input
+      id="src-folder"
+      class="field"
+      list="src-folders"
+      placeholder="None"
+      autocomplete="off"
+      bind:value={folder}
+    />
+    <datalist id="src-folders">
+      {#each folders as name (name)}
+        <option value={name}></option>
+      {/each}
+    </datalist>
+  {/if}
 
   <div class="switches">
     <label class="toggle">
@@ -157,7 +203,7 @@
       </span>
     </label>
 
-    {#if isWeb}
+    {#if isWeb && !isShow}
       <label class="toggle">
         <input type="checkbox" bind:checked={fullText} />
         <span>
@@ -191,6 +237,113 @@
       </span>
     </label>
   </div>
+
+  {#if isShow}
+    <hr class="sep spaced" />
+    <h3 class="eyebrow section">Podcast</h3>
+
+    <label class="field-label" for="pod-download">Download episodes</label>
+    <div class="choice">
+      <select id="pod-download" class="field" bind:value={form.download}>
+        <option value="default">
+          {useDefault(defaults ? downloadPolicyLabel(defaults.download) : null)}
+        </option>
+        <option value="off">Off</option>
+        <option value="newest">The newest</option>
+        <option value="all">Every episode</option>
+      </select>
+      {#if form.download === 'newest'}
+        <input
+          class="field days"
+          type="number"
+          min="1"
+          max="999"
+          aria-label="How many of the newest episodes to download"
+          bind:value={form.downloadCount}
+        />
+        <span class="hint">episodes</span>
+      {/if}
+    </div>
+    <p class="hint under">An episode is fetched into your files folder, and plays from there.</p>
+
+    <label class="field-label spaced" for="pod-keep">Keep downloaded episodes</label>
+    <div class="choice">
+      <select id="pod-keep" class="field" bind:value={form.keep}>
+        <option value="default">
+          {useDefault(defaults ? keepPolicyLabel(defaults.keep) : null)}
+        </option>
+        <option value="forever">Forever</option>
+        <option value="afterPlayed">For a while after they are played</option>
+        <option value="newest">Only the newest</option>
+      </select>
+      {#if form.keep === 'afterPlayed'}
+        <input
+          class="field days"
+          type="number"
+          min="1"
+          max="365"
+          aria-label="Days to keep an episode after it is played to the end"
+          bind:value={form.keepNumber}
+        />
+        <span class="hint">days</span>
+      {:else if form.keep === 'newest'}
+        <input
+          class="field days"
+          type="number"
+          min="1"
+          max="999"
+          aria-label="How many of the newest episodes to keep"
+          bind:value={form.keepNumber}
+        />
+        <span class="hint">episodes</span>
+      {/if}
+    </div>
+    <p class="hint under">
+      Favourites, saved stories and what is in Up Next are never removed. Transcripts are kept.
+    </p>
+
+    <label class="field-label spaced" for="pod-transcribe">Transcribe</label>
+    <select id="pod-transcribe" class="field" bind:value={form.transcribe}>
+      <option value="default">
+        {useDefault(defaults ? transcribePolicyLabel(defaults.transcribe) : null)}
+      </option>
+      <option value="off">{transcribePolicyLabel('off')}</option>
+      <option value="whenDownloaded">{transcribePolicyLabel('whenDownloaded')}</option>
+      <option value="whenPlayed">{transcribePolicyLabel('whenPlayed')}</option>
+    </select>
+
+    <label class="field-label spaced" for="pod-queue">Put new episodes in Up Next</label>
+    <select id="pod-queue" class="field" bind:value={form.queueNew}>
+      <option value="default">
+        {useDefault(defaults ? (defaults.queueNew ? 'Yes' : 'No') : null)}
+      </option>
+      <option value="yes">Yes</option>
+      <option value="no">No</option>
+    </select>
+
+    <label class="field-label spaced" for="pod-speed">Speed</label>
+    <select id="pod-speed" class="field" bind:value={form.speed}>
+      <option value={null}>The player's own</option>
+      {#each PLAYER_SPEEDS as speed (speed)}
+        <option value={speed}>{speedLabel(speed)}</option>
+      {/each}
+    </select>
+
+    <label class="field-label spaced" for="pod-skip">Skip the intro</label>
+    <div class="choice">
+      <input
+        id="pod-skip"
+        class="field days"
+        type="number"
+        min="0"
+        max="600"
+        bind:value={form.skipIntroS}
+      />
+      <span class="hint">seconds, in an episode not started yet. 0 plays from the start.</span>
+    </div>
+
+    <hr class="sep spaced" />
+  {/if}
 
   <span class="field-label spaced">Keep for</span>
   <div class="keep">
@@ -309,11 +462,21 @@
     line-height: var(--leading-normal);
   }
 
-  .keep {
+  .keep,
+  .choice {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--sp-2);
+  }
+  /* The select takes what the number beside it leaves. */
+  .choice > select {
+    flex: 1;
+    min-width: 200px;
+    width: auto;
+  }
+  .section {
+    margin: var(--sp-3) 0 var(--sp-3);
   }
   .days {
     width: 76px;

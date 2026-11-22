@@ -70,6 +70,8 @@ const KINDS = [
   'draft',
   'newsSource',
   'story',
+  'queue',
+  'consumption',
   'bankLink',
   'bankAccount',
   'txn',

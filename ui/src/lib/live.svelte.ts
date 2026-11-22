@@ -43,6 +43,7 @@ import { templates } from './templates.svelte'
 import { todo } from './todo.svelte'
 import { targets as goalTargets } from './targets.svelte'
 import { tracking } from './tracking.svelte'
+import { upnext } from './upnext.svelte'
 import type { ChangeEvent, ChangeKind } from './types'
 
 /**
@@ -104,7 +105,10 @@ export const RELOAD = {
   goalTargets: () => goalTargets.refresh(),
   // Settings that moved: the auto-lock, the assistant's configuration. What
   // draws them re-reads on open, so the useful thing is the status word.
-  status: () => app.refreshStatus(),
+  // Settings → Feed is one of them, read again only once it has been read
+  // since the vault opened: nothing else draws it.
+  status: () =>
+    Promise.all([app.refreshStatus(), upnext.settings ? upnext.loadSettings() : undefined]),
   // A recording's stage moved, or a voiceprint was learned or forgotten --
   // another window's write, or this vault's own background pipeline
   // finishing or failing a call. One target for both kinds; see
@@ -114,7 +118,19 @@ export const RELOAD = {
   // Both halves, since the sidebar's counts and the list move together; the
   // list reloads over what it has and keeps the open story in its place, so
   // a refresh landing mid-read does not take the pane's footing away.
-  feed: () => Promise.all([feed.refreshSources(), feed.reload()]),
+  //
+  // An episode finishing its download is a story change too, and while any
+  // is under way the downloads are asked after again: that is what tells Up
+  // Next a file has arrived.
+  feed: () => Promise.all([feed.refreshSources(), feed.reload(), upnext.storyChanged()]),
+  // Up Next changed in another window, or by something in the background: a
+  // show's new episode put in it, a top-up from Recommended. Read again at
+  // once -- the player moves on to whatever is next in it.
+  upnext: () => upnext.queueChanged(),
+  // Something was read, heard or watched, here or on another device. A
+  // device playing reports every fifteen seconds, so the store gathers a
+  // burst into one read of Up Next and Recommended: see `consumptionChanged`.
+  consumption: () => upnext.consumptionChanged(),
   // A bank synced in the background, or a transaction, category or rule
   // changed on another machine. One reload of everything Money shows --
   // the banks, the month's list and summary, and whichever report is on
@@ -285,6 +301,10 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // a mail sync does -- so there is nothing to patch in place and no applier.
   newsSource: 'feed',
   story: 'feed',
+  // What Up Next holds, and what was read and heard. Their own store's, not
+  // the Feed's list: the queue is drawn in the player and on its own page.
+  queue: 'upnext',
+  consumption: 'consumption',
   // Linked banks, their accounts, what happened in them, and the categories
   // and rules that sort it. A background sync raises `txn` changes for a
   // whole delta at once, so there is nothing to patch row by row and no

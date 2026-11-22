@@ -68,6 +68,7 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
     'the Screen time tab, whether this computer records which app or site is in use, and how',
   files:
     'the Files tab, where the files folder is, which apps keep their files encrypted, and how long the trash keeps them',
+  feed: 'the Feed tab, what podcasts download and keep, how Recommended is ranked, and the player',
   health:
     'the Health tab, where health data comes from and the units and goals it is shown against',
   meetings: 'the Meetings tab',

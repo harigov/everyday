@@ -969,6 +969,74 @@
       ]
     },
     {
+      "command": "add_to_queue",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "queue",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "move_in_queue",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "queue",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "remove_from_queue",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "queue",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "record_progress",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "consumption",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_feed_settings",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "cancel_download",
+      "events": []
+    },
+    {
+      "command": "rerank",
+      "events": []
+    },
+    {
       "command": "import_opml",
       "events": [
         {
@@ -2754,6 +2822,20 @@
           "kind": "backgroundTask",
           "op": "updated",
           "origin": null
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "backgroundTask",
+          "op": "updated",
+          "origin": null
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "backgroundTask",
+          "op": "updated",
+          "origin": null
         }
       ]
     }
@@ -2836,6 +2918,10 @@
       "reason": "a real network download of 1-4 GB"
     },
     {
+      "name": "download_episode",
+      "reason": "fetches a podcast episode over the network"
+    },
+    {
       "name": "download_image_model",
       "reason": "a real network download of the picture weights or the inference program"
     },
@@ -2890,6 +2976,10 @@
     {
       "name": "name_speaker",
       "reason": "needs a transcript, which only a finished recording produces"
+    },
+    {
+      "name": "remove_episode_download",
+      "reason": "needs an episode already downloaded, which needs the network"
     },
     {
       "name": "respond_to_invite",

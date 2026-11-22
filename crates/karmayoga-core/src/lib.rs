@@ -160,13 +160,13 @@ pub use files::{
 };
 pub use id::{
     AccountId, AlbumId, AllergyId, AreaId, BankAccountId, BankLinkId, BlobId, BlockId, CalendarId,
-    ChatLinkId, ConditionId, ConnectionId, ConversationId, DoseId, DraftId, EntryId, EventId,
-    FileId, FoodId, GoalId, HealthDocumentId, HealthSourceId, ItemId, JobId, JournalId, KindId,
-    LabResultId, LogId, MailMessageId, MailboxId, MealId, MedicationId, MemoryId, MessageId,
-    MoneyCategoryId, MoneyRuleId, NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId,
-    ReadingId, RecordingId, RoutineId, RoutineRunId, ScreenAppId, ScreenCategoryId, ScreenSpanId,
-    SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, TxnId, VoiceprintId,
-    WorkoutId, WritingId,
+    ChatLinkId, ConditionId, ConnectionId, ConsumptionId, ConversationId, DoseId, DraftId, EntryId,
+    EventId, FileId, FoodId, GoalId, HealthDocumentId, HealthSourceId, ItemId, JobId, JournalId,
+    KindId, LabResultId, LogId, MailMessageId, MailboxId, MealId, MedicationId, MemoryId,
+    MessageId, MoneyCategoryId, MoneyRuleId, NewsSourceId, NoteId, OpId, PackId, ProjectId,
+    ProposalId, QueueEntryId, ReadingId, RecordingId, RoutineId, RoutineRunId, ScreenAppId,
+    ScreenCategoryId, ScreenSpanId, SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId,
+    TranscriptId, TxnId, VoiceprintId, WorkoutId, WritingId,
 };
 pub use job::{Job, JobKind, JobOutput, JobRules, JobStatus, JobUpdate, Observed, Probe};
 pub use library::{
@@ -192,8 +192,9 @@ pub use money::{
     MoneyCategory, MoneyRule, PlaidEnvironment, Txn, TxnOrigin, TxnQuery,
 };
 pub use news::{
-    Also, BodyOrigin, FetchState, HnList, NewsImage, NewsSource, Retention, SourceKind,
-    SourceSummary, Story, StoryBody,
+    Also, BodyOrigin, ConsumeMode, Consumption, ContentRef, Enclosure, FeedSettings, FetchState,
+    HnList, NewsImage, NewsSource, PodcastSettings, QueueEntry, Retention, SourceKind,
+    SourceSummary, Story, StoryBody, StoryFiles,
 };
 pub use note::{Note, NoteOrigin, NoteSummary};
 pub use profile::Profile;
@@ -246,6 +247,6 @@ pub use timestamped::Timestamped;
 pub use tracker::{
     Aggregate, Period, Reading, Standing, Tally, Target, Tracker, TrackerKind, TrackerSource,
 };
-pub use vault::{Vault, VaultConfig, VaultHeader, VaultStatus};
+pub use vault::{QueuePlace, Vault, VaultConfig, VaultHeader, VaultStatus};
 pub use websearch::{Fetcher, SearchRequest, SearchResult, Source, WebSearch};
 pub use writing::{WritingAction, WritingAssist, WritingOutcome};

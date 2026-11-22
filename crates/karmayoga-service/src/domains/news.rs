@@ -30,7 +30,7 @@ use jiff::Timestamp;
 use karmayoga_core::library::Item;
 use karmayoga_core::mail::Category;
 use karmayoga_core::news::opml::Outline;
-use karmayoga_core::news::{HnList, NewsSource, SourceKind, SourceSummary, Story};
+use karmayoga_core::news::{HnList, NewsSource, PodcastSettings, SourceKind, SourceSummary, Story};
 use karmayoga_core::store::library::ItemQuery;
 use karmayoga_core::store::news::{StoryPage, StoryQuery};
 use karmayoga_core::{ItemId, KindId, NewsSourceId, StoryId, Vault};
@@ -59,6 +59,24 @@ pub enum NewSource {
         title: Option<String>,
         #[serde(default)]
         folder: Option<String>,
+    },
+    /// A show from the podcast directory (`crate::news::directory`): a web
+    /// feed that is known to be a podcast from the start, which is what lets
+    /// its first episodes be downloaded by the show's policies. The address
+    /// is a stranger's, so unlike a typed [`NewSource::Web`] it may not be one
+    /// on the person's own network.
+    #[serde(rename_all = "camelCase")]
+    Podcast {
+        url: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        folder: Option<String>,
+        /// The directory's own id for the show, kept in its settings.
+        #[serde(default)]
+        directory_id: Option<String>,
+        #[serde(default)]
+        author: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     HackerNews {
@@ -216,6 +234,9 @@ async fn add_news_source(
         NewSource::Web { url, title, folder } => {
             followed_web(&existing, &url, title, folder).await?
         }
+        NewSource::Podcast { url, title, folder, directory_id, author } => {
+            podcast_source(&existing, &url, title, folder, directory_id, author)?
+        }
         NewSource::HackerNews { list, min_points, folder } => {
             let min_points = min_points.unwrap_or(0);
             let kind = SourceKind::HackerNews { list, min_points };
@@ -278,6 +299,9 @@ async fn add_news_source(
         .await?;
     }
 
+    // A show has no site yet -- the host of its feed is a podcast host's, and
+    // its favicon is no icon for the show. The first read of the feed brings
+    // the show's own picture (`refresh::learn`).
     if !source.site_url.is_empty()
         && let Some(icon) = fetch::site_icon(&vault, &source.site_url).await
     {
@@ -307,6 +331,43 @@ async fn add_news_source(
     }
 
     blocking(move || Ok(vault.news_source(id)?)).await
+}
+
+/// A podcast from the directory, as a source: a web feed with its show
+/// settings begun, named as the directory named it.
+///
+/// Refused when its address is on the person's own network, as an OPML
+/// import refuses one: the address came from a directory, which is a
+/// stranger's text, and the refresher would fetch it from inside the network
+/// every few minutes on the stranger's say-so. A show of their own on their
+/// own network is followed by pasting its address as a feed, which is the one
+/// gesture that is theirs -- and is a podcast as soon as it has been read.
+fn podcast_source(
+    existing: &[NewsSource],
+    url: &str,
+    title: Option<String>,
+    folder: Option<String>,
+    directory_id: Option<String>,
+    author: Option<String>,
+) -> CommandResult<NewsSource> {
+    let url = web_address(url)?;
+    if names_own_network(&url) {
+        return Err(CommandError::new(
+            codes::INVALID,
+            "a podcast from the directory cannot be on your own network; paste its address as a \
+             feed instead",
+        ));
+    }
+    refuse_duplicate(existing, &SourceKind::Web { url: url.clone() })?;
+    let title = clean(title).unwrap_or_else(|| host_title(&url));
+    let mut source = NewsSource::new(SourceKind::Web { url }, title);
+    source.folder = folder.map(|f| f.trim().to_string()).unwrap_or_default();
+    source.podcast = Some(PodcastSettings {
+        author: clean(author).unwrap_or_default(),
+        directory_id: clean(directory_id),
+        ..PodcastSettings::default()
+    });
+    Ok(source)
 }
 
 /// Following a sender in the Feed says what their mail is: a newsletter. So
@@ -414,6 +475,8 @@ async fn mark_stories_read(svc: Arc<Service>, _ctx: Ctx, args: MarkStories) -> C
         })
         .await?
     };
+    // Recommended offers only what is unread.
+    crate::news::rank::forget_window(&svc);
     if mail_backed.is_empty() {
         return Ok(());
     }
@@ -432,7 +495,10 @@ async fn mark_all_stories_read(
     _ctx: Ctx,
     args: MarkAll,
 ) -> CommandResult<Vec<StoryId>> {
-    svc.on_vault(move |vault| vault.mark_all_stories_read(&args.sources, args.up_to)).await
+    let marked =
+        svc.on_vault(move |vault| vault.mark_all_stories_read(&args.sources, args.up_to)).await?;
+    crate::news::rank::forget_window(&svc);
+    Ok(marked)
 }
 
 async fn save_stories(svc: Arc<Service>, _ctx: Ctx, args: SaveStories) -> CommandResult<()> {
@@ -654,12 +720,29 @@ async fn export_opml(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandRes
 /// -- so `Example.com/feed/` and `example.com/feed`, or a link with and
 /// without `utm_source`, are one feed -- and by the trimmed text when either
 /// does not.
-fn same_address(a: &str, b: &str) -> bool {
+pub(crate) fn same_address(a: &str, b: &str) -> bool {
     let (a, b) = (a.trim(), b.trim());
     match (canonical::canonicalise(a), canonical::canonicalise(b)) {
         (Some(a), Some(b)) => a == b,
         _ => a == b,
     }
+}
+
+/// The addresses of the feeds somebody follows, a podcast's among them: what
+/// a directory's hits are compared with to say which are already followed.
+pub(crate) fn followed_feeds(sources: &[NewsSource]) -> Vec<String> {
+    sources
+        .iter()
+        .filter_map(|s| match &s.kind {
+            SourceKind::Web { url } => Some(url.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `url` is one of the `followed` feeds, by [`same_address`].
+pub(crate) fn is_followed(followed: &[String], url: &str) -> bool {
+    followed.iter().any(|f| same_address(f, url))
 }
 
 /// Trimmed, and `None` when nothing is left.
@@ -979,6 +1062,101 @@ mod tests {
         for kind in different {
             assert!(refuse_duplicate(&existing, &kind).is_ok(), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn a_podcast_from_the_directory_is_a_web_feed_that_is_a_show_from_the_start() {
+        let source = podcast_source(
+            &[],
+            "feeds.example.com/show.xml",
+            Some("  The Show ".into()),
+            Some(" Listening ".into()),
+            Some("173001861".into()),
+            Some(" Dan Carlin ".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            source.kind,
+            SourceKind::Web { url: "https://feeds.example.com/show.xml".into() }
+        );
+        assert_eq!(source.title, "The Show");
+        assert_eq!(source.folder, "Listening");
+        assert_eq!(source.site_url, "");
+        let show = source.podcast.expect("a show");
+        assert_eq!(show.author, "Dan Carlin");
+        assert_eq!(show.directory_id.as_deref(), Some("173001861"));
+        // Everything else is the Feed's say.
+        assert_eq!((show.download, show.keep, show.queue_new), (None, None, None));
+
+        let bare =
+            podcast_source(&[], "https://feeds.example.com/show.xml", None, None, None, None)
+                .unwrap();
+        assert_eq!(bare.title, "feeds.example.com");
+        assert_eq!(bare.folder, "");
+        assert_eq!(bare.podcast.unwrap().directory_id, None);
+    }
+
+    #[test]
+    fn a_show_is_refused_as_a_web_feed_is_when_it_is_already_followed() {
+        let mut followed = web("https://feeds.example.com/show.xml");
+        followed.podcast = Some(PodcastSettings::default());
+        // Followed as a show, offered as a show, and followed as a plain feed
+        // then offered as a show: all the same feed.
+        for existing in [followed, web("https://Feeds.example.com/show.xml/")] {
+            let e = podcast_source(
+                &[existing],
+                "https://feeds.example.com/show.xml",
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(e.code, codes::INVALID);
+            assert!(e.message.contains("already follow"), "{}", e.message);
+        }
+        let other = web("https://feeds.example.com/other.xml");
+        assert!(
+            podcast_source(&[other], "https://feeds.example.com/show.xml", None, None, None, None)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_show_whose_feed_is_on_the_persons_own_network_is_not_taken_from_a_directory() {
+        for own in ["http://192.168.1.2/feed", "http://nas.local/rss", "http://127.0.0.1:8080/x"] {
+            let e = podcast_source(&[], own, None, None, None, None).unwrap_err();
+            assert_eq!(e.code, codes::INVALID, "{own}");
+        }
+        let e = podcast_source(&[], "ftp://example.com/x", None, None, None, None).unwrap_err();
+        assert_eq!(e.code, codes::INVALID);
+    }
+
+    #[test]
+    fn a_podcast_is_asked_for_the_way_the_interface_writes_it() {
+        let wire = serde_json::json!({
+            "type": "podcast",
+            "url": "https://feeds.example.com/show.xml",
+            "title": "The Show",
+            "directoryId": "42",
+            "author": "A. Host",
+        });
+        match serde_json::from_value::<NewSource>(wire).unwrap() {
+            NewSource::Podcast { url, title, folder, directory_id, author } => {
+                assert_eq!(url, "https://feeds.example.com/show.xml");
+                assert_eq!(title.as_deref(), Some("The Show"));
+                assert_eq!(
+                    (folder, directory_id.as_deref(), author.as_deref()),
+                    (None, Some("42"), Some("A. Host"))
+                );
+            }
+            other => panic!("not a podcast: {other:?}"),
+        }
+        let minimal = serde_json::json!({"type": "podcast", "url": "https://x.example/f"});
+        assert!(matches!(
+            serde_json::from_value::<NewSource>(minimal).unwrap(),
+            NewSource::Podcast { title: None, folder: None, directory_id: None, author: None, .. }
+        ));
     }
 
     fn story() -> Story {

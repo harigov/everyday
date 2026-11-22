@@ -37,8 +37,20 @@
 //! arithmetic that decides things -- [`schedule`] -- which is pure and
 //! under test.
 
+pub mod listening;
 pub mod opml;
+pub mod podcast;
 pub mod schedule;
+pub mod settings;
+
+pub use listening::{
+    AddedBy, ConsumeMode, ConsumedQuery, Consumption, ContentRef, QueueEntry, Span,
+};
+pub use podcast::{
+    DownloadPolicy, Enclosure, EnclosureKind, KeepPolicy, PodcastDefaults, PodcastPolicy,
+    PodcastSettings, StoryFiles, TranscribePolicy,
+};
+pub use settings::{Criterion, FeedSettings, Rank, RankAnswer, Ranking};
 
 use crate::id::{BlobId, MailMessageId, NewsSourceId, StoryId};
 use crate::timestamped::Timestamped;
@@ -115,6 +127,11 @@ pub struct NewsSource {
     /// person's.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub added_by_assistant: bool,
+    /// A podcast: set when it was followed from the podcast directory, or
+    /// when its feed turned out to carry audio or video. Its own say over
+    /// what is downloaded and kept; see [`podcast`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub podcast: Option<PodcastSettings>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -141,9 +158,15 @@ impl NewsSource {
             paused: false,
             sort_order: 0,
             added_by_assistant: false,
+            podcast: None,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Whether this is a podcast.
+    pub fn is_podcast(&self) -> bool {
+        self.podcast.is_some()
     }
 
     /// The retention that applies: this source's own, or the default.
@@ -414,6 +437,15 @@ pub struct Story {
     /// mail's own route, and its read state is the message's seen flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_message: Option<MailMessageId>,
+    /// A podcast episode: the file the feed named for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<Enclosure>,
+    /// What this story has in the files folder -- the episode downloaded,
+    /// its transcript, the article kept -- the way a library item has its
+    /// files. Written through [`crate::Vault::update_story_files`], never by a
+    /// refresh.
+    #[serde(default, skip_serializing_if = "StoryFiles::is_empty")]
+    pub files: StoryFiles,
     /// Read. Filled by the store from its clear column (or, for a mail-backed
     /// story, from the message's flags) on every read; the sealed copy is not
     /// authoritative. See [`crate::store::news::NewsStore::set_read`].
@@ -458,6 +490,8 @@ impl Story {
             discussion_url: String::new(),
             also: Vec::new(),
             mail_message: None,
+            media: None,
+            files: StoryFiles::default(),
             read: false,
             saved: false,
             has_body: false,
@@ -510,6 +544,9 @@ pub enum BodyOrigin {
     Extracted,
     /// An Ask HN post's own text.
     HackerNews,
+    /// Written from an episode's transcript: a podcast read as an article,
+    /// with the show notes the feed carried kept below it.
+    Transcript,
 }
 
 /// One picture a body refers to.

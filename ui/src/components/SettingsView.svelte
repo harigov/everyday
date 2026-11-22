@@ -66,6 +66,7 @@
   import ChatLinksPanel from './ChatLinksPanel.svelte'
   import ConnectionsPanel from './ConnectionsPanel.svelte'
   import DataPanel from './DataPanel.svelte'
+  import FeedSettingsPanel from './FeedSettingsPanel.svelte'
   import FilesSettingsPanel from './FilesSettingsPanel.svelte'
   import KeepInTouchPanel from './KeepInTouchPanel.svelte'
   import MailSortingPanel from './MailSortingPanel.svelte'
@@ -212,6 +213,10 @@
     // waits, and what the assistant and the network may be told. See
     // `FilesSettingsPanel`.
     { id: 'files', label: 'Files', icon: 'folder', group: 'apps' },
+    // What the Feed downloads and keeps of the podcasts it follows, how
+    // Recommended is ranked, Up Next and the player. Beside Files, since
+    // that is where the episodes it downloads end up. See `FeedSettingsPanel`.
+    { id: 'feed', label: 'Feed', icon: 'rss', group: 'apps' },
     // Where health data comes from -- a phone's automations, an Apple export
     // -- the units and goals it is shown against, and the key for the food
     // database. Not a pane of the app: those are for reading, and a token
@@ -263,6 +268,7 @@
       .filter((t) => t.id !== 'money' || app.supportsMoney)
       .filter((t) => t.id !== 'screentime' || app.supportsScreenTime)
       .filter((t) => t.id !== 'files' || files.supported)
+      .filter((t) => t.id !== 'feed' || app.supportsNews)
       .filter((t) => t.id !== 'health' || app.supportsHealth)
       .filter((t) => t.id !== 'keepintouch' || app.supportsLibrary)
       .filter((t) => t.id !== 'sorting' || (agent.supported && app.supportsMail))
@@ -481,6 +487,8 @@
         <ScreenTimeSettingsPanel />
       {:else if tab === 'files'}
         <FilesSettingsPanel />
+      {:else if tab === 'feed'}
+        <FeedSettingsPanel />
       {:else if tab === 'health'}
         <HealthSettingsPanel />
       {:else if tab === 'meetings'}

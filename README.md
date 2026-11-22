@@ -1163,6 +1163,38 @@ a routine. "Every weekday at seven, read what is new in my Feed and leave me a
 note with the five worth my time." And everything you follow leaves as OPML,
 which every other reader opens.
 
+### Podcasts, Up Next and Recommended
+
+**Podcasts are feeds that carry something to hear or watch.** Browse finds
+shows in Apple's directory — search, or the top charts by genre — and feeds
+through Feedly's search, neither with a key; a podcast's own address works
+too. An episode is downloaded before it is played, never streamed, into
+`Feed/Podcasts/<show>/` in your files folder, where it is a file like any
+other: searched, backed up, synced, and listed under the story it came from,
+the way a library item lists its book. What is downloaded and how long it is
+kept are set once in Settings → Feed — the newest episode of each show, kept
+a week after it was played, by default — and any show can say otherwise.
+Clean-up only ever moves to the trash an episode the Feed itself downloaded,
+never a favourite, a saved story or anything in Up Next.
+
+**One player for everything.** The same player plays every episode, every
+recording and film in Files, and stays playing while you move between apps:
+a bar in the top strip, a panel with the picture, the speed and Up Next.
+Where you stopped is remembered for each thing, and what of it you heard.
+
+**Up Next** is what plays without picking: episodes, articles (read aloud
+through Listen, or opened to read), library items and files, in the order you
+drag them into. A show can put every new episode there, and Up Next can top
+itself up from **Recommended** — the unread stories of the last week, ranked
+against the questions you write in Settings → Feed ("about building software
+with AI", "a show I always finish", or weighted down, "crypto"). Each
+question is put to the decision model, or the Small model when there is no
+decision model, and the answers are kept per story, so editing a question
+ranks everything again. Every article read and episode heard is recorded —
+what, when, and how much — and that record outlives the story it came from.
+The assistant can list Up Next, add to it, follow a podcast, and say what you
+read or listened to last week.
+
 ## Money
 
 Your bank accounts, what went through them, and what you meant to spend —

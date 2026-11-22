@@ -2961,6 +2961,11 @@
             "const": "health",
             "description": "A clinical document or a meal's photograph kept by Health. Always\nsealed when Health adds it (Hari's call: what a clinician gave\nsomebody stays in the vault), and out of the assistant's file tools,\nwhich have Health's own gates to answer to instead.",
             "type": "string"
+          },
+          {
+            "const": "feed",
+            "description": "Kept by the Feed: a podcast episode downloaded, its transcript, an\narticle kept as Markdown once it was read, an article turned into\naudio, the daily podcast. Under `Feed/` (see\n[`crate::news::podcast::FEED_DIR`]). Its documents are always indexed\nwhile indexing is on, whatever folders are chosen: they are the Feed's\nmemory of what was read and heard.",
+            "type": "string"
           }
         ]
       },
@@ -3495,6 +3500,11 @@
           {
             "const": "health",
             "description": "A clinical document or a meal's photograph kept by Health. Always\nsealed when Health adds it (Hari's call: what a clinician gave\nsomebody stays in the vault), and out of the assistant's file tools,\nwhich have Health's own gates to answer to instead.",
+            "type": "string"
+          },
+          {
+            "const": "feed",
+            "description": "Kept by the Feed: a podcast episode downloaded, its transcript, an\narticle kept as Markdown once it was read, an article turned into\naudio, the daily podcast. Under `Feed/` (see\n[`crate::news::podcast::FEED_DIR`]). Its documents are always indexed\nwhile indexing is on, whatever folders are chosen: they are the Feed's\nmemory of what was read and heard.",
             "type": "string"
           }
         ]
@@ -8211,6 +8221,56 @@
         "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
         "type": "string"
       },
+      "DownloadPolicy": {
+        "description": "Which episodes are downloaded without being asked.",
+        "oneOf": [
+          {
+            "description": "Only what somebody asks for, or puts in Up Next.",
+            "properties": {
+              "type": {
+                "const": "off",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The newest `count` episodes, as they arrive.",
+            "properties": {
+              "count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "newest",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "count"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Every new episode.",
+            "properties": {
+              "type": {
+                "const": "all",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "HnList": {
         "description": "Which Hacker News list a source follows.",
         "oneOf": [
@@ -8235,6 +8295,134 @@
             "type": "string"
           }
         ]
+      },
+      "KeepPolicy": {
+        "description": "How long a downloaded episode is kept.",
+        "oneOf": [
+          {
+            "description": "Until somebody deletes it.",
+            "properties": {
+              "type": {
+                "const": "forever",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Moved to the files trash `days` after it was played to the end.",
+            "properties": {
+              "days": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "afterPlayed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "days"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Only the newest `count` episodes of the show are kept.",
+            "properties": {
+              "count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "newest",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "count"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "PodcastSettings": {
+        "description": "One show's own say over what is downloaded and kept. Every field left\n`None` follows the Feed's [`PodcastDefaults`].",
+        "properties": {
+          "author": {
+            "default": "",
+            "description": "`itunes:author`, or the directory's artist name.",
+            "type": "string"
+          },
+          "directoryId": {
+            "description": "The directory's own id for the show (Apple's `collectionId`), when it\nwas followed from there.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "download": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DownloadPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "keep": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/KeepPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "queueNew": {
+            "description": "Put every new episode in Up Next.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "skipIntroS": {
+            "description": "Seconds to skip at the start of every episode.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "speed": {
+            "description": "This show's playback speed, a multiple of normal. `None` is the\nplayer's own.",
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "transcribe": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TranscribePolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
       },
       "Retention": {
         "description": "How long a source's stories are kept, in days.\n\nNews expires and saving keeps it: a saved story is never expired, and\neverything else goes once it is older than this. What is left of an\nexpired story is a tombstone -- see [`Story::expired`].",
@@ -8332,6 +8520,26 @@
             "type": "object"
           }
         ]
+      },
+      "TranscribePolicy": {
+        "description": "When an episode is transcribed -- which is what lets it be read as an\narticle, asked about, and found again by what was said.",
+        "oneOf": [
+          {
+            "const": "off",
+            "description": "Only when somebody asks.",
+            "type": "string"
+          },
+          {
+            "const": "whenDownloaded",
+            "description": "As soon as it is downloaded.",
+            "type": "string"
+          },
+          {
+            "const": "whenPlayed",
+            "description": "Once somebody starts playing it.",
+            "type": "string"
+          }
+        ]
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -8395,6 +8603,17 @@
         "default": false,
         "description": "Stop asking. A source that has failed for thirty days in a row pauses\nitself; a person can pause one too.",
         "type": "boolean"
+      },
+      "podcast": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/PodcastSettings"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "A podcast: set when it was followed from the podcast directory, or\nwhen its feed turned out to carry audio or video. Its own say over\nwhat is downloaded and kept; see [`podcast`]."
       },
       "retention": {
         "anyOf": [
@@ -14074,6 +14293,107 @@
           "sourceId"
         ],
         "type": "object"
+      },
+      "Enclosure": {
+        "description": "The file a story carries: a podcast episode's audio or video.",
+        "properties": {
+          "durationMs": {
+            "description": "`itunes:duration`, in milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "episode": {
+            "description": "`itunes:episode` and `itunes:season`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "length": {
+            "description": "Bytes, as the feed said. Often wrong, sometimes zero; a hint for the\nprogress bar and nothing else.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mime": {
+            "default": "",
+            "description": "As the feed said it, lower-cased: `audio/mpeg`, `video/mp4`. Empty when\nit said nothing, and then [`Enclosure::kind`] goes by the extension.",
+            "type": "string"
+          },
+          "season": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "transcriptMime": {
+            "default": "",
+            "description": "That transcript's type, as the feed said it.",
+            "type": "string"
+          },
+          "transcriptUrl": {
+            "default": "",
+            "description": "`podcast:transcript`: the publisher's own transcript, the best of the\nones it offered (WebVTT, then SRT, then JSON, then HTML, then text).\nEmpty when it offered none.",
+            "type": "string"
+          },
+          "url": {
+            "description": "Absolute. Fetched only by the downloader, over the public client.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "StoryFiles": {
+        "description": "The files a story has in the files folder. Each is a file like any other,\nreferred to by id, the way [`crate::library::Item::files`] are; the\ncatalog's references table knows them under\n[`crate::files::RefKind::Story`].",
+        "properties": {
+          "audio": {
+            "description": "The article turned into audio.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "media": {
+            "description": "The episode, downloaded.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "The article, kept as Markdown once it was read or heard: the Feed's\nmemory of it, which outlives the story's own expiry.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transcript": {
+            "description": "What was said in it, as Markdown with a time on every paragraph --\nsee `karmayoga_core::news::transcript`.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -14114,6 +14434,10 @@
         "format": "date-time",
         "type": "string"
       },
+      "files": {
+        "$ref": "#/$defs/StoryFiles",
+        "description": "What this story has in the files folder -- the episode downloaded,\nits transcript, the article kept -- the way a library item has its\nfiles. Written through [`crate::Vault::update_story_files`], never by a\nrefresh."
+      },
       "hasBody": {
         "default": false,
         "description": "A body row exists: the feed carried content, or an article was\nextracted.",
@@ -14139,6 +14463,17 @@
           "string",
           "null"
         ]
+      },
+      "media": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Enclosure"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "A podcast episode: the file the feed named for it."
       },
       "publishedAt": {
         "description": "When the publisher says it was published, or when it was first seen\nif the publisher did not say.",

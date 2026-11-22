@@ -68,6 +68,10 @@ class Listening {
   /** Stop has been asked for, and the session has not said it is over. */
   #stopping = false
   #grace: ReturnType<typeof setTimeout> | null = null
+  /** Told when a session is about to start, and when one ends of its own
+   *  accord. See `onStart` and `onEnded`. */
+  #startListeners = new Set<(source: ListenSource) => void>()
+  #endListeners = new Set<(source: ListenSource) => void>()
 
   constructor() {
     // Gone with the key: a session reads the vault aloud.
@@ -77,6 +81,30 @@ class Listening {
   /** This window can play aloud: the desktop app, on a vault of its own. */
   get available(): boolean {
     return isMock || (hasShell && app.remote === null)
+  }
+
+  /**
+   * Be told when a session is about to start, with what it will read, before
+   * whatever is being read is ended. Answers the way to stop being told.
+   *
+   * A registry rather than an import because the media player
+   * (`player.svelte.ts`) imports this file -- it hands an article in Up Next
+   * to it -- and Listen has to make the player pause when it starts.
+   */
+  onStart(listener: (source: ListenSource) => void): () => void {
+    this.#startListeners.add(listener)
+    return () => this.#startListeners.delete(listener)
+  }
+
+  /**
+   * Be told when a session reaches its end on its own: the last sentence was
+   * said, and nobody pressed Stop. Not for Stop, an error, a lock, or another
+   * session replacing it -- the player moves on to the next thing in Up Next
+   * only for a thing that was heard to the end.
+   */
+  onEnded(listener: (source: ListenSource) => void): () => void {
+    this.#endListeners.add(listener)
+    return () => this.#endListeners.delete(listener)
   }
 
   /** Whether `source` is what is being read now. */
@@ -91,6 +119,7 @@ class Listening {
       this.error = 'Listening needs the desktop app, on this computer.'
       return
     }
+    this.#tell(this.#startListeners, source)
     if (this.active) {
       // The shell would replace it anyway. Ending it here first means its
       // last events cannot land in the session about to begin.
@@ -205,9 +234,27 @@ class Listening {
         // The session carries on, so the player stays.
         this.error = event.message
         break
-      case 'ended':
+      case 'ended': {
+        // Read before the reset, which clears both. A Stop is also answered
+        // with `ended`, and with no error: only `#stopping` tells it from
+        // the end of the text.
+        const source = this.source
+        const ofItsOwn = !this.#stopping && event.error === null
         this.#reset(event.error)
+        if (ofItsOwn && source) this.#tell(this.#endListeners, source)
         break
+      }
+    }
+  }
+
+  /** Call each listener. One that throws must not stop the session, or the rest. */
+  #tell(listeners: Set<(source: ListenSource) => void>, source: ListenSource) {
+    for (const listener of [...listeners]) {
+      try {
+        listener(source)
+      } catch {
+        // A listener's trouble is its own.
+      }
     }
   }
 

@@ -1034,7 +1034,7 @@ fn fetched_address<'a>(name: &str, arguments: &'a Value) -> Option<&'a str> {
     let named = |address: Option<&'a str>| address.filter(|a| !a.trim().is_empty());
     match name {
         READ_WEB_PAGE => argument("url"),
-        FOLLOW_SOURCE => named(argument("url")),
+        FOLLOW_SOURCE | FOLLOW_PODCAST => named(argument("url")),
         LOOK_UP_ITEM => argument("title").filter(|t| SearchResult::for_address(t).is_some()),
         _ if crate::websearch::COVER_TOOLS.contains(&name) => named(argument("image_url")),
         _ => None,
@@ -1217,6 +1217,9 @@ const REMEMBER_PRONUNCIATION: &str = karmayoga_core::agent::PRONUNCIATION_TOOL;
 /// In the core catalogue, unlike the ones above, but singled out by the gate:
 /// following a web feed puts a request on the network. See `on_tool_call`.
 const FOLLOW_SOURCE: &str = "follow_source";
+/// The same way out as [`FOLLOW_SOURCE`]: following a podcast puts its
+/// feed's address on the network, and its episodes after it.
+const FOLLOW_PODCAST: &str = "follow_podcast";
 /// Also in the core catalogue, and singled out after it runs: an item filled
 /// in from the web carries a stranger's words. See `on_tool_result`.
 const GET_ITEM: &str = "get_item";
@@ -5835,7 +5838,9 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
             // What `save_profile`'s own command row raises.
             "update_profile" => Kind::Settings,
             // The Feed's two writes to a source rather than a story.
-            "follow_source" | "unfollow_source" => Kind::NewsSource,
+            "follow_source" | "unfollow_source" | "follow_podcast" => Kind::NewsSource,
+            // Up Next is its own list, drawn by the player and the Feed.
+            "add_to_up_next" | "remove_from_up_next" => Kind::Queue,
             // Money's budget lives on its category. A rule is run over the
             // transactions already there the moment it is saved, so the
             // interface reloads its transaction list on a rule's change too.
@@ -6281,7 +6286,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // `["create_note"]`, and the cap is fixed at one regardless.
     let note_budget = drafting.is_some().then(|| Arc::new(AtomicU32::new(1)));
     let meta = TurnMeta {
-        service,
+        service: service.clone(),
         conversation,
         from_chat: via.is_some(),
         unattended: nobody_watching,
@@ -6388,6 +6393,17 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // failed after deleting a project must still show the deletion.
     let ran = std::mem::take(&mut *ledger.lock().unwrap());
     let wrote = written_in_turn(&ran, &site_trusted);
+    // The core's `add_to_up_next` can only write the vault; an episode it
+    // queued that has not been downloaded is asked for here, as the
+    // interface's own Add would have.
+    if ran.iter().any(|r| r.call.name == "add_to_up_next" && matches!(r.outcome, Some(Ok(_)))) {
+        let service = service.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::news::queue::request_missing(&service).await {
+                tracing::warn!(error = %e.message, "could not ask for Up Next's episodes");
+            }
+        });
+    }
 
     match outcome {
         // Stopped before it had said or done anything: there is nothing to

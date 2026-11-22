@@ -69,6 +69,10 @@ export const SETTINGS_TABS = [
   // vault, how long the trash keeps what is in it, and bringing older
   // pictures in. See `docs/plans/files.md`.
   'files',
+  // What the Feed does with podcasts -- what downloads, how long it is kept,
+  // when it is transcribed -- how Recommended is ranked, Up Next and the
+  // player. See FeedSettingsPanel and `docs/plans/podcasts.md`.
+  'feed',
   // Where health data comes from -- the phone's automations, an Apple
   // export -- how it is shown, and the food database key. See
   // `docs/plans/health.md`.

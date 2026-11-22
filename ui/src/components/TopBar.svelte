@@ -26,6 +26,7 @@
   import Icon from './Icon.svelte'
   import ListenPlayer from './ListenPlayer.svelte'
   import Logo from './Logo.svelte'
+  import PlayerBar from './PlayerBar.svelte'
   import RecordingPill from './RecordingPill.svelte'
   import WindowControls from './WindowControls.svelte'
 
@@ -80,7 +81,9 @@
     <!-- Whatever is being read aloud: here and not in an app, so it plays on
          and stays in reach while somebody moves between apps. Its buttons are
          not drag regions -- only an element carrying the attribute itself is
-         one, and the pill and its children do not. -->
+         one, and the pill and its children do not. The player for episodes,
+         recordings and films stands beside it for the same reason. -->
+    <PlayerBar />
     <ListenPlayer />
     <WindowControls />
   </div>
