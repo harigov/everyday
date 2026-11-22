@@ -6589,6 +6589,10 @@ export interface DocSearchPage {
   total: number
   /** Indexing is still under way, so more may match later. */
   indexing: boolean
+  /** The offset to ask for the next page from -- not `offset + hits.length`,
+   *  since hits for files no longer indexed are left out after the index
+   *  answers. */
+  nextOffset: number
 }
 
 export interface DocFailure {

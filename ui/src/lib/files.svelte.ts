@@ -129,6 +129,12 @@ export interface DocumentFound {
   hit: DocSearchHit
 }
 
+/** What makes two found places the same place: the file and the block. The
+ *  key the Files list draws them under. */
+export function placeKey(found: DocumentFound): string {
+  return `${found.file.id}:${found.hit.block}`
+}
+
 /** Bytes per upload chunk. */
 export const UPLOAD_CHUNK = 4 * 1024 * 1024
 
@@ -928,14 +934,21 @@ class FilesState {
       if (!this.#documentGen.isCurrent(token)) return
       const entries = await this.#entriesOf(found.hits.map((h) => h.file))
       if (!this.#documentGen.isCurrent(token)) return
+      // One row per place: a page never repeats a passage the one before it
+      // listed, but a title and a first passage can name the same block.
+      const held = new Set(more ? this.documentHits.map(placeKey) : [])
       const rows = found.hits.flatMap((hit) => {
         const file = entries.get(hit.file)
-        return file ? [{ file, hit }] : []
+        if (!file || held.has(placeKey({ file, hit }))) return []
+        held.add(placeKey({ file, hit }))
+        return [{ file, hit }]
       })
       this.documentHits = more ? [...this.documentHits, ...rows] : rows
       this.documentTotal = found.total
       this.documentIndexing = found.indexing
-      this.#documentTaken = offset + found.hits.length
+      // Where the index says it stopped, not how many came back: it leaves
+      // out passages of files no longer indexed after it has counted them.
+      this.#documentTaken = Math.max(found.nextOffset, offset + found.hits.length)
     } catch (e) {
       if (!this.#documentGen.isCurrent(token)) return
       if (!more) this.documentHits = []

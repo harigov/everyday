@@ -43,9 +43,9 @@ pub mod cache;
 pub mod parse;
 pub mod task;
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use base64::Engine;
@@ -137,6 +137,9 @@ pub struct DocumentsState {
     /// Raised by a reindex, so a pass that is under way knows what it has
     /// found out about the index has been cleared since.
     epoch: AtomicU64,
+    /// A reindex asked for the index to be emptied and it could not be yet
+    /// (another handle held the writer); the next pass does it.
+    clear_pending: AtomicBool,
 }
 
 /// Why a document could not be loaded, by whose doing.
@@ -235,6 +238,7 @@ impl DocumentsState {
             flights: Flights::default(),
             progress: Mutex::new(Progress::default()),
             epoch: AtomicU64::new(0),
+            clear_pending: AtomicBool::new(false),
         })
     }
 
@@ -412,14 +416,26 @@ impl DocumentsState {
     ///
     /// The index is asked first and the catalog second: a hit for a file that
     /// is gone, trashed, Health's, or no longer one the settings index is left
-    /// out, so what the index has not yet been told ( the next pass is
+    /// out, so what the index has not yet been told (the next pass is
     /// minutes away) is never shown. The page is made up from further hits
-    /// when some were left out, so a page is as full as the matches allow; the
-    /// offset counts from the first hit the index has, which can be a hit or
-    /// two off where something was left out before it.
+    /// when some were left out, so a page is as full as the matches allow.
+    ///
+    /// Two hits at one place are one: the marker that stands for a title
+    /// points at the first passage's block, and a block too long for a passage
+    /// is cut into several at the same block. The best-scoring is kept, which
+    /// is the first, hits coming best first.
+    ///
+    /// [`DocSearchPage::next_offset`] is the position in the index's own
+    /// answers just past the last one this page used, so asking from there
+    /// neither repeats a hit nor skips one: hits left out, and hits that came
+    /// after the page was full, are accounted for. `total` is the index's
+    /// count in the same terms, so `next_offset < total` says there is more;
+    /// it can run a little over what is shown while a file the catalog has let
+    /// go of waits for the next pass to leave the index.
     pub fn search(&self, vault: &Vault, query: &DocSearch) -> CoreResult<DocSearchPage> {
         let indexing = self.working();
-        let nothing = DocSearchPage { indexing, ..DocSearchPage::default() };
+        let nothing =
+            DocSearchPage { indexing, next_offset: query.offset, ..DocSearchPage::default() };
         let Some(index) = &self.index else { return Ok(nothing) };
         let settings = vault.files_settings()?;
         if !settings.index_documents || query.text.trim().is_empty() {
@@ -428,22 +444,25 @@ impl DocumentsState {
         let limit = query.limit.clamp(1, MAX_SEARCH_LIMIT);
 
         let mut wanted: HashMap<FileId, bool> = HashMap::new();
+        let mut places: HashSet<(FileId, u32)> = HashSet::new();
         let mut hits: Vec<DocSearchHit> = Vec::with_capacity(limit);
-        let (mut at, mut matching, mut left_out) = (query.offset, 0, 0usize);
-        while hits.len() < limit && at < query.offset + MAX_SEARCH_PULL {
-            let (found, total) = index.search(&query.text, &query.files, limit, at)?;
-            matching = total;
+        let (mut at, mut total) = (query.offset, 0);
+        'pull: while at < query.offset + MAX_SEARCH_PULL {
+            let (found, matching) = index.search(&query.text, &query.files, limit, at)?;
+            total = matching;
             if found.is_empty() {
                 break;
             }
-            at += found.len();
             for hit in found {
+                // Full: this one, and the rest of what came back, are not used.
+                if hits.len() == limit {
+                    break 'pull;
+                }
+                at += 1;
                 let kept = *wanted.entry(hit.file).or_insert_with(|| {
                     vault.file(hit.file).is_ok_and(|file| settings.indexes(&file))
                 });
-                if !kept {
-                    left_out += 1;
-                } else if hits.len() < limit {
+                if kept && places.insert((hit.file, hit.block)) {
                     hits.push(DocSearchHit {
                         file: hit.file,
                         block: hit.block,
@@ -454,11 +473,11 @@ impl DocumentsState {
                     });
                 }
             }
-            if at >= matching {
+            if hits.len() == limit || at >= total {
                 break;
             }
         }
-        Ok(DocSearchPage { hits, total: matching.saturating_sub(left_out), indexing })
+        Ok(DocSearchPage { hits, total, indexing, next_offset: at })
     }
 
     /// Whether the indexing task has work under way or waiting.
@@ -497,19 +516,33 @@ impl DocumentsState {
 
     /// Empty the index and read every document into it again, at the next
     /// pass (which this brings forward).
+    ///
+    /// When the index cannot be emptied now -- another handle holds the writer
+    /// -- that is remembered, and the next pass empties it as soon as it has
+    /// the writer, rather than the request being lost.
     pub fn reindex(&self) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
-        if let Some(index) = &self.index
-            && let Err(e) = index.clear()
-        {
-            tracing::warn!(error = %e, "documents: could not empty the search index");
-        }
+        self.clear_pending.store(true, Ordering::SeqCst);
+        self.apply_pending_clear();
         {
             let mut progress = self.progress();
             progress.failed.clear();
             progress.indexed = Some(0);
         }
         task::wake();
+    }
+
+    /// Empty the index if a reindex has asked for it and it has not been done.
+    /// Blocking.
+    pub(crate) fn apply_pending_clear(&self) {
+        if !self.clear_pending.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let Some(index) = &self.index else { return };
+        if let Err(e) = index.clear() {
+            tracing::warn!(error = %e, "documents: could not empty the search index yet");
+            self.clear_pending.store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -958,7 +991,8 @@ mod tests {
         // Only the kept file: the sealed one is not indexed by the settings,
         // the trashed and the vanished are not there to show.
         assert_eq!(page.hits.iter().map(|h| h.file).collect::<Vec<_>>(), vec![kept.id]);
-        assert_eq!(page.total, 1);
+        // The index's own count and position, which a next page goes on from.
+        assert_eq!((page.total, page.next_offset), (4, 4));
 
         // Switched off, nothing is shown, whatever the index still holds.
         let mut settings = vault.files_settings().unwrap();
@@ -966,6 +1000,79 @@ mod tests {
         vault.save_files_settings(&settings).unwrap();
         assert_eq!(state.search(&vault, &query).unwrap().hits.len(), 0);
         assert!(!state.status(&vault).enabled);
+    }
+
+    fn passage(block: u32, text: &str) -> karmayoga_docindex::Passage {
+        karmayoga_docindex::Passage { block, page: 1, section: String::new(), text: text.into() }
+    }
+
+    #[test]
+    fn paging_through_a_search_neither_repeats_nor_skips_a_hit_however_many_are_left_out() {
+        let (_home, _folder, svc, vault) = with_folder();
+        let state = svc.documents().unwrap();
+        let index = state.index().unwrap();
+        // Two files the catalog has and two it has not, three passages each,
+        // so some of every page the index gives are left out.
+        let real: Vec<FileEntry> =
+            (0..2).map(|n| plain(&vault, &format!("{n}.txt"), b"x")).collect();
+        let ghosts = [FileId::new(), FileId::new()];
+        let ids = real.iter().map(|f| f.id).chain(ghosts);
+        for id in ids {
+            let passages: Vec<_> = (0..3).map(|n| passage(n * 2, &format!("alpha {n}"))).collect();
+            index.put(id, "v", "t", &passages).unwrap();
+        }
+        index.commit().unwrap();
+
+        let mut seen: Vec<(FileId, u32)> = Vec::new();
+        let mut offset = 0;
+        for _ in 0..20 {
+            let query =
+                DocSearch { text: "alpha".into(), limit: 2, offset, ..DocSearch::default() };
+            let page = state.search(&vault, &query).unwrap();
+            assert!(page.hits.len() <= 2);
+            seen.extend(page.hits.iter().map(|h| (h.file, h.block)));
+            assert!(page.next_offset >= offset, "never backwards");
+            if page.hits.is_empty() || page.next_offset >= page.total {
+                break;
+            }
+            offset = page.next_offset;
+        }
+        let mut want: Vec<(FileId, u32)> =
+            real.iter().flat_map(|f| [0, 2, 4].map(|block| (f.id, block))).collect();
+        want.sort();
+        let mut got = seen.clone();
+        got.sort();
+        assert_eq!(got, want, "every kept passage once: {seen:?}");
+    }
+
+    #[test]
+    fn two_hits_at_one_place_are_one_and_the_page_goes_on_past_both() {
+        let (_home, _folder, svc, vault) = with_folder();
+        let state = svc.documents().unwrap();
+        let file = plain(&vault, "book.txt", b"x");
+        // The title marker stands at the first passage's block, and a block too
+        // long for a passage is several at one.
+        let passages = [
+            passage(0, "alpha begins"),
+            passage(5, "alpha, a long block"),
+            passage(5, "alpha again"),
+        ];
+        state.index().unwrap().put(file.id, "v", "alpha book", &passages).unwrap();
+        state.index().unwrap().commit().unwrap();
+
+        let query = DocSearch { text: "alpha".into(), limit: 10, ..DocSearch::default() };
+        let page = state.search(&vault, &query).unwrap();
+        let mut blocks: Vec<u32> = page.hits.iter().map(|h| h.block).collect();
+        blocks.sort();
+        assert_eq!(blocks, vec![0, 5], "{:?}", page.hits);
+        // All four of the index's answers were used.
+        assert_eq!((page.total, page.next_offset), (4, 4));
+
+        // A short page stops at the last hit it kept: what came after is for the next.
+        let first = DocSearch { limit: 1, ..query.clone() };
+        let one = state.search(&vault, &first).unwrap();
+        assert_eq!(one.hits.len(), 1);
+        assert_eq!(one.next_offset, 1);
     }
 
     #[test]

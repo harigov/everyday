@@ -27,7 +27,7 @@
   import { untrack } from 'svelte'
   import { docFormatOf, isReadable } from '../lib/documents'
   import { formatSize } from '../lib/files'
-  import { files, type DocumentFound } from '../lib/files.svelte'
+  import { files, placeKey, type DocumentFound } from '../lib/files.svelte'
   import { dragIsFromOutside, droppedFiles, folderName } from '../lib/files-ui.svelte'
   import { plural } from '../lib/format'
   import { panels } from '../lib/panels.svelte'
@@ -213,7 +213,7 @@
   <section class="inside scroll" class:alone={nothingElse} aria-label="Found inside documents">
     <h2 class="eyebrow">Found inside documents</h2>
     <ul>
-      {#each shownInside as hit (`${hit.file.id}:${hit.hit.block}`)}
+      {#each shownInside as hit (placeKey(hit))}
         <li>
           <button class="list-row hit" onclick={() => openHit(hit)}>
             <span class="hit-where">

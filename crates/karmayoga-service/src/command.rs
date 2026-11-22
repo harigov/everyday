@@ -306,6 +306,12 @@ impl Command {
             #[cfg(any(debug_assertions, test))]
             assert_declared_matches_touched(self.name, kind, &touched, out.id.as_deref(), &out.ids);
             svc.events().changed(Change { kind, op, id: out.id, ids: out.ids, origin });
+            // A file added, moved, renamed or trashed by hand is the documents'
+            // index's business too; the reconciler wakes it for what arrives
+            // on disk by itself.
+            if kind == crate::events::Kind::File {
+                crate::documents::task::wake();
+            }
         }
         Ok(out.value)
     }

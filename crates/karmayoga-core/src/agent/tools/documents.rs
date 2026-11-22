@@ -37,7 +37,7 @@ use serde_json::{Map, Value, json};
 
 use super::files::{check_access, check_may_read, healths};
 use super::{Args, Tool, ToolContext, number, one_line, schema, text};
-use crate::documents::{DocFormat, DocSearch, DocSection, DocText};
+use crate::documents::{DocFormat, DocSearch, DocSearchHit, DocSection, DocText};
 use crate::error::{Error, Result};
 use crate::files::{FileEntry, FileOrigin, FileStatus, disk};
 use crate::id::FileId;
@@ -69,6 +69,10 @@ const TRAIL_CHARS: usize = 80;
 const DESCRIPTION_CHARS: usize = 600;
 const WARNING_CHARS: usize = 300;
 const MAX_LISTED: usize = 10;
+/// The most pages of the index one `search_documents` call reads while
+/// leaving out passages from other folders: enough to fill a page from a
+/// folder that holds a few of the matches, bounded for one that holds none.
+const SEARCH_ROUNDS: usize = 8;
 
 /// What every tool says its `id` is.
 const ID_HELP: &str = "The file's id, from find_files, a library item or one they handed you.";
@@ -772,46 +776,56 @@ fn run_search_documents(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value>
         }));
     }
 
-    // With a folder asked for, passages from other folders are dropped after
-    // the search, so more are asked for than will be kept.
-    let fetch = if folder.is_empty() { limit } else { (limit * 4).min(120) };
-    let page = documents.search(&DocSearch {
-        text: query.to_string(),
-        files: Vec::new(),
-        limit: fetch,
-        offset,
-    })?;
-
     // Each passage's file, by the catalog and not the index's say-so: one
-    // trashed, gone, moved or Health's since it was indexed is left out.
+    // trashed, gone, moved or Health's since it was indexed is left out, as is
+    // one outside the folder asked for. The index is asked a page at a time
+    // for only as many as are still wanted, and carried on from where it says
+    // it stopped (`next_offset`), so a passage is never listed twice across
+    // pages however many are left out.
     let mut files: HashMap<FileId, Option<FileEntry>> = HashMap::new();
-    let mut kept: Vec<(usize, FileId)> = Vec::new();
-    for (at, hit) in page.hits.iter().enumerate() {
-        let file = files.entry(hit.file).or_insert_with(|| ctx.vault.file(hit.file).ok());
-        let Some(file) = file else { continue };
-        let allowed = file.origin != FileOrigin::Health
-            && matches!(file.status, FileStatus::Present)
-            && DocFormat::of_file(file).is_some()
-            && is_under(file, &folder);
-        if allowed {
-            kept.push((at, hit.file));
+    let mut kept: Vec<DocSearchHit> = Vec::new();
+    let (mut at, mut total, mut indexing) = (offset, 0usize, false);
+    for _ in 0..SEARCH_ROUNDS {
+        let page = documents.search(&DocSearch {
+            text: query.to_string(),
+            files: Vec::new(),
+            limit: limit - kept.len(),
+            offset: at,
+        })?;
+        total = page.total;
+        indexing = page.indexing;
+        let next = page.next_offset.max(at + page.hits.len());
+        let moved = next > at;
+        at = next;
+        for hit in page.hits {
+            let file = files.entry(hit.file).or_insert_with(|| ctx.vault.file(hit.file).ok());
+            let Some(file) = file else { continue };
+            let allowed = file.origin != FileOrigin::Health
+                && matches!(file.status, FileStatus::Present)
+                && DocFormat::of_file(file).is_some()
+                && is_under(file, &folder);
+            let again = kept.iter().any(|k| k.file == hit.file && k.block == hit.block);
+            if allowed && !again {
+                kept.push(hit);
+            }
+        }
+        if kept.len() >= limit || !moved || at >= total {
+            break;
         }
     }
-    let cut = kept.len() > limit;
     kept.truncate(limit);
 
     // Grouped by file, the files in the order of their best passage.
     let mut order: Vec<FileId> = Vec::new();
-    for (_, file) in &kept {
-        if !order.contains(file) {
-            order.push(*file);
+    for hit in &kept {
+        if !order.contains(&hit.file) {
+            order.push(hit.file);
         }
     }
     let mut hits: Vec<Value> = Vec::new();
     for id in &order {
         let Some(Some(file)) = files.get(id) else { continue };
-        for (at, _) in kept.iter().filter(|(_, hit_file)| hit_file == id) {
-            let hit = &page.hits[*at];
+        for hit in kept.iter().filter(|hit| hit.file == *id) {
             let mut one = head(file);
             one.insert("path".into(), json!(file.path().unwrap_or("encrypted")));
             one.insert("page".into(), json!(hit.page));
@@ -827,16 +841,13 @@ fn run_search_documents(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value>
         }
     }
 
-    // Where to ask from next: past the last passage looked at, which is the
-    // last one kept when the page was cut short, else the end of what came back.
-    let looked_at = if cut { kept.last().map_or(0, |(at, _)| at + 1) } else { page.hits.len() };
-    let next = offset + looked_at;
-    let more = next < page.total;
+    let next = at;
+    let more = next < total;
 
     let mut m = Map::new();
     m.insert("query".into(), json!(query));
-    m.insert("total".into(), json!(page.total));
-    m.insert("indexing".into(), json!(page.indexing));
+    m.insert("total".into(), json!(total));
+    m.insert("indexing".into(), json!(indexing));
     if !folder.is_empty() {
         m.insert("folder".into(), json!(folder));
         m.insert(
@@ -848,7 +859,7 @@ fn run_search_documents(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value>
         );
     }
     if hits.is_empty() && !more {
-        let why = if page.indexing {
+        let why = if indexing {
             "Nothing found yet, and indexing is still under way, so some documents are not \
              searchable yet. Try again shortly, or find_files finds a document by its name and \
              search_document searches inside it."

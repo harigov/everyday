@@ -12,19 +12,26 @@
 //!
 //! # One writer, one reader that reloads itself
 //!
-//! One [`IndexWriter`] is held for the life of the [`DocIndex`], behind a
-//! lock, and [`DocIndex::commit`] reloads the reader itself right after the
-//! commit, as mail's index does: a search made after a commit returns sees
-//! it, with no race against a background reload. The writer is built for one
-//! indexing thread; the documents arrive one at a time from the indexing task
-//! and a passage is a few hundred words, so there is nothing for more threads
-//! to do.
+//! One [`IndexWriter`] is held at a time, behind a lock, and
+//! [`DocIndex::commit`] reloads the reader itself right after the commit, as
+//! mail's index does: a search made after a commit returns sees it, with no
+//! race against a background reload. The writer is built for one indexing
+//! thread; the documents arrive one at a time from the indexing task and a
+//! passage is a few hundred words, so there is nothing for more threads to do.
 //!
-//! A second process that has the same vault open (a read-only window) cannot
-//! take the writer lock. It still opens the index and searches it -- without a
-//! writer, reloading its reader before every search to see what the first
-//! process has committed -- and every write answers that the index is in use
-//! elsewhere.
+//! # A writer that is not there yet is tried for again
+//!
+//! Only one handle at a time can hold tantivy's writer lock. When this one
+//! cannot have it -- a second process has the vault open, or a handle from a
+//! session a moment ago has not finished being dropped -- the index still
+//! opens and searches, reloading its reader before every search to see what
+//! the other has committed, and every write answers that the index is in use
+//! elsewhere. It is not read-only for good, though: the writer is taken lazily,
+//! and tried for again by [`DocIndex::ensure_writer`] and by every write, so
+//! that once the holder lets go the next pass over the files gets it. A lock
+//! and unlock in quick succession, with a pass still finishing on the old
+//! session's handle, would otherwise leave the new session unable to index
+//! until the app was restarted.
 //!
 //! # An index that cannot be read is made again
 //!
@@ -38,7 +45,9 @@
 pub mod schema;
 
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use karmayoga_core::crypto::Cipher;
@@ -95,10 +104,29 @@ pub struct IndexHit {
 pub struct DocIndex {
     fields: Fields,
     index: Index,
-    /// `None` when another process holds the writer lock: see the module
-    /// docs.
-    writer: Option<Mutex<IndexWriter>>,
+    /// `None` until the writer lock has been had: see the module docs.
+    writer: Mutex<Option<IndexWriter>>,
+    /// Whether `writer` is `Some`, readable without waiting for a write in
+    /// progress: a search asks it before every reload.
+    has_writer: AtomicBool,
     reader: IndexReader,
+}
+
+/// The writer, locked, and known to be there. Dereferences to it.
+struct WriterGuard<'a>(MutexGuard<'a, Option<IndexWriter>>);
+
+impl Deref for WriterGuard<'_> {
+    type Target = IndexWriter;
+
+    fn deref(&self) -> &IndexWriter {
+        self.0.as_ref().expect("a writer guard is made only over a writer")
+    }
+}
+
+impl DerefMut for WriterGuard<'_> {
+    fn deref_mut(&mut self) -> &mut IndexWriter {
+        self.0.as_mut().expect("a writer guard is made only over a writer")
+    }
 }
 
 fn wrap_tantivy(e: tantivy::TantivyError) -> Error {
@@ -117,8 +145,19 @@ fn in_use_elsewhere() -> Error {
 /// What opening one attempt at `dir` came to.
 struct Parts {
     index: Index,
-    writer: Option<Mutex<IndexWriter>>,
+    writer: Option<IndexWriter>,
     reader: IndexReader,
+}
+
+/// Take the writer lock and make the writer, if nobody else has the lock.
+fn make_writer(index: &Index) -> Option<IndexWriter> {
+    match index.writer_with_num_threads(1, WRITER_HEAP_BYTES) {
+        Ok(writer) => Some(writer),
+        Err(e) => {
+            tracing::debug!(error = %e, "documents: the index is open elsewhere; reading only");
+            None
+        }
+    }
 }
 
 /// One attempt to open `dir` as it stands. `Ok(None)` when tantivy refuses
@@ -134,13 +173,7 @@ fn open_once(
     let directory = SealedDirectory::open(dir, cipher, cache_bytes)?;
     let Ok(index) = Index::open_or_create(directory, layout.clone()) else { return Ok(None) };
     index.tokenizers().register(DOC_TOKENIZER, schema::analyzer());
-    let writer = match index.writer_with_num_threads(1, WRITER_HEAP_BYTES) {
-        Ok(writer) => Some(Mutex::new(writer)),
-        Err(e) => {
-            tracing::debug!(error = %e, "documents: the index is open elsewhere; reading only");
-            None
-        }
-    };
+    let writer = make_writer(&index);
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
@@ -213,18 +246,45 @@ impl DocIndex {
                 })?
             }
         };
-        Ok(Self { fields, index: parts.index, writer: parts.writer, reader: parts.reader })
+        Ok(Self {
+            fields,
+            index: parts.index,
+            has_writer: AtomicBool::new(parts.writer.is_some()),
+            writer: Mutex::new(parts.writer),
+            reader: parts.reader,
+        })
     }
 
-    /// Whether this handle can write: `false` when another process has the
-    /// index open for writing, and this one only reads.
+    /// Whether this handle holds the writer now: `false` while another has
+    /// the index open for writing. Does not try to take it; see
+    /// [`DocIndex::ensure_writer`].
     pub fn can_write(&self) -> bool {
-        self.writer.is_some()
+        self.has_writer.load(Ordering::SeqCst)
     }
 
-    fn writer(&self) -> Result<MutexGuard<'_, IndexWriter>> {
-        let writer = self.writer.as_ref().ok_or_else(in_use_elsewhere)?;
-        Ok(writer.lock().unwrap_or_else(|e| e.into_inner()))
+    /// Take the writer if this handle does not have it yet and nobody else
+    /// does, and say whether it has it now. What the indexing task asks at
+    /// the start of a pass, so an index that opened while another handle was
+    /// still being dropped becomes writable once that handle has gone.
+    pub fn ensure_writer(&self) -> bool {
+        self.writer().is_ok()
+    }
+
+    /// The writer, locked; taken first if it has not been had yet.
+    fn writer(&self) -> Result<WriterGuard<'_>> {
+        let mut slot = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = make_writer(&self.index);
+            if slot.is_none() {
+                return Err(in_use_elsewhere());
+            }
+            self.has_writer.store(true, Ordering::SeqCst);
+            // What the last holder committed since this handle was opened.
+            if let Err(e) = self.reader.reload() {
+                tracing::debug!(error = %e, "documents: could not reload the index reader");
+            }
+        }
+        Ok(WriterGuard(slot))
     }
 
     /// Replace whatever is indexed for `file` with `passages`, recorded as
@@ -427,7 +487,7 @@ impl DocIndex {
     /// Pick up what another process has committed, when this one has no
     /// writer of its own to say what has changed.
     fn refresh(&self) -> Result<()> {
-        if self.writer.is_none() {
+        if !self.can_write() {
             self.reader.reload().map_err(wrap_tantivy)?;
         }
         Ok(())
@@ -732,5 +792,46 @@ mod tests {
         first.commit().unwrap();
         assert_eq!(second.search("zeppelin", &[], 10, 0).unwrap().1, 1);
         assert_eq!(second.version(file).unwrap().as_deref(), Some("v2"));
+        assert!(!second.can_write() && !second.ensure_writer(), "the first still has it");
+    }
+
+    #[test]
+    fn a_handle_without_the_writer_takes_it_once_the_other_has_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = open(dir.path());
+        let file = FileId::new();
+        old.put(file, "v1", "T", &book()).unwrap();
+        old.commit().unwrap();
+
+        // Opened while the old handle is still alive, as a session that begins
+        // while the last one is finishing: it can read, and cannot write.
+        let new = open(dir.path());
+        assert!(!new.can_write());
+        assert_eq!(new.search("mortimer", &[], 10, 0).unwrap().1, 2);
+        assert!(new.put(FileId::new(), "v1", "T", &book()).is_err());
+
+        // The old one goes; the new one takes the writer when it next asks, and
+        // sees what the old one had committed.
+        old.put(file, "v2", "T", &[passage(0, 1, "", "One last word: dirigible.")]).unwrap();
+        old.commit().unwrap();
+        drop(old);
+        assert!(new.ensure_writer());
+        assert!(new.can_write());
+        assert_eq!(new.version(file).unwrap().as_deref(), Some("v2"));
+        let other = FileId::new();
+        new.put(other, "v1", "T", &[passage(0, 1, "", "A new word: airship.")]).unwrap();
+        new.commit().unwrap();
+        assert_eq!(new.search("airship", &[], 10, 0).unwrap().1, 1);
+        assert_eq!(new.search("dirigible", &[], 10, 0).unwrap().1, 1);
+
+        // A write alone is enough to take it, without ensure_writer.
+        let third_dir = tempfile::tempdir().unwrap();
+        let first = open(third_dir.path());
+        let second = open(third_dir.path());
+        assert!(!second.can_write());
+        drop(first);
+        second.put(file, "v1", "T", &book()).unwrap();
+        second.commit().unwrap();
+        assert_eq!(second.version(file).unwrap().as_deref(), Some("v1"));
     }
 }

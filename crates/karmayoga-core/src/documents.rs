@@ -1238,6 +1238,12 @@ pub struct DocSearchPage {
     pub total: usize,
     /// Whether indexing is still under way, so more may match later.
     pub indexing: bool,
+    /// The offset to ask for the next page from. Not `offset + hits.len()`:
+    /// hits for files that are gone or no longer indexed are left out after
+    /// the index answers, so a page can use up more of the index's answers
+    /// than it returns.
+    #[serde(default)]
+    pub next_offset: usize,
 }
 
 /// How the search index stands, for Settings → Files and the tools.

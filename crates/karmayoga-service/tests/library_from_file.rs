@@ -122,3 +122,48 @@ async fn a_document_becomes_one_item_on_books_and_pressed_again_is_the_same_item
     assert_eq!(on_articles["kindId"], shelf("article"));
     assert_eq!(vault.file_uses(file.id).unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn a_document_that_cannot_be_read_is_still_an_item_made_from_its_name() {
+    let (svc, _dir) = support::vault::service(None);
+    let vault = svc.require().unwrap();
+    vault.seed_library().unwrap();
+    let books = vault.kinds().unwrap().into_iter().find(|k| k.slug == "book").unwrap();
+    // A scan, or anything else the parser cannot make a document of. The file
+    // is there and may be read; what is in it is the trouble.
+    let file = sealed(&vault, "scan0042.pdf", b"this is not a pdf, only bytes", FileOrigin::Files);
+
+    let made = call(&svc, "create_item_from_file", json!({ "file": file.to_string() })).await;
+    assert_eq!(made["title"], "scan0042", "called by its file name, without the extension");
+    assert_eq!(made["kindId"], books.id.to_string(), "no DOI to say it is a paper");
+    assert_eq!(made["files"], json!([file.to_string()]));
+    assert_eq!(made["status"], "wishlist");
+    assert_eq!(made["source"], "file");
+    assert_eq!(made["creator"], "");
+    assert_eq!(made["summary"], "");
+    assert!(made.get("cover").is_none(), "nothing to take a cover from");
+    assert_eq!(vault.file_uses(file).unwrap().len(), 1, "saved, and the file is used");
+
+    // Pressed again, the same item.
+    let again = call(&svc, "create_item_from_file", json!({ "file": file.to_string() })).await;
+    assert_eq!(again["id"], made["id"]);
+}
+
+#[tokio::test]
+async fn a_file_that_cannot_be_got_at_is_still_an_error_and_makes_no_item() {
+    let (svc, dir) = support::vault::service(None);
+    let vault = svc.require().unwrap();
+    vault.seed_library().unwrap();
+    let folder = dir.path().join("files");
+    assert!(vault.set_up_files_folder(Some(&folder)).unwrap().is_available());
+    let opts = ImportOptions::new(FileOrigin::Files);
+    let file = vault.import_bytes(b"%PDF-1.4 gone", "gone.pdf", &opts).unwrap();
+    // Taken off the disk behind the catalog's back, before the reconciler has
+    // noticed: the catalog still says it is there.
+    std::fs::remove_file(folder.join("gone.pdf")).unwrap();
+
+    let err = fails(&svc, Ctx::local(), json!({ "file": file.id.to_string() })).await;
+    assert!(!err.message.is_empty());
+    let kinds = call(&svc, "list_kinds", json!({})).await;
+    assert!(kinds.as_array().unwrap().iter().all(|k| k["items"] == 0), "{kinds}");
+}

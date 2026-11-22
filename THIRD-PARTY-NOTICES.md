@@ -73,6 +73,7 @@ Reproduced below in full:
   64. Qwen3-ASR 1.7B and 0.6B (models) — © Alibaba Cloud, https://huggingface.co/Qwen/Qwen3-ASR-1.7B
   65. Kokoro 82M (model and voices) — © hexgrad, https://huggingface.co/hexgrad/Kokoro-82M
   66. loqui-g2p — © 2026 Awakened Labs Inc., https://github.com/Awakened-Labs/loqui, with misaki's lexicons (© hexgrad, https://github.com/hexgrad/misaki), Peter Reid's grapheme-to-phoneme models (https://huggingface.co/PeterReid/graphemes_to_phonemes_en_us) and spaCy's English tokenizer rules (© ExplosionAI GmbH, https://github.com/explosion/spaCy)
+  67. pdf-extract and lopdf — © Jeff Muizelaar, https://github.com/jrmuizel/pdf-extract, and © 2016 Junfeng Liu, https://github.com/J-F-Liu/lopdf
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -4143,3 +4144,40 @@ It embeds, and so this application's binary carries:
 
 - A part-of-speech tagger's weights original to loqui, under its MIT licence
   above.
+
+---
+
+## 67. pdf-extract and lopdf
+
+`karmayoga-service`'s `documents::parse::pdf` reads a PDF's text page by page
+with `pdf-extract` (https://github.com/jrmuizel/pdf-extract, by Jeff
+Muizelaar), and its outline and information dictionary with `lopdf`
+(https://github.com/J-F-Liu/lopdf), on which pdf-extract is built -- pure
+Rust, chosen for the reader in `docs/plans/reading.md`. pdf-extract brings
+the same author's `adobe-cmap-parser`, `type1-encoding-parser` and
+`cff-parser`, all MIT licensed, and `postscript` and `euclid`, MIT or
+Apache-2.0 licensed. pdf-extract and lopdf are MIT licensed; lopdf's licence
+is reproduced below, and pdf-extract's is the same text with its own
+copyright line, © Jeff Muizelaar.
+
+MIT License
+
+Copyright (c) 2016 Junfeng Liu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

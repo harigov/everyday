@@ -40,9 +40,11 @@ karmayoga-docindex.workspace = true
 # crash that would take the process with it) for being reliable to build
 # and to run, at the price of a less perfect reading of some files. lopdf
 # itself, at the version pdf-extract is built on, reads the outline and the
-# information dictionary. Every parse runs under `catch_unwind`.
-pdf-extract = "0.12"
-lopdf = "0.42"
+# information dictionary. Every parse runs under `catch_unwind`. Pinned
+# exactly, per the house rule for pre-1.0 crates; see THIRD-PARTY-NOTICES.md,
+# entry 67.
+pdf-extract = "=0.12.1"
+lopdf = "=0.42.0"
 karmayoga-connect.workspace = true
 # A Gmail thread id (`X-GM-THRID`) is hashed into a deterministic `ThreadId`
 # -- see `mailsync::ingest` -- the same domain-separation technique

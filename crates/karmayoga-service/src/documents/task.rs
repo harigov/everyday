@@ -4,9 +4,10 @@
 //! # What a pass does
 //!
 //! It lists the catalog's documents, keeps those the settings say to index
-//! ([`FilesSettings::indexes`]: plain, present, under the chosen folders and
-//! not under the skipped ones), and compares them with what the index holds
-//! and at which version -- the cache's name for the file's contents. A
+//! ([`FilesSettings::indexes`](karmayoga_core::files::FilesSettings::indexes):
+//! plain, present, under the chosen folders and not under the skipped ones),
+//! and compares them with what the index holds and at which version -- the
+//! cache's name for the file's contents. A
 //! document that is new or changed is read ([`DocumentsState::text`], so what
 //! the indexer parses the reader finds already cached) and put into the index
 //! as passages; one the index holds and the settings no longer want is taken
@@ -23,11 +24,16 @@
 //! # When
 //!
 //! Shortly after unlock, then every few minutes, and soon after something
-//! says there is work: a reindex asked for ([`wake`]), or a change in the
-//! catalog or the settings. The catalog's changes are noticed by looking: the
-//! files reconciler announces them to the windows, not to the service, so
-//! every [`LOOK_EVERY`] the catalog's cheap columns (which every file's row
-//! carries in the clear) are hashed and compared with what the last pass saw.
+//! says there is work, by [`wake`]: a reindex asked for, Files' settings
+//! saved (which choose what is indexed), and a pass of the files reconciler
+//! that found the folder changed. Nothing looks at the catalog on a timer:
+//! the five minutes between passes are the backstop for whatever does not
+//! ring (a file imported or trashed by a command, which the reconciler never
+//! sees), and a pass that has nothing to do costs one read of the catalog.
+//!
+//! A pass that cannot take the index's writer -- the last session's handle is
+//! still being dropped after a lock and unlock in quick succession -- tries
+//! again soon, not in five minutes.
 //!
 //! # What is not tried again
 //!
@@ -46,7 +52,7 @@ use karmayoga_core::Vault;
 use karmayoga_core::documents::{DocFormat, DocText};
 use karmayoga_core::error::{Error, Result as CoreResult};
 use karmayoga_core::files::{
-    FileEntry, FileFilter, FileKind, FileOrigin, FileQuery, FileSort, FilesSettings, StatusFilter,
+    FileEntry, FileFilter, FileKind, FileOrigin, FileQuery, FileSort, StatusFilter,
 };
 use karmayoga_core::id::FileId;
 use karmayoga_docindex::Passage;
@@ -67,15 +73,14 @@ const FIRST: Duration = Duration::from_secs(20);
 /// How often a pass runs when nothing prompts one.
 const EVERY: Duration = Duration::from_secs(5 * 60);
 
-/// How often the catalog is looked at for a change, between passes.
-const LOOK_EVERY: Duration = Duration::from_secs(30);
+/// How long after a [`wake`] the pass it brings forward starts: long enough
+/// for a burst of files arriving, each pass of the reconciler ringing, to be
+/// one pass here.
+const SOON: Duration = Duration::from_secs(3);
 
-/// How long after a change is seen the pass it brings forward starts: long
-/// enough for a burst of files arriving to be one pass.
-const QUIET: Duration = Duration::from_secs(5);
-
-/// How long after a [`wake`] the pass starts.
-const SOON: Duration = Duration::from_secs(2);
+/// How long a pass that could not take the index's writer waits before it
+/// tries again.
+const WRITER_RETRY: Duration = Duration::from_secs(15);
 
 /// The breath between one document and the next.
 const PAUSE: Duration = Duration::from_millis(25);
@@ -106,8 +111,8 @@ fn wake_signal() -> &'static Arc<Notify> {
     WAKE.get_or_init(|| Arc::new(Notify::new()))
 }
 
-/// Ask for a pass soon: after a reindex, or a write that bypassed the
-/// catalog.
+/// Ask for a pass soon: after a reindex, a change to what is indexed, or a
+/// pass of the files reconciler that changed the catalog.
 pub fn wake() {
     wake_signal().notify_one();
 }
@@ -141,15 +146,10 @@ pub fn ensure_task(svc: &Arc<Service>, vault: &Arc<Vault>) {
 }
 
 /// The supervised loop: a pass [`FIRST`] after it starts, then every
-/// [`EVERY`], and sooner after a wake or a change in the catalog. Returns when
-/// `stop` turns `true`.
+/// [`EVERY`], and sooner after a [`wake`]. Returns when `stop` turns `true`.
 async fn run(svc: Arc<Service>, vault: Arc<Vault>, mut stop: watch::Receiver<bool>) -> TaskResult {
     let wake = wake_signal().clone();
-    let start = Instant::now();
-    let mut pass_at = start + FIRST;
-    let mut look_at = start + LOOK_EVERY;
-    // What the catalog looked like to the last pass; `None` before the first.
-    let mut seen: Option<String> = None;
+    let mut pass_at = Instant::now() + FIRST;
     let mut swept: Option<Instant> = None;
     loop {
         if *stop.borrow() {
@@ -164,26 +164,13 @@ async fn run(svc: Arc<Service>, vault: Arc<Vault>, mut stop: watch::Receiver<boo
             () = wake.notified() => {
                 pass_at = pass_at.min(Instant::now() + SOON);
             }
-            () = tokio::time::sleep_until(look_at) => {
-                look_at = Instant::now() + LOOK_EVERY;
-                if seen.is_none() || !vault.is_unlocked() {
-                    continue;
-                }
-                let looking = vault.clone();
-                let now = blocking(move || Ok(fingerprint_of(&looking)?)).await;
-                if let Ok(now) = now
-                    && seen.as_ref() != Some(&now)
-                {
-                    pass_at = pass_at.min(Instant::now() + QUIET);
-                }
-            }
             () = tokio::time::sleep_until(pass_at) => {
                 if !vault.is_unlocked() {
                     pass_at = Instant::now() + EVERY;
                     continue;
                 }
                 let sweep = swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY);
-                let ended = pass(&svc, &vault, &stop, &mut seen, sweep).await;
+                let ended = pass(&svc, &vault, &stop, sweep).await;
                 // The interval is counted from when a pass ends, not from when
                 // it began: one that took twenty minutes is not owed another
                 // at once.
@@ -194,6 +181,7 @@ async fn run(svc: Arc<Service>, vault: Arc<Vault>, mut stop: watch::Receiver<boo
                     // What the pass found out was cleared from under it: begin
                     // again rather than wait out the interval.
                     End::Again => pass_at = Instant::now() + SOON,
+                    End::Busy => pass_at = Instant::now() + WRITER_RETRY,
                 }
             }
         }
@@ -209,14 +197,13 @@ enum End {
     Stopped,
     /// The index was cleared while the pass ran.
     Again,
+    /// The index's writer is held by another handle for now.
+    Busy,
 }
 
 /// What a pass is going to do, worked out before it starts.
 #[derive(Default)]
 struct Plan {
-    /// What the catalog looked like when this was worked out: see
-    /// [`fingerprint_of`].
-    fingerprint: String,
     /// Documents to read into the index: new, or changed since they were.
     work: Vec<FileEntry>,
     /// Indexed files the settings no longer want.
@@ -262,20 +249,28 @@ enum Step {
     Locked,
 }
 
-/// One pass: see the module docs. Returns how it ended; `seen` is set to what
-/// the catalog looked like when it began.
+/// One pass: see the module docs. Returns how it ended.
 async fn pass(
     svc: &Arc<Service>,
     vault: &Arc<Vault>,
     stop: &watch::Receiver<bool>,
-    seen: &mut Option<String>,
     sweep: bool,
 ) -> End {
-    let Ok(state) = svc.documents() else { return End::Stopped };
-    // An index this process cannot write -- another has it open, or this
-    // vault's last session is still finishing with it -- is left alone.
-    if state.index().is_none_or(|index| !index.can_write()) {
+    // Opening the documents' state opens the index and the cache: disk work,
+    // off the runtime's threads like everything else here that touches either.
+    let opening = svc.clone();
+    let Ok(state) = blocking(move || opening.documents()).await else { return End::Stopped };
+    if state.index().is_none() {
+        // The index would not open at all: reading works, indexing does not.
         return End::Done { swept: false };
+    }
+    // An index this handle cannot write is not the same for ever: see
+    // `DocIndex::ensure_writer`.
+    let checking = state.clone();
+    let writable =
+        blocking(move || Ok(checking.index().is_some_and(|index| index.ensure_writer()))).await;
+    if !writable.unwrap_or(false) {
+        return End::Busy;
     }
     let _running = Running::begin(&state);
     let epoch = state.epoch();
@@ -288,7 +283,6 @@ async fn pass(
             return End::Done { swept: false };
         }
     };
-    *seen = Some(plan.fingerprint.clone());
     if plan.off || plan.unavailable {
         return End::Done { swept: false };
     }
@@ -414,9 +408,10 @@ fn index_one(state: &DocumentsState, vault: &Vault, file: &FileEntry, commit: bo
 
 /// Work out what a pass has to do. Blocking.
 fn plan(state: &DocumentsState, vault: &Vault) -> CoreResult<Plan> {
+    // A reindex that could not empty the index when it was asked to.
+    state.apply_pending_clear();
     let settings = vault.files_settings()?;
-    let fingerprint = fingerprint(vault, &settings)?;
-    let Some(index) = state.index() else { return Ok(Plan { fingerprint, ..Plan::default() }) };
+    let Some(index) = state.index() else { return Ok(Plan::default()) };
 
     if !settings.index_documents {
         // Switched off: what is in the index goes, once, and the status says
@@ -428,15 +423,15 @@ fn plan(state: &DocumentsState, vault: &Vault) -> CoreResult<Plan> {
         progress.indexed = Some(0);
         progress.pending = 0;
         progress.failed.clear();
-        return Ok(Plan { fingerprint, off: true, ..Plan::default() });
+        return Ok(Plan { off: true, ..Plan::default() });
     }
     if !vault.folder_state()?.is_available() {
         // A drive that is not mounted is not a folder with nothing in it.
-        return Ok(Plan { fingerprint, unavailable: true, ..Plan::default() });
+        return Ok(Plan { unavailable: true, ..Plan::default() });
     }
 
     let indexed = index.indexed()?;
-    let mut plan = Plan { fingerprint, ..Plan::default() };
+    let mut plan = Plan::default();
     let mut wanted: HashMap<FileId, String> = HashMap::new();
     let failed = state.progress().failed.clone();
     each_document(vault, |file| {
@@ -487,40 +482,6 @@ fn each_document(vault: &Vault, mut each: impl FnMut(FileEntry)) -> CoreResult<(
         }
         offset += CATALOG_PAGE;
     }
-}
-
-/// A hash of everything a pass would have to look at: the settings that
-/// choose what is indexed, and every document of the catalog's id, path,
-/// contents hash, size and time. Read from the catalog's clear columns, so
-/// it opens none of the files' records. Two passes that see the same hash
-/// have the same work to do.
-fn fingerprint(vault: &Vault, settings: &FilesSettings) -> CoreResult<String> {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&[u8::from(settings.index_documents)]);
-    for folders in [&settings.index_folders, &settings.skip_folders] {
-        for folder in folders {
-            hasher.update(folder.as_bytes());
-            hasher.update(&[0]);
-        }
-        hasher.update(&[1]);
-    }
-    let mut rows = vault.file_index()?;
-    rows.retain(|row| !row.missing && DocFormat::of_name(&row.path).is_some());
-    rows.sort_by_key(|row| row.id);
-    for row in rows {
-        hasher.update(row.id.as_uuid().as_bytes());
-        hasher.update(row.path.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(row.hash.as_bytes());
-        hasher.update(&row.size.to_le_bytes());
-        hasher.update(&row.modified_us.to_le_bytes());
-    }
-    Ok(hasher.finalize().to_hex().to_string())
-}
-
-/// [`fingerprint`] with the settings read for it.
-fn fingerprint_of(vault: &Vault) -> CoreResult<String> {
-    fingerprint(vault, &vault.files_settings()?)
 }
 
 /// The words a title search finds a document by: its own title and authors,
@@ -671,9 +632,11 @@ fn pieces_of(text: &str, max: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::documents::cache::DocCache;
     use karmayoga_core::VaultConfig;
     use karmayoga_core::documents::{DocBlock, DocBlockKind, DocSection};
     use karmayoga_core::files::ImportOptions;
+    use karmayoga_docindex::DocIndex;
 
     fn block(at_page: u32, section: Option<u32>, text: &str) -> DocBlock {
         DocBlock { page: at_page, section, text: text.into(), ..DocBlock::default() }
@@ -824,9 +787,9 @@ mod tests {
     }
 
     /// A pass over `vault`, as the task would run one, to its end.
-    async fn run_pass(svc: &Arc<Service>, vault: &Arc<Vault>, seen: &mut Option<String>) -> End {
+    async fn run_pass(svc: &Arc<Service>, vault: &Arc<Vault>) -> End {
         let (_keep, stop) = watch::channel(false);
-        pass(svc, vault, &stop, seen, true).await
+        pass(svc, vault, &stop, true).await
     }
 
     fn hits(state: &DocumentsState, vault: &Vault, query: &str) -> Vec<FileId> {
@@ -855,9 +818,7 @@ mod tests {
         );
         plain(&vault, "photo.png", b"\x89PNG\r\n\x1a\n not a document");
 
-        let mut seen = None;
-        assert_eq!(run_pass(&svc, &vault, &mut seen).await, End::Done { swept: true });
-        assert!(seen.is_some());
+        assert_eq!(run_pass(&svc, &vault).await, End::Done { swept: true });
         let indexed = state.index().unwrap().indexed().unwrap();
         assert_eq!(indexed.len(), 2, "the picture is not a document: {indexed:?}");
         assert_eq!(indexed.get(&dune.id), Some(&state.version_of(&dune)));
@@ -870,19 +831,19 @@ mod tests {
 
         // Nothing changed: nothing is read again.
         let before = state.cache().len();
-        assert_eq!(run_pass(&svc, &vault, &mut seen).await, End::Done { swept: true });
+        assert_eq!(run_pass(&svc, &vault).await, End::Done { swept: true });
         assert_eq!(state.cache().len(), before);
 
         // Changed on disk and found by the reconciler: its new words, not its old.
         std::fs::write(folder.path().join("dune.txt"), b"Sandworms under Arrakeen sand.").unwrap();
         crate::files::task::scan_now(&svc, &vault);
-        assert_eq!(run_pass(&svc, &vault, &mut seen).await, End::Done { swept: true });
+        assert_eq!(run_pass(&svc, &vault).await, End::Done { swept: true });
         assert!(hits(&state, &vault, "arrakis").is_empty());
         assert_eq!(hits(&state, &vault, "sandworms"), vec![dune.id]);
 
         // Trashed: out of the index at the next pass.
         vault.trash_files(&[kite.id]).unwrap();
-        assert_eq!(run_pass(&svc, &vault, &mut seen).await, End::Done { swept: true });
+        assert_eq!(run_pass(&svc, &vault).await, End::Done { swept: true });
         assert!(hits(&state, &vault, "kite").is_empty());
         let indexed = state.index().unwrap().indexed().unwrap();
         assert_eq!(indexed.keys().copied().collect::<Vec<_>>(), vec![dune.id]);
@@ -903,17 +864,14 @@ mod tests {
         let mut settings = vault.files_settings().unwrap();
         settings.index_folders = vec!["Books".into()];
         vault.save_files_settings(&settings).unwrap();
-        let mut seen = None;
-        run_pass(&svc, &vault, &mut seen).await;
+        run_pass(&svc, &vault).await;
         assert_eq!(hits(&state, &vault, "lighthouse").len(), 1);
 
         // Both chosen, one skipped.
         settings.index_folders = vec!["Books".into(), "Receipts".into()];
         settings.skip_folders = vec!["Books".into()];
         vault.save_files_settings(&settings).unwrap();
-        let before = seen.clone();
-        run_pass(&svc, &vault, &mut seen).await;
-        assert_ne!(seen, before, "the settings are part of what a pass sees");
+        run_pass(&svc, &vault).await;
         let found = hits(&state, &vault, "lighthouse");
         assert_eq!(found.len(), 1);
         let till = vault.file(found[0]).unwrap();
@@ -925,14 +883,13 @@ mod tests {
         let (_home, _folder, svc, vault) = with_folder();
         let state = svc.documents().unwrap();
         plain(&vault, "notes.txt", b"some words to find");
-        let mut seen = None;
-        run_pass(&svc, &vault, &mut seen).await;
+        run_pass(&svc, &vault).await;
         assert_eq!(state.index().unwrap().indexed().unwrap().len(), 1);
 
         let mut settings = vault.files_settings().unwrap();
         settings.index_documents = false;
         vault.save_files_settings(&settings).unwrap();
-        run_pass(&svc, &vault, &mut seen).await;
+        run_pass(&svc, &vault).await;
         assert!(state.index().unwrap().indexed().unwrap().is_empty());
         let status = state.status(&vault);
         assert_eq!((status.enabled, status.indexed), (false, 0));
@@ -940,7 +897,7 @@ mod tests {
         // On again: filled again.
         settings.index_documents = true;
         vault.save_files_settings(&settings).unwrap();
-        run_pass(&svc, &vault, &mut seen).await;
+        run_pass(&svc, &vault).await;
         assert_eq!(state.index().unwrap().indexed().unwrap().len(), 1);
     }
 
@@ -952,8 +909,7 @@ mod tests {
         let bad = plain(&vault, "broken.pdf", b"this is not a pdf at all");
         let good = plain(&vault, "fine.txt", b"readable words");
 
-        let mut seen = None;
-        run_pass(&svc, &vault, &mut seen).await;
+        run_pass(&svc, &vault).await;
         let status = state.status(&vault);
         assert_eq!(status.failed.len(), 1, "{:?}", status.failed);
         assert_eq!(status.failed[0].file, bad.id);
@@ -987,36 +943,45 @@ mod tests {
         plain(&vault, "a.txt", b"alpha words");
         plain(&vault, "b.txt", b"beta words");
         let (tx, stop) = watch::channel(true);
-        let mut seen = None;
-        assert_eq!(pass(&svc, &vault, &stop, &mut seen, false).await, End::Stopped);
+        assert_eq!(pass(&svc, &vault, &stop, false).await, End::Stopped);
         assert!(!state.status(&vault).running, "no longer running once it has stopped");
         drop(tx);
     }
 
-    #[test]
-    fn the_catalogs_fingerprint_follows_the_documents_and_the_settings_and_nothing_else() {
-        let (_home, folder, svc, vault) = with_folder();
-        plain(&vault, "a.txt", b"alpha");
-        let first = fingerprint_of(&vault).unwrap();
-        assert_eq!(fingerprint_of(&vault).unwrap(), first);
+    #[tokio::test]
+    async fn a_pass_that_cannot_take_the_writer_waits_and_gets_it_when_the_other_has_gone() {
+        let (_home, _folder, svc, vault) = with_folder();
+        // The last session's handle, still alive when this session opens its own.
+        let cache = DocCache::open(&vault).unwrap();
+        let old = DocIndex::open(cache.index_dir(), cache.index_cipher(), 1 << 20).unwrap();
+        let state = svc.documents().unwrap();
+        assert!(!state.index().unwrap().can_write());
+        let file = plain(&vault, "notes.txt", b"some words to find");
 
-        // A file that is not a document does not move it.
-        plain(&vault, "photo.png", b"\x89PNG\r\n\x1a\n");
-        assert_eq!(fingerprint_of(&vault).unwrap(), first);
+        assert_eq!(run_pass(&svc, &vault).await, End::Busy);
+        assert!(hits(&state, &vault, "words").is_empty());
+        assert!(!state.status(&vault).running);
 
-        // A document arriving, or changing, does.
-        plain(&vault, "b.md", b"beta");
-        let second = fingerprint_of(&vault).unwrap();
-        assert_ne!(second, first);
-        std::fs::write(folder.path().join("b.md"), b"beta, changed").unwrap();
-        crate::files::task::scan_now(&svc, &vault);
-        let third = fingerprint_of(&vault).unwrap();
-        assert_ne!(third, second);
+        // It is let go of: the next pass has the writer and does the work.
+        drop(old);
+        assert_eq!(run_pass(&svc, &vault).await, End::Done { swept: true });
+        assert_eq!(hits(&state, &vault, "words"), vec![file.id]);
+    }
 
-        // And so do the settings that choose what is indexed.
-        let mut settings = vault.files_settings().unwrap();
-        settings.skip_folders = vec!["Private".into()];
-        vault.save_files_settings(&settings).unwrap();
-        assert_ne!(fingerprint_of(&vault).unwrap(), third);
+    #[tokio::test]
+    async fn a_reindex_that_could_not_empty_the_index_is_done_by_the_pass_that_gets_the_writer() {
+        let (_home, _folder, svc, vault) = with_folder();
+        let cache = DocCache::open(&vault).unwrap();
+        let old = DocIndex::open(cache.index_dir(), cache.index_cipher(), 1 << 20).unwrap();
+        let state = svc.documents().unwrap();
+        let file = plain(&vault, "notes.txt", b"some words to find");
+        // Indexed at its current version, but with nothing in it to find.
+        old.put(file.id, &state.version_of(&file), "notes", &[]).unwrap();
+        old.commit().unwrap();
+
+        state.reindex();
+        drop(old);
+        assert_eq!(run_pass(&svc, &vault).await, End::Done { swept: true });
+        assert_eq!(hits(&state, &vault, "words"), vec![file.id], "emptied, then read again");
     }
 }

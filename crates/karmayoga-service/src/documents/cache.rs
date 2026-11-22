@@ -14,8 +14,9 @@
 //! The directory is `karmayoga-docs-<hash of the vault's path>` in the user's
 //! cache directory -- [`scratch_base`](karmayoga_core::files::disk::scratch_base),
 //! which is the vault's own directory while a test runs -- with `text/` for
-//! these entries and `index/` for the search index beside them. It is named by the vault's *path*, as the open
-//! copies of sealed files are, so it can be found again without a key.
+//! these entries and `index/` for the search index beside them. It is named
+//! by the vault's *path*, as the open copies of sealed files are, so it can be
+//! found again without a key.
 //!
 //! # Names that say nothing
 //!

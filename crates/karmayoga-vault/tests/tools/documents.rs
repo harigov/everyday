@@ -37,7 +37,14 @@ impl Documents for Library {
 
     fn search(&self, query: &DocSearch) -> karmayoga_core::Result<DocSearchPage> {
         self.asked.lock().unwrap().push(query.clone());
-        Ok(self.found.clone())
+        // A page of what it found, as the service pages: from `offset`, at
+        // most `limit`, saying where the next page starts.
+        let mut page = self.found.clone();
+        let from = query.offset.min(page.hits.len());
+        let to = (from + query.limit).min(page.hits.len());
+        page.hits = page.hits[from..to].to_vec();
+        page.next_offset = to;
+        Ok(page)
     }
 
     fn index_status(&self) -> DocIndexStatus {
@@ -455,6 +462,7 @@ fn with_hits(mut w: World) -> World {
         ],
         total: 4,
         indexing: false,
+        next_offset: 4,
     };
     w
 }
@@ -496,8 +504,12 @@ fn a_folder_narrows_a_search_after_it_and_a_short_page_says_where_to_go_on() {
     assert_eq!(hits[0]["name"], "notes.md");
     assert_eq!(out["folder"], "Papers");
     assert!(out["note"].as_str().unwrap().contains("every folder"), "{out}");
-    // More were fetched than were wanted, since some would be dropped.
-    assert_eq!(w.asked()[0].limit, 40);
+    // Only as many as are still wanted are asked for, page after page from
+    // where the index says it stopped, until the folder's are found or the
+    // index has no more.
+    let asked = w.asked();
+    assert_eq!((asked[0].limit, asked[0].offset), (10, 0));
+    assert!(asked.len() == 1 || asked[1].offset == 4, "{asked:?}");
 
     // A folder that is not a folder is refused rather than matching nothing.
     let bad = w.refused("search_documents", json!({ "query": "mortimer", "folder": "../etc" }));
@@ -529,7 +541,7 @@ fn a_search_across_documents_says_when_the_index_is_off_and_does_not_search() {
 #[test]
 fn nothing_found_across_documents_says_what_to_try_and_whether_it_is_still_indexing() {
     let mut w = world();
-    w.docs.found = DocSearchPage { hits: Vec::new(), total: 0, indexing: true };
+    w.docs.found = DocSearchPage { hits: Vec::new(), total: 0, indexing: true, next_offset: 0 };
     let out = w.call("search_documents", json!({ "query": "zeppelin" }));
     assert_eq!(out["hits"], json!([]));
     assert_eq!(out["indexing"], true);

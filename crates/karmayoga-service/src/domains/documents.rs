@@ -9,14 +9,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use jiff::Timestamp;
+use karmayoga_core::Vault;
 use karmayoga_core::documents::{
     DocChapterView, DocFormat, DocHit, DocIndexStatus, DocOutline, DocSearch, DocSearchPage,
     READER_BLOCK_KEY, READER_PAGE_KEY,
 };
 use karmayoga_core::files::{FileEntry, FileOrigin, FileUpdate, PropValue};
 use karmayoga_core::id::FileId;
-use karmayoga_core::library::Progress;
-use karmayoga_core::{ItemQuery, Vault};
+use karmayoga_core::library::{Item, ItemStatus, Progress};
 use serde::Deserialize;
 
 use crate::command;
@@ -238,9 +238,21 @@ fn save_place(
     }
 }
 
-/// Set the progress of every library item whose files include `file` to
-/// `page` of the document's pages, in pages, for those it is not already
-/// that.
+/// Whether a reader's page may stand as this item's progress: the item is
+/// still being got through, and its progress is not already something else.
+/// An item that is finished or given up on has said where it got to, and one
+/// whose progress is in minutes or episodes -- a film with a script, say -- is
+/// not in pages at all; neither is the reader's to move.
+fn counts_in_pages(item: &Item) -> bool {
+    !matches!(item.status, ItemStatus::Done | ItemStatus::Abandoned)
+        && item.progress.as_ref().is_none_or(|p| {
+            p.unit.eq_ignore_ascii_case("page") || p.unit.eq_ignore_ascii_case("pages")
+        })
+}
+
+/// Set the progress of the library items that have `file` among their files
+/// to `page` of the document's pages, in pages, for those it suits
+/// ([`counts_in_pages`]) and is not already that.
 fn move_items(
     vault: &Vault,
     state: &DocumentsState,
@@ -248,11 +260,10 @@ fn move_items(
     page: u32,
     now: Timestamp,
 ) -> karmayoga_core::Result<usize> {
-    let mut owners: Vec<_> = vault
-        .items(&ItemQuery::default())?
-        .into_iter()
-        .filter(|item| item.files.contains(&file.id))
-        .collect();
+    // Found through the files' references, not by reading the whole shelf: this
+    // runs on every page somebody turns.
+    let mut owners = vault.items_with_file(file.id)?;
+    owners.retain(counts_in_pages);
     if owners.is_empty() {
         return Ok(0);
     }
@@ -347,7 +358,6 @@ mod tests {
     use crate::ctx::Caller;
     use karmayoga_core::VaultConfig;
     use karmayoga_core::files::ImportOptions;
-    use karmayoga_core::library::Item;
 
     fn open() -> (tempfile::TempDir, tempfile::TempDir, Arc<Service>, Arc<Vault>) {
         let (home, folder) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -545,5 +555,39 @@ mod tests {
         save(0, None).await.unwrap();
         let kept = vault.file(file.id).unwrap();
         assert_eq!(kept.properties.get(READER_PAGE_KEY), Some(&PropValue::Number(1.0)));
+    }
+
+    #[tokio::test]
+    async fn an_item_that_is_finished_or_counts_in_something_else_keeps_its_progress() {
+        let (_home, _folder, svc, vault) = open();
+        vault.seed_library().unwrap();
+        let kind = vault.kinds().unwrap()[0].id;
+        let file = plain(&vault, "dune.txt", b"one two three\n\nfour five six");
+        let item = |title: &str, status: ItemStatus, progress: Option<Progress>| {
+            let mut item = Item::new(kind, title);
+            item.files = vec![file.id];
+            item.status = status;
+            item.progress = progress;
+            vault.save_item(&item).unwrap();
+            item.id
+        };
+        let at = |position, total, unit| Some(Progress::new(position, Some(total), unit));
+        let finished = item("Finished", ItemStatus::Done, at(300, 300, "page"));
+        let given_up = item("Given up", ItemStatus::Abandoned, None);
+        let minutes = item("In minutes", ItemStatus::Active, at(12, 90, "minute"));
+        let capitals = item("Counted in Pages", ItemStatus::Active, at(1, 10, "Pages"));
+        let fresh = item("Fresh", ItemStatus::Wishlist, None);
+
+        let args = SaveReaderPosition { id: file.id, page: 4, block: None };
+        save_reader_position(svc.clone(), Ctx::local(), args).await.unwrap();
+
+        let progress = |id| vault.item(id).unwrap().progress;
+        assert_eq!(progress(finished), at(300, 300, "page"));
+        assert_eq!(progress(given_up), None);
+        assert_eq!(progress(minutes), at(12, 90, "minute"));
+        for moved in [capitals, fresh] {
+            let moved = progress(moved).expect("in pages, so moved");
+            assert_eq!((moved.position, moved.unit.as_str()), (4, "page"));
+        }
     }
 }

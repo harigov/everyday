@@ -133,6 +133,27 @@ impl Vault {
         self.with_library(|l| l.get_item(id))
     }
 
+    /// The items that have `file` among their files, found through the files'
+    /// references table rather than by reading every item: what a reader that
+    /// reports where somebody is in a book asks on every page turn.
+    ///
+    /// An owner the table names that is no longer there, or no longer names
+    /// the file (the table is kept up by saves, and can be a row behind a
+    /// record removed some other way), is left out.
+    pub fn items_with_file(&self, file: FileId) -> Result<Vec<Item>> {
+        let owners = self.with_files(|s| s.refs_to(file))?;
+        let mut items = Vec::new();
+        for owner in owners.into_iter().filter(|o| o.kind == RefKind::Item) {
+            let Ok(id) = ItemId::parse(&owner.id) else { continue };
+            match self.item(id) {
+                Ok(item) if item.files.contains(&file) => items.push(item),
+                Ok(_) | Err(Error::NotFound { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(items)
+    }
+
     pub fn save_item(&self, item: &Item) -> Result<()> {
         self.writable()?;
         if item.title.trim().is_empty() {

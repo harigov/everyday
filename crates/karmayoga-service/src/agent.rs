@@ -6216,22 +6216,32 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     let described = match (&unattended_context, on_screen) {
         (None, Some(screen)) => {
             let zone = zone_name(&settings);
-            // The document in the reader is described by its pages, which the
-            // documents' cache knows; reading them is a tool's job.
-            let documents = screen.reader.as_ref().and_then(|_| {
-                service
-                    .documents()
-                    .ok()
-                    .map(|state| crate::documents::ToolDocuments { state, vault: vault.clone() })
-            });
-            let ctx = ToolContext::new(&vault, settings.now().date(), &zone)
-                .with_withheld(withheld_for(job.is_some()))
-                .with_caller(ToolCaller::Assistant { conversation })
-                .with_assistant_provider(access.acknowledgement.clone())
-                .with_documents(
-                    documents.as_ref().map(|d| d as &dyn karmayoga_core::documents::Documents),
-                );
-            Some(karmayoga_core::agent::onscreen::describe(&ctx, &screen))
+            let today = settings.now().date();
+            let withheld = withheld_for(job.is_some());
+            let acknowledgement = access.acknowledgement.clone();
+            let (vault, service) = (vault.clone(), service.clone());
+            // On the blocking pool, like every tool: describing the screen
+            // reads the vault, and the document in the reader is described by
+            // its pages, which the documents' cache knows -- or, for one not
+            // read since it changed, a parse of the whole file.
+            tokio::task::spawn_blocking(move || {
+                let documents = screen.reader.as_ref().and_then(|_| {
+                    service.documents().ok().map(|state| crate::documents::ToolDocuments {
+                        state,
+                        vault: vault.clone(),
+                    })
+                });
+                let ctx = ToolContext::new(&vault, today, &zone)
+                    .with_withheld(withheld)
+                    .with_caller(ToolCaller::Assistant { conversation })
+                    .with_assistant_provider(acknowledgement)
+                    .with_documents(
+                        documents.as_ref().map(|d| d as &dyn karmayoga_core::documents::Documents),
+                    );
+                karmayoga_core::agent::onscreen::describe(&ctx, &screen)
+            })
+            .await
+            .ok()
         }
         _ => None,
     };

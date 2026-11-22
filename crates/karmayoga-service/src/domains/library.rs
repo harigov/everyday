@@ -16,13 +16,13 @@
 use crate::command;
 use crate::covers;
 use crate::ctx::{Ctx, Scope};
-use crate::documents::DocumentsState;
 use crate::documents::parse::{Resource, read_resource};
+use crate::documents::{DocumentsState, readable};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::websearch;
 use karmayoga_core::Vault;
-use karmayoga_core::documents::DocFormat;
+use karmayoga_core::documents::{DocFormat, DocMeta, DocText};
 use karmayoga_core::files::{FileEntry, FileOrigin, FileStatus};
 use karmayoga_core::id::{BlobId, FileId};
 use karmayoga_core::keepintouch::{KeepInTouchSettings, PassReport, PersonDue, note_from_journal};
@@ -591,9 +591,45 @@ fn held_on(vault: &Vault, kind: KindId, file: FileId) -> CommandResult<Option<It
     Ok(on_shelf.into_iter().find(|item| item.files.contains(&file)))
 }
 
+/// Did reading `file` fail on what is in it, rather than on getting at it?
+///
+/// Asked after a read has failed. A file that is still a document that may be
+/// read, and whose bytes are there to be counted, was got at: what went wrong
+/// was inside it -- more than a document is read up to, a scan with no text, a
+/// PDF the parser cannot make sense of. A refusal (Health's, in the trash, not
+/// a document) or a file that cannot be reached (the folder is away, it has
+/// gone from the disk, the vault is locked) is not that, and stays the
+/// failure it was.
+fn failed_on_its_contents(vault: &Vault, file: &FileEntry) -> bool {
+    readable(file).is_ok() && vault.file_len(file.id).is_ok()
+}
+
+/// What the file says about itself, or `None` when it could be got at and not
+/// read as a document: such a file is still a thing a person wants on a shelf,
+/// and an item made from its name is better than none. Blocking: a document's
+/// first read is a parse.
+fn read_text(
+    vault: &Vault,
+    documents: &DocumentsState,
+    file: &FileEntry,
+) -> CommandResult<Option<Arc<DocText>>> {
+    match documents.text(vault, file) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if failed_on_its_contents(vault, file) => {
+            tracing::info!(error = %e, "making an item from a file's name: it could not be read");
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Read the document and settle everything about the item that needs the
 /// vault and the file but not the network. Blocking: a document's first read
 /// is a parse.
+///
+/// A document that cannot be read is made from nothing but its name -- an empty
+/// [`DocMeta`], the shelf chosen from its format alone, and no cover and no
+/// DOI to look up.
 fn read_for_item(
     vault: &Vault,
     documents: &DocumentsState,
@@ -601,12 +637,14 @@ fn read_for_item(
     format: DocFormat,
     wanted: Option<KindId>,
 ) -> CommandResult<FromFile> {
-    let text = documents.text(vault, file)?;
+    let text = read_text(vault, documents, file)?;
+    let unread = DocMeta::default();
+    let meta = text.as_deref().map_or(&unread, |t| &t.meta);
     let kind = match wanted {
         Some(id) => vault.kind(id)?,
         None => {
             let kinds = vault.kinds()?;
-            shelf_for_document(&kinds, format, &text.meta).cloned().ok_or_else(|| {
+            shelf_for_document(&kinds, format, meta).cloned().ok_or_else(|| {
                 CommandError::new(
                     codes::NOT_FOUND,
                     "there is no shelf to put it on; make one in the library first",
@@ -618,11 +656,11 @@ fn read_for_item(
         return Ok(FromFile::Held(Box::new(held)));
     }
 
-    let item = item_from_document(&kind, file.id, &file.name, &text.meta);
-    let cover = (format == DocFormat::Epub && !text.meta.cover.trim().is_empty())
-        .then(|| epub_cover(vault, file, &text.meta.cover))
+    let item = item_from_document(&kind, file.id, &file.name, meta);
+    let cover = (format == DocFormat::Epub && !meta.cover.trim().is_empty())
+        .then(|| epub_cover(vault, file, &meta.cover))
         .flatten();
-    Ok(FromFile::Made(Box::new(Made { item, kind, doi: doi_in(&text.meta), cover })))
+    Ok(FromFile::Made(Box::new(Made { item, kind, doi: doi_in(meta), cover })))
 }
 
 /// An EPUB's cover picture, as the bytes of a picture this app can make a
@@ -933,6 +971,30 @@ mod tests {
         assert_eq!(err.code, codes::INVALID, "{}", err.message);
         let err = document_file(&vault, FileId::new()).unwrap_err();
         assert_eq!(err.code, codes::NOT_FOUND, "{}", err.message);
+    }
+
+    #[test]
+    fn a_failed_read_is_the_files_own_only_when_the_file_was_got_at_and_may_be_read() {
+        let (vault, _dir) = test_vault();
+
+        // A document that is there: whatever went wrong was in its contents.
+        let scan = sealed(&vault, "scan.pdf", b"not a pdf at all", FileOrigin::Files);
+        assert!(failed_on_its_contents(&vault, &scan));
+
+        // A refusal stays one: Health's, not a document, in the trash.
+        let labs = sealed(&vault, "labs.pdf", b"%PDF-1.4 labs", FileOrigin::Health);
+        assert!(!failed_on_its_contents(&vault, &labs));
+        let boat = sealed(&vault, "boat.png", b"\x89PNG\r\n\x1a\nnot really", FileOrigin::Files);
+        assert!(!failed_on_its_contents(&vault, &boat));
+        let old = sealed(&vault, "old.md", b"# Old", FileOrigin::Files);
+        let trashed = vault.trash_files(&[old.id]).unwrap().remove(0);
+        assert!(!failed_on_its_contents(&vault, &trashed));
+
+        // And so does a file that cannot be got at: one the catalog knows and
+        // the vault cannot count, which is what a missing record looks like.
+        let mut ghost = scan.clone();
+        ghost.id = FileId::new();
+        assert!(!failed_on_its_contents(&vault, &ghost));
     }
 
     #[test]

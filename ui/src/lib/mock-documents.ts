@@ -699,7 +699,7 @@ function status(): DocIndexStatus {
 }
 
 function searchAll(query: string, limit: number, offset: number): DocSearchPage {
-  if (!indexOn()) return { hits: [], total: 0, indexing: false }
+  if (!indexOn()) return { hits: [], total: 0, indexing: false, nextOffset: 0 }
   const all: DocSearchHit[] = []
   for (const file of indexable()) {
     const doc = documentOf(file)
@@ -716,7 +716,8 @@ function searchAll(query: string, limit: number, offset: number): DocSearchPage 
     }
   }
   all.sort((a, b) => b.score - a.score || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
-  return { hits: all.slice(offset, offset + limit), total: all.length, indexing: false }
+  const hits = all.slice(offset, offset + limit)
+  return { hits, total: all.length, indexing: false, nextOffset: offset + hits.length }
 }
 
 /** What an item made from this file is filled with: the document's own title,
