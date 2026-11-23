@@ -1002,8 +1002,10 @@ mod tests {
         // themselves.
         let (svc, vault, events, _dir) = world();
         let (message, thread) = a_newsletter_issue(&vault);
-        let source =
-            NewsSource::new(SourceKind::Mail { sender: "news@example.com".into() }, "The Weekly");
+        let source = NewsSource::new(
+            SourceKind::Mail { sender: "news@example.com".into(), name: String::new() },
+            "The Weekly",
+        );
         vault.save_news_source(&source).unwrap();
         let key = vault.news_key("issue-12").unwrap();
         let mut issue = Story::new(source.id, key, "Issue 12", Timestamp::now());

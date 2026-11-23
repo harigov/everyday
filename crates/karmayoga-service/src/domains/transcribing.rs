@@ -70,8 +70,8 @@ async fn write_article(svc: Arc<Service>, _ctx: Ctx, args: StoryRef) -> CommandR
 }
 
 /// Everything the Feed is working on in the background for what is heard and
-/// read: transcripts, articles, and articles turned into audio. Waiting,
-/// under way, and failed since last asked for.
+/// read: transcripts, articles, summaries, and articles turned into audio.
+/// Waiting, under way, and failed since last asked for.
 async fn listening_work(
     svc: Arc<Service>,
     _ctx: Ctx,

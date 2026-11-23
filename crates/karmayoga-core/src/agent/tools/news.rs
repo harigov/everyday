@@ -391,10 +391,18 @@ fn source_json(summary: &SourceSummary) -> Value {
                 m.insert("min_points".into(), json!(min_points));
             }
         }
-        SourceKind::Mail { sender } => {
+        SourceKind::Mail { sender, name } => {
             m.insert("sender".into(), json!(sender));
+            // One sender can send several newsletters, each found as a source
+            // of its own; the display name is what tells them apart.
+            if !name.trim().is_empty() {
+                m.insert("newsletter".into(), json!(name.trim()));
+            }
         }
         SourceKind::Newsletters => {}
+    }
+    if source.found {
+        m.insert("found".into(), json!(true));
     }
     if !source.folder.trim().is_empty() {
         m.insert("folder".into(), json!(source.folder.trim()));
@@ -727,7 +735,8 @@ fn default_title(kind: &SourceKind) -> String {
                 n => format!("{name}, {n}+ points"),
             }
         }
-        SourceKind::Mail { sender } => sender.clone(),
+        SourceKind::Mail { sender, name } if name.trim().is_empty() => sender.clone(),
+        SourceKind::Mail { name, .. } => name.trim().to_string(),
         SourceKind::Newsletters => "Newsletters".to_string(),
     }
 }

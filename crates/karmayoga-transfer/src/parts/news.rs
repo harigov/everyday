@@ -305,7 +305,7 @@ fn unusable(source: &NewsSource) -> Option<&'static str> {
             }
         }
         SourceKind::HackerNews { .. } | SourceKind::Newsletters => {}
-        SourceKind::Mail { sender } => {
+        SourceKind::Mail { sender, .. } => {
             if !sender.contains('@') {
                 return Some("a newsletter source needs the sender's address");
             }
@@ -331,8 +331,12 @@ fn same_feed(a: &SourceKind, b: &SourceKind) -> bool {
     }
     match (a, b) {
         (SourceKind::Web { url: a }, SourceKind::Web { url: b }) => address(a) == address(b),
-        (SourceKind::Mail { sender: a }, SourceKind::Mail { sender: b }) => {
+        (
+            SourceKind::Mail { sender: a, name: a_name },
+            SourceKind::Mail { sender: b, name: b_name },
+        ) => {
             a.trim().eq_ignore_ascii_case(b.trim())
+                && a_name.trim().to_lowercase() == b_name.trim().to_lowercase()
         }
         (a, b) => a == b,
     }
@@ -434,7 +438,10 @@ mod tests {
         );
         let hn =
             NewsSource::new(SourceKind::HackerNews { list: HnList::Front, min_points: 0 }, "HN");
-        let mail = NewsSource::new(SourceKind::Mail { sender: "a@b.example".into() }, "Weekly");
+        let mail = NewsSource::new(
+            SourceKind::Mail { sender: "a@b.example".into(), name: String::new() },
+            "Weekly",
+        );
         assert_eq!(outline(&hn), None);
         assert_eq!(outline(&mail), None);
     }
@@ -477,7 +484,10 @@ mod tests {
         assert_eq!(unusable(&web("Blog", "https://blog.example/feed")), None);
         assert!(unusable(&web("", "https://blog.example/feed")).is_some());
         assert!(unusable(&web("Blog", "ftp://blog.example/feed")).is_some());
-        let mail = NewsSource::new(SourceKind::Mail { sender: "nobody".into() }, "Weekly");
+        let mail = NewsSource::new(
+            SourceKind::Mail { sender: "nobody".into(), name: String::new() },
+            "Weekly",
+        );
         assert!(unusable(&mail).is_some());
         let mut keeps = web("Blog", "https://blog.example/feed");
         keeps.retention = Some(Retention { read_days: 0, unread_days: 90 });
@@ -492,7 +502,7 @@ mod tests {
         let top = |points| SourceKind::HackerNews { list: HnList::Top, min_points: points };
         assert!(same_feed(&top(300), &top(300)));
         assert!(!same_feed(&top(300), &top(100)));
-        let mail = |sender: &str| SourceKind::Mail { sender: sender.into() };
+        let mail = |sender: &str| SourceKind::Mail { sender: sender.into(), name: String::new() };
         assert!(same_feed(&mail("News@Example.com"), &mail("news@example.com")));
         assert!(!same_feed(&mail("news@example.com"), &top(300)));
     }

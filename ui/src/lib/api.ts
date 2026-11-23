@@ -2257,7 +2257,9 @@ export const api = {
   // Rust -- so the wire names say news and these say what the screen does.
   // Available only when `status.capabilities.news` is true. A story's body is
   // not a command: it is served at `karmayoga://news/body/{id}`, which
-  // `feed.svelte.ts` fetches the way `mailview.ts` fetches a message.
+  // `feed.svelte.ts` fetches the way `mailview.ts` fetches a message. With
+  // `?part=notes|transcript|summary` it is one document of the story's pane
+  // (the tabs of `StoryTabs.svelte`) instead of the whole body.
 
   newsSources: () => call('listNewsSources', {}),
   /** Every feed at, or advertised by, an address somebody pasted. */
@@ -2324,6 +2326,8 @@ export const api = {
   transcribeEpisode: (id: StoryId) => call('transcribeEpisode', { id }),
   transcribeFile: (id: FileId) => call('transcribeFile', { id }),
   writeArticle: (id: StoryId) => call('writeArticle', { id }),
+  /** Queue a summary of an article, kept in Files and linked as the story's `files.summary`. */
+  summarizeStory: (id: StoryId) => call('summarizeStory', { id }),
   renderStoryAudio: (id: StoryId) => call('renderStoryAudio', { id }),
   listeningWork: () => call('listeningWork', {}),
   getConsumption: (what: ContentRef) => call('getConsumption', { what }),
@@ -2880,14 +2884,36 @@ export function fileUrl(id: string, version = ''): string {
 }
 
 /**
- * Where the player plays a file from. The same address as `fileUrl` -- the
- * files protocol answers `Range`, so a long episode seeks without being read
- * whole -- except in the mock, which has no sound to serve and answers a
+ * Where the player plays a file from. On Linux the shell's own loopback
+ * address (`media_address`, see `crates/karmayoga-app/src/player.rs`):
+ * WebKitGTK plays no media from `karmayoga://`, and refuses it with "The
+ * operation is not supported". Elsewhere, and if the shell has none to give,
+ * the same address as `fileUrl`. Both answer `Range`, so a long episode seeks
+ * without being read whole. The mock has no sound to serve and answers a
  * silent recording as long as the file says it is.
  */
-export function playUrl(id: string, version = ''): string {
+export async function playUrl(id: string, version = ''): Promise<string> {
   if (MOCK) return mockPlayUrl(id)
-  return fileUrl(id, version)
+  const base = WEB ? null : await playbackAddress()
+  // No `?v=` on the shell's address: it only says whether an answer may be
+  // kept, and that server keeps none.
+  return base ? `${base}/file/${encodeURIComponent(id)}` : fileUrl(id, version)
+}
+
+/**
+ * The shell's answer to `media_address`. Kept once there is one; no answer is
+ * asked again next time, since the shell starts its server on any ask.
+ */
+let playback: Promise<string | null> | null = null
+
+function playbackAddress(): Promise<string | null> {
+  playback ??= invoke<string | null>('media_address')
+    .catch(() => null)
+    .then((address) => {
+      if (!address) playback = null
+      return address
+    })
+  return playback
 }
 
 /** What `fileUrl` is versioned by. */

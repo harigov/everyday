@@ -31,6 +31,7 @@
 
 use karmayoga_service::agent::{AgentEvent, Sink};
 use karmayoga_service::error::{CommandError, CommandResult};
+use karmayoga_service::news::view::BodyPart;
 use karmayoga_service::{Ctx, PROTOCOL};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -486,11 +487,16 @@ impl RemoteClient {
 
     /// A story's rendered body and whether its source holds pictures back:
     /// the remote counterpart of `karmayoga_service::news::view::body_document`,
-    /// from `/v1/news/body/{story}`. The same pair a mail body is, so it comes
+    /// from `/v1/news/body/{story}`, or of one of the story's documents --
+    /// `?part=` -- for a pane's tab. The same pair a mail body is, so it comes
     /// back as one.
-    pub async fn news_body(&self, story: &str) -> CommandResult<MailBody> {
+    pub async fn news_body(&self, story: &str, part: BodyPart) -> CommandResult<MailBody> {
+        let path = match part.query() {
+            Some(part) => format!("/v1/news/body/{story}?part={part}"),
+            None => format!("/v1/news/body/{story}"),
+        };
         let response = self
-            .request(reqwest::Method::GET, &format!("/v1/news/body/{story}"))
+            .request(reqwest::Method::GET, &path)
             .send()
             .await
             .map_err(transport)?

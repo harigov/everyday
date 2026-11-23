@@ -13,13 +13,13 @@ use super::session::Domain;
 use crate::error::{Error, Result};
 use crate::id::{MailMessageId, NewsSourceId, StoryId};
 use crate::news::{
-    ExpireReport, ExpiryRule, FetchState, NEWS_KEY_LABEL, NewsSource, SourceCount, SourceKind,
-    SourceSummary, Story, StoryBody,
+    CleanupDefaults, ExpireReport, ExpiryRule, FetchState, NEWS_KEY_LABEL, NewsSource, SourceCount,
+    SourceKind, SourceSummary, Story, StoryBody,
 };
 use crate::record::RecordKind;
-use crate::store::news::{NewsStore, StoryPage, StoryQuery};
+use crate::store::news::{NewsStore, StoryCursor, StoryPage, StoryQuery};
 use jiff::Timestamp;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 impl Vault {
     /// Does this vault's backend store a feed?
@@ -166,6 +166,16 @@ impl Vault {
         Ok(())
     }
 
+    /// Move stories to another source. See [`NewsStore::move_stories`].
+    pub fn move_stories(&self, moves: &[(StoryId, NewsSourceId)]) -> Result<u32> {
+        self.writable()?;
+        let moved = self.with_news(|n| n.move_stories(moves))?;
+        for (story, _) in moves {
+            self.wrote(RecordKind::Story, *story);
+        }
+        Ok(moved)
+    }
+
     pub fn stories(&self, query: &StoryQuery) -> Result<StoryPage> {
         self.with_news(|n| n.list_stories(query))
     }
@@ -238,16 +248,27 @@ impl Vault {
 
     /// Expire what each source's retention says has had its time, and drop
     /// old tombstones. Reads every source to learn its retention -- sealed,
-    /// so the store cannot -- and hands the rules down.
+    /// so the store cannot -- and hands the rules down: a source's own, else
+    /// the default for its kind in Settings → Feed.
+    ///
+    /// The report names the email of each issue cleaned up from a source that
+    /// moves its mail to Trash ([`NewsSource::trash_mail`]). It has to be
+    /// worked out first: what the store keeps of an expired story is a
+    /// tombstone, which no longer says which message it was.
     pub fn expire_stories(&self, now: Timestamp) -> Result<ExpireReport> {
         if !self.is_writable() {
             return Ok(ExpireReport::default());
         }
         self.with_news(|n| {
-            let rules: Vec<ExpiryRule> = n
-                .list_sources()?
+            let defaults = match n.feed_settings() {
+                Ok(settings) => settings.unwrap_or_default().cleanup,
+                Err(Error::Unsupported(_)) => CleanupDefaults::default(),
+                Err(e) => return Err(e),
+            };
+            let sources = n.list_sources()?;
+            let rules: Vec<ExpiryRule> = sources
                 .iter()
-                .map(|s| ExpiryRule { source_id: s.id, retention: s.retention() })
+                .map(|s| ExpiryRule { source_id: s.id, retention: s.retention_with(&defaults) })
                 .collect();
             // What is in Up Next is kept until it is played or taken out.
             let keep: Vec<StoryId> = match n.queue() {
@@ -261,8 +282,99 @@ impl Vault {
                 Err(Error::Unsupported(_)) => Vec::new(),
                 Err(e) => return Err(e),
             };
-            n.expire_except(&rules, &keep, now)
+            let binning = issues_to_bin(n, &sources, &defaults, &keep, now)?;
+            let mut report = n.expire_except(&rules, &keep, now)?;
+            report.mail = binned_mail(n, binning);
+            Ok(report)
         })
+    }
+}
+
+/// The issues the store is about to expire whose source moves its mail to
+/// Trash, as `(story, message)`. Only a source that reads mail from a sender
+/// ([`SourceKind::Mail`]) can say so -- never the Newsletters source, which
+/// takes whatever Mail files under Newsletters, misfiled mail included.
+///
+/// Mirrors the store's own rule (`NewsStore::expire_except`): a story goes
+/// when it is older than its source's days -- by the date it was published
+/// -- read or unread, unless it is saved, has files, or is in `keep`.
+/// Only what `expire_except` really expired is reported, see [`binned_mail`],
+/// so a story saved in between is not a message lost.
+fn issues_to_bin(
+    n: &dyn NewsStore,
+    sources: &[NewsSource],
+    defaults: &CleanupDefaults,
+    keep: &[StoryId],
+    now: Timestamp,
+) -> Result<Vec<(StoryId, MailMessageId)>> {
+    const DAY_US: i64 = 86_400_000_000;
+    let spare: HashSet<StoryId> = keep.iter().copied().collect();
+    let mut found = Vec::new();
+    for source in sources {
+        if !source.trash_mail || !matches!(source.kind, SourceKind::Mail { .. }) {
+            continue;
+        }
+        let retention = source.retention_with(defaults);
+        let before =
+            |days: u32| now.as_microsecond().saturating_sub(i64::from(days).saturating_mul(DAY_US));
+        let (read_before, unread_before) =
+            (before(retention.read_days), before(retention.unread_days));
+        // Nothing newer than the later of the two cutoffs can be due, so the
+        // walk, newest first, starts there rather than decrypting every
+        // issue a source still keeps. The id is the greatest there is: the
+        // cursor means "older than this (date, id)", and a story published
+        // at the cutoff itself is tested below like any other.
+        let mut at = Timestamp::from_microsecond(read_before.max(unread_before)).ok().map(|at| {
+            StoryCursor { published_at: at, id: StoryId::from(uuid::Uuid::from_u128(u128::MAX)) }
+        });
+        loop {
+            let page = n.list_stories(&StoryQuery {
+                sources: vec![source.id],
+                before: at,
+                limit: StoryQuery::MAX_LIMIT,
+                ..Default::default()
+            })?;
+            for story in &page.stories {
+                let Some(message) = story.mail_message else { continue };
+                let published = story.published_at.as_microsecond();
+                let due =
+                    if story.read { published < read_before } else { published < unread_before };
+                if due && !story.saved && story.files.media.is_none() && !spare.contains(&story.id)
+                {
+                    found.push((story.id, message));
+                }
+            }
+            match page.next {
+                Some(next) => at = Some(next),
+                None => break,
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Of the issues [`issues_to_bin`] expected to expire, the messages of those
+/// the store did. If that cannot be read, none: a message is only ever sent
+/// to Trash on the store's word that its story is gone.
+fn binned_mail(n: &dyn NewsStore, expected: Vec<(StoryId, MailMessageId)>) -> Vec<MailMessageId> {
+    if expected.is_empty() {
+        return Vec::new();
+    }
+    let ids: Vec<StoryId> = expected.iter().map(|(story, _)| *story).collect();
+    match n.get_stories(&ids) {
+        Ok(stories) => {
+            let gone: HashSet<StoryId> =
+                stories.iter().filter(|s| s.expired).map(|s| s.id).collect();
+            expected
+                .into_iter()
+                .filter(|(story, _)| gone.contains(story))
+                .map(|(_, message)| message)
+                .collect()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "expired old issues but could not tell which emails to bin");
+            Vec::new()
+        }
     }
 }
 
@@ -303,6 +415,11 @@ fn validate_source(source: &NewsSource) -> Result<()> {
             }
         }
     }
+    if source.trash_mail && !matches!(source.kind, SourceKind::Mail { .. }) {
+        return Err(Error::Invalid(
+            "only a newsletter followed from Mail can move its email to Trash".into(),
+        ));
+    }
     if let Some(r) = source.retention
         && (r.read_days == 0 || r.unread_days == 0)
     {
@@ -339,5 +456,28 @@ mod tests {
         assert!(validate_source(&s).is_err());
         s.kind = SourceKind::Web { url: "HTTPS://example.com/feed".into() };
         assert!(validate_source(&s).is_ok());
+    }
+
+    #[test]
+    fn only_a_newsletter_followed_from_mail_can_bin_its_email() {
+        let mut s = src("x", "", 0);
+        s.trash_mail = true;
+        let refused = |kind: SourceKind| {
+            let mut s = s.clone();
+            s.kind = kind;
+            validate_source(&s).expect_err("not a source that reads a sender")
+        };
+        refused(SourceKind::Web { url: "https://a.example/feed".into() });
+        refused(SourceKind::HackerNews { list: crate::news::HnList::Front, min_points: 0 });
+        // Mail files misfiled mail under Newsletters, which is why the one
+        // source that takes all of it cannot be told to bin it.
+        let Error::Invalid(why) = refused(SourceKind::Newsletters) else { panic!("invalid") };
+        assert!(why.contains("followed from Mail"), "{why}");
+
+        s.kind = SourceKind::Mail { sender: "news@a.example".into(), name: "The Download".into() };
+        assert!(validate_source(&s).is_ok());
+        s.trash_mail = false;
+        s.kind = SourceKind::Newsletters;
+        assert!(validate_source(&s).is_ok(), "it is only the setting that is refused");
     }
 }

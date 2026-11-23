@@ -5,8 +5,9 @@
 //! What is counted and grouped is pinned where it lives
 //! (`karmayoga_core::mail::cleanup`'s unit tests, the store's conformance
 //! suite); what is checked here is what the Feed adds on top: one story per
-//! message and no more, the watermark, the outbox ops, and which mail it
-//! refuses to make a story of.
+//! message and no more, the watermark, the outbox ops, which mail it refuses
+//! to make a story of, and -- for the Newsletters source -- which source of
+//! its own each newsletter's issues go to.
 
 #[allow(dead_code)]
 mod support;
@@ -22,7 +23,7 @@ use karmayoga_core::mail::{
     Address, Category, CategorySource, Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind,
     OpState, Origin,
 };
-use karmayoga_core::news::{FetchState, NewsSource, SourceKind, Story};
+use karmayoga_core::news::{FetchState, NewsSource, NewsletterRef, SourceKind, Story};
 use karmayoga_core::packstore::PackRef;
 use karmayoga_core::store::mail::{IngestMessage, ThreadFilter};
 use karmayoga_core::store::news::StoryQuery;
@@ -165,10 +166,52 @@ impl World {
     }
 
     fn follow(&self, sender: &str, keep_out_of_inbox: bool) -> NewsSource {
-        let mut source = NewsSource::new(SourceKind::Mail { sender: sender.into() }, "The Weekly");
+        let mut source = NewsSource::new(
+            SourceKind::Mail { sender: sender.into(), name: String::new() },
+            "The Weekly",
+        );
         source.keep_out_of_inbox = keep_out_of_inbox;
         self.vault.save_news_source(&source).unwrap();
         source
+    }
+
+    /// A sender followed, under one display name.
+    fn follow_named(&self, sender: &str, name: &str) -> NewsSource {
+        let source = NewsSource::new(
+            SourceKind::Mail { sender: sender.into(), name: name.into() },
+            format!("{name} from {sender}"),
+        );
+        self.vault.save_news_source(&source).unwrap();
+        source
+    }
+
+    /// Every newsletter at once.
+    fn follow_all(&self) -> NewsSource {
+        let all = NewsSource::new(SourceKind::Newsletters, "Newsletters");
+        self.vault.save_news_source(&all).unwrap();
+        all
+    }
+
+    /// The sources the Newsletters source made.
+    fn found(&self) -> Vec<NewsSource> {
+        self.vault.news_sources().unwrap().into_iter().filter(|s| s.found).collect()
+    }
+
+    /// The found source called `title`.
+    fn found_named(&self, title: &str) -> NewsSource {
+        let found = self.found().into_iter().find(|s| s.title == title);
+        found.unwrap_or_else(|| panic!("no found source called {title:?}"))
+    }
+
+    /// Any source called `title`; the titles in a test are its own.
+    fn source_named(&self, title: &str) -> NewsSource {
+        let sources = self.vault.news_sources().unwrap();
+        sources.into_iter().find(|s| s.title == title).unwrap_or_else(|| panic!("no {title:?}"))
+    }
+
+    fn turned_down(&self) -> Vec<(String, String)> {
+        let settings = self.vault.feed_settings().unwrap();
+        settings.not_newsletters.into_iter().map(|n| (n.sender, n.name)).collect()
     }
 
     /// One turn of `source`, as the refresher takes it.
@@ -280,7 +323,10 @@ async fn drafts_the_trash_and_muted_words_are_not_stories_but_still_move_the_wat
     let kept = w.seed(Mail::news(30, "Issue 1"));
     let newest_muted = w.seed(Mail::news(20, "Our sponsors this week"));
 
-    let mut source = NewsSource::new(SourceKind::Mail { sender: NEWS.into() }, "The Weekly");
+    let mut source = NewsSource::new(
+        SourceKind::Mail { sender: NEWS.into(), name: String::new() },
+        "The Weekly",
+    );
     source.mute = vec!["sponsor".into()];
     w.vault.save_news_source(&source).unwrap();
     let mut state = FetchState::new(source.id);
@@ -534,7 +580,8 @@ async fn following_a_sender_files_their_mail_as_newsletters_unless_they_were_pin
 
 /// Following every newsletter at once: whatever Mail files under Newsletters,
 /// from anybody, but not a sender followed as a source of their own, nor mail
-/// that is not a newsletter, nor what sits in Trash.
+/// that is not a newsletter, nor what sits in Trash. Each lands under a source
+/// of its own, found for the purpose.
 #[tokio::test]
 async fn following_all_newsletters_takes_every_newsletter_but_a_followed_senders() {
     let w = world();
@@ -548,19 +595,23 @@ async fn following_all_newsletters_takes_every_newsletter_but_a_followed_senders
     });
     let thrown = w.seed_in(w.trash, Mail::news(5, "Binned"));
 
-    w.follow("own@example.com", false);
-    let all = NewsSource::new(SourceKind::Newsletters, "Newsletters");
-    w.vault.save_news_source(&all).unwrap();
+    let own = w.follow("own@example.com", false);
+    let all = w.follow_all();
     let mut state = FetchState::new(all.id);
     assert_eq!(w.turn(&all, &mut state).await, 2);
 
-    let got = mail_ids(&w.stories(&all));
-    assert_eq!(got, [Some(digest.id), Some(weekly.id)], "newest first");
+    assert!(w.stories(&all).is_empty(), "nothing is kept under it");
+    let found = w.found();
+    assert_eq!(found.len(), 2, "{found:?}");
+    let weekly_source = w.found_named("The Weekly");
+    let digest_source = w.found_named("The Digest");
+    assert_eq!(mail_ids(&w.stories(&weekly_source)), [Some(weekly.id)]);
+    assert_eq!(mail_ids(&w.stories(&digest_source)), [Some(digest.id)]);
+    assert_eq!(w.stories(&digest_source)[0].author, "The Digest", "each issue says who it is from");
+    assert!(w.stories(&own).is_empty(), "a followed sender's mail waits for its own turn");
     for left in [followed.id, lunch.id, thrown.id] {
-        assert!(!got.contains(&Some(left)));
+        assert!(w.vault.stories_for_mail(&[left]).unwrap().is_empty());
     }
-    let digest_story = &w.stories(&all)[0];
-    assert_eq!(digest_story.author, "The Digest", "each issue says who it is from");
 }
 
 #[tokio::test]
@@ -580,15 +631,370 @@ async fn all_newsletters_is_followed_once() {
 async fn a_newsletter_sorted_late_is_still_found() {
     let w = world();
     let late = w.seed(Mail { category: None, ..Mail::news(10, "Sorted late") });
-    let early = w.seed(Mail { from: DIGEST, ..Mail::news(5, "Sorted at once") });
-    let all = NewsSource::new(SourceKind::Newsletters, "Newsletters");
-    w.vault.save_news_source(&all).unwrap();
+    let early =
+        w.seed(Mail { from: DIGEST, name: "The Digest", ..Mail::news(5, "Sorted at once") });
+    let all = w.follow_all();
     let mut state = FetchState::new(all.id);
     assert_eq!(w.turn(&all, &mut state).await, 1);
     assert_eq!(state.watermark, Some(early.date), "past the one not yet sorted");
 
     w.vault.set_mail_message_category(late.id, Category::Newsletter).unwrap();
     assert_eq!(w.turn(&all, &mut state).await, 1, "found behind the watermark");
-    assert_eq!(mail_ids(&w.stories(&all)), [Some(early.id), Some(late.id)]);
     assert_eq!(w.turn(&all, &mut state).await, 0, "and only once");
+    assert_eq!(mail_ids(&w.stories(&w.found_named("The Digest"))), [Some(early.id)]);
+    assert_eq!(mail_ids(&w.stories(&w.found_named("The Weekly"))), [Some(late.id)]);
+}
+
+fn kind(sender: &str, name: &str) -> SourceKind {
+    SourceKind::Mail { sender: sender.into(), name: name.into() }
+}
+
+/// What a newsletter is: the display name on its messages, not their address.
+/// The Download and The Algorithm come from one sender and are two sources;
+/// a name that differs only in case is the same one; and a sender with no
+/// display name is called by its address.
+#[tokio::test]
+async fn two_display_names_from_one_sender_are_two_found_sources() {
+    let w = world();
+    let first = w.seed(Mail { name: "The Download", ..Mail::news(72, "Download 1") });
+    let second = w.seed(Mail { name: "The Algorithm", ..Mail::news(60, "Algorithm 1") });
+    let third = w.seed(Mail { name: " the download ", ..Mail::news(48, "Download 2") });
+    let bare = w.seed(Mail { from: DIGEST, name: "", ..Mail::news(30, "Digest 1") });
+
+    let all = w.follow_all();
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 4);
+    assert_eq!(state.watermark, Some(bare.date));
+    assert!(w.stories(&all).is_empty(), "the Newsletters source keeps nothing itself");
+
+    let found = w.found();
+    assert_eq!(found.len(), 3, "{found:?}");
+    let download = w.found_named("The Download");
+    assert_eq!(download.kind, kind(NEWS, "The Download"), "named for the first display name");
+    assert_eq!(w.found_named("The Algorithm").kind, kind(NEWS, "The Algorithm"));
+    assert_eq!(w.found_named(DIGEST).kind, kind(DIGEST, ""), "no name: called by its address");
+    assert!(found.iter().all(|s| !s.paused && s.retention.is_none() && !s.keep_out_of_inbox));
+
+    assert_eq!(mail_ids(&w.stories(&download)), [Some(third.id), Some(first.id)]);
+    assert!(w.stories(&download).iter().all(|s| s.source_id == download.id));
+    assert_eq!(mail_ids(&w.stories(&w.found_named("The Algorithm"))), [Some(second.id)]);
+    assert_eq!(mail_ids(&w.stories(&w.found_named(DIGEST))), [Some(bare.id)]);
+
+    // The next issue of either goes where the last did, and nothing new is
+    // made for it.
+    let next = w.seed(Mail { name: "THE ALGORITHM", ..Mail::news(1, "Algorithm 2") });
+    assert_eq!(w.turn(&all, &mut state).await, 1);
+    assert_eq!(w.found().len(), 3);
+    assert_eq!(w.stories(&w.found_named("The Algorithm"))[0].mail_message, Some(next.id));
+    assert_eq!(w.turn(&all, &mut state).await, 0, "and only once");
+}
+
+/// A sender's first issue with no display name is found under the address,
+/// and that source does not take what the sender later sends under a name:
+/// each name is found as a newsletter of its own.
+#[tokio::test]
+async fn a_nameless_found_newsletter_does_not_take_the_senders_named_ones() {
+    let w = world();
+    let bare = w.seed(Mail { from: DIGEST, name: "", ..Mail::news(50, "Digest 1") });
+    let all = w.follow_all();
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 1);
+    assert_eq!(w.found_named(DIGEST).kind, kind(DIGEST, ""));
+
+    let named = w.seed(Mail { from: DIGEST, name: "The Digest", ..Mail::news(10, "Digest 2") });
+    let again = w.seed(Mail { from: DIGEST, name: "", ..Mail::news(5, "Digest 3") });
+    assert_eq!(w.turn(&all, &mut state).await, 2);
+    assert_eq!(w.found().len(), 2, "{:?}", w.found());
+    assert_eq!(mail_ids(&w.stories(&w.found_named("The Digest"))), [Some(named.id)]);
+    assert_eq!(mail_ids(&w.stories(&w.found_named(DIGEST))), [Some(again.id), Some(bare.id)]);
+}
+
+/// A followed sender's source takes everything from the sender, or, with a
+/// name, only that name -- whatever Mail files it under -- on its own turn,
+/// and the Newsletters turn does not make a second story of it.
+#[tokio::test]
+async fn a_followed_senders_source_claims_its_mail_and_the_newsletters_source_skips_it() {
+    let w = world();
+    let download = w.seed(Mail { name: "The Download", ..Mail::news(50, "Download 1") });
+    let algorithm = w.seed(Mail { name: "The Algorithm", ..Mail::news(40, "Algorithm 1") });
+    let unfiled =
+        w.seed(Mail { name: "The Download", category: None, ..Mail::news(30, "Download 2") });
+    let digest = w.seed(Mail { from: DIGEST, name: "The Digest", ..Mail::news(20, "Digest 1") });
+    let extra = w.seed(Mail { from: DIGEST, name: "Digest Extra", ..Mail::news(10, "Extra 1") });
+
+    let weekly = w.follow(NEWS, false);
+    let digests = w.follow_named(DIGEST, "the digest");
+    let all = w.follow_all();
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 1, "only what nobody followed");
+    assert_eq!(state.watermark, Some(extra.date));
+
+    let found = w.found();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, kind(DIGEST, "Digest Extra"));
+    assert_eq!(mail_ids(&w.stories(&found[0])), [Some(extra.id)]);
+    assert!(w.stories(&weekly).is_empty() && w.stories(&digests).is_empty());
+
+    // Their own turns take it all: every message of the sender's, and for
+    // the named one, only that name's.
+    let mut weekly_state = FetchState::new(weekly.id);
+    assert_eq!(w.turn(&weekly, &mut weekly_state).await, 3);
+    assert_eq!(
+        mail_ids(&w.stories(&weekly)),
+        [Some(unfiled.id), Some(algorithm.id), Some(download.id)]
+    );
+    let mut digests_state = FetchState::new(digests.id);
+    assert_eq!(w.turn(&digests, &mut digests_state).await, 1);
+    assert_eq!(mail_ids(&w.stories(&digests)), [Some(digest.id)]);
+
+    // And the Newsletters turn still leaves them alone.
+    assert_eq!(w.turn(&all, &mut state).await, 0);
+    assert_eq!(w.found().len(), 1);
+}
+
+/// "Not a newsletter" is remembered: the sender and name on the list are not
+/// made a source of again, however the case falls, and what they send still
+/// moves the watermark so it is not read again every turn. A sender turned
+/// down with no name is only their nameless mail.
+#[tokio::test]
+async fn a_newsletter_turned_down_is_not_found_again() {
+    let w = world();
+    let mut settings = w.vault.feed_settings().unwrap();
+    settings.not_newsletters = vec![
+        NewsletterRef { sender: NEWS.into(), name: "The Algorithm".into() },
+        NewsletterRef { sender: DIGEST.into(), name: String::new() },
+    ];
+    w.vault.save_feed_settings(&settings).unwrap();
+
+    let kept = w.seed(Mail { name: "The Download", ..Mail::news(50, "Download 1") });
+    w.seed(Mail { name: "the ALGORITHM", ..Mail::news(40, "Algorithm 1") });
+    let named = w.seed(Mail { from: DIGEST, name: "The Digest", ..Mail::news(30, "Digest 1") });
+    let newest = w.seed(Mail { from: DIGEST, name: "", ..Mail::news(20, "Digest 2") });
+
+    let all = w.follow_all();
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 2);
+    assert_eq!(state.watermark, Some(newest.date), "what was turned down is still read past");
+
+    let found = w.found();
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(mail_ids(&w.stories(&w.found_named("The Download"))), [Some(kept.id)]);
+    assert_eq!(w.found_named("The Digest").kind, kind(DIGEST, "The Digest"));
+    assert_eq!(mail_ids(&w.stories(&w.found_named("The Digest"))), [Some(named.id)]);
+    assert_eq!(w.turn(&all, &mut state).await, 0);
+    assert_eq!(w.found().len(), 2);
+}
+
+/// What an earlier version stored under the Newsletters source is handed to
+/// the source each message belongs to -- a followed one, when there is one --
+/// carrying what was done to it, and not again.
+#[tokio::test]
+async fn stories_already_under_the_newsletters_source_are_given_to_their_own_sources() {
+    let w = world();
+    let download = w.seed(Mail { name: "The Download", ..Mail::news(72, "Download 1") });
+    let again = w.seed(Mail { name: "The Download", ..Mail::news(48, "Download 2") });
+    let algorithm = w.seed(Mail { name: "The Algorithm", ..Mail::news(40, "Algorithm 1") });
+    let digest = w.seed(Mail { from: DIGEST, name: "The Digest", ..Mail::news(30, "Digest 1") });
+
+    let all = w.follow_all();
+    let digests = w.follow(DIGEST, false);
+    let stored: Vec<Story> = [&download, &again, &algorithm, &digest]
+        .iter()
+        .map(|m| {
+            let key = w.vault.news_key(&format!("mail:{}", header(m.id))).unwrap();
+            let mut story = Story::new(all.id, key, "An issue", m.date);
+            story.mail_message = Some(m.id);
+            story
+        })
+        .collect();
+    let batch: Vec<_> = stored.iter().map(|s| (s.clone(), None)).collect();
+    assert_eq!(w.vault.insert_stories(&batch).unwrap().len(), 4);
+    w.vault.set_stories_saved(&[stored[0].id], true).unwrap();
+    assert_eq!(w.stories(&all).len(), 4);
+
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 0, "no mail is new: the stories were there");
+    assert!(w.stories(&all).is_empty(), "nothing is left under it");
+
+    let download_source = w.found_named("The Download");
+    let ids: Vec<_> = w.stories(&download_source).iter().map(|s| s.id).collect();
+    assert_eq!(ids, [stored[1].id, stored[0].id]);
+    assert!(w.stories(&download_source)[1].saved, "what was done to a story goes with it");
+    assert!(w.stories(&download_source).iter().all(|s| s.source_id == download_source.id));
+    assert_eq!(mail_ids(&w.stories(&w.found_named("The Algorithm"))), [Some(algorithm.id)]);
+    assert_eq!(w.stories(&digests)[0].id, stored[3].id, "a followed sender's source is a home too");
+    assert_eq!(w.found().len(), 2, "one found for each that had no source");
+
+    // Idempotent.
+    assert_eq!(w.turn(&all, &mut state).await, 0);
+    assert_eq!(w.found().len(), 2);
+    assert_eq!(w.stories(&download_source).len(), 2);
+}
+
+/// Unfollowing a found newsletter says it is not one; following the sender by
+/// hand takes that back. A source somebody followed leaves no mark.
+#[tokio::test]
+async fn deleting_a_found_source_turns_it_down_and_following_by_hand_takes_it_back() {
+    let w = world();
+    w.seed(Mail { name: "The Download", ..Mail::news(50, "Download 1") });
+    w.seed(Mail { name: "The Algorithm", ..Mail::news(40, "Algorithm 1") });
+    let all = w.follow_all();
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 2);
+    assert!(w.turned_down().is_empty());
+
+    let algorithm = w.found_named("The Algorithm");
+    w.svc
+        .call(Ctx::local(), "delete_news_source", json!({ "id": algorithm.id.to_string() }))
+        .await
+        .unwrap();
+    assert_eq!(w.turned_down(), [(NEWS.to_string(), "The Algorithm".to_string())]);
+    assert_eq!(w.found().len(), 1, "the other is untouched");
+
+    // Its mail is still there, and the next turn does not find it again.
+    w.seed(Mail { name: "The Algorithm", ..Mail::news(1, "Algorithm 2") });
+    assert_eq!(w.turn(&all, &mut state).await, 0);
+    assert_eq!(w.found().len(), 1);
+    assert_eq!(w.turned_down().len(), 1, "listed once");
+
+    // Deleted a second time, or as a source somebody followed: nothing to add.
+    w.svc
+        .call(Ctx::local(), "delete_news_source", json!({ "id": algorithm.id.to_string() }))
+        .await
+        .unwrap();
+    assert_eq!(w.turned_down().len(), 1);
+
+    let added = w
+        .svc
+        .call(
+            Ctx::local(),
+            "add_news_source",
+            json!({ "source": { "type": "mail", "sender": NEWS } }),
+        )
+        .await
+        .unwrap();
+    assert!(w.turned_down().is_empty(), "followed by hand: it is a newsletter after all");
+    assert!(added.get("found").is_none(), "a person's source is not found");
+
+    let followed = w.source_named(NEWS);
+    w.svc
+        .call(Ctx::local(), "delete_news_source", json!({ "id": followed.id.to_string() }))
+        .await
+        .unwrap();
+    assert!(w.turned_down().is_empty(), "unfollowing what you followed says nothing");
+}
+
+/// Following by hand a sender the Newsletters source found under its address
+/// makes that source the person's -- the same source, no longer found -- not
+/// a refusal as followed already.
+#[tokio::test]
+async fn following_a_found_senders_address_by_hand_makes_it_followed() {
+    let w = world();
+    w.seed(Mail { from: DIGEST, name: "", ..Mail::news(30, "Digest 1") });
+    let all = w.follow_all();
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 1);
+    let found = w.found_named(DIGEST);
+
+    let added = w
+        .svc
+        .call(
+            Ctx::local(),
+            "add_news_source",
+            json!({ "source": { "type": "mail", "sender": DIGEST, "title": "The Digest" } }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(added["id"], json!(found.id.to_string()), "the same source");
+    assert!(added.get("found").is_none(), "and the person's now");
+    assert_eq!(added["title"], json!("The Digest"));
+    assert!(w.found().is_empty());
+}
+
+/// Refreshing a found newsletter is refreshing where its issues come from:
+/// the Newsletters source, or -- with none -- the found source itself, over
+/// its own mail and no other's. The sidebar's summary of it takes the
+/// Newsletters source's health.
+#[tokio::test]
+async fn a_found_source_is_refreshed_through_the_newsletters_source() {
+    let w = world();
+    w.seed(Mail { name: "The Download", ..Mail::news(50, "Download 1") });
+    w.seed(Mail { name: "The Algorithm", ..Mail::news(40, "Algorithm 1") });
+    let all = w.follow_all();
+    let report = |reports: &serde_json::Value| {
+        (reports[0]["sourceId"].clone(), reports[0]["inserted"].clone())
+    };
+
+    let reports = w
+        .svc
+        .call(Ctx::local(), "refresh_news", json!({ "source": all.id.to_string() }))
+        .await
+        .unwrap();
+    assert_eq!(report(&reports), (json!(all.id.to_string()), json!(2)));
+    let download = w.found_named("The Download");
+    let algorithm = w.found_named("The Algorithm");
+
+    let fresh = w.seed(Mail { name: "The Algorithm", ..Mail::news(1, "Algorithm 2") });
+    let reports = w
+        .svc
+        .call(Ctx::local(), "refresh_news", json!({ "source": download.id.to_string() }))
+        .await
+        .unwrap();
+    assert_eq!(reports.as_array().unwrap().len(), 1);
+    assert_eq!(report(&reports), (json!(download.id.to_string()), json!(1)), "answers the ask");
+    assert_eq!(w.stories(&algorithm)[0].mail_message, Some(fresh.id), "the whole turn was taken");
+
+    // Every refresh at once is one turn of the Newsletters source, not one
+    // for each newsletter it found.
+    w.seed(Mail { name: "The Algorithm", ..Mail::news(1, "Algorithm 3") });
+    let reports = w.svc.call(Ctx::local(), "refresh_news", json!({})).await.unwrap();
+    assert_eq!(reports.as_array().unwrap().len(), 1, "{reports}");
+
+    let listed = w.svc.call(Ctx::local(), "list_news_sources", json!({})).await.unwrap();
+    for summary in listed.as_array().unwrap() {
+        assert!(summary["lastOk"].is_string(), "{summary}");
+        assert!(summary["nextAt"].is_string(), "{summary}");
+    }
+
+    // With no Newsletters source to ask, a found one takes its own turn, over
+    // what Mail files as newsletters from its sender and name.
+    w.svc
+        .call(Ctx::local(), "delete_news_source", json!({ "id": all.id.to_string() }))
+        .await
+        .unwrap();
+    let mine = w.seed(Mail { name: "The Download", ..Mail::news(1, "Download 2") });
+    w.seed(Mail { name: "The Algorithm", ..Mail::news(1, "Algorithm 4") });
+    w.seed(Mail { name: "The Download", category: None, ..Mail::news(1, "Not a newsletter") });
+    let reports = w
+        .svc
+        .call(Ctx::local(), "refresh_news", json!({ "source": download.id.to_string() }))
+        .await
+        .unwrap();
+    assert_eq!(report(&reports), (json!(download.id.to_string()), json!(1)));
+    assert_eq!(w.stories(&download)[0].mail_message, Some(mine.id));
+    assert_eq!(w.stories(&algorithm).len(), 3, "somebody else's issue waits for its own turn");
+}
+
+/// Whether a source was found is the stored copy's to say: a person cannot
+/// make one found, and a found one stays so.
+#[tokio::test]
+async fn saving_a_source_never_changes_whether_it_was_found() {
+    let w = world();
+    w.seed(Mail { name: "The Download", ..Mail::news(50, "Download 1") });
+    let all = w.follow_all();
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 1);
+
+    let mut download = w.found_named("The Download");
+    download.found = false;
+    download.title = "Download, renamed".into();
+    w.svc.call(Ctx::local(), "save_news_source", json!({ "source": download })).await.unwrap();
+    let stored = w.vault.news_source(download.id).unwrap();
+    assert_eq!(stored.title, "Download, renamed", "the rest is theirs to change");
+    assert!(stored.found, "found until it is deleted");
+
+    let mut followed = w.follow(NEWS, false);
+    followed.found = true;
+    w.svc.call(Ctx::local(), "save_news_source", json!({ "source": followed })).await.unwrap();
+    assert!(!w.vault.news_source(followed.id).unwrap().found, "nobody can say it is");
 }

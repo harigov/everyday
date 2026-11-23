@@ -17,6 +17,13 @@
 // Behind them are Up Next and Recommended, what has been heard, the
 // downloads, the directory and Settings → Feed -- see `docs/plans/podcasts.md`.
 //
+// And the newsletters, as `docs/plans/feed-usability.md` has them: three that
+// the Newsletters source *found* in Mail -- two sent from one address under
+// different names, one from another -- each a source of its own with its
+// issues under it, and the Newsletters source itself with nothing left under
+// it. Unfollowing a found one is saying it is not a newsletter, which puts it
+// on Settings → Feed's list of those.
+//
 // Nothing here runs at module load but building the seed: no timers, so
 // loading this file cannot hold a test process open. A refresh is a function
 // call that adds the next story from a short script rather than a timer that
@@ -55,6 +62,7 @@ import type {
   NewSource,
   NewsSource,
   NewsSourceId,
+  NewsletterRef,
   NewsletterSender,
   PodcastGenre,
   PodcastHit,
@@ -66,11 +74,13 @@ import type {
   RankingStatus,
   Recommendation,
   RefreshReport,
+  Retention,
   SourceSummary,
   Span,
   Story,
   StoryId,
   StoryPage,
+  StoryPart,
   StoryQuery,
   WorkItem,
 } from './types'
@@ -111,6 +121,11 @@ const HACKER = 'src-hn'
 const RADIO = 'src-radio'
 const SLOW = 'src-slowhour'
 const FRAME = 'src-frame'
+// Found by the Newsletters source: one sender sends two of them.
+const DOWNLOAD = 'src-download'
+const ALGORITHM = 'src-algorithm'
+const TLDR = 'src-tldr'
+const LETTERS = 'src-newsletters'
 
 function source(
   partial: Partial<NewsSource> & Pick<NewsSource, 'id' | 'kind' | 'title'>,
@@ -193,6 +208,42 @@ const sources: NewsSource[] = [
     sortOrder: 5,
     podcast: { author: 'Okonkwo and Lee', directoryId: '1450002' },
   }),
+  // Newsletters found in Mail. A found source fetches nothing of its own: its
+  // issues arrive through the Newsletters source's turn, and pictures follow
+  // Mail's rule, which is to hold them back.
+  source({
+    id: DOWNLOAD,
+    kind: { type: 'mail', sender: 'newsletters@technologyreview.com', name: 'The Download' },
+    title: 'The Download',
+    images: false,
+    found: true,
+    sortOrder: 6,
+  }),
+  source({
+    id: ALGORITHM,
+    kind: { type: 'mail', sender: 'newsletters@technologyreview.com', name: 'The Algorithm' },
+    title: 'The Algorithm',
+    images: false,
+    found: true,
+    sortOrder: 7,
+  }),
+  source({
+    id: TLDR,
+    kind: { type: 'mail', sender: 'dan@tldrnewsletter.com', name: 'TLDR' },
+    title: 'TLDR',
+    images: false,
+    found: true,
+    sortOrder: 8,
+  }),
+  // What found them. Nothing is stored under it any more, so a sidebar that
+  // lists it only while it has stories draws no row for it.
+  source({
+    id: LETTERS,
+    kind: { type: 'newsletters' },
+    title: 'Newsletters',
+    images: false,
+    sortOrder: 9,
+  }),
 ]
 
 const fetched = new Map<NewsSourceId, Fetched>([
@@ -205,6 +256,10 @@ const fetched = new Map<NewsSourceId, Fetched>([
   ],
   [SLOW, { lastOk: ago(1), lastError: null, nextAt: ago(-2) }],
   [FRAME, { lastOk: ago(3), lastError: null, nextAt: ago(-1) }],
+  [DOWNLOAD, { lastOk: ago(1), lastError: null, nextAt: ago(-1) }],
+  [ALGORITHM, { lastOk: ago(1), lastError: null, nextAt: ago(-1) }],
+  [TLDR, { lastOk: ago(1), lastError: null, nextAt: ago(-1) }],
+  [LETTERS, { lastOk: ago(1), lastError: null, nextAt: ago(-1) }],
 ])
 
 // ── Stories ──────────────────────────────────────────────────────────────
@@ -554,6 +609,89 @@ const stories: Story[] = [
       durationMs: 8 * MINUTE + 30_000,
     }),
   }),
+  // The newsletters found in Mail, each issue the message it is. All older than
+  // the newest of everything above, so what a list opens on is as it was.
+  story({
+    id: 'st-23',
+    sourceId: DOWNLOAD,
+    title: 'The Download: the chip that learned to wait',
+    summary:
+      'A processor that idles on purpose, a small town’s argument with its own weather station, and the one number worth knowing today.',
+    publishedAt: ago(11),
+    mailMessage: 'msg-seed-23',
+    hasBody: true,
+  }),
+  story({
+    id: 'st-24',
+    sourceId: DOWNLOAD,
+    title: 'The Download: who gets to forecast the storm',
+    summary:
+      'Three agencies, two models and a very old rule of thumb, and what happens when they disagree about the same afternoon.',
+    publishedAt: ago(35),
+    mailMessage: 'msg-seed-24',
+    hasBody: true,
+  }),
+  story({
+    id: 'st-25',
+    sourceId: DOWNLOAD,
+    title: 'The Download: the grid’s long afternoon',
+    summary:
+      'Why the hardest hour for the grid is the one after the sun goes down, and the batteries built for exactly that.',
+    publishedAt: ago(59),
+    mailMessage: 'msg-seed-25',
+    read: true,
+    hasBody: true,
+  }),
+  story({
+    id: 'st-26',
+    sourceId: ALGORITHM,
+    title: 'The Algorithm: when a model grades its own homework',
+    summary:
+      'Letting a system mark its own answers is quick and cheap, and wrong in a way that is hard to see from the inside.',
+    publishedAt: ago(33),
+    mailMessage: 'msg-seed-26',
+    hasBody: true,
+  }),
+  story({
+    id: 'st-27',
+    sourceId: ALGORITHM,
+    title: 'The Algorithm: small models, big errands',
+    summary:
+      'The models that run on a phone are doing more of the work than the ones in the news, and nobody is keeping score.',
+    publishedAt: ago(24 * 8 + 1),
+    mailMessage: 'msg-seed-27',
+    read: true,
+    hasBody: true,
+  }),
+  story({
+    id: 'st-28',
+    sourceId: TLDR,
+    title: 'TLDR: the week’s launches, in five lines',
+    summary:
+      'A database that forgets on purpose, a terminal that draws, and three releases that did what they said.',
+    publishedAt: ago(12),
+    mailMessage: 'msg-seed-28',
+    hasBody: true,
+  }),
+  story({
+    id: 'st-29',
+    sourceId: TLDR,
+    title: 'TLDR: a compiler’s unlikely bug',
+    summary: 'One flag, one platform, and eleven years of nobody noticing.',
+    publishedAt: ago(36),
+    mailMessage: 'msg-seed-29',
+    hasBody: true,
+  }),
+  story({
+    id: 'st-30',
+    sourceId: TLDR,
+    title: 'TLDR: three tools worth a look',
+    summary: 'A diff viewer, a spreadsheet that shows its working, and a font for reading logs.',
+    publishedAt: ago(60),
+    mailMessage: 'msg-seed-30',
+    read: true,
+    hasBody: true,
+  }),
 ]
 
 // ── Bodies ───────────────────────────────────────────────────────────────
@@ -604,6 +742,8 @@ function showNotes(item: Story): string {
 const bodies = new Map<StoryId, string>()
 /** Where a body came from, when it was not the feed: an extracted page, or a transcript. */
 const bodyOrigins = new Map<StoryId, BodyOrigin>()
+/** What an article's summary says, by story, once it is written: what its file holds. */
+const summaries = new Map<StoryId, { html: string; markdown: string }>()
 for (const s of stories) {
   if (s.hasBody) bodies.set(s.id, s.media ? showNotes(s) : articleBody(s, 3))
 }
@@ -720,16 +860,36 @@ export function mockSaveStories(ids: StoryId[], saved: boolean): void {
  * A story with no stored body is drawn from its summary, as the real route
  * does, so the reading pane is never blank for one that is only a teaser. The
  * origin is what the real document says in its head: where the body came from.
+ *
+ * `part` is the route's `?part=`: one document of the pane instead of the
+ * whole body -- an episode's show notes or its transcript, or the summary of a
+ * story. A part that does not exist yet answers not found, as the route does;
+ * the pane only asks for one it knows is there.
  */
-export function mockStoryBody(id: StoryId): {
+export function mockStoryBody(
+  id: StoryId,
+  part?: StoryPart | null,
+): {
   html: string
   imagesHidden: boolean
   origin: BodyOrigin
 } {
   ensureSeeded()
   const s = find(id)
-  const origin = bodyOrigins.get(id) ?? 'feed'
-  let html = bodies.get(id) ?? `<p>${escapeHtml(s.summary)}</p>`
+  if (part) return partOfBody(s, part)
+  return framed(
+    s,
+    bodies.get(id) ?? `<p>${escapeHtml(s.summary)}</p>`,
+    bodyOrigins.get(id) ?? 'feed',
+  )
+}
+
+/** `html` as the route serves it for `s`: with its pictures held back when its source says so. */
+function framed(
+  s: Story,
+  html: string,
+  origin: BodyOrigin,
+): { html: string; imagesHidden: boolean; origin: BodyOrigin } {
   const from = sources.find((x) => x.id === s.sourceId)
   if (from && !from.images) {
     const hidden = /<img\b/i.test(html)
@@ -737,6 +897,42 @@ export function mockStoryBody(id: StoryId): {
     return { html, imagesHidden: hidden, origin }
   }
   return { html, imagesHidden: false, origin }
+}
+
+/** One document of a story's pane: see `mockStoryBody`. */
+function partOfBody(
+  s: Story,
+  part: StoryPart,
+): { html: string; imagesHidden: boolean; origin: BodyOrigin } {
+  switch (part) {
+    case 'notes':
+      // An episode's own show notes, whatever was written over its body since.
+      return framed(
+        s,
+        s.media ? showNotes(s) : (bodies.get(s.id) ?? `<p>${escapeHtml(s.summary)}</p>`),
+        'feed',
+      )
+    case 'transcript':
+      if (!linkPresent(s.files?.transcript)) {
+        throw new VaultError('notFound', 'This story has no transcript.')
+      }
+      return framed(s, transcriptHtml(s), 'feed')
+    case 'summary': {
+      // An episode's summary is the telling written from its transcript; an
+      // article's is the file the summary was written to.
+      if (s.media) {
+        if (bodyOrigins.get(s.id) !== 'transcript') {
+          throw new VaultError('notFound', 'This episode has not been written up.')
+        }
+        return framed(s, tellingOf(s), 'transcript')
+      }
+      const made = summaries.get(s.id)
+      if (!made || !linkPresent(s.files?.summary)) {
+        throw new VaultError('notFound', 'This story has no summary.')
+      }
+      return framed(s, made.html, 'feed')
+    }
+  }
 }
 
 export function mockFetchFullArticle(id: StoryId): Story {
@@ -863,7 +1059,9 @@ function build(input: NewSource, order: number, now: string): NewsSource {
     case 'mail': {
       const sender = input.sender.trim().toLowerCase()
       if (!sender.includes('@')) throw new VaultError('invalid', 'That is not an email address.')
-      if (sources.some((s) => s.kind.type === 'mail' && s.kind.sender === sender)) {
+      // A newsletter the Newsletters source found is not followed: following
+      // the sender by hand is a source of its own, taking everything it sends.
+      if (sources.some((s) => s.kind.type === 'mail' && s.kind.sender === sender && !s.found)) {
         throw new VaultError('invalid', 'You already follow that sender.')
       }
       return source({
@@ -902,24 +1100,47 @@ export function mockAddNewsSource(input: NewSource): NewsSource {
   const made = build(input, order, now)
   sources.push(made)
   fetched.set(made.id, { lastOk: null, lastError: null, nextAt: now })
+  // Following a sender by hand takes it off the list of what is not a newsletter.
+  if (made.kind.type === 'mail') {
+    const sender = made.kind.sender
+    const left = (settings.notNewsletters ?? []).filter((n) => n.sender !== sender)
+    if (left.length > 0) settings.notNewsletters = left
+    else delete settings.notNewsletters
+  }
   return structuredClone(made)
 }
 
 export function mockSaveNewsSource(updated: NewsSource): void {
   const at = sources.findIndex((s) => s.id === updated.id)
   if (at < 0) throw new VaultError('notFound', 'no such source')
-  sources[at] = { ...structuredClone(updated), updatedAt: new Date().toISOString() }
+  // Whether a source was found is the service's to say, not something a save sets.
+  const found = sources[at]!.found
+  const next: NewsSource = { ...structuredClone(updated), updatedAt: new Date().toISOString() }
+  if (found) next.found = true
+  else delete next.found
+  sources[at] = next
 }
 
 export function mockDeleteNewsSource(id: NewsSourceId): void {
-  sourceById(id)
+  const gone = sourceById(id)
   const at = sources.findIndex((s) => s.id === id)
   sources.splice(at, 1)
   fetched.delete(id)
+  // Unfollowing a newsletter that was found is saying it is not one, so the
+  // next message from it does not bring it back.
+  if (gone.found && gone.kind.type === 'mail') {
+    const ref: NewsletterRef = { sender: gone.kind.sender }
+    if (gone.kind.name) ref.name = gone.kind.name
+    const listed = settings.notNewsletters ?? []
+    const known = listed.some((n) => n.sender === ref.sender && (n.name ?? '') === (ref.name ?? ''))
+    if (!known) settings.notNewsletters = [...listed, ref]
+  }
   for (let i = stories.length - 1; i >= 0; i--) {
-    const gone = stories[i]!
-    if (gone.sourceId !== id) continue
-    bodies.delete(gone.id)
+    const doomed = stories[i]!
+    if (doomed.sourceId !== id) continue
+    bodies.delete(doomed.id)
+    bodyOrigins.delete(doomed.id)
+    summaries.delete(doomed.id)
     stories.splice(i, 1)
   }
 }
@@ -973,6 +1194,39 @@ const FRESH: Record<NewsSourceId, { title: string; summary: string; author: stri
       title: 'The window as a light source',
       author: 'Okonkwo and Lee',
       summary: 'North light, south light and the curtain that fixes both.',
+    },
+  ],
+  [DOWNLOAD]: [
+    {
+      title: 'The Download: a map of every unmapped road',
+      author: '',
+      summary:
+        'A volunteer count of the roads no atlas has, and the ones that turned out to be rivers.',
+    },
+    {
+      title: 'The Download: the battery that sleeps through winter',
+      author: '',
+      summary: 'Storing summer for January, one very large flask at a time.',
+    },
+  ],
+  [ALGORITHM]: [
+    {
+      title: 'The Algorithm: the benchmark nobody trusts',
+      author: '',
+      summary:
+        'A leaderboard that everyone cites and nobody believes, and what replaced it in one lab.',
+    },
+  ],
+  [TLDR]: [
+    {
+      title: 'TLDR: a shell that explains itself',
+      author: '',
+      summary: 'Type a command and read, beside it, what it is about to do.',
+    },
+    {
+      title: 'TLDR: the retry that made it worse',
+      author: '',
+      summary: 'A small outage, a helpful client, and the arithmetic of everybody asking again.',
     },
   ],
   [HACKER]: [
@@ -1037,6 +1291,10 @@ function addFresh(src: NewsSource, hoursAgo: number): Story {
   unranked.push(id)
   if (made.hasBody) bodies.set(id, made.media ? showNotes(made) : articleBody(made, 3))
   if (made.media && src.podcast) newEpisode(made, src.podcast.queueNew === true)
+  // A source that summarises what it brings asks for it as the story arrives.
+  if (!made.media && made.hasBody && src.automation?.summarize === true) {
+    queueWork({ kind: 'summary', storyId: id, title: made.title })
+  }
   return made
 }
 
@@ -1044,6 +1302,13 @@ function refreshOne(src: NewsSource): RefreshReport {
   const state = fetched.get(src.id) ?? { lastOk: null, lastError: null, nextAt: null }
   fetched.set(src.id, state)
   const now = new Date().toISOString()
+  // The Newsletters source stores nothing under itself: what it brings goes to
+  // the source that claims each message, and those are refreshed as themselves.
+  if (src.kind.type === 'newsletters') {
+    state.lastOk = now
+    state.nextAt = new Date(Date.now() + 30 * 60_000).toISOString()
+    return { sourceId: src.id, inserted: 0, notModified: true, error: null }
+  }
   if (src.id === RADIO) {
     // Still failing: the sidebar's dimmed dot stays, and the message with it.
     state.nextAt = new Date(Date.now() + 6 * HOUR).toISOString()
@@ -1274,6 +1539,10 @@ let settings: FeedSettings = {
   resumeAfterVoice: true,
   skipBackS: 15,
   skipForwardS: 30,
+  cleanup: {
+    feeds: { readDays: 30, unreadDays: 90 },
+    newsletters: { readDays: 30, unreadDays: 90 },
+  },
 }
 
 export function mockFeedSettings(): FeedSettings {
@@ -1285,10 +1554,27 @@ function fingerprint(s: FeedSettings): string {
   return JSON.stringify([s.ranking.enabled, s.ranking.criteria, s.ranking.goals])
 }
 
+/** A number of days as the service keeps it: whole, from one to a year. */
+function wholeDays(days: number): number {
+  return Math.min(365, Math.max(1, Math.round(days)))
+}
+
+function tidyRetention(r: Retention): Retention {
+  return { readDays: wholeDays(r.readDays), unreadDays: wholeDays(r.unreadDays) }
+}
+
 export function mockSaveFeedSettings(next: FeedSettings): FeedSettings {
   const stale = fingerprint(next) !== fingerprint(settings)
-  settings = {
+  // Clean-up and the list of what is not a newsletter are kept when a save does
+  // not carry them, as the service's own record keeps what it was not told.
+  const cleanup = next.cleanup ?? settings.cleanup
+  const notNewsletters = next.notNewsletters ?? settings.notNewsletters ?? []
+  const saved: FeedSettings = {
     ...structuredClone(next),
+    cleanup: {
+      feeds: tidyRetention(cleanup.feeds),
+      newsletters: tidyRetention(cleanup.newsletters),
+    },
     ranking: {
       ...structuredClone(next.ranking),
       criteria: next.ranking.criteria.map((c) => ({
@@ -1297,6 +1583,10 @@ export function mockSaveFeedSettings(next: FeedSettings): FeedSettings {
       })),
     },
   }
+  // An empty list is no list at all on the wire.
+  if (notNewsletters.length > 0) saved.notNewsletters = structuredClone(notNewsletters)
+  else delete saved.notNewsletters
+  settings = saved
   if (stale) unranked = candidates().map((s) => s.id)
   return mockFeedSettings()
 }
@@ -1848,18 +2138,44 @@ function writeFileTranscript(f: FileEntry): FileEntry {
   return made
 }
 
-/** What an episode becomes as an article: the telling, and the show notes kept under it. */
-function articleFromTranscript(s: Story): string {
+/** What an episode becomes as an article: the telling alone, which is its summary. */
+function tellingOf(s: Story): string {
   const told = [
     'The episode opens on a sound -- a door that has not been opened in years -- and spends the next few minutes on why nobody expected the quiet that followed it.',
     'Those closest to the story say they were wrong about the cause. The logbooks, kept by one patient hand, say otherwise, and the host reads from them at length.',
     'The part to hold on to is the lamp. It comes up three times, and each time it means something a little different.',
   ]
-  return (
-    `<p><strong>${escapeHtml(s.summary)}</strong></p>` +
-    told.map((p) => `<p>${p}</p>`).join('') +
-    `<hr><h3>Show notes</h3>${showNotes(s)}`
+  const paragraphs = told.map((p) => `<p>${p}</p>`).join('')
+  return `<p><strong>${escapeHtml(s.summary)}</strong></p>${paragraphs}`
+}
+
+/** What an episode becomes as the body: the telling, and the show notes kept under it. */
+function articleFromTranscript(s: Story): string {
+  return `${tellingOf(s)}<hr><h3>Show notes</h3>${showNotes(s)}`
+}
+
+/** An episode's transcript as the route draws it: each paragraph with the time it begins. */
+function transcriptHtml(s: Story): string {
+  const length = s.media?.durationMs ?? 8 * MINUTE
+  const step = Math.max(1000, Math.floor(length / SPOKEN.length))
+  const paragraphs = SPOKEN.map(
+    (line, i) => `<p><strong>${clockMark(i * step)}</strong> ${line}</p>`,
   )
+  return paragraphs.join('')
+}
+
+/** What a summary of an article says: the gist, and what to take from it. */
+function summaryOf(s: Story): { html: string; markdown: string } {
+  const points = [
+    'The question that started it was a small one, and the answer was not.',
+    'Most of what survives is paperwork; the people who remember are few.',
+    'What would have changed, had they stopped, is the part left open.',
+  ]
+  const items = points.map((p) => `<li>${p}</li>`).join('')
+  return {
+    html: `<p>${escapeHtml(s.summary)}</p><ul>${items}</ul>`,
+    markdown: [`# ${s.title}`, '', s.summary, '', ...points.map((p) => `- ${p}`), ''].join('\n'),
+  }
 }
 
 /**
@@ -1920,7 +2236,12 @@ interface MockWork {
   error: string | null
 }
 
-const WORK_STEPS: Record<WorkItem['kind'], number> = { transcript: 4, article: 3, audio: 3 }
+const WORK_STEPS: Record<WorkItem['kind'], number> = {
+  transcript: 4,
+  article: 3,
+  audio: 3,
+  summary: 3,
+}
 
 const workQueue: MockWork[] = []
 
@@ -1962,6 +2283,15 @@ export function mockWriteArticle(id: StoryId): void {
   queueWork({ kind: 'article', storyId: id, title: s.title })
 }
 
+/** Summarise an article. An episode's summary is its article, which `write_article` makes. */
+export function mockSummarizeStory(id: StoryId): void {
+  const s = find(id)
+  if (s.media) throw new VaultError('invalid', 'An episode is summarised by writing its article.')
+  if (s.expired) throw new VaultError('invalid', 'This story is past its age: there is no text.')
+  if (linkPresent(s.files?.summary)) return
+  queueWork({ kind: 'summary', storyId: id, title: s.title })
+}
+
 export function mockRenderStoryAudio(id: StoryId): void {
   const s = find(id)
   if (s.media) throw new VaultError('invalid', 'An episode is audio already.')
@@ -1972,8 +2302,15 @@ export function mockRenderStoryAudio(id: StoryId): void {
 
 /** Why a piece of work cannot be done, or `null` when it can. */
 function unworkable(w: MockWork): string | null {
-  if (w.kind !== 'transcript' || !w.storyId) return null
+  if (!w.storyId) return null
   const s = find(w.storyId)
+  // A story that is only a headline has nothing to summarise until its article is fetched.
+  if (w.kind === 'summary') {
+    return s.hasBody
+      ? null
+      : 'There is no article text to summarise yet. Fetch the full article first.'
+  }
+  if (w.kind !== 'transcript') return null
   // A show that publishes its transcript needs no file; anything else is listened to.
   return s.files?.media || s.media?.transcriptUrl
     ? null
@@ -1995,6 +2332,19 @@ function finishWork(w: MockWork): void {
     bodies.set(s.id, articleFromTranscript(s))
     bodyOrigins.set(s.id, 'transcript')
     s.hasBody = true
+  } else if (w.kind === 'summary' && w.storyId) {
+    const s = find(w.storyId)
+    const show = sources.find((x) => x.id === s.sourceId)?.title ?? ''
+    const made = summaryOf(s)
+    const day = new Date().toISOString().slice(0, 10)
+    const file = mockTextFile(
+      `${day} ${nameFrom(s.title)}.md`,
+      made.markdown,
+      `Feed/Summaries/${nameFrom(show || 'Feed')}`,
+      'feed',
+    )
+    summaries.set(s.id, made)
+    s.files = { ...s.files, summary: file.id }
   } else if (w.kind === 'audio' && w.storyId) {
     const s = find(w.storyId)
     const file = audioFileOf(s.id)

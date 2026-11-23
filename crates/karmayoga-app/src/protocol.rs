@@ -57,6 +57,10 @@
 //! from, and the one header -- `X-News-Images-Hidden`, `1` or `0` -- that
 //! tells the interface a source has its pictures switched off.
 //!
+//! The body address takes a `?part=` -- `notes`, `transcript` or `summary` --
+//! for the tabs of a story's pane: each is one document, in the same frame,
+//! and no `part` (or one this does not know) is the whole body.
+//!
 //! A newsletter story's body is mail's own, drawn by
 //! [`karmayoga_service::mailview`] on this route's behalf; its pictures are
 //! addressed to `mail/img/…` and never reach `news/img/…`.
@@ -137,6 +141,7 @@
 use karmayoga_core::BlobId;
 use karmayoga_core::id::{FileId, MailMessageId, StoryId};
 use karmayoga_core::media;
+use karmayoga_service::news::view::BodyPart;
 use tauri::http::{Request, Response, StatusCode, header};
 use tauri::{Manager, Runtime};
 
@@ -615,8 +620,9 @@ fn respond_bytes(
 /// already parsed.
 #[derive(Debug)]
 enum NewsRoute {
-    /// `news/body/{story}`.
-    Body(StoryId),
+    /// `news/body/{story}`, or one of its documents -- `?part=notes`,
+    /// `?part=transcript`, `?part=summary` -- which is a pane's tab.
+    Body(StoryId, BodyPart),
     /// `news/img/{story}/{token}`.
     Img(StoryId, String),
 }
@@ -641,7 +647,12 @@ fn parse_news_route(request: &Request<Vec<u8>>) -> Option<NewsRoute> {
     let mut segments = path.split('/');
     match (segments.next(), segments.next(), segments.next(), segments.next()) {
         (Some("body"), Some(story), None, None) => {
-            StoryId::parse(&percent_decode(story)).ok().map(NewsRoute::Body)
+            let story = StoryId::parse(&percent_decode(story)).ok()?;
+            // A part this does not know is the whole body, as none is: an
+            // address from a newer interface still shows something.
+            let part = query_param(request.uri().query().unwrap_or(""), "part")
+                .map_or(BodyPart::Whole, |part| BodyPart::parse(&part));
+            Some(NewsRoute::Body(story, part))
         }
         (Some("img"), Some(story), Some(token), None) => {
             let story = StoryId::parse(&percent_decode(story)).ok()?;
@@ -678,11 +689,11 @@ async fn serve_news_local(
     }
 
     match route {
-        NewsRoute::Body(id) => {
+        NewsRoute::Body(id, part) => {
             let v = vault.clone();
             // Off the async runtime's threads, on `serve_mail_local`'s reasoning.
             let result = karmayoga_service::blocking(move || {
-                karmayoga_service::news::view::body_document(&v, id)
+                karmayoga_service::news::view::body_document(&v, id, part)
             })
             .await;
             match result {
@@ -717,7 +728,7 @@ async fn serve_news_remote(
     route: NewsRoute,
 ) -> Response<Vec<u8>> {
     match route {
-        NewsRoute::Body(id) => match remote.client.news_body(&id.to_string()).await {
+        NewsRoute::Body(id, part) => match remote.client.news_body(&id.to_string(), part).await {
             Ok(body) => respond_news_body(karmayoga_service::mailview::BodyDocument {
                 html: body.html,
                 images_hidden: body.images_hidden,
@@ -766,12 +777,12 @@ fn respond_news_body(doc: karmayoga_service::mailview::BodyDocument) -> Response
 // ---- files -----------------------------------------------------------------
 
 /// What a `files/…` address named.
-#[derive(Debug, PartialEq, Eq)]
-struct FileRoute {
-    id: FileId,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileRoute {
+    pub(crate) id: FileId,
     /// The address's `?v=`, when it has one: the version of the file it names.
     /// The bytes may be cached only when that is the version the file has now.
-    version: Option<String>,
+    pub(crate) version: Option<String>,
 }
 
 /// The `file/{id}` remainder of a files address, in whichever of its two shapes
@@ -811,24 +822,55 @@ async fn serve_files(
     };
     let range =
         request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
-    match session {
-        Some(SessionHandle::Local(service)) => serve_files_local(&service, route, range).await,
-        Some(SessionHandle::Remote(remote)) => serve_files_remote(&remote, route, range).await,
-        None => error(StatusCode::INTERNAL_SERVER_ERROR, "application state is missing"),
+    match read_file(session, route, range).await {
+        Ok(part) => respond_file(&part.mime, part.plan, part.bytes, part.current),
+        Err(refused) => *refused,
     }
 }
 
-async fn serve_files_local(
+/// The answer to give instead of a file's bytes.
+pub(crate) type Refusal = Box<Response<Vec<u8>>>;
+
+/// Part of a file, from whichever vault the window is looking at.
+pub(crate) struct FilePart {
+    /// The catalog's type for the file.
+    pub(crate) mime: String,
+    pub(crate) plan: media::ResponsePlan,
+    pub(crate) bytes: Vec<u8>,
+    /// The request named the version the file has now, so the answer may be
+    /// kept ([`karmayoga_server::routes::file_cache_control`]).
+    pub(crate) current: bool,
+}
+
+/// Read what `range` asks of a file, as far as [`media::plan`] allows in one
+/// answer: what a `karmayoga://files` address is answered with, and what the
+/// player's loopback server ([`crate::player`]) streams a piece at a time.
+/// `Err` is the answer to give instead.
+pub(crate) async fn read_file(
+    session: Option<SessionHandle>,
+    route: FileRoute,
+    range: Option<String>,
+) -> Result<FilePart, Refusal> {
+    match session {
+        Some(SessionHandle::Local(service)) => read_file_local(&service, route, range).await,
+        Some(SessionHandle::Remote(remote)) => read_file_remote(&remote, route, range).await,
+        None => {
+            Err(Box::new(error(StatusCode::INTERNAL_SERVER_ERROR, "application state is missing")))
+        }
+    }
+}
+
+async fn read_file_local(
     service: &std::sync::Arc<karmayoga_service::Service>,
     route: FileRoute,
     range: Option<String>,
-) -> Response<Vec<u8>> {
+) -> Result<FilePart, Refusal> {
     let Some(vault) = service.get() else {
-        return error(StatusCode::NOT_FOUND, "no vault is open");
+        return Err(Box::new(error(StatusCode::NOT_FOUND, "no vault is open")));
     };
     // The same rule the blob, mail and news routes enforce.
     if !vault.is_unlocked() {
-        return error(StatusCode::FORBIDDEN, "vault is locked");
+        return Err(Box::new(error(StatusCode::FORBIDDEN, "vault is locked")));
     }
 
     let FileRoute { id, version } = route;
@@ -839,38 +881,45 @@ async fn serve_files_local(
     })
     .await;
     match read {
-        Ok(slice) => respond_file(&slice.mime, slice.plan, slice.bytes, slice.current),
+        Ok(slice) => Ok(FilePart {
+            mime: slice.mime,
+            plan: slice.plan,
+            bytes: slice.bytes,
+            current: slice.current,
+        }),
         Err(e) => {
             tracing::debug!(%id, error = %e, "could not read a file");
-            error_from(&e)
+            Err(Box::new(error_from(&e)))
         }
     }
 }
 
-async fn serve_files_remote(
+async fn read_file_remote(
     remote: &std::sync::Arc<crate::remote::Remote>,
     route: FileRoute,
     range: Option<String>,
-) -> Response<Vec<u8>> {
+) -> Result<FilePart, Refusal> {
     // Never kept: whether the version named is the file's version now is the
     // other machine's to say, and nothing it answers says so.
     let FileRoute { id, version: _ } = route;
     match remote.client.file_range(&id.to_string(), range.as_deref()).await {
-        Ok(served) => {
+        Ok(served) => Ok(FilePart {
+            mime: served.content_type,
             // The server's plan, read back out of its answer: the same
             // arithmetic as a local read, decided once and on the machine that
             // has the file.
-            let plan = media::ResponsePlan {
+            plan: media::ResponsePlan {
                 start: served.start,
                 len: served.bytes.len() as u64,
                 total: served.total,
                 partial: served.partial,
-            };
-            respond_file(&served.content_type, plan, served.bytes, false)
-        }
+            },
+            bytes: served.bytes,
+            current: false,
+        }),
         Err(e) => {
             tracing::warn!(%id, error = %e, "could not read a remote file");
-            error_from(&e)
+            Err(Box::new(error_from(&e)))
         }
     }
 }
@@ -1107,7 +1156,56 @@ mod news_route_tests {
         let story = StoryId::new();
         let uri = format!("karmayoga://news/body/{story}");
         let route = parse_news_route(&request(&uri)).expect("a recognised news route");
-        assert!(matches!(route, NewsRoute::Body(id) if id == story));
+        assert!(matches!(route, NewsRoute::Body(id, BodyPart::Whole) if id == story));
+    }
+
+    #[test]
+    fn a_body_route_carries_the_part_it_asks_for() {
+        let story = StoryId::new();
+        for (query, want) in [
+            ("?part=notes", BodyPart::Notes),
+            ("?part=transcript", BodyPart::Transcript),
+            ("?part=summary", BodyPart::Summary),
+            ("?part=Summary", BodyPart::Summary),
+            // Anything else is the whole body, as no part is.
+            ("?part=", BodyPart::Whole),
+            ("?part=nonsense", BodyPart::Whole),
+            ("?other=notes", BodyPart::Whole),
+            ("?x=1&part=transcript", BodyPart::Transcript),
+        ] {
+            let uri = format!("karmayoga://news/body/{story}{query}");
+            let route = parse_news_route(&request(&uri)).expect("a recognised news route");
+            assert!(
+                matches!(route, NewsRoute::Body(id, part) if id == story && part == want),
+                "{query}: {route:?}"
+            );
+        }
+    }
+
+    /// The Windows and Android shape, where the host is not `news` but the
+    /// first path segment, and the part rides after the path all the same.
+    #[test]
+    fn the_part_rides_the_windows_shape_of_the_address_too() {
+        let story = StoryId::new();
+        let uri = format!("http://karmayoga.localhost/news/body/{story}?part=transcript");
+        let route = parse_news_route(&request(&uri));
+        assert!(matches!(route, Some(NewsRoute::Body(id, BodyPart::Transcript)) if id == story));
+    }
+
+    /// A query is not a path: `?part=` makes neither a second route nor a
+    /// way past the one-segment rule.
+    #[test]
+    fn a_part_does_not_make_a_malformed_body_address_acceptable() {
+        let story = StoryId::new();
+        let extra = format!("karmayoga://news/body/{story}/extra?part=notes");
+        assert!(parse_news_route(&request(&extra)).is_none());
+        assert!(parse_news_route(&request("karmayoga://news/body/not-an-id?part=notes")).is_none());
+        // And an image address has no part to take.
+        let uri = format!("karmayoga://news/img/{story}/tok?part=notes");
+        assert!(matches!(
+            parse_news_route(&request(&uri)),
+            Some(NewsRoute::Img(id, token)) if id == story && token == "tok"
+        ));
     }
 
     #[test]
@@ -1134,7 +1232,7 @@ mod news_route_tests {
         assert!(matches!(route, NewsRoute::Img(id, token) if id == story && token == "abc"));
         let uri = format!("http://karmayoga.localhost/news/body/{story}");
         let route = parse_news_route(&request(&uri));
-        assert!(matches!(route, Some(NewsRoute::Body(id)) if id == story));
+        assert!(matches!(route, Some(NewsRoute::Body(id, BodyPart::Whole)) if id == story));
     }
 
     #[test]

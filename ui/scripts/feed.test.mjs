@@ -11,6 +11,10 @@ import { load } from './harness.mjs'
 
 const { module: feed, close } = await load('/src/lib/feed.ts')
 const {
+  FEED_KINDS,
+  KIND_LABELS,
+  KIND_NONE,
+  NOT_NEWSLETTER_DETAIL,
   alsoLine,
   alsoOn,
   bylineParts,
@@ -23,14 +27,19 @@ const {
   folderUnread,
   groupFolders,
   hostOf,
+  isOfKind,
   isWebUrl,
+  kindOf,
+  listedSources,
   looksCutOff,
   muteText,
   parseMute,
   plainText,
   pointsLine,
+  scopeSources,
   scopeTitle,
   scopeUnread,
+  searchNav,
   siteOf,
   sortStories,
   sourceLabel,
@@ -154,6 +163,14 @@ assert.equal(
 )
 
 assert.equal(
+  sourceLabel(
+    source('m', { title: '', kind: { type: 'mail', sender: 'a@b.example', name: ' TLDR AI ' } }),
+  ),
+  'TLDR AI',
+  'else the name a newsletter goes by, before the address it is sent from',
+)
+
+assert.equal(
   siteOf(source('a', { siteUrl: 'https://a.example/' })),
   'https://a.example/',
   "a source's own site",
@@ -274,6 +291,214 @@ assert.equal(isWebUrl(''), false)
   assert.equal(scopeUnread({ kind: 'source', id: 'b' }, sources), 3)
   assert.equal(scopeUnread({ kind: 'source', id: 'gone' }, sources), 0)
 }
+
+// ── the kinds ────────────────────────────────────────────────────────────
+
+const show = { author: 'A' }
+const mail = (sender, name) => ({ type: 'mail', sender, ...(name ? { name } : {}) })
+
+assert.deepEqual(
+  FEED_KINDS.map((k) => KIND_LABELS[k]),
+  ['All', 'Newsletters', 'Feeds', 'Podcasts'],
+  'the chips, in the order they are drawn',
+)
+assert.deepEqual(Object.keys(KIND_NONE).sort(), ['feed', 'newsletter', 'podcast'])
+
+{
+  assert.equal(kindOf(source('blog')), 'feed', 'a web feed')
+  assert.equal(
+    kindOf(source('hn', { kind: { type: 'hackerNews', list: 'front', minPoints: 0 } })),
+    'feed',
+    'Hacker News is a feed',
+  )
+  assert.equal(kindOf(source('pod', { podcast: show })), 'podcast', 'a show')
+  assert.equal(kindOf(source('pod', { podcast: null })), 'feed', 'no settings, no show')
+  assert.equal(kindOf(source('m', { kind: mail('a@b.example') })), 'newsletter', 'a sender')
+  assert.equal(
+    kindOf(source('m', { kind: mail('a@b.example', 'The Download'), found: true })),
+    'newsletter',
+    'a found newsletter, which is a sender and a name',
+  )
+  assert.equal(kindOf(source('n', { kind: { type: 'newsletters' } })), 'newsletter', 'all of Mail')
+  assert.equal(
+    kindOf(source('both', { kind: mail('a@b.example'), podcast: show })),
+    'podcast',
+    'a show is a show, whatever it is read from: the order the service decides in',
+  )
+
+  assert.equal(isOfKind(source('blog'), 'all'), true, 'everything is under All')
+  assert.equal(isOfKind(source('blog'), 'feed'), true)
+  assert.equal(isOfKind(source('blog'), 'podcast'), false)
+}
+
+// ── what the sidebar lists, and what a place in it covers ────────────────
+
+{
+  const letters = { ...summary('news', 0, { kind: { type: 'newsletters' } }), total: 0 }
+  const letterStories = { ...letters, total: 4 }
+  const all = [
+    summary('blog', 2),
+    summary('pod', 5, { podcast: show }),
+    summary('dl', 1, { kind: mail('dl@mit.example', 'The Download'), found: true }),
+    letters,
+  ]
+  const named = (list) => list.map((s) => s.source.id)
+
+  assert.deepEqual(
+    named(listedSources(all)),
+    ['blog', 'pod', 'dl'],
+    'the Newsletters source is not listed while nothing is under it',
+  )
+  assert.deepEqual(
+    named(listedSources([...all.slice(0, 3), letterStories])),
+    ['blog', 'pod', 'dl', 'news'],
+    'and is once something is',
+  )
+  assert.deepEqual(named(listedSources(all, 'podcast')), ['pod'], 'the Podcasts chip')
+  assert.deepEqual(named(listedSources(all, 'feed')), ['blog'], 'the Feeds chip')
+  assert.deepEqual(named(listedSources(all, 'newsletter')), ['dl'], 'the Newsletters chip')
+  assert.deepEqual(
+    named(listedSources([...all.slice(0, 3), letterStories], 'newsletter')),
+    ['dl', 'news'],
+    'a Newsletters source with issues is a newsletter',
+  )
+  assert.deepEqual(named(listedSources([], 'podcast')), [], 'nothing followed, nothing listed')
+  assert.deepEqual(
+    named(listedSources(all, 'podcast', 'blog')),
+    ['blog', 'pod'],
+    'the source on screen keeps its row, in its place, whatever the chip says',
+  )
+  assert.deepEqual(
+    named(listedSources(all, 'all', 'news')),
+    ['blog', 'pod', 'dl', 'news'],
+    'even the Newsletters source with nothing under it, while it is the one open',
+  )
+
+  // What a place covers: the same sources the list, the count and "mark all
+  // read" are made from.
+  const filed = [
+    summary('blog', 2, { folder: 'Mix' }),
+    summary('pod', 5, { folder: 'Mix', podcast: show }),
+    summary('dl', 1, { kind: mail('dl@mit.example', 'The Download') }),
+  ]
+  assert.deepEqual(named(scopeSources({ kind: 'all' }, filed)), ['blog', 'pod', 'dl'])
+  assert.deepEqual(named(scopeSources({ kind: 'all' }, filed, 'podcast')), ['pod'])
+  assert.deepEqual(named(scopeSources({ kind: 'all' }, filed, 'newsletter')), ['dl'])
+  assert.deepEqual(
+    named(scopeSources({ kind: 'all' }, [summary('blog')], 'podcast')),
+    [],
+    'a kind with nothing followed covers nothing, which is not the same as everything',
+  )
+  assert.deepEqual(named(scopeSources({ kind: 'folder', name: 'Mix' }, filed)), ['blog', 'pod'])
+  assert.deepEqual(
+    named(scopeSources({ kind: 'folder', name: ' Mix ' }, filed, 'podcast')),
+    ['pod'],
+    'a folder is what the chip leaves of it, its name compared trimmed',
+  )
+  assert.deepEqual(named(scopeSources({ kind: 'folder', name: 'Mix' }, filed, 'newsletter')), [])
+  assert.deepEqual(
+    named(scopeSources({ kind: 'source', id: 'blog' }, filed, 'podcast')),
+    ['blog'],
+    'one source is itself, whatever the chip says',
+  )
+  assert.deepEqual(named(scopeSources({ kind: 'upnext' }, filed)), [], 'Up Next is not sources')
+  assert.deepEqual(named(scopeSources({ kind: 'history' }, filed)), [])
+
+  assert.equal(scopeUnread({ kind: 'all' }, filed), 8)
+  assert.equal(scopeUnread({ kind: 'all' }, filed, 'podcast'), 5, 'All, under a chip, is its kind')
+  assert.equal(scopeUnread({ kind: 'all' }, filed, 'newsletter'), 1)
+  assert.equal(scopeUnread({ kind: 'all' }, filed, 'feed'), 2)
+  assert.equal(scopeUnread({ kind: 'folder', name: 'Mix' }, filed), 7, 'a show is in its folder')
+  assert.equal(scopeUnread({ kind: 'folder', name: 'Mix' }, filed, 'feed'), 2)
+  assert.equal(scopeUnread({ kind: 'source', id: 'pod' }, filed, 'feed'), 5)
+  assert.equal(scopeUnread({ kind: 'history' }, filed), 0)
+
+  assert.equal(scopeTitle({ kind: 'all' }, filed, 'all'), 'All')
+  assert.equal(scopeTitle({ kind: 'all' }, filed, 'newsletter'), 'All newsletters')
+  assert.equal(scopeTitle({ kind: 'all' }, filed, 'podcast'), 'All podcasts')
+  assert.equal(scopeTitle({ kind: 'folder', name: 'Mix' }, filed, 'podcast'), 'Mix')
+  assert.equal(scopeTitle({ kind: 'source', id: 'pod' }, filed, 'feed'), 'pod')
+
+  // Shows are rows in their folder like any other source, and a folder of
+  // nothing but shows is a folder.
+  const folders = groupFolders([
+    summary('blog', 2, { folder: 'news' }),
+    summary('pod', 5, { folder: 'news', podcast: show }),
+    summary('only', 3, { folder: 'shows', podcast: show }),
+    summary('loose', 1, { podcast: show }),
+  ])
+  assert.deepEqual(
+    folders.map((f) => f.name),
+    ['', 'news', 'shows'],
+  )
+  assert.deepEqual(
+    folders.map((f) => named(f.sources)),
+    [['loose'], ['blog', 'pod'], ['only']],
+    'a show is in its folder, or unfiled',
+  )
+  assert.deepEqual(
+    folders.map((f) => f.unread),
+    [1, 7, 3],
+  )
+  assert.deepEqual(folderNames(folders.flatMap((f) => f.sources)), ['news', 'shows'])
+}
+
+// ── finding a row in the sidebar ─────────────────────────────────────────
+
+{
+  const folders = groupFolders([
+    summary('dl', 1, { title: 'The Download', folder: 'Tech' }),
+    summary('algo', 2, { title: 'The Algorithm', folder: 'Tech' }),
+    summary('long', 0, { title: 'Longform Weekly', folder: 'Reading' }),
+    summary('radar', 3, { title: 'Tech Radar', folder: 'Reading' }),
+    summary('slow', 0, { title: 'The Slow Hour', podcast: show }),
+  ])
+  // Folders: unfiled, Reading, Tech.
+  const found = (query) =>
+    searchNav(folders, query).map((f) => [f.folder.name, f.rows.map((s) => s.source.id)])
+
+  assert.deepEqual(
+    found(''),
+    [
+      ['', ['slow']],
+      ['Reading', ['long', 'radar']],
+      ['Tech', ['dl', 'algo']],
+    ],
+    'nothing typed is everything',
+  )
+  assert.deepEqual(found('   '), found(''), 'and so is a blank')
+  assert.deepEqual(found('download'), [['Tech', ['dl']]], 'a source by its name')
+  assert.deepEqual(found('DOWNLOAD'), [['Tech', ['dl']]], 'in any case')
+  assert.deepEqual(found('slow'), [['', ['slow']]], 'an unfiled source')
+  assert.deepEqual(found('the algo'), [['Tech', ['algo']]], 'every word, in the name, in any order')
+  assert.deepEqual(found('algo the'), [['Tech', ['algo']]])
+  assert.deepEqual(
+    found('reading'),
+    [['Reading', ['long', 'radar']]],
+    'a folder by its own name keeps every row it has',
+  )
+  assert.deepEqual(
+    found('tech'),
+    [
+      ['Reading', ['radar']],
+      ['Tech', ['dl', 'algo']],
+    ],
+    'a name that matches in one place and a folder that matches in another',
+  )
+  assert.deepEqual(found('unfiled'), [], 'the unfiled sources have no folder name to find')
+  assert.deepEqual(found('zzz'), [], 'nothing matches')
+  assert.deepEqual(found('download zzz'), [], 'every word has to')
+  assert.equal(
+    searchNav(folders, 'download')[0].folder,
+    folders[2],
+    'the folder is the grouped one, with the unread it had, for its menu',
+  )
+}
+
+assert.equal(
+  NOT_NEWSLETTER_DETAIL,
+  'It goes from the Feed and will not be found again. Its emails stay in Mail.',
+)
 
 // ── what a row says ──────────────────────────────────────────────────────
 

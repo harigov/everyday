@@ -44,6 +44,11 @@ default-members = [
     "crates/karmayoga-connect",
 ]
 
+# Patched copies of other people's crates (see `[patch.crates-io]` below).
+# Not members, so not ours to lint or test; `cargo fmt --all` still checks
+# them, against our rustfmt.toml.
+exclude = ["vendor"]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
@@ -82,6 +87,15 @@ zeroize = { version = "1", features = ["derive"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 tracing = "0.1"
+
+# matrix-sdk 0.19.1, the newest, pins ruma 0.17 and with it
+# ruma-identifiers-validation 0.12, where a stranger's mxc:// URI or key ID
+# could panic the Matrix sync (RUSTSEC-2026-0588, RUSTSEC-2026-0589). The fixes
+# came in 0.13 and 0.14, which changed the signatures ruma 0.17 calls, so
+# `vendor/` holds 0.12.1 with them backported (its CHANGELOG says how). Goes
+# when matrix-sdk moves to ruma-identifiers-validation 0.14 or later.
+[patch.crates-io]
+ruma-identifiers-validation = { path = "vendor/ruma-identifiers-validation" }
 
 # What `make build` (a bare `cargo tauri build`) makes: the app you run
 # yourself, optimised, and built for the time it takes. No cross-crate LTO,

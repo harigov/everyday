@@ -3,8 +3,10 @@
 // `PlayerHost.svelte` in `App.svelte` and handed here with `attach`, so
 // switching apps never stops what is playing.
 //
-// It plays files only -- `fileUrl(id)`, which the files protocol serves with
-// `Range` -- never a remote address: an episode is downloaded first. An
+// It plays files only -- `playUrl(id)`, which answers `Range`: the files
+// protocol, or on Linux the shell's loopback server, since WebKitGTK plays no
+// media from a custom scheme -- never a remote address: an episode is
+// downloaded first. An
 // article in Up Next is heard through Listen (`listen.svelte.ts`) instead,
 // and the queue moves on when either ends.
 //
@@ -283,6 +285,7 @@ class Player {
     // Looked up before anything is changed, so a slow answer leaves the last
     // thing playing a moment longer rather than a silent player.
     const start = request.startMs ?? (await this.#resumeAt(request))
+    const src = await playUrl(request.fileId)
     if (token !== this.#token) return
 
     this.#resetStretch()
@@ -296,7 +299,7 @@ class Player {
     this.speed = speed
     this.#pendingStart = start > 0 ? start : null
     el.defaultPlaybackRate = speed
-    el.src = playUrl(request.fileId)
+    el.src = src
     el.playbackRate = speed
     // Not every webview takes a start before the length is known; the
     // `loadedmetadata` handler makes sure of it.

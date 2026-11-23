@@ -650,8 +650,10 @@ fn newsletters_are_read_only_from_mail_the_assistant_may_read() {
             remote_images: Vec::new(),
         })
         .unwrap();
-    let source =
-        NewsSource::new(SourceKind::Mail { sender: "news@brew.example".into() }, "Morning Brew");
+    let source = NewsSource::new(
+        SourceKind::Mail { sender: "news@brew.example".into(), name: String::new() },
+        "Morning Brew",
+    );
     vault.save_news_source(&source).unwrap();
     let mut issue = Story::new(source.id, vault.news_key("brew/markets").unwrap(), "Markets", sent);
     issue.fetched_at = sent;

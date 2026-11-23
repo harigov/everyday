@@ -7,14 +7,15 @@
   // pane says how to start instead of showing an empty column beside an empty
   // page.
   //
-  // Which list is in the column follows the sidebar. A source, a folder, the
-  // podcasts and All are stories, newest first: `StoryList`. Recommended is
-  // stories too, but chosen and ordered by the Feed: the same two panes, with
-  // its own column. Up Next is not a list of stories at all -- it is
-  // episodes, files and articles in the order they will be taken in -- so it
-  // is a page of its own, whole width, with nothing to read beside it. So is
-  // History, what was read, heard and watched, by day: a record, not a list
-  // to read down, and its rows open a story in its own source's list.
+  // Which list is in the column follows the sidebar. A source, a folder and
+  // All -- narrowed to one kind of feed when a chip is on -- are stories,
+  // newest first: `StoryList`. Recommended is stories too, but chosen and
+  // ordered by the Feed: the same two panes, with its own column. Up Next is
+  // not a list of stories at all -- it is episodes, files and articles in the
+  // order they will be taken in -- so it is a page of its own, whole width,
+  // with nothing to read beside it. So is History, what was read, heard and
+  // watched, by day: a record, not a list to read down, and its rows open a
+  // story in its own source's list.
 
   import { feed } from '../lib/feed.svelte'
   import { upnext } from '../lib/upnext.svelte'

@@ -1196,6 +1196,7 @@ export interface Commands {
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
   suggestAddresses: { args: { prefix: string; limit?: number | null }; result: MailAddress[] }
   suggestReplies: { args: { id: ThreadId }; result: ReplySuggestions }
+  summarizeStory: { args: { id: StoryId }; result: void }
   summarizeThread: { args: { id: ThreadId }; result: ThreadSummary }
   syncAccount: { args: { id: AccountId }; result: void }
   syncBankLinks: { args: { linkId?: BankLinkId | null }; result: MoneySyncReport[] }
@@ -1779,6 +1780,7 @@ export const COMMAND_NAMES = {
   subscribeCalendar: 'subscribe_calendar',
   suggestAddresses: 'suggest_addresses',
   suggestReplies: 'suggest_replies',
+  summarizeStory: 'summarize_story',
   summarizeThread: 'summarize_thread',
   syncAccount: 'sync_account',
   syncBankLinks: 'sync_bank_links',
@@ -2368,6 +2370,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'subscribe_calendar',
   'suggest_addresses',
   'suggest_replies',
+  'summarize_story',
   'summarize_thread',
   'sync_account',
   'sync_bank_links',
@@ -2715,6 +2718,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'stop_sorting_older_mail',
   'subscribe_account_calendar',
   'subscribe_calendar',
+  'summarize_story',
   'sync_account',
   'sync_bank_links',
   'sync_calendar',

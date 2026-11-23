@@ -424,6 +424,10 @@ export function workLine(
     if (item.state === 'failed') return 'The article could not be written'
     return `Writing the article${rate}`
   }
+  if (item.kind === 'summary') {
+    if (item.state === 'waiting') return 'Waiting to summarise'
+    return item.state === 'failed' ? 'The summary could not be written' : `Summarising${rate}`
+  }
   if (item.state === 'waiting') return 'Waiting to save as audio'
   return item.state === 'failed' ? 'Saving as audio failed' : `Saving as audio${rate}`
 }

@@ -8,9 +8,10 @@
 // open story that has to stay put through a reload, the folder that has to
 // show nothing and not everything.
 //
-// Written against the mock's seed (six sources, two of them podcasts;
-// twenty-two stories, fifteen of them unread), so a change to the seed will
-// need these numbers changing.
+// Written against the mock's seed (ten sources: two of them podcasts, three
+// newsletters found among the mail, and the Newsletters source that found
+// them, with nothing left under it; thirty stories, twenty of them unread),
+// so a change to the seed will need these numbers changing.
 
 import assert from 'node:assert/strict'
 import { load, stubBrowser } from './harness.mjs'
@@ -50,7 +51,7 @@ globalThis.open = (url) => {
 }
 
 const {
-  modules: [feedModule, stateModule, apiModule, notifyModule],
+  modules: [feedModule, stateModule, apiModule, notifyModule, rulesModule],
   close,
 } = await load(
   [
@@ -58,10 +59,12 @@ const {
     '/src/lib/state.svelte.ts',
     '/src/lib/api.ts',
     '/src/lib/notify.svelte.ts',
+    '/src/lib/feed.ts',
   ],
   { svelte: true },
 )
 const { feed } = feedModule
+const { kindOf } = rulesModule
 const { app } = stateModule
 const { api } = apiModule
 const { notify } = notifyModule
@@ -85,7 +88,7 @@ assert.equal(app.supportsNews, true, 'and carry the news domain')
 // ── start ────────────────────────────────────────────────────────────
 
 await feed.start()
-assert.equal(feed.sources.length, 6, 'the mock follows six sources')
+assert.equal(feed.sources.length, 10, 'the mock follows ten sources')
 assert.equal(feed.loading, false, 'loading settles back to false once the load lands')
 assert.equal(feed.filter, 'unread', 'Unread is the chip a feed opens on')
 assert.deepEqual(
@@ -98,8 +101,13 @@ assert.deepEqual(
     'st-10',
     'st-21',
     'st-11',
+    'st-23',
+    'st-28',
     'st-2',
     'st-13',
+    'st-26',
+    'st-24',
+    'st-29',
     'st-14',
     'st-18',
     'st-6',
@@ -109,17 +117,21 @@ assert.deepEqual(
   ],
   'Unread shows only what is unread, newest first',
 )
-assert.equal(feed.next, null, 'fifteen stories is one page')
-assert.equal(feed.unreadTotal, 15, 'the sidebar total is the sum of the sources')
+assert.equal(feed.next, null, 'twenty stories is one page')
+assert.equal(feed.unreadTotal, 20, 'the sidebar total is the sum of the sources')
 
 assert.deepEqual(
-  feed.folders.map((f) => [f.name, f.unread]),
-  [
-    ['', 7],
-    ['Engineering', 3],
-  ],
-  'unfiled sources come first, then each folder with its unread total',
+  feed.folders.map((f) => f.name),
+  ['', 'Engineering'],
+  'unfiled sources come first, then each folder',
 )
+assert.equal(feed.folders[1].unread, 3, 'a folder carries its unread total')
+assert.equal(
+  feed.folders.reduce((n, f) => n + f.unread, 0),
+  feed.unreadTotal,
+  'and every source is in one, shows and newsletters with the rest',
+)
+assert.equal(feed.kind, 'all', 'every kind of feed is how it opens')
 assert.ok(sourceNamed('The Old Radio Blog').lastError, 'the dead feed says why it is dead')
 assert.equal(feed.mailAvailable, true, 'the mock has mail, so newsletters can be offered')
 assert.equal(feed.accent, '#0369a1', 'the Feed has an accent of its own')
@@ -127,7 +139,7 @@ assert.equal(feed.accent, '#0369a1', 'the Feed has an accent of its own')
 // ── the chip, and remembering it ─────────────────────────────────────
 
 await feed.setFilter('all')
-assert.equal(feed.stories.length, 22, 'All is every story')
+assert.equal(feed.stories.length, 30, 'All is every story')
 assert.equal(
   globalThis.localStorage.getItem('karmayoga.feed.filter'),
   'all',
@@ -152,7 +164,7 @@ await feed.select({ kind: 'folder', name: 'Nowhere' })
 assert.equal(feed.stories.length, 0, 'a folder with nothing in it shows nothing, not everything')
 
 await feed.select({ kind: 'all' })
-assert.equal(feed.stories.length, 22)
+assert.equal(feed.stories.length, 30)
 
 // A stale answer never lands: two selections in the air, the second wins.
 {
@@ -179,7 +191,134 @@ await feed.select({ kind: 'all' })
 feed.setQuery('lighthouse')
 assert.deepEqual(ids(feed.visible), ['st-1'], 'the bar narrows what is loaded')
 feed.setQuery('')
-assert.equal(feed.visible.length, 22)
+assert.equal(feed.visible.length, 30)
+
+// ── the kind chips ───────────────────────────────────────────────────
+
+{
+  await feed.select({ kind: 'all' })
+  await feed.setFilter('all')
+  const ofKind = (kind) => feed.sources.filter((s) => kindOf(s.source) === kind)
+  const idSet = (list) => new Set(list.map((s) => s.source.id))
+  const listed = () => feed.folders.flatMap((f) => f.sources)
+  const totalOf = (list) => list.reduce((n, s) => n + s.total, 0)
+  const unreadOf = (list) => list.reduce((n, s) => n + s.unread, 0)
+
+  const shows = ofKind('podcast')
+  assert.ok(shows.length > 0 && shows.length < feed.sources.length, 'some of them are shows')
+
+  await feed.setKind('podcast')
+  assert.equal(
+    globalThis.localStorage.getItem('karmayoga.feed.kind'),
+    'podcast',
+    'the chip is kept on this device',
+  )
+  assert.deepEqual(
+    [...idSet(listed())].sort(),
+    [...idSet(shows)].sort(),
+    'the Podcasts chip lists the shows, and only them',
+  )
+  assert.deepEqual(feed.scope, { kind: 'all' }, 'it does not move the list off All')
+  assert.equal(feed.stories.length, totalOf(shows), 'All lists only the stories of that kind')
+  assert.ok(feed.stories.every((s) => idSet(shows).has(s.sourceId)))
+  assert.equal(feed.unreadTotal, unreadOf(shows), 'and counts only those')
+  assert.match(feed.showing.view ?? '', /Podcasts only/, 'the assistant hears the chip’s words')
+
+  await feed.setKind('feed')
+  assert.ok(
+    listed().length > 0 && listed().every((s) => kindOf(s.source) === 'feed'),
+    'the Feeds chip lists web feeds and Hacker News, not shows',
+  )
+  assert.equal(feed.stories.length, totalOf(ofKind('feed')))
+  assert.ok(feed.stories.every((s) => idSet(ofKind('feed')).has(s.sourceId)))
+
+  // A kind with nothing followed shows nothing: sent as an empty list the
+  // service would read it as "every source".
+  await feed.setKind('newsletter')
+  const letters = ofKind('newsletter')
+  if (letters.length === 0) {
+    assert.equal(feed.stories.length, 0, 'a kind with none followed shows nothing, not everything')
+    assert.equal(feed.unreadTotal, 0)
+    assert.equal(listed().length, 0)
+  } else {
+    assert.ok(feed.stories.every((s) => idSet(letters).has(s.sourceId)))
+    const rows = letters.filter((s) => s.source.kind.type !== 'newsletters' || s.total > 0)
+    assert.deepEqual(
+      [...idSet(listed())].sort(),
+      [...idSet(rows)].sort(),
+      'the Newsletters chip lists each newsletter, but not the empty Newsletters source',
+    )
+  }
+
+  // One source is what it is whatever the chip says, and keeps its row.
+  const shipyard = sourceNamed('Shipyard Notes')
+  await feed.select({ kind: 'source', id: shipyard.source.id })
+  assert.ok(feed.stories.length > 0, 'a source opened under another kind is still listed')
+  assert.ok(
+    listed().some((s) => s.source.id === shipyard.source.id),
+    'and its row stays where it was, so the list is not from nowhere',
+  )
+  await feed.select({ kind: 'all' })
+
+  // A folder is the sources of the kind filed in it. Give Engineering a show.
+  const frame = sourceNamed('Frame by Frame').source
+  await feed.saveSource({ ...frame, folder: 'Engineering' })
+  const inFolder = (kind) =>
+    feed.sources.filter(
+      (s) => s.source.folder === 'Engineering' && (kind === 'all' || kindOf(s.source) === kind),
+    )
+  assert.ok(inFolder('podcast').length === 1 && inFolder('feed').length > 0)
+  await feed.setKind('all')
+  await feed.select({ kind: 'folder', name: 'Engineering' })
+  assert.equal(feed.stories.length, totalOf(inFolder('all')), 'a folder holds its shows too')
+  await feed.setKind('feed')
+  assert.deepEqual(feed.scope, { kind: 'folder', name: 'Engineering' }, 'the folder stays open')
+  assert.equal(feed.stories.length, totalOf(inFolder('feed')), 'narrowed to the kind')
+  await feed.setKind('podcast')
+  assert.equal(feed.stories.length, totalOf(inFolder('podcast')))
+  assert.deepEqual(
+    feed.folders.find((f) => f.name === 'Engineering').sources.map((s) => s.source.id),
+    [frame.id],
+    'and the folder lists what the chip leaves of it',
+  )
+  await feed.setKind('newsletter')
+  assert.deepEqual(
+    feed.scope,
+    { kind: 'all' },
+    'a folder with none of the kind is gone from the sidebar, so the list is All',
+  )
+  await feed.saveSource({ ...frame, folder: '' })
+
+  // A folder the chip leaves nothing of can still be asked for, and wins.
+  await feed.setKind('podcast')
+  await feed.select({ kind: 'folder', name: 'Engineering' })
+  assert.equal(feed.kind, 'all', 'asking for it turns the chip off')
+  assert.equal(globalThis.localStorage.getItem('karmayoga.feed.kind'), 'all')
+  assert.deepEqual(feed.scope, { kind: 'folder', name: 'Engineering' })
+  assert.equal(feed.stories.length, totalOf(inFolder('all')), 'and the folder is all of itself')
+  await feed.select({ kind: 'all' })
+
+  // "Mark all read" on All covers the kind and no other, and so does its undo.
+  await feed.setKind('podcast')
+  await feed.setFilter('unread')
+  await feed.refreshSources()
+  const showsUnread = unreadOf(ofKind('podcast'))
+  const feedsUnread = unreadOf(ofKind('feed'))
+  assert.ok(showsUnread > 0 && feedsUnread > 0)
+  await feed.markAllRead()
+  assert.equal(unreadOf(ofKind('podcast')), 0, 'the shows are read')
+  assert.equal(unreadOf(ofKind('feed')), feedsUnread, 'and nothing of another kind is')
+  const toast = notify.toasts.find((t) => t.key === 'feed-marked-read')
+  assert.ok(toast, 'with a way back')
+  toast.action.run()
+  await until('the undo lands', () => unreadOf(ofKind('podcast')) === showsUnread)
+  notify.dismiss(toast.id)
+
+  await feed.setFilter('all')
+  await feed.setKind('all')
+  assert.equal(feed.stories.length, totalOf(feed.sources), 'with no chip, All is every story')
+  assert.equal(feed.unreadTotal, unreadOf(feed.sources))
+}
 
 // ── pages ────────────────────────────────────────────────────────────
 
@@ -317,11 +456,13 @@ assert.equal((await api.story('st-2')).saved, false)
 {
   const before = feed.stories.length
   const reports = await feed.refresh()
-  assert.equal(reports.length, 6, 'one report for every source')
+  assert.equal(reports.length, 10, 'one report for every source')
   assert.ok(reports.find((r) => r.sourceId === 'src-radio').error, 'the dead feed reports why')
   assert.equal(feed.refreshing, false)
-  assert.equal(feed.stories.length, before + 5, 'the five that answered each brought one')
-  assert.match(feed.note, /5 new stories, and 1 source could not be reached/)
+  // The five that answered brought one each, and each newsletter found
+  // among the mail one more; the Newsletters source itself stores nothing.
+  assert.equal(feed.stories.length, before + 8, 'the eight that answered each brought one')
+  assert.match(feed.note, /8 new stories, and 1 source could not be reached/)
 
   // A folder's menu asks for each of its sources at once, and the spinner
   // has to last until the last of them, not the first.
@@ -402,7 +543,7 @@ assert.equal((await api.story('st-2')).saved, false)
   assert.ok(!feed.stories.some((s) => s.sourceId === letter.id))
   await feed.deleteSource(added.id)
   // The first delete's reload can land after the second's optimistic removal.
-  await until('the vault agrees', () => feed.sources.length === 6)
+  await until('the vault agrees', () => feed.sources.length === 10)
 
   // A rename reaches the vault and the sidebar.
   const original = sourceNamed('Shipyard Notes').source
@@ -492,12 +633,15 @@ assert.equal((await api.story('st-2')).saved, false)
 
 feed.setQuery('x')
 await feed.open(feed.stories[0].id)
+await feed.setKind('podcast')
 feed.reset()
 assert.equal(feed.sources.length, 0, 'a lock drops what was loaded')
 assert.equal(feed.stories.length, 0)
 assert.equal(feed.selected, null)
 assert.equal(feed.query, '')
 assert.equal(feed.filter, 'all', 'but not the chip, which is chrome')
+assert.equal(feed.kind, 'podcast', 'nor the kind, which is the same')
+await feed.setKind('all')
 await feed.flush()
 
 // ── every newsletter, followed once unasked ──────────────────────────
@@ -508,6 +652,20 @@ await feed.following
 const newsletters = feed.sources.filter((s) => s.source.kind.type === 'newsletters')
 assert.equal(newsletters.length, 1, 'the Feed follows every newsletter in Mail the first time')
 assert.equal(stored.get('karmayoga.feed.newsletters'), 'followed')
+
+// Its issues go to the sources found for each newsletter, so a Newsletters
+// source with nothing under it is a row that opens nothing: it is followed,
+// and it is not listed. (That it is once something is under it is
+// `feed.test.mjs`'s, which can say so without a refresh to make the stories.)
+{
+  const catchAll = newsletters[0]
+  assert.equal(catchAll.total, 0, 'nothing is stored under it')
+  assert.ok(
+    !feed.folders.some((f) => f.sources.some((s) => s.source.id === catchAll.source.id)),
+    'so it has no row',
+  )
+}
+
 await feed.deleteSource(newsletters[0].source.id)
 await feed.start()
 await feed.following

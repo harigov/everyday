@@ -7,8 +7,14 @@
 //! transcript is written as Markdown beside its recording, linked from the
 //! story ([`karmayoga_core::news::StoryFiles::transcript`]) and from the
 //! recording's own properties ([`karmayoga_core::news::transcript::TRANSCRIPT_PROPERTY`]),
-//! and for an episode the article is written from it next
+//! and for an episode of a show that summarises
+//! ([`karmayoga_core::news::NewsSource::summarizes`], which a podcast does
+//! unless it was told not to) the article is written from it next
 //! ([`super::article`]).
+//!
+//! The summaries of articles ([`super::summary`]) ride the same list: writing
+//! one is a model reading something and writing something, as the article is,
+//! and what is on the list is shown, failed or not, by the one [`status`].
 //!
 //! # Where the words come from
 //!
@@ -156,6 +162,9 @@ pub enum Work {
     },
     /// Only the article, from the transcript a story has.
     Article(StoryId),
+    /// A summary of an article, a web feed's story or a newsletter issue
+    /// ([`super::summary`]).
+    Summary(StoryId),
 }
 
 impl Task for Work {
@@ -164,6 +173,7 @@ impl Task for Work {
         match (self, other) {
             (Work::Transcript { job: a, .. }, Work::Transcript { job: b, .. }) => a == b,
             (Work::Article(a), Work::Article(b)) => a == b,
+            (Work::Summary(a), Work::Summary(b)) => a == b,
             _ => false,
         }
     }
@@ -181,12 +191,15 @@ impl Task for Work {
         match self {
             Work::Transcript { .. } => WorkKind::Transcript,
             Work::Article(_) => WorkKind::Article,
+            Work::Summary(_) => WorkKind::Summary,
         }
     }
 
     fn story(self) -> Option<StoryId> {
         match self {
-            Work::Transcript { job: Job::Story(id), .. } | Work::Article(id) => Some(id),
+            Work::Transcript { job: Job::Story(id), .. }
+            | Work::Article(id)
+            | Work::Summary(id) => Some(id),
             Work::Transcript { job: Job::File(_), .. } => None,
         }
     }
@@ -201,11 +214,13 @@ impl Task for Work {
     fn unnamed(self) -> &'static str {
         match self {
             Work::Transcript { job: Job::File(_), .. } => "Recording",
+            Work::Summary(_) => "Article",
             _ => "Episode",
         }
     }
 
-    /// How far listening has got is not how far writing the article has.
+    /// How far listening has got is not how far writing the article, or a
+    /// summary, has.
     fn shows_progress(self) -> bool {
         matches!(self, Work::Transcript { .. })
     }
@@ -259,6 +274,13 @@ pub fn request_again(svc: &Arc<Service>, job: Job) {
 /// list (once) and wake the task.
 pub fn request_article(svc: &Arc<Service>, story: StoryId) {
     ask(svc, Work::Article(story));
+}
+
+/// Put the summary of `story`, an article, on the list (once) and wake the
+/// task. [`super::summary::request`] is what asks, having made sure it can be
+/// written.
+pub(super) fn request_summary(svc: &Arc<Service>, story: StoryId) {
+    ask(svc, Work::Summary(story));
 }
 
 /// Quick, and no read of the vault: it is called from places that must not
@@ -389,7 +411,7 @@ struct Seams {
     /// What hears a recording. `None` is the speech model chosen in
     /// Settings → Models.
     hearing: Option<Arc<Hearing>>,
-    /// What writes an article. `None` is the Medium model.
+    /// What writes an article, or a summary. `None` is the Medium model.
     writer: Option<Arc<dyn crate::meeting::pipeline::Summariser>>,
 }
 
@@ -462,6 +484,7 @@ async fn do_work(
             transcribe(svc, vault, seams, job, again, asked, progress).await
         }
         Work::Article(story) => write_article(svc, seams, story).await.map_err(Stop::from),
+        Work::Summary(story) => write_summary(svc, seams, story).await.map_err(Stop::from),
     };
     match result {
         Ok(()) => Ended::Finished,
@@ -470,6 +493,8 @@ async fn do_work(
                 Ended::Parked(Work::Transcript { job, again, asked: true })
             }
             Work::Article(_) => Ended::Failed("The transcript is not there yet.".into()),
+            // Nothing a summary does waits for something else.
+            Work::Summary(_) => Ended::Failed("The article is not there yet.".into()),
         },
         Err(Stop::Failed(message)) => {
             tracing::debug!(?work, %message, "podcasts: something could not be transcribed");
@@ -483,6 +508,22 @@ async fn write_article(svc: &Arc<Service>, seams: &Seams, story: StoryId) -> Com
     match &seams.writer {
         Some(writer) => article::write_with(svc, story, writer.as_ref()).await,
         None => article::write_article(svc, story).await,
+    }
+}
+
+/// Whether the show `story` belongs to has its article written as soon as
+/// there is a transcript ([`karmayoga_core::news::NewsSource::summarizes`]).
+/// A story that is gone, or whose show is, has no article to write.
+fn show_summarises(vault: &Vault, story: StoryId) -> bool {
+    let show = vault.story(story).and_then(|found| vault.news_source(found.source_id));
+    show.is_ok_and(|show| show.summarizes())
+}
+
+/// The summary, with the model the seams give it.
+async fn write_summary(svc: &Arc<Service>, seams: &Seams, story: StoryId) -> CommandResult<()> {
+    match &seams.writer {
+        Some(writer) => super::summary::write_with(svc, story, writer.as_ref()).await,
+        None => super::summary::write(svc, story).await,
     }
 }
 
@@ -667,19 +708,23 @@ async fn transcribe(
     );
     files::probe_later(svc, vault, vec![written.file]);
 
-    // The article is the transcript made easy to read, when a model is set up
-    // to write it. Nothing is said of a vault that has none: that is a choice
-    // and not a failure. One that has, and fails -- a provider having a bad
-    // moment -- is shown on the list as the article's failure, with its
-    // reason, until it is asked for again; the transcript is no less made for
-    // it.
+    // The article is the transcript made easy to read, when the show says it
+    // is to be and a model is set up to write it. Nothing is said of a show
+    // that does not summarise, or a vault with no model: those are choices and
+    // not failures. One that has, and fails -- a provider having a bad moment
+    // -- is shown on the list as the article's failure, with its reason, until
+    // it is asked for again; the transcript is no less made for it. An
+    // article somebody asks for is written whatever the show says.
     if let Some(story) = story {
-        let writable = seams.writer.is_some()
-            || blocking({
-                let vault = vault.clone();
-                move || Ok(article::ready(&vault, story).is_ok())
-            })
-            .await?;
+        let has_writer = seams.writer.is_some();
+        let writable = blocking({
+            let vault = vault.clone();
+            move || {
+                Ok(show_summarises(&vault, story)
+                    && (has_writer || article::ready(&vault, story).is_ok()))
+            }
+        })
+        .await?;
         if writable {
             svc.listening.transcripts.switch_running(Work::Article(story));
             write_article(svc, seams, story).await?;
@@ -2346,6 +2391,116 @@ mod tests {
                 .await;
         assert!(matches!(ended, Ended::Finished), "{ended:?}");
         assert!(status(&f.svc).is_empty(), "no model is a choice, and nothing to show");
+        files::settled().await;
+    }
+
+    #[tokio::test]
+    async fn a_show_that_does_not_summarise_has_no_article_written_after_its_transcript() {
+        let f = fixture();
+        let mut show = follow(&f.vault, "The Slow Hour");
+        show.automation.summarize = Some(false);
+        f.vault.save_news_source(&show).unwrap();
+        let ep = episode(&f.vault, &show, "Ep", None);
+        downloaded(&f, &ep, "The Slow Hour", &loud(3.0));
+        let recogniser = Recogniser::new(Says::Words);
+        // A script with nothing in it to say: the model must not be asked.
+        let writer = Scripted::new(vec![]);
+        let seams = Seams {
+            route: anywhere(),
+            hearing: Some(hearing(&recogniser, false)),
+            writer: Some(writer.clone() as Arc<dyn crate::meeting::pipeline::Summariser>),
+        };
+        let (ended, _) = run(&f, &seams, transcribe_work(Job::Story(ep.id))).await;
+        assert!(matches!(ended, Ended::Finished), "{ended:?}");
+        assert!(f.vault.story(ep.id).unwrap().files.transcript.is_some());
+        assert!(writer.asked.lock().unwrap().is_empty(), "no article was asked for");
+        assert_eq!(f.vault.story_body(ep.id).unwrap(), None);
+        assert!(status(&f.svc).is_empty(), "and none is waiting or failed");
+
+        // An article somebody asks for is written whatever the show says.
+        writer.replies.lock().unwrap().push_back(Ok("# Title\n\n## Part\n\nWords.".into()));
+        let (ended, _) = run(&f, &seams, Work::Article(ep.id)).await;
+        assert!(matches!(ended, Ended::Finished), "{ended:?}");
+        let body = f.vault.story_body(ep.id).unwrap().expect("the article is the body now");
+        assert_eq!(body.origin, BodyOrigin::Transcript);
+        files::settled().await;
+    }
+
+    #[test]
+    fn a_show_summarises_as_its_automation_says_and_a_podcast_does_unless_told_not_to() {
+        let f = fixture();
+        let story_of = |show: &NewsSource| episode(&f.vault, show, "Ep", None).id;
+        let podcast = follow(&f.vault, "A podcast");
+        assert!(show_summarises(&f.vault, story_of(&podcast)), "a podcast does by default");
+
+        let mut told_not_to = follow(&f.vault, "Told not to");
+        told_not_to.automation.summarize = Some(false);
+        f.vault.save_news_source(&told_not_to).unwrap();
+        assert!(!show_summarises(&f.vault, story_of(&told_not_to)));
+
+        // A feed that is not a podcast and has episodes in it anyway: only
+        // when it was asked to.
+        let mut feed =
+            NewsSource::new(SourceKind::Web { url: "https://example.com/f.xml".into() }, "A feed");
+        f.vault.save_news_source(&feed).unwrap();
+        let odd = story_of(&feed);
+        assert!(!show_summarises(&f.vault, odd));
+        feed.automation.summarize = Some(true);
+        f.vault.save_news_source(&feed).unwrap();
+        assert!(show_summarises(&f.vault, odd));
+
+        assert!(!show_summarises(&f.vault, StoryId::new()), "a story that is gone has none");
+    }
+
+    // ── A summary on the same list ───────────────────────────────────────
+
+    #[tokio::test(start_paused = true)]
+    async fn a_summary_is_work_on_this_list_and_its_failure_is_shown_with_its_reason() {
+        let f = fixture();
+        let blog =
+            NewsSource::new(SourceKind::Web { url: "https://example.com/b.xml".into() }, "Blog");
+        f.vault.save_news_source(&blog).unwrap();
+        let post = |title: &str| {
+            let story = Story::new(
+                blog.id,
+                format!("key {title}"),
+                title,
+                "2026-03-09T12:00:00Z".parse().unwrap(),
+            );
+            let body = StoryBody {
+                story_id: story.id,
+                html: "<p>Words.</p>".into(),
+                text: "Words.".into(),
+                origin: BodyOrigin::Feed,
+                images: Vec::new(),
+            };
+            f.vault.insert_stories(&[(story.clone(), Some(body))]).unwrap();
+            story.id
+        };
+        let (good, bad) = (post("Good"), post("Bad"));
+        let error = || Err(CommandError::new(codes::QUICK, "the model took too long"));
+        let writer = Scripted::new(vec![Ok("Gist.\n\n- One.".into()), error(), error()]);
+        let seams = Seams {
+            route: anywhere(),
+            hearing: None,
+            writer: Some(writer.clone() as Arc<dyn crate::meeting::pipeline::Summariser>),
+        };
+
+        let (ended, _) = run(&f, &seams, Work::Summary(good)).await;
+        assert!(matches!(ended, Ended::Finished), "{ended:?}");
+        assert!(f.vault.story(good).unwrap().files.summary.is_some());
+        assert!(status(&f.svc).is_empty(), "a finished one is not shown");
+
+        let (ended, _) = run(&f, &seams, Work::Summary(bad)).await;
+        assert_eq!(failure(&ended), "the model took too long");
+        assert_eq!(f.vault.story(bad).unwrap().files.summary, None);
+        let shown = status(&f.svc);
+        assert_eq!(
+            (shown.len(), shown[0].kind, shown[0].state, shown[0].story_id),
+            (1, WorkKind::Summary, WorkState::Failed, Some(bad))
+        );
+        assert_eq!(shown[0].error.as_deref(), Some("the model took too long"));
+        assert_eq!(shown[0].progress, None);
         files::settled().await;
     }
 

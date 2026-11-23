@@ -21,13 +21,19 @@
 import { accounts } from './accounts.svelte'
 import { api, callCommand, isMock, isWeb } from './api'
 import {
+  FEED_KINDS,
+  KIND_LABELS,
   bodyOriginOf,
   filterStories,
   groupFolders,
   isWebUrl,
+  listedSources,
   sameFeedAddress,
+  scopeSources,
+  scopeUnread,
   sortStories,
   type BodyOrigin,
+  type KindChoice,
 } from './feed'
 import { allowWebOrigin, applyBodyTheme, bodyDocument } from './mailview'
 import { mediaBase } from './web'
@@ -56,6 +62,7 @@ import type {
   RefreshReport,
   SourceSummary,
   Story,
+  StoryPart,
   StoryCursor,
   StoryId,
   StoryPage,
@@ -76,8 +83,6 @@ const FEED_ACCENT = '#0369a1'
  * `upnext`, `recommended` and `history` are not lists of stories this store
  * loads: they are the queue, the ranking and the record of what was read and
  * heard, which `upnext.svelte.ts` holds, and selecting one asks it to load.
- * `podcasts` is every episode of every podcast followed, newest first,
- * narrowed by the chips like any other list.
  */
 export type FeedScope =
   | { kind: 'all' }
@@ -86,7 +91,6 @@ export type FeedScope =
   | { kind: 'upnext' }
   | { kind: 'recommended' }
   | { kind: 'history' }
-  | { kind: 'podcasts' }
 
 /** How many hits a directory search asks for. */
 const DIRECTORY_LIMIT = 40
@@ -127,6 +131,17 @@ const filterPref = pref<FeedFilter>(
   'karmayoga.feed.filter',
   (raw) => FEED_FILTERS.find((f) => f === raw) ?? 'unread',
   'unread',
+)
+
+/**
+ * Which kind of feed was last chosen over the sidebar, remembered on this
+ * device for the reason the chip above is: it is how somebody likes to look
+ * at their feeds, not a fact about the vault.
+ */
+const kindPref = pref<KindChoice>(
+  'karmayoga.feed.kind',
+  (raw) => FEED_KINDS.find((k) => k === raw) ?? 'all',
+  'all',
 )
 
 /**
@@ -193,6 +208,12 @@ class FeedState {
   scope = $state<FeedScope>({ kind: 'all' })
   filter = $state<FeedFilter>('unread')
   sort = $state<FeedSort>('newest')
+  /**
+   * Which kind of feed the sidebar shows: everything, newsletters, feeds or
+   * podcasts. It filters the rows, and narrows All to the stories of that
+   * kind -- see `#queryFor`.
+   */
+  kind = $state<KindChoice>('all')
   /** The bar's search text, applied to titles, summaries and source names. */
   query = $state('')
   selected = $state<StoryId | null>(null)
@@ -271,6 +292,7 @@ class FeedState {
     // selection or a chip somebody changed while the download ran.
     upnext.onEpisodeChange((ids, change) => void this.#refetch(ids, change === 'body'))
     this.filter = filterPref.get()
+    this.kind = kindPref.get()
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────
@@ -322,7 +344,7 @@ class FeedState {
   /**
    * Drop everything. Registered with `app.onLock` in the constructor.
    *
-   * The chip stays: it is chrome, not content. The rest is a stranger's
+   * The chips stay: they are chrome, not content. The rest is a stranger's
    * words about what somebody chose to read, which is what a lock exists to
    * put away.
    */
@@ -386,6 +408,19 @@ class FeedState {
   // ── navigation ───────────────────────────────────────────────────────
 
   async select(scope: FeedScope): Promise<void> {
+    // A folder the chip leaves nothing of is not in the sidebar to be opened
+    // from, but can be asked for -- from the Overview, say. The place asked
+    // for wins over the filter that was on: an empty list under "Podcasts"
+    // would say the folder was caught up.
+    if (
+      scope.kind === 'folder' &&
+      this.kind !== 'all' &&
+      this.sources.length > 0 &&
+      scopeSources(scope, this.sources, this.kind).length === 0
+    ) {
+      this.kind = 'all'
+      kindPref.set('all')
+    }
     this.scope = scope
     // A different list is a different place: what was open there is not.
     this.close()
@@ -397,6 +432,26 @@ class FeedState {
     if (filter === this.filter) return
     this.filter = filter
     filterPref.set(filter)
+    this.close()
+    this.note = null
+    await this.#load(true)
+  }
+
+  /**
+   * Show one kind of feed, or all of them.
+   *
+   * What it changes on screen is the sidebar's rows, always, and the list when
+   * that is All or a folder -- a source is what it is whatever the chip says.
+   * A folder with nothing of the kind left in it is gone from the sidebar, so
+   * the list goes back to All rather than stay on a place that is not there.
+   */
+  async setKind(kind: KindChoice): Promise<void> {
+    if (kind === this.kind) return
+    this.kind = kind
+    kindPref.set(kind)
+    if (this.#scopeGone()) this.scope = { kind: 'all' }
+    const scope = this.scope.kind
+    if (scope !== 'all' && scope !== 'folder') return
     this.close()
     this.note = null
     await this.#load(true)
@@ -776,7 +831,9 @@ class FeedState {
       await this.#track(api.saveNewsSource($state.snapshot(source)))
       await this.#loadSources(true)
       // A source moved into or out of the folder on screen changes the list.
-      if (this.scope.kind === 'folder' || this.scope.kind === 'podcasts') await this.#load(false)
+      // Or a source that changed kind: under a chip, All is only the stories of one.
+      const scope = this.scope.kind
+      if (scope === 'folder' || (scope === 'all' && this.kind !== 'all')) await this.#load(false)
     } catch (e) {
       await handle(e)
     }
@@ -1053,13 +1110,18 @@ class FeedState {
       : null
   }
 
-  /** The sidebar's folders, unfiled first, each with its unread total. */
+  /**
+   * The sidebar's folders, unfiled first, each with its unread total: the
+   * sources under the chip, bar an empty Newsletters source -- see
+   * `listedSources`.
+   */
   get folders(): FeedFolder[] {
-    return groupFolders(this.sources)
+    return groupFolders(listedSources(this.sources, this.kind, this.source?.source.id ?? null))
   }
 
+  /** What All holds unread: every source, or those of the kind chosen. */
   get unreadTotal(): number {
-    return this.sources.reduce((n, s) => n + s.unread, 0)
+    return scopeUnread({ kind: 'all' }, this.sources, this.kind)
   }
 
   /** The list as drawn: sorted, and narrowed by the bar's query. */
@@ -1104,9 +1166,8 @@ class FeedState {
           ? 'Recommended'
           : scope.kind === 'history'
             ? 'History'
-            : scope.kind === 'podcasts'
-              ? 'Podcasts'
-              : null,
+            : null,
+      scope.kind === 'all' && this.kind !== 'all' ? `${KIND_LABELS[this.kind]} only` : null,
       scope.kind === 'folder' ? 'a folder' : null,
       chips && this.filter === 'unread' ? 'unread only' : null,
       chips && this.filter === 'saved' ? 'saved' : null,
@@ -1121,9 +1182,15 @@ class FeedState {
     }
   }
 
-  /** The address the reading pane's frame loads a story's body from. */
-  bodyUrl(story: Story): string {
-    return `${newsOrigin()}/body/${encodeURIComponent(story.id)}`
+  /**
+   * The address the reading pane's frame loads a story's body from. With a
+   * `part` it is one document of the pane -- an episode's notes or transcript,
+   * or a summary -- and not the whole body; the route answers not found for a
+   * transcript or a summary that is not there.
+   */
+  bodyUrl(story: Story, part?: StoryPart): string {
+    const url = `${newsOrigin()}/body/${encodeURIComponent(story.id)}`
+    return part ? `${url}?part=${part}` : url
   }
 
   /**
@@ -1138,10 +1205,11 @@ class FeedState {
    *
    * The pane asks again when the story's `hasBody` changes, which is what
    * `fetchFullArticle` flips: the address is the same and the body is not.
+   * With a `part`, one of the pane's tabs instead -- see `bodyUrl`.
    */
-  async loadBody(story: Story): Promise<LoadedBody | null> {
+  async loadBody(story: Story, part?: StoryPart): Promise<LoadedBody | null> {
     try {
-      const loaded = isMock ? await this.#mockBody(story) : await this.#fetchBody(story)
+      const loaded = isMock ? await this.#mockBody(story, part) : await this.#fetchBody(story, part)
       return {
         html: applyNewsOrigin(applyBodyTheme(loaded.html, app.dark, app.frame)),
         imagesHidden: loaded.imagesHidden,
@@ -1173,8 +1241,8 @@ class FeedState {
    * the response, and an `<iframe src>` has no hook to read it. Not cached,
    * since whether they are held back can change between two requests.
    */
-  async #fetchBody(story: Story): Promise<LoadedBody> {
-    const res = await fetch(this.bodyUrl(story), { cache: 'no-store' })
+  async #fetchBody(story: Story, part?: StoryPart): Promise<LoadedBody> {
+    const res = await fetch(this.bodyUrl(story, part), { cache: 'no-store' })
     if (!res.ok) throw new Error(`could not load the story (${res.status})`)
     const imagesHidden = res.headers.get('x-news-images-hidden') === '1'
     const html = await res.text()
@@ -1186,12 +1254,12 @@ class FeedState {
    * name, as the dev-only mail triggers are: no real command is behind it, so
    * the generated client has nothing to type it from.
    */
-  async #mockBody(story: Story): Promise<LoadedBody> {
+  async #mockBody(story: Story, part?: StoryPart): Promise<LoadedBody> {
     const body = await callCommand<{
       html: string
       imagesHidden: boolean
       origin?: BodyOrigin | null
-    }>('mock_story_body', { id: story.id })
+    }>('mock_story_body', { id: story.id, part })
     const framed = bodyDocument(story.id, { html: body.html, imagesHidden: body.imagesHidden })
     return {
       html: framed.html ?? '',
@@ -1202,25 +1270,21 @@ class FeedState {
 
   // ── loading ──────────────────────────────────────────────────────────
 
-  /** The sources in a folder. Compared trimmed, as the sidebar groups them. */
+  /**
+   * The sources in a folder, of the kind chosen. Compared trimmed, as the
+   * sidebar groups them: a folder lists what the chip leaves of it, and opens
+   * as just that.
+   */
   #inFolder(name: string): SourceSummary[] {
-    const wanted = name.trim()
-    // A podcast keeps its own group in the sidebar, whatever folder it was
-    // filed in: Podcasts is where its episodes are.
-    return this.sources.filter((s) => !this.isPodcast(s) && s.source.folder.trim() === wanted)
+    return scopeSources({ kind: 'folder', name }, this.sources, this.kind)
   }
 
   /** The sources the scope on screen covers, for a service call that takes them by id. */
   #scopeSourceIds(): NewsSourceId[] {
     const scope = this.scope
+    // Not looked up: a source can be opened before the sidebar has heard of it.
     if (scope.kind === 'source') return [scope.id]
-    const covered =
-      scope.kind === 'folder'
-        ? this.#inFolder(scope.name)
-        : scope.kind === 'podcasts'
-          ? this.podcastSources
-          : this.sources
-    return covered.map((s) => s.source.id)
+    return scopeSources(scope, this.sources, this.kind).map((s) => s.source.id)
   }
 
   /**
@@ -1229,14 +1293,17 @@ class FeedState {
    * A folder with no sources in it is nothing, not everything: sent as an
    * empty list the service would read it as "every source", which is the
    * opposite of what a folder somebody has just emptied should show. The same
-   * goes for Podcasts when none is followed.
+   * goes for All under a chip when none of that kind is followed.
+   *
+   * All under a chip is sent by source, since the service has no kind to
+   * filter on; the same ids `markAllRead` sweeps and the sidebar counts.
    */
   #queryFor(before: StoryCursor | null, limit: number): StoryQuery | null {
     const query: StoryQuery = { limit }
     if (this.filter === 'unread') query.unreadOnly = true
     if (this.filter === 'saved') query.savedOnly = true
     if (before) query.before = before
-    if (this.scope.kind !== 'all') {
+    if (this.scope.kind !== 'all' || this.kind !== 'all') {
       const ids = this.#scopeSourceIds()
       if (ids.length === 0) return null
       query.sources = ids

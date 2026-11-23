@@ -31,7 +31,9 @@
 
 pub mod article;
 pub mod audio;
+pub mod automation;
 pub mod canonical;
+pub mod cleanup;
 pub mod consumed;
 pub mod directory;
 pub mod discover;
@@ -48,6 +50,7 @@ pub mod queue;
 pub mod rank;
 pub mod refresh;
 pub mod sanitize;
+pub mod summary;
 pub mod transcribe;
 pub mod view;
 pub mod work;
@@ -127,6 +130,8 @@ pub enum WorkKind {
     Transcript,
     Article,
     Audio,
+    /// A summary of an article ([`summary`]).
+    Summary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -731,8 +731,8 @@ fn random_code() -> String {
 }
 
 /// Also the secret behind a browser's session and media token -- see
-/// `crate::web::session`.
-pub(crate) fn random_token() -> String {
+/// `crate::web::session` -- and the desktop player's loopback address.
+pub fn random_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.try_fill_bytes(&mut bytes).expect("the system random source");
     use base64::Engine;
@@ -744,7 +744,7 @@ pub(crate) fn hash(token: &str) -> String {
 }
 
 /// Compare without leaking where two strings first differ.
-pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;

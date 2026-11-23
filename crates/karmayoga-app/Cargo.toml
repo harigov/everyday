@@ -61,7 +61,11 @@ tauri-plugin-single-instance = "2"
 # desktop and not every desktop will honour it -- Wayland wants a portal. See
 # `hotkey.rs`.
 tauri-plugin-global-shortcut = "2"
-tokio = { version = "1.53.1", features = ["sync", "time"] }
+tokio = { version = "1.53.1", features = ["sync", "time", "net"] }
+# The player's loopback server (`src/player.rs`): the same axum
+# `karmayoga-server` already builds, and a body streamed a piece at a time.
+axum = "0.8"
+futures-util = "0.3"
 jiff.workspace = true
 # A device token is a bearer credential to an unlocked vault on another
 # machine, so it goes in the operating system's own store rather than in a
@@ -128,7 +132,6 @@ gtk = "0.18"
 # X11's half of taking focus: presenting a window with the server's own
 # time, which focus-stealing prevention accepts. See `src/writing/desktop.rs`.
 gdkx11 = "0.18"
-futures-util = "0.3"
 # The main window's Wayland surface, for the portal dialog's parent. The
 # same version Tauri's windows implement.
 raw-window-handle = "0.6"

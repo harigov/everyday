@@ -1125,7 +1125,7 @@ struct Swept {
     /// Those episodes' files.
     files: Vec<FileId>,
     /// Stories unlinked from a file that was already gone: the episode, or
-    /// its transcript or audio.
+    /// its transcript, audio or summary.
     dangling: Vec<StoryId>,
     /// Recordings whose property naming a transcript was taken off, because
     /// the transcript is gone.
@@ -1307,6 +1307,7 @@ struct Lost {
     transcript: Option<FileId>,
     text: Option<FileId>,
     audio: Option<FileId>,
+    summary: Option<FileId>,
 }
 
 impl Lost {
@@ -1322,6 +1323,7 @@ impl Lost {
             (&mut files.transcript, self.transcript),
             (&mut files.text, self.text),
             (&mut files.audio, self.audio),
+            (&mut files.summary, self.summary),
         ] {
             if lost.is_some() && *slot == lost {
                 *slot = None;
@@ -1336,7 +1338,9 @@ impl Lost {
 /// [`link_is_dead`]. The kept article is not, until it is gone from the catalog
 /// altogether: putting it in the trash is somebody saying they do not want it
 /// kept, and reading the article again must not write it out again behind their
-/// back ([`super::keep`]).
+/// back ([`super::keep`]). A summary is treated as the kept article is: one
+/// somebody binned is not unlinked from its story by the next sweep, and the
+/// story's tab, which finds the file in the trash, says there is none.
 fn lost_links(files: &StoryFiles, catalog: &HashMap<FileId, FileEntry>, now: Timestamp) -> Lost {
     let dead = |file: Option<FileId>| file.filter(|f| link_is_dead(catalog.get(f), now));
     Lost {
@@ -1344,6 +1348,7 @@ fn lost_links(files: &StoryFiles, catalog: &HashMap<FileId, FileEntry>, now: Tim
         transcript: dead(files.transcript),
         text: files.text.filter(|f| !catalog.contains_key(f)),
         audio: dead(files.audio),
+        summary: files.summary.filter(|f| !catalog.contains_key(f)),
     }
 }
 
@@ -2655,12 +2660,14 @@ mod end_to_end {
             transcript: Some(gone),
             text: Some(trashed.id),
             audio: Some(present.id),
+            summary: Some(trashed.id),
         };
         let lost = lost_links(&files, &catalog, now);
         assert_eq!(lost.media, Some(trashed.id));
         assert_eq!(lost.transcript, Some(gone));
         assert_eq!(lost.text, None, "in the trash is not gone, for an article somebody binned");
         assert_eq!(lost.audio, None);
+        assert_eq!(lost.summary, None, "nor for a summary");
         assert!(lost_links(&StoryFiles::default(), &catalog, now).is_empty());
 
         // Unlinking takes only what it was found to name.
@@ -2671,5 +2678,16 @@ mod end_to_end {
         let text_gone =
             lost_links(&StoryFiles { text: Some(gone), ..Default::default() }, &catalog, now);
         assert_eq!(text_gone.text, Some(gone));
+        // A summary that is gone from the catalog is unlinked, and only if it
+        // is still the one that was found gone.
+        let summary_gone =
+            lost_links(&StoryFiles { summary: Some(gone), ..Default::default() }, &catalog, now);
+        assert_eq!(summary_gone.summary, Some(gone));
+        let mut linked = StoryFiles { summary: Some(gone), ..Default::default() };
+        summary_gone.unlink(&mut linked);
+        assert_eq!(linked.summary, None);
+        let mut rewritten = StoryFiles { summary: Some(present.id), ..Default::default() };
+        summary_gone.unlink(&mut rewritten);
+        assert_eq!(rewritten.summary, Some(present.id), "another summary was linked since");
     }
 }

@@ -109,6 +109,8 @@ const APP_COMMANDS: &[&str] = &[
     "reveal_file",
     "export_files",
     "upload_chunk",
+    // Where the player plays a file from, on Linux.
+    "media_address",
     // This process's own furniture.
     "set_opens_itself",
     "ready_to_close",

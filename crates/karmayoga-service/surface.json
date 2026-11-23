@@ -10635,6 +10635,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "StoryId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "summarize_story",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "ThreadId"
         }
       ],

@@ -26,6 +26,7 @@ export type PrefKey =
   | 'karmayoga.library.capture'
   | 'karmayoga.library.enrich'
   | 'karmayoga.feed.filter'
+  | 'karmayoga.feed.kind'
   | 'karmayoga.feed.folders.closed'
   | 'karmayoga.feed.newsletters'
   | 'karmayoga.money.view'

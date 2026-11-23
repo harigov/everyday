@@ -5531,7 +5531,8 @@ export type HnList = (typeof HN_LISTS)[number]
 export type SourceKind =
   | { type: 'web'; url: string }
   | { type: 'hackerNews'; list: HnList; minPoints: number }
-  | { type: 'mail'; sender: string }
+  /** One sender's mail; with a name, only the newsletter it sends under that display name. */
+  | { type: 'mail'; sender: string; name?: string }
   /** Every newsletter in Mail, but for senders followed on their own. */
   | { type: 'newsletters' }
 
@@ -5567,9 +5568,26 @@ export interface NewsSource {
   addedByAssistant?: boolean
   /** A podcast: its own say over downloads and keeping. Absent for anything else. */
   podcast?: PodcastSettings | null
+  /** Found by the Newsletters source rather than followed: unfollowing it says it is not a newsletter. */
+  found?: boolean
+  /** Mail sources only: move an issue's email to Trash when it is cleaned up (unless starred). */
+  trashMail?: boolean
+  /** What is done by itself with each new story. Absent: the defaults. */
+  automation?: Automation
   createdAt: string
   updatedAt: string
 }
+
+/** What a source does by itself with each new story. */
+export interface Automation {
+  /** Summarise it. Absent: the kind's default (on for a podcast, off otherwise). */
+  summarize?: boolean | null
+  /** Make an article into audio. A podcast ignores it. */
+  audio?: boolean
+}
+
+/** The sidebar's three kinds of feed. */
+export type FeedKind = 'feed' | 'newsletter' | 'podcast'
 
 /** A source with what the sidebar draws beside it. */
 export interface SourceSummary {
@@ -5724,7 +5742,16 @@ export interface StoryFiles {
   text?: FileId | null
   /** The article turned into audio. */
   audio?: FileId | null
+  /** A summary of an article, as Markdown. An episode's summary is its body. */
+  summary?: FileId | null
 }
+
+/**
+ * One document of a story's pane, as the news body route's `?part=` names it:
+ * an episode's show notes or transcript, or the summary of an article (an
+ * episode's is the article written from its transcript). No part is the body.
+ */
+export type StoryPart = 'notes' | 'transcript' | 'summary'
 
 export type DownloadPolicy = { type: 'off' } | { type: 'newest'; count: number } | { type: 'all' }
 
@@ -5784,6 +5811,24 @@ export interface FeedSettings {
   resumeAfterVoice: boolean
   skipBackS: number
   skipForwardS: number
+  /** How long stories are kept, by kind, when their source does not say. Removes from the Feed only. */
+  cleanup: CleanupDefaults
+  /** Newsletters unfollowed after the Newsletters source found them: not found again. */
+  notNewsletters?: NewsletterRef[]
+}
+
+/** How long stories are kept when their source does not say. */
+export interface CleanupDefaults {
+  /** Web feeds, Hacker News and podcasts' episodes. */
+  feeds: Retention
+  /** Newsletters. Stories only: mail is never touched by this. */
+  newsletters: Retention
+}
+
+/** One newsletter: a sender and the display name it sends this one under (none: its nameless mail). */
+export interface NewsletterRef {
+  sender: string
+  name?: string
 }
 
 /** Something to read, hear or watch. */
@@ -5934,9 +5979,9 @@ export interface Recommendation {
   progress?: number | null
 }
 
-/** Background work on the Feed's behalf: a transcript, an article, an audio version. */
+/** Background work on the Feed's behalf: a transcript, an article, an audio version, a summary. */
 export interface WorkItem {
-  kind: 'transcript' | 'article' | 'audio'
+  kind: 'transcript' | 'article' | 'audio' | 'summary'
   storyId?: StoryId | null
   fileId?: FileId | null
   title: string

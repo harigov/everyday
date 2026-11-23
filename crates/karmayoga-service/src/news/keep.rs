@@ -276,14 +276,14 @@ fn without_pictures(markdown: &str) -> String {
 }
 
 /// `text` on one line, whitespace runs folded to a space.
-fn one_line(text: &str) -> String {
+pub(super) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// `text` as a YAML double-quoted string on one line. JSON's escapes are
 /// YAML's, and folding the whitespace first takes out the line separators
 /// JSON passes through and YAML would break a string at.
-fn quoted(text: &str) -> String {
+pub(super) fn quoted(text: &str) -> String {
     serde_json::to_string(&one_line(text)).unwrap_or_else(|_| "\"\"".to_string())
 }
 

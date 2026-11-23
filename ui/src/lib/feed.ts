@@ -20,9 +20,11 @@ import { episodeProgress, type EpisodeProgress } from './podcast'
 import { isoDate } from './time'
 import type {
   Consumption,
+  FeedKind,
   FeedSettings,
   HnList,
   NewsSource,
+  NewsSourceId,
   RankingStatus,
   SourceSummary,
   Story,
@@ -35,6 +37,26 @@ export const FILTER_LABELS: Record<FeedFilter, string> = {
   unread: 'Unread',
   all: 'All',
   saved: 'Saved',
+}
+
+/** The chips over the sidebar, in the order they are drawn: everything, or one kind of feed. */
+export const FEED_KINDS = ['all', 'newsletter', 'feed', 'podcast'] as const
+/** What a kind chip can be: every kind, or one of {@link FeedKind}. */
+export type KindChoice = (typeof FEED_KINDS)[number]
+
+/** What each kind chip says. */
+export const KIND_LABELS: Record<KindChoice, string> = {
+  all: 'All',
+  newsletter: 'Newsletters',
+  feed: 'Feeds',
+  podcast: 'Podcasts',
+}
+
+/** What the sidebar says when a chip is on and there is nothing of that kind to list. */
+export const KIND_NONE: Record<FeedKind, string> = {
+  newsletter: 'No newsletters yet.',
+  feed: 'No feeds followed.',
+  podcast: 'No podcasts followed.',
 }
 
 /** Hacker News's lists, as the add sheet and the sidebar name them. */
@@ -144,7 +166,7 @@ export function sourceLabel(source: NewsSource): string {
   if (title) return title
   const kind = source.kind
   if (kind.type === 'hackerNews') return HN_LIST_LABELS[kind.list]
-  if (kind.type === 'mail') return kind.sender
+  if (kind.type === 'mail') return kind.name?.trim() || kind.sender
   if (kind.type === 'newsletters') return 'Newsletters'
   return hostOf(kind.url) || kind.url
 }
@@ -166,6 +188,80 @@ export function podcastSources(sources: SourceSummary[]): SourceSummary[] {
 }
 
 /**
+ * Which chip a source is under: a podcast when it has a show's settings, a
+ * newsletter when it reads mail, a feed otherwise. The same answer as the
+ * service's `NewsSource::kind_group`, so a count made here and one made there
+ * are about the same set.
+ */
+export function kindOf(source: NewsSource): FeedKind {
+  if (source.podcast) return 'podcast'
+  const type = source.kind.type
+  return type === 'mail' || type === 'newsletters' ? 'newsletter' : 'feed'
+}
+
+/** Is `source` under the chip `kind`? Every source is under All. */
+export function isOfKind(source: NewsSource, kind: KindChoice): boolean {
+  return kind === 'all' || kindOf(source) === kind
+}
+
+/**
+ * The Newsletters source with nothing left under it. Its issues go to the
+ * sources found for each newsletter, so what is left under it is only what was
+ * fetched before that, and once that is gone the row is a door to an empty room.
+ */
+function isEmptyCatchAll(summary: SourceSummary): boolean {
+  // Unless something is wrong with it: every found newsletter's issues come
+  // through its turn, so a paused or failing one must have a row to be fixed
+  // from.
+  return (
+    summary.source.kind.type === 'newsletters' &&
+    summary.total === 0 &&
+    !summary.source.paused &&
+    !summary.lastError
+  )
+}
+
+/**
+ * The sources the sidebar has rows for under the chip `kind`.
+ *
+ * `open` is the source on screen, and its row stays whatever the chip says --
+ * the way a folder stays unfolded over the open source -- since a list with
+ * nothing in the sidebar marked as where it came from reads as lost.
+ */
+export function listedSources(
+  sources: SourceSummary[],
+  kind: KindChoice = 'all',
+  open: NewsSourceId | null = null,
+): SourceSummary[] {
+  return sources.filter(
+    (s) => s.source.id === open || (isOfKind(s.source, kind) && !isEmptyCatchAll(s)),
+  )
+}
+
+/**
+ * The sources a place in the sidebar covers, under the chip `kind`.
+ *
+ * Where the list of stories, the unread count and "mark all read" all get
+ * their sources from, so they cannot disagree about what is in view: All is
+ * every source of the kind, and a folder is the sources of the kind filed in
+ * it. One source is itself, whatever the chip. Up Next, Recommended and
+ * History are not lists of sources.
+ */
+export function scopeSources(
+  scope: FeedScope,
+  sources: SourceSummary[],
+  kind: KindChoice = 'all',
+): SourceSummary[] {
+  if (scope.kind === 'source') return sources.filter((s) => s.source.id === scope.id)
+  if (scope.kind === 'folder') {
+    const wanted = scope.name.trim()
+    return sources.filter((s) => s.source.folder.trim() === wanted && isOfKind(s.source, kind))
+  }
+  if (scope.kind === 'all') return sources.filter((s) => isOfKind(s.source, kind))
+  return []
+}
+
+/**
  * Sources folded into the sidebar's folders.
  *
  * The unfiled sources come first, under the empty name, because they are the
@@ -174,13 +270,12 @@ export function podcastSources(sources: SourceSummary[]): SourceSummary[] {
  * is the order they were put in (`sortOrder`), not an alphabetical one -- how
  * somebody arranged their sidebar is theirs to keep.
  *
- * Shows are left out: the sidebar lists them in a group of their own, and a
- * show that was in a folder as well would be the same row twice.
+ * Every source is in one, shows and newsletters with the rest: what kind a
+ * source is a chip's business, and a folder is whatever somebody put in it.
  */
 export function groupFolders(sources: SourceSummary[]): FeedFolder[] {
   const byName = new Map<string, FeedFolder>()
   for (const summary of sources) {
-    if (isPodcastSource(summary.source)) continue
     const name = summary.source.folder.trim()
     let folder = byName.get(name)
     if (!folder) {
@@ -204,12 +299,44 @@ export function folderNames(sources: SourceSummary[]): string[] {
     .filter((name) => name !== '')
 }
 
-/** What the list's heading says for `scope`. */
-export function scopeTitle(scope: FeedScope, sources: SourceSummary[]): string {
-  if (scope.kind === 'all') return 'All'
+/** A folder, and the rows of it the sidebar's search leaves showing. */
+export interface NavFolder {
+  folder: FeedFolder
+  rows: SourceSummary[]
+}
+
+/**
+ * The folders as the sidebar's search leaves them.
+ *
+ * Every word typed has to be in a source's name, in any order and in any case
+ * -- "tech review" finds "MIT Technology Review". A folder whose own name
+ * matches keeps every row it has, since somebody looking for "Engineering"
+ * wants what is in it; a folder with no match in it is gone. The unfiled
+ * sources have no folder name to match. Nothing typed is everything.
+ */
+export function searchNav(folders: FeedFolder[], query: string): NavFolder[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const found = (text: string) => words.every((word) => text.toLowerCase().includes(word))
+  const out: NavFolder[] = []
+  for (const folder of folders) {
+    const wholeFolder = words.length === 0 || (folder.name !== '' && found(folder.name))
+    const rows = wholeFolder
+      ? folder.sources
+      : folder.sources.filter((s) => found(sourceLabel(s.source)))
+    if (rows.length > 0) out.push({ folder, rows })
+  }
+  return out
+}
+
+/** What the list's heading says for `scope`, with the chip `kind` over All. */
+export function scopeTitle(
+  scope: FeedScope,
+  sources: SourceSummary[],
+  kind: KindChoice = 'all',
+): string {
+  if (scope.kind === 'all') return kind === 'all' ? 'All' : `All ${KIND_LABELS[kind].toLowerCase()}`
   if (scope.kind === 'upnext') return 'Up Next'
   if (scope.kind === 'recommended') return 'Recommended'
-  if (scope.kind === 'podcasts') return 'Podcasts'
   if (scope.kind === 'history') return 'History'
   if (scope.kind === 'folder') return scope.name.trim() || UNFILED
   const found = sources.find((s) => s.source.id === scope.id)
@@ -217,30 +344,23 @@ export function scopeTitle(scope: FeedScope, sources: SourceSummary[]): string {
 }
 
 /** How many stories in `scope` are unread, from the same counts the sidebar draws. */
-export function scopeUnread(scope: FeedScope, sources: SourceSummary[]): number {
-  if (scope.kind === 'source') {
-    return sources.find((s) => s.source.id === scope.id)?.unread ?? 0
-  }
+export function scopeUnread(
+  scope: FeedScope,
+  sources: SourceSummary[],
+  kind: KindChoice = 'all',
+): number {
   // Up Next, Recommended and History are lists of their own, counted by what they hold.
-  if (scope.kind === 'upnext' || scope.kind === 'recommended' || scope.kind === 'history') return 0
-  if (scope.kind === 'podcasts') {
-    return podcastSources(sources).reduce((n, s) => n + s.unread, 0)
-  }
-  // A folder holds no shows -- they have a group of their own (see
-  // `groupFolders`) -- so a show filed in one is not counted in it.
-  return sources
-    .filter(
-      (s) =>
-        scope.kind === 'all' ||
-        (!isPodcastSource(s.source) && s.source.folder.trim() === scope.name.trim()),
-    )
-    .reduce((n, s) => n + s.unread, 0)
+  return scopeSources(scope, sources, kind).reduce((n, s) => n + s.unread, 0)
 }
 
 /** Is this the one kind of source where points mean something? */
 export function isHackerNews(source: NewsSource | undefined | null): boolean {
   return source?.kind.type === 'hackerNews'
 }
+
+/** What the confirmation before taking a found newsletter out of the Feed says. */
+export const NOT_NEWSLETTER_DETAIL =
+  'It goes from the Feed and will not be found again. Its emails stay in Mail.'
 
 /** What the confirmation before unfollowing says is lost, and what is not. */
 export function unfollowDetail(source: NewsSource): string {

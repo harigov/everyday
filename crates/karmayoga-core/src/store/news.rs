@@ -40,8 +40,12 @@
 //!   copy has, whatever the record passed in says -- a refresh holding a copy
 //!   read before a download finished must not unlink the episode. A clear
 //!   index of which stories have files follows them (`news_story_files` in
-//!   the SQL stores), and a story with files never expires
-//!   (nor does one in `keep`, which the caller fills with what is in Up Next).
+//!   the SQL stores), and a story with a downloaded episode never expires --
+//!   the show's keep policy decides when the episode goes -- nor does one in
+//!   `keep`, which the caller fills with what is in Up Next. A story's other
+//!   files (a transcript, a kept article, audio, a summary) do not keep it:
+//!   they stay in Files as the Feed's memory of it when it is cleaned up, and
+//!   with a source summarising everything, every story would have one.
 //! - **Up Next holds one entry per thing.** Putting an entry for something
 //!   already queued under another id replaces that one. Deleting a source
 //!   takes its stories' queue entries and ranks with it, but never a
@@ -171,6 +175,20 @@ pub trait NewsStore: Send + Sync {
     /// `read`, `saved` or `expired`, whatever the record passed in says.
     fn update_story(&self, story: &Story) -> Result<()>;
 
+    /// Move stories to the source each is paired with: the clear `source_id`
+    /// and the sealed copy's, together, in one transaction. Read, state and
+    /// files go with the story, as they are not the source's.
+    ///
+    /// Left where they are, without failing the rest: a tombstone, a story
+    /// already there, one the other source has the key of, and an id that is
+    /// not stored. Answers how many moved. For the Newsletters source handing
+    /// what it stored to the newsletters it found -- see
+    /// `docs/plans/feed-usability.md`.
+    fn move_stories(&self, moves: &[(StoryId, NewsSourceId)]) -> Result<u32> {
+        let _ = moves;
+        Err(unsupported())
+    }
+
     fn list_stories(&self, query: &StoryQuery) -> Result<StoryPage>;
 
     fn get_story(&self, id: StoryId) -> Result<Story>;
@@ -226,7 +244,7 @@ pub trait NewsStore: Send + Sync {
     fn expire(&self, rules: &[ExpiryRule], now: Timestamp) -> Result<ExpireReport>;
 
     /// [`NewsStore::expire`], except that nothing in `keep` is expired --
-    /// what is in Up Next -- and neither is a story with files.
+    /// what is in Up Next -- and neither is a story with a downloaded episode.
     fn expire_except(
         &self,
         rules: &[ExpiryRule],
