@@ -31,6 +31,8 @@ mod listen;
 mod rooms;
 mod rtc;
 mod rules;
+#[cfg(test)]
+mod ruma_patch;
 mod signin;
 mod speaking;
 mod verification;
