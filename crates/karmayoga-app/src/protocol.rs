@@ -766,12 +766,12 @@ fn respond_news_body(doc: karmayoga_service::mailview::BodyDocument) -> Response
 // ---- files -----------------------------------------------------------------
 
 /// What a `files/…` address named.
-#[derive(Debug, PartialEq, Eq)]
-struct FileRoute {
-    id: FileId,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileRoute {
+    pub(crate) id: FileId,
     /// The address's `?v=`, when it has one: the version of the file it names.
     /// The bytes may be cached only when that is the version the file has now.
-    version: Option<String>,
+    pub(crate) version: Option<String>,
 }
 
 /// The `file/{id}` remainder of a files address, in whichever of its two shapes
@@ -811,24 +811,55 @@ async fn serve_files(
     };
     let range =
         request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
-    match session {
-        Some(SessionHandle::Local(service)) => serve_files_local(&service, route, range).await,
-        Some(SessionHandle::Remote(remote)) => serve_files_remote(&remote, route, range).await,
-        None => error(StatusCode::INTERNAL_SERVER_ERROR, "application state is missing"),
+    match read_file(session, route, range).await {
+        Ok(part) => respond_file(&part.mime, part.plan, part.bytes, part.current),
+        Err(refused) => *refused,
     }
 }
 
-async fn serve_files_local(
+/// The answer to give instead of a file's bytes.
+pub(crate) type Refusal = Box<Response<Vec<u8>>>;
+
+/// Part of a file, from whichever vault the window is looking at.
+pub(crate) struct FilePart {
+    /// The catalog's type for the file.
+    pub(crate) mime: String,
+    pub(crate) plan: media::ResponsePlan,
+    pub(crate) bytes: Vec<u8>,
+    /// The request named the version the file has now, so the answer may be
+    /// kept ([`karmayoga_server::routes::file_cache_control`]).
+    pub(crate) current: bool,
+}
+
+/// Read what `range` asks of a file, as far as [`media::plan`] allows in one
+/// answer: what a `karmayoga://files` address is answered with, and what the
+/// player's loopback server ([`crate::player`]) streams a piece at a time.
+/// `Err` is the answer to give instead.
+pub(crate) async fn read_file(
+    session: Option<SessionHandle>,
+    route: FileRoute,
+    range: Option<String>,
+) -> Result<FilePart, Refusal> {
+    match session {
+        Some(SessionHandle::Local(service)) => read_file_local(&service, route, range).await,
+        Some(SessionHandle::Remote(remote)) => read_file_remote(&remote, route, range).await,
+        None => {
+            Err(Box::new(error(StatusCode::INTERNAL_SERVER_ERROR, "application state is missing")))
+        }
+    }
+}
+
+async fn read_file_local(
     service: &std::sync::Arc<karmayoga_service::Service>,
     route: FileRoute,
     range: Option<String>,
-) -> Response<Vec<u8>> {
+) -> Result<FilePart, Refusal> {
     let Some(vault) = service.get() else {
-        return error(StatusCode::NOT_FOUND, "no vault is open");
+        return Err(Box::new(error(StatusCode::NOT_FOUND, "no vault is open")));
     };
     // The same rule the blob, mail and news routes enforce.
     if !vault.is_unlocked() {
-        return error(StatusCode::FORBIDDEN, "vault is locked");
+        return Err(Box::new(error(StatusCode::FORBIDDEN, "vault is locked")));
     }
 
     let FileRoute { id, version } = route;
@@ -839,38 +870,45 @@ async fn serve_files_local(
     })
     .await;
     match read {
-        Ok(slice) => respond_file(&slice.mime, slice.plan, slice.bytes, slice.current),
+        Ok(slice) => Ok(FilePart {
+            mime: slice.mime,
+            plan: slice.plan,
+            bytes: slice.bytes,
+            current: slice.current,
+        }),
         Err(e) => {
             tracing::debug!(%id, error = %e, "could not read a file");
-            error_from(&e)
+            Err(Box::new(error_from(&e)))
         }
     }
 }
 
-async fn serve_files_remote(
+async fn read_file_remote(
     remote: &std::sync::Arc<crate::remote::Remote>,
     route: FileRoute,
     range: Option<String>,
-) -> Response<Vec<u8>> {
+) -> Result<FilePart, Refusal> {
     // Never kept: whether the version named is the file's version now is the
     // other machine's to say, and nothing it answers says so.
     let FileRoute { id, version: _ } = route;
     match remote.client.file_range(&id.to_string(), range.as_deref()).await {
-        Ok(served) => {
+        Ok(served) => Ok(FilePart {
+            mime: served.content_type,
             // The server's plan, read back out of its answer: the same
             // arithmetic as a local read, decided once and on the machine that
             // has the file.
-            let plan = media::ResponsePlan {
+            plan: media::ResponsePlan {
                 start: served.start,
                 len: served.bytes.len() as u64,
                 total: served.total,
                 partial: served.partial,
-            };
-            respond_file(&served.content_type, plan, served.bytes, false)
-        }
+            },
+            bytes: served.bytes,
+            current: false,
+        }),
         Err(e) => {
             tracing::warn!(%id, error = %e, "could not read a remote file");
-            error_from(&e)
+            Err(Box::new(error_from(&e)))
         }
     }
 }

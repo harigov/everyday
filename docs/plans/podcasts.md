@@ -130,8 +130,12 @@ file, then reviewed (15 findings, all fixed). What differs from that contract:
   title, source and address and outlives its story.
 - **The player is one media element for the whole window**, mounted once in
   `App.svelte` (never unmounted while switching apps), playing
-  `fileUrl(id)` -- the files protocol already honours `Range`. It plays
-  anything audio or video in Files. Articles in Up Next are heard through
+  `playUrl(id)`, which honours `Range`. It plays anything audio or video in
+  Files. On Linux that is the shell's loopback server
+  (`karmayoga-app/src/player.rs`), not `fileUrl(id)`: WebKitGTK's media goes
+  through GStreamer, which reads no custom scheme, so `karmayoga://` failed
+  with "The operation is not supported" -- found after phase 2 merged, since
+  nothing had played a file in the real app. Articles in Up Next are heard through
   Listen (`ListenSource::Story`) or opened to read. Progress is reported with
   `record_progress` every 15 s while playing, on pause, on seek and at the
   end; a consumption keeps `position_ms` (resume) and merged `heard` spans.

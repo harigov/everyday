@@ -63,6 +63,17 @@ pub fn plan(total: u64, range_header: Option<&str>) -> ResponsePlan {
 /// Returns an inclusive `(start, end)`. Multi-range requests are refused;
 /// serving the first range instead would be a silent lie about the response.
 pub fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
+    range_within(value, total, MAX_CHUNK)
+}
+
+/// [`parse_range`] without the [`MAX_CHUNK`] limit: everything the range asks
+/// for, for an answer streamed a piece at a time (the desktop player's, in
+/// `karmayoga-app/src/player.rs`) rather than read into memory at once.
+pub fn parse_whole_range(value: &str, total: u64) -> Option<(u64, u64)> {
+    range_within(value, total, u64::MAX)
+}
+
+fn range_within(value: &str, total: u64, limit: u64) -> Option<(u64, u64)> {
     if total == 0 {
         return None;
     }
@@ -80,15 +91,15 @@ pub fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
             }
             (total.saturating_sub(n), total - 1)
         }
-        // `bytes=N-`: from N to the end, bounded by the chunk limit.
+        // `bytes=N-`: from N to the end, bounded by the limit.
         (s, "") => {
             let s: u64 = s.parse().ok()?;
-            (s, s.saturating_add(MAX_CHUNK - 1).min(total - 1))
+            (s, s.saturating_add(limit - 1).min(total - 1))
         }
         (s, e) => {
             let s: u64 = s.parse().ok()?;
             let e: u64 = e.parse().ok()?;
-            (s, e.min(total - 1).min(s.saturating_add(MAX_CHUNK - 1)))
+            (s, e.min(total - 1).min(s.saturating_add(limit - 1)))
         }
     };
     if start > end || start >= total {
@@ -156,6 +167,22 @@ mod tests {
         let big = 64 * 1024 * 1024;
         assert_eq!(parse_range("bytes=0-", big), Some((0, MAX_CHUNK - 1)));
         assert_eq!(parse_range("bytes=0-99999999", big), Some((0, MAX_CHUNK - 1)));
+    }
+
+    #[test]
+    fn a_whole_range_is_everything_asked_for_and_no_more() {
+        let big = 64 * 1024 * 1024;
+        assert_eq!(parse_whole_range("bytes=0-", big), Some((0, big - 1)));
+        assert_eq!(parse_whole_range("bytes=5-", big), Some((5, big - 1)));
+        assert_eq!(parse_whole_range("bytes=0-99999999", big), Some((0, big - 1)));
+        assert_eq!(parse_whole_range("bytes=10-20", big), Some((10, 20)));
+        assert_eq!(parse_whole_range("bytes=-10", big), Some((big - 10, big - 1)));
+        assert_eq!(
+            parse_whole_range(&format!("bytes={}-", u64::MAX - 1), u64::MAX),
+            Some((u64::MAX - 1, u64::MAX - 1))
+        );
+        assert_eq!(parse_whole_range("bytes=9999-", 1000), None);
+        assert_eq!(parse_whole_range("bytes=0-1,5-6", big), None);
     }
 
     #[test]

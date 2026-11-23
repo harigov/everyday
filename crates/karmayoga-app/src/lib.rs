@@ -39,6 +39,7 @@ mod micwatch;
 mod navigation;
 mod notice;
 mod offers;
+mod player;
 #[cfg(target_os = "linux")]
 mod portal;
 mod protocol;
@@ -150,6 +151,8 @@ pub fn run() {
         .manage(micwatch::MicWatch::default())
         // This machine's screen time -- see `screentime`.
         .manage(screentime::ScreenTime::default())
+        // Where the player plays from, on Linux -- see `player`.
+        .manage(player::Player::default())
         .setup(|app| {
             // The window, from its entry in `tauri.conf.json` -- marked
             // `create: false` so that it is built here, where it can be told
@@ -352,6 +355,8 @@ pub fn run() {
             files::reveal_file,
             files::export_files,
             files::upload_chunk,
+            // Where the player plays a file from, on Linux -- see `player.rs`.
+            player::media_address,
             // This process's own furniture.
             commands::set_opens_itself,
             commands::ready_to_close,

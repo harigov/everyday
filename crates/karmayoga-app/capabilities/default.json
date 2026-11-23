@@ -75,6 +75,7 @@
     "allow-reveal-file",
     "allow-export-files",
     "allow-upload-chunk",
+    "allow-media-address",
     "allow-set-opens-itself",
     "allow-ready-to-close",
     "allow-set-tray-menu",
