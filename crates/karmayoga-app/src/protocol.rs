@@ -57,6 +57,10 @@
 //! from, and the one header -- `X-News-Images-Hidden`, `1` or `0` -- that
 //! tells the interface a source has its pictures switched off.
 //!
+//! The body address takes a `?part=` -- `notes`, `transcript` or `summary` --
+//! for the tabs of a story's pane: each is one document, in the same frame,
+//! and no `part` (or one this does not know) is the whole body.
+//!
 //! A newsletter story's body is mail's own, drawn by
 //! [`karmayoga_service::mailview`] on this route's behalf; its pictures are
 //! addressed to `mail/img/…` and never reach `news/img/…`.
@@ -137,6 +141,7 @@
 use karmayoga_core::BlobId;
 use karmayoga_core::id::{FileId, MailMessageId, StoryId};
 use karmayoga_core::media;
+use karmayoga_service::news::view::BodyPart;
 use tauri::http::{Request, Response, StatusCode, header};
 use tauri::{Manager, Runtime};
 
@@ -615,8 +620,9 @@ fn respond_bytes(
 /// already parsed.
 #[derive(Debug)]
 enum NewsRoute {
-    /// `news/body/{story}`.
-    Body(StoryId),
+    /// `news/body/{story}`, or one of its documents -- `?part=notes`,
+    /// `?part=transcript`, `?part=summary` -- which is a pane's tab.
+    Body(StoryId, BodyPart),
     /// `news/img/{story}/{token}`.
     Img(StoryId, String),
 }
@@ -641,7 +647,12 @@ fn parse_news_route(request: &Request<Vec<u8>>) -> Option<NewsRoute> {
     let mut segments = path.split('/');
     match (segments.next(), segments.next(), segments.next(), segments.next()) {
         (Some("body"), Some(story), None, None) => {
-            StoryId::parse(&percent_decode(story)).ok().map(NewsRoute::Body)
+            let story = StoryId::parse(&percent_decode(story)).ok()?;
+            // A part this does not know is the whole body, as none is: an
+            // address from a newer interface still shows something.
+            let part = query_param(request.uri().query().unwrap_or(""), "part")
+                .map_or(BodyPart::Whole, |part| BodyPart::parse(&part));
+            Some(NewsRoute::Body(story, part))
         }
         (Some("img"), Some(story), Some(token), None) => {
             let story = StoryId::parse(&percent_decode(story)).ok()?;
@@ -678,11 +689,11 @@ async fn serve_news_local(
     }
 
     match route {
-        NewsRoute::Body(id) => {
+        NewsRoute::Body(id, part) => {
             let v = vault.clone();
             // Off the async runtime's threads, on `serve_mail_local`'s reasoning.
             let result = karmayoga_service::blocking(move || {
-                karmayoga_service::news::view::body_document(&v, id)
+                karmayoga_service::news::view::body_document(&v, id, part)
             })
             .await;
             match result {
@@ -717,7 +728,7 @@ async fn serve_news_remote(
     route: NewsRoute,
 ) -> Response<Vec<u8>> {
     match route {
-        NewsRoute::Body(id) => match remote.client.news_body(&id.to_string()).await {
+        NewsRoute::Body(id, part) => match remote.client.news_body(&id.to_string(), part).await {
             Ok(body) => respond_news_body(karmayoga_service::mailview::BodyDocument {
                 html: body.html,
                 images_hidden: body.images_hidden,
@@ -1145,7 +1156,56 @@ mod news_route_tests {
         let story = StoryId::new();
         let uri = format!("karmayoga://news/body/{story}");
         let route = parse_news_route(&request(&uri)).expect("a recognised news route");
-        assert!(matches!(route, NewsRoute::Body(id) if id == story));
+        assert!(matches!(route, NewsRoute::Body(id, BodyPart::Whole) if id == story));
+    }
+
+    #[test]
+    fn a_body_route_carries_the_part_it_asks_for() {
+        let story = StoryId::new();
+        for (query, want) in [
+            ("?part=notes", BodyPart::Notes),
+            ("?part=transcript", BodyPart::Transcript),
+            ("?part=summary", BodyPart::Summary),
+            ("?part=Summary", BodyPart::Summary),
+            // Anything else is the whole body, as no part is.
+            ("?part=", BodyPart::Whole),
+            ("?part=nonsense", BodyPart::Whole),
+            ("?other=notes", BodyPart::Whole),
+            ("?x=1&part=transcript", BodyPart::Transcript),
+        ] {
+            let uri = format!("karmayoga://news/body/{story}{query}");
+            let route = parse_news_route(&request(&uri)).expect("a recognised news route");
+            assert!(
+                matches!(route, NewsRoute::Body(id, part) if id == story && part == want),
+                "{query}: {route:?}"
+            );
+        }
+    }
+
+    /// The Windows and Android shape, where the host is not `news` but the
+    /// first path segment, and the part rides after the path all the same.
+    #[test]
+    fn the_part_rides_the_windows_shape_of_the_address_too() {
+        let story = StoryId::new();
+        let uri = format!("http://karmayoga.localhost/news/body/{story}?part=transcript");
+        let route = parse_news_route(&request(&uri));
+        assert!(matches!(route, Some(NewsRoute::Body(id, BodyPart::Transcript)) if id == story));
+    }
+
+    /// A query is not a path: `?part=` makes neither a second route nor a
+    /// way past the one-segment rule.
+    #[test]
+    fn a_part_does_not_make_a_malformed_body_address_acceptable() {
+        let story = StoryId::new();
+        let extra = format!("karmayoga://news/body/{story}/extra?part=notes");
+        assert!(parse_news_route(&request(&extra)).is_none());
+        assert!(parse_news_route(&request("karmayoga://news/body/not-an-id?part=notes")).is_none());
+        // And an image address has no part to take.
+        let uri = format!("karmayoga://news/img/{story}/tok?part=notes");
+        assert!(matches!(
+            parse_news_route(&request(&uri)),
+            Some(NewsRoute::Img(id, token)) if id == story && token == "tok"
+        ));
     }
 
     #[test]
@@ -1172,7 +1232,7 @@ mod news_route_tests {
         assert!(matches!(route, NewsRoute::Img(id, token) if id == story && token == "abc"));
         let uri = format!("http://karmayoga.localhost/news/body/{story}");
         let route = parse_news_route(&request(&uri));
-        assert!(matches!(route, Some(NewsRoute::Body(id)) if id == story));
+        assert!(matches!(route, Some(NewsRoute::Body(id, BodyPart::Whole)) if id == story));
     }
 
     #[test]

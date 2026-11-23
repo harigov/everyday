@@ -6,6 +6,11 @@
 //! `<meta>` in case the first wall missed something. A mail-backed story is
 //! served by mail's own [`crate::mailview::body_document`].
 //!
+//! A story's pane has more than one document in it -- an episode's notes, its
+//! transcript, its summary -- and each is asked for by name, as
+//! `?part=notes|transcript|summary` on the same address ([`BodyPart`]). Every
+//! one is drawn the same way, in the same frame, under the same policy.
+//!
 //! Both transports call straight into this file -- `karmayoga-app`'s
 //! `karmayoga://news/...` and `karmayoga-server`'s `/v1/news/...` -- for the
 //! reason `mailview` gives: a rendered body is bytes behind a byte-serving
@@ -24,7 +29,9 @@
 //! private address never reaches a socket are written out again below; they
 //! are small, and they are the three things that must not differ.
 
-use crate::error::CommandResult;
+use super::article::{SHOW_NOTES_HEADING, SHOW_NOTES_MARKER};
+use super::sanitize;
+use crate::error::{CommandError, CommandResult, codes};
 // The policy, the refusal pixel and the picture fetch are mail's own: the
 // document is drawn by the same frame and a picture is fetched by the same
 // rules -- public addresses only, raster only, capped -- whichever app's
@@ -34,8 +41,12 @@ use crate::mailview::{
 };
 use crate::service::blocking;
 use karmayoga_core::Vault;
-use karmayoga_core::id::StoryId;
+use karmayoga_core::files::{FileOrigin, FileStatus};
+use karmayoga_core::id::{FileId, StoryId};
 use karmayoga_core::media;
+use karmayoga_core::news::transcript::{TimedText, format_clock, parse_markdown};
+use karmayoga_core::news::{BodyOrigin, Story, StoryBody};
+use pulldown_cmark::{Options, Parser};
 use std::sync::Arc;
 
 /// What a story starts from. Plain CSS in the document, not a `<link>`:
@@ -79,9 +90,12 @@ table { max-width: 100%; border-collapse: collapse; }
 td, th { padding: 4px 8px; }
 .plain { white-space: pre-line; }
 .quiet { color: #8b857c; }
+.said { margin: 0 0 1.1em; }
+.said p { margin: 0 0 0.5em; }
+.when { display: block; font-size: 12px; line-height: 1.4; font-variant-numeric: tabular-nums; color: #8b857c; }
 @media (prefers-color-scheme: dark) {
   body { color: #eceaf0; background: #17161a; }
-  figcaption, .quiet { color: #7d7a86; }
+  figcaption, .quiet, .when { color: #7d7a86; }
   blockquote { border-left-color: #3a3841; color: #b4b1bd; }
 }
 "#;
@@ -89,10 +103,63 @@ td, th { padding: 4px 8px; }
 /// What a story with nothing to read says, in place of a blank frame.
 const NOTHING: &str = "Nothing came with this story. Open the original to read it.";
 
-/// The whole document for `story`'s frame. `images_hidden` is true when the
-/// story has pictures and its source has them switched off.
+/// What a transcript file with no words in it says.
+const NO_WORDS: &str = "This transcript has no words in it.";
+
+/// What stands under a document made from a file that was longer than is read.
+const CUT: &str = "The rest of this file is in Files.";
+
+/// The most of a story's file that is read into a document, in bytes. A
+/// conversation of four hours is under a megabyte of transcript; past this a
+/// file is not one to draw in a pane, and Files has it whole.
+const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Which of a story's documents is wanted: the `?part=` of
+/// `karmayoga://news/body/{story}?part=...`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BodyPart {
+    /// What a story's pane has always drawn, the whole body.
+    #[default]
+    Whole,
+    /// An episode's show notes; for anything else, the body.
+    Notes,
+    /// An episode's article, written from its transcript; for anything else,
+    /// the summary kept in Files.
+    Summary,
+    /// What was said in an episode, with when.
+    Transcript,
+}
+
+impl BodyPart {
+    /// The part a `?part=` value names. Not a place to fail: a value this
+    /// does not know -- a newer interface's, a typed address -- is the whole
+    /// body, which is what no value at all is.
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "notes" => Self::Notes,
+            "summary" => Self::Summary,
+            "transcript" => Self::Transcript,
+            _ => Self::Whole,
+        }
+    }
+
+    /// The `?part=` value that asks for this part, or `None` for the whole
+    /// body, which is asked for with none.
+    pub fn query(self) -> Option<&'static str> {
+        match self {
+            Self::Whole => None,
+            Self::Notes => Some("notes"),
+            Self::Summary => Some("summary"),
+            Self::Transcript => Some("transcript"),
+        }
+    }
+}
+
+/// The whole document for `story`'s frame, or the part of it `part` names.
+/// `images_hidden` is true when the story has pictures and its source has them
+/// switched off.
 ///
-/// Three shapes, by what the story has:
+/// [`BodyPart::Whole`] has three shapes, by what the story has:
 ///
 /// * A newsletter is mail, and is drawn by mail, under mail's own rules about
 ///   remote pictures -- the sender allow-list, nothing else. "Show images
@@ -101,15 +168,38 @@ const NOTHING: &str = "Nothing came with this story. Open the original to read i
 /// * A story with a body gets the body the sanitiser stored.
 /// * A story with none gets its summary, escaped, so the pane is never a
 ///   blank rectangle the interface has to explain.
-pub fn body_document(vault: &Vault, story: StoryId) -> CommandResult<BodyDocument> {
+///
+/// The other parts are the tabs of a pane:
+///
+/// * **Notes**: for a body written from a transcript, the feed's own show
+///   notes, which `article.rs` keeps below the article; for any other story,
+///   as the whole body is, since an article's own words are its notes.
+/// * **Summary**: for a body written from a transcript, the article above the
+///   show notes; for any other story, the summary kept in Files
+///   ([`karmayoga_core::news::StoryFiles::summary`]) as Markdown, or not found.
+/// * **Transcript**: the transcript kept in Files, a paragraph at a time with
+///   its time, or not found.
+pub fn body_document(vault: &Vault, story: StoryId, part: BodyPart) -> CommandResult<BodyDocument> {
     let story = vault.story(story)?;
+    match part {
+        BodyPart::Whole => whole(vault, &story),
+        BodyPart::Notes => notes(vault, &story),
+        BodyPart::Summary => summary(vault, &story),
+        BodyPart::Transcript => transcript(vault, &story),
+    }
+}
 
+fn whole(vault: &Vault, story: &Story) -> CommandResult<BodyDocument> {
     if let Some(message) = story.mail_message {
         let allowed = mailview::remote_images_allowed(vault, message, false)?;
         return mailview::body_document(vault, message, allowed);
     }
+    stored(vault, story, vault.story_body(story.id)?)
+}
 
-    let body = vault.story_body(story.id)?;
+/// A story's own body, or failing that its summary: what a story that is not
+/// mail has to draw.
+fn stored(vault: &Vault, story: &Story, body: Option<StoryBody>) -> CommandResult<BodyDocument> {
     if let Some(body) = body.as_ref().filter(|b| !b.html.trim().is_empty()) {
         let source = vault.news_source(story.source_id)?;
         let images_hidden = !source.images && !body.images.is_empty();
@@ -126,19 +216,198 @@ pub fn body_document(vault: &Vault, story: StoryId) -> CommandResult<BodyDocumen
     Ok(BodyDocument { html: wrap(&paragraphs(text), None), images_hidden: false })
 }
 
+// ---- an episode's, an article's tabs ------------------------------------
+
+/// What lies above and below the rule an article written from a transcript
+/// has between it and the feed's show notes (see `article.rs`): the article,
+/// and the notes without their heading. A body with no rule is all article.
+fn split_article(html: &str) -> (&str, &str) {
+    let (article, notes) = html.split_once(SHOW_NOTES_MARKER).unwrap_or((html, ""));
+    let notes = notes.trim_start();
+    (article, notes.strip_prefix(SHOW_NOTES_HEADING).unwrap_or(notes))
+}
+
+fn notes(vault: &Vault, story: &Story) -> CommandResult<BodyDocument> {
+    if story.mail_message.is_some() {
+        return whole(vault, story);
+    }
+    let body = vault.story_body(story.id)?;
+    let Some(written) = body.as_ref().filter(|b| b.origin == BodyOrigin::Transcript) else {
+        return stored(vault, story, body);
+    };
+
+    // The article is the summary's, not the notes'. What is left is what the
+    // feed carried, which `show_notes` in `article.rs` kept: a feed's, whatever
+    // it was before the article went above it.
+    let (_, notes) = split_article(&written.html);
+    if notes.trim().is_empty() {
+        // An episode whose feed carried nothing: the short description its
+        // row drew is all the notes there are.
+        return Ok(BodyDocument {
+            html: wrap(&paragraphs(&story.summary), None),
+            images_hidden: false,
+        });
+    }
+    let source = vault.news_source(story.source_id)?;
+    let images_hidden = !source.images && !written.images.is_empty();
+    Ok(BodyDocument { html: wrap(notes, Some(BodyOrigin::Feed)), images_hidden })
+}
+
+fn summary(vault: &Vault, story: &Story) -> CommandResult<BodyDocument> {
+    // An episode's summary is the article written from its transcript, which
+    // is its body.
+    if let Some(body) = vault.story_body(story.id)?.filter(|b| b.origin == BodyOrigin::Transcript) {
+        let (article, _) = split_article(&body.html);
+        if !article.trim().is_empty() {
+            return Ok(BodyDocument {
+                html: wrap(article, Some(BodyOrigin::Transcript)),
+                images_hidden: false,
+            });
+        }
+    }
+
+    let kept = file_text(vault, story.files.summary, "This story has no summary yet.")?;
+    let mut html = markdown_html(story.id, without_front_matter(&kept.text));
+    if kept.cut {
+        html.push_str(&format!("<p class=\"quiet\">{CUT}</p>\n"));
+    }
+    Ok(BodyDocument { html: wrap(&html, None), images_hidden: false })
+}
+
+fn transcript(vault: &Vault, story: &Story) -> CommandResult<BodyDocument> {
+    let kept = file_text(vault, story.files.transcript, "This story has no transcript yet.")?;
+    let said = parse_markdown(&kept.text);
+    let mut html = if !said.is_empty() {
+        said_html(&said)
+    } else if kept.text.trim().is_empty() {
+        format!("<p class=\"quiet\">{NO_WORDS}</p>\n")
+    } else {
+        // Words with no times in front of them -- somebody typed a
+        // transcript in -- are still the transcript.
+        paragraphs(&kept.text)
+    };
+    if kept.cut {
+        html.push_str(&format!("<p class=\"quiet\">{CUT}</p>\n"));
+    }
+    // Not a body's origin, so a pane that says "written from the transcript"
+    // of one does not say it of the transcript itself.
+    Ok(BodyDocument { html: wrap_as(&html, "transcriptFile"), images_hidden: false })
+}
+
+/// A story's file, read as text.
+struct FileText {
+    text: String,
+    /// The file is longer than [`MAX_FILE_BYTES`], and this is the start of it.
+    cut: bool,
+}
+
+/// The text of `file`, which a story names, plain in the files folder or
+/// sealed in the vault alike; not found, in `missing`'s words, when the story
+/// names none, or it is in the trash or gone from the folder.
+///
+/// Health's files are never read here: what a clinical document says is
+/// Health's to show, behind Health's own gate, and this route has only the
+/// Feed's.
+fn file_text(vault: &Vault, file: Option<FileId>, missing: &str) -> CommandResult<FileText> {
+    let not_found = || CommandError::new(codes::NOT_FOUND, missing);
+    let Some(file) = file else { return Err(not_found()) };
+    let entry = match vault.file(file) {
+        Ok(entry) => entry,
+        Err(karmayoga_core::Error::NotFound { .. }) => return Err(not_found()),
+        Err(e) => return Err(e.into()),
+    };
+    if entry.origin == FileOrigin::Health {
+        return Err(CommandError::new(
+            codes::FORBIDDEN,
+            "That is one of Health's files, which the Feed does not show.",
+        ));
+    }
+    if !matches!(entry.status, FileStatus::Present) {
+        return Err(not_found());
+    }
+    let text = vault.read_file_text(file, MAX_FILE_BYTES)?;
+    Ok(FileText { text, cut: entry.size > MAX_FILE_BYTES as u64 })
+}
+
+/// `markdown` as the Feed's HTML: the way `article.rs` makes an article's,
+/// raw HTML made text and pictures made words, then through the same
+/// sanitiser as any body. A model wrote it, and a person may have edited it;
+/// it is not markup this application vouches for.
+fn markdown_html(story: StoryId, markdown: &str) -> String {
+    let parser = Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES);
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(&mut html, crate::delivery::inert(parser));
+    // No base address, as for an article: there is no page it was read from.
+    sanitize::body(story, &html, "", BodyOrigin::Transcript).html
+}
+
+/// `markdown` without the front matter a file the Feed keeps may begin with:
+/// the `---` block `keep.rs` writes, which is for the document index and not
+/// for reading.
+fn without_front_matter(markdown: &str) -> &str {
+    let Some(rest) = markdown.strip_prefix("---\n").or_else(|| markdown.strip_prefix("---\r\n"))
+    else {
+        return markdown;
+    };
+    let mut at = 0;
+    for line in rest.split_inclusive('\n') {
+        at += line.len();
+        if line.trim_end() == "---" {
+            return &rest[at..];
+        }
+    }
+    // Never closed: it was a rule at the top, not front matter.
+    markdown
+}
+
+/// A transcript's paragraphs, each with the time it was said at as a small
+/// label above it, and the speaker in bold when the file names one.
+///
+/// Every word is escaped and the markup is this function's own, so nothing
+/// here needs the sanitiser a body's HTML does: a transcript is a stranger's
+/// words, never a stranger's markup.
+fn said_html(said: &[TimedText]) -> String {
+    let mut out = String::new();
+    for line in said {
+        out.push_str("<div class=\"said\"><span class=\"when\">");
+        out.push_str(&format_clock(line.start_ms));
+        out.push_str("</span>");
+        // A paragraph a plain-text transcript had more than one of is one
+        // entry, with a blank line between; the time is on the first.
+        let blocks = line.text.split("\n\n").map(str::trim).filter(|b| !b.is_empty());
+        for (i, block) in blocks.enumerate() {
+            out.push_str("<p>");
+            if let Some(speaker) = line.speaker.as_deref().filter(|_| i == 0) {
+                out.push_str("<strong>");
+                out.push_str(&escape(speaker));
+                out.push_str(":</strong> ");
+            }
+            out.push_str(&escape(block));
+            out.push_str("</p>");
+        }
+        out.push_str("</div>\n");
+    }
+    out
+}
+
 /// The document around `inner`: the policy, the style, and links that open
 /// outside the frame.
-fn wrap(inner: &str, origin: Option<karmayoga_core::news::BodyOrigin>) -> String {
+fn wrap(inner: &str, origin: Option<BodyOrigin>) -> String {
     // Where the body came from, for the window to say "written from the
     // episode's transcript": a word of ours in the head, never the
     // publisher's.
     let origin = match origin {
-        Some(karmayoga_core::news::BodyOrigin::Feed) => "feed",
-        Some(karmayoga_core::news::BodyOrigin::Extracted) => "extracted",
-        Some(karmayoga_core::news::BodyOrigin::HackerNews) => "hackerNews",
-        Some(karmayoga_core::news::BodyOrigin::Transcript) => "transcript",
+        Some(BodyOrigin::Feed) => "feed",
+        Some(BodyOrigin::Extracted) => "extracted",
+        Some(BodyOrigin::HackerNews) => "hackerNews",
+        Some(BodyOrigin::Transcript) => "transcript",
         None => "summary",
     };
+    wrap_as(inner, origin)
+}
+
+/// [`wrap`] with the word for where it came from given.
+fn wrap_as(inner: &str, origin: &str) -> String {
     format!(
         "<!DOCTYPE html>\n\
          <html>\n\
@@ -300,7 +569,7 @@ mod tests {
     use karmayoga_core::mail::{
         Address, Body, CategorySource, Mailbox, MailboxRole, Message, MessageFlags,
     };
-    use karmayoga_core::news::{BodyOrigin, NewsImage, NewsSource, SourceKind, Story, StoryBody};
+    use karmayoga_core::news::{NewsImage, NewsSource, SourceKind};
     use karmayoga_core::packstore::PackRef;
     use karmayoga_core::store::mail::IngestMessage;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -378,7 +647,7 @@ mod tests {
     fn a_body_is_wrapped_with_the_policy_and_never_gains_a_script() {
         let (_dir, vault) = test_vault();
         let (id, _) = seeded(&vault, true, Some("<p>Hello</p>"), "");
-        let doc = body_document(&vault, id).unwrap();
+        let doc = body_document(&vault, id, BodyPart::Whole).unwrap();
         assert!(doc.html.contains("<p>Hello</p>"));
         assert!(doc.html.contains("Content-Security-Policy"));
         assert!(doc.html.contains("default-src 'none'"));
@@ -393,21 +662,21 @@ mod tests {
         let html = "<p><img src=\"karmayoga://news/img/s/abc123\"></p>";
 
         let (off, _) = seeded(&vault, false, Some(html), "https://cdn.example/a.png");
-        assert!(body_document(&vault, off).unwrap().images_hidden);
+        assert!(body_document(&vault, off, BodyPart::Whole).unwrap().images_hidden);
 
         let (on, _) = seeded(&vault, true, Some(html), "https://cdn.example/a.png");
-        assert!(!body_document(&vault, on).unwrap().images_hidden);
+        assert!(!body_document(&vault, on, BodyPart::Whole).unwrap().images_hidden);
 
         // Off, but nothing to hide: there is no bar to offer.
         let (bare, _) = seeded(&vault, false, Some("<p>text only</p>"), "");
-        assert!(!body_document(&vault, bare).unwrap().images_hidden);
+        assert!(!body_document(&vault, bare, BodyPart::Whole).unwrap().images_hidden);
     }
 
     #[test]
     fn a_story_with_no_body_shows_its_summary_escaped() {
         let (_dir, vault) = test_vault();
         let (id, _) = seeded(&vault, true, None, "");
-        let doc = body_document(&vault, id).unwrap();
+        let doc = body_document(&vault, id, BodyPart::Whole).unwrap();
         let escaped = "A &lt;b&gt;short&lt;/b&gt; &amp; plain summary";
         assert!(doc.html.contains(escaped), "{}", doc.html);
         assert!(!doc.html.contains("<b>short</b>"));
@@ -419,7 +688,7 @@ mod tests {
     fn a_story_with_nothing_at_all_says_so() {
         let (_dir, vault) = test_vault();
         let (id, _) = seeded_with(&vault, true, None, "", "");
-        let doc = body_document(&vault, id).unwrap();
+        let doc = body_document(&vault, id, BodyPart::Whole).unwrap();
         assert!(doc.html.contains(NOTHING), "{}", doc.html);
     }
 
@@ -435,7 +704,7 @@ mod tests {
             images: Vec::new(),
         };
         vault.save_story_body(&body).unwrap();
-        let doc = body_document(&vault, id).unwrap();
+        let doc = body_document(&vault, id, BodyPart::Whole).unwrap();
         assert!(doc.html.contains("<p class=\"plain\">First.</p>"), "{}", doc.html);
         assert!(doc.html.contains("Second &lt;one&gt;."));
     }
@@ -485,8 +754,10 @@ mod tests {
             })
             .unwrap();
 
-        let source =
-            NewsSource::new(SourceKind::Mail { sender: "letter@example.com".into() }, "Letter");
+        let source = NewsSource::new(
+            SourceKind::Mail { sender: "letter@example.com".into(), name: String::new() },
+            "Letter",
+        );
         vault.save_news_source(&source).unwrap();
         let key = vault.news_key(&id.to_string()).unwrap();
         let mut story = Story::new(source.id, key, "Issue 1", Timestamp::now());
@@ -500,7 +771,7 @@ mod tests {
     fn a_newsletter_is_drawn_by_mail_not_by_this_file() {
         let (_dir, vault) = test_vault();
         let id = newsletter(&vault, "<p>This week in letters</p>");
-        let doc = body_document(&vault, id).unwrap();
+        let doc = body_document(&vault, id, BodyPart::Whole).unwrap();
         assert!(doc.html.contains("<p>This week in letters</p>"), "{}", doc.html);
         assert!(doc.html.contains("default-src 'none'"));
         // Mail's wrapper, not the article one: its own stylesheet is absent.
@@ -511,8 +782,355 @@ mod tests {
     #[test]
     fn a_story_that_does_not_exist_is_not_found() {
         let (_dir, vault) = test_vault();
-        let e = body_document(&vault, StoryId::new()).unwrap_err();
+        for part in [BodyPart::Whole, BodyPart::Notes, BodyPart::Summary, BodyPart::Transcript] {
+            let e = body_document(&vault, StoryId::new(), part).unwrap_err();
+            assert_eq!(e.code, codes::NOT_FOUND, "{part:?}");
+        }
+    }
+
+    // ---- the parts of a pane ----------------------------------------------
+
+    use karmayoga_core::files::{FileEntry, ImportOptions};
+
+    fn part(vault: &Vault, story: StoryId, part: BodyPart) -> BodyDocument {
+        body_document(vault, story, part).unwrap()
+    }
+
+    /// A story whose body was written from a transcript: the article, then
+    /// (when `notes` is given) the rule and the show notes under their heading,
+    /// as `article.rs` stores them.
+    fn episode(vault: &Vault, notes: Option<&str>) -> StoryId {
+        let (id, _) = seeded(vault, true, None, "");
+        let html = match notes {
+            Some(notes) => {
+                format!(
+                    "<h1>The article</h1><p>Written.</p>{SHOW_NOTES_MARKER}{SHOW_NOTES_HEADING}{notes}"
+                )
+            }
+            None => "<h1>The article</h1><p>Written.</p>".to_string(),
+        };
+        let body = StoryBody {
+            story_id: id,
+            html,
+            text: String::new(),
+            origin: BodyOrigin::Transcript,
+            images: Vec::new(),
+        };
+        vault.save_story_body(&body).unwrap();
+        id
+    }
+
+    fn keep(vault: &Vault, name: &str, text: &str, origin: FileOrigin, sealed: bool) -> FileEntry {
+        let options = ImportOptions { encrypted: Some(sealed), ..ImportOptions::new(origin) };
+        vault.import_bytes(text.as_bytes(), name, &options).unwrap()
+    }
+
+    fn origin_of(doc: &BodyDocument) -> &str {
+        let (_, after) = doc.html.split_once("name=\"news-body-origin\" content=\"").unwrap();
+        after.split('"').next().unwrap()
+    }
+
+    #[test]
+    fn a_part_is_read_from_the_query_value_and_anything_else_is_the_whole_body() {
+        assert_eq!(BodyPart::parse("notes"), BodyPart::Notes);
+        assert_eq!(BodyPart::parse("summary"), BodyPart::Summary);
+        assert_eq!(BodyPart::parse("transcript"), BodyPart::Transcript);
+        assert_eq!(BodyPart::parse(" Transcript "), BodyPart::Transcript);
+        for other in ["", "whole", "everything", "../notes", "notes,summary"] {
+            assert_eq!(BodyPart::parse(other), BodyPart::Whole, "{other:?}");
+        }
+        // And back: the value a client puts on the address.
+        for part in [BodyPart::Whole, BodyPart::Notes, BodyPart::Summary, BodyPart::Transcript] {
+            assert_eq!(BodyPart::parse(part.query().unwrap_or("")), part);
+        }
+    }
+
+    #[test]
+    fn a_body_written_from_a_transcript_splits_at_the_marker() {
+        let (_dir, vault) = test_vault();
+        let id = episode(&vault, Some("<p>Guest: Anna</p>"));
+
+        let notes = part(&vault, id, BodyPart::Notes);
+        assert!(notes.html.contains("<p>Guest: Anna</p>"), "{}", notes.html);
+        assert!(!notes.html.contains("Show notes"), "the heading is the tab's: {}", notes.html);
+        assert!(!notes.html.contains("The article"));
+        assert!(!notes.html.contains("data-show-notes"));
+        // What the feed carried, not what was written from the transcript.
+        assert_eq!(origin_of(&notes), "feed");
+
+        let summary = part(&vault, id, BodyPart::Summary);
+        assert!(summary.html.contains("<h1>The article</h1><p>Written.</p>"), "{}", summary.html);
+        assert!(!summary.html.contains("Guest: Anna"));
+        assert!(!summary.html.contains("data-show-notes"));
+        assert_eq!(origin_of(&summary), "transcript");
+
+        // The whole is as it always was: both, and the rule between them.
+        let whole = part(&vault, id, BodyPart::Whole);
+        assert!(whole.html.contains("The article") && whole.html.contains("Guest: Anna"));
+        assert!(whole.html.contains("data-show-notes"));
+        assert_eq!(origin_of(&whole), "transcript");
+
+        // Every part keeps the head: the policy, the base, the style.
+        for doc in [&notes, &summary] {
+            assert!(doc.html.contains("default-src 'none'"));
+            assert!(doc.html.contains("<base target=\"_blank\">"));
+            assert!(doc.html.contains(".when {"));
+        }
+    }
+
+    #[test]
+    fn show_notes_with_pictures_are_held_back_as_the_whole_body_is() {
+        let (_dir, vault) = test_vault();
+        let (id, _) = seeded(&vault, false, None, "");
+        let body = StoryBody {
+            story_id: id,
+            html: format!(
+                "<p>Written.</p>{SHOW_NOTES_MARKER}{SHOW_NOTES_HEADING}\
+                 <p><img src=\"karmayoga://news/img/s/abc123\"></p>"
+            ),
+            text: String::new(),
+            origin: BodyOrigin::Transcript,
+            images: vec![NewsImage {
+                token: "abc123".into(),
+                url: "https://cdn.example/a.png".into(),
+                cached_blob: None,
+            }],
+        };
+        vault.save_story_body(&body).unwrap();
+        assert!(part(&vault, id, BodyPart::Notes).images_hidden);
+        // The article above them has none to hide.
+        assert!(!part(&vault, id, BodyPart::Summary).images_hidden);
+    }
+
+    #[test]
+    fn an_article_written_with_no_show_notes_under_it_has_the_rows_description_for_notes() {
+        let (_dir, vault) = test_vault();
+        let id = episode(&vault, None);
+
+        let notes = part(&vault, id, BodyPart::Notes);
+        assert!(notes.html.contains("A &lt;b&gt;short&lt;/b&gt; &amp; plain summary"));
+        assert!(!notes.html.contains("The article"), "{}", notes.html);
+        let summary = part(&vault, id, BodyPart::Summary);
+        assert!(summary.html.contains("<h1>The article</h1>"), "{}", summary.html);
+    }
+
+    #[test]
+    fn the_notes_of_anything_else_are_the_whole_body() {
+        let (_dir, vault) = test_vault();
+        let (id, _) = seeded(&vault, true, Some("<p>Hello</p>"), "");
+        let (notes, whole) = (part(&vault, id, BodyPart::Notes), part(&vault, id, BodyPart::Whole));
+        assert_eq!(notes.html, whole.html);
+
+        // A story with no body at all keeps its summary, as the whole does.
+        let (bare, _) = seeded(&vault, true, None, "");
+        assert_eq!(
+            part(&vault, bare, BodyPart::Notes).html,
+            part(&vault, bare, BodyPart::Whole).html
+        );
+
+        // And a newsletter is mail's, in either.
+        let issue = newsletter(&vault, "<p>This week in letters</p>");
+        let notes = part(&vault, issue, BodyPart::Notes);
+        assert!(notes.html.contains("<p>This week in letters</p>"), "{}", notes.html);
+        assert!(!notes.html.contains(".plain"));
+    }
+
+    #[test]
+    fn a_transcript_file_is_drawn_a_paragraph_at_a_time_with_its_time_and_escaped() {
+        let (_dir, vault) = test_vault();
+        let (id, _) = seeded(&vault, true, Some("<p>Notes</p>"), "");
+        let file = keep(
+            &vault,
+            "transcript.md",
+            "# Episode 41: The <i>clocks</i>\n\nThe Slow Hour · 2026-11-20 · transcript\n\n\
+             [00:00:00] Welcome <b>back</b>, all.\n\n\
+             [01:02:03] **Anna:** The mechanism & the \"church\".\n\n\
+             A second thought, still hers.\n",
+            FileOrigin::Feed,
+            true,
+        );
+        vault.update_story_files(id, |files| files.transcript = Some(file.id)).unwrap();
+
+        let doc = part(&vault, id, BodyPart::Transcript);
+        assert!(doc.html.contains("<span class=\"when\">00:00:00</span>"), "{}", doc.html);
+        assert!(doc.html.contains("<span class=\"when\">01:02:03</span>"));
+        assert!(doc.html.contains("<p>Welcome &lt;b&gt;back&lt;/b&gt;, all.</p>"), "{}", doc.html);
+        assert!(doc.html.contains(
+            "<p><strong>Anna:</strong> The mechanism &amp; the &quot;church&quot;.</p><p>A second thought, still hers.</p>"
+        ));
+        // The heading is not speech, and nothing of the file is markup.
+        assert!(
+            !doc.html.contains("Episode 41")
+                && !doc.html.contains("<b>")
+                && !doc.html.contains("<i>")
+        );
+        assert_eq!(doc.html.matches("class=\"said\"").count(), 2);
+        assert!(doc.html.contains("default-src 'none'"));
+        assert_eq!(origin_of(&doc), "transcriptFile");
+        assert!(!doc.images_hidden);
+    }
+
+    #[test]
+    fn a_transcript_that_is_a_plain_file_in_the_folder_is_read_as_well() {
+        let (_dir, vault) = test_vault();
+        let folder = tempfile::tempdir().unwrap();
+        vault.set_up_files_folder(Some(folder.path())).unwrap();
+        let (id, _) = seeded(&vault, true, None, "");
+        let file =
+            keep(&vault, "plain.md", "[00:00:07] Said in the open.\n", FileOrigin::Feed, false);
+        assert!(!file.is_sealed());
+        vault.update_story_files(id, |files| files.transcript = Some(file.id)).unwrap();
+
+        let doc = part(&vault, id, BodyPart::Transcript);
+        assert!(doc.html.contains("<span class=\"when\">00:00:07</span>"), "{}", doc.html);
+        assert!(doc.html.contains("<p>Said in the open.</p>"));
+    }
+
+    #[test]
+    fn a_transcript_with_no_times_is_text_and_one_with_nothing_says_so() {
+        let (_dir, vault) = test_vault();
+        let (id, _) = seeded(&vault, true, None, "");
+        let typed = keep(
+            &vault,
+            "typed.md",
+            "Typed in <by> hand.\n\nTwo paragraphs.\n",
+            FileOrigin::Files,
+            true,
+        );
+        vault.update_story_files(id, |files| files.transcript = Some(typed.id)).unwrap();
+        let doc = part(&vault, id, BodyPart::Transcript);
+        assert!(
+            doc.html.contains("<p class=\"plain\">Typed in &lt;by&gt; hand.</p>"),
+            "{}",
+            doc.html
+        );
+        assert!(doc.html.contains("<p class=\"plain\">Two paragraphs.</p>"));
+        assert!(!doc.html.contains("class=\"when\""));
+
+        let empty = keep(&vault, "empty.md", "  \n", FileOrigin::Feed, true);
+        vault.update_story_files(id, |files| files.transcript = Some(empty.id)).unwrap();
+        assert!(part(&vault, id, BodyPart::Transcript).html.contains(NO_WORDS));
+    }
+
+    #[test]
+    fn a_file_longer_than_is_read_is_cut_and_says_where_the_rest_is() {
+        let (_dir, vault) = test_vault();
+        let (id, _) = seeded(&vault, true, None, "");
+        let mut text = String::from("[00:00:00] ");
+        while text.len() <= MAX_FILE_BYTES + 1024 {
+            text.push_str("word ");
+        }
+        let file = keep(&vault, "long.md", &text, FileOrigin::Feed, true);
+        vault.update_story_files(id, |files| files.transcript = Some(file.id)).unwrap();
+
+        let doc = part(&vault, id, BodyPart::Transcript);
+        assert!(doc.html.contains(CUT));
+        assert!(doc.html.len() < MAX_FILE_BYTES + 64 * 1024, "{}", doc.html.len());
+    }
+
+    #[test]
+    fn a_story_with_no_transcript_or_summary_is_not_found_and_so_is_one_whose_file_is_gone() {
+        let (_dir, vault) = test_vault();
+        let (id, _) = seeded(&vault, true, Some("<p>Hello</p>"), "");
+        for which in [BodyPart::Summary, BodyPart::Transcript] {
+            let e = body_document(&vault, id, which).unwrap_err();
+            assert_eq!(e.code, codes::NOT_FOUND, "{which:?}");
+        }
+
+        // Linked, then thrown away: not a document to draw.
+        let file = keep(&vault, "gone.md", "[00:00:01] Words.\n", FileOrigin::Feed, true);
+        vault
+            .update_story_files(id, |files| {
+                files.transcript = Some(file.id);
+                files.summary = Some(file.id);
+            })
+            .unwrap();
+        assert!(body_document(&vault, id, BodyPart::Transcript).is_ok());
+        vault.trash_files(&[file.id]).unwrap();
+        for which in [BodyPart::Summary, BodyPart::Transcript] {
+            let e = body_document(&vault, id, which).unwrap_err();
+            assert_eq!(e.code, codes::NOT_FOUND, "{which:?}");
+        }
+
+        // A link to a file the catalog never had.
+        vault.update_story_files(id, |files| files.transcript = Some(FileId::new())).unwrap();
+        let e = body_document(&vault, id, BodyPart::Transcript).unwrap_err();
         assert_eq!(e.code, codes::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_summary_file_is_rendered_from_markdown_and_sanitised_like_any_body() {
+        let (_dir, vault) = test_vault();
+        let (id, _) = seeded(&vault, true, Some("<p>Hello</p>"), "");
+        let file = keep(
+            &vault,
+            "summary.md",
+            "---\ntitle: \"A post\"\nsource: \"Blog\"\n---\n\n# A post\n\nA **plain** claim, [linked](https://example.com/a).\n\n\
+             <script>alert(1)</script>\n\n<img src=\"https://tracker.example/p.png\">\n\n\
+             ![alt](https://tracker.example/q.png)\n\n- one\n- two\n",
+            FileOrigin::Feed,
+            true,
+        );
+        vault.update_story_files(id, |files| files.summary = Some(file.id)).unwrap();
+
+        let doc = part(&vault, id, BodyPart::Summary);
+        assert!(doc.html.contains("<h1>A post</h1>"), "{}", doc.html);
+        assert!(doc.html.contains("<strong>plain</strong>"));
+        assert!(doc.html.contains("href=\"https://example.com/a\""));
+        assert!(doc.html.contains("<li>one</li>"));
+        // The front matter is for the index, not the reader.
+        assert!(!doc.html.contains("source:") && !doc.html.contains("title:"), "{}", doc.html);
+        // Nothing that runs and nothing that fetches by itself.
+        let lower = doc.html.to_ascii_lowercase();
+        assert!(!lower.contains("<script") && !lower.contains("<img"), "{}", doc.html);
+        assert!(doc.html.contains("default-src 'none'"));
+        assert_eq!(origin_of(&doc), "summary");
+        assert!(!doc.images_hidden);
+
+        // The body itself is untouched by having a summary beside it.
+        assert!(part(&vault, id, BodyPart::Whole).html.contains("<p>Hello</p>"));
+    }
+
+    #[test]
+    fn a_newsletter_has_a_summary_in_files_like_any_other_story() {
+        let (_dir, vault) = test_vault();
+        let issue = newsletter(&vault, "<p>This week in letters</p>");
+        assert_eq!(
+            body_document(&vault, issue, BodyPart::Summary).unwrap_err().code,
+            codes::NOT_FOUND
+        );
+
+        let file = keep(&vault, "issue.md", "The week in **brief**.\n", FileOrigin::Feed, true);
+        vault.update_story_files(issue, |files| files.summary = Some(file.id)).unwrap();
+        let doc = part(&vault, issue, BodyPart::Summary);
+        assert!(doc.html.contains("<strong>brief</strong>"), "{}", doc.html);
+    }
+
+    #[test]
+    fn a_health_file_is_never_drawn_by_the_feed() {
+        let (_dir, vault) = test_vault();
+        let (id, _) = seeded(&vault, true, None, "");
+        let report =
+            keep(&vault, "labs.md", "[00:00:00] A clinical thing.\n", FileOrigin::Health, true);
+        vault
+            .update_story_files(id, |files| {
+                files.transcript = Some(report.id);
+                files.summary = Some(report.id);
+            })
+            .unwrap();
+        for which in [BodyPart::Summary, BodyPart::Transcript] {
+            let e = body_document(&vault, id, which).unwrap_err();
+            assert_eq!(e.code, codes::FORBIDDEN, "{which:?}");
+        }
+    }
+
+    #[test]
+    fn front_matter_is_taken_off_only_when_it_is_closed() {
+        assert_eq!(without_front_matter("---\na: 1\n---\n\nBody"), "\nBody");
+        assert_eq!(without_front_matter("---\r\na: 1\r\n---\r\nBody"), "Body");
+        // A rule at the top and nothing closing it.
+        assert_eq!(without_front_matter("---\nWords"), "---\nWords");
+        assert_eq!(without_front_matter("Words\n---\nMore"), "Words\n---\nMore");
     }
 
     // ---- pictures ---------------------------------------------------------

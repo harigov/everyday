@@ -51,7 +51,7 @@ import {
 /** How often the downloads are asked after while one is under way. */
 const DOWNLOAD_POLL_MS = 1000
 
-/** The same for background work: a transcript, an article, an audio version. */
+/** The same for background work: a transcript, an article, an audio version, a summary. */
 const WORK_POLL_MS = 1000
 
 /** How many records a page of History asks for. */
@@ -500,12 +500,14 @@ class UpNext {
 
   // ── transcripts, articles and audio ──────────────────────────────────
   //
-  // Three kinds of work the service does in the background, one at a time, for
+  // Four kinds of work the service does in the background, one at a time, for
   // a story or a file: write down what was said in a recording, write an
-  // episode up as an article from that, and record an article in a voice. The
-  // service answers a request at once and raises a change when the work is
-  // done; what a button needs in between is the list of work, which is read
-  // again every second while any is waiting or under way.
+  // episode up as an article from that, record an article in a voice, and
+  // summarise an article. The service answers a request at once and raises a
+  // change when the work is done; what a button needs in between is the list
+  // of work, which is read again every second while any is waiting or under
+  // way. A source's automation asks for the same work as it brings stories, so
+  // a summary can be going for a story nobody has asked about.
 
   /** The work asked for a story or a file, of `kind` when one is named. */
   workFor(
@@ -579,6 +581,11 @@ class UpNext {
       storyId: story.id,
     })
     if (!asked) this.#articleAfter.delete(story.id)
+  }
+
+  /** Summarise an article: the summary is kept in Files and linked as the story's `files.summary`. */
+  async summarize(story: StoryId): Promise<void> {
+    await this.#ask(() => api.summarizeStory(story), { kind: 'summary', storyId: story })
   }
 
   /** Record an article in a voice, and keep it in Files. */

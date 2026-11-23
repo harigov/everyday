@@ -1,13 +1,19 @@
 <script lang="ts">
   // Settings → Feed: what the Feed does with the podcasts it follows, how
-  // Recommended is ordered, Up Next and the player, and what it remembers.
-  // See `docs/plans/podcasts.md`.
+  // Recommended is ordered, Up Next and the player, what it remembers, and how
+  // long it keeps stories. See `docs/plans/podcasts.md` and
+  // `docs/plans/feed-usability.md`.
   //
   // One draft for the whole page, saved whole -- the service keeps one sealed
   // row (`save_feed_settings`) -- with Save pinned at the foot of the pane
   // (`SettingsView`'s `.save`, which has to be the last thing on the page).
-  // What is chosen here is the Feed's default for every show; a show's own
-  // page overrides any of it for that show alone.
+  // What is chosen here is the Feed's default for every show, feed and
+  // newsletter; a source's own page overrides any of it for that source alone.
+  //
+  // One thing on it is not the draft's: "Allow again" on a sender that was
+  // taken out of the Feed as not being a newsletter saves at once, and saves
+  // only that, over what is stored. A click on a button beside a name is not
+  // a wish to save whatever else is half-edited on the page.
   //
   // Nothing applies until it is saved, and that includes the criteria: each
   // one is a question the decision model is asked about every new story, so
@@ -15,6 +21,8 @@
   // there is an unsaved edit rather than asking the old questions.
 
   import { untrack, tick } from 'svelte'
+  import { sameNewsletter } from '../lib/automation'
+  import { MAX_RETENTION_DAYS } from '../lib/feed'
   import { panels } from '../lib/panels.svelte'
   import { upnext } from '../lib/upnext.svelte'
   import type {
@@ -22,6 +30,7 @@
     DownloadPolicy,
     FeedSettings,
     KeepPolicy,
+    NewsletterRef,
     TranscribePolicy,
   } from '../lib/types'
   import Icon from './Icon.svelte'
@@ -195,6 +204,46 @@
     if (draft && count !== null) draft.autofill = count
   }
 
+  // ── Clean-up ─────────────────────────────────────────────────────────
+
+  function setDays(kind: 'feeds' | 'newsletters', field: 'readDays' | 'unreadDays', raw: string) {
+    const days = whole(raw, 1, MAX_RETENTION_DAYS)
+    if (draft && days !== null) draft.cleanup[kind][field] = days
+  }
+
+  /** `settings` without `ref` among the not-newsletters; no list at all when none is left. */
+  function without(settings: FeedSettings, ref: NewsletterRef) {
+    const left = (settings.notNewsletters ?? []).filter((n) => !sameNewsletter(n, ref))
+    if (left.length > 0) settings.notNewsletters = left
+    else delete settings.notNewsletters
+  }
+
+  let allowing = $state(false)
+
+  async function allowAgain(ref: NewsletterRef) {
+    const stored = upnext.settings
+    if (!draft || !stored || allowing) return
+    allowing = true
+    notice = null
+    problem = null
+    // Only this change is saved, over what is stored: the page's other edits are
+    // still the draft's, and Save is still theirs.
+    const only: FeedSettings = $state.snapshot(stored)
+    without(only, ref)
+    const saved = await upnext.saveSettings(only)
+    allowing = false
+    if (!saved) {
+      problem = upnext.error ?? 'The change could not be saved.'
+      return
+    }
+    // The draft and what it is compared with move together, so the page is not
+    // made to look edited by what was saved.
+    without(draft, ref)
+    const base = JSON.parse(kept) as FeedSettings
+    without(base, ref)
+    kept = JSON.stringify(base)
+  }
+
   // ── Saving ───────────────────────────────────────────────────────────
 
   let saving = $state(false)
@@ -204,10 +253,17 @@
   async function save() {
     if (!draft) return
     const plain = $state.snapshot(draft)
+    saving = true
+    // What is not a newsletter is added to by the service -- an unfollow in a
+    // source's own settings while this page is open -- and taken from only by
+    // "Allow again", which saves at once; so it goes back as it is stored
+    // now, not as it was when the page opened.
+    await upnext.loadSettings()
     // A question with no words in it asks nothing: left out rather than
     // saved blank, and its row goes with it.
     const next: FeedSettings = {
       ...plain,
+      notNewsletters: upnext.settings?.notNewsletters ?? plain.notNewsletters,
       ranking: {
         ...plain.ranking,
         criteria: plain.ranking.criteria
@@ -215,7 +271,6 @@
           .filter((c) => c.text !== ''),
       },
     }
-    saving = true
     notice = null
     problem = null
     const saved = await upnext.saveSettings(next)
@@ -232,8 +287,8 @@
 </script>
 
 <p class="hint lead">
-  What the Feed does with podcasts, how Recommended is chosen, and how Up Next and the player
-  behave. A show's own page can say otherwise for that show.
+  What the Feed does with podcasts, how Recommended is chosen, how Up Next and the player behave,
+  and how long stories are kept. A source's own page can say otherwise for that source.
 </p>
 
 {#if !draft}
@@ -601,6 +656,98 @@
         </span>
       </label>
     </section>
+
+    <section class="block">
+      <h3 class="eyebrow">Clean-up</h3>
+
+      <div class="field-row">
+        <span class="label" id="feed-clean-feeds">Web feeds, Hacker News and podcasts</span>
+        <div class="when" role="group" aria-labelledby="feed-clean-feeds">
+          <input
+            class="field num"
+            type="number"
+            min="1"
+            max={MAX_RETENTION_DAYS}
+            aria-label="Days to keep a story from a feed after it is read"
+            value={d.cleanup.feeds.readDays}
+            oninput={(e) => setDays('feeds', 'readDays', e.currentTarget.value)}
+          />
+          <span class="hint">days once read, and</span>
+          <input
+            class="field num"
+            type="number"
+            min="1"
+            max={MAX_RETENTION_DAYS}
+            aria-label="Days to keep a story from a feed that was never read"
+            value={d.cleanup.feeds.unreadDays}
+            oninput={(e) => setDays('feeds', 'unreadDays', e.currentTarget.value)}
+          />
+          <span class="hint">days if not.</span>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <span class="label" id="feed-clean-newsletters">Newsletters</span>
+        <div class="when" role="group" aria-labelledby="feed-clean-newsletters">
+          <input
+            class="field num"
+            type="number"
+            min="1"
+            max={MAX_RETENTION_DAYS}
+            aria-label="Days to keep a newsletter after it is read"
+            value={d.cleanup.newsletters.readDays}
+            oninput={(e) => setDays('newsletters', 'readDays', e.currentTarget.value)}
+          />
+          <span class="hint">days once read, and</span>
+          <input
+            class="field num"
+            type="number"
+            min="1"
+            max={MAX_RETENTION_DAYS}
+            aria-label="Days to keep a newsletter that was never read"
+            value={d.cleanup.newsletters.unreadDays}
+            oninput={(e) => setDays('newsletters', 'unreadDays', e.currentTarget.value)}
+          />
+          <span class="hint">days if not.</span>
+        </div>
+        <span class="hint">
+          Newsletters are only removed from the Feed — their emails stay in Mail. To bin a
+          newsletter’s emails too, turn that on in its own settings.
+        </span>
+      </div>
+
+      <p class="hint">
+        Saved stories are kept for good. A source’s own settings can choose another time for just
+        that source.
+      </p>
+
+      {#if (d.notNewsletters ?? []).length > 0}
+        <div class="field-row">
+          <span class="label" id="feed-not-newsletters">Not newsletters</span>
+          <span class="hint">
+            Taken out of the Feed as not being newsletters, so they are not found again. Their
+            emails are still in Mail.
+          </span>
+          <ul class="refs" aria-labelledby="feed-not-newsletters">
+            {#each d.notNewsletters ?? [] as n (`${n.sender}\n${n.name ?? ''}`)}
+              <li class="ref">
+                <span class="who">
+                  <b>{n.name?.trim() || n.sender}</b>
+                  {#if n.name?.trim()}<small>{n.sender}</small>{/if}
+                </span>
+                <button
+                  class="btn btn-sm btn-outline"
+                  disabled={allowing}
+                  onclick={() => void allowAgain(n)}
+                >
+                  Allow again
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+    </section>
   </div>
 
   <div class="save">
@@ -786,6 +933,45 @@
   }
   .word.neg {
     color: var(--danger);
+  }
+
+  /* The senders taken out as not being newsletters, and the way back. */
+  .refs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    margin: var(--sp-1) 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .ref {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .who {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .who b {
+    font-size: var(--text-base);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .who small {
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .icon-btn {

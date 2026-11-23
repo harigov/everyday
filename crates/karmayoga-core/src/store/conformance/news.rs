@@ -39,6 +39,7 @@ pub fn run_news_suite(store: &dyn JournalStore) {
     a_story_round_trips_every_field(news);
     inserting_is_idempotent_by_source_and_key(news);
     update_story_rewrites_content_but_never_state(news);
+    moving_stories_changes_their_source_and_skips_what_cannot_move(news);
     story_by_key_finds_the_first_arrival_across_sources(news);
     listing_filters_and_pages_newest_first(news);
     counts_follow_read_state_and_mark_all_read_moves_it(news);
@@ -240,7 +241,7 @@ fn source_round_trips_every_field(news: &dyn NewsStore) {
 
     let web = followed(news, "plain");
     let letters = NewsSource::new(
-        SourceKind::Mail { sender: "letters@writer.example".into() },
+        SourceKind::Mail { sender: "letters@writer.example".into(), name: String::new() },
         "A writer's letters",
     );
     news.put_source(&letters).expect("put_source");
@@ -359,6 +360,7 @@ fn a_story_round_trips_every_field(news: &dyn NewsStore) {
         transcript: Some(FileId::new()),
         text: Some(FileId::new()),
         audio: Some(FileId::new()),
+        summary: None,
     };
     assert_eq!(insert(news, &[&story]), vec![story.id]);
 
@@ -496,6 +498,88 @@ fn update_story_rewrites_content_but_never_state(news: &dyn NewsStore) {
     forget(news, &[&source, &other]);
 }
 
+fn moving_stories_changes_their_source_and_skips_what_cannot_move(news: &dyn NewsStore) {
+    let all = followed(news, "all-letters");
+    let weekly = followed(news, "weekly");
+    let digest = followed(news, "digest");
+
+    let mut mine = new_story(&all, "k-mine", "Issue 1", ago(5));
+    mine.score = Some(3);
+    let theirs = new_story(&all, "k-theirs", "Issue 2", ago(4));
+    let twin = new_story(&all, "k-twin", "Issue 3", ago(3));
+    let old = new_story(&all, "k-old", "Issue 0", ago(200));
+    let stay = new_story(&weekly, "k-stay", "Already here", ago(2));
+    let already = new_story(&weekly, "k-twin", "Already had it", ago(3));
+    assert_eq!(insert(news, &[&mine, &theirs, &twin, &old, &stay, &already]).len(), 6);
+
+    // What a story carries is not the source's: a state, a body, a file.
+    news.set_read(&[mine.id], true).unwrap();
+    news.set_saved(&[mine.id], true).unwrap();
+    news.put_body(&body_of(&mine, "<p>Issue one.</p>")).unwrap();
+    let files = files_of(true, true);
+    news.set_story_files(mine.id, &files).unwrap();
+    let rules =
+        [ExpiryRule { source_id: all.id, retention: Retention { read_days: 30, unread_days: 30 } }];
+    assert_eq!(news.expire(&rules, now()).unwrap().expired, 1);
+    assert!(news.get_story(old.id).unwrap().expired, "a tombstone, to be left where it is");
+
+    let moved = news
+        .move_stories(&[
+            (mine.id, weekly.id),
+            (theirs.id, digest.id),
+            // The other source has this key: stays, and costs nothing else.
+            (twin.id, weekly.id),
+            (old.id, weekly.id),
+            (StoryId::new(), weekly.id),
+            // Where it is already.
+            (stay.id, weekly.id),
+        ])
+        .expect("move_stories");
+    assert_eq!(moved, 2);
+
+    // The column and the sealed copy agree: it is listed under the new
+    // source, and says so.
+    let weekly_query = StoryQuery { sources: vec![weekly.id], ..Default::default() };
+    assert_eq!(sorted(listed_ids(news, &weekly_query)), sorted(vec![mine.id, stay.id, already.id]));
+    let digest_query = StoryQuery { sources: vec![digest.id], ..Default::default() };
+    assert_eq!(listed_ids(news, &digest_query), vec![theirs.id]);
+    assert_eq!(news.get_story(mine.id).unwrap().source_id, weekly.id);
+    assert_eq!(news.get_story(theirs.id).unwrap().source_id, digest.id);
+    assert_eq!(news.get_story(twin.id).unwrap().source_id, all.id, "the key was taken");
+    assert_eq!(news.get_story(old.id).unwrap().source_id, all.id, "a tombstone stays");
+    assert_eq!(news.get_story(stay.id).unwrap().source_id, weekly.id);
+
+    let back = news.get_story(mine.id).unwrap();
+    assert!(back.read && back.saved && back.has_body, "the rest of the story goes with it");
+    assert_eq!((back.title.as_str(), back.score, &back.files), ("Issue 1", Some(3), &files));
+    assert!(news.get_body(mine.id).unwrap().is_some());
+    assert_eq!(news.stories_with_files().unwrap(), vec![back]);
+
+    assert_eq!(tally(news, all.id), (1, 1), "the one that stayed");
+    assert_eq!(tally(news, weekly.id), (2, 3), "the moved one is read, the others not");
+    assert_eq!(tally(news, digest.id), (1, 1));
+    let mut left = news.keys_for_source(all.id).unwrap();
+    left.sort();
+    assert_eq!(left, ["k-old", "k-twin"], "a moved story's key goes with it");
+    let mut there = news.keys_for_source(weekly.id).unwrap();
+    there.sort();
+    assert_eq!(there, ["k-mine", "k-stay", "k-twin"]);
+
+    // A second pass finds nothing left to do.
+    assert_eq!(news.move_stories(&[(mine.id, weekly.id), (theirs.id, digest.id)]).unwrap(), 0);
+    assert_eq!(news.move_stories(&[]).unwrap(), 0);
+
+    // It is the new source's now, as far as unfollowing goes.
+    forget(news, &[&all]);
+    assert!(news.get_story(mine.id).is_ok() && news.get_story(theirs.id).is_ok());
+    super::assert_not_found(news.get_story(twin.id));
+    forget(news, &[&weekly]);
+    super::assert_not_found(news.get_story(mine.id));
+    assert!(news.get_body(mine.id).unwrap().is_none());
+    assert!(news.stories_with_files().unwrap().is_empty());
+    forget(news, &[&digest]);
+}
+
 fn story_by_key_finds_the_first_arrival_across_sources(news: &dyn NewsStore) {
     let first = followed(news, "first-seen");
     let second = followed(news, "second-seen");
@@ -517,7 +601,7 @@ fn story_by_key_finds_the_first_arrival_across_sources(news: &dyn NewsStore) {
         retention: Retention { read_days: 30, unread_days: 30 },
     }];
     let report = news.expire(&rules, now()).unwrap();
-    assert_eq!(report, ExpireReport { expired: 1, removed: 0 });
+    assert_eq!(report, ExpireReport { expired: 1, removed: 0, mail: Vec::new() });
     let found = news.story_by_key("k-shared").unwrap().expect("the other is still live");
     assert_eq!(found.id, late.id);
 
@@ -822,7 +906,7 @@ fn expiry_leaves_tombstones_and_spares_saved_stories(news: &dyn NewsStore) {
     assert_eq!((tally(news, tight.id), tally(news, loose.id)), ((3, 5), (2, 4)));
 
     let report = news.expire(&rules, now()).unwrap();
-    assert_eq!(report, ExpireReport { expired: 4, removed: 0 });
+    assert_eq!(report, ExpireReport { expired: 4, removed: 0, mail: Vec::new() });
 
     // Never listed or counted again; what is kept is untouched.
     let listed = listed_ids(news, &StoryQuery::default());
@@ -886,7 +970,10 @@ fn old_tombstones_are_removed_and_their_keys_forgotten(news: &dyn NewsStore) {
     ];
     assert_eq!(news.insert_stories(&pairs).unwrap().len(), 3);
 
-    assert_eq!(news.expire(&rules, now()).unwrap(), ExpireReport { expired: 1, removed: 0 });
+    assert_eq!(
+        news.expire(&rules, now()).unwrap(),
+        ExpireReport { expired: 1, removed: 0, mail: Vec::new() }
+    );
     let mut keys = news.keys_for_source(source.id).unwrap();
     keys.sort();
     assert_eq!(keys, ["doomed", "fresh", "kept"], "a young tombstone is kept");
@@ -895,7 +982,7 @@ fn old_tombstones_are_removed_and_their_keys_forgotten(news: &dyn NewsStore) {
     // and the unread story that has meanwhile aged out becomes a young one.
     let later = now() + SignedDuration::from_hours(24 * 300);
     let report = news.expire(&rules, later).unwrap();
-    assert_eq!(report, ExpireReport { expired: 1, removed: 1 });
+    assert_eq!(report, ExpireReport { expired: 1, removed: 1, mail: Vec::new() });
     let mut keys = news.keys_for_source(source.id).unwrap();
     keys.sort();
     assert_eq!(keys, ["fresh", "kept"], "the old tombstone's key is forgotten");
@@ -1079,7 +1166,10 @@ fn newsletter_stories_follow_their_message(store: &dyn JournalStore) {
     mail.put_mailbox(&inbox).unwrap();
 
     let sender = "letters@writer.example";
-    let letters = NewsSource::new(SourceKind::Mail { sender: sender.into() }, "A writer's letters");
+    let letters = NewsSource::new(
+        SourceKind::Mail { sender: sender.into(), name: String::new() },
+        "A writer's letters",
+    );
     news.put_source(&letters).unwrap();
     let plain_source = followed(news, "not-mail");
 
@@ -1167,7 +1257,7 @@ fn newsletter_stories_follow_their_message(store: &dyn JournalStore) {
     assert_eq!(insert(news, &[&old_seen, &old_unseen]).len(), 2);
     mark(4, true); // uid 4 is issue 3, the one whose story is `old_seen`
     let report = news.expire(&[], now()).unwrap();
-    assert_eq!(report, ExpireReport { expired: 1, removed: 0 });
+    assert_eq!(report, ExpireReport { expired: 1, removed: 0, mail: Vec::new() });
     assert!(news.get_story(old_seen.id).unwrap().expired, "read in Mail, so past thirty days");
     assert!(!news.get_story(old_unseen.id).unwrap().expired, "unread in Mail, so kept");
 
@@ -1285,7 +1375,10 @@ fn files_are_written_only_by_set_story_files(news: &dyn NewsStore) {
     super::assert_not_found(news.set_story_files(StoryId::new(), &files));
     let old = new_story(&source, "k-old", "Old", ago(200));
     insert(news, &[&old]);
-    assert_eq!(news.expire(&[], now()).unwrap(), ExpireReport { expired: 1, removed: 0 });
+    assert_eq!(
+        news.expire(&[], now()).unwrap(),
+        ExpireReport { expired: 1, removed: 0, mail: Vec::new() }
+    );
     super::assert_not_found(news.set_story_files(old.id, &files));
     assert!(news.get_story(old.id).unwrap().files.is_empty(), "a tombstone stays one");
 
@@ -1300,16 +1393,20 @@ fn a_story_with_files_or_in_up_next_is_never_expired(news: &dyn NewsStore) {
     }];
     let old = |key: &str| new_story(&source, key, key, ago(100));
     let (with_files, queued, plain) = (old("with-files"), old("queued"), old("plain"));
+    let written = old("transcript-only");
     let mut saved = old("saved");
     saved.saved = true;
-    insert(news, &[&with_files, &queued, &saved, &plain]);
+    insert(news, &[&with_files, &queued, &saved, &plain, &written]);
     news.set_story_files(with_files.id, &files_of(true, false)).unwrap();
+    news.set_story_files(written.id, &files_of(false, true)).unwrap();
 
-    // Nothing in `keep` is expired, nor is a story with files; saved ones
-    // never are, and the plain one goes.
+    // Nothing in `keep` is expired, nor is a story with its episode
+    // downloaded; saved ones never are. The plain one goes, and so does one
+    // whose only file is a transcript: that stays in Files without it.
     let report = news.expire_except(&rules, &[queued.id], now()).unwrap();
-    assert_eq!(report, ExpireReport { expired: 1, removed: 0 });
+    assert_eq!(report, ExpireReport { expired: 2, removed: 0, mail: Vec::new() });
     assert!(news.get_story(plain.id).unwrap().expired);
+    assert!(news.get_story(written.id).unwrap().expired);
     for kept in [&with_files, &queued, &saved] {
         assert!(!news.get_story(kept.id).unwrap().expired, "{}", kept.key);
     }
@@ -1317,14 +1414,17 @@ fn a_story_with_files_or_in_up_next_is_never_expired(news: &dyn NewsStore) {
     // `expire` is `expire_except` with nothing to keep: the story that was
     // in Up Next is now just an old one, and the one with files still is not.
     let report = news.expire(&rules, now()).unwrap();
-    assert_eq!(report, ExpireReport { expired: 1, removed: 0 });
+    assert_eq!(report, ExpireReport { expired: 1, removed: 0, mail: Vec::new() });
     assert!(news.get_story(queued.id).unwrap().expired);
     assert!(!news.get_story(with_files.id).unwrap().expired, "expire spares files too");
     assert_eq!(news.expire(&rules, now()).unwrap(), ExpireReport::default());
 
     // With its files gone, it ages out like any other.
     news.set_story_files(with_files.id, &StoryFiles::default()).unwrap();
-    assert_eq!(news.expire(&rules, now()).unwrap(), ExpireReport { expired: 1, removed: 0 });
+    assert_eq!(
+        news.expire(&rules, now()).unwrap(),
+        ExpireReport { expired: 1, removed: 0, mail: Vec::new() }
+    );
     assert!(news.get_story(with_files.id).unwrap().expired);
     assert!(!news.get_story(saved.id).unwrap().expired);
 

@@ -1,11 +1,12 @@
 <script lang="ts">
   // What can be changed about one source: its name and folder, whether its
-  // pictures load, how long its stories are kept, the words that drop a story,
-  // and whether it is being fetched at all.
+  // pictures load, what is done by itself with each new story, how long its
+  // stories are kept, the words that drop a story, and whether it is being
+  // fetched at all.
   //
   // Everything here is the source's own and nothing is applied until Save, the
   // way a calendar's or an account's is not -- except that those are switches
-  // with one effect each, and this is a form with nine. The record saved is
+  // with one effect each, and this is a form with a dozen. The record saved is
   // the one the store holds *now* with these fields laid over it, not the copy
   // this dialog opened with: a refresh can have given the source its icon
   // while the dialog was open, and writing the old copy back would take it
@@ -18,13 +19,30 @@
   // learn what "default" is. A show is listed apart from the folders, so it is
   // not asked which folder it is in, and the article fetching a feed of
   // links needs means nothing for a recording.
+  //
+  // How long stories are kept is the same kind of choice, and so is whether a
+  // source summarises what it brings: its kind's default, shown, or its own. A
+  // newsletter that was found in Mail says so, quietly, and can be sent away
+  // as "not a newsletter"; one from a sender may also say that an issue's
+  // email goes to Trash when the issue is cleaned up, which nothing but its own
+  // setting can do.
 
   import { onMount, untrack } from 'svelte'
+  import {
+    automationForm,
+    automationFromForm,
+    defaultRetention,
+    isMailSender,
+    retentionForm,
+    retentionFromForm,
+    retentionLabel,
+    type AutomationForm,
+    type RetentionForm,
+  } from '../lib/automation'
   import { feed } from '../lib/feed.svelte'
   import {
-    DEFAULT_RETENTION,
     MAX_RETENTION_DAYS,
-    clampDays,
+    NOT_NEWSLETTER_DETAIL,
     folderNames,
     muteText,
     parseMute,
@@ -59,10 +77,7 @@
   let keepOutOfInbox = $state(original.keepOutOfInbox)
   let paused = $state(original.paused)
   let mute = $state(muteText(original.mute))
-  let readDays = $state<number | null>(original.retention?.readDays ?? DEFAULT_RETENTION.readDays)
-  let unreadDays = $state<number | null>(
-    original.retention?.unreadDays ?? DEFAULT_RETENTION.unreadDays,
-  )
+  let trashMail = $state(original.trashMail === true)
 
   let saving = $state(false)
   let confirming = $state(false)
@@ -70,6 +85,9 @@
   const kind = original.kind
   const isWeb = kind.type === 'web'
   const isMail = kind.type === 'mail' || kind.type === 'newsletters'
+  /** One sender's mail, followed or found: what an issue's email can be binned for. */
+  const fromSender = isMailSender(original)
+  const found = original.found === true
 
   // ── A podcast's own say ────────────────────────────────────────────────
 
@@ -78,20 +96,46 @@
   let form = $state<PodcastForm>(podcastForm(show ?? { author: '' }))
 
   // The defaults the options name. Loaded if the Feed's settings have not
-  // been yet; until they are, the option says only that it is the default.
+  // been yet; until they are, a podcast's option says only that it is the
+  // default and the clean-up's names the stock numbers.
   onMount(() => {
-    if (isShow && !upnext.settings) void upnext.loadSettings()
+    if (!upnext.settings) void upnext.loadSettings()
   })
   const defaults = $derived(upnext.settings?.podcasts ?? null)
   const useDefault = (label: string | null) =>
     label ? `Use the Feed's default (${label})` : "Use the Feed's default"
+
+  // ── What is done with each new story ───────────────────────────────────
+
+  let auto = $state<AutomationForm>(automationForm(original))
+
+  // ── How long stories are kept ──────────────────────────────────────────
+
+  const cleanup = $derived(upnext.settings?.cleanup ?? null)
+  /** What the source keeps its stories for when it has not said: its kind's default. */
+  const keepDefault = $derived(defaultRetention(original, cleanup))
+  let keep = $state<RetentionForm>(untrack(() => retentionForm(original, cleanup)))
+  /** The numbers were typed in: they are somebody's, and a default arriving later leaves them. */
+  let keepEdited = false
+  /** What the select shows, which is a word where the form keeps a flag. */
+  const keepChoice = () => (keep.custom ? 'custom' : 'default')
+  const chooseKeep = (choice: string) => (keep.custom = choice === 'custom')
+
+  // A source with no retention of its own opens with its kind's default in the
+  // boxes, ready to edit; the settings may arrive after the dialog does.
+  $effect(() => {
+    const fallback = keepDefault
+    if (original.retention || keepEdited) return
+    keep.readDays = fallback.readDays
+    keep.unreadDays = fallback.unreadDays
+  })
 
   /** Where it comes from, in words, so the dialog says what it is about. */
   const following =
     kind.type === 'web'
       ? [show?.author.trim(), kind.url].filter(Boolean).join(' · ')
       : kind.type === 'mail'
-        ? `Newsletters from ${kind.sender}, read in Mail`
+        ? `${kind.name?.trim() || 'Newsletters'} from ${kind.sender}, read in Mail`
         : kind.type === 'newsletters'
           ? 'Every newsletter in Mail, but for senders you follow on their own'
           : kind.minPoints > 0
@@ -103,8 +147,6 @@
   async function save() {
     if (saving) return
     saving = true
-    const read = clampDays(readDays, DEFAULT_RETENTION.readDays)
-    const unread = clampDays(unreadDays, DEFAULT_RETENTION.unreadDays)
     // The store's copy, if the source is still there, so nothing a refresh
     // wrote in the meantime is lost.
     const current = feed.sources.find((s) => s.source.id === original.id)?.source ?? original
@@ -119,10 +161,9 @@
       mute: parseMute(mute),
       // The defaults are stored as no choice at all, so a source nobody has
       // set anything on keeps following them if they ever change.
-      retention:
-        read === DEFAULT_RETENTION.readDays && unread === DEFAULT_RETENTION.unreadDays
-          ? null
-          : { readDays: read, unreadDays: unread },
+      retention: retentionFromForm(keep, original, cleanup),
+      automation: automationFromForm(original, auto),
+      trashMail: fromSender ? trashMail : false,
       paused,
     }
     await feed.saveSource(next)
@@ -163,7 +204,12 @@
   use:trapFocus
 >
   <h2>{sourceLabel(original)}</h2>
-  <p class="hint following">{following}</p>
+  <div class="following">
+    <p class="hint line">{following}</p>
+    {#if found}
+      <p class="hint line">Found among your newsletters.</p>
+    {/if}
+  </div>
 
   <label class="field-label" for="src-title">Name</label>
   <input
@@ -236,6 +282,39 @@
         <small>A paused source is not refreshed. What it already fetched stays readable.</small>
       </span>
     </label>
+  </div>
+
+  <hr class="sep spaced" />
+  <h3 class="eyebrow section">Automation</h3>
+
+  <div class="switches under">
+    <label class="toggle">
+      <input type="checkbox" bind:checked={auto.summarize} />
+      <span>
+        <b>{isShow ? 'Write an article from each transcript' : 'Summarise new stories'}</b>
+        <small>
+          {#if isShow}
+            Once an episode has a transcript, an article is written from it and kept in Files: the
+            Summary tab. A show does this unless it is turned off.
+          {:else}
+            Each new story is summarised as it arrives, and the summary is kept in Files. Otherwise
+            the Summary tab makes it when you ask.
+          {/if}
+        </small>
+      </span>
+    </label>
+
+    {#if !isShow}
+      <label class="toggle">
+        <input type="checkbox" bind:checked={auto.audio} />
+        <span>
+          <b>Make each new article into audio</b>
+          <small>
+            Each new article is recorded and kept in Files, so it plays from Up Next without asking.
+          </small>
+        </span>
+      </label>
+    {/if}
   </div>
 
   {#if isShow}
@@ -341,31 +420,67 @@
       />
       <span class="hint">seconds, in an episode not started yet. 0 plays from the start.</span>
     </div>
-
-    <hr class="sep spaced" />
   {/if}
 
-  <span class="field-label spaced">Keep for</span>
-  <div class="keep">
-    <input
-      class="field days"
-      type="number"
-      min="1"
-      max={MAX_RETENTION_DAYS}
-      aria-label="Days to keep a story after it is read"
-      bind:value={readDays}
-    />
-    <span class="hint">days once read, and</span>
-    <input
-      class="field days"
-      type="number"
-      min="1"
-      max={MAX_RETENTION_DAYS}
-      aria-label="Days to keep a story that was never read"
-      bind:value={unreadDays}
-    />
-    <span class="hint">days if not. Saved stories are kept for good.</span>
+  <hr class="sep spaced" />
+  <h3 class="eyebrow section">Clean-up</h3>
+
+  <label class="field-label" for="src-clean">Clean up after</label>
+  <div class="choice">
+    <select id="src-clean" class="field" bind:value={keepChoice, chooseKeep}>
+      <option value="default">Use the default ({retentionLabel(keepDefault)})</option>
+      <option value="custom">Choose for this source</option>
+    </select>
+    {#if keep.custom}
+      <input
+        class="field days"
+        type="number"
+        min="1"
+        max={MAX_RETENTION_DAYS}
+        aria-label="Days to keep a story after it is read"
+        bind:value={keep.readDays}
+        oninput={() => (keepEdited = true)}
+      />
+      <span class="hint">days once read, and</span>
+      <input
+        class="field days"
+        type="number"
+        min="1"
+        max={MAX_RETENTION_DAYS}
+        aria-label="Days to keep a story that was never read"
+        bind:value={keep.unreadDays}
+        oninput={() => (keepEdited = true)}
+      />
+      <span class="hint">days if not.</span>
+    {/if}
   </div>
+  <p class="hint under">
+    {#if fromSender}
+      An old issue is removed from the Feed; its email stays in Mail unless you say otherwise below.
+    {:else if isMail}
+      An old issue is removed from the Feed; its email stays in Mail.
+    {:else}
+      An old story is removed from the Feed.
+    {/if}
+    Saved stories are kept for good.
+  </p>
+
+  {#if fromSender}
+    <div class="switches">
+      <label class="toggle">
+        <input type="checkbox" bind:checked={trashMail} />
+        <span>
+          <b>Also move each issue’s email to Trash when it is cleaned up</b>
+          <small>
+            Starred ones stay. The email goes to Trash in Mail like any other you delete, where it
+            can be got back.
+          </small>
+        </span>
+      </label>
+    </div>
+  {/if}
+
+  <hr class="sep spaced" />
 
   <label class="field-label spaced" for="src-mute">Mute words</label>
   <input
@@ -380,7 +495,9 @@
   </p>
 
   <div class="sheet-row">
-    <button class="btn btn-ghost-danger" onclick={() => (confirming = true)}>Unfollow…</button>
+    <button class="btn btn-ghost-danger" onclick={() => (confirming = true)}>
+      {found ? 'Not a newsletter…' : 'Unfollow…'}
+    </button>
     <span class="spacer"></span>
     <button class="btn" onclick={onclose}>Cancel</button>
     <button class="btn btn-primary" disabled={saving} onclick={() => void save()}>Save</button>
@@ -389,9 +506,11 @@
 
 {#if confirming}
   <ConfirmDialog
-    title={'Unfollow “' + sourceLabel(original) + '”?'}
-    detail={unfollowDetail(original)}
-    confirmLabel="Unfollow"
+    title={found
+      ? 'Take “' + sourceLabel(original) + '” out of the Feed?'
+      : 'Unfollow “' + sourceLabel(original) + '”?'}
+    detail={found ? NOT_NEWSLETTER_DETAIL : unfollowDetail(original)}
+    confirmLabel={found ? 'Not a newsletter' : 'Unfollow'}
     onconfirm={() => void unfollow()}
     oncancel={() => (confirming = false)}
   />
@@ -416,6 +535,9 @@
   }
   .following {
     margin: 2px 0 var(--sp-4);
+  }
+  .line {
+    margin: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -435,6 +557,10 @@
     flex-direction: column;
     gap: var(--sp-3);
     margin-top: var(--sp-4);
+  }
+  /* Under a section's heading, which has the gap already. */
+  .switches.under {
+    margin-top: 0;
   }
   .toggle {
     display: flex;

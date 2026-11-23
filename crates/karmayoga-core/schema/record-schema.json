@@ -8217,6 +8217,23 @@
   },
   "NewsSource": {
     "$defs": {
+      "Automation": {
+        "description": "What a source has done by itself with each story it brings.",
+        "properties": {
+          "audio": {
+            "description": "Make an article into audio. A podcast ignores it.",
+            "type": "boolean"
+          },
+          "summarize": {
+            "description": "Summarise it: an article gets a summary in Files, an episode an\narticle written from its transcript as soon as there is one. `None`\nis the kind's default -- see [`NewsSource::summarizes`].",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "BlobId": {
         "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
         "type": "string"
@@ -8491,6 +8508,10 @@
           {
             "description": "Newsletters already arriving in Mail, from one sender. Fetches\nnothing: its stories point at messages the mail engine already\nstored, and their read state *is* the message's.\n\nMatched by sender address alone. A stored message keeps no memory of\nthe `List-Id` it arrived with (see `mail::categorize`), and one sender\nis what a person picks from the list of who writes to them anyway.",
             "properties": {
+              "name": {
+                "description": "The display name of the one newsletter this is, when the sender\nsends several (The Download and The Algorithm come from one\naddress). Empty for every message from the sender. Compared\ntrimmed and case-insensitively.",
+                "type": "string"
+              },
               "sender": {
                 "description": "The sender's address, lower-cased.",
                 "type": "string"
@@ -8549,6 +8570,10 @@
         "description": "Followed by the assistant rather than added by the person. Such a\nsource is fetched from the internet only: its address may have come\nfrom whatever the assistant last read, and it is fetched again every\nfew minutes for as long as it exists. One the person added reaches\nwherever they pointed it, their own network included. Written only\nwhen set, so every source from before it existed reads as the\nperson's.",
         "type": "boolean"
       },
+      "automation": {
+        "$ref": "#/$defs/Automation",
+        "description": "What is done by itself with each new story."
+      },
       "createdAt": {
         "format": "date-time",
         "type": "string"
@@ -8557,6 +8582,10 @@
         "default": "",
         "description": "The sidebar folder this sits under. Empty means none. A sealed string\nrather than a record of its own: there are tens of sources, they are\ndecrypted together, and a folder table would be a second thing to\nkeep in step for nothing.",
         "type": "string"
+      },
+      "found": {
+        "description": "A newsletter the Newsletters source found, rather than one a person\nfollowed: it fetches nothing itself, its issues arrive through that\nsource's turn, and unfollowing it says it is not a newsletter. See\n`docs/plans/feed-usability.md`.",
+        "type": "boolean"
       },
       "fullText": {
         "default": false,
@@ -8639,6 +8668,10 @@
       "title": {
         "description": "What the sidebar calls it. Filled from the feed's own title when it is\nadded, and the person's from then on: the refresher never writes it.",
         "type": "string"
+      },
+      "trashMail": {
+        "description": "Mail sources only: when one of its issues is cleaned up, move the\nemail to Trash as well (unless it is starred). Never a default:\nmisfiled mail must not be binned by a setting meant for newsletters.",
+        "type": "boolean"
       },
       "updatedAt": {
         "format": "date-time",
@@ -14767,6 +14800,14 @@
           },
           "media": {
             "description": "The episode, downloaded.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "description": "A summary of an article, as Markdown -- see `docs/plans/feed-usability.md`.\nAn episode's summary is the article written from its transcript, kept\nas its body, not this.",
             "format": "uuid",
             "type": [
               "string",

@@ -30,7 +30,9 @@ use jiff::Timestamp;
 use karmayoga_core::library::Item;
 use karmayoga_core::mail::Category;
 use karmayoga_core::news::opml::Outline;
-use karmayoga_core::news::{HnList, NewsSource, PodcastSettings, SourceKind, SourceSummary, Story};
+use karmayoga_core::news::{
+    HnList, NewsSource, NewsletterRef, PodcastSettings, SourceKind, SourceSummary, Story,
+};
 use karmayoga_core::store::library::ItemQuery;
 use karmayoga_core::store::news::{StoryPage, StoryQuery};
 use karmayoga_core::{ItemId, KindId, NewsSourceId, StoryId, Vault};
@@ -184,12 +186,33 @@ pub struct ImportOpml {
 
 // ---- sources ------------------------------------------------------------
 
+/// Every source with its counts and its health.
+///
+/// A newsletter the Newsletters source found has no fetch state of its own --
+/// it fetches nothing, its issues arrive when that source takes its turn --
+/// and would be drawn as never having been fetched. It is given the
+/// Newsletters source's instead, which is when it was last read.
 async fn list_news_sources(
     svc: Arc<Service>,
     _ctx: Ctx,
     _args: Nothing,
 ) -> CommandResult<Vec<SourceSummary>> {
-    svc.on_vault(|vault| vault.news_source_summaries()).await
+    svc.on_vault(|vault| {
+        let mut summaries = vault.news_source_summaries()?;
+        let letters = summaries
+            .iter()
+            .find(|s| matches!(s.source.kind, SourceKind::Newsletters))
+            .map(|s| (s.last_ok, s.last_error.clone(), s.next_at));
+        if let Some((last_ok, last_error, next_at)) = letters {
+            for summary in summaries.iter_mut().filter(|s| s.source.found && s.next_at.is_none()) {
+                summary.last_ok = last_ok;
+                summary.last_error = last_error.clone();
+                summary.next_at = next_at;
+            }
+        }
+        Ok(summaries)
+    })
+    .await
 }
 
 /// Every feed at, or advertised by, an address somebody pasted.
@@ -263,12 +286,28 @@ async fn add_news_source(
                     "give the email address the newsletter comes from",
                 ));
             }
-            let kind = SourceKind::Mail { sender: sender.clone() };
-            refuse_duplicate(&existing, &kind)?;
-            let title = clean(title).unwrap_or(sender);
-            let mut source = NewsSource::new(kind, title);
-            source.folder = folder.map(|f| f.trim().to_string()).unwrap_or_default();
-            source
+            let kind = SourceKind::Mail { sender: sender.clone(), name: String::new() };
+            // A newsletter the Newsletters source found under this address is
+            // not refused as followed already: following it makes it the
+            // person's, with a turn of its own that takes everything the
+            // sender sends, as any followed sender's does.
+            if let Some(found) = existing.iter().find(|s| s.found && s.kind == kind) {
+                let mut adopted = found.clone();
+                adopted.found = false;
+                if let Some(title) = clean(title) {
+                    adopted.title = title;
+                }
+                if let Some(folder) = folder {
+                    adopted.folder = folder.trim().to_string();
+                }
+                adopted
+            } else {
+                refuse_duplicate(&existing, &kind)?;
+                let title = clean(title).unwrap_or(sender);
+                let mut source = NewsSource::new(kind, title);
+                source.folder = folder.map(|f| f.trim().to_string()).unwrap_or_default();
+                source
+            }
         }
         NewSource::Newsletters { folder } => {
             if !vault.supports_mail() {
@@ -290,10 +329,13 @@ async fn add_news_source(
         let (vault, source) = (vault.clone(), source.clone());
         blocking(move || Ok(vault.save_news_source(&source)?)).await?;
     }
-    if let SourceKind::Mail { sender } = &source.kind {
-        let (vault, sender) = (vault.clone(), sender.clone());
+    if let SourceKind::Mail { sender, name } = &source.kind {
+        let (vault, sender, name) = (vault.clone(), sender.clone(), name.clone());
         blocking(move || {
             file_as_newsletter(&vault, &sender);
+            if let Err(e) = take_back(&vault, &sender, &name) {
+                tracing::info!(error = %e, "could not take a followed sender off the list of non-newsletters");
+            }
             Ok(())
         })
         .await?;
@@ -430,17 +472,79 @@ async fn followed_web(
     Ok(source)
 }
 
+/// Save a source as a person edited it.
+///
+/// Whether it was found is not theirs to say: it is the stored copy's, so a
+/// caller cannot make a source one the Newsletters source found, and one that
+/// was found stays so until it is deleted.
 async fn save_news_source(svc: Arc<Service>, _ctx: Ctx, args: SaveSource) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.save_news_source(&args.source)).await
+    svc.on_vault(move |vault| {
+        let mut source = args.source;
+        source.found = match vault.news_source(source.id) {
+            Ok(stored) => stored.found,
+            Err(karmayoga_core::Error::NotFound { .. }) => false,
+            Err(e) => return Err(e),
+        };
+        vault.save_news_source(&source)
+    })
+    .await
 }
 
 /// Unfollow: the source, every story it brought -- saved ones too, because
 /// unfollowing is the explicit act -- their bodies and its fetch state.
+///
+/// Unfollowing a newsletter the Newsletters source found is saying it is not
+/// one, so it goes on the list of those -- before it is deleted, so that a
+/// failure to write the list leaves the source where it was and not gone and
+/// back with the next issue.
 async fn delete_news_source(svc: Arc<Service>, _ctx: Ctx, args: SourceRef) -> CommandResult<()> {
     let id = args.id;
-    svc.on_vault(move |vault| vault.delete_news_source(id)).await?;
+    svc.on_vault(move |vault| {
+        match vault.news_source(id) {
+            Ok(NewsSource { found: true, kind: SourceKind::Mail { sender, name }, .. }) => {
+                turn_down(vault, &sender, &name)?;
+            }
+            Ok(_) | Err(karmayoga_core::Error::NotFound { .. }) => {}
+            Err(e) => return Err(e),
+        }
+        vault.delete_news_source(id)
+    })
+    .await?;
     // Forgotten, so that following it again and watching it fail is news again.
     svc.news_recovered(id);
+    Ok(())
+}
+
+/// Put a newsletter on the list of those somebody said are not newsletters,
+/// so the Newsletters source does not find it again. Once: a sender and name
+/// already listed, whatever its case, are not listed twice.
+fn turn_down(vault: &Vault, sender: &str, name: &str) -> karmayoga_core::Result<()> {
+    let mut settings = vault.feed_settings()?;
+    let (sender, name) = (sender.trim().to_lowercase(), name.trim().to_string());
+    let listed = settings
+        .not_newsletters
+        .iter()
+        .any(|n| n.sender == sender && n.name.to_lowercase() == name.to_lowercase());
+    if !listed {
+        settings.not_newsletters.push(NewsletterRef { sender, name });
+        vault.save_feed_settings(&settings)?;
+    }
+    Ok(())
+}
+
+/// Take what a followed source covers off the list of non-newsletters. A
+/// source that follows the sender as a whole covers every name they send
+/// under; one that follows a name covers that name.
+fn take_back(vault: &Vault, sender: &str, name: &str) -> karmayoga_core::Result<()> {
+    let mut settings = vault.feed_settings()?;
+    let (sender, name) = (sender.trim().to_lowercase(), name.trim().to_lowercase());
+    let before = settings.not_newsletters.len();
+    settings
+        .not_newsletters
+        .retain(|n| !(n.sender == sender && (name.is_empty() || n.name.to_lowercase() == name)));
+    if settings.not_newsletters.len() != before {
+        vault.save_feed_settings(&settings)?;
+    }
     Ok(())
 }
 
@@ -506,7 +610,8 @@ async fn save_stories(svc: Arc<Service>, _ctx: Ctx, args: SaveStories) -> Comman
 }
 
 /// Ask now, rather than when the schedule says: one source, or every source
-/// that is not paused.
+/// that is not paused. A newsletter the Newsletters source found is asked by
+/// asking that source, which is where its issues come from.
 ///
 /// A source that cannot be reached is a report with an error in it, not a
 /// failed command -- the same rule `sync_due_calendars` keeps, for the same
@@ -829,8 +934,12 @@ fn refuse_duplicate(existing: &[NewsSource], kind: &SourceKind) -> CommandResult
             SourceKind::HackerNews { list: l1, min_points: p1 },
             SourceKind::HackerNews { list: l2, min_points: p2 },
         ) => l1 == l2 && p1 == p2,
-        (SourceKind::Mail { sender: a }, SourceKind::Mail { sender: b }) => {
+        (
+            SourceKind::Mail { sender: a, name: a_name },
+            SourceKind::Mail { sender: b, name: b_name },
+        ) => {
             a.eq_ignore_ascii_case(b)
+                && a_name.trim().to_lowercase() == b_name.trim().to_lowercase()
         }
         (SourceKind::Newsletters, SourceKind::Newsletters) => true,
         _ => false,
@@ -1032,12 +1141,15 @@ mod tests {
         let existing = vec![
             web("https://example.com/feed"),
             NewsSource::new(SourceKind::HackerNews { list: HnList::Show, min_points: 50 }, "Show"),
-            NewsSource::new(SourceKind::Mail { sender: "letters@example.com".into() }, "Letters"),
+            NewsSource::new(
+                SourceKind::Mail { sender: "letters@example.com".into(), name: String::new() },
+                "Letters",
+            ),
         ];
         let again = [
             SourceKind::Web { url: "https://example.com/feed".into() },
             SourceKind::HackerNews { list: HnList::Show, min_points: 50 },
-            SourceKind::Mail { sender: "Letters@Example.com".into() },
+            SourceKind::Mail { sender: "Letters@Example.com".into(), name: String::new() },
         ];
         for kind in again {
             let e = refuse_duplicate(&existing, &kind).unwrap_err();
@@ -1051,13 +1163,16 @@ mod tests {
         let existing = vec![
             web("https://example.com/feed"),
             NewsSource::new(SourceKind::HackerNews { list: HnList::Show, min_points: 50 }, "Show"),
-            NewsSource::new(SourceKind::Mail { sender: "letters@example.com".into() }, "Letters"),
+            NewsSource::new(
+                SourceKind::Mail { sender: "letters@example.com".into(), name: String::new() },
+                "Letters",
+            ),
         ];
         let different = [
             SourceKind::Web { url: "https://example.com/other".into() },
             SourceKind::HackerNews { list: HnList::Show, min_points: 100 },
             SourceKind::HackerNews { list: HnList::Ask, min_points: 50 },
-            SourceKind::Mail { sender: "news@example.com".into() },
+            SourceKind::Mail { sender: "news@example.com".into(), name: String::new() },
         ];
         for kind in different {
             assert!(refuse_duplicate(&existing, &kind).is_ok(), "{kind:?}");

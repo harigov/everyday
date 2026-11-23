@@ -2257,7 +2257,9 @@ export const api = {
   // Rust -- so the wire names say news and these say what the screen does.
   // Available only when `status.capabilities.news` is true. A story's body is
   // not a command: it is served at `karmayoga://news/body/{id}`, which
-  // `feed.svelte.ts` fetches the way `mailview.ts` fetches a message.
+  // `feed.svelte.ts` fetches the way `mailview.ts` fetches a message. With
+  // `?part=notes|transcript|summary` it is one document of the story's pane
+  // (the tabs of `StoryTabs.svelte`) instead of the whole body.
 
   newsSources: () => call('listNewsSources', {}),
   /** Every feed at, or advertised by, an address somebody pasted. */
@@ -2324,6 +2326,8 @@ export const api = {
   transcribeEpisode: (id: StoryId) => call('transcribeEpisode', { id }),
   transcribeFile: (id: FileId) => call('transcribeFile', { id }),
   writeArticle: (id: StoryId) => call('writeArticle', { id }),
+  /** Queue a summary of an article, kept in Files and linked as the story's `files.summary`. */
+  summarizeStory: (id: StoryId) => call('summarizeStory', { id }),
   renderStoryAudio: (id: StoryId) => call('renderStoryAudio', { id }),
   listeningWork: () => call('listeningWork', {}),
   getConsumption: (what: ContentRef) => call('getConsumption', { what }),

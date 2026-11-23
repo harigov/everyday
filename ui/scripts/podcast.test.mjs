@@ -606,7 +606,8 @@ const show = { author: 'A' }
     ['pod', 'pod2'],
   )
 
-  // A show is in the sidebar's Podcasts group and not in a folder as well.
+  // A show is a row in its folder like any other source: the Podcasts chip is
+  // how to see only them, and there is no group of their own.
   const folders = groupFolders([
     summary('blog', 2, { folder: 'news' }),
     summary('pod', 5, { folder: 'news', podcast: show }),
@@ -614,22 +615,21 @@ const show = { author: 'A' }
   ])
   assert.deepEqual(
     folders.map((f) => f.name),
-    ['news'],
-    'a folder of nothing but shows is not a folder',
+    ['news', 'shows'],
+    'a folder of nothing but shows is a folder',
   )
   assert.deepEqual(
     folders[0].sources.map((s) => s.source.id),
-    ['blog'],
+    ['blog', 'pod'],
   )
-  assert.equal(folders[0].unread, 2)
+  assert.equal(folders[0].unread, 7)
 
   assert.equal(scopeTitle({ kind: 'upnext' }, all), 'Up Next')
   assert.equal(scopeTitle({ kind: 'recommended' }, all), 'Recommended')
-  assert.equal(scopeTitle({ kind: 'podcasts' }, all), 'Podcasts')
   assert.equal(scopeTitle({ kind: 'all' }, all), 'All')
   assert.equal(scopeTitle({ kind: 'source', id: 'pod' }, all), 'pod')
 
-  assert.equal(scopeUnread({ kind: 'podcasts' }, all), 6)
+  assert.equal(scopeUnread({ kind: 'all' }, all, 'podcast'), 6, 'the chip is what Podcasts was')
   assert.equal(scopeUnread({ kind: 'all' }, all), 8)
   assert.equal(scopeUnread({ kind: 'upnext' }, all), 0)
   assert.equal(scopeUnread({ kind: 'recommended' }, all), 0)

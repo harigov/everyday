@@ -11,8 +11,8 @@ use crate::files::{RefKind, RefOwner};
 use crate::id::{ConsumptionId, QueueEntryId, StoryId};
 use crate::news::listening::QUEUE_GAP;
 use crate::news::{
-    ConsumedQuery, Consumption, ContentRef, Criterion, FeedSettings, NewsSource, PodcastPolicy,
-    QueueEntry, Rank, Story, StoryFiles,
+    ConsumedQuery, Consumption, ContentRef, Criterion, FeedSettings, NewsSource, NewsletterRef,
+    PodcastPolicy, QueueEntry, Rank, Retention, Story, StoryFiles,
 };
 use crate::record::RecordKind;
 use jiff::Timestamp;
@@ -23,6 +23,9 @@ pub const MAX_CRITERIA: usize = 12;
 pub const MAX_CRITERION_CHARS: usize = 240;
 /// The most Up Next may be topped up to.
 pub const MAX_AUTOFILL: u32 = 50;
+/// The most days anything in the Feed is kept: a year, as the field for a
+/// source's own retention allows (`MAX_RETENTION_DAYS` in `ui/src/lib/feed.ts`).
+pub const MAX_RETENTION_DAYS: u32 = 365;
 
 /// Where a new entry goes in Up Next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -287,7 +290,40 @@ fn tidy_settings(settings: &FeedSettings) -> Result<FeedSettings> {
     s.autofill = s.autofill.map(|n| n.min(MAX_AUTOFILL)).filter(|n| *n > 0);
     s.skip_back_s = s.skip_back_s.clamp(5, 120);
     s.skip_forward_s = s.skip_forward_s.clamp(5, 120);
+    s.cleanup.feeds = tidy_retention(s.cleanup.feeds);
+    s.cleanup.newsletters = tidy_retention(s.cleanup.newsletters);
+    s.not_newsletters = tidy_not_newsletters(&s.not_newsletters);
     Ok(s)
+}
+
+/// Keep for at least a day and at most [`MAX_RETENTION_DAYS`].
+fn tidy_retention(r: Retention) -> Retention {
+    Retention {
+        read_days: r.read_days.clamp(1, MAX_RETENTION_DAYS),
+        unread_days: r.unread_days.clamp(1, MAX_RETENTION_DAYS),
+    }
+}
+
+/// Senders trimmed and lower-cased -- how a sender is compared -- and names
+/// trimmed, a sender with nothing in it dropped, and each newsletter listed
+/// once, whatever case its name came in: a name is matched case-insensitively.
+fn tidy_not_newsletters(list: &[NewsletterRef]) -> Vec<NewsletterRef> {
+    let mut tidy: Vec<NewsletterRef> = list
+        .iter()
+        .map(|n| NewsletterRef {
+            sender: n.sender.trim().to_lowercase(),
+            name: n.name.trim().into(),
+        })
+        .filter(|n| !n.sender.is_empty())
+        .collect();
+    tidy.sort_by(|a, b| {
+        a.sender
+            .cmp(&b.sender)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    tidy.dedup_by(|b, a| a.sender == b.sender && a.name.to_lowercase() == b.name.to_lowercase());
+    tidy
 }
 
 #[cfg(test)]
@@ -325,5 +361,35 @@ mod tests {
         assert_eq!(tidy.autofill, None);
         s.ranking.criteria.push(Criterion { id: "a".into(), text: "again".into(), weight: 1 });
         assert!(tidy_settings(&s).is_err());
+    }
+
+    #[test]
+    fn clean_up_days_are_clamped_and_not_newsletters_tidied() {
+        let mut s = FeedSettings::default();
+        s.cleanup.feeds = Retention { read_days: 0, unread_days: 9_999 };
+        s.cleanup.newsletters = Retention { read_days: 7, unread_days: 14 };
+        let nl =
+            |sender: &str, name: &str| NewsletterRef { sender: sender.into(), name: name.into() };
+        s.not_newsletters = vec![
+            nl("  News@Example.COM ", " The Download "),
+            nl("a@example.com", ""),
+            nl("   ", "Nobody"),
+            nl("news@example.com", "the download"),
+            nl("news@example.com", ""),
+            nl("a@example.com", ""),
+        ];
+        let tidy = tidy_settings(&s).unwrap();
+        assert_eq!(tidy.cleanup.feeds, Retention { read_days: 1, unread_days: MAX_RETENTION_DAYS });
+        assert_eq!(tidy.cleanup.newsletters, Retention { read_days: 7, unread_days: 14 });
+        assert_eq!(
+            tidy.not_newsletters,
+            [
+                nl("a@example.com", ""),
+                nl("news@example.com", ""),
+                nl("news@example.com", "The Download")
+            ],
+            "lower-cased, trimmed, sorted, once each, and none without a sender"
+        );
+        assert_eq!(tidy_settings(&tidy).unwrap(), tidy, "tidying what is tidy changes nothing");
     }
 }

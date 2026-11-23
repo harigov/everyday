@@ -858,18 +858,29 @@ fn mail_bytes_response(
 // table, because they are not commands: a story's body is written by a
 // stranger, and the pictures inside it are fetched on a client's behalf.
 
+#[derive(Deserialize)]
+struct NewsPart {
+    /// `?part=notes|transcript|summary`: which of the story's documents a
+    /// pane's tab draws. Absent, or a word this does not know, is the whole
+    /// body -- see [`karmayoga_service::news::view::BodyPart`].
+    part: Option<String>,
+}
+
 async fn get_news_body(
     State((server, transport)): Ctxt,
     Path(story): Path<String>,
     headers: HeaderMap,
+    Query(q): Query<NewsPart>,
 ) -> Answer<Response> {
     let ctx = authenticate_media(&server, transport, &headers)?;
     ctx.require(Scope::News)?;
     let story =
         StoryId::parse(&story).map_err(|_| CommandError::new("invalid", "not a story id"))?;
+    let part = karmayoga_service::news::view::BodyPart::parse(q.part.as_deref().unwrap_or(""));
 
     let vault = server.service.require()?;
-    // A newsletter's body is a message's, drawn by mail. A client that may
+    // A newsletter's body is a message's, drawn by mail, and what is kept of it
+    // in Files -- its summary -- is made from that message. A client that may
     // read the Feed is not for that reason one that may read mail.
     let mail_backed = {
         let vault = vault.clone();
@@ -879,7 +890,7 @@ async fn get_news_body(
         ctx.require(Scope::Mail)?;
     }
     let doc = karmayoga_service::blocking(move || {
-        karmayoga_service::news::view::body_document(&vault, story)
+        karmayoga_service::news::view::body_document(&vault, story, part)
     })
     .await?;
 
@@ -1676,6 +1687,51 @@ mod news_route_tests {
             assert!(html.contains("<p>Hello</p>"), "{html}");
             assert!(html.contains("Content-Security-Policy"));
         }
+    }
+
+    #[tokio::test]
+    async fn a_part_asks_for_one_of_a_stories_documents_and_anything_else_is_the_whole() {
+        let (_dir, service, story) = seeded(true);
+        // An episode: the article written from its transcript, the feed's notes
+        // below the rule `article.rs` keeps between them.
+        service
+            .require()
+            .unwrap()
+            .save_story_body(&StoryBody {
+                story_id: story,
+                html: "<p>Written.</p><hr data-show-notes><h2>Show notes</h2><p>Guest</p>".into(),
+                text: String::new(),
+                origin: BodyOrigin::Transcript,
+                images: Vec::new(),
+            })
+            .unwrap();
+
+        // (the query, a word it has, a word it has not)
+        let asked = [
+            ("?part=notes", "Guest", "Written."),
+            ("?part=summary", "Written.", "Guest"),
+            ("", "Written.", "never in a body"),
+            ("?part=nonsense", "Guest", "never in a body"),
+        ];
+        for (query, has, hasnt) in asked {
+            let (router, _config_dir) = socket_router(service.clone());
+            let response = get(router, &format!("/v1/news/body/{story}{query}")).await;
+            assert_eq!(response.status(), StatusCode::OK, "{query}");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let html = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(html.contains(has), "{query}: {html}");
+            assert!(!html.contains(hasnt), "{query}: {html}");
+        }
+        // The whole is both.
+        let (router, _config_dir) = socket_router(service.clone());
+        let response = get(router, &format!("/v1/news/body/{story}?part=nonsense")).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8(bytes.to_vec()).unwrap().contains("Written."));
+
+        // No transcript was kept: that tab has nothing, which is a 404.
+        let (router, _config_dir) = socket_router(service);
+        let response = get(router, &format!("/v1/news/body/{story}?part=transcript")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

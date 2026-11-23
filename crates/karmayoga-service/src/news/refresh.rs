@@ -269,10 +269,12 @@ async fn expire(svc: &Arc<Service>, vault: &Arc<Vault>, now: Timestamp) {
     })
     .await;
     match expired {
-        Ok(report) if report.expired > 0 => {
-            svc.events().changed(Change::new(Kind::Story, Op::Deleted));
+        Ok(report) => {
+            if report.expired > 0 {
+                svc.events().changed(Change::new(Kind::Story, Op::Deleted));
+            }
+            super::cleanup::after_expiry(svc, vault, &report).await;
         }
-        Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "could not expire old stories"),
     }
 }
@@ -281,7 +283,8 @@ async fn expire(svc: &Arc<Service>, vault: &Arc<Vault>, now: Timestamp) {
 
 /// Give one source its turn now, whatever its schedule says, and record what
 /// happened in its fetch state. A mail-backed source is handed to
-/// [`super::newsletters::refresh`].
+/// [`super::newsletters::refresh`]; a newsletter the Newsletters source found
+/// is given that source's turn, and the report says what became of it.
 ///
 /// A paused source is refreshed too: this is the path a person takes by
 /// asking.
@@ -319,14 +322,20 @@ pub async fn refresh_all(svc: &Arc<Service>, vault: &Arc<Vault>) -> Vec<RefreshR
 
 /// The sources that are not paused -- of these `only`, or all of them -- each
 /// with the host it will ask.
+///
+/// Not a newsletter the Newsletters source found, while that source is there:
+/// its turn brings every one of them, and a turn of its own for each would be
+/// that same turn again, once per newsletter.
 fn sources_to_refresh(
     vault: &Vault,
     only: Option<&[NewsSourceId]>,
 ) -> karmayoga_core::Result<Vec<(NewsSourceId, String)>> {
-    Ok(vault
-        .news_sources()?
+    let sources = vault.news_sources()?;
+    let letters = sources.iter().any(|s| matches!(s.kind, SourceKind::Newsletters));
+    Ok(sources
         .into_iter()
         .filter(|s| !s.paused)
+        .filter(|s| !(s.found && letters))
         .filter(|s| only.is_none_or(|ids| ids.contains(&s.id)))
         .map(|s| (s.id, host_of(&s.kind)))
         .collect())
@@ -414,8 +423,21 @@ async fn refresh_one(
     let loaded = blocking({
         let vault = vault.clone();
         move || {
-            let source = vault.news_source(id)?;
-            let state = vault.news_fetch_state(id)?.unwrap_or_else(|| FetchState::new(id));
+            let mut source = vault.news_source(id)?;
+            // A newsletter the Newsletters source found fetches nothing
+            // itself: its issues arrive when that source takes its turn, so
+            // a turn asked for here is that one. With no Newsletters source
+            // to ask, it takes its own, over what Mail files as newsletters.
+            if source.found
+                && let Some(letters) = vault
+                    .news_sources()?
+                    .into_iter()
+                    .find(|s| matches!(s.kind, SourceKind::Newsletters))
+            {
+                source = letters;
+            }
+            let state =
+                vault.news_fetch_state(source.id)?.unwrap_or_else(|| FetchState::new(source.id));
             Ok((source, state))
         }
     })
@@ -424,6 +446,9 @@ async fn refresh_one(
         Ok(loaded) => loaded,
         Err(e) => return Turn::unchanged(id, Some(e.message)),
     };
+    // The report answers the question that was asked.
+    let asked = id;
+    let id = source.id;
 
     let before = state.last_error.clone();
     let started = svc.now();
@@ -509,6 +534,7 @@ async fn refresh_one(
         }
     }
 
+    let report = RefreshReport { source_id: asked, ..report };
     Turn { report, health_changed: paused || source_changed || state.last_error != before }
 }
 
@@ -610,6 +636,7 @@ fn announce_stored(svc: &Arc<Service>, source: &NewsSource, stored: &Stored) {
         return;
     }
     downloads::after_refresh(svc, source.id, &stored.inserted);
+    super::automation::arrived(svc, source, &stored.inserted);
     rank::wake(svc);
 }
 
@@ -1042,7 +1069,10 @@ mod tests {
         assert_eq!(web("not a url"), "");
         let hn = SourceKind::HackerNews { list: HnList::Front, min_points: 0 };
         assert_eq!(host_of(&hn), HN_HOST);
-        assert_eq!(host_of(&SourceKind::Mail { sender: "a@b.example".into() }), "<mail>");
+        assert_eq!(
+            host_of(&SourceKind::Mail { sender: "a@b.example".into(), name: String::new() }),
+            "<mail>"
+        );
     }
 
     #[test]

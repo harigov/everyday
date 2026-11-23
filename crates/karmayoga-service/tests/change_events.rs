@@ -323,6 +323,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ),
     ("transcribe_file", "starts background work that needs a speech model"),
     ("write_article", "starts background work that needs the Medium model"),
+    ("summarize_story", "starts background work that needs the Medium model"),
     ("render_story_audio", "starts background work that needs a voice"),
     ("remove_episode_download", "needs an episode already downloaded, which needs the network"),
     ("fetch_image", "fetches a remote image over HTTP"),

@@ -368,8 +368,10 @@ fn a_newsletter_story_points_at_its_thread_and_is_left_for_mail_to_mark() {
     let vault = vault(dir.path());
     let (message, thread) = a_newsletter_issue(&vault);
 
-    let source =
-        NewsSource::new(SourceKind::Mail { sender: "news@example.com".into() }, "Example Weekly");
+    let source = NewsSource::new(
+        SourceKind::Mail { sender: "news@example.com".into(), name: String::new() },
+        "Example Weekly",
+    );
     vault.save_news_source(&source).unwrap();
     let key = vault.news_key("issue-12").unwrap();
     let mut issue = Story::new(source.id, key, "Issue 12", at("2026-09-07T08:00:00Z"));

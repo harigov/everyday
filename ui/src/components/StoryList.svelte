@@ -20,9 +20,12 @@
   import { feed, FEED_FILTERS } from '../lib/feed.svelte'
   import {
     FILTER_LABELS,
+    KIND_LABELS,
+    KIND_NONE,
     bylineParts,
     hostOf,
     isHackerNews,
+    isOfKind,
     pointsLine,
     scopeTitle,
     scopeUnread,
@@ -45,8 +48,8 @@
   import VirtualList from './VirtualList.svelte'
 
   const rows = $derived(feed.visible)
-  const title = $derived(scopeTitle(feed.scope, feed.sources))
-  const unread = $derived(scopeUnread(feed.scope, feed.sources))
+  const title = $derived(scopeTitle(feed.scope, feed.sources, feed.kind))
+  const unread = $derived(scopeUnread(feed.scope, feed.sources, feed.kind))
   const sub = $derived.by(() => {
     if (feed.sources.length === 0) return ''
     return unread > 0 ? `${unread.toLocaleString()} unread` : 'Nothing unread'
@@ -56,7 +59,17 @@
   const anyUnread = $derived(rows.some((s) => !s.read))
   const searching = $derived(feed.query.trim() !== '')
   const caughtUpNote = $derived(
-    feed.scope.kind === 'all' ? 'Nothing is unread.' : `Nothing in ${title} is unread.`,
+    feed.scope.kind !== 'all'
+      ? `Nothing in ${title} is unread.`
+      : feed.kind === 'all'
+        ? 'Nothing is unread.'
+        : `No ${KIND_LABELS[feed.kind].toLowerCase()} are unread.`,
+  )
+  /** All, under a chip, with nothing of that kind followed: not a caught-up list, an empty one. */
+  const noneOfKind = $derived(
+    feed.scope.kind === 'all' &&
+      feed.kind !== 'all' &&
+      !feed.sources.some((s) => isOfKind(s.source, feed.kind)),
   )
   /** What to try when a search finds nothing: Unread and Saved leave a lot out. */
   const searchNote = $derived(
@@ -73,8 +86,6 @@
     } else if (scope.kind === 'folder') {
       const inFolder = feed.folders.find((f) => f.name === scope.name)?.sources ?? []
       void Promise.all(inFolder.map((s) => feed.refresh(s.source.id)))
-    } else if (scope.kind === 'podcasts') {
-      void Promise.all(feed.podcastSources.map((s) => feed.refresh(s.source.id)))
     } else {
       void feed.refresh()
     }
@@ -319,6 +330,18 @@
     {#if searching}
       <EmptyState lead={`Nothing matches “${feed.query.trim()}”.`}>
         {#snippet note()}{searchNote}{/snippet}
+      </EmptyState>
+    {:else if noneOfKind && feed.kind !== 'all'}
+      <EmptyState lead={KIND_NONE[feed.kind]}>
+        {#snippet action()}
+          {#if feed.kind === 'podcast'}
+            <button class="btn" onclick={() => feed.openDirectory('podcasts')}>
+              Browse podcasts
+            </button>
+          {:else}
+            <button class="btn" onclick={() => feed.openAdd()}>Follow something</button>
+          {/if}
+        {/snippet}
       </EmptyState>
     {:else if feed.filter === 'saved'}
       <EmptyState lead="Nothing saved here.">

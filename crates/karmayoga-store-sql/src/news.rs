@@ -207,11 +207,11 @@ impl SqlStore {
             &format!(
                 "SELECT s.id, s.dedupe_key, s.published_us, s.created_us FROM {STORY_FROM}
                  WHERE s.source_id = ?1 AND s.expired = ?2 AND s.saved = ?3
-                   AND s.id NOT IN (SELECT story_id FROM news_story_files)
+                   AND s.id NOT IN (SELECT story_id FROM news_story_files WHERE media = ?6)
                    AND ((({READ}) = 1 AND s.published_us < ?4)
                      OR (({READ}) = 0 AND s.published_us < ?5))"
             ),
-            &vals![source.to_string(), false, false, read_before, unread_before],
+            &vals![source.to_string(), false, false, read_before, unread_before, true],
         )?;
         let mut expired = 0u32;
         for row in &rows {
@@ -521,6 +521,58 @@ impl NewsStore for SqlStore {
             return Err(Error::not_found(RecordKind::Story.not_found_noun(), story.id));
         }
         tx.commit()
+    }
+
+    fn move_stories(&self, moves: &[(StoryId, NewsSourceId)]) -> Result<u32> {
+        if moves.is_empty() {
+            return Ok(0);
+        }
+        // Each story is read on the writer and resealed in the same
+        // transaction, for `put_body`'s reason: a copy read on a pooled
+        // reader could be a write behind, and sealing it again would revert
+        // whatever that write was. The clear `source_id` and the sealed one
+        // change together, which is the whole point -- every reader trusts
+        // the sealed copy for the rest of the story and the column for
+        // which list it is in.
+        //
+        // What stays where it is: a tombstone, whose key is what keeps its
+        // article from coming back to the source that expired it; a story
+        // already at its destination; and one whose key the destination
+        // already has, which the unique index would refuse -- the same
+        // article reached it another way.
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        let mut moved = 0u32;
+        for (id, to) in moves {
+            let Some(row) = tx.query_opt(
+                "SELECT source_id, dedupe_key, expired, data FROM news_stories WHERE id = ?1",
+                &vals![id.to_string()],
+            )?
+            else {
+                continue;
+            };
+            if row.bool(2)? || row.text(0)? == to.to_string() {
+                continue;
+            }
+            let taken = !tx
+                .query(
+                    "SELECT 1 FROM news_stories WHERE source_id = ?1 AND dedupe_key = ?2",
+                    &vals![to.to_string(), row.text(1)?],
+                )?
+                .is_empty();
+            if taken {
+                continue;
+            }
+            let mut story: Story = self.unseal(&story_aad(*id), &row.bytes(3)?)?;
+            story.source_id = *to;
+            tx.execute(
+                "UPDATE news_stories SET source_id = ?2, data = ?3 WHERE id = ?1",
+                &vals![id.to_string(), to.to_string(), self.seal(&story_aad(*id), &story)?],
+            )?;
+            moved += 1;
+        }
+        tx.commit()?;
+        Ok(moved)
     }
 
     fn list_stories(&self, query: &StoryQuery) -> Result<StoryPage> {

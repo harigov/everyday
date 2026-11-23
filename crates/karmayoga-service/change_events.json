@@ -3056,6 +3056,10 @@
       "reason": "fetches a remote ICS feed over the network"
     },
     {
+      "name": "summarize_story",
+      "reason": "starts background work that needs the Medium model"
+    },
+    {
       "name": "sync_account",
       "reason": "starts a supervised sync task against a real mail server"
     },

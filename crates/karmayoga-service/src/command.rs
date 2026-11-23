@@ -691,12 +691,13 @@ mod tests {
             // announces what it ranked then.
             "rerank",
             // Background work on the Feed's behalf, a note in this process's
-            // memory until it lands: a transcript, an article, an audio
-            // version. `listening_work` is polled while any is under way,
-            // and what lands announces its story or its file.
+            // memory until it lands: a transcript, an article, a summary, an
+            // audio version. `listening_work` is polled while any is under
+            // way, and what lands announces its story or its file.
             "transcribe_episode",
             "transcribe_file",
             "write_article",
+            "summarize_story",
             "render_story_audio",
             // Signs in to an account's outgoing server and sends nothing. A
             // write for its reach, not for a record anybody draws.

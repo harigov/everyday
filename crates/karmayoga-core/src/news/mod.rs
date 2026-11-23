@@ -52,7 +52,9 @@ pub use podcast::{
     DownloadPolicy, Enclosure, EnclosureKind, KeepPolicy, PodcastDefaults, PodcastPolicy,
     PodcastSettings, StoryFiles, TranscribePolicy,
 };
-pub use settings::{Criterion, FeedSettings, Rank, RankAnswer, Ranking};
+pub use settings::{
+    CleanupDefaults, Criterion, FeedSettings, NewsletterRef, Rank, RankAnswer, Ranking,
+};
 
 use crate::id::{BlobId, MailMessageId, NewsSourceId, StoryId};
 use crate::timestamped::Timestamped;
@@ -134,8 +136,56 @@ pub struct NewsSource {
     /// what is downloaded and kept; see [`podcast`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub podcast: Option<PodcastSettings>,
+    /// A newsletter the Newsletters source found, rather than one a person
+    /// followed: it fetches nothing itself, its issues arrive through that
+    /// source's turn, and unfollowing it says it is not a newsletter. See
+    /// `docs/plans/feed-usability.md`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub found: bool,
+    /// Mail sources only: when one of its issues is cleaned up, move the
+    /// email to Trash as well (unless it is starred). Never a default:
+    /// misfiled mail must not be binned by a setting meant for newsletters.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trash_mail: bool,
+    /// What is done by itself with each new story.
+    #[serde(default, skip_serializing_if = "Automation::is_default")]
+    pub automation: Automation,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+}
+
+/// What a source has done by itself with each story it brings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Automation {
+    /// Summarise it: an article gets a summary in Files, an episode an
+    /// article written from its transcript as soon as there is one. `None`
+    /// is the kind's default -- see [`NewsSource::summarizes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarize: Option<bool>,
+    /// Make an article into audio. A podcast ignores it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub audio: bool,
+}
+
+impl Automation {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Which of the three kinds the sidebar's filter knows a source as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum FeedKind {
+    /// A web feed or Hacker News.
+    Feed,
+    /// Reads mail: one newsletter, a sender's, or all of them.
+    Newsletter,
+    /// Has podcast settings.
+    Podcast,
 }
 
 fn yes() -> bool {
@@ -161,6 +211,9 @@ impl NewsSource {
             sort_order: 0,
             added_by_assistant: false,
             podcast: None,
+            found: false,
+            trash_mail: false,
+            automation: Automation::default(),
             created_at: now,
             updated_at: now,
         }
@@ -174,6 +227,33 @@ impl NewsSource {
     /// The retention that applies: this source's own, or the default.
     pub fn retention(&self) -> Retention {
         self.retention.unwrap_or_default()
+    }
+
+    /// The retention that applies: this source's own, else its kind's
+    /// default in Settings → Feed.
+    pub fn retention_with(&self, defaults: &CleanupDefaults) -> Retention {
+        self.retention.unwrap_or(match self.kind_group() {
+            FeedKind::Newsletter => defaults.newsletters,
+            FeedKind::Feed | FeedKind::Podcast => defaults.feeds,
+        })
+    }
+
+    /// The sidebar's kind for this source.
+    pub fn kind_group(&self) -> FeedKind {
+        if self.podcast.is_some() {
+            FeedKind::Podcast
+        } else if self.kind.is_mail() {
+            FeedKind::Newsletter
+        } else {
+            FeedKind::Feed
+        }
+    }
+
+    /// Whether each new story is summarised: the source's own say, else on
+    /// for a podcast (an article from its transcript, as since the podcasts
+    /// work) and off for everything else.
+    pub fn summarizes(&self) -> bool {
+        self.automation.summarize.unwrap_or(self.podcast.is_some())
     }
 
     /// Does a mute word drop a story with this title?
@@ -224,6 +304,12 @@ pub enum SourceKind {
     Mail {
         /// The sender's address, lower-cased.
         sender: String,
+        /// The display name of the one newsletter this is, when the sender
+        /// sends several (The Download and The Algorithm come from one
+        /// address). Empty for every message from the sender. Compared
+        /// trimmed and case-insensitively.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        name: String,
     },
     /// Every newsletter arriving in Mail -- whatever Mail files under
     /// Newsletters, from anybody -- except a sender followed as a
@@ -576,13 +662,18 @@ pub struct ExpiryRule {
 }
 
 /// What an expiry pass did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExpireReport {
     /// Stories turned into tombstones.
     pub expired: u32,
     /// Tombstones removed for good.
     pub removed: u32,
+    /// The messages of newsletter issues just cleaned up whose source moves
+    /// its mail to Trash ([`NewsSource::trash_mail`]). Filled by the vault,
+    /// acted on by the service.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mail: Vec<MailMessageId>,
 }
 
 #[cfg(test)]

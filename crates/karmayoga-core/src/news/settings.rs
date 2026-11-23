@@ -53,6 +53,41 @@ pub struct FeedSettings {
     pub skip_back_s: u32,
     #[serde(default = "FeedSettings::default_skip_forward")]
     pub skip_forward_s: u32,
+    /// How long stories are kept, by kind, for a source with no retention of
+    /// its own. Cleaning up removes a story from the Feed and never touches
+    /// mail: only a newsletter's own [`super::NewsSource::trash_mail`] does.
+    #[serde(default)]
+    pub cleanup: CleanupDefaults,
+    /// Newsletters somebody said are not newsletters: unfollowed after the
+    /// Newsletters source found them. Not found again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_newsletters: Vec<NewsletterRef>,
+}
+
+/// How long stories are kept when their source does not say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupDefaults {
+    /// Web feeds, Hacker News, and podcasts' episodes.
+    #[serde(default)]
+    pub feeds: super::Retention,
+    /// Newsletters, found or followed. Some mail is misfiled as a newsletter,
+    /// which is why this removes stories only.
+    #[serde(default)]
+    pub newsletters: super::Retention,
+}
+
+/// One newsletter: a sender, and the display name it sends this one under
+/// (empty for what it sends with no display name).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct NewsletterRef {
+    /// Lower-cased.
+    pub sender: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 fn yes() -> bool {
@@ -79,6 +114,8 @@ impl Default for FeedSettings {
             resume_after_voice: true,
             skip_back_s: Self::default_skip_back(),
             skip_forward_s: Self::default_skip_forward(),
+            cleanup: CleanupDefaults::default(),
+            not_newsletters: Vec::new(),
         }
     }
 }

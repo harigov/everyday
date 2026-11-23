@@ -93,6 +93,7 @@ import type {
   Reading,
   ReadingQuery,
   SearchHit,
+  StoryPart,
   StoryQuery,
   Task,
   TaskQuery,
@@ -223,6 +224,7 @@ import {
   mockSetItemLookup,
   mockStoryBody,
   mockStoryForLibrary,
+  mockSummarizeStory,
   mockTopPodcasts,
   mockTranscribeEpisode,
   mockTranscribeFile,
@@ -8812,7 +8814,11 @@ export const mockInvoke = async <T>(
       return mockNewsletterSenders(typeof args.days === 'number' ? args.days : 90) as T
     case 'mock_story_body':
       requireUnlocked()
-      return mockStoryBody(str(args.id)) as T
+      // `part` is the route's `?part=`: one document of the pane, or the body.
+      return mockStoryBody(
+        str(args.id),
+        typeof args.part === 'string' ? (args.part as StoryPart) : null,
+      ) as T
 
     // ── Podcasts, Up Next, and what was read and heard ──────────────────
     //
@@ -8895,6 +8901,10 @@ export const mockInvoke = async <T>(
     case 'write_article':
       requireUnlocked()
       mockWriteArticle(str(args.id))
+      return undefined as T
+    case 'summarize_story':
+      requireUnlocked()
+      mockSummarizeStory(str(args.id))
       return undefined as T
     case 'render_story_audio':
       requireUnlocked()

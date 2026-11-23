@@ -76,7 +76,7 @@ const AGAIN_AFTER: Duration = Duration::from_secs(3);
 pub const SHOW_NOTES_MARKER: &str = "<hr data-show-notes>";
 
 /// The heading over the show notes.
-const SHOW_NOTES_HEADING: &str = "<h2>Show notes</h2>";
+pub(super) const SHOW_NOTES_HEADING: &str = "<h2>Show notes</h2>";
 
 const ARTICLE_SYSTEM: &str = "\
 You write a podcast episode up as an article that somebody would rather read \
@@ -232,10 +232,11 @@ fn no_transcript() -> CommandError {
 // ── The model ────────────────────────────────────────────────────────────
 
 /// The Medium model, as [`Summariser`] asks of one: a system prompt and a
-/// message in, the whole of its reply out.
-struct ModelWriter {
-    client: crate::llm::Client,
-    model: karmayoga_core::llm::LLMModelConfig,
+/// message in, the whole of its reply out. A summary is written with it too
+/// ([`super::summary`]).
+pub(super) struct ModelWriter {
+    pub(super) client: crate::llm::Client,
+    pub(super) model: karmayoga_core::llm::LLMModelConfig,
 }
 
 impl Summariser for ModelWriter {
@@ -255,11 +256,15 @@ impl Summariser for ModelWriter {
 /// One ask, made once more after a pause when it failed: a piece of a long
 /// transcript is minutes of a person's wait, and a provider's hiccup is
 /// likelier than a model that cannot answer.
-async fn ask(writer: &dyn Summariser, system: &str, user: &str) -> CommandResult<String> {
+pub(super) async fn ask(
+    writer: &dyn Summariser,
+    system: &str,
+    user: &str,
+) -> CommandResult<String> {
     match writer.ask(system, user).await {
         Ok(text) => Ok(text),
         Err(first) => {
-            tracing::debug!(error = %first, "podcasts: the model did not answer, asking again");
+            tracing::debug!(error = %first, "feed: the model did not answer, asking again");
             tokio::time::sleep(AGAIN_AFTER).await;
             writer.ask(system, user).await
         }
@@ -414,7 +419,7 @@ async fn article(
 }
 
 /// `reply` without the code fence some models wrap a whole document in.
-fn unfenced(reply: &str) -> String {
+pub(super) fn unfenced(reply: &str) -> String {
     let trimmed = reply.trim();
     let Some(inner) = trimmed.strip_prefix("```") else { return trimmed.to_string() };
     let inner = inner.split_once('\n').map_or("", |(_, rest)| rest);

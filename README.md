@@ -1195,6 +1195,33 @@ what, when, and how much — and that record outlives the story it came from.
 The assistant can list Up Next, add to it, follow a podcast, and say what you
 read or listened to last week.
 
+### Every newsletter its own row, an episode's tabs, and what each feed does by itself
+
+**Newsletters are listed one by one.** Following every newsletter in Mail now
+gives each publication its own row — The Download, The Algorithm, TLDR AI —
+told apart by the name it is sent under, not the address, since one sender
+often sends several. The sidebar is one list of newsletters, web feeds and
+podcasts, with chips over it for one kind at a time and a quick search over
+the names. A row found this way that is not a newsletter at all can be marked
+**Not a newsletter**: it leaves the Feed and is not found again, and its mail
+is left where it is.
+
+**An episode has tabs** where its show notes were: **Notes**, **Transcript**
+and **Summary** (the article written from the transcript), each offering to
+make itself when it is not there yet. An article has **Article** and
+**Summary**. That transcripts and summaries are files in your files folder is
+how the assistant can search them, not something you have to open.
+
+**Each feed can clean up after itself and do things by itself.** How long
+stories are kept has a default for web feeds and one for newsletters in
+Settings → Feed, and any feed can choose its own. Cleaning up only ever removes
+a story from the Feed; a newsletter's emails go to the Trash only if that one
+newsletter says so in its own settings, and never a starred one — some mail
+is misfiled as a newsletter, and a default must not bin it. A feed can also
+summarise every new story (a short summary kept in `Feed/Summaries/`), make
+every new article into audio, or, for a podcast, write each episode up as an
+article once it is transcribed.
+
 ### Read a podcast, hear an article, and remember all of it
 
 **An episode can be read.** It is transcribed — from the publisher's own

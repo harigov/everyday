@@ -579,8 +579,10 @@ fn a_newsletter_being_read_aloud_goes_through_the_mail_gate() {
     let dir = tempfile::tempdir().unwrap();
     let v = vault(dir.path());
     let (account, _, _, message) = a_thread(&v, true);
-    let source =
-        NewsSource::new(SourceKind::Mail { sender: "mallory@example.net".into() }, "Mallory");
+    let source = NewsSource::new(
+        SourceKind::Mail { sender: "mallory@example.net".into(), name: String::new() },
+        "Mallory",
+    );
     v.save_news_source(&source).unwrap();
     let key = v.news_key("issue").unwrap();
     let mut issue = Story::new(

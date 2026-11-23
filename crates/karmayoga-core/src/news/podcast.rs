@@ -41,6 +41,8 @@ pub const ARTICLES_DIR: &str = "Feed/Articles";
 pub const AUDIO_DIR: &str = "Feed/Audio";
 /// Where the daily podcast goes.
 pub const DAILY_DIR: &str = "Feed/Daily";
+/// Where a story's summary is kept, by source: `Feed/Summaries/<source>/`.
+pub const SUMMARIES_DIR: &str = "Feed/Summaries";
 
 /// The file a story carries: a podcast episode's audio or video.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +148,11 @@ pub struct StoryFiles {
     /// The article turned into audio.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<FileId>,
+    /// A summary of an article, as Markdown -- see `docs/plans/feed-usability.md`.
+    /// An episode's summary is the article written from its transcript, kept
+    /// as its body, not this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<FileId>,
 }
 
 impl StoryFiles {
@@ -154,11 +161,12 @@ impl StoryFiles {
             && self.transcript.is_none()
             && self.text.is_none()
             && self.audio.is_none()
+            && self.summary.is_none()
     }
 
     /// Every file, for the references table.
     pub fn all(&self) -> impl Iterator<Item = FileId> + '_ {
-        [self.media, self.transcript, self.text, self.audio].into_iter().flatten()
+        [self.media, self.transcript, self.text, self.audio, self.summary].into_iter().flatten()
     }
 }
 

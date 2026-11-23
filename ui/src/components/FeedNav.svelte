@@ -16,13 +16,26 @@
   // Above the following, three places that are lists of their own and not
   // sources: Up Next, what is lined up to read, hear and watch; Recommended,
   // what the Feed would pick from everything unread; and History, what has
-  // been read, heard and watched, by day. Shows sit in a group below the
-  // folders, headed by a row that opens every episode at once: a podcast is a
-  // feed, but it is not read the way a blog is, and a show filed in a folder
-  // beside articles is a show nobody finds again.
+  // been read, heard and watched, by day.
+  //
+  // There is one list of what is followed -- newsletters, web feeds and shows
+  // together, each in its folder or unfiled -- and two ways to narrow it,
+  // both over everything at the top. The chips choose a kind, and with one on
+  // All is only that kind's stories: that is the store's, and is remembered
+  // on this device. The search field is this sidebar's alone: it finds a row
+  // by its name, or a folder by its own, and leaves the stories as they are.
 
   import { feed, type FeedFolder, type FeedScope } from '../lib/feed.svelte'
-  import { siteOf, sourceLabel, unfollowDetail } from '../lib/feed'
+  import {
+    FEED_KINDS,
+    KIND_LABELS,
+    KIND_NONE,
+    NOT_NEWSLETTER_DETAIL,
+    searchNav,
+    siteOf,
+    sourceLabel,
+    unfollowDetail,
+  } from '../lib/feed'
   import { upnext } from '../lib/upnext.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -54,29 +67,38 @@
   /** The folder holding the open source, always unfolded: the selected row is never hidden. */
   const selectedFolder = $derived(feed.source ? feed.source.source.folder.trim() : null)
 
+  /** Open, or showing a match: a find that hid its answer in a shut folder would be no find. */
   function folderOpen(name: string): boolean {
-    return !closed.has(name) || selectedFolder === name
+    return searching || !closed.has(name) || selectedFolder === name
   }
 
   function toggleFolder(name: string) {
+    // Every folder with a match is open while one is looked for, so there is
+    // nothing to fold; and a fold made now would be one nobody saw.
+    if (searching) return
     const next = new Set(closed)
-    if (name === PODCASTS ? showsOpen : folderOpen(name)) next.add(name)
+    if (folderOpen(name)) next.add(name)
     else next.delete(name)
     closed = next
     closedPref.set([...next])
   }
 
-  /**
-   * The Podcasts group's own entry in the same list of shut things. A name no
-   * folder can have -- a NUL is not something anyone types -- so a folder
-   * that happens to be called "Podcasts" is not folded with it.
-   */
-  const PODCASTS = '\u0000podcasts'
+  // ── Finding a row ─────────────────────────────────────────────────────
 
-  const shows = $derived(feed.podcastSources)
-  const showsUnread = $derived(shows.reduce((n, s) => n + s.unread, 0))
-  /** Open unless shut, and always while one of its shows is the open source. */
-  const showsOpen = $derived(!closed.has(PODCASTS) || !!feed.source?.source.podcast)
+  let search = $state('')
+  const searching = $derived(search.trim() !== '')
+
+  /** The folders under the chip, as the search leaves them. */
+  const shown = $derived(searchNav(feed.folders, search))
+
+  function findKey(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || search === '') return
+    // Clears the field and nothing else: the key is not also asked to close
+    // whatever is open behind it.
+    e.preventDefault()
+    e.stopPropagation()
+    search = ''
+  }
 
   // ── What the rows show ────────────────────────────────────────────────
 
@@ -129,7 +151,14 @@
       { label: 'Settings…', icon: 'settings', run: () => (editing = summary) },
       site !== '' && { label: 'Open site', icon: 'globe', run: () => void openExternal(site) },
       SEP,
-      { label: 'Unfollow…', icon: 'trash', danger: true, run: () => (pendingUnfollow = summary) },
+      // A newsletter the Feed found was never followed, so there is nothing to
+      // unfollow: what is said is that it is not one, and it is not found again.
+      {
+        label: summary.source.found ? 'Not a newsletter…' : 'Unfollow…',
+        icon: 'trash',
+        danger: true,
+        run: () => (pendingUnfollow = summary),
+      },
     ])
   }
 
@@ -165,39 +194,6 @@
     ])
   }
 
-  /** The Podcasts heading: open them, refresh them, fold them. */
-  function showsMenu(): MenuItem[] {
-    const scope: FeedScope = { kind: 'podcasts' }
-    return tidyMenu([
-      {
-        label: 'Open',
-        icon: 'podcast',
-        disabled: isScope(scope),
-        run: () => void feed.select(scope),
-      },
-      {
-        label: 'Refresh',
-        icon: 'refresh',
-        run: () => {
-          for (const s of shows) void feed.refresh(s.source.id)
-        },
-      },
-      {
-        label: 'Mark all read',
-        icon: 'tick',
-        disabled: showsUnread === 0,
-        hint: showsUnread > 0 ? String(showsUnread) : undefined,
-        run: () => void markScopeRead(scope),
-      },
-      SEP,
-      {
-        label: showsOpen ? 'Fold' : 'Unfold',
-        icon: 'chevron',
-        run: () => toggleFolder(PODCASTS),
-      },
-    ])
-  }
-
   /** The blank space, and the heading: nothing in either is about one source. */
   function navMenu(): MenuItem[] {
     return tidyMenu([
@@ -219,6 +215,33 @@
 </script>
 
 <nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
+  <!-- The shared filter bar, with every kind named: there are only four, and
+       each is a word. Over All, which it narrows, and over the rows. -->
+  <div class="filters kinds" role="tablist" aria-label="Show">
+    {#each FEED_KINDS as kind (kind)}
+      <button
+        class="filter"
+        class:on={feed.kind === kind}
+        role="tab"
+        aria-selected={feed.kind === kind}
+        onclick={() => void feed.setKind(kind)}
+      >
+        {KIND_LABELS[kind]}
+      </button>
+    {/each}
+  </div>
+
+  <input
+    class="field find"
+    type="search"
+    bind:value={search}
+    placeholder="Find a feed"
+    aria-label="Find a feed"
+    spellcheck="false"
+    autocomplete="off"
+    onkeydown={findKey}
+  />
+
   <button
     class="side-row"
     class:sel={isScope({ kind: 'all' })}
@@ -308,13 +331,21 @@
     </button>
   {/snippet}
 
-  {#if feed.sources.length === 0}
-    <p class="hint">Nothing followed yet. The plus above is the way in.</p>
+  {#if shown.length === 0}
+    <p class="hint">
+      {#if searching}
+        No feeds match “{search.trim()}”.
+      {:else if feed.kind === 'all'}
+        Nothing followed yet. The plus above is the way in.
+      {:else}
+        {KIND_NONE[feed.kind]}
+      {/if}
+    </p>
   {/if}
 
-  {#each feed.folders as folder (folder.name)}
+  {#each shown as { folder, rows } (folder.name)}
     {#if folder.name === ''}
-      {#each folder.sources as summary (summary.source.id)}
+      {#each rows as summary (summary.source.id)}
         {@render sourceRow(summary, false)}
       {/each}
     {:else}
@@ -341,42 +372,12 @@
         </button>
       </div>
       {#if open}
-        {#each folder.sources as summary (summary.source.id)}
+        {#each rows as summary (summary.source.id)}
           {@render sourceRow(summary, true)}
         {/each}
       {/if}
     {/if}
   {/each}
-
-  {#if shows.length > 0}
-    <!-- The group's header is a folder's: a chevron that folds, and a name that
-         opens everything under it. -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="folder" oncontextmenu={(e) => menu.show(e, showsMenu())}>
-      <button
-        class="fold"
-        aria-expanded={showsOpen}
-        aria-label="{showsOpen ? 'Fold' : 'Unfold'} Podcasts"
-        onclick={() => toggleFolder(PODCASTS)}
-      >
-        <span class="chev" class:down={showsOpen}><Icon name="chevron" size={12} /></span>
-      </button>
-      <button
-        class="side-row folder-name"
-        class:sel={isScope({ kind: 'podcasts' })}
-        title={showsUnread > 0 ? `Podcasts — ${showsUnread} unread` : 'Podcasts'}
-        onclick={() => void feed.select({ kind: 'podcasts' })}
-      >
-        <span class="side-text">Podcasts</span>
-        {#if !showsOpen && showsUnread > 0}<span class="side-count">{showsUnread}</span>{/if}
-      </button>
-    </div>
-    {#if showsOpen}
-      {#each shows as summary (summary.source.id)}
-        {@render sourceRow(summary, true)}
-      {/each}
-    {/if}
-  {/if}
 </nav>
 
 {#if editing}
@@ -384,10 +385,15 @@
 {/if}
 
 {#if pendingUnfollow}
+  {@const found = !!pendingUnfollow.source.found}
+  <!-- The same delete either way; what differs is what is said about it, and
+       that the service remembers a found newsletter was said not to be one. -->
   <ConfirmDialog
-    title={'Unfollow “' + sourceLabel(pendingUnfollow.source) + '”?'}
-    detail={unfollowDetail(pendingUnfollow.source)}
-    confirmLabel="Unfollow"
+    title={found
+      ? 'Take “' + sourceLabel(pendingUnfollow.source) + '” out of the Feed?'
+      : 'Unfollow “' + sourceLabel(pendingUnfollow.source) + '”?'}
+    detail={found ? NOT_NEWSLETTER_DETAIL : unfollowDetail(pendingUnfollow.source)}
+    confirmLabel={found ? 'Not a newsletter' : 'Unfollow'}
     onconfirm={() => {
       const doomed = pendingUnfollow
       pendingUnfollow = null
@@ -401,6 +407,25 @@
   /* The rows, headings and counts are the shared sidebar's -- see app.css's
      "Sidebars". What is the Feed's own: a folder that folds, a source set in
      under it, and a source that is paused. */
+
+  /* The kind chips fill the sidebar's width, each as wide as its word needs. A
+     narrow sidebar wraps them, which the shared bar is made to do. */
+  .kinds {
+    margin: var(--sp-1) 0 var(--sp-2);
+  }
+  .kinds .filter {
+    flex: 1 1 auto;
+    justify-content: center;
+    padding: 0 6px;
+    font-size: var(--text-xs);
+  }
+
+  /* The shared field, one row high like the rows it finds. */
+  .find {
+    height: var(--side-row-h);
+    margin-bottom: var(--sp-2);
+    font-size: var(--text-sm);
+  }
 
   /* A source inside a folder, set in under the folder's name. */
   .side-row.nested {

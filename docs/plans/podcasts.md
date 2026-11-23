@@ -115,8 +115,9 @@ file, then reviewed (15 findings, all fixed). What differs from that contract:
   linked by `Story.files: StoryFiles { media, transcript, text, audio }`,
   recorded in the references table as `RefKind::Story`. Only
   `Vault::update_story_files` writes them; `update_story` (the refresher's)
-  keeps whatever the stored copy has. A story with files never expires; nor
-  does one in Up Next.
+  keeps whatever the stored copy has. A story with its episode downloaded
+  never expires; nor does one in Up Next. (Until the Feed usability work any
+  file kept a story; see `docs/plans/feed-usability.md`.)
 - **Policies:** `FeedSettings.podcasts: PodcastDefaults` and each show's
   `PodcastSettings` overrides (`None` = default); `PodcastPolicy::of` merges.
   Download: off / newest N / all. Keep: forever / N days after played to the

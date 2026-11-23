@@ -50,6 +50,7 @@ pub mod routines;
 pub mod screentime;
 pub mod signin;
 pub mod speech;
+pub mod summaries;
 pub mod tasks;
 pub mod templates;
 pub mod trackers;
@@ -112,6 +113,7 @@ pub fn catalog() -> &'static [&'static Command] {
             ranking::COMMANDS,
             transcribing::COMMANDS,
             rendering::COMMANDS,
+            summaries::COMMANDS,
             money::COMMANDS,
             screentime::COMMANDS,
             files::COMMANDS,

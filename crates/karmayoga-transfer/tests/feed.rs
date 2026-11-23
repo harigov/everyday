@@ -70,8 +70,10 @@ fn follow_things(vault: &Vault) -> (NewsSource, NewsSource, NewsSource) {
         SourceKind::HackerNews { list: HnList::Top, min_points: 300 },
         "Best of Hacker News",
     );
-    let mut weekly =
-        NewsSource::new(SourceKind::Mail { sender: "news@example.com".into() }, "Example Weekly");
+    let mut weekly = NewsSource::new(
+        SourceKind::Mail { sender: "news@example.com".into(), name: String::new() },
+        "Example Weekly",
+    );
     weekly.keep_out_of_inbox = true;
     for source in [&blog, &hn, &weekly] {
         vault.save_news_source(source).unwrap();
