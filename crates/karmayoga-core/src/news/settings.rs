@@ -44,6 +44,10 @@ pub struct FeedSettings {
     /// Play the next thing in Up Next when one ends.
     #[serde(default = "yes")]
     pub autoplay: bool,
+    /// Pick up what was playing again when a conversation with the assistant
+    /// that paused it ends.
+    #[serde(default = "yes")]
+    pub resume_after_voice: bool,
     /// What the player's buttons skip, in seconds.
     #[serde(default = "FeedSettings::default_skip_back")]
     pub skip_back_s: u32,
@@ -72,6 +76,7 @@ impl Default for FeedSettings {
             keep_read: true,
             autofill: None,
             autoplay: true,
+            resume_after_voice: true,
             skip_back_s: Self::default_skip_back(),
             skip_forward_s: Self::default_skip_forward(),
         }

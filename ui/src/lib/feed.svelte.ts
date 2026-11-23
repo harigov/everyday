@@ -20,7 +20,15 @@
 
 import { accounts } from './accounts.svelte'
 import { api, callCommand, isMock, isWeb } from './api'
-import { filterStories, groupFolders, isWebUrl, sameFeedAddress, sortStories } from './feed'
+import {
+  bodyOriginOf,
+  filterStories,
+  groupFolders,
+  isWebUrl,
+  sameFeedAddress,
+  sortStories,
+  type BodyOrigin,
+} from './feed'
 import { allowWebOrigin, applyBodyTheme, bodyDocument } from './mailview'
 import { mediaBase } from './web'
 import { notify } from './notify.svelte'
@@ -65,10 +73,11 @@ const FEED_ACCENT = '#0369a1'
 /**
  * What the sidebar has selected.
  *
- * `upnext` and `recommended` are not lists of stories this store loads: they
- * are the queue and the ranking, which `upnext.svelte.ts` holds, and selecting
- * one asks it to load. `podcasts` is every episode of every podcast followed,
- * newest first, narrowed by the chips like any other list.
+ * `upnext`, `recommended` and `history` are not lists of stories this store
+ * loads: they are the queue, the ranking and the record of what was read and
+ * heard, which `upnext.svelte.ts` holds, and selecting one asks it to load.
+ * `podcasts` is every episode of every podcast followed, newest first,
+ * narrowed by the chips like any other list.
  */
 export type FeedScope =
   | { kind: 'all' }
@@ -76,6 +85,7 @@ export type FeedScope =
   | { kind: 'source'; id: NewsSourceId }
   | { kind: 'upnext' }
   | { kind: 'recommended' }
+  | { kind: 'history' }
   | { kind: 'podcasts' }
 
 /** How many hits a directory search asks for. */
@@ -93,6 +103,17 @@ export interface FeedFolder {
   name: string
   sources: SourceSummary[]
   unread: number
+}
+
+/**
+ * A story's body as the pane draws it: the document, whether its pictures were
+ * held back, and what it was written from -- `null` when the document does not
+ * say, which is every document from a service that predates transcripts.
+ */
+export interface LoadedBody {
+  html: string
+  imagesHidden: boolean
+  origin: BodyOrigin | null
 }
 
 /**
@@ -196,6 +217,12 @@ class FeedState {
   extracting = $state(false)
   /** A line under the list after something happened. Cleared on navigation. */
   note = $state<string | null>(null)
+  /**
+   * How many times each story's body was replaced under the pane: an article
+   * written from a transcript changes the body while `hasBody` stays true,
+   * which is all the pane would otherwise have to go on. See `bodyStamp`.
+   */
+  bodyStamps = $state<Record<StoryId, number>>({})
 
   // -- the directory: podcasts and feeds to follow ----------------------
   /** The directory sheet is open. */
@@ -242,7 +269,7 @@ class FeedState {
     // download finishing or a button: those stories' files changed. Patched
     // in place rather than by reloading the list, which could land over a
     // selection or a chip somebody changed while the download ran.
-    upnext.onEpisodeChange((ids) => void this.#refetch(ids))
+    upnext.onEpisodeChange((ids, change) => void this.#refetch(ids, change === 'body'))
     this.filter = filterPref.get()
   }
 
@@ -320,6 +347,7 @@ class FeedState {
     this.refreshing = false
     this.extracting = false
     this.note = null
+    this.bodyStamps = {}
     this.#detached = null
     this.#refreshes = 0
     // The directory's answers are public, but which of them are already
@@ -447,6 +475,27 @@ class FeedState {
     }
     const story = this.#find(id)
     if (story && !story.read) await this.markRead([id], true)
+  }
+
+  /**
+   * Open a story in the list of its own source, which is what somebody who
+   * found it somewhere else -- History, a link from another app -- wants: the
+   * story with its neighbours beside it, and not a pane over a page that has
+   * no list. Answers whether there was a story to open: a record outlives its
+   * story, and a source unfollowed since takes its stories with it.
+   */
+  async openInSource(id: StoryId): Promise<boolean> {
+    let found: Story
+    try {
+      found = await api.story(id)
+    } catch (e) {
+      // Not found is an answer here, not a failure; a locked vault is the lock screen's.
+      if (isLocked(e)) await handle(e)
+      return false
+    }
+    await this.select({ kind: 'source', id: found.sourceId })
+    await this.open(id)
+    return true
   }
 
   /** Back to the list. */
@@ -1045,16 +1094,19 @@ class FeedState {
               seen('newsSource', s.source.id, s.source.title),
             )
           : []
-    // Up Next and Recommended are not narrowed by the chips, which say nothing there.
-    const chips = scope.kind !== 'upnext' && scope.kind !== 'recommended'
+    // Up Next, Recommended and History are not narrowed by the chips, which say nothing there.
+    const chips =
+      scope.kind !== 'upnext' && scope.kind !== 'recommended' && scope.kind !== 'history'
     const words = [
       scope.kind === 'upnext'
         ? 'Up Next'
         : scope.kind === 'recommended'
           ? 'Recommended'
-          : scope.kind === 'podcasts'
-            ? 'Podcasts'
-            : null,
+          : scope.kind === 'history'
+            ? 'History'
+            : scope.kind === 'podcasts'
+              ? 'Podcasts'
+              : null,
       scope.kind === 'folder' ? 'a folder' : null,
       chips && this.filter === 'unread' ? 'unread only' : null,
       chips && this.filter === 'saved' ? 'saved' : null,
@@ -1087,17 +1139,28 @@ class FeedState {
    * The pane asks again when the story's `hasBody` changes, which is what
    * `fetchFullArticle` flips: the address is the same and the body is not.
    */
-  async loadBody(story: Story): Promise<{ html: string; imagesHidden: boolean } | null> {
+  async loadBody(story: Story): Promise<LoadedBody | null> {
     try {
       const loaded = isMock ? await this.#mockBody(story) : await this.#fetchBody(story)
       return {
         html: applyNewsOrigin(applyBodyTheme(loaded.html, app.dark, app.frame)),
         imagesHidden: loaded.imagesHidden,
+        origin: loaded.origin,
       }
     } catch (e) {
       await handle(e)
       return null
     }
+  }
+
+  /**
+   * How many times `id`'s body has been replaced since it was first seen. A
+   * pane that reads this in the effect that loads the body loads it again when
+   * an article is written from a transcript, whose address, `hasBody` and
+   * everything else about the story are as they were.
+   */
+  bodyStamp(id: StoryId): number {
+    return this.bodyStamps[id] ?? 0
   }
 
   /**
@@ -1110,11 +1173,12 @@ class FeedState {
    * the response, and an `<iframe src>` has no hook to read it. Not cached,
    * since whether they are held back can change between two requests.
    */
-  async #fetchBody(story: Story): Promise<{ html: string; imagesHidden: boolean }> {
+  async #fetchBody(story: Story): Promise<LoadedBody> {
     const res = await fetch(this.bodyUrl(story), { cache: 'no-store' })
     if (!res.ok) throw new Error(`could not load the story (${res.status})`)
     const imagesHidden = res.headers.get('x-news-images-hidden') === '1'
-    return { html: await res.text(), imagesHidden }
+    const html = await res.text()
+    return { html, imagesHidden, origin: bodyOriginOf(html) }
   }
 
   /**
@@ -1122,12 +1186,18 @@ class FeedState {
    * name, as the dev-only mail triggers are: no real command is behind it, so
    * the generated client has nothing to type it from.
    */
-  async #mockBody(story: Story): Promise<{ html: string; imagesHidden: boolean }> {
-    const body = await callCommand<{ html: string; imagesHidden: boolean }>('mock_story_body', {
-      id: story.id,
-    })
+  async #mockBody(story: Story): Promise<LoadedBody> {
+    const body = await callCommand<{
+      html: string
+      imagesHidden: boolean
+      origin?: BodyOrigin | null
+    }>('mock_story_body', { id: story.id })
     const framed = bodyDocument(story.id, { html: body.html, imagesHidden: body.imagesHidden })
-    return { html: framed.html ?? '', imagesHidden: framed.imagesHidden ?? false }
+    return {
+      html: framed.html ?? '',
+      imagesHidden: framed.imagesHidden ?? false,
+      origin: body.origin ?? null,
+    }
   }
 
   // ── loading ──────────────────────────────────────────────────────────
@@ -1220,12 +1290,15 @@ class FeedState {
       this.#generation,
       async (isCurrent) => {
         const scope = this.scope
-        if (scope.kind === 'upnext' || scope.kind === 'recommended') {
-          // Not stories: the queue and the ranking, which have a store of
-          // their own. The list is empty so nothing from the last scope shows.
+        if (scope.kind === 'upnext' || scope.kind === 'recommended' || scope.kind === 'history') {
+          // Not stories: the queue, the ranking and the record of what was
+          // read and heard, which have a store of their own. The list is
+          // empty so nothing from the last scope shows.
           this.#land([], null)
           if (scope.kind === 'upnext') await upnext.load()
-          else await upnext.loadRecommended()
+          else if (scope.kind === 'recommended') await upnext.loadRecommended()
+          // A reload keeps as many records as are loaded; a navigation starts over.
+          else await upnext.loadHistory(!fresh)
           return
         }
         const covering = fresh ? PAGE : Math.min(MOST, Math.max(PAGE, this.stories.length))
@@ -1309,24 +1382,29 @@ class FeedState {
   }
 
   /**
-   * Change a story where it is held.
-   *
-   * In place for a listed one, so a row and the pane redraw from one object;
-   * replaced whole for the detached copy, which is raw.
+   * Read these stories again and patch what changed in place, if they are
+   * shown. `body` says the body was replaced as well, which the pane is told
+   * by a stamp since nothing about the story's own fields says so.
    */
-  /** Read these stories again and patch what changed in place, if they are shown. */
-  async #refetch(ids: StoryId[]): Promise<void> {
+  async #refetch(ids: StoryId[], body = false): Promise<void> {
     for (const id of ids) {
       if (!this.#find(id)) continue
       try {
         const fresh = await api.story(id)
         this.#patch(id, { files: fresh.files, hasBody: fresh.hasBody })
+        if (body) this.bodyStamps = { ...this.bodyStamps, [id]: this.bodyStamp(id) + 1 }
       } catch (e) {
         await quietly(e)
       }
     }
   }
 
+  /**
+   * Change a story where it is held.
+   *
+   * In place for a listed one, so a row and the pane redraw from one object;
+   * replaced whole for the detached copy, which is raw.
+   */
   #patch(id: StoryId, changes: Partial<Story>): void {
     const listed = this.stories.find((s) => s.id === id)
     if (listed) {

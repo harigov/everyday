@@ -18,15 +18,36 @@
 //! the vault writes are made inside a scope of their own: otherwise the
 //! command's debug-build check of what it touched against what it declared
 //! would take the story's read mark for a mistake.
+//!
+//! # What the Feed remembers
+//!
+//! Two more things follow from a report, and neither may slow it or fail it.
+//! An article that is finished is kept as Markdown in the files folder
+//! ([`super::keep`]) on a task of its own, which announces what it writes
+//! itself. And the *first* time an episode is played, it is put on the list to
+//! be transcribed when its show's policy is to do that once somebody plays it
+//! ([`super::transcribe`]): the first report is the one that makes the record,
+//! so "first" costs no read the report did not already make.
+//!
+//! Only episodes, and never a file. A recording in Files is the person's own --
+//! music, a family film, a memo -- and transcribing one means sending it to
+//! whatever recogniser is set up, which may be somebody else's cloud service;
+//! that is for the Transcribe button, not for pressing play. The app's own
+//! audio (the daily podcast, an article read aloud) was written from words it
+//! already has. So the policy that applies is a show's, and a file is
+//! transcribed only when somebody asks.
 
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Kind, Op};
-use crate::news::{newsletters, queue, rank};
+use crate::news::transcribe::{self, Job};
+use crate::news::{keep, newsletters, queue, rank};
 use crate::service::{Service, blocking};
 use jiff::Timestamp;
 use karmayoga_core::id::{FileId, QueueEntryId};
 use karmayoga_core::news::listening::{FINISHED_AT, covered, merge_spans};
-use karmayoga_core::news::{ConsumeMode, Consumption, ContentRef, Span, Story};
+use karmayoga_core::news::{
+    ConsumeMode, Consumption, ContentRef, Enclosure, PodcastPolicy, Span, Story, TranscribePolicy,
+};
 use karmayoga_core::vault::upnext_entry::ContentFacts;
 use karmayoga_core::{Error, Vault};
 use serde::Deserialize;
@@ -199,11 +220,38 @@ struct Saved {
     /// The story, if the thing is one: whether it is read, and whether it is
     /// a newsletter.
     story: Option<Story>,
+    /// What this report asks to have transcribed: set only by the first
+    /// report of an episode that is played. See [`to_transcribe`].
+    transcribe: Option<Job>,
+}
+
+/// What the first report of an episode that is played puts on the list to be
+/// transcribed, if anything: the episode, when its show's policy says to
+/// transcribe once it is played and it has no transcript yet.
+///
+/// A show's own policy is its [`PodcastPolicy`]; a feed that turned out to
+/// carry episodes without having been followed as a show has none, and the
+/// Feed's defaults stand in. A story that is not an episode is read, not
+/// played, and never asks. Nothing but a story does: see the module docs for
+/// why a file in Files is left to the Transcribe button.
+fn to_transcribe(vault: &Vault, story: &Story) -> CommandResult<Option<Job>> {
+    let episode = story.media.as_ref().is_some_and(Enclosure::is_playable);
+    if !episode || story.files.transcript.is_some() {
+        return Ok(None);
+    }
+    let defaults = vault.feed_settings()?.podcasts;
+    let policy = vault
+        .news_source(story.source_id)
+        .ok()
+        .and_then(|source| source.podcast)
+        .map_or(defaults.transcribe, |show| PodcastPolicy::of(&show, &defaults).transcribe);
+    Ok((policy == TranscribePolicy::WhenPlayed).then_some(Job::Story(story.id)))
 }
 
 /// The reads and the one write of a report. Runs on a blocking thread.
 fn store(vault: &Vault, report: &ProgressReport, now: Timestamp) -> CommandResult<Saved> {
     let old = vault.consumption(&report.what)?;
+    let first = old.is_none();
     // A story is read every time, for its files; anything else only to make
     // the record the first time.
     let (described, story) = match (&old, report.what) {
@@ -213,6 +261,14 @@ fn store(vault: &Vault, report: &ProgressReport, now: Timestamp) -> CommandResul
             None => (None, None),
         },
     };
+    // Asked of the first report only, so a report that is one of hundreds
+    // reads nothing more than it did before.
+    let transcribe = match &story {
+        Some(story) if first && matches!(report.mode, ConsumeMode::Listen | ConsumeMode::Watch) => {
+            to_transcribe(vault, story)?
+        }
+        _ => None,
+    };
     let Some(folded) = fold(old, described, report, now) else {
         return Err(CommandError::new(
             codes::NOT_FOUND,
@@ -220,7 +276,7 @@ fn store(vault: &Vault, report: &ProgressReport, now: Timestamp) -> CommandResul
         ));
     };
     vault.save_consumption(&folded.consumption)?;
-    Ok(Saved { consumption: folded.consumption, finishing: folded.finishing, story })
+    Ok(Saved { consumption: folded.consumption, finishing: folded.finishing, story, transcribe })
 }
 
 /// Fold `progress` into what is stored about the thing, creating it on the
@@ -235,10 +291,29 @@ pub async fn record(svc: &Arc<Service>, progress: ProgressReport) -> CommandResu
     // Recommended shows how far through each story is, and leaves out what is
     // finished: it must read the Feed afresh, not what it read a moment ago.
     rank::forget_window(svc);
+    if let Some(job) = saved.transcribe {
+        transcribe::request(svc, job);
+    }
     if saved.finishing {
+        remember(svc, &saved);
         settle(svc, &vault, &saved).await;
     }
     Ok(saved.consumption)
+}
+
+/// A finished article is kept as Markdown: the Feed's memory of it. On a task
+/// of its own, so the report does not wait for a file to be written, and so
+/// that what it writes -- which the command did not declare -- is announced by
+/// [`keep::keep_article`] and not taken for the command's own. A failure is
+/// said in the log and never reaches the report, which was kept.
+fn remember(svc: &Arc<Service>, saved: &Saved) {
+    let Some(story) = saved.story.as_ref().filter(|s| keep::is_article(s)) else { return };
+    let (svc, id) = (svc.clone(), story.id);
+    tokio::spawn(async move {
+        if let Err(e) = keep::keep_article(&svc, id).await {
+            tracing::info!(error = %e, "could not keep an article that was finished");
+        }
+    });
 }
 
 /// A thing was finished: out of Up Next, a story read, Up Next topped up.
@@ -518,8 +593,9 @@ mod tests {
     use crate::ctx::Ctx;
     use crate::events::{Change, EventSink};
     use karmayoga_core::QueuePlace;
+    use karmayoga_core::files::{FileOrigin, ImportOptions};
     use karmayoga_core::news::{
-        AddedBy, Enclosure, FeedSettings, NewsSource, QueueEntry, SourceKind,
+        AddedBy, Enclosure, FeedSettings, NewsSource, PodcastSettings, QueueEntry, SourceKind,
     };
     use std::sync::Mutex;
 
@@ -673,6 +749,196 @@ mod tests {
         let again =
             ProgressReport { finished: Some(true), mode: ConsumeMode::Read, ..report(what) };
         record(&svc, again).await.unwrap();
+    }
+
+    fn show(vault: &Vault, title: &str, podcast: Option<PodcastSettings>) -> NewsSource {
+        let kind = SourceKind::Web { url: format!("https://example.com/{title}.xml") };
+        let mut source = NewsSource::new(kind, title);
+        source.podcast = podcast;
+        vault.save_news_source(&source).unwrap();
+        source
+    }
+
+    fn policy(vault: &Vault, transcribe: TranscribePolicy) {
+        let mut settings = vault.feed_settings().unwrap();
+        settings.podcasts.transcribe = transcribe;
+        vault.save_feed_settings(&settings).unwrap();
+    }
+
+    #[test]
+    fn an_episode_is_transcribed_when_played_only_if_the_shows_policy_says_so() {
+        let (_svc, vault, _events, _dir) = world();
+        let ask = |story: &Story| {
+            let story = vault.story(story.id).unwrap();
+            to_transcribe(&vault, &story).unwrap()
+        };
+
+        // A show on the Feed's defaults, which transcribe once played.
+        let plain = show(&vault, "Plain", Some(PodcastSettings::default()));
+        let ep = stored_story(&vault, &plain, "Ep", true);
+        assert_eq!(ask(&ep), Some(Job::Story(ep.id)));
+
+        // Its own word over the Feed's, either way.
+        let off = show(
+            &vault,
+            "Off",
+            Some(PodcastSettings {
+                transcribe: Some(TranscribePolicy::Off),
+                ..PodcastSettings::default()
+            }),
+        );
+        assert_eq!(ask(&stored_story(&vault, &off, "Ep", true)), None);
+        let eager = show(
+            &vault,
+            "Eager",
+            Some(PodcastSettings {
+                transcribe: Some(TranscribePolicy::WhenDownloaded),
+                ..PodcastSettings::default()
+            }),
+        );
+        assert_eq!(
+            ask(&stored_story(&vault, &eager, "Ep", true)),
+            None,
+            "that one was asked for when it was downloaded, not when played"
+        );
+        policy(&vault, TranscribePolicy::Off);
+        assert_eq!(ask(&ep), None, "the Feed's default is off");
+        let asking = show(
+            &vault,
+            "Asking",
+            Some(PodcastSettings {
+                transcribe: Some(TranscribePolicy::WhenPlayed),
+                ..PodcastSettings::default()
+            }),
+        );
+        let wanted = stored_story(&vault, &asking, "Ep", true);
+        assert_eq!(ask(&wanted), Some(Job::Story(wanted.id)));
+
+        // One with a transcript already, and an article, which is nothing to play.
+        policy(&vault, TranscribePolicy::WhenPlayed);
+        vault.update_story_files(ep.id, |f| f.transcript = Some(FileId::new())).unwrap();
+        assert_eq!(ask(&ep), None);
+        assert_eq!(ask(&stored_story(&vault, &plain, "Post", false)), None);
+
+        // An episode in a feed nobody followed as a show: the Feed's defaults.
+        let blog = show(&vault, "Blog", None);
+        let loose = stored_story(&vault, &blog, "Loose", true);
+        assert_eq!(ask(&loose), Some(Job::Story(loose.id)));
+        policy(&vault, TranscribePolicy::Off);
+        assert_eq!(ask(&loose), None);
+    }
+
+    #[test]
+    fn a_recording_in_files_is_never_transcribed_by_playing_it() {
+        let (_svc, vault, _events, dir) = world();
+        vault.set_up_files_folder(Some(&dir.path().join("files"))).unwrap();
+        // The Feed's default is to transcribe what is played, which is for
+        // shows. Music, a family film, a memo, and what the app rendered
+        // itself are all in Files too.
+        policy(&vault, TranscribePolicy::WhenPlayed);
+        let into = |dir: &str, origin| ImportOptions {
+            dir: Some(dir.into()),
+            ..ImportOptions::new(origin)
+        };
+        let files = [
+            vault.import_bytes(b"x", "song.m4a", &into("Music", FileOrigin::Files)).unwrap(),
+            vault.import_bytes(b"x", "party.mp4", &into("Family", FileOrigin::Files)).unwrap(),
+            vault.import_bytes(b"x", "Daily.ogg", &into("Feed/Daily", FileOrigin::Feed)).unwrap(),
+            vault.import_bytes(b"x", "Article.ogg", &into("Feed/Audio", FileOrigin::Feed)).unwrap(),
+        ];
+        for file in files {
+            for mode in [ConsumeMode::Listen, ConsumeMode::Watch] {
+                let first = ProgressReport {
+                    mode,
+                    position_ms: Some(1_000),
+                    ..report(ContentRef::File(file.id))
+                };
+                let saved = store(&vault, &first, at(0)).unwrap();
+                assert_eq!(saved.transcribe, None, "{} asked for a transcript", file.name);
+                vault.forget_consumption(saved.consumption.id).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_first_report_of_something_heard_asks_for_a_transcript() {
+        let (_svc, vault, _events, _dir) = world();
+        let source = show(&vault, "Plain", Some(PodcastSettings::default()));
+        let ep = stored_story(&vault, &source, "Ep", true);
+        let what = ContentRef::Story(ep.id);
+        let play = |to: u64| ProgressReport {
+            position_ms: Some(to),
+            duration_ms: Some(100_000),
+            heard: Some(span(0, to)),
+            ..report(what)
+        };
+
+        assert_eq!(
+            store(&vault, &play(15_000), at(0)).unwrap().transcribe,
+            Some(Job::Story(ep.id))
+        );
+        assert_eq!(store(&vault, &play(30_000), at(15)).unwrap().transcribe, None);
+
+        // An episode first opened to read is not being played.
+        let other = stored_story(&vault, &source, "Other", true);
+        let reading =
+            ProgressReport { mode: ConsumeMode::Read, ..report(ContentRef::Story(other.id)) };
+        assert_eq!(store(&vault, &reading, at(0)).unwrap().transcribe, None);
+        assert_eq!(store(&vault, &play_of(other.id), at(15)).unwrap().transcribe, None);
+    }
+
+    fn play_of(story: StoryId) -> ProgressReport {
+        ProgressReport { position_ms: Some(5_000), ..report(ContentRef::Story(story)) }
+    }
+
+    /// Wait, for as long as a slow machine needs, for `done` to say yes.
+    async fn until<T>(mut done: impl FnMut() -> Option<T>) -> T {
+        for _ in 0..500 {
+            if let Some(found) = done() {
+                return found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("it never happened");
+    }
+
+    #[tokio::test]
+    async fn finishing_an_article_keeps_it_for_the_memory_without_slowing_the_report() {
+        let (svc, vault, events, dir) = world();
+        vault.set_up_files_folder(Some(&dir.path().join("files"))).unwrap();
+        let blog = show(&vault, "Blog", None);
+        let post = stored_story(&vault, &blog, "Slow gardens", false);
+        let what = ContentRef::Story(post.id);
+
+        // Half way down: nothing is kept.
+        let half = ProgressReport { mode: ConsumeMode::Read, progress: Some(0.5), ..report(what) };
+        record(&svc, half).await.unwrap();
+        assert!(vault.story(post.id).unwrap().files.text.is_none());
+
+        let done = ProgressReport { mode: ConsumeMode::Read, finished: Some(true), ..report(what) };
+        let c = record(&svc, done).await.unwrap();
+        assert!(c.finished, "the report did not wait for the file");
+        let file = until(|| vault.story(post.id).unwrap().files.text).await;
+        let kept = vault.file(file).unwrap();
+        assert_eq!(kept.path(), Some(&format!("Feed/Articles/Blog/{}", kept.name)[..]));
+        until(|| vault.consumption(&what).unwrap().filter(|c| c.text_file == Some(file))).await;
+        // Announced once everything is linked: a moment after the links land.
+        let mut seen = Vec::new();
+        until(|| {
+            seen.extend(events.take());
+            seen.contains(&(Kind::File, Op::Created)).then_some(())
+        })
+        .await;
+
+        // Told again that it ended, it is not written a second time.
+        let again =
+            ProgressReport { mode: ConsumeMode::Read, finished: Some(true), ..report(what) };
+        record(&svc, again).await.unwrap();
+        keep::keep_article(&svc, post.id).await.unwrap();
+        assert_eq!(vault.story(post.id).unwrap().files.text, Some(file));
+        let folder = dir.path().join("files/Feed/Articles/Blog");
+        assert_eq!(std::fs::read_dir(folder).unwrap().count(), 1);
+        crate::files::settled().await;
     }
 
     /// A newsletter issue in somebody's inbox, built directly: all a story

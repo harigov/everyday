@@ -21,9 +21,17 @@
   // exactly as an article's is. What only makes sense for an article is left
   // off it: Listen reads the page aloud, and there is no article to fetch
   // behind a recording.
+  //
+  // What was said in an episode can be written down (a transcript, opened in
+  // the reader like any document) and written up (an article, which replaces
+  // the body with the telling and keeps the show notes under it). Both are the
+  // service's background work, and the buttons say how far along it is. When
+  // the body is the telling, a quiet line above it says so, and offers to write
+  // it again. An article, for its part, can be saved as audio -- that is
+  // `EpisodeActions`, which also plays it.
 
   import { untrack } from 'svelte'
-  import { feed } from '../lib/feed.svelte'
+  import { feed, type LoadedBody } from '../lib/feed.svelte'
   import { listening } from '../lib/listen.svelte'
   import {
     alsoOn,
@@ -34,10 +42,11 @@
     sourceLabel,
   } from '../lib/feed'
   import { mediaUrl } from '../lib/api'
+  import { openTranscript } from '../lib/episodes'
   import { dateFormat } from '../lib/format'
   import { applyPlatformOrigin } from '../lib/mailview'
   import { openExternal } from '../lib/open-external'
-  import { episodeProgress, formatDuration } from '../lib/podcast'
+  import { episodeProgress, formatDuration, workLine } from '../lib/podcast'
   import { upnext } from '../lib/upnext.svelte'
   import type { Story } from '../lib/types'
   import EpisodeActions from './EpisodeActions.svelte'
@@ -88,14 +97,54 @@
     artBroken = false
   })
 
+  // ── What was said in it ───────────────────────────────────────────────
+
+  /**
+   * The transcript, once there is one and while it is in Files: the story
+   * links it by id, and somebody may have put the file in the trash since.
+   * Looked up as the story is opened; a transcript that is gone is shown as no
+   * transcript, which offers to write it down again.
+   */
+  const transcript = $derived(upnext.linkedFile(story.files?.transcript))
+  /** What is passed to the store for "write it up": the story as this pane sees its transcript. */
+  const written = $derived({ id: story.id, files: { transcript } })
+  /** The transcript was asked for and found gone, so the pane says so. */
+  let lost = $state(false)
+
+  $effect(() => {
+    void upnext.checkLinks([story.files?.transcript, story.files?.audio])
+  })
+  $effect(() => {
+    void story.id
+    lost = false
+  })
+
+  async function readTranscript() {
+    lost = false
+    if (!(await openTranscript(transcript))) lost = true
+  }
+  const transcribing = $derived(upnext.workFor({ story: story.id }, 'transcript'))
+  const writing = $derived(upnext.workFor({ story: story.id }, 'article'))
+  const transcribeBusy = $derived(!!transcribing && transcribing.state !== 'failed')
+  const writeBusy = $derived(!!writing && writing.state !== 'failed')
+
   // ── The body ──────────────────────────────────────────────────────────
 
-  let body = $state<{ html: string; imagesHidden: boolean } | null>(null)
+  let body = $state<LoadedBody | null>(null)
   let failed = $state(false)
   /** Which story `body` belongs to, so a new one never shows under the old one's. */
   let shownFor = ''
   /** Counts loads, so one that was overtaken by a newer story is ignored when it lands. */
   let loads = 0
+
+  /**
+   * Whether the body is the telling of the episode and not the feed's own text.
+   * The document says so when the service does; when it does not, this window's
+   * own memory of having asked for it is what there is.
+   */
+  const writtenFrom = $derived(
+    !!media && (body?.origin ? body.origin === 'transcript' : upnext.wroteFromTranscript(story.id)),
+  )
 
   // Reload when the story changes -- or gains a body, which is what fetching
   // the full article does -- and once more when an extraction ends, since a
@@ -104,14 +153,18 @@
   //
   // Keyed on these values and not on `story` itself: the store replaces
   // its story objects whenever the list reloads, and a refresh that changed
-  // nothing about this one is no reason to fetch its body again.
+  // nothing about this one is no reason to fetch its body again. The stamp is
+  // the third: an article written from a transcript replaces the body of a
+  // story that had one already.
   const storyId = $derived(story.id)
   const hasBody = $derived(story.hasBody)
   const expired = $derived(story.expired)
+  const stamp = $derived(feed.bodyStamp(story.id))
 
   $effect(() => {
     const id = storyId
     void hasBody
+    void stamp
     if (feed.extracting) return
     const target = untrack(() => story)
     const mine = ++loads
@@ -384,12 +437,80 @@
                   <span class="along-label">{progress.label}</span>
                 </div>
               {/if}
+              <div class="words" role="group" aria-label="Transcript and article">
+                {#if transcribeBusy}
+                  <span class="status" role="status">
+                    <span class="spin"><Icon name="quote" size={15} /></span>
+                    {workLine(transcribing)}
+                  </span>
+                {:else if transcript}
+                  <button
+                    class="btn btn-outline"
+                    title="Read what was said, in the reader beside the assistant"
+                    onclick={() => void readTranscript()}
+                  >
+                    <Icon name="quote" size={15} /> Open transcript
+                  </button>
+                {:else}
+                  <button
+                    class="btn btn-outline"
+                    title="Write down what was said in it"
+                    onclick={() => void upnext.transcribe(story.id)}
+                  >
+                    <Icon name="quote" size={15} />
+                    {transcribing ? 'Transcription failed, try again' : 'Transcribe'}
+                  </button>
+                {/if}
+                <!-- Once the body is the telling, writing it again is offered where it says so. -->
+                {#if !writtenFrom}
+                  {#if writeBusy}
+                    <span class="status" role="status">
+                      <span class="spin"><Icon name="newspaper" size={15} /></span>
+                      {workLine(writing)}
+                    </span>
+                  {:else}
+                    <button
+                      class="btn btn-outline"
+                      title="Write the episode up as an article from its transcript, which is made first if there is none"
+                      onclick={() => void upnext.readAsArticle(written)}
+                    >
+                      <Icon name="newspaper" size={15} />
+                      {writing ? 'Writing failed, try again' : 'Read as an article'}
+                    </button>
+                  {/if}
+                {/if}
+              </div>
+              {#if lost && !transcript}
+                <p class="origin" role="status">
+                  The transcript is no longer in Files. It can be written down again.
+                </p>
+              {/if}
+              {#if transcribing?.state === 'failed' && transcribing.error}
+                <p class="trouble" role="status">{transcribing.error}</p>
+              {:else if writing?.state === 'failed' && writing.error}
+                <p class="trouble" role="status">{writing.error}</p>
+              {/if}
             </div>
           {/if}
         </header>
 
         <div class="reading">
-          {#if media && !story.expired}<h2 class="notes-title">Show notes</h2>{/if}
+          {#if media && !story.expired}
+            <h2 class="notes-title">{writtenFrom ? 'Article' : 'Show notes'}</h2>
+          {/if}
+          {#if writtenFrom && !story.expired}
+            <p class="origin">
+              {#if writeBusy}
+                <span role="status">{workLine(writing)}</span>
+              {:else}
+                Written from the episode’s transcript, with the show notes kept below it.
+                <!-- Written from the transcript, which is made again first if it is gone. -->
+                <button class="link" onclick={() => void upnext.readAsArticle(written)}>
+                  Write again
+                </button>
+              {/if}
+            </p>
+          {/if}
           {#if story.expired}
             <p class="loading">
               This story is past its age, so its text was removed. The original may still be there.
@@ -558,6 +679,49 @@
   }
   .along-label {
     flex: none;
+  }
+  /* Transcript and article: pills, as the episode's other actions are, with the
+     progress of what is going where its button was. */
+  .words {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px var(--sp-2);
+  }
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The icon breathes while the work goes on; stopped outright under reduced
+     motion, where the words beside it still say it is going. */
+  .spin {
+    display: grid;
+    animation: breathe 1.4s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spin {
+      animation: none;
+    }
+  }
+  .trouble {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--danger);
+  }
+  /* Where the body came from, said once and quietly over it. */
+  .origin {
+    margin: 0 0 var(--sp-3);
+    font-size: var(--text-xs);
+    color: var(--fg-subtle);
   }
   .notes-title {
     margin: var(--sp-2) 0 var(--sp-3);

@@ -13,7 +13,7 @@ authors.workspace = true
 # computer through Phonon's own pure-Rust runtime. On in the desktop app and
 # the server; off for the CLI and a plain `cargo test`. See
 # docs/plans/meeting-notes.md and docs/plans/voice.md.
-speech = ["dep:sherpa-onnx", "dep:ptts", "dep:xn", "dep:loqui-g2p"]
+speech = ["dep:sherpa-onnx", "dep:ptts", "dep:xn", "dep:loqui-g2p", "dep:opus", "dep:ogg"]
 # Local decision models: a downloaded GGUF run through llama.cpp, for sorting
 # mail on this computer instead of at a provider. With `speech` as well, also
 # the Qwen3-ASR recognisers, which llama.cpp runs too. Links a native library
@@ -88,6 +88,16 @@ futures = "0.3.34"
 # A routine's emailed result: the model's Markdown as the message's HTML --
 # see `delivery::html_of`. Already in the tree through the Matrix SDK.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# A podcast episode, a recording or a film's sound read as samples, to be
+# transcribed -- see `speech::decode`. Pure Rust; MP3, AAC in MP4/M4A, Ogg
+# Vorbis, FLAC and WAV, which is what podcasts are published as.
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
+# What `speech::render` writes an article or the daily podcast out as: Opus
+# in an Ogg file, a few megabytes for a quarter of an hour of speech. libopus
+# (BSD) is built from the source the crate bundles, as it already is for
+# calls in karmayoga-chat. Only with `speech`, where the voices are.
+opus = { version = "0.4", optional = true }
+ogg = { version = "0.9", optional = true }
 # An attached text file read in the encoding it was written in -- see
 # `mailpreview::decode`. Already in the tree under reqwest.
 encoding_rs = "0.8"

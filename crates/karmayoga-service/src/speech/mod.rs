@@ -26,6 +26,7 @@
 //! missing. See `docs/plans/voice.md`.
 
 pub mod access;
+pub mod decode;
 pub mod detect;
 pub mod dictate;
 pub mod listen;
@@ -35,6 +36,7 @@ pub mod local;
 pub mod narrate;
 pub mod pcm;
 pub mod qwen;
+pub mod render;
 pub mod resample;
 pub mod script;
 pub mod synth;

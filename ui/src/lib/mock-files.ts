@@ -1204,6 +1204,24 @@ let uploadCount = 0
 export function mockFilesReset(): void {
   store = null
   uploadCount = 0
+  writtenTexts.clear()
+}
+
+/** What other mocks wrote as text files -- a transcript, an article kept --
+ *  by file id, served by `mockFileUrl` as the file's contents. */
+const writtenTexts = new Map<string, string>()
+
+/** A text file another mock writes into the folder: the Feed's transcripts
+ *  and kept articles. */
+export function mockTextFile(
+  name: string,
+  text: string,
+  dir: string,
+  origin: FileOrigin,
+): FileEntry {
+  const added = addFile(name, text.length, { dir, origin })
+  writtenTexts.set(added.id, text)
+  return wire(added)
 }
 
 function mustFile(id: string): FileEntry {
@@ -1904,7 +1922,7 @@ export function mockFileUrl(id: string): string {
   if (f.kind === 'image') return svgUrl(pictureSvg(f))
   if (f.kind === 'video' || f.kind === 'audio') return svgUrl(mediaSvg(f))
   if (ext === 'pdf') return `data:application/pdf;base64,${btoa(samplePdf(f.name))}`
-  const text = TEXTS[f.name]
+  const text = writtenTexts.get(id) ?? TEXTS[f.name]
   if (text !== undefined) {
     return `data:${f.mime};charset=utf-8,${encodeURIComponent(text)}`
   }

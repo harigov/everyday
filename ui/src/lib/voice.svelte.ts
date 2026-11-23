@@ -12,11 +12,18 @@
 // A session is one thread's. Opening another thread, or locking the vault,
 // ends it, because the words that follow would land in the wrong place.
 //
-// See `docs/plans/voice.md`.
+// It shares the speakers with the player, so a session pauses what is
+// playing -- a podcast, a film, a story read aloud -- and, once it ends,
+// picks it up again where it was if Settings → Feed says to
+// (`player.pauseForVoice`, `player.resumeAfterVoice`). The player is where
+// one is begun from, too: `askAboutPlaying`.
+//
+// See `docs/plans/voice.md` and `docs/plans/podcasts.md`.
 
 import { agent } from './agent.svelte'
 import { api, hasShell, isMock, voiceStart } from './api'
 import { toWire } from './onscreen'
+import { player } from './player.svelte'
 import { onScreenNow } from './screen.svelte'
 import { app, errorMessage, isLocked, quietly } from './state.svelte'
 import type { ConversationId, OnScreen, VoiceEvent, VoiceState } from './types'
@@ -119,6 +126,9 @@ class VoiceSession {
     agent.talking = true
     this.state = 'starting'
     this.muted = false
+    // The speakers are the session's now. Before the screen is described to
+    // it, so what was playing is said to be paused.
+    player.pauseForVoice()
     try {
       await voiceStart(conversation, screenNow(), (event) => this.#hear(run, event))
     } catch (e) {
@@ -126,6 +136,26 @@ class VoiceSession {
       if (run === this.#run) this.#reset(isLocked(e) ? null : errorMessage(e))
       await quietly(e)
     }
+  }
+
+  /**
+   * Ask about what is playing, from the player: the assistant is opened
+   * beside the app -- the player's panel stands over the rail's place, so it
+   * is put away -- and a conversation begins in the thread on screen. `start`
+   * pauses what is playing and tells the session where it was.
+   *
+   * A failure is not reported here: an assistant that is not set up shows
+   * the rail's own screen for it, and a session that would not start leaves
+   * `error`, drawn above the composer.
+   */
+  async askAboutPlaying(): Promise<void> {
+    if (this.active || !agent.supported) return
+    player.expanded = false
+    // The Assistant app draws the thread over the whole window, with no rail.
+    if (!agent.open && app.section !== 'assistant') await agent.toggle()
+    if (!agent.conversationId) await agent.load()
+    if (!agent.ready) return
+    await this.start()
   }
 
   async stop(): Promise<void> {
@@ -208,8 +238,9 @@ class VoiceSession {
     return true
   }
 
-  /** Back to nothing, keeping `error` for the composer to show. */
-  #reset(error: string | null) {
+  /** Back to nothing, keeping `error` for the composer to show. `pickUp` is
+   *  false for a lock, which leaves nothing to carry on. */
+  #reset(error: string | null, pickUp = true) {
     this.#run += 1
     this.#stopping = false
     if (this.#grace) clearTimeout(this.#grace)
@@ -221,11 +252,13 @@ class VoiceSession {
     this.error = error
     this.#conversation = null
     agent.endSpoken()
+    // The speakers are free again.
+    player.resumeAfterVoice(pickUp)
   }
 
   #lock() {
     if (this.active) void api.voiceStop().catch(() => {})
-    this.#reset(null)
+    this.#reset(null, false)
   }
 }
 

@@ -213,6 +213,7 @@
     morning: 'Morning',
     evening: 'Evening',
     weekly: 'Weekly',
+    podcast: 'Daily podcast',
   }
 
   // However the editor came to be holding a brief, it is the wrong place for

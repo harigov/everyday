@@ -238,6 +238,7 @@ import type {
   PersonDue,
   PlaidEnvironment,
   PlaidSetup,
+  PodcastBrief,
   PodcastGenre,
   PodcastHit,
   Profile,
@@ -362,6 +363,7 @@ import type {
   VoiceprintId,
   VoiceprintInfo,
   WeatherReport,
+  WorkItem,
   Workout,
   WorkoutDetail,
   WorkoutId,
@@ -796,6 +798,7 @@ export interface Commands {
   listVoiceprints: { args: Record<string, never>; result: VoiceprintInfo[] }
   listWorkouts: { args: { from: string; to: string }; result: Workout[] }
   listWritingAssists: { args: { query?: WritingQuery }; result: WritingAssist[] }
+  listeningWork: { args: Record<string, never>; result: WorkItem[] }
   loadEvent: { args: { id: EventId }; result: EditableEvent }
   lock: { args: Record<string, never>; result: VaultStatus }
   logDose: { args: { dose: Dose }; result: Dose }
@@ -973,6 +976,7 @@ export interface Commands {
     }
     result: GeneratedImage
   }
+  renderStoryAudio: { args: { id: StoryId }; result: void }
   renderTemplate: {
     args: { template: Template; date?: string | null; journalId?: JournalId | null }
     result: RenderedTemplate
@@ -1128,7 +1132,10 @@ export interface Commands {
   }
   setAutoLock: { args: { seconds: number }; result: void }
   setBackupKeys: { args: { accessKeyId: string; secretAccessKey: string }; result: BackupView }
-  setBrief: { args: { kind: BriefKind; on: boolean }; result: Routine }
+  setBrief: {
+    args: { kind: BriefKind; on: boolean; podcast?: PodcastBrief | null }
+    result: Routine
+  }
   setChatTrustedDevices: { args: { id: ChatLinkId; devices: string[] }; result: ChatLinkView }
   setConnectionSecrets: {
     args: {
@@ -1206,6 +1213,8 @@ export interface Commands {
   topPodcasts: { args: { genre?: number | null; limit?: number | null }; result: PodcastHit[] }
   touch: { args: Record<string, never>; result: void }
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
+  transcribeEpisode: { args: { id: StoryId }; result: void }
+  transcribeFile: { args: { id: FileId }; result: void }
   trash: { args: { threads: ThreadId[] }; result: Op[] }
   trashFiles: { args: { ids: string[] }; result: FileEntry[] }
   trashFolder: { args: { path: string }; result: number }
@@ -1231,6 +1240,7 @@ export interface Commands {
   voiceSample: { args: Record<string, never>; result: VoiceSample }
   weather: { args: { place?: string | null }; result: WeatherReport }
   webSearch: { args: { request: SearchRequest }; result: SearchResult[] }
+  writeArticle: { args: { id: StoryId }; result: void }
   writeImport: { args: { handle: string; offset: number; data: string }; result: ImportProgress }
 }
 
@@ -1519,6 +1529,7 @@ export const COMMAND_NAMES = {
   listVoiceprints: 'list_voiceprints',
   listWorkouts: 'list_workouts',
   listWritingAssists: 'list_writing_assists',
+  listeningWork: 'listening_work',
   loadEvent: 'load_event',
   lock: 'lock',
   logDose: 'log_dose',
@@ -1628,6 +1639,7 @@ export const COMMAND_NAMES = {
   renameFile: 'rename_file',
   renameFolder: 'rename_folder',
   renderIllustration: 'render_illustration',
+  renderStoryAudio: 'render_story_audio',
   renderTemplate: 'render_template',
   rerank: 'rerank',
   rescanFiles: 'rescan_files',
@@ -1781,6 +1793,8 @@ export const COMMAND_NAMES = {
   topPodcasts: 'top_podcasts',
   touch: 'touch',
   trackerDays: 'tracker_days',
+  transcribeEpisode: 'transcribe_episode',
+  transcribeFile: 'transcribe_file',
   trash: 'trash',
   trashFiles: 'trash_files',
   trashFolder: 'trash_folder',
@@ -1806,6 +1820,7 @@ export const COMMAND_NAMES = {
   voiceSample: 'voice_sample',
   weather: 'weather',
   webSearch: 'web_search',
+  writeArticle: 'write_article',
   writeImport: 'write_import',
 } as const
 
@@ -2104,6 +2119,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_voiceprints',
   'list_workouts',
   'list_writing_assists',
+  'listening_work',
   'load_event',
   'lock',
   'log_dose',
@@ -2213,6 +2229,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'rename_file',
   'rename_folder',
   'render_illustration',
+  'render_story_audio',
   'render_template',
   'rerank',
   'rescan_files',
@@ -2365,6 +2382,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'top_podcasts',
   'touch',
   'tracker_days',
+  'transcribe_episode',
+  'transcribe_file',
   'trash',
   'trash_files',
   'trash_folder',
@@ -2390,6 +2409,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'voice_sample',
   'weather',
   'web_search',
+  'write_article',
   'write_import',
 ])
 
@@ -2577,6 +2597,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'remove_pronunciation',
   'rename_file',
   'rename_folder',
+  'render_story_audio',
   'rerank',
   'rescan_files',
   'respond_to_invite',
@@ -2699,6 +2720,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'sync_calendar',
   'sync_due_calendars',
   'touch',
+  'transcribe_episode',
+  'transcribe_file',
   'trash',
   'trash_files',
   'trash_folder',
@@ -2715,6 +2738,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'update_files',
   'update_transactions',
   'verify_password',
+  'write_article',
 ])
 
 /** What a listener should reload after a command succeeds. */

@@ -115,6 +115,8 @@ mod health;
 mod jobs;
 mod journals;
 mod library;
+// Up Next's memory and the player's moment: `recall`, `what_was_said`.
+mod listening;
 // `pub(crate)` for one reader outside the catalogue: `agent::onscreen`, which
 // describes an open thread only when `mail::permits` says the tools could
 // have read it.
@@ -1531,6 +1533,7 @@ fn all() -> &'static [Tool] {
             mail::TOOLS,
             meetings::TOOLS,
             news::TOOLS,
+            listening::TOOLS,
             money::TOOLS,
             screentime::TOOLS,
             files::TOOLS,

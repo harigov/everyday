@@ -1,5 +1,6 @@
 <script lang="ts">
-  // The brief page: the morning, evening or weekly brief, read as a page.
+  // The brief page: the morning, evening or weekly brief, read as a page --
+  // and the daily podcast, played from it.
   //
   // A brief is a short document -- the shape of the day in one sentence,
   // then a few sections of the model's prose -- and the page is laid out
@@ -13,6 +14,12 @@
   // covers and when (Settings → Briefs). Older briefs are a step back
   // through the run log, which is all a brief's history is. See
   // `docs/plans/briefs.md`.
+  //
+  // The daily podcast is a brief too, and its page leads with what it is
+  // for: a Play button that hands its audio to the player -- the one in the
+  // top bar, which goes on when somebody leaves the page -- and Up Next, with
+  // the show notes and the script it was recorded from below. Until its
+  // audio is made the page says so.
 
   import { onMount } from 'svelte'
   import { agent } from '../lib/agent.svelte'
@@ -24,24 +31,30 @@
     greeting,
     hasFigure,
     listeningMinutes,
+    podcastPlayRequest,
     readingMinutes,
+    scriptMinutes,
     sectionTitle,
   } from '../lib/brief'
   import { briefs } from '../lib/brief.svelte'
   import { formatClock, friendlyDate, timeOfDay } from '../lib/format'
+  import type { IconName } from '../lib/icons'
   import { listening } from '../lib/listen.svelte'
   import { renderMarkdown } from '../lib/markdown'
   import { panels } from '../lib/panels.svelte'
+  import { player } from '../lib/player.svelte'
   import { app } from '../lib/state.svelte'
   import { isoDate } from '../lib/time'
   import {
     BRIEF_KINDS,
     type BriefKind,
     type BriefSection,
+    type ContentRef,
     type Delivered,
     type RoutineRun,
     type RoutineRunId,
   } from '../lib/types'
+  import { upnext } from '../lib/upnext.svelte'
   import BriefFigure from './BriefFigure.svelte'
   import BriefStats from './BriefStats.svelte'
   import BriefTimeline from './BriefTimeline.svelte'
@@ -51,6 +64,8 @@
 
   onMount(() => {
     void briefs.start()
+    // Whether the podcast is already in Up Next is read from it.
+    void upnext.load()
   })
 
   /** The kind somebody picked; until then, the newest brief's. */
@@ -62,6 +77,7 @@
     morning: 'Morning',
     evening: 'Evening',
     weekly: 'Weekly',
+    podcast: 'Podcast',
   }
 
   /**
@@ -128,6 +144,55 @@
   function openSettings() {
     panels.openSettings('briefs')
   }
+
+  // ── The daily podcast ────────────────────────────────────────────────
+
+  const podcast = $derived(brief?.kind === 'podcast' ? brief : null)
+  const audioRef = $derived<ContentRef | null>(
+    podcast?.audio ? { type: 'file', id: podcast.audio } : null,
+  )
+  const current = $derived(audioRef !== null && player.isCurrent(audioRef))
+  const playing = $derived(audioRef !== null && player.isPlaying(audioRef))
+  const queued = $derived(audioRef !== null && upnext.isQueued(audioRef))
+
+  /** How long after a podcast was written its audio is still expected. */
+  const AUDIO_WAIT_MS = 30 * 60_000
+
+  /** No audio yet, and the podcast is recent enough for it to be on its way. */
+  const finishedMs = $derived(run ? Date.parse(run.finishedAt ?? run.startedAt) : Number.NaN)
+  const recording = $derived(!!podcast && !podcast.audio && Date.now() - finishedMs < AUDIO_WAIT_MS)
+
+  /** Play the podcast, or pause it, or take it up again where it was left. */
+  function playPodcast() {
+    if (!podcast) return
+    if (audioRef && player.isCurrent(audioRef)) {
+      player.toggle()
+      return
+    }
+    const request = podcastPlayRequest(podcast)
+    if (request) void player.play(request)
+  }
+
+  function queuePodcast() {
+    if (audioRef && !queued) void upnext.add(audioRef)
+  }
+
+  /** Who says a line: the speaker's name when there are several, else nobody. */
+  function said(speaker: string): string {
+    const speakers = podcast?.script?.speakers ?? []
+    if (speakers.length < 2) return ''
+    return speakers.find((s) => s.id === speaker)?.name || speaker
+  }
+
+  /** The mark on the page for a kind that has no brief yet. */
+  const emptyIcon = $derived<IconName>(
+    kind === 'podcast' ? 'podcast' : kind === 'evening' ? 'clock' : 'sun',
+  )
+
+  /** About how many minutes the podcast takes to hear. */
+  const podcastMinutes = $derived(
+    podcast ? scriptMinutes(podcast.script) || listeningMinutes(podcast) : 0,
+  )
 
   /**
    * Show the run's transcript in the Assistant app -- every tool it called
@@ -226,27 +291,33 @@
 
     <div class="actions">
       {#if run}
-        <button
-          class="btn btn-outline"
-          class:hearing
-          aria-pressed={hearing}
-          disabled={!listening.available}
-          title={listening.available
-            ? hearing
-              ? 'Stop reading it aloud'
-              : 'Read this brief aloud'
-            : 'Reading aloud works in the desktop app'}
-          onclick={listen}
-        >
-          {#if hearing}
-            <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span> Listening…
-          {:else}
-            <Icon name="play" size={13} /> Listen
-          {/if}
-        </button>
+        <!-- A podcast is played, from the button on its page: the player in
+             the top bar, with its own speed and place. Listen would only say
+             its words in the voice again. -->
+        {#if kind !== 'podcast'}
+          <button
+            class="btn btn-outline"
+            class:hearing
+            aria-pressed={hearing}
+            disabled={!listening.available}
+            title={listening.available
+              ? hearing
+                ? 'Stop reading it aloud'
+                : 'Read this brief aloud'
+              : 'Reading aloud works in the desktop app'}
+            onclick={listen}
+          >
+            {#if hearing}
+              <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span> Listening…
+            {:else}
+              <Icon name="play" size={13} /> Listen
+            {/if}
+          </button>
+        {/if}
         <button class="btn" disabled={making} onclick={() => makeNow()}>
           {#if making}
-            <span class="spinner" aria-hidden="true"></span> Writing your brief…
+            <span class="spinner" aria-hidden="true"></span>
+            {kind === 'podcast' ? 'Making your podcast…' : 'Writing your brief…'}
           {:else}
             <Icon name="sparkle" size={14} /> Make one now
           {/if}
@@ -283,7 +354,12 @@
       {#if making}
         <p class="writing text" role="status">
           <span class="spinner" aria-hidden="true"></span>
-          Writing a new {KIND_INFO[kind].name.toLowerCase()}. It appears here in a minute or two.
+          {#if kind === 'podcast'}
+            Making a new daily podcast: the script first, then the audio. It appears here in a few
+            minutes.
+          {:else}
+            Writing a new {KIND_INFO[kind].name.toLowerCase()}. It appears here in a minute or two.
+          {/if}
         </p>
       {/if}
 
@@ -299,15 +375,53 @@
               {@html inline(brief.headline)}
             </h1>
             <p class="meta">
-              <span>{readingMinutes(brief)} min read</span>
-              <span class="sep-dot" aria-hidden="true">·</span>
-              <span>{listeningMinutes(brief)} min to hear</span>
+              {#if podcast}
+                {#if podcastMinutes > 0}<span>About {podcastMinutes} min to hear</span>{/if}
+              {:else}
+                <span>{readingMinutes(brief)} min read</span>
+                <span class="sep-dot" aria-hidden="true">·</span>
+                <span>{listeningMinutes(brief)} min to hear</span>
+              {/if}
             </p>
           </header>
 
-          <div class="wide stats">
-            <BriefStats {digest} />
-          </div>
+          {#if podcast}
+            <div class="text listen" role="group" aria-label="The podcast">
+              {#if audioRef}
+                <button
+                  class="btn btn-primary play"
+                  onclick={playPodcast}
+                  title={playing ? 'Pause the podcast' : 'Play the podcast'}
+                >
+                  <Icon name={playing ? 'pause' : 'play'} size={18} weight={1.6} filled />
+                  {playing ? 'Pause' : current ? 'Resume' : 'Play'}
+                </button>
+                <button
+                  class="btn btn-outline"
+                  disabled={queued}
+                  title={queued ? 'It is in Up Next' : 'Play it after what is queued'}
+                  onclick={queuePodcast}
+                >
+                  <Icon name={queued ? 'tick' : 'queue-add'} size={14} />
+                  {queued ? 'In Up Next' : 'Add to Up Next'}
+                </button>
+              {:else if recording}
+                <p class="recording" role="status">
+                  <span class="spinner" aria-hidden="true"></span>
+                  The audio is being made. It will be here in a few minutes; the script is below.
+                </p>
+              {:else}
+                <p class="recording" role="status">
+                  <span class="note-icon"><Icon name="info" size={13} weight={1.7} /></span>
+                  No audio was made for this one. The script is below.
+                </p>
+              {/if}
+            </div>
+          {:else}
+            <div class="wide stats">
+              <BriefStats {digest} />
+            </div>
+          {/if}
 
           {#each brief.parts as part, i (i)}
             {@const section = part.section && part.section in SECTION_INFO ? part.section : null}
@@ -352,6 +466,25 @@
               {/if}
             </section>
           {/each}
+
+          {#if podcast?.script && podcast.script.lines.length > 0}
+            <section class="part" aria-labelledby="brief-script">
+              <h2 class="part-title text" id="brief-script" style="--tint: var(--app-feed)">
+                <span class="mark" aria-hidden="true">
+                  <Icon name="podcast" size={15} weight={1.7} />
+                </span>
+                <span>The script</span>
+              </h2>
+              <div class="prose text">
+                {#each podcast.script.lines as line, i (i)}
+                  <p>
+                    {#if said(line.speaker)}<b class="speaker">{said(line.speaker)}</b>{/if}
+                    {line.text}
+                  </p>
+                {/each}
+              </div>
+            </section>
+          {/if}
 
           <footer class="foot text">
             <p class="made">
@@ -419,7 +552,7 @@
               ? `The ${KIND_INFO[kind].name.toLowerCase()} is switched off.`
               : `There is no ${KIND_INFO[kind].name.toLowerCase()} yet.`}
       >
-        {#snippet icon()}<Icon name={kind === 'evening' ? 'clock' : 'sun'} size={28} />{/snippet}
+        {#snippet icon()}<Icon name={emptyIcon} size={28} />{/snippet}
         {#snippet note()}
           {#if making}
             It takes a minute or two, and appears here when it is done.
@@ -723,6 +856,40 @@
 
   .stats {
     margin-bottom: var(--sp-8);
+  }
+
+  /* The podcast's point: the button that plays it, with what else to do
+     with it beside, where a brief has the day's figures. */
+  .listen {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-8);
+  }
+  .play {
+    height: 46px;
+    padding: 0 var(--sp-6) 0 var(--sp-5);
+    font-size: var(--text-md);
+    font-weight: 600;
+  }
+  .recording {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+  }
+  /* Who says a line, when more than one voice does. */
+  .speaker {
+    margin-right: 0.4em;
+    color: var(--fg-muted);
+    font-family: var(--font-ui);
+    font-size: 0.82em;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
   /* ── Sections ─────────────────────────────────────────────────────── */

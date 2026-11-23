@@ -33,7 +33,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// What the player plays for an entry. Absent for an article, which is heard
-/// through Listen or read.
+/// through Listen or read -- unless it has been turned into audio, which is
+/// played like an episode.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Playable {
@@ -112,9 +113,10 @@ fn build(vault: &Vault, downloading: &HashSet<StoryId>) -> CommandResult<QueueVi
     } else {
         vault.news_sources()?.into_iter().map(|s| (s.id, s)).collect()
     };
-    // The files of Up Next's own, and the episodes its stories link to: an
-    // episode whose file was trashed or went missing is not playable.
-    file_ids.extend(stories.values().filter_map(|s| s.files.media));
+    // The files of Up Next's own, the episodes its stories link to, and the
+    // audio made of their articles: one whose file was trashed or went
+    // missing is not playable.
+    file_ids.extend(stories.values().flat_map(|s| [s.files.media, s.files.audio]).flatten());
     let mut files = HashMap::new();
     for id in file_ids {
         match vault.file(id) {
@@ -171,7 +173,11 @@ fn build(vault: &Vault, downloading: &HashSet<StoryId>) -> CommandResult<QueueVi
                             row.source_title = source.title.clone();
                         }
                         let media = story.files.media.and_then(|id| files.get(&id));
-                        row.play = story_playable(story, source, media, row.consumption.as_ref());
+                        let audio = story.files.audio.and_then(|id| files.get(&id));
+                        row.play = story_playable(story, source, media, row.consumption.as_ref())
+                            .or_else(|| {
+                                story_audio_playable(story, audio, row.consumption.as_ref())
+                            });
                         row.downloading = downloading.contains(&id);
                         row.story = Some(story.clone());
                     }
@@ -216,6 +222,27 @@ fn story_playable(
         kind: enclosure.kind(),
         duration_ms: consumption.and_then(|c| c.duration_ms).or(enclosure.duration_ms),
         start_ms: start_at(consumption, intro),
+    })
+}
+
+/// What the player plays for an article that was turned into audio: the audio
+/// file, while it is in the folder, from where it was left. Its length is the
+/// file's own, unless the player has measured it. An episode is its
+/// enclosure's, never this.
+fn story_audio_playable(
+    story: &Story,
+    audio: Option<&FileEntry>,
+    consumption: Option<&Consumption>,
+) -> Option<Playable> {
+    if story.media.as_ref().is_some_and(|m| m.is_playable()) {
+        return None;
+    }
+    let file = audio.filter(|f| matches!(f.status, FileStatus::Present))?;
+    Some(Playable {
+        file_id: file.id,
+        kind: EnclosureKind::Audio,
+        duration_ms: consumption.and_then(|c| c.duration_ms).or(file.media.duration_ms),
+        start_ms: start_at(consumption, None),
     })
 }
 
@@ -520,6 +547,33 @@ mod tests {
     }
 
     #[test]
+    fn an_article_with_audio_plays_from_it_while_the_file_is_there() {
+        let mut s = story("Post", None);
+        let made = file("2026-03-09 Post.opus", "Feed/Audio/Blog", FileKind::Audio, Some(95_000));
+        s.files.audio = Some(made.id);
+        let play = story_audio_playable(&s, Some(&made), None).unwrap();
+        assert_eq!((play.file_id, play.kind), (made.id, EnclosureKind::Audio));
+        assert_eq!((play.duration_ms, play.start_ms), (Some(95_000), None));
+
+        let mut c = consumption(Some(12_000), false);
+        c.duration_ms = Some(94_800);
+        let play = story_audio_playable(&s, Some(&made), Some(&c)).unwrap();
+        assert_eq!((play.duration_ms, play.start_ms), (Some(94_800), Some(12_000)));
+
+        // Trashed, missing, or not known: an article, which is read.
+        let at = Timestamp::from_second(1_790_000_000).unwrap();
+        let mut trashed = made.clone();
+        trashed.status = FileStatus::Trashed { at, from: "Post.opus".into() };
+        assert_eq!(story_audio_playable(&s, Some(&trashed), None), None);
+        assert_eq!(story_audio_playable(&s, None, None), None);
+
+        // An episode is played from its own file, whatever was made of it.
+        let mut ep = story("Ep", Some(enclosure("https://x/a.mp3", "audio/mpeg", None)));
+        ep.files.audio = Some(made.id);
+        assert_eq!(story_audio_playable(&ep, Some(&made), None), None);
+    }
+
+    #[test]
     fn a_file_plays_when_it_is_audio_or_video_and_still_there() {
         let audio = file("a.mp3", "", FileKind::Audio, Some(1_000));
         assert_eq!(file_playable(&audio, None).unwrap().kind, EnclosureKind::Audio);
@@ -670,6 +724,44 @@ mod tests {
         assert_eq!(item.play.unwrap().start_ms, Some(31_000));
         assert_eq!(item.consumption.unwrap().position_ms, Some(31_000));
         assert!(!item.downloading);
+    }
+
+    #[tokio::test]
+    async fn an_article_turned_into_audio_goes_in_up_next_to_be_heard() {
+        let w = world();
+        let show = w.show("The Gazette");
+        let article = w.story(&show, "A new bridge", None);
+
+        // Before: an article, to read, and nothing to play.
+        let entry = add(&w.svc, ContentRef::Story(article.id), QueuePlace::End, AddedBy::Person)
+            .await
+            .unwrap();
+        assert_eq!(entry.mode, ConsumeMode::Read);
+        assert_eq!(view(&w.svc).await.unwrap().items[0].play, None);
+
+        // After: the audio is its file, and Up Next plays it.
+        let audio = w.file("2026-03-09 A new bridge.opus", "Feed/Audio/The Gazette");
+        let media = MediaInfo { duration_ms: Some(95_000), ..audio.media.clone() };
+        w.vault.save_file_derived(audio.id, media, None, None).unwrap();
+        w.vault.update_story_files(article.id, |f| f.audio = Some(audio.id)).unwrap();
+        let item = view(&w.svc).await.unwrap().items.remove(0);
+        let play = item.play.expect("it is played from its audio");
+        assert_eq!((play.file_id, play.kind), (audio.id, EnclosureKind::Audio));
+        assert_eq!(play.duration_ms, Some(95_000));
+        assert!(!item.downloading);
+
+        // A new entry for it is heard, as long as the file says, and nothing
+        // is asked for: there is nothing to fetch.
+        w.vault.remove_from_queue_for(&[ContentRef::Story(article.id)]).unwrap();
+        let entry = add(&w.svc, ContentRef::Story(article.id), QueuePlace::End, AddedBy::Person)
+            .await
+            .unwrap();
+        assert_eq!((entry.mode, entry.duration_ms), (ConsumeMode::Listen, Some(95_000)));
+        assert_eq!(request_missing(&w.svc).await.unwrap(), 0);
+
+        // The file trashed: back to an article, with no player to give it.
+        w.vault.trash_files(&[audio.id]).unwrap();
+        assert_eq!(view(&w.svc).await.unwrap().items[0].play, None);
     }
 
     #[tokio::test]

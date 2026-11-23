@@ -11,9 +11,11 @@ use crate::command;
 use crate::ctx::Ctx;
 use crate::error::CommandResult;
 use crate::service::{Service, blocking};
-use karmayoga_core::brief::BriefKind;
-use karmayoga_core::routine::{Routine, RoutineRun};
+use karmayoga_core::Error;
+use karmayoga_core::brief::{BriefKind, PodcastBrief};
+use karmayoga_core::routine::{Routine, RoutineKind, RoutineRun};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// The most briefs one call hands back: a month of mornings and evenings.
@@ -24,6 +26,12 @@ const MOST_BRIEFS: u32 = 60;
 pub struct SetBrief {
     pub kind: BriefKind,
     pub on: bool,
+    /// The daily podcast's settings -- what it is made from, how long it
+    /// runs, who says it -- saved with the switch. Only for `podcast`; the
+    /// other briefs' are saved with the routine (`save_routine`), as the
+    /// podcast's may be.
+    #[serde(default)]
+    pub podcast: Option<PodcastBrief>,
 }
 
 #[derive(Deserialize)]
@@ -36,9 +44,48 @@ pub struct Briefs {
     pub limit: Option<u32>,
 }
 
-/// Switch a brief on or off, making its routine the first time.
+/// Switch a brief on or off, making its routine the first time -- and, for
+/// the daily podcast, saving what it is made from.
+///
+/// The settings are made acceptable first -- a length that overshot is held
+/// to what a podcast may run, a source named twice kept once -- and then
+/// checked: every source named must be one that is followed, or the podcast
+/// would be made from nothing and never say why. Checked before the switch
+/// moves, so a refusal leaves the brief as it was.
 async fn set_brief(svc: Arc<Service>, _ctx: Ctx, args: SetBrief) -> CommandResult<Routine> {
-    svc.on_vault(move |vault| vault.set_brief(args.kind, args.on)).await
+    svc.on_vault(move |vault| {
+        let podcast = match args.podcast {
+            None => None,
+            Some(_) if args.kind != BriefKind::Podcast => {
+                return Err(Error::Invalid("only the daily podcast has podcast settings".into()));
+            }
+            Some(podcast) => {
+                let podcast = podcast.tidied();
+                if !podcast.sources.is_empty() {
+                    let followed: HashSet<_> =
+                        vault.news_sources()?.into_iter().map(|s| s.id).collect();
+                    if podcast.sources.iter().any(|id| !followed.contains(id)) {
+                        return Err(Error::Invalid(
+                            "a source chosen for the daily podcast is not one that is followed"
+                                .into(),
+                        ));
+                    }
+                }
+                podcast.validate()?;
+                Some(podcast)
+            }
+        };
+        let mut routine = vault.set_brief(args.kind, args.on)?;
+        if let Some(podcast) = podcast
+            && let RoutineKind::Brief(spec) = &mut routine.kind
+        {
+            spec.podcast = Some(podcast);
+            vault.save_routine(&routine)?;
+            routine = vault.routine(routine.id)?;
+        }
+        Ok(routine)
+    })
+    .await
 }
 
 /// What the briefs wrote, newest first: each a finished run with its brief.
@@ -53,7 +100,11 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "set_brief", scope: Agent, effect: Write,
         change: Routine / Updated,
         args: SetBrief, returns: "Routine",
-        signature: &[("kind", "BriefKind", true), ("on", "boolean", true)],
+        signature: &[
+            ("kind", "BriefKind", true),
+            ("on", "boolean", true),
+            ("podcast", "PodcastBrief | null", false),
+        ],
         run: set_brief,
     },
     command! {

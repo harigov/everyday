@@ -831,8 +831,8 @@ export type RoutineKind =
 // The morning brief and the evening one: a routine the application owns,
 // whose run keeps the brief it wrote. Mirrors `karmayoga_core::brief`.
 
-export const BRIEF_KINDS = ['morning', 'evening', 'weekly'] as const
-/** Which brief: before the day, at the end of it, or the week ahead (Sundays). */
+export const BRIEF_KINDS = ['morning', 'evening', 'weekly', 'podcast'] as const
+/** Which brief: before the day, at the end of it, the week ahead (Sundays), or the daily podcast. */
 export type BriefKind = (typeof BRIEF_KINDS)[number]
 
 export const BRIEF_SECTIONS = [
@@ -861,6 +861,40 @@ export interface BriefSpec {
   /** In the order they appear. */
   sections: BriefSection[]
   length: BriefLength
+  /** The daily podcast's own; only on a `podcast` brief. */
+  podcast?: PodcastBrief | null
+}
+
+/** What the daily podcast is made from. */
+export interface PodcastBrief {
+  /** The Feed's sources it covers; empty is every source followed. */
+  sources: NewsSourceId[]
+  /** About how long it runs. */
+  minutes: number
+  /** Who says it; one narrator today. */
+  speakers: ScriptSpeaker[]
+}
+
+/** One voice in a script. */
+export interface ScriptSpeaker {
+  id: string
+  name: string
+  /** The local voice's speaker; absent is the voice chosen in Settings → Models. */
+  voice?: string | null
+}
+
+/** Something written to be heard: who says what, in order. */
+export interface Script {
+  title: string
+  speakers: ScriptSpeaker[]
+  lines: ScriptLine[]
+}
+
+export interface ScriptLine {
+  speaker: string
+  text: string
+  /** The story it is about. */
+  about?: StoryId | null
 }
 
 /** A brief, as kept on the run that wrote it. */
@@ -874,6 +908,10 @@ export interface Brief {
   parts: BriefPart[]
   /** The same brief written to be heard. */
   spoken: string
+  /** The daily podcast: who says what. */
+  script?: Script | null
+  /** The daily podcast rendered: its audio file under Feed/Daily. */
+  audio?: FileId | null
   /** What it was written from: what the pictures are drawn from. */
   digest: BriefDigest
 }
@@ -920,6 +958,36 @@ export interface BriefDigest {
   previous?: string | null
   /** Why a section asked for has nothing in it. */
   gaps: string[]
+  /** The daily podcast's: what it covers. Only on a podcast brief. */
+  podcast?: PodcastDigest | null
+}
+
+/** What a daily podcast was made from. */
+export interface PodcastDigest {
+  minutes: number
+  words: number
+  /** How far back it looked. */
+  since?: string | null
+  speakers: ScriptSpeaker[]
+  stories: PodcastStory[]
+  /** The sources the stories are from, by name. */
+  sources: string[]
+  /** How many more arrived than fit. */
+  leftOut: number
+  /** How many were already read or heard, and so left out. */
+  heardAlready: number
+}
+
+/** One story a daily podcast may tell. */
+export interface PodcastStory {
+  storyId: StoryId
+  title: string
+  source: string
+  url: string
+  publishedAt: string
+  episode: boolean
+  excerpt: string
+  from: 'transcript' | 'article' | 'newsletter' | 'summary' | 'title'
 }
 
 export interface BriefEvent {
@@ -4274,6 +4342,17 @@ export interface OnScreen {
   query?: string | null
   /** The document open in the reader, and where in it they are. */
   reader?: ReaderAt | null
+  /** What the player or Listen has loaded, and where in it. */
+  playing?: PlayingAt | null
+}
+
+/** What is being heard or watched, by reference and position only. */
+export interface PlayingAt {
+  what: ContentRef
+  /** The player's position; absent for an article read aloud. */
+  positionMs?: number | null
+  durationMs?: number | null
+  paused: boolean
 }
 
 /** Where in a document somebody is reading -- by file, page and block, never
@@ -5701,6 +5780,8 @@ export interface FeedSettings {
   autofill?: number | null
   /** Play the next thing when one ends. */
   autoplay: boolean
+  /** Pick up what was playing when a conversation that paused it ends. */
+  resumeAfterVoice: boolean
   skipBackS: number
   skipForwardS: number
 }
@@ -5851,6 +5932,18 @@ export interface Recommendation {
   reasons: string[]
   queued: boolean
   progress?: number | null
+}
+
+/** Background work on the Feed's behalf: a transcript, an article, an audio version. */
+export interface WorkItem {
+  kind: 'transcript' | 'article' | 'audio'
+  storyId?: StoryId | null
+  fileId?: FileId | null
+  title: string
+  state: 'waiting' | 'working' | 'failed'
+  /** 0 to 1, when it can be told. */
+  progress?: number | null
+  error?: string | null
 }
 
 export interface RankingStatus {

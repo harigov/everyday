@@ -636,7 +636,7 @@ impl Session {
                     self.resume_if_paused();
                 }
             }
-            VoiceInput::Screen(screen) => self.screen = screen,
+            VoiceInput::Screen(screen) => self.screen = screen.map(|s| *s),
             VoiceInput::Say(text) => {
                 if !self.stopping {
                     for sentence in sentences(&text) {

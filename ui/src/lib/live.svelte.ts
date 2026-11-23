@@ -121,7 +121,8 @@ export const RELOAD = {
   //
   // An episode finishing its download is a story change too, and while any
   // is under way the downloads are asked after again: that is what tells Up
-  // Next a file has arrived.
+  // Next a file has arrived. So is one that has been transcribed, or an
+  // article written from it, and the list of background work is asked again.
   feed: () => Promise.all([feed.refreshSources(), feed.reload(), upnext.storyChanged()]),
   // Up Next changed in another window, or by something in the background: a
   // show's new episode put in it, a top-up from Recommended. Read again at
@@ -129,7 +130,8 @@ export const RELOAD = {
   upnext: () => upnext.queueChanged(),
   // Something was read, heard or watched, here or on another device. A
   // device playing reports every fifteen seconds, so the store gathers a
-  // burst into one read of Up Next and Recommended: see `consumptionChanged`.
+  // burst into one read of Up Next and Recommended -- and of History, while
+  // its page is open: see `consumptionChanged`.
   consumption: () => upnext.consumptionChanged(),
   // A bank synced in the background, or a transaction, category or rule
   // changed on another machine. One reload of everything Money shows --
@@ -155,7 +157,16 @@ export const RELOAD = {
   // them as the folder changes under a sync tool, and every app that keeps a
   // file raises one -- or an album did. Read again only while Files is the
   // app on screen, and one at a time: see `files.changed` and `files.reload`.
-  files: () => files.changed(),
+  //
+  // A recording that has just been transcribed is a file change too -- the
+  // transcript is a new file -- so the Feed's list of background work is read
+  // again with it, once something has asked for it.
+  // The Feed's work list too, which reads only once it has been loaded: a
+  // transcript or an audio version landing is a file change.
+  files: () => {
+    void upnext.workChanged()
+    return files.changed()
+  },
   // A medication, a condition, a lab result, a meal or a workout changed on
   // another machine, or a source was edited. Read again only while Health is
   // the app on screen, and only once it has been opened since the vault was:

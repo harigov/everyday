@@ -2321,6 +2321,11 @@ export const api = {
     call('moveInQueue', { id, before }),
 
   recordProgress: (progress: ProgressReport) => call('recordProgress', { progress }),
+  transcribeEpisode: (id: StoryId) => call('transcribeEpisode', { id }),
+  transcribeFile: (id: FileId) => call('transcribeFile', { id }),
+  writeArticle: (id: StoryId) => call('writeArticle', { id }),
+  renderStoryAudio: (id: StoryId) => call('renderStoryAudio', { id }),
+  listeningWork: () => call('listeningWork', {}),
   getConsumption: (what: ContentRef) => call('getConsumption', { what }),
   listConsumed: (query: ConsumedQuery) => call('listConsumed', { query }),
   forgetConsumption: (id: ConsumptionId) => call('forgetConsumption', { id }),

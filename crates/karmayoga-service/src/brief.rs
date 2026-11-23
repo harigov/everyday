@@ -48,7 +48,11 @@ pub(crate) async fn extras(
             Err(gap) => extras.weather_gap = Some(gap),
         }
     }
-    let wants_mail = spec.covers(BriefSection::Mail) || spec.covers(BriefSection::People);
+    // The podcast reads newsletters, which are mail, so it needs to know which
+    // accounts it may read -- and nothing about follow-ups.
+    let podcast = spec.brief == BriefKind::Podcast;
+    let wants_mail =
+        spec.covers(BriefSection::Mail) || spec.covers(BriefSection::People) || podcast;
     if !wants_mail {
         return extras;
     }
@@ -74,7 +78,7 @@ pub(crate) async fn extras(
     .await;
     let Ok((readable, own)) = readable else { return extras };
     extras.mail_accounts = readable;
-    if extras.mail_accounts.is_empty() {
+    if podcast || extras.mail_accounts.is_empty() {
         return extras;
     }
     let threads = crate::mailfollowup::follow_ups(service, None).await.unwrap_or_default();
@@ -160,11 +164,17 @@ pub(crate) fn prompt(spec: &BriefSpec, extra: &str, digest: &BriefDigest) -> Str
     prompt.push_str("\n\n");
     prompt.push_str(DIGEST_MARKER);
     prompt.push_str("\n\n");
-    prompt.push_str(&fenced_as_untrusted(
-        "today's digest: their calendar, contacts, tasks, mail and feeds, some of it written by \
-         other people",
-        &digest.to_markdown(),
-    ));
+    let what = match digest.kind {
+        BriefKind::Podcast => {
+            "the stories to cover: articles, newsletter issues and the text of podcast \
+             episodes, all written by other people"
+        }
+        _ => {
+            "today's digest: their calendar, contacts, tasks, mail and feeds, some of it written \
+             by other people"
+        }
+    };
+    prompt.push_str(&fenced_as_untrusted(what, &digest.to_markdown()));
     prompt
 }
 
@@ -176,12 +186,30 @@ pub(crate) fn keep(digest: BriefDigest, text: &str, now: jiff::Timestamp) -> Opt
     if parsed.headline.trim().is_empty() && parsed.parts.is_empty() {
         return None;
     }
+    let day = digest.day.unwrap_or_else(|| now.to_zoned(jiff::tz::TimeZone::UTC).date());
+    // A podcast's spoken half is a script, said by its speakers; what a call
+    // says and Listen reads is that script's words.
+    let (spoken, script) =
+        match digest.podcast.as_ref().filter(|_| digest.kind == BriefKind::Podcast) {
+            Some(podcast) => {
+                let script =
+                    brief::script(&brief::podcast_title(day), &parsed.spoken, &podcast.speakers);
+                if script.lines.is_empty() {
+                    (parsed.spoken, None)
+                } else {
+                    (script.text(), Some(script))
+                }
+            }
+            None => (parsed.spoken, None),
+        };
     Some(Brief {
         kind: digest.kind,
-        day: digest.day.unwrap_or_else(|| now.to_zoned(jiff::tz::TimeZone::UTC).date()),
+        day,
         headline: parsed.headline,
         parts: parsed.parts,
-        spoken: parsed.spoken,
+        spoken,
+        script,
+        audio: None,
         digest,
     })
 }
@@ -205,6 +233,65 @@ mod tests {
         assert!(own.contains(DIGEST_MARKER));
         assert!(!own.contains("Morning brief digest"));
         assert!(prompt.contains("Morning brief digest"));
+    }
+
+    fn podcast_digest() -> BriefDigest {
+        use karmayoga_core::brief::{ExcerptFrom, PodcastDigest, PodcastStory};
+        BriefDigest {
+            kind: BriefKind::Podcast,
+            first_name: "Hari".into(),
+            day: Some(jiff::civil::date(2026, 11, 22)),
+            podcast: Some(PodcastDigest {
+                minutes: 15,
+                words: 2_250,
+                stories: vec![PodcastStory {
+                    story_id: karmayoga_core::id::StoryId::new(),
+                    title: "Chips are late".into(),
+                    source: "Blog".into(),
+                    url: String::new(),
+                    published_at: jiff::Timestamp::UNIX_EPOCH,
+                    episode: false,
+                    excerpt: "The fab is a year behind.".into(),
+                    from: ExcerptFrom::Article,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_podcasts_prompt_fences_its_stories_as_other_peoples_writing() {
+        let spec = BriefSpec::new(BriefKind::Podcast);
+        let digest = podcast_digest();
+        let prompt = prompt(&spec, "Keep it light.", &digest);
+        assert!(prompt.contains("Hari's daily podcast"));
+        assert!(prompt.contains("the stories to cover"));
+        assert!(prompt.contains("Chips are late"));
+        let own = crate::agent::own_words(&prompt);
+        assert!(own.contains("Keep it light.") && own.contains(DIGEST_MARKER));
+        assert!(!own.contains("Chips are late"), "the stories are not the person's own words");
+    }
+
+    #[test]
+    fn a_podcasts_answer_is_kept_as_a_script_and_its_words_are_what_is_spoken() {
+        let now = jiff::Timestamp::UNIX_EPOCH;
+        let answer = "# Chips.\n\n## Chips\n- **Chips are late** (Blog): late.\n\n\
+                      --- spoken ---\nGood morning.\n\nThe fab is late.";
+        let kept = keep(podcast_digest(), answer, now).unwrap();
+        let script = kept.script.as_ref().expect("a script");
+        assert_eq!(script.title, "2026-11-22 Daily podcast");
+        assert_eq!(script.lines.len(), 2);
+        assert_eq!(kept.spoken, "Good morning.\n\nThe fab is late.");
+        assert!(kept.audio.is_none(), "rendered afterwards");
+
+        // A model that forgot the spoken half still gives something to say.
+        let kept = keep(podcast_digest(), "# Chips.\n\n## Chips\n- late", now).unwrap();
+        assert!(kept.script.is_some());
+        // And no other brief has a script.
+        let mut morning = podcast_digest();
+        morning.kind = BriefKind::Morning;
+        assert!(keep(morning, answer, now).unwrap().script.is_none());
     }
 
     #[test]

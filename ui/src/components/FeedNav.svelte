@@ -13,12 +13,13 @@
   // a folder, a source. What a source's menu offers is what has a command
   // behind it; the rest of what can be changed is in its settings.
   //
-  // Above the following, two places that are lists of their own and not
-  // sources: Up Next, what is lined up to read, hear and watch, and
-  // Recommended, what the Feed would pick from everything unread. Shows sit
-  // in a group below the folders, headed by a row that opens every episode
-  // at once: a podcast is a feed, but it is not read the way a blog is, and a
-  // show filed in a folder beside articles is a show nobody finds again.
+  // Above the following, three places that are lists of their own and not
+  // sources: Up Next, what is lined up to read, hear and watch; Recommended,
+  // what the Feed would pick from everything unread; and History, what has
+  // been read, heard and watched, by day. Shows sit in a group below the
+  // folders, headed by a row that opens every episode at once: a podcast is a
+  // feed, but it is not read the way a blog is, and a show filed in a folder
+  // beside articles is a show nobody finds again.
 
   import { feed, type FeedFolder, type FeedScope } from '../lib/feed.svelte'
   import { siteOf, sourceLabel, unfollowDetail } from '../lib/feed'
@@ -248,6 +249,16 @@
   >
     <span class="side-icon"><Symbol name="sparkle" size={17} /></span>
     <span class="side-text">Recommended</span>
+  </button>
+
+  <button
+    class="side-row"
+    class:sel={isScope({ kind: 'history' })}
+    title="History: what you have read, heard and watched"
+    onclick={() => void feed.select({ kind: 'history' })}
+  >
+    <span class="side-icon"><Symbol name="clock" size={17} /></span>
+    <span class="side-text">History</span>
   </button>
 
   <div class="side-head">

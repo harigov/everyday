@@ -8,7 +8,9 @@
   // the way to get the file -- and everything else is in the row's menu
   // (`compact`). In the open story the whole set is drawn as pills, and an
   // article, which has nothing to play, is offered only the one thing it can
-  // do here: go in Up Next, to be heard through Listen or read in its turn.
+  // do here: go in Up Next, to be heard through Listen or read in its turn --
+  // and be saved as audio, which turns it into a recording of its own: once
+  // that is in Files it plays here and in Up Next like an episode does.
   //
   // An episode plays from the files folder and never from the network (see
   // `player.svelte.ts`), so "play" is only offered once the file is there;
@@ -19,7 +21,7 @@
 
   import { playEpisode } from '../lib/episodes'
   import { player } from '../lib/player.svelte'
-  import { downloadLine, downloadPercent } from '../lib/podcast'
+  import { downloadLine, downloadPercent, workLine } from '../lib/podcast'
   import type { ContentRef, Story } from '../lib/types'
   import { upnext } from '../lib/upnext.svelte'
   import Icon from './Icon.svelte'
@@ -43,6 +45,14 @@
 
   const current = $derived(player.isCurrent(ref))
   const playing = $derived(player.isPlaying(ref))
+
+  // An article saved as audio plays that audio -- while the file is in Files:
+  // the story's link is not the file, and the open story's pane looks it up --
+  // and one that is being saved says how far.
+  const hasAudio = $derived(!isEpisode && upnext.linkedFile(story.files?.audio) !== null)
+  const audioWork = $derived(upnext.workFor({ story: story.id }, 'audio'))
+  const savingAudio = $derived(!!audioWork && audioWork.state !== 'failed')
+  const audioFailed = $derived(audioWork?.state === 'failed')
 
   /** "Play", "Pause", or "Resume" for one that was left part way. */
   const playWord = $derived(playing ? 'Pause' : current || started ? 'Resume' : 'Play')
@@ -147,7 +157,34 @@
     {/if}
   </div>
 {:else}
-  <!-- An article: nothing to play, but it can wait its turn. -->
+  <!-- An article: nothing to play until it is saved as audio, but it can wait its turn. -->
+  {#if hasAudio}
+    <button
+      class="btn btn-outline"
+      class:on={playing}
+      title="Play the audio this article was saved as"
+      onclick={() => playEpisode(story)}
+    >
+      <Icon name={playing ? 'pause' : 'play'} size={15} filled />
+      {playing ? 'Pause' : current || started ? 'Resume' : 'Play audio'}
+    </button>
+  {:else if savingAudio}
+    <span class="status" role="status">
+      <span class="spin"><Icon name="volume" size={15} /></span>
+      {workLine(audioWork)}
+    </span>
+  {:else if !story.expired}
+    <button
+      class="btn btn-outline"
+      title={audioFailed
+        ? (audioWork?.error ?? '')
+        : 'Record the article as audio and keep it in Files, to play here and in Up Next'}
+      onclick={() => void upnext.renderAudio(story.id)}
+    >
+      <Icon name="volume" size={15} />
+      {audioFailed ? 'Saving as audio failed, try again' : 'Save as audio'}
+    </button>
+  {/if}
   <button
     class="btn btn-outline"
     class:on={queued}

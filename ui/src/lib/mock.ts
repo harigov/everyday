@@ -224,10 +224,16 @@ import {
   mockStoryBody,
   mockStoryForLibrary,
   mockTopPodcasts,
+  mockTranscribeEpisode,
+  mockTranscribeFile,
+  mockWriteArticle,
+  mockRenderStoryAudio,
+  mockListeningWork,
+  mockFeedFile,
 } from './mock-feed'
 import { FINISHED_POINTS, JOURNAL_POINTS, habitPoints, scoreDay, taskPoints } from './karma'
 import { mockBackup } from './mock-backup'
-import { MOCK_SECTIONS, mockBrief, mockBriefRun } from './mock-brief'
+import { MOCK_SECTIONS, mockBrief, mockBriefRoutine, mockBriefRun } from './mock-brief'
 import { mockConnections } from './mock-connections'
 import { isMockDocumentsCommand, mockDocumentFields, mockDocumentsInvoke } from './mock-documents'
 import { mockMoney } from './mock-money'
@@ -2157,6 +2163,9 @@ const routines: Routine[] = [
     createdAt: iso(30),
     updatedAt: iso(30),
   },
+  // The daily podcast: the Feed's own brief, made from what was followed and
+  // heard as a script, every morning at six.
+  { ...mockBriefRoutine('ro-brief-podcast', 'podcast'), enabled: true, lastRunAt: iso(1) },
   {
     id: 'ro-review',
     name: 'Weekly review',
@@ -2199,6 +2208,16 @@ const runs: RoutineRun[] = [
       'ro-brief-weekly',
       mockBrief('weekly', lastSunday()),
       lastSunday(),
+    ),
+    seen: true,
+  },
+  // This morning's daily podcast, already looked at.
+  {
+    ...mockBriefRun(
+      'run-brief-podcast',
+      'ro-brief-podcast',
+      mockBrief('podcast'),
+      new Date(new Date().setHours(6, 0, 0, 0)),
     ),
     seen: true,
   },
@@ -5298,6 +5317,12 @@ export const mockInvoke = async <T>(
   // want the vault open.
   if (isMockFilesCommand(cmd)) {
     if (cmd !== 'pick_files_folder') requireUnlocked()
+    // The files the Feed's mock makes up for episodes and article audio are in
+    // no catalog; it answers for them, so the Feed can ask whether one is there.
+    if (cmd === 'get_file') {
+      const made = mockFeedFile(str(args.id))
+      if (made) return made as T
+    }
     return mockFilesInvoke(cmd, args) as T
   }
 
@@ -5598,29 +5623,7 @@ export const mockInvoke = async <T>(
       const kind = args.kind as BriefKind
       let routine = routines.find((r) => r.kind?.type === 'brief' && r.kind.brief === kind)
       if (!routine) {
-        routine = {
-          id: `ro-${nextId++}`,
-          name: { morning: 'Morning brief', evening: 'Evening brief', weekly: 'Weekly brief' }[
-            kind
-          ],
-          instructions: '',
-          trigger:
-            kind === 'weekly'
-              ? { type: 'schedule', at: '08:00', days: ['sun'] }
-              : { type: 'schedule', at: kind === 'morning' ? '07:00' : '20:00', days: [] },
-          graceMinutes: kind === 'evening' ? 180 : kind === 'weekly' ? 360 : 240,
-          enabled: false,
-          kind: {
-            type: 'brief',
-            brief: kind,
-            sections: MOCK_SECTIONS[kind],
-            length: kind === 'weekly' ? 'long' : 'standard',
-          },
-          delivery: { ask: false },
-          maxSteps: 8,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }
+        routine = mockBriefRoutine(`ro-${nextId++}`, kind)
         routines.push(routine)
       }
       routine.enabled = args.on === true
@@ -8878,6 +8881,28 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       mockForgetConsumption(str(args.id))
       return undefined as T
+
+    // Background work: written down, written up, read aloud. Each answers at
+    // once and the list of work is what moves, a step each time it is asked for.
+    case 'transcribe_episode':
+      requireUnlocked()
+      mockTranscribeEpisode(str(args.id))
+      return undefined as T
+    case 'transcribe_file':
+      requireUnlocked()
+      mockTranscribeFile(str(args.id))
+      return undefined as T
+    case 'write_article':
+      requireUnlocked()
+      mockWriteArticle(str(args.id))
+      return undefined as T
+    case 'render_story_audio':
+      requireUnlocked()
+      mockRenderStoryAudio(str(args.id))
+      return undefined as T
+    case 'listening_work':
+      requireUnlocked()
+      return mockListeningWork() as T
 
     case 'feed_settings':
       requireUnlocked()

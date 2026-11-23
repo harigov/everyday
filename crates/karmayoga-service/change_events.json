@@ -2836,6 +2836,20 @@
           "kind": "backgroundTask",
           "op": "updated",
           "origin": null
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "backgroundTask",
+          "op": "updated",
+          "origin": null
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "backgroundTask",
+          "op": "updated",
+          "origin": null
         }
       ]
     }
@@ -2982,6 +2996,10 @@
       "reason": "needs an episode already downloaded, which needs the network"
     },
     {
+      "name": "render_story_audio",
+      "reason": "starts background work that needs a voice"
+    },
+    {
       "name": "respond_to_invite",
       "reason": "needs an ICS-bearing message in the local pack store, and sends"
     },
@@ -3050,8 +3068,20 @@
       "reason": "refreshes every subscribed calendar from its remote source"
     },
     {
+      "name": "transcribe_episode",
+      "reason": "starts background work that fetches a transcript or needs a speech model"
+    },
+    {
+      "name": "transcribe_file",
+      "reason": "starts background work that needs a speech model"
+    },
+    {
       "name": "update_event",
       "reason": "writes to an account calendar's server over the network"
+    },
+    {
+      "name": "write_article",
+      "reason": "starts background work that needs the Medium model"
     }
   ],
   "tools": [

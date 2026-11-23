@@ -21,9 +21,14 @@ import type {
   BriefLength,
   BriefSection,
   BriefSpec,
+  NewsSource,
+  NewsSourceId,
+  PodcastBrief,
   Routine,
   RoutineRun,
+  Script,
 } from './types'
+import type { PlayRequest } from './player.svelte'
 
 // ── The catalogue ────────────────────────────────────────────────────────
 
@@ -138,10 +143,14 @@ export const DEFAULT_SECTIONS: Record<BriefKind, BriefSection[]> = {
     'mail',
     'tidbit',
   ],
+  // The daily podcast is made from the Feed, not from the day's facts, so it
+  // covers no section: what it covers is `PodcastBrief.sources`.
+  podcast: [],
 }
 
 /** Every section a brief of `kind` may cover. */
 export function sectionsFor(kind: BriefKind): BriefSection[] {
+  if (kind === 'podcast') return []
   return (Object.keys(SECTION_INFO) as BriefSection[]).filter(
     (s) => SECTION_INFO[s].only?.includes(kind) ?? true,
   )
@@ -179,6 +188,12 @@ export const KIND_INFO: Record<BriefKind, KindInfo> = {
       'On Sunday morning: today, last week, and the week ahead. It takes the morning brief’s place on its day.',
     defaultTime: '08:00',
   },
+  podcast: {
+    name: 'Daily podcast',
+    blurb:
+      'Your own show, made each morning from the podcasts, newsletters and feeds you choose: something to listen to on a run or at the gym.',
+    defaultTime: '06:00',
+  },
 }
 
 export interface LengthInfo {
@@ -200,7 +215,13 @@ export const LENGTH_INFO: Record<BriefLength, LengthInfo> = {
 export function briefSpec(routine: Pick<Routine, 'kind'>): BriefSpec | null {
   const kind = routine.kind
   if (kind?.type !== 'brief') return null
-  return { brief: kind.brief, sections: kind.sections ?? [], length: kind.length ?? 'standard' }
+  return {
+    brief: kind.brief,
+    sections: kind.sections ?? [],
+    length: kind.length ?? 'standard',
+    // Only the daily podcast has one; the others are saved without the key.
+    ...(kind.podcast ? { podcast: kind.podcast } : {}),
+  }
 }
 
 export function isBriefRoutine(routine: Pick<Routine, 'kind'>): boolean {
@@ -254,6 +275,102 @@ export function toggleSection(
   const at = next.findIndex((s) => rank(s) > rank(section))
   next.splice(at < 0 ? next.length : at, 0, section)
   return next
+}
+
+// ── The daily podcast ────────────────────────────────────────────────────
+
+/** How long the daily podcast may run, in minutes, and how long it does until somebody says. */
+export const PODCAST_MINUTES = { least: 5, most: 60, usually: 15 } as const
+
+/** `minutes` as the podcast may have it: whole, and no shorter or longer than it may run. */
+export function clampMinutes(minutes: number): number {
+  if (!Number.isFinite(minutes)) return PODCAST_MINUTES.usually
+  return Math.min(PODCAST_MINUTES.most, Math.max(PODCAST_MINUTES.least, Math.round(minutes)))
+}
+
+/**
+ * What a spec says the podcast is made from -- or what it is made from until
+ * somebody says: every source, about fifteen minutes. The speakers are the
+ * spec's own, whatever they are: there is one narrator today and the page
+ * does not edit them, so they are carried through a save untouched.
+ */
+export function podcastOf(spec: Pick<BriefSpec, 'podcast'>): PodcastBrief {
+  const p = spec.podcast
+  return {
+    sources: p?.sources ?? [],
+    minutes: clampMinutes(p?.minutes ?? PODCAST_MINUTES.usually),
+    speakers: p?.speakers ?? [],
+  }
+}
+
+/** Choose `id` or let go of it. Each is kept once, in the order chosen. */
+export function toggleSource(
+  sources: NewsSourceId[],
+  id: NewsSourceId,
+  on: boolean,
+): NewsSourceId[] {
+  if (!on) return sources.filter((s) => s !== id)
+  return sources.includes(id) ? sources : [...sources, id]
+}
+
+/** What a source is, in a word, for the list of what the podcast is made from. */
+export function sourceKindLabel(source: Pick<NewsSource, 'kind' | 'podcast'>): string {
+  if (source.podcast) return 'Podcast'
+  switch (source.kind.type) {
+    case 'mail':
+      return 'Newsletter'
+    case 'newsletters':
+      return 'Every newsletter'
+    case 'hackerNews':
+      return 'Hacker News'
+    default:
+      return 'Feed'
+  }
+}
+
+/** Where a kind of source goes in the list: podcasts first, then newsletters, then the rest. */
+function sourceRank(source: Pick<NewsSource, 'kind' | 'podcast'>): number {
+  if (source.podcast) return 0
+  return source.kind.type === 'mail' || source.kind.type === 'newsletters' ? 1 : 2
+}
+
+/** A source as a list holds it: with what the sidebar draws beside it. */
+interface Choosable {
+  source: Pick<NewsSource, 'kind' | 'podcast' | 'title'>
+}
+
+/** The Feed's sources as the podcast's list offers them: podcasts first, each group by title. */
+export function podcastChoices<T extends Choosable>(sources: T[]): T[] {
+  return [...sources].sort(
+    (a, b) =>
+      sourceRank(a.source) - sourceRank(b.source) ||
+      a.source.title.localeCompare(b.source.title, undefined, { sensitivity: 'base' }),
+  )
+}
+
+/** The player's title for a podcast made on `day`: "Daily podcast — Saturday 21 November". */
+export function podcastTitle(day: string): string {
+  return `${KIND_INFO.podcast.name} — ${briefDay(day)}`
+}
+
+/** What the player plays for a podcast brief, or `null` while its audio is still being made. */
+export function podcastPlayRequest(brief: Pick<Brief, 'audio' | 'day'>): PlayRequest | null {
+  const audio = brief.audio
+  if (!audio) return null
+  return {
+    what: { type: 'file', id: audio },
+    fileId: audio,
+    kind: 'audio',
+    title: podcastTitle(brief.day),
+    source: KIND_INFO.podcast.name,
+  }
+}
+
+/** About how many minutes a script takes to say, at 150 words a minute. */
+export function scriptMinutes(script: Pick<Script, 'lines'> | null | undefined): number {
+  if (!script) return 0
+  const n = script.lines.reduce((sum, l) => sum + words(l.text), 0)
+  return n === 0 ? 0 : Math.max(1, Math.round(n / 150))
 }
 
 // ── Reading one ──────────────────────────────────────────────────────────

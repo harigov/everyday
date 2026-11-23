@@ -538,9 +538,10 @@ impl Routine {
     ///
     /// At the kind's own time on its own days (every day, or Sundays for the
     /// weekly brief), covering the kind's default
-    /// sections, at a standard length; instructions empty (the person's
-    /// paragraph), eight steps at most -- a brief reads a few things and
-    /// writes once -- and disabled until `set_brief` turns it on.
+    /// sections, at a standard length -- the daily podcast covers none, and
+    /// has a quarter of an hour of the whole Feed instead; instructions empty
+    /// (the person's paragraph), eight steps at most -- a brief reads a few
+    /// things and writes once -- and disabled until `set_brief` turns it on.
     pub fn brief(kind: BriefKind) -> Self {
         let trigger = Trigger::Schedule {
             at: kind.default_time(),

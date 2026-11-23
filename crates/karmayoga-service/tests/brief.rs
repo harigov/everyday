@@ -392,3 +392,174 @@ async fn a_brief_with_no_model_is_skipped_before_anything_is_gathered() {
     assert!(!run.reason.is_empty());
     assert!(model.requests.lock().unwrap().is_empty());
 }
+
+// ---- the daily podcast ------------------------------------------------------
+
+/// A source with one story that arrived an hour ago, in the service's vault.
+fn feed_with_a_story(svc: &Arc<Service>) {
+    use karmayoga_core::news::{BodyOrigin, NewsSource, SourceKind, Story, StoryBody};
+    let vault = svc.get().unwrap();
+    let source =
+        NewsSource::new(SourceKind::Web { url: "https://blog.example/feed".into() }, "Blog");
+    vault.save_news_source(&source).unwrap();
+    let hour_ago =
+        vault.agent_settings().unwrap().now().timestamp() - jiff::SignedDuration::from_hours(1);
+    let mut story =
+        Story::new(source.id, vault.news_key("blog/chips").unwrap(), "Chips are late", hour_ago);
+    story.summary = "The fab is a year behind.".into();
+    let body = StoryBody {
+        story_id: story.id,
+        html: "<p>x</p>".into(),
+        text: "The fab says its new line will start a year late, after the tools arrived.".into(),
+        origin: BodyOrigin::Extracted,
+        images: Vec::new(),
+    };
+    vault.insert_stories(&[(story, Some(body))]).unwrap();
+}
+
+/// Switch the daily podcast on and ask for one now, as "Make one now" does.
+fn queue_podcast(svc: &Arc<Service>) -> RoutineRun {
+    let vault = svc.get().unwrap();
+    let routine = vault.set_brief(BriefKind::Podcast, true).unwrap();
+    let run = RoutineRun::new(&routine, None);
+    vault.save_run(&run).unwrap();
+    run
+}
+
+const PODCAST: &str = "# Chips are late, and not much else.\n\n\
+    ## Chips\n- **Chips are late** (Blog): the fab is a year behind.\n\n\
+    --- spoken ---\nGood morning, Hari. Chips lead today.\n\n\
+    Blog says the new fab will start a year late.\n\nThat is all for today.";
+
+/// The text of the first user message a request carried.
+fn user_message(request: &serde_json::Value) -> String {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "user")
+        .and_then(|m| {
+            m["content"].as_str().map(str::to_string).or_else(|| {
+                m["content"]
+                    .as_array()
+                    .and_then(|parts| parts[0]["text"].as_str().map(str::to_string))
+            })
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_daily_podcast_is_written_from_the_feed_and_kept_as_a_script() {
+    let _serial = SERIAL.lock().await;
+    let model = fake_model(says(PODCAST)).await;
+    let (svc, _dir) = service(&model.endpoint);
+    feed_with_a_story(&svc);
+    let queued = queue_podcast(&svc);
+
+    karmayoga_service::scheduler::tick(&svc).await;
+    karmayoga_service::scheduler::settle(&svc).await;
+
+    let run = svc.get().unwrap().run(queued.id).unwrap();
+    assert_eq!(run.outcome, Outcome::Done, "{}", run.reason);
+    let brief = run.brief.as_deref().expect("the podcast is kept on the run");
+    assert_eq!(brief.kind, BriefKind::Podcast);
+    assert_eq!(brief.headline, "Chips are late, and not much else.");
+    assert_eq!(brief.parts.len(), 1);
+    assert_eq!(brief.parts[0].section, None, "a topic, not one of the day's sections");
+    // The spoken half is a script of one narrator, a line a paragraph, and a
+    // call or Listen says its words.
+    let script = brief.script.as_ref().expect("a script");
+    assert_eq!(script.title, format!("{} Daily podcast", brief.day));
+    assert_eq!(script.lines.len(), 3);
+    assert!(script.lines.iter().all(|l| l.speaker == karmayoga_core::news::script::NARRATOR));
+    assert_eq!(brief.spoken, script.text());
+    assert!(brief.spoken.starts_with("Good morning, Hari."));
+    // What it was written from is kept, for the next podcast to leave out.
+    let digest = brief.digest.podcast.as_ref().expect("its digest");
+    assert_eq!(digest.stories.len(), 1);
+    assert_eq!(digest.stories[0].title, "Chips are late");
+    assert!(digest.stories[0].excerpt.starts_with("The fab says"));
+    // The chat and the email get the written podcast, without a section mark.
+    assert!(run.summary.starts_with("# Chips are late"));
+    assert!(!run.summary.contains("spoken"));
+
+    // No voice is set up in a test: the written podcast stands, and the run
+    // says why there is no audio.
+    assert!(brief.audio.is_none());
+    assert!(run.reason.starts_with("the audio could not be made: "), "{}", run.reason);
+
+    let requests = model.requests.lock().unwrap();
+    let user = user_message(&requests[0]);
+    assert!(user.contains(DIGEST_MARKER), "{user}");
+    assert!(user.contains("BEGIN TEXT WRITTEN BY SOMEBODY ELSE"), "the stories are fenced");
+    assert!(user.contains("daily podcast"), "{user}");
+    assert!(user.contains("2250 words"), "{user}");
+    assert!(user.contains("Stories to cover (1)"), "{user}");
+    assert!(user.contains("The fab says its new line will start a year late"), "{user}");
+    // Read-only, like every brief.
+    let offered: Vec<String> = requests[0]["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    for write in ["create_task", "send_draft", "web_search"] {
+        assert!(!offered.iter().any(|t| t == write), "{write} was offered: {offered:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_daily_podcast_with_nothing_new_is_skipped_and_says_why() {
+    let _serial = SERIAL.lock().await;
+    let model = fake_model(says(PODCAST)).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let queued = queue_podcast(&svc);
+
+    karmayoga_service::scheduler::tick(&svc).await;
+
+    let run = svc.get().unwrap().run(queued.id).unwrap();
+    assert_eq!(run.outcome, Outcome::Skipped);
+    assert!(run.reason.contains("nothing new"), "{}", run.reason);
+    assert!(run.brief.is_none());
+    assert!(model.requests.lock().unwrap().is_empty(), "no model was asked to write about nothing");
+}
+
+#[tokio::test]
+async fn a_podcast_for_two_speakers_is_a_conversation() {
+    let _serial = SERIAL.lock().await;
+    let model = fake_model(says(
+        "# Chips.\n\n## Chips\n- **Chips are late** (Blog): late.\n\n--- spoken ---\n\
+         MAYA: Welcome. I'm Maya.\n\nLEO: And I'm Leo. The fab is late.\n\nMAYA: A year.",
+    ))
+    .await;
+    let (svc, _dir) = service(&model.endpoint);
+    feed_with_a_story(&svc);
+    let vault = svc.get().unwrap();
+    let mut routine = vault.set_brief(BriefKind::Podcast, true).unwrap();
+    let mut spec = routine.kind.brief().unwrap().clone();
+    let mut maya = karmayoga_core::news::script::ScriptSpeaker::new("maya", "Maya");
+    maya.voice = Some("alba".into());
+    spec.podcast.as_mut().unwrap().speakers =
+        vec![maya, karmayoga_core::news::script::ScriptSpeaker::new("leo", "Leo")];
+    routine.kind = karmayoga_core::routine::RoutineKind::Brief(spec);
+    vault.save_routine(&routine).unwrap();
+    let run = RoutineRun::new(&routine, None);
+    vault.save_run(&run).unwrap();
+
+    karmayoga_service::scheduler::tick(&svc).await;
+    karmayoga_service::scheduler::settle(&svc).await;
+
+    let run = vault.run(run.id).unwrap();
+    assert_eq!(run.outcome, Outcome::Done, "{}", run.reason);
+    let script = run.brief.as_deref().unwrap().script.as_ref().unwrap();
+    let said: Vec<_> = script.lines.iter().map(|l| l.speaker.as_str()).collect();
+    assert_eq!(said, vec!["maya", "leo", "maya"]);
+    assert_eq!(script.speaker("maya").unwrap().voice.as_deref(), Some("alba"));
+    assert_eq!(script.lines[1].text, "And I'm Leo. The fab is late.");
+    let user = user_message(&model.requests.lock().unwrap()[0]);
+    assert!(user.contains("a conversation between Maya, Leo"), "{user}");
+}

@@ -587,6 +587,7 @@ fn an_invitation_on_screen_counts_as_a_strangers_words() {
             open: vec![Shown::Event(event.id)],
             query: None,
             reader: None,
+            playing: None,
         },
     );
     assert!(quotes_mail, "an invitation's title is somebody else's writing: {text}");

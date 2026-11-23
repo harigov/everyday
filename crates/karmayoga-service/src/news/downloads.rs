@@ -35,10 +35,11 @@
 //! stranger's server's ranges is more failure modes than it saves minutes.
 //! What lasts is what is linked to the story, which is the file.
 
+use super::announce;
 use super::fetch::BROWSER_USER_AGENT;
 use super::queue;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::events::{Change, Kind, Op};
+use crate::events::{Kind, Op};
 use crate::files;
 use crate::http;
 use crate::service::{Service, blocking};
@@ -48,12 +49,15 @@ use futures::stream::FuturesUnordered;
 use jiff::Timestamp;
 use jiff::civil::Date;
 use karmayoga_core::files::{
-    FileFilter, FileOrigin, FileQuery, FileStatus, ImportOptions, StatusFilter,
+    FileFilter, FileKind, FileOrigin, FileQuery, FileStatus, FileUpdate, ImportOptions, PropValue,
+    StatusFilter,
 };
 use karmayoga_core::id::{FileId, NewsSourceId, StoryId};
 use karmayoga_core::news::podcast::PODCASTS_DIR;
+use karmayoga_core::news::transcript::TRANSCRIPT_PROPERTY;
 use karmayoga_core::news::{
-    AddedBy, ContentRef, DownloadPolicy, EnclosureKind, KeepPolicy, PodcastPolicy,
+    AddedBy, ContentRef, DownloadPolicy, EnclosureKind, KeepPolicy, PodcastPolicy, StoryFiles,
+    TranscribePolicy,
 };
 use karmayoga_core::{FileEntry, QueuePlace, Vault};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
@@ -514,13 +518,20 @@ async fn download(
     job: &mut Job,
 ) -> Result<(), Stop> {
     let id = job.story;
-    let (story, show, present) = blocking({
+    let (story, show, present, transcribe) = blocking({
         let vault = vault.clone();
         move || {
             let story = vault.story(id)?;
-            let show = vault.news_source(story.source_id).map(|s| s.title).unwrap_or_default();
+            let source = vault.news_source(story.source_id);
+            let show = source.as_ref().map(|s| s.title.clone()).unwrap_or_default();
+            // Whether the show's policy is to transcribe an episode the moment
+            // it is here. A source that cannot be read is a show with no policy.
+            let transcribe = source
+                .ok()
+                .and_then(|s| vault.podcast_policy(&s).ok().flatten())
+                .is_some_and(|p| p.transcribe == TranscribePolicy::WhenDownloaded);
             let present = story.files.media.is_some_and(|file| is_present(&vault, file));
-            Ok((story, show, present))
+            Ok((story, show, present, transcribe))
         }
     })
     .await?;
@@ -575,6 +586,9 @@ async fn download(
     announce(svc, Kind::File, Op::Created, vec![file.id.to_string()]);
     announce(svc, Kind::Story, Op::Updated, vec![id.to_string()]);
     files::probe_later(svc, vault, vec![file.id]);
+    if transcribe {
+        super::transcribe::request(svc, super::transcribe::Job::Story(id));
+    }
     Ok(())
 }
 
@@ -1080,8 +1094,11 @@ pub async fn remove_download(svc: &Arc<Service>, story: StoryId) -> CommandResul
 /// transcript, a kept article or its audio is not touched: those are the
 /// Feed's memory of what was heard.
 ///
-/// It also unlinks a story from an episode somebody trashed or deleted in
-/// Files, which no policy would otherwise ever notice ([`link_is_dead`]).
+/// It also unlinks what points at a file somebody trashed or deleted in Files,
+/// which no policy would otherwise ever notice ([`link_is_dead`]): a story from
+/// its episode, its transcript and its audio, and a recording from the
+/// transcript its properties name, so that the interface stops offering to open
+/// or play what is not there and offers to make it again.
 pub async fn sweep(svc: &Arc<Service>) -> CommandResult<u32> {
     let vault = svc.require()?;
     if !vault.is_writable() || !vault.supports_news() {
@@ -1096,7 +1113,7 @@ pub async fn sweep(svc: &Arc<Service>) -> CommandResult<u32> {
     let changed: Vec<String> =
         swept.stories.iter().chain(&swept.dangling).map(|s| s.to_string()).collect();
     announce(svc, Kind::Story, Op::Updated, changed);
-    files::announce(svc, swept.files);
+    files::announce(svc, swept.files.into_iter().chain(swept.recordings).collect());
     Ok(swept.stories.len() as u32)
 }
 
@@ -1107,8 +1124,12 @@ struct Swept {
     stories: Vec<StoryId>,
     /// Those episodes' files.
     files: Vec<FileId>,
-    /// Stories unlinked from an episode that was already gone.
+    /// Stories unlinked from a file that was already gone: the episode, or
+    /// its transcript or audio.
     dangling: Vec<StoryId>,
+    /// Recordings whose property naming a transcript was taken off, because
+    /// the transcript is gone.
+    recordings: Vec<FileId>,
 }
 
 /// One downloaded episode, as far as a keep policy cares.
@@ -1158,37 +1179,40 @@ fn to_clear(keep: KeepPolicy, held: &[Held], now: Timestamp) -> Vec<StoryId> {
 
 /// The blocking half of [`sweep`].
 fn clear_out(vault: &Vault, now: Timestamp) -> CommandResult<Swept> {
-    // Only a story with an episode is read: one that keeps nothing but a
-    // transcript or an article, and there will be thousands, is not.
-    let stories = vault.stories_with_media()?;
-    if stories.is_empty() {
-        return Ok(Swept::default());
-    }
-    let media: Vec<FileId> = stories.iter().filter_map(|s| s.files.media).collect();
-    let files = catalog_entries(vault, &media)?;
-
     let mut swept = Swept::default();
+    // Every story that has any file, which is the few that were played or
+    // transcribed and not the thousands that were only read.
+    let stories = vault.stories_with_files()?;
+    let linked: Vec<FileId> = stories.iter().flat_map(|s| s.files.all()).collect();
+    let files = catalog_entries(vault, &linked)?;
+
     // A link to a file that is gone from the catalog, in the trash, or has
     // been missing from the folder for good, is a story that offers a
-    // download it does not have, and that never expires for want of knowing.
+    // download, a transcript or a recording to hear that it does not have --
+    // and, for an episode, that never expires for want of knowing.
     let mut live = Vec::with_capacity(stories.len());
     for story in stories {
-        let Some(file) = story.files.media else { continue };
-        if !link_is_dead(files.get(&file), now) {
-            live.push(story);
+        let lost = lost_links(&story.files, &files, now);
+        if lost.is_empty() {
+            if story.files.media.is_some() {
+                live.push(story);
+            }
             continue;
         }
-        // Only if it still says so: a download may have linked another file
+        // Only what it still says: a download may have linked another file
         // since the stories were read.
-        let unlinked = vault.update_story_files(story.id, |files| {
-            if files.media == Some(file) {
-                files.media = None;
-            }
-        });
+        let unlinked = vault.update_story_files(story.id, |files| lost.unlink(files));
         match unlinked {
             Ok(_) => swept.dangling.push(story.id),
-            Err(e) => tracing::warn!(error = %e, "podcasts: could not unlink a lost episode"),
+            Err(e) => tracing::warn!(error = %e, "podcasts: could not unlink a lost file"),
         }
+        if lost.media.is_none() && story.files.media.is_some() {
+            live.push(story);
+        }
+    }
+    unlink_lost_transcripts(vault, now, &mut swept)?;
+    if live.is_empty() {
+        return Ok(swept);
     }
 
     let mut policies: HashMap<NewsSourceId, PodcastPolicy> = HashMap::new();
@@ -1276,6 +1300,99 @@ fn clear_out(vault: &Vault, now: Timestamp) -> CommandResult<Swept> {
     Ok(swept)
 }
 
+/// The links of one story that lead nowhere any more.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Lost {
+    media: Option<FileId>,
+    transcript: Option<FileId>,
+    text: Option<FileId>,
+    audio: Option<FileId>,
+}
+
+impl Lost {
+    fn is_empty(&self) -> bool {
+        *self == Lost::default()
+    }
+
+    /// Take the lost links off `files`: each only if it still names the file
+    /// that was found lost.
+    fn unlink(&self, files: &mut StoryFiles) {
+        for (slot, lost) in [
+            (&mut files.media, self.media),
+            (&mut files.transcript, self.transcript),
+            (&mut files.text, self.text),
+            (&mut files.audio, self.audio),
+        ] {
+            if lost.is_some() && *slot == lost {
+                *slot = None;
+            }
+        }
+    }
+}
+
+/// Which of a story's links lead nowhere, by `catalog`.
+///
+/// The episode, the transcript and the audio are lost when their file is, by
+/// [`link_is_dead`]. The kept article is not, until it is gone from the catalog
+/// altogether: putting it in the trash is somebody saying they do not want it
+/// kept, and reading the article again must not write it out again behind their
+/// back ([`super::keep`]).
+fn lost_links(files: &StoryFiles, catalog: &HashMap<FileId, FileEntry>, now: Timestamp) -> Lost {
+    let dead = |file: Option<FileId>| file.filter(|f| link_is_dead(catalog.get(f), now));
+    Lost {
+        media: dead(files.media),
+        transcript: dead(files.transcript),
+        text: files.text.filter(|f| !catalog.contains_key(f)),
+        audio: dead(files.audio),
+    }
+}
+
+/// Take the property that names a transcript off every recording whose
+/// transcript is lost. A recording that is not an episode has no story to say
+/// it has one, and its properties are all that does.
+///
+/// Every audio and video file is looked at, which is what a catalog can answer
+/// without an index on properties; the few that name a transcript are then read
+/// from the catalog.
+fn unlink_lost_transcripts(vault: &Vault, now: Timestamp, swept: &mut Swept) -> CommandResult<()> {
+    let recordings = vault.files(&FileQuery {
+        filter: FileFilter {
+            kinds: vec![FileKind::Audio, FileKind::Video],
+            status: StatusFilter::Live,
+            include_hidden: true,
+            ..FileFilter::default()
+        },
+        ..FileQuery::default()
+    })?;
+    let named: Vec<(FileId, FileId)> = recordings
+        .files
+        .iter()
+        .filter_map(|recording| match recording.properties.get(TRANSCRIPT_PROPERTY) {
+            Some(PropValue::Text(id)) => FileId::parse(id).ok().map(|t| (recording.id, t)),
+            _ => None,
+        })
+        .collect();
+    if named.is_empty() {
+        return Ok(());
+    }
+    let transcripts: Vec<FileId> = named.iter().map(|(_, transcript)| *transcript).collect();
+    let catalog = catalog_entries(vault, &transcripts)?;
+    for (recording, transcript) in named {
+        if !link_is_dead(catalog.get(&transcript), now) {
+            continue;
+        }
+        let update = FileUpdate {
+            properties: [(TRANSCRIPT_PROPERTY.to_string(), None)].into(),
+            ..FileUpdate::default()
+        };
+        match vault.update_files(&[recording], &update) {
+            Ok(_) => swept.recordings.push(recording),
+            Err(e) => tracing::warn!(error = %e, "podcasts: could not forget a lost transcript"),
+        }
+    }
+    Ok(())
+}
+
 /// The catalog's records for `ids`, in as few reads as the store allows.
 /// Trashed and missing files are included; an id the catalog does not have is
 /// not in the answer.
@@ -1316,18 +1433,6 @@ fn link_is_dead(file: Option<&FileEntry>, now: Timestamp) -> bool {
     }
 }
 
-// ── Saying so ────────────────────────────────────────────────────────────
-
-/// Raise one change: `ids` as the `id` when there is one, as `ids` when more.
-fn announce(svc: &Service, kind: Kind, op: Op, ids: Vec<String>) {
-    let (id, ids) = match ids.len() {
-        0 => return,
-        1 => (ids.into_iter().next(), Vec::new()),
-        _ => (None, ids),
-    };
-    svc.events().changed(Change { kind, op, id, ids, origin: None });
-}
-
 // ── Names ────────────────────────────────────────────────────────────────
 
 /// `text` as one segment of a path: what a file system refuses is taken out
@@ -1338,7 +1443,7 @@ fn announce(svc: &Service, kind: Kind, op: Op, ids: Vec<String>) {
 /// More careful than the files folder requires on Linux, because the folder
 /// may be carried to other systems by a sync tool, and a show or an episode
 /// whose title has a colon in it is the ordinary case.
-fn safe_name(text: &str, max_bytes: usize, fallback: &str) -> String {
+pub(crate) fn safe_name(text: &str, max_bytes: usize, fallback: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -1776,9 +1881,8 @@ mod tests {
 #[cfg(test)]
 mod end_to_end {
     use super::*;
-    use crate::events::EventSink;
+    use crate::events::{Change, EventSink};
     use karmayoga_core::VaultConfig;
-    use karmayoga_core::files::FileUpdate;
     use karmayoga_core::news::{
         ConsumeMode, Consumption, Enclosure, NewsSource, PodcastSettings, SourceKind, Story,
     };
@@ -2469,5 +2573,103 @@ mod end_to_end {
         assert_eq!(swept.files, [older_file]);
         assert!(linked(&f.vault, &newer).is_some());
         assert_eq!(linked(&f.vault, &older), None);
+    }
+
+    #[tokio::test]
+    async fn what_points_at_a_file_that_was_trashed_is_taken_off_and_a_kept_article_is_not() {
+        let f = fixture();
+        let show = follow(&f.vault, "Daily", Some(PodcastSettings::default()));
+        let (ep, media) = downloaded(&f, &show, "An episode", "2026-03-09T12:00:00Z");
+        let make = |name: &str| {
+            f.vault.import_bytes(b"x", name, &ImportOptions::new(FileOrigin::Feed)).unwrap().id
+        };
+        let (transcript, text, audio) = (make("t.md"), make("a.md"), make("a.opus"));
+        f.vault
+            .update_story_files(ep.id, |files| {
+                files.transcript = Some(transcript);
+                files.text = Some(text);
+                files.audio = Some(audio);
+            })
+            .unwrap();
+        // An episode's recording names its transcript, and so does one that is
+        // not an episode's at all.
+        let names_it = FileUpdate {
+            properties: [(
+                TRANSCRIPT_PROPERTY.to_string(),
+                Some(PropValue::Text(transcript.to_string())),
+            )]
+            .into(),
+            ..FileUpdate::default()
+        };
+        let memo = f
+            .vault
+            .import_bytes(b"sound", "memo.mp3", &ImportOptions::new(FileOrigin::Files))
+            .unwrap();
+        f.vault.update_files(&[media, memo.id], &names_it).unwrap();
+
+        // While every file is there, nothing is touched.
+        sweep(&f.svc).await.unwrap();
+        let files = f.vault.story(ep.id).unwrap().files;
+        assert_eq!(
+            (files.media, files.transcript, files.text, files.audio),
+            (Some(media), Some(transcript), Some(text), Some(audio))
+        );
+        assert_eq!(f.events.count(Kind::Story, Op::Updated), 0);
+
+        // Trashed in Files: the story stops offering what is not there, and the
+        // recordings stop naming a transcript that is not. The article somebody
+        // trashed stays unlinked from nothing: it is how they said they do not
+        // want it kept again.
+        f.vault.trash_files(&[transcript, text, audio]).unwrap();
+        sweep(&f.svc).await.unwrap();
+        let files = f.vault.story(ep.id).unwrap().files;
+        assert_eq!(
+            (files.media, files.transcript, files.text, files.audio),
+            (Some(media), None, Some(text), None)
+        );
+        for recording in [media, memo.id] {
+            let properties = f.vault.file(recording).unwrap().properties;
+            assert!(!properties.contains_key(TRANSCRIPT_PROPERTY), "{recording}");
+        }
+        assert_eq!(f.events.count(Kind::Story, Op::Updated), 1);
+        assert_eq!(f.events.count(Kind::File, Op::Updated), 1, "both recordings, announced once");
+
+        // And the second time there is nothing left to do.
+        sweep(&f.svc).await.unwrap();
+        assert_eq!(f.events.count(Kind::Story, Op::Updated), 1);
+    }
+
+    #[test]
+    fn which_links_are_lost_depends_on_the_slot() {
+        let f = fixture();
+        let options = ImportOptions::new(FileOrigin::Feed);
+        let mut trashed = f.vault.import_bytes(b"x", "a.md", &options).unwrap();
+        let present = f.vault.import_bytes(b"x", "b.md", &options).unwrap();
+        let now = Timestamp::now();
+        trashed.status = FileStatus::Trashed { at: now, from: String::new() };
+        let gone = FileId::new();
+        let catalog: HashMap<FileId, FileEntry> =
+            [(trashed.id, trashed.clone()), (present.id, present.clone())].into();
+        let files = StoryFiles {
+            media: Some(trashed.id),
+            transcript: Some(gone),
+            text: Some(trashed.id),
+            audio: Some(present.id),
+        };
+        let lost = lost_links(&files, &catalog, now);
+        assert_eq!(lost.media, Some(trashed.id));
+        assert_eq!(lost.transcript, Some(gone));
+        assert_eq!(lost.text, None, "in the trash is not gone, for an article somebody binned");
+        assert_eq!(lost.audio, None);
+        assert!(lost_links(&StoryFiles::default(), &catalog, now).is_empty());
+
+        // Unlinking takes only what it was found to name.
+        let mut changed = StoryFiles { media: Some(present.id), ..files.clone() };
+        lost.unlink(&mut changed);
+        assert_eq!(changed.media, Some(present.id), "another episode was linked since");
+        assert_eq!(changed.transcript, None);
+        let text_gone =
+            lost_links(&StoryFiles { text: Some(gone), ..Default::default() }, &catalog, now);
+        assert_eq!(text_gone.text, Some(gone));
     }
 }

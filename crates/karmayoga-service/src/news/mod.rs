@@ -18,6 +18,8 @@
 //!                             that gives every source its turn
 //!   newsletters               the mail-backed source: no network at all
 //!   view                      what `karmayoga://news/...` serves
+//!   work                      the lists the background tasks of transcripts and
+//!                             audio work through, and the loop that does it
 //! ```
 //!
 //! Two HTTP clients, by who chose the address. The address a person typed
@@ -27,6 +29,8 @@
 //! through [`crate::http::public_client`], whose resolver and redirects
 //! refuse private and loopback addresses.
 
+pub mod article;
+pub mod audio;
 pub mod canonical;
 pub mod consumed;
 pub mod directory;
@@ -35,6 +39,7 @@ pub mod downloads;
 pub mod extract;
 pub mod fetch;
 pub mod hn;
+pub mod keep;
 pub mod listen;
 pub mod newsletters;
 pub mod opml;
@@ -43,8 +48,11 @@ pub mod queue;
 pub mod rank;
 pub mod refresh;
 pub mod sanitize;
+pub mod transcribe;
 pub mod view;
+pub mod work;
 
+use crate::events::{Change, Kind, Op};
 use crate::service::Service;
 use jiff::Timestamp;
 use karmayoga_core::Vault;
@@ -63,6 +71,8 @@ pub const TASK_KEY: &str = "news";
 pub struct Listening {
     pub downloads: downloads::Downloads,
     pub ranker: rank::Ranker,
+    pub transcripts: transcribe::Transcripts,
+    pub audio: audio::AudioJobs,
 }
 
 impl Listening {
@@ -70,7 +80,61 @@ impl Listening {
     pub fn clear(&self) {
         self.downloads.clear();
         self.ranker.clear();
+        self.transcripts.clear();
+        self.audio.clear();
     }
+}
+
+/// Raise one change: `ids` as the `id` when there is one, as `ids` when more,
+/// and nothing when there are none. What every background task of the Feed
+/// says what it did with.
+pub(crate) fn announce(svc: &Service, kind: Kind, op: Op, ids: Vec<String>) {
+    let (id, ids) = match ids.len() {
+        0 => return,
+        1 => (ids.into_iter().next(), Vec::new()),
+        _ => (None, ids),
+    };
+    svc.events().changed(Change { kind, op, id, ids, origin: None });
+}
+
+/// [`announce`] for the one record.
+pub(crate) fn announce_one(svc: &Service, kind: Kind, op: Op, id: impl ToString) {
+    announce(svc, kind, op, vec![id.to_string()]);
+}
+
+/// One piece of background work on the Feed's behalf -- a transcript, an
+/// article, an audio version -- as the interface shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkItem {
+    pub kind: WorkKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub story_id: Option<karmayoga_core::id::StoryId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<karmayoga_core::id::FileId>,
+    pub title: String,
+    pub state: WorkState,
+    /// From 0 to 1, when it can be told.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkKind {
+    Transcript,
+    Article,
+    Audio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkState {
+    Waiting,
+    Working,
+    Failed,
 }
 
 /// One item as a parser read it, before it is a [`karmayoga_core::Story`]:

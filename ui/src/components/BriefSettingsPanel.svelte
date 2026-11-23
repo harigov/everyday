@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Settings → Briefs: the morning brief, the evening one, and the weekly
-  // one on Sunday mornings.
+  // Settings → Briefs: the morning brief, the evening one, the weekly one on
+  // Sunday mornings, and the daily podcast.
   //
   // A brief is a routine the application owns (`RoutineKind::Brief`), so
   // most of what is set here is an ordinary routine field -- its time and
@@ -18,24 +18,37 @@
   // brief, so moving between the tabs loses nothing. A brief never asks
   // anything while it is written (it is a read-only turn), so the routine
   // editor's "ask me there" is not offered, and `ask` is always sent off.
-  // See `docs/plans/briefs.md`.
+  //
+  // The daily podcast is the one brief that is not made from the day's facts
+  // but from the Feed: it has no sections, and in their place says which
+  // sources it covers and about how long it runs (`BriefSpec.podcast`). The
+  // narrator is the spec's own and is carried through a save as it is. See
+  // `docs/plans/briefs.md` and `docs/plans/podcasts.md`.
 
   import { untrack } from 'svelte'
   import { agent } from '../lib/agent.svelte'
   import { api } from '../lib/api'
   import {
     briefSpec,
+    clampMinutes,
     KIND_INFO,
     LENGTH_INFO,
     moveSection,
+    PODCAST_MINUTES,
+    podcastChoices,
+    podcastOf,
     SECTION_INFO,
     sectionsFor,
     sectionTitle,
+    sourceKindLabel,
     toggleSection,
+    toggleSource,
     withSpec,
   } from '../lib/brief'
   import { briefs } from '../lib/brief.svelte'
+  import { feed } from '../lib/feed.svelte'
   import { relativeTime } from '../lib/format'
+  import type { IconName } from '../lib/icons'
   import { models } from '../lib/models.svelte'
   import { overview } from '../lib/overview.svelte'
   import { panels } from '../lib/panels.svelte'
@@ -48,6 +61,9 @@
     BriefSpec,
     ChatLinkView,
     ModelTier,
+    NewsSource,
+    NewsSourceId,
+    PodcastBrief,
     Routine,
     RoutineInfo,
     Weekday,
@@ -61,6 +77,8 @@
   // own ceiling.
   void agent.loadSettings()
   void models.load()
+  // What the daily podcast is made from is chosen among the Feed's sources.
+  if (feed.sources.length === 0) void feed.refreshSources()
 
   // ── Where a brief can go ─────────────────────────────────────────────
 
@@ -142,6 +160,54 @@
   const rows = $derived(
     spec ? [...spec.sections, ...sectionsFor(kind).filter((s) => !spec.sections.includes(s))] : [],
   )
+
+  // ── What the podcast covers ──────────────────────────────────────────
+
+  const podcast = $derived(spec && kind === 'podcast' ? podcastOf(spec) : null)
+
+  function setPodcast(next: PodcastBrief) {
+    if (spec) setSpec({ ...spec, podcast: next })
+  }
+
+  /** The Feed's sources to choose from: podcasts first, then newsletters and feeds. */
+  const choices = $derived(podcastChoices(feed.sources))
+
+  /** The list to pick from is showing: some are picked, or it was asked for
+   *  and none is yet. */
+  let choosing = $state(false)
+  const picking = $derived(choosing || (podcast?.sources.length ?? 0) > 0)
+
+  /** How many of those picked are still followed. */
+  const pickedCount = $derived(
+    podcast ? choices.filter((c) => podcast.sources.includes(c.source.id)).length : 0,
+  )
+
+  function coverEverything() {
+    choosing = false
+    if (podcast) setPodcast({ ...podcast, sources: [] })
+  }
+
+  function setSource(id: NewsSourceId, picked: boolean) {
+    if (podcast) setPodcast({ ...podcast, sources: toggleSource(podcast.sources, id, picked) })
+  }
+
+  /** Each keystroke is taken as it stands, within the limits: a "1" on the way
+   *  to "10" is the shortest it may be for now. The field itself is put right
+   *  on leaving it. */
+  function setMinutes(raw: string) {
+    if (podcast) setPodcast({ ...podcast, minutes: clampMinutes(Number(raw)) })
+  }
+
+  /** What a source is, and that it is paused: "Podcast · paused". */
+  function describe(source: NewsSource): string {
+    return source.paused ? `${sourceKindLabel(source)} · paused` : sourceKindLabel(source)
+  }
+
+  /** What a source's mark is: its kind's. */
+  function sourceIcon(source: Pick<NewsSource, 'kind' | 'podcast'>): IconName {
+    if (source.podcast) return 'podcast'
+    return source.kind.type === 'mail' || source.kind.type === 'newsletters' ? 'mail' : 'rss'
+  }
 
   // ── When ─────────────────────────────────────────────────────────────
 
@@ -392,6 +458,9 @@
             <span class="hint">
               {#if kind === 'weekly'}
                 On its day, the weekly brief takes the morning brief's place.
+              {:else if kind === 'podcast'}
+                It is ready a few minutes after this time: the script is written, then recorded. No
+                day chosen means every day.
               {:else}
                 No day chosen means every day.
               {/if}
@@ -403,87 +472,189 @@
           {/if}
         </div>
 
-        <div class="field-row">
-          <span class="eyebrow">What to include</span>
-          <span class="hint">
-            In this order. A section with nothing worth saying on the day is left out rather than
-            filled.
-          </span>
-          <ol class="sections">
-            {#each rows as s (s)}
-              {@const included = spec.sections.includes(s)}
-              {@const at = spec.sections.indexOf(s)}
-              {@const title = sectionTitle(s, kind)}
-              <li class="section" class:off={!included}>
-                <label class="pick">
-                  <input
-                    type="checkbox"
-                    checked={included}
-                    disabled={included && spec.sections.length === 1}
-                    title={included && spec.sections.length === 1
-                      ? 'A brief covers one section at least'
-                      : undefined}
-                    onchange={(e) =>
-                      setSections(toggleSection(spec.sections, s, e.currentTarget.checked, kind))}
-                  />
-                  <span class="section-icon"><Icon name={SECTION_INFO[s].icon} size={15} /></span>
-                  <span class="section-text">
-                    <b>{title}</b>
-                    <small>{SECTION_INFO[s].blurb}</small>
-                  </span>
-                </label>
-                {#if included}
-                  <div class="actions">
-                    <button
-                      class="icon-btn"
-                      aria-label="Move {title} up"
-                      disabled={at === 0}
-                      onclick={() => setSections(moveSection(spec.sections, s, -1))}
-                    >
-                      <Icon name="chevron" size={14} />
-                    </button>
-                    <button
-                      class="icon-btn down"
-                      aria-label="Move {title} down"
-                      disabled={at === spec.sections.length - 1}
-                      onclick={() => setSections(moveSection(spec.sections, s, 1))}
-                    >
-                      <Icon name="chevron" size={14} />
-                    </button>
-                  </div>
-                {/if}
-                {#if s === 'weather' && included}
-                  <p class="hint section-note">
-                    Asks Open-Meteo for the forecast where you live, as
-                    <button class="link" onclick={() => panels.openSettings('profile')}
-                      >Settings → About you</button
-                    > has it.
-                  </p>
-                {/if}
-              </li>
-            {/each}
-          </ol>
-        </div>
-
-        <div class="field-row">
-          <span class="eyebrow">Length</span>
-          <div class="segmented" role="group" aria-label="Length">
-            {#each BRIEF_LENGTHS as length (length)}
-              <button
-                class="seg"
-                class:on={spec.length === length}
-                aria-pressed={spec.length === length}
-                onclick={() => setSpec({ ...spec, length })}
-              >
-                {LENGTH_INFO[length].label}
-                <small>{aboutMinutes(LENGTH_INFO[length].minutes)}</small>
-              </button>
-            {/each}
+        {#if kind === 'podcast' && podcast}
+          <div class="field-row">
+            <span class="eyebrow">What it covers</span>
+            <label class="toggle">
+              <input
+                type="radio"
+                name="podcast-sources"
+                checked={!picking}
+                onchange={coverEverything}
+              />
+              <span>
+                <b>Everything I follow</b>
+                <small>
+                  Every podcast, newsletter and feed in your Feed, whatever is new since the last
+                  one.
+                </small>
+              </span>
+            </label>
+            <label class="toggle">
+              <input
+                type="radio"
+                name="podcast-sources"
+                checked={picking}
+                onchange={() => (choosing = true)}
+              />
+              <span>
+                <b>Only these</b>
+                <small>Pick the shows, newsletters and feeds it is made from.</small>
+              </span>
+            </label>
+            {#if picking}
+              {#if choices.length === 0}
+                <p class="hint sub">
+                  You follow nothing yet. Follow podcasts and feeds in the Feed, and they are listed
+                  here.
+                </p>
+              {:else}
+                <ol class="sections sources sub" aria-label="Sources">
+                  {#each choices as c (c.source.id)}
+                    {@const picked = podcast.sources.includes(c.source.id)}
+                    {@const icon = sourceIcon(c.source)}
+                    <li class="section" class:off={!picked}>
+                      <label class="pick">
+                        <input
+                          type="checkbox"
+                          checked={picked}
+                          onchange={(e) => setSource(c.source.id, e.currentTarget.checked)}
+                        />
+                        <span class="section-icon"><Icon name={icon} size={15} /></span>
+                        <span class="section-text">
+                          <b>{c.source.title}</b>
+                          <small>{describe(c.source)}</small>
+                        </span>
+                      </label>
+                    </li>
+                  {/each}
+                </ol>
+                <span class="hint sub">
+                  {#if pickedCount === 0}
+                    None picked yet: until one is, it covers everything you follow.
+                  {:else}
+                    {pickedCount} of {choices.length} picked.
+                  {/if}
+                </span>
+              {/if}
+            {/if}
           </div>
-          <span class="hint">
-            How long it takes to hear. The written brief is a little quicker to read.
-          </span>
-        </div>
+        {:else}
+          <div class="field-row">
+            <span class="eyebrow">What to include</span>
+            <span class="hint">
+              In this order. A section with nothing worth saying on the day is left out rather than
+              filled.
+            </span>
+            <ol class="sections">
+              {#each rows as s (s)}
+                {@const included = spec.sections.includes(s)}
+                {@const at = spec.sections.indexOf(s)}
+                {@const title = sectionTitle(s, kind)}
+                <li class="section" class:off={!included}>
+                  <label class="pick">
+                    <input
+                      type="checkbox"
+                      checked={included}
+                      disabled={included && spec.sections.length === 1}
+                      title={included && spec.sections.length === 1
+                        ? 'A brief covers one section at least'
+                        : undefined}
+                      onchange={(e) =>
+                        setSections(toggleSection(spec.sections, s, e.currentTarget.checked, kind))}
+                    />
+                    <span class="section-icon"><Icon name={SECTION_INFO[s].icon} size={15} /></span>
+                    <span class="section-text">
+                      <b>{title}</b>
+                      <small>{SECTION_INFO[s].blurb}</small>
+                    </span>
+                  </label>
+                  {#if included}
+                    <div class="actions">
+                      <button
+                        class="icon-btn"
+                        aria-label="Move {title} up"
+                        disabled={at === 0}
+                        onclick={() => setSections(moveSection(spec.sections, s, -1))}
+                      >
+                        <Icon name="chevron" size={14} />
+                      </button>
+                      <button
+                        class="icon-btn down"
+                        aria-label="Move {title} down"
+                        disabled={at === spec.sections.length - 1}
+                        onclick={() => setSections(moveSection(spec.sections, s, 1))}
+                      >
+                        <Icon name="chevron" size={14} />
+                      </button>
+                    </div>
+                  {/if}
+                  {#if s === 'weather' && included}
+                    <p class="hint section-note">
+                      Asks Open-Meteo for the forecast where you live, as
+                      <button class="link" onclick={() => panels.openSettings('profile')}
+                        >Settings → About you</button
+                      > has it.
+                    </p>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+          </div>
+        {/if}
+
+        {#if kind === 'podcast' && podcast}
+          <div class="field-row">
+            <span class="eyebrow">About how long</span>
+            <div class="when">
+              <input
+                class="field mins"
+                type="number"
+                min={PODCAST_MINUTES.least}
+                max={PODCAST_MINUTES.most}
+                aria-label="Minutes"
+                value={podcast.minutes}
+                oninput={(e) => setMinutes(e.currentTarget.value)}
+                onchange={(e) => (e.currentTarget.value = String(podcast.minutes))}
+              />
+              <span class="hint">minutes to hear</span>
+            </div>
+            <span class="hint">
+              Between {PODCAST_MINUTES.least} and {PODCAST_MINUTES.most}. The script is written to
+              about this length, the most important stories first.
+            </span>
+          </div>
+
+          <div class="field-row">
+            <span class="eyebrow">Who says it</span>
+            <span class="hint">
+              One voice for now: the voice chosen in
+              <button class="link" onclick={() => panels.openSettings('models')}
+                >Settings → Models</button
+              > reads it all. More voices, as two hosts in conversation, come later.
+            </span>
+          </div>
+        {:else}
+          <div class="field-row">
+            <span class="eyebrow">Length</span>
+            <div class="segmented" role="group" aria-label="Length">
+              {#each BRIEF_LENGTHS as length (length)}
+                <button
+                  class="seg"
+                  class:on={spec.length === length}
+                  aria-pressed={spec.length === length}
+                  onclick={() => setSpec({ ...spec, length })}
+                >
+                  {LENGTH_INFO[length].label}
+                  <small>{aboutMinutes(LENGTH_INFO[length].minutes)}</small>
+                </button>
+              {/each}
+            </div>
+            <span class="hint">
+              How long it takes to hear. The written brief is a little quicker to read.
+            </span>
+          </div>
+        {/if}
 
         <div class="field-row">
           <span class="eyebrow">Where it goes</span>
@@ -491,7 +662,13 @@
             <input type="checkbox" checked disabled />
             <span>
               <b>In the Overview</b>
-              <small>Always: on its Brief page, and on the Today's brief card on Home.</small>
+              <small>
+                {#if kind === 'podcast'}
+                  Always: on its Brief page, ready to play, and in Up Next.
+                {:else}
+                  Always: on its Brief page, and on the Today's brief card on Home.
+                {/if}
+              </small>
             </span>
           </label>
           <label class="toggle">
@@ -800,6 +977,12 @@
     color: var(--fg-subtle);
     font-size: var(--text-xs);
     line-height: var(--leading-normal);
+  }
+  /* The Feed's sources to pick from: as many rows as there are, so a long
+     list scrolls inside its box and not the page. */
+  .sources {
+    max-height: 22rem;
+    overflow-y: auto;
   }
   /* Under the section's own words, lined up with them. */
   .section-note {

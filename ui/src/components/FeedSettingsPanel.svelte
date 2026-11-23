@@ -550,6 +550,17 @@
         </span>
       </label>
 
+      <label class="toggle">
+        <input type="checkbox" bind:checked={d.resumeAfterVoice} />
+        <span>
+          <b>Pick up where it was when a conversation ends</b>
+          <small>
+            Talking to the assistant pauses what is playing, an episode or an article read aloud.
+            When the conversation ends, it carries on from the same place.
+          </small>
+        </span>
+      </label>
+
       <div class="when">
         <label class="label" for="feed-skip-back">Skip back</label>
         <select

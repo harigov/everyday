@@ -32,6 +32,11 @@
   // on a library shelf, where it becomes an item with the file as its reading
   // copy. A file that a library item already holds says so under "Used in",
   // and the line opens the item.
+  //
+  // A recording or a film can be transcribed: written down by the service in
+  // the background, with the progress said where the button was, and then
+  // opened in the reader like any document. The transcript is a file beside
+  // it, and the recording's own record points at it (`feed.transcript`).
 
   import { untrack } from 'svelte'
   import { docFormatOf, isReadable } from '../lib/documents'
@@ -55,12 +60,13 @@
     propFromText,
     propText,
   } from '../lib/files-ui.svelte'
+  import { openTranscript } from '../lib/episodes'
   import { dateFormat, longDate, relativeTime, timeOfDay } from '../lib/format'
   import { library } from '../lib/library.svelte'
   import { openExternal } from '../lib/open-external'
   import { panels } from '../lib/panels.svelte'
   import { player } from '../lib/player.svelte'
-  import { playRequestForFile } from '../lib/podcast'
+  import { canTranscribeFile, playRequestForFile, transcriptOfFile, workLine } from '../lib/podcast'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { app } from '../lib/state.svelte'
   import { upnext } from '../lib/upnext.svelte'
@@ -350,6 +356,39 @@
   function read(f: FileEntry): void {
     leave()
     void files.read(f.id)
+  }
+
+  // ── Transcripts ────────────────────────────────────────────────────
+
+  // The work is looked at once, so a recording being transcribed says so.
+  void upnext.ensureWork()
+
+  /** A recording or a film that is there to be written down. */
+  const transcribable = $derived(file !== undefined && canTranscribeFile(file))
+  /**
+   * The transcript the recording has, once it has one and while it is in Files:
+   * the recording's property names the file, and the file may have been put in
+   * the trash since. Looked up as the recording is inspected; a transcript that
+   * is gone is shown as none, which offers to write it down again.
+   */
+  const transcriptId = $derived(file ? upnext.linkedFile(transcriptOfFile(file)) : null)
+  const transcribing = $derived(file ? upnext.workFor({ file: file.id }, 'transcript') : undefined)
+  const transcribeBusy = $derived(!!transcribing && transcribing.state !== 'failed')
+  /** The transcript was asked for and found gone, so the panel says so. */
+  let transcriptLost = $state(false)
+
+  $effect(() => {
+    void upnext.checkLinks([file ? transcriptOfFile(file) : null])
+  })
+  $effect(() => {
+    void file?.id
+    transcriptLost = false
+  })
+
+  /** Read the transcript, in the reader; the viewer comes down first, as Read does. */
+  async function readTranscript(id: FileId): Promise<void> {
+    transcriptLost = false
+    if (!(await openTranscript(id, leave))) transcriptLost = true
   }
 
   // ── Playing, and Up Next ───────────────────────────────────────────
@@ -925,6 +964,32 @@
             <button class="btn btn-sm btn-primary" onclick={() => read(f)}>
               <Icon name="book" size={14} /> Read
             </button>
+          {/if}
+          {#if transcribable}
+            {#if transcriptId}
+              <button
+                class="btn btn-sm btn-outline"
+                onclick={() => void readTranscript(transcriptId)}
+              >
+                <Icon name="quote" size={14} /> Open transcript
+              </button>
+            {:else if transcribeBusy}
+              <span class="note" role="status">{workLine(transcribing)}</span>
+            {:else}
+              {#if transcriptLost}
+                <span class="note" role="status">
+                  The transcript is no longer in Files. It can be written down again.
+                </span>
+              {/if}
+              <button
+                class="btn btn-sm btn-outline"
+                title={transcribing?.error ?? 'Write down what is said in it'}
+                onclick={() => void upnext.transcribeFile(f.id)}
+              >
+                <Icon name="quote" size={14} />
+                {transcribing ? 'Transcription failed, try again' : 'Transcribe'}
+              </button>
+            {/if}
           {/if}
           {#if queueable}
             <button

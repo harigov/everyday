@@ -23,6 +23,7 @@ import { notes } from './notes.svelte'
 import type { Seen, Showing } from './onscreen'
 import { overview } from './overview.svelte'
 import { panels, type SettingsTab } from './panels.svelte'
+import { player } from './player.svelte'
 import { reader } from './reader.svelte'
 import { screentime } from './screentime.svelte'
 import { app } from './state.svelte'
@@ -113,12 +114,20 @@ function withReader(showing: Showing): Showing {
   return { ...showing, open, within, reader: at }
 }
 
-/** Which app is in front of them, and what it shows. */
+/**
+ * Which app is in front of them, and what it shows.
+ *
+ * What is playing goes with every app, Settings included: a recording is
+ * what they are talking about whichever page it is playing under. It is the
+ * player's to say, not an app's -- the player outlives each of them -- so it
+ * is added here, as the reader is.
+ */
 export function onScreenNow(): { app: OnScreenApp; showing: Showing } {
+  const playing = player.playingAt()
   if (panels.settings !== null) {
-    return { app: 'settings', showing: { view: SETTINGS_PAGES[panels.settings] } }
+    return { app: 'settings', showing: { view: SETTINGS_PAGES[panels.settings], playing } }
   }
-  return { app: app.section, showing: withReader(APPS[app.section].onScreen(deps)) }
+  return { app: app.section, showing: { ...withReader(APPS[app.section].onScreen(deps)), playing } }
 }
 
 /** What the bar searches: the open app's own search, or `null` -- Settings

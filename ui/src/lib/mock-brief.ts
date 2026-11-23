@@ -1,6 +1,8 @@
 // A brief for the demo build: what the morning and evening brief would say
 // about a plausible day, with the digest the pictures are drawn from. Built
 // against the clock it is given, so the day it describes is always today.
+// The daily podcast is here too: a script, and an audio file the mock's play
+// address serves as a minute of silence.
 //
 // Imports types alone, as the other mock modules do: `mock.ts` loads this.
 
@@ -10,8 +12,10 @@ import type {
   BriefDigest,
   BriefKind,
   BriefSection,
+  Routine,
   RoutineRun,
   RoutineRunId,
+  Script,
   BriefWeatherDay,
 } from './types'
 
@@ -60,6 +64,54 @@ export const MOCK_SECTIONS: Record<BriefKind, BriefSection[]> = {
     'mail',
     'tidbit',
   ],
+  // The podcast is made from the Feed's sources, not from the day's sections.
+  podcast: [],
+}
+
+/** What each brief's routine is called. */
+export const MOCK_ROUTINE_NAMES: Record<BriefKind, string> = {
+  morning: 'Morning brief',
+  evening: 'Evening brief',
+  weekly: 'Weekly brief',
+  podcast: 'Daily podcast',
+}
+
+/**
+ * The routine `set_brief` makes the first time a brief is switched on: off,
+ * at the hour it usually comes. The podcast carries what it is made from --
+ * every source, a quarter of an hour, the one narrator.
+ */
+export function mockBriefRoutine(id: string, kind: BriefKind, at = new Date()): Routine {
+  const when = at.toISOString()
+  const trigger: Routine['trigger'] =
+    kind === 'weekly'
+      ? { type: 'schedule', at: '08:00', days: ['sun'] }
+      : {
+          type: 'schedule',
+          at: kind === 'morning' ? '07:00' : kind === 'evening' ? '20:00' : '06:00',
+          days: [],
+        }
+  return {
+    id,
+    name: MOCK_ROUTINE_NAMES[kind],
+    instructions: '',
+    trigger,
+    graceMinutes: kind === 'evening' ? 180 : kind === 'weekly' || kind === 'podcast' ? 360 : 240,
+    enabled: false,
+    kind: {
+      type: 'brief',
+      brief: kind,
+      sections: MOCK_SECTIONS[kind],
+      length: kind === 'weekly' ? 'long' : 'standard',
+      ...(kind === 'podcast'
+        ? { podcast: { sources: [], minutes: 15, speakers: [{ id: 'narrator', name: '' }] } }
+        : {}),
+    },
+    delivery: { ask: false },
+    maxSteps: 8,
+    createdAt: when,
+    updatedAt: when,
+  }
 }
 
 /** The week ahead after `now`, for the weekly brief. */
@@ -597,7 +649,41 @@ Three things are overdue; File October expenses is the oldest.`,
   },
 ]
 
+/** What the narrator says, a paragraph a line: the demo's daily podcast. */
+const PODCAST_LINES = [
+  'Good morning, Hari. This is your podcast for today: four stories from the shows and feeds you follow, about fifteen minutes.',
+  'First, the winter ferry timetable. Island Life reports that the Thursday boat to the outer islands stops from the first of December until March, so anything you want to send out has to go on Wednesday.',
+  'Second, the tides. The Slow Water podcast spent half an hour with a harbour master who still reads them from a notebook, and the part worth your time is the story of the spring tide that lifted a trawler onto the quay.',
+  'Third, from the newsletters. The Sunday Reader has a long piece on rope: why a three-strand line still beats most modern braids for mooring, and what the old sailmakers knew about stretch.',
+  'Last, something short from Hacker News: a small team has rebuilt an old chart plotter on a single board, and the thread is better than the article.',
+  "That's all for today. Your run is at seven; the first story will be a good one to start with. Have a good one.",
+]
+
+const PODCAST_PARTS = [
+  {
+    section: null,
+    title: 'In this episode',
+    body: `- **The winter ferry timetable**, from Island Life. The Thursday boat stops from 1 December.
+- **A harbour master and the tides**, from Slow Water. Half an hour; the trawler on the quay is at the twenty minute mark.
+- **Why a three-strand line still wins**, from The Sunday Reader.
+- **A chart plotter on a single board**, from Hacker News.`,
+  },
+]
+
+/** The podcast's script: one narrator, a line a paragraph. */
+function podcastScript(now: Date): Script {
+  return {
+    title: `Daily podcast, ${dayOf(now)}`,
+    speakers: [{ id: 'narrator', name: '' }],
+    lines: PODCAST_LINES.map((text) => ({ speaker: 'narrator', text })),
+  }
+}
+
+/** The audio file the podcast was rendered to: the mock's play address serves it as silence. */
+export const MOCK_PODCAST_AUDIO = 'file-daily-podcast'
+
 const SPOKEN: Record<BriefKind, string> = {
+  podcast: PODCAST_LINES.join('\n\n'),
   weekly: `Good morning, Hari. Here's your week.
 
 Last week went well: the board slides are done and you closed eleven tasks. The grant report slipped, and it is due tomorrow at five.
@@ -620,6 +706,8 @@ Pack your climbing shoes tonight. Sleep well.`,
 }
 
 const HEADLINE: Record<BriefKind, string> = {
+  podcast:
+    'Four stories from what you follow: **the winter ferry timetable**, a harbour master on the tides, and a long one on rope.',
   weekly:
     'A front-loaded week: **Monday has the board, the renewal and the grant report**, then two days in Lisbon.',
   morning:
@@ -630,13 +718,22 @@ const HEADLINE: Record<BriefKind, string> = {
 
 /** A brief of `kind` about the day `now` falls on. */
 export function mockBrief(kind: BriefKind, now = new Date()): Brief {
+  const parts =
+    kind === 'morning'
+      ? MORNING_PARTS(now)
+      : kind === 'weekly'
+        ? WEEKLY_PARTS
+        : kind === 'podcast'
+          ? PODCAST_PARTS
+          : EVENING_PARTS
   return {
     kind,
     day: dayOf(now),
     headline: HEADLINE[kind],
-    parts:
-      kind === 'morning' ? MORNING_PARTS(now) : kind === 'weekly' ? WEEKLY_PARTS : EVENING_PARTS,
+    parts,
     spoken: SPOKEN[kind],
+    // The podcast is its script, and the audio rendered from it.
+    ...(kind === 'podcast' ? { script: podcastScript(now), audio: MOCK_PODCAST_AUDIO } : {}),
     digest: digestFor(kind, now),
   }
 }
@@ -658,9 +755,7 @@ export function mockBriefRun(
   return {
     id,
     routineId,
-    routineName: { morning: 'Morning brief', evening: 'Evening brief', weekly: 'Weekly brief' }[
-      brief.kind
-    ],
+    routineName: MOCK_ROUTINE_NAMES[brief.kind],
     startedAt: at.toISOString(),
     finishedAt: at.toISOString(),
     outcome: 'done',

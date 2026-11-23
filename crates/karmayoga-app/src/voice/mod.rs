@@ -48,7 +48,7 @@ pub struct Held {
     /// The window that asked, whose closing ends the session.
     window: String,
     muted: Option<bool>,
-    screen: Option<Option<OnScreen>>,
+    screen: Option<Option<Box<OnScreen>>>,
     stop: bool,
 }
 
@@ -209,7 +209,8 @@ async fn try_start(
     let link = state.service().voice_open(conversation_id).await?;
     let karmayoga_service::voice::VoiceLink { input, output } = link;
 
-    let _ = input.send(VoiceInput::Screen(on_screen.as_ref().and_then(OnScreen::lenient)));
+    let _ = input
+        .send(VoiceInput::Screen(on_screen.as_ref().and_then(OnScreen::lenient).map(Box::new)));
 
     // What the devices report goes to the session, and a device failing is
     // told to the window and ends the session.
@@ -371,7 +372,7 @@ pub async fn voice_set_screen(
     state: State<'_, AppState>,
     on_screen: Option<serde_json::Value>,
 ) -> CommandResult<()> {
-    let screen = on_screen.as_ref().and_then(OnScreen::lenient);
+    let screen = on_screen.as_ref().and_then(OnScreen::lenient).map(Box::new);
     send_or_hold(state.voice(), VoiceInput::Screen(screen));
     Ok(())
 }
