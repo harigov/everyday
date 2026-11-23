@@ -113,7 +113,7 @@ pub fn body_document(vault: &Vault, story: StoryId) -> CommandResult<BodyDocumen
     if let Some(body) = body.as_ref().filter(|b| !b.html.trim().is_empty()) {
         let source = vault.news_source(story.source_id)?;
         let images_hidden = !source.images && !body.images.is_empty();
-        return Ok(BodyDocument { html: wrap(&body.html), images_hidden });
+        return Ok(BodyDocument { html: wrap(&body.html, Some(body.origin)), images_hidden });
     }
 
     // An extraction that came out as text alone is still a body; a story
@@ -123,17 +123,28 @@ pub fn body_document(vault: &Vault, story: StoryId) -> CommandResult<BodyDocumen
         .map(|b| b.text.as_str())
         .filter(|t| !t.trim().is_empty())
         .unwrap_or(story.summary.as_str());
-    Ok(BodyDocument { html: wrap(&paragraphs(text)), images_hidden: false })
+    Ok(BodyDocument { html: wrap(&paragraphs(text), None), images_hidden: false })
 }
 
 /// The document around `inner`: the policy, the style, and links that open
 /// outside the frame.
-fn wrap(inner: &str) -> String {
+fn wrap(inner: &str, origin: Option<karmayoga_core::news::BodyOrigin>) -> String {
+    // Where the body came from, for the window to say "written from the
+    // episode's transcript": a word of ours in the head, never the
+    // publisher's.
+    let origin = match origin {
+        Some(karmayoga_core::news::BodyOrigin::Feed) => "feed",
+        Some(karmayoga_core::news::BodyOrigin::Extracted) => "extracted",
+        Some(karmayoga_core::news::BodyOrigin::HackerNews) => "hackerNews",
+        Some(karmayoga_core::news::BodyOrigin::Transcript) => "transcript",
+        None => "summary",
+    };
     format!(
         "<!DOCTYPE html>\n\
          <html>\n\
          <head>\n\
          <meta charset=\"utf-8\">\n\
+         <meta name=\"news-body-origin\" content=\"{origin}\">\n\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\n\
          <base target=\"_blank\">\n\
          <style>{STYLE}</style>\n\

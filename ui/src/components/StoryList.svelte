@@ -32,12 +32,12 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { player } from '../lib/player.svelte'
-  import { downloadLine, episodeProgress, formatDuration } from '../lib/podcast'
+  import { downloadLine, episodeProgress, formatDuration, workLine } from '../lib/podcast'
   import { upnext } from '../lib/upnext.svelte'
-  import type { ContentRef, Story } from '../lib/types'
+  import type { ContentRef, FileId, Story } from '../lib/types'
   import Avatar from './Avatar.svelte'
   import EmptyState from './EmptyState.svelte'
-  import { playEpisode } from '../lib/episodes'
+  import { openTranscript, playEpisode } from '../lib/episodes'
   import EpisodeActions from './EpisodeActions.svelte'
   import Icon from './Icon.svelte'
   import PaneResizer from './PaneResizer.svelte'
@@ -99,6 +99,13 @@
 
   // ── What a right-click offers ─────────────────────────────────────────
 
+  /** Open a transcript from a menu; one that is gone is said under the list. */
+  async function openFromMenu(file: FileId) {
+    if (!(await openTranscript(file))) {
+      feed.note = 'That transcript is no longer in Files. Transcribe the episode to make it again.'
+    }
+  }
+
   /** The listening half of a story's menu: an episode's play and download, and Up Next for any. */
   function listeningMenu(story: Story): (MenuItem | false)[] {
     const ref: ContentRef = { type: 'story', id: story.id }
@@ -106,7 +113,35 @@
     const queueItem: MenuItem = queued
       ? { label: 'Take out of Up Next', icon: 'queue-add', run: () => void upnext.removeFor(ref) }
       : { label: 'Add to Up Next', icon: 'queue-add', run: () => void upnext.add(ref) }
-    if (!story.media) return [queueItem]
+    if (!story.media) {
+      // An article: it can be saved as audio, and played once it has been.
+      const audio = upnext.workFor({ story: story.id }, 'audio')
+      // Only what the vault was last heard to say about the file: a row is not
+      // looked up, and a menu is raised by a click, so it asks for the next one.
+      const saved = upnext.linkedFile(story.files?.audio) !== null
+      void upnext.checkLinks([story.files?.audio])
+      return [
+        saved && {
+          label: player.isPlaying(ref) ? 'Pause audio' : 'Play audio',
+          icon: player.isPlaying(ref) ? 'pause' : 'play',
+          run: () => playEpisode(story),
+        },
+        !saved &&
+          !story.expired &&
+          (audio && audio.state !== 'failed'
+            ? { label: workLine(audio), icon: 'volume', disabled: true }
+            : {
+                label: 'Save as audio',
+                icon: 'volume',
+                run: () => void upnext.renderAudio(story.id),
+              }),
+        queueItem,
+      ]
+    }
+    const transcript = upnext.linkedFile(story.files?.transcript)
+    void upnext.checkLinks([story.files?.transcript])
+    const transcribing = upnext.workFor({ story: story.id }, 'transcript')
+    const writing = upnext.workFor({ story: story.id }, 'article')
     const downloaded = !!story.files?.media
     const download = upnext.downloadOf(story.id)
     const running = download?.state === 'downloading' || download?.state === 'waiting'
@@ -136,6 +171,19 @@
         icon: 'trash',
         run: () => void upnext.removeDownload(story.id),
       },
+      SEP,
+      transcript
+        ? { label: 'Open transcript', icon: 'quote', run: () => void openFromMenu(transcript) }
+        : transcribing && transcribing.state !== 'failed'
+          ? { label: workLine(transcribing), icon: 'quote', disabled: true }
+          : { label: 'Transcribe', icon: 'quote', run: () => void upnext.transcribe(story.id) },
+      writing && writing.state !== 'failed'
+        ? { label: workLine(writing), icon: 'newspaper', disabled: true }
+        : {
+            label: 'Read as an article',
+            icon: 'newspaper',
+            run: () => void upnext.readAsArticle(story),
+          },
     ]
   }
 
@@ -367,6 +415,11 @@
           {#if story.saved}
             <span class="mark" title="Saved"><Icon name="star" size={13} filled /></span>
           {/if}
+          {#if story.files?.audio}
+            <span class="mark" title="Saved as audio" role="img" aria-label="Saved as audio">
+              <Icon name="volume" size={13} />
+            </span>
+          {/if}
         </div>
         <div class="meta">{meta(story)}</div>
         {#if story.media}{@render episodeLine(story)}{/if}
@@ -388,6 +441,7 @@
   {@const length = story.media?.durationMs}
   {@const progress = episodeProgress(upnext.progressOf(ref), length)}
   {@const download = upnext.downloadOf(story.id)}
+  {@const work = upnext.workFor({ story: story.id })}
   <div class="facts">
     {#if length}<span>{formatDuration(length)}</span>{/if}
     {#if progress}<span class:played={progress.finished}>{progress.label}</span>{/if}
@@ -398,6 +452,15 @@
         <Icon name="download" size={12} />
         <span class="vh">Downloaded</span>
       </span>
+    {/if}
+    {#if story.files?.transcript}
+      <span class="fact-mark" title="Has a transcript">
+        <Icon name="quote" size={12} />
+        <span class="vh">Has a transcript</span>
+      </span>
+    {/if}
+    {#if work}
+      <span class:bad={work.state === 'failed'}>{workLine(work)}</span>
     {/if}
     {#if upnext.isQueued(ref)}
       <span class="fact-mark queued" title="In Up Next">

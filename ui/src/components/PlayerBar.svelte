@@ -1,9 +1,9 @@
 <!--
   The player, in the top bar: what is playing, skip back, play and pause, skip
   forward, how far it is and how long is left, its speed, and a way to open
-  the panel with the picture and Up Next. ListenPlayer's neighbour, in the
-  same pill: it stays where it is while somebody moves between apps, and the
-  sound goes on.
+  the panel with the picture and Up Next, and to ask the assistant about what
+  is playing. ListenPlayer's neighbour, in the same pill: it stays where it is
+  while somebody moves between apps, and the sound goes on.
 
   This only draws the player and passes the buttons on; the store (`player`)
   owns what is loaded, and the one media element is `PlayerHost`'s. When
@@ -13,11 +13,13 @@
   player of.
 -->
 <script lang="ts">
+  import { agent } from '../lib/agent.svelte'
   import type { IconName } from '../lib/icons'
   import { menu } from '../lib/menu.svelte'
   import { PLAYER_SPEEDS, player } from '../lib/player.svelte'
   import { formatRemaining } from '../lib/podcast'
   import { upnext } from '../lib/upnext.svelte'
+  import { voice } from '../lib/voice.svelte'
   import Icon from './Icon.svelte'
 
   const current = $derived(player.current)
@@ -60,6 +62,10 @@
   function toggleExpanded() {
     player.expanded = !player.expanded
   }
+
+  /** Talking to the assistant about this is on offer where it can be done at
+   *  all, and not while it is already being done. */
+  const askable = $derived(voice.available && agent.supported)
 </script>
 
 {#if current}
@@ -145,6 +151,17 @@
     >
       {speedLabel(player.speed)}
     </button>
+    {#if askable}
+      <button
+        class="ctl"
+        disabled={voice.active}
+        title={voice.active ? 'You are talking to the assistant' : 'Ask about this'}
+        aria-label="Ask about this"
+        onclick={() => void voice.askAboutPlaying()}
+      >
+        <Icon name="mic" size={15} weight={1.6} />
+      </button>
+    {/if}
     <button
       class="ctl"
       class:on={player.expanded}
@@ -262,6 +279,10 @@
   }
   .ctl:hover {
     background: color-mix(in oklab, var(--accent) 18%, transparent);
+  }
+  .ctl:disabled {
+    opacity: 0.45;
+    pointer-events: none;
   }
   .trouble .ctl:hover {
     background: color-mix(in oklab, var(--danger) 18%, transparent);

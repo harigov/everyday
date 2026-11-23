@@ -9763,7 +9763,7 @@
         ]
       },
       "BriefKind": {
-        "description": "Which brief: before the day, or at the end of it.",
+        "description": "Which brief: before the day, at the end of it, for the week -- or the daily\npodcast, which is not about the day at all.",
         "oneOf": [
           {
             "const": "morning",
@@ -9778,6 +9778,11 @@
           {
             "const": "weekly",
             "description": "Today and the week ahead, on Sunday mornings. On its day it takes the\nmorning brief's place: see `karmayoga_service::scheduler`.",
+            "type": "string"
+          },
+          {
+            "const": "podcast",
+            "description": "What arrived in the Feed since the last one, as a script to listen to\n-- during exercise, say. Has no sections and takes no other brief's\nplace: it has its own time, and its own settings in\n[`BriefSpec::podcast`].",
             "type": "string"
           }
         ]
@@ -9871,6 +9876,17 @@
           "length": {
             "$ref": "#/$defs/BriefLength",
             "default": "standard"
+          },
+          "podcast": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PodcastBrief"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The daily podcast's own: what it is made from and how long it runs.\nOnly on a [`BriefKind::Podcast`] brief."
           },
           "sections": {
             "default": [],
@@ -10872,6 +10888,36 @@
           }
         ]
       },
+      "PodcastBrief": {
+        "description": "What the daily podcast is made from. See `docs/plans/podcasts.md`.",
+        "properties": {
+          "minutes": {
+            "default": 15,
+            "description": "About how long it runs, in minutes.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sources": {
+            "default": [],
+            "description": "The Feed's sources it covers -- shows, feeds, newsletters. Empty is\nevery source followed.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "speakers": {
+            "default": [],
+            "description": "Who says it. One narrator today -- empty, or one speaker -- and the\nscript is plain paragraphs; with more, it is a conversation, a line per\nturn. See [`crate::news::script`].",
+            "items": {
+              "$ref": "#/$defs/ScriptSpeaker"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "Priority": {
         "description": "How much this matters.\n\n`None` is a real value and the default: most tasks do not deserve a\npriority, and a scheme where everything must be triaged on capture is a\nscheme people stop capturing into.",
         "enum": [
@@ -11364,6 +11410,31 @@
             "type": "object"
           }
         ]
+      },
+      "ScriptSpeaker": {
+        "description": "One voice in a script.",
+        "properties": {
+          "id": {
+            "description": "What a line names it by.",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "description": "What it is called, if it is ever introduced.",
+            "type": "string"
+          },
+          "voice": {
+            "description": "The local voice's speaker to use (`LocalVoice` speakers by name).\n`None` is the voice chosen in Settings → Models.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
       },
       "Skill": {
         "description": "A process the assistant was given for a certain kind of request. See the\nmodule docs' \"Skills, and progressive disclosure\".",
@@ -12372,7 +12443,7 @@
   "Routine": {
     "$defs": {
       "BriefKind": {
-        "description": "Which brief: before the day, or at the end of it.",
+        "description": "Which brief: before the day, at the end of it, for the week -- or the daily\npodcast, which is not about the day at all.",
         "oneOf": [
           {
             "const": "morning",
@@ -12387,6 +12458,11 @@
           {
             "const": "weekly",
             "description": "Today and the week ahead, on Sunday mornings. On its day it takes the\nmorning brief's place: see `karmayoga_service::scheduler`.",
+            "type": "string"
+          },
+          {
+            "const": "podcast",
+            "description": "What arrived in the Feed since the last one, as a script to listen to\n-- during exercise, say. Has no sections and takes no other brief's\nplace: it has its own time, and its own settings in\n[`BriefSpec::podcast`].",
             "type": "string"
           }
         ]
@@ -12481,6 +12557,17 @@
             "$ref": "#/$defs/BriefLength",
             "default": "standard"
           },
+          "podcast": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PodcastBrief"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The daily podcast's own: what it is made from and how long it runs.\nOnly on a [`BriefKind::Podcast`] brief."
+          },
           "sections": {
             "default": [],
             "description": "In the order they appear. A section that has nothing worth saying on a\ngiven day is left out of that day's brief.",
@@ -12567,6 +12654,36 @@
           }
         ]
       },
+      "PodcastBrief": {
+        "description": "What the daily podcast is made from. See `docs/plans/podcasts.md`.",
+        "properties": {
+          "minutes": {
+            "default": 15,
+            "description": "About how long it runs, in minutes.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sources": {
+            "default": [],
+            "description": "The Feed's sources it covers -- shows, feeds, newsletters. Empty is\nevery source followed.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "speakers": {
+            "default": [],
+            "description": "Who says it. One narrator today -- empty, or one speaker -- and the\nscript is plain paragraphs; with more, it is a conversation, a line per\nturn. See [`crate::news::script`].",
+            "items": {
+              "$ref": "#/$defs/ScriptSpeaker"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "RoutineKind": {
         "description": "Whose routine this is.\n\nA dream is a routine the application owns: it is made when dreaming is\nswitched on, it cannot be deleted by hand, and its instructions field is\nthe person's paragraph *added to* an app-owned prompt rather than the\nprompt itself. See `docs/plans/dreaming.md`.\n\nA brief is the other routine the application owns: one per\n[`BriefKind`], made when it is first switched on, and its instructions are\nlikewise the person's paragraph added to the app's own prompt. What it\ncovers and how long it is ride on the kind itself -- see [`BriefSpec`] and\n`docs/plans/briefs.md`.",
         "oneOf": [
@@ -12612,6 +12729,31 @@
             "type": "object"
           }
         ]
+      },
+      "ScriptSpeaker": {
+        "description": "One voice in a script.",
+        "properties": {
+          "id": {
+            "description": "What a line names it by.",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "description": "What it is called, if it is ever introduced.",
+            "type": "string"
+          },
+          "voice": {
+            "description": "The local voice's speaker to use (`LocalVoice` speakers by name).\n`None` is the voice chosen in Settings → Models.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
       },
       "Trigger": {
         "description": "What sets a routine going.\n\nAn enum rather than a bag of optional fields, for the reason\n[`crate::Purpose`] is one: a clock time with weekdays and a lead time\nbefore a meeting have nothing in common but the word \"when\", and a routine\nhas exactly one of them.",
@@ -12821,6 +12963,14 @@
       "Brief": {
         "description": "A brief, as kept on the run that wrote it.",
         "properties": {
+          "audio": {
+            "description": "The daily podcast, rendered: its audio file under `Feed/Daily`.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "day": {
             "description": "The day it was made on, in the person's zone.",
             "format": "date",
@@ -12844,6 +12994,17 @@
               "$ref": "#/$defs/BriefPart"
             },
             "type": "array"
+          },
+          "script": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Script"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The daily podcast: who says what. `None` for every other brief."
           },
           "spoken": {
             "default": "",
@@ -13124,6 +13285,18 @@
             },
             "type": "array"
           },
+          "podcast": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PodcastDigest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The daily podcast's: what it is made from. `None` for every other brief."
+          },
           "previous": {
             "default": null,
             "description": "The last brief's headline and tidbit, so today's does not repeat it.",
@@ -13336,7 +13509,7 @@
         "type": "object"
       },
       "BriefKind": {
-        "description": "Which brief: before the day, or at the end of it.",
+        "description": "Which brief: before the day, at the end of it, for the week -- or the daily\npodcast, which is not about the day at all.",
         "oneOf": [
           {
             "const": "morning",
@@ -13351,6 +13524,11 @@
           {
             "const": "weekly",
             "description": "Today and the week ahead, on Sunday mornings. On its day it takes the\nmorning brief's place: see `karmayoga_service::scheduler`.",
+            "type": "string"
+          },
+          {
+            "const": "podcast",
+            "description": "What arrived in the Feed since the last one, as a script to listen to\n-- during exercise, say. Has no sections and takes no other brief's\nplace: it has its own time, and its own settings in\n[`BriefSpec::podcast`].",
             "type": "string"
           }
         ]
@@ -13860,6 +14038,36 @@
         ],
         "type": "string"
       },
+      "ExcerptFrom": {
+        "description": "Where what a story says was read from, which is how much of it was.",
+        "oneOf": [
+          {
+            "const": "transcript",
+            "description": "An episode's article, written from its transcript: all of what was said.",
+            "type": "string"
+          },
+          {
+            "const": "article",
+            "description": "The article itself, or what the feed carried of it.",
+            "type": "string"
+          },
+          {
+            "const": "newsletter",
+            "description": "A newsletter issue, from Mail.",
+            "type": "string"
+          },
+          {
+            "const": "summary",
+            "description": "Only the feed's short summary, or an episode's show notes.",
+            "type": "string"
+          },
+          {
+            "const": "title",
+            "description": "Nothing but the title.",
+            "type": "string"
+          }
+        ]
+      },
       "FreeStretch": {
         "description": "A stretch of the day with nothing in it.",
         "properties": {
@@ -13942,6 +14150,119 @@
           }
         ]
       },
+      "PodcastDigest": {
+        "description": "What a daily podcast is made from: the stories that arrived since the last\none, newest first, each with what it says. Kept with the brief so the\ninterface can say what was covered, and so the next podcast leaves it out.",
+        "properties": {
+          "heardAlready": {
+            "default": 0,
+            "description": "How many were already read or heard, and so left out.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "leftOut": {
+            "default": 0,
+            "description": "How many more arrived than fit.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "minutes": {
+            "default": 0,
+            "description": "About how long it runs, in minutes, and the words that comes to.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "since": {
+            "default": null,
+            "description": "How far back it looked for arrivals: a little before the last podcast\nwas made, or a day before this one.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sources": {
+            "default": [],
+            "description": "The sources those stories are from, by name, in the order they come.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "speakers": {
+            "default": [],
+            "description": "Who says it. Empty is one narrator.",
+            "items": {
+              "$ref": "#/$defs/ScriptSpeaker"
+            },
+            "type": "array"
+          },
+          "stories": {
+            "default": [],
+            "description": "What it covers, the ones with something to say first.",
+            "items": {
+              "$ref": "#/$defs/PodcastStory"
+            },
+            "type": "array"
+          },
+          "words": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "PodcastStory": {
+        "description": "One story a podcast may tell, and what it says.",
+        "properties": {
+          "episode": {
+            "default": false,
+            "description": "A podcast episode, not an article.",
+            "type": "boolean"
+          },
+          "excerpt": {
+            "default": "",
+            "description": "What it says, as plain text cut to a length. Empty when all that is\nknown is its title.",
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/$defs/ExcerptFrom",
+            "default": "title",
+            "description": "Where the excerpt is from."
+          },
+          "publishedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "source": {
+            "description": "The show, the feed, the newsletter.",
+            "type": "string"
+          },
+          "storyId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "default": "",
+            "description": "Never said aloud; for the interface.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "storyId",
+          "title",
+          "source",
+          "publishedAt"
+        ],
+        "type": "object"
+      },
       "Priority": {
         "description": "How much this matters.\n\n`None` is a real value and the default: most tasks do not deserve a\npriority, and a scheme where everything must be triaged on capture is a\nscheme people stop capturing into.",
         "enum": [
@@ -13952,6 +14273,82 @@
           "urgent"
         ],
         "type": "string"
+      },
+      "Script": {
+        "description": "Lines to be said, by whom.",
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/$defs/ScriptLine"
+            },
+            "type": "array"
+          },
+          "speakers": {
+            "items": {
+              "$ref": "#/$defs/ScriptSpeaker"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "speakers",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "ScriptLine": {
+        "description": "One thing said.",
+        "properties": {
+          "about": {
+            "description": "The story it is about, if it is about one.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "speaker": {
+            "description": "A [`ScriptSpeaker::id`].",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "speaker",
+          "text"
+        ],
+        "type": "object"
+      },
+      "ScriptSpeaker": {
+        "description": "One voice in a script.",
+        "properties": {
+          "id": {
+            "description": "What a line names it by.",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "description": "What it is called, if it is ever introduced.",
+            "type": "string"
+          },
+          "voice": {
+            "description": "The local voice's speaker to use (`LocalVoice` speakers by name).\n`None` is the voice chosen in Settings → Models.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",

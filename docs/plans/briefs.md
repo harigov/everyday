@@ -118,3 +118,12 @@ line of guidance, not a new feature:
   tools the person allowed unattended, again so the turn stays offline.
 - **More kinds**: a monthly look ahead would be one more `BriefKind`, a
   prompt and a wider window, as the weekly one was.
+
+## The daily podcast (Nov 22 2026)
+
+A fourth kind, `BriefKind::Podcast`, set up in Settings → Briefs like the
+others but with sources and a length in minutes instead of sections: a script
+written from what arrived in the chosen Feed sources since the last podcast,
+rendered into `Feed/Daily/` and put at the top of Up Next. See
+`docs/plans/podcasts.md` (phase 2).
+

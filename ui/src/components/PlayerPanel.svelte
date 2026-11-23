@@ -14,8 +14,14 @@
   // Escape from the whole window would close when somebody meant to leave
   // Settings or drop a selection, and one is always an Escape away from
   // either.
+  //
+  // "Ask about this" pauses what is playing and starts a spoken conversation
+  // with the assistant (`voice.askAboutPlaying`). The assistant's rail is
+  // where the conversation is drawn, which is under this panel's place, so
+  // asking puts the panel away.
 
   import { onMount } from 'svelte'
+  import { agent } from '../lib/agent.svelte'
   import { thumbnailUrl } from '../lib/api'
   import { files } from '../lib/files.svelte'
   import { focusOnMount } from '../lib/focus'
@@ -24,6 +30,7 @@
   import { dropBefore, formatDuration, formatRemaining } from '../lib/podcast'
   import type { QueueEntryId, QueueItem } from '../lib/types'
   import { upnext } from '../lib/upnext.svelte'
+  import { voice } from '../lib/voice.svelte'
   import Icon from './Icon.svelte'
 
   interface Props {
@@ -45,6 +52,8 @@
   }
 
   const current = $derived(player.current)
+  /** Asking is on offer where it can be done at all. */
+  const askable = $derived(voice.available && agent.supported)
   const back = $derived(upnext.settings?.skipBackS ?? 15)
   const forward = $derived(upnext.settings?.skipForwardS ?? 30)
 
@@ -327,6 +336,18 @@
       >
         <Icon name="tick" size={14} /> Mark played
       </button>
+      {#if askable}
+        <button
+          class="btn btn-sm btn-outline"
+          disabled={voice.active}
+          title={voice.active
+            ? 'You are talking to the assistant'
+            : 'Pause this and ask the assistant about it, out loud'}
+          onclick={() => void voice.askAboutPlaying()}
+        >
+          <Icon name="mic" size={14} /> Ask about this
+        </button>
+      {/if}
     </div>
   {:else}
     <p class="hint idle">

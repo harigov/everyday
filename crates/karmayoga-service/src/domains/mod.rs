@@ -45,6 +45,7 @@ pub mod proposals;
 pub mod purpose;
 pub mod quick;
 pub mod ranking;
+pub mod rendering;
 pub mod routines;
 pub mod screentime;
 pub mod signin;
@@ -52,6 +53,7 @@ pub mod speech;
 pub mod tasks;
 pub mod templates;
 pub mod trackers;
+pub mod transcribing;
 pub mod transcripts;
 pub mod transfer;
 pub mod upnext;
@@ -108,6 +110,8 @@ pub fn catalog() -> &'static [&'static Command] {
             downloads::COMMANDS,
             upnext::COMMANDS,
             ranking::COMMANDS,
+            transcribing::COMMANDS,
+            rendering::COMMANDS,
             money::COMMANDS,
             screentime::COMMANDS,
             files::COMMANDS,

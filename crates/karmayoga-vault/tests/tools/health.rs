@@ -1327,6 +1327,7 @@ fn what_they_have_open_in_health_is_named_and_a_strangers_words_are_quoted_and_t
         open,
         query: None,
         reader: None,
+        playing: None,
     };
 
     let said = describe(

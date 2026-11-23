@@ -1195,6 +1195,46 @@ what, when, and how much — and that record outlives the story it came from.
 The assistant can list Up Next, add to it, follow a podcast, and say what you
 read or listened to last week.
 
+### Read a podcast, hear an article, and remember all of it
+
+**An episode can be read.** It is transcribed — from the publisher's own
+transcript when the feed names one (WebVTT, SRT or Podcasting 2.0 JSON),
+otherwise by the speech model chosen in Settings → Models, on this computer or
+at a provider — and the transcript is kept as Markdown beside the episode, a
+time on every paragraph. The Medium model then writes the episode up as an
+article, with the show notes kept below it, so a podcast reads like anything
+else in the Feed. Episodes are transcribed when they are first played, or when
+they are downloaded, or only when asked — per show, with a default in Settings
+→ Feed. A recording in Files is transcribed when you ask, never by playing it.
+
+**An article can be heard.** Listen still reads one aloud on the spot; **Save
+as audio** renders it, in the voice chosen in Settings → Models, as an Opus
+file under `Feed/Audio/` that plays in the player and waits in Up Next like an
+episode.
+
+**Your own daily podcast** is a fourth brief, set up in Settings → Briefs: the
+shows, feeds and newsletters it covers, how long it runs, and when it is
+made. Each morning the model writes a script from what arrived since the last
+one — an episode by its article, a newsletter by its issue — the voice says
+it into `Feed/Daily/`, and it goes to the top of Up Next for the run or the
+gym. It is one narrator for now; a script already names a speaker for every
+line, so two hosts are a setting away, and every line can name the story it is
+about, which is what a video version would show.
+
+**Ask about what is playing.** The player and Listen have an **Ask** button
+that pauses them and opens voice mode; every message says what is playing and
+where, and the assistant reads the transcript around that moment
+(`what_was_said`) to answer "what did she just say about that?" — and can act
+on it: a note, a task, the next episode in Up Next. When the conversation
+ends, playing picks up where it stopped.
+
+**The Feed remembers.** Every article you finish is kept as Markdown under
+`Feed/Articles/`, every transcript beside its episode, and the Feed's files are
+always in the document index; with the record of what you read, heard and
+watched and when, the assistant's `recall` answers "what was that podcast about
+sleep last month?" from what was actually said. The Feed's History page lists
+it all by day.
+
 ## Money
 
 Your bank accounts, what went through them, and what you meant to spend —

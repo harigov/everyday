@@ -742,6 +742,8 @@ impl Service {
             crate::news::ensure_task(self, &vault);
             crate::news::downloads::ensure_task(self, &vault);
             crate::news::rank::ensure_task(self, &vault);
+            crate::news::transcribe::ensure_task(self, &vault);
+            crate::news::audio::ensure_task(self, &vault);
             crate::calendar_refresh::ensure_task(self, &vault);
             crate::money::ensure_task(self, &vault);
             crate::backup::task::ensure_task(self, &vault);

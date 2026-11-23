@@ -33,7 +33,7 @@
     queueRemainingMs,
   } from '../lib/podcast'
   import { app } from '../lib/state.svelte'
-  import type { QueueEntryId, QueueItem } from '../lib/types'
+  import type { ConsumeMode, QueueEntryId, QueueItem } from '../lib/types'
   import { upnext } from '../lib/upnext.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
@@ -59,9 +59,19 @@
     return item.entry.title.trim() || item.story?.title.trim() || 'Untitled'
   }
 
+  /**
+   * How an entry is taken in. What there is to play is heard or watched
+   * whatever it was lined up as: an article saved as audio since it was added
+   * is still an article entry, and now it plays.
+   */
+  function modeOf(item: QueueItem): ConsumeMode {
+    if (item.play) return item.play.kind === 'video' ? 'watch' : 'listen'
+    return item.entry.mode
+  }
+
   /** The mark in front of a row: how it is taken in. */
   function modeIcon(item: QueueItem): IconName {
-    const mode = item.entry.mode
+    const mode = modeOf(item)
     if (mode === 'watch') return 'film'
     if (mode === 'listen') {
       if (item.story?.media) return 'podcast'
@@ -72,11 +82,11 @@
 
   /** The mark, or a speaker while it is the thing being heard. */
   function markIcon(item: QueueItem, now: boolean): IconName {
-    return now && item.entry.mode !== 'read' ? 'volume' : modeIcon(item)
+    return now && modeOf(item) !== 'read' ? 'volume' : modeIcon(item)
   }
 
   function modeWord(item: QueueItem): string {
-    const mode = item.entry.mode
+    const mode = modeOf(item)
     return mode === 'watch' ? 'To watch' : mode === 'listen' ? 'To listen to' : 'To read'
   }
 
@@ -107,6 +117,9 @@
     const progress = episodeProgress(item.consumption, length)
     if (progress) out.push(progress.label)
     else if (length) out.push(formatSpan(length))
+    // What was made of it in Files: its words written down, an article's voice.
+    if (item.story?.files?.transcript) out.push('Has a transcript')
+    if (item.story && !item.story.media && item.story.files?.audio) out.push('Saved as audio')
     if (item.entry.addedBy !== 'person') out.push(addedByLabel(item.entry.addedBy))
     return out
   }
@@ -130,7 +143,7 @@
       await feed.open(item.story.id)
     } else if (item.item) {
       if (await app.goTo('library')) await library.open(item.item.id)
-    } else if (what.type === 'file' && item.entry.mode === 'read') {
+    } else if (what.type === 'file' && modeOf(item) === 'read') {
       if (await app.goTo('files')) files.open(what.id)
     } else {
       void player.playItem(item)
@@ -139,7 +152,7 @@
 
   /** The round button: play or pause it, get it, or open it to read. */
   function primary(item: QueueItem) {
-    if (item.entry.mode === 'read') {
+    if (modeOf(item) === 'read') {
       void open(item)
     } else if (needsDownload(item) && item.story) {
       if (item.downloading) void upnext.cancelDownload(item.story.id)
@@ -154,7 +167,7 @@
   }
 
   function primaryIcon(item: QueueItem): IconName {
-    if (item.entry.mode === 'read') return item.item && !item.story ? 'book' : 'newspaper'
+    if (modeOf(item) === 'read') return item.item && !item.story ? 'book' : 'newspaper'
     if (needsDownload(item)) return item.downloading ? 'close' : 'download'
     if (isReading(item) || player.isPlaying(item.entry.what)) {
       return isReading(item) ? 'stop' : 'pause'
@@ -164,7 +177,7 @@
 
   function primaryLabel(item: QueueItem): string {
     const name = titleOf(item)
-    if (item.entry.mode === 'read') return `Open “${name}” to read`
+    if (modeOf(item) === 'read') return `Open “${name}” to read`
     if (needsDownload(item)) {
       return item.downloading ? `Cancel the download of “${name}”` : `Download “${name}”`
     }
@@ -386,7 +399,7 @@
             <div class="controls">
               <button
                 class="round"
-                class:go={!needsDownload(item) && item.entry.mode !== 'read'}
+                class:go={!needsDownload(item) && modeOf(item) !== 'read'}
                 title={primaryLabel(item)}
                 aria-label={primaryLabel(item)}
                 onclick={() => primary(item)}

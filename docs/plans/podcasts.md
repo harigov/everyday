@@ -68,6 +68,41 @@ differs from the body of this file:
 - **`forget_consumption` is Destructive.**
 - The Transcribe setting is stored now and acted on in phase 2.
 
+## Delivered (phase 2, Nov 22 2026)
+
+Built by six Sonnet agents against the phase 2 contract at the bottom of this
+file, then reviewed (15 findings, all fixed). What differs from that contract:
+
+- **One generic background queue** (`news/work.rs`: `Queue`, `Worker`) runs
+  transcripts and audio renders; one `announce` in `news/mod.rs`. Downloads,
+  transcripts, kept articles and renders share `downloads::safe_name`.
+- **Transcripts:** an explicit Transcribe redoes one (beside the old as
+  `… transcript (2).md`); policies and first play do not. A sealed
+  recording's transcript is sealed too, decrypted to a private scratch copy
+  (never the "open" copy); Health files are refused. After a transcript the
+  article is written at once; its failure is a failed Article work item.
+- **Transcribe on play is for episodes only.** A recording in Files — and the
+  app's own rendered audio — is transcribed only when asked: nothing private
+  goes to a transcriber unasked.
+- **Kept articles skip newsletters** (they are mail, searchable by the mail
+  tools) and episodes (their transcript is their words). Clean-up unlinks the
+  episode, transcript and audio slots when their file is trashed or gone, and
+  the kept-article slot only when it is gone (a binned article stays unkept).
+- **`what_was_said`** builds outward from the paragraph at the moment and cuts
+  an over-long paragraph to a window around its proportional position, within
+  its character budget.
+- **The daily podcast** is `BriefKind::Podcast`: its own time (06:00), no
+  sections, `PodcastBrief` validated (5–60 minutes, at most four speakers whose
+  names the script parser recognises, `script::is_name`); stories chosen by
+  when they *arrived* since the last podcast that has audio; the render runs
+  detached but holds the routine in flight; `File/Created` and Up Next (top,
+  `AddedBy::Daily`) follow. A podcast with nothing new is skipped.
+- **`ScriptSpeaker`**, not `Speaker` — the meetings already have a `Speaker`,
+  and the UI's types merged the two.
+- **`OnScreen.playing`** made `VoiceInput::Screen` large; it is boxed.
+- The body document's head carries `<meta name="news-body-origin">` so the
+  window can say an article was written from the transcript.
+
 ## Decisions
 
 - **A podcast is a web feed with `NewsSource.podcast` set.** No new
@@ -205,3 +240,53 @@ RankingStatus  { judge: 'decision'|'small'|null, ranked, waiting, problem? }
   "Save as audio" for an article; the daily podcast as a brief kind
   (`BriefKind::Podcast`) with a script of speaker-tagged lines (one narrator
   now; more voices and a video track later).
+
+## Phase 2 contract (laid Nov 22 2026, after phase 1 merged as 398b3e27)
+
+### Core
+- `news/transcript.rs`: `TimedText`, `TranscriptOrigin`, `TranscriptMeta`,
+  `paragraphs`, `to_markdown`, `parse_markdown`, `around`, `parse_vtt`,
+  `parse_srt`, `parse_json`, `parse_plain`, `format_clock`; properties
+  `feed.transcript` (on the recording) and `feed.transcript_of` (on the
+  transcript).
+- `news/script.rs`: `Script`, `ScriptSpeaker`, `ScriptLine` (`about: StoryId`),
+  `NARRATOR`, `Script::narrated`.
+- `agent/onscreen.rs`: `OnScreen.playing: Option<PlayingAt { what, position_ms,
+  duration_ms, paused }>`.
+- `FeedSettings.resume_after_voice` (default on).
+- `brief.rs`: `BriefSpec.podcast: Option<PodcastBrief { sources, minutes,
+  speakers }>`, `Brief.script`, `Brief.audio`; `BriefKind::Podcast` is added by
+  the agent that owns briefs.
+- `agent/tools/listening.rs` (registered, empty): `recall`, `what_was_said`.
+
+### Service
+- `speech/decode.rs::decode_file` (symphonia, streamed 16 kHz mono).
+- `speech/render.rs::render_script` (Ogg Opus with `speech`, else WAV).
+- `news/transcribe.rs` (`Transcripts`, `Job`, `request`, `status`,
+  `transcript_of`, task `news-transcripts`), `news/article.rs::write_article`,
+  `news/keep.rs::keep_article`, `news/audio.rs` (`AudioJobs`, `request`,
+  `status`, task `news-audio`); `news::WorkItem` for the interface.
+
+### Commands (scope News)
+
+| Command | Args | Returns | Effect |
+|---|---|---|---|
+| `transcribe_episode` | `id: StoryId` | `void` | Write (INVISIBLE; the story is announced when done) |
+| `transcribe_file` | `id: FileId` | `void` | Write (INVISIBLE; the file is announced when done) |
+| `write_article` | `id: StoryId` | `void` | Write (INVISIBLE) |
+| `render_story_audio` | `id: StoryId` | `void` | Write (INVISIBLE) |
+| `listening_work` | | `WorkItem[]` | Read |
+
+The daily podcast is set with the existing `set_brief` (kind `podcast`,
+`spec.podcast`) and read with `briefs`.
+
+### Ownership (phase 2)
+
+| Agent | Owns |
+|---|---|
+| P | `core/news/transcript.rs`, `service/speech/decode.rs`, `news/transcribe.rs`, `news/article.rs`, `domains/transcribing.rs`, the one hook call in `news/downloads.rs` |
+| M | `news/keep.rs`, `news/consumed.rs` (keep + transcribe-when-played hooks), `core/agent/tools/listening.rs`, `core/agent/onscreen.rs` (`playing` in `describe`) |
+| R1 | `service/speech/render.rs`, `news/audio.rs`, `domains/rendering.rs`, `core/news/script.rs`, the audio `play` for stories in `core/vault/upnext_entry.rs` + `news/queue.rs` |
+| R2 | `BriefKind::Podcast` everywhere it is matched, `core/brief.rs`, `service/brief.rs`, `scheduler.rs` (render + queue after a podcast brief) |
+| U1 | transcripts/articles/audio/history in the UI: `feed.svelte.ts`, `upnext.svelte.ts`, `StoryView`, `StoryList`, `EpisodeActions`, `files-ui.svelte.ts`, `FileInspector`, new `HistoryView.svelte`, `mock.ts`, `mock-feed.ts` |
+| U2 | voice from the player and the daily podcast's settings: `player.svelte.ts`, `voice.svelte.ts`, `screen.svelte.ts`, `PlayerBar`, `PlayerPanel`, `FeedSettingsPanel`, `BriefSettingsPanel`, `BriefView`, `brief.svelte.ts`, `mock-brief.ts` |

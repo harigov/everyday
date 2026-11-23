@@ -317,6 +317,13 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("fetch_attachment", "needs a message's raw bytes from a real synced pack"),
     ("fetch_full_article", "fetches the page a story links to over the network"),
     ("download_episode", "fetches a podcast episode over the network"),
+    (
+        "transcribe_episode",
+        "starts background work that fetches a transcript or needs a speech model",
+    ),
+    ("transcribe_file", "starts background work that needs a speech model"),
+    ("write_article", "starts background work that needs the Medium model"),
+    ("render_story_audio", "starts background work that needs a voice"),
     ("remove_episode_download", "needs an episode already downloaded, which needs the network"),
     ("fetch_image", "fetches a remote image over HTTP"),
     ("finish_recording", "moves the recording into the transcription pipeline: background work"),

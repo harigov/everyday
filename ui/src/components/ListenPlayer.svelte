@@ -14,7 +14,9 @@
   the set's own.
 -->
 <script lang="ts">
+  import { agent } from '../lib/agent.svelte'
   import { listening, LISTEN_SPEEDS } from '../lib/listen.svelte'
+  import { voice } from '../lib/voice.svelte'
   import Icon from './Icon.svelte'
 
   const preparing = $derived(listening.state === 'preparing')
@@ -107,6 +109,19 @@
     >
       {speedLabel(listening.speed)}
     </button>
+    {#if voice.available && agent.supported}
+      <!-- Ask about what is being read: the reading pauses while they talk,
+           and picks up again after, as the player's does. -->
+      <button
+        class="ctl"
+        disabled={voice.active}
+        title={voice.active ? 'You are talking to the assistant' : 'Ask about this'}
+        aria-label="Ask about this"
+        onclick={() => void voice.askAboutPlaying()}
+      >
+        <Icon name="mic" size={15} weight={1.6} />
+      </button>
+    {/if}
     <button
       class="ctl"
       title="Stop reading"

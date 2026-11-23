@@ -20,6 +20,7 @@ const {
 
 const {
   addedByLabel,
+  canTranscribeFile,
   clampCount,
   clampSkip,
   downloadLine,
@@ -28,6 +29,7 @@ const {
   dropBefore,
   enclosureKind,
   episodeProgress,
+  findWork,
   formatDuration,
   formatRemaining,
   formatSpan,
@@ -39,13 +41,25 @@ const {
   podcastFromForm,
   policyNumber,
   queueRemainingMs,
+  sameWork,
   speedLabel,
   transcribePolicyLabel,
+  transcriptOfFile,
+  workActive,
+  workLine,
+  workPercent,
 } = podcast
 
 const {
+  bodyOriginOf,
+  dayOfInstant,
   feedKey,
+  filterHistory,
   groupFolders,
+  groupHistory,
+  historyMark,
+  historyModeWord,
+  historyProgress,
   isPodcastSource,
   looksLikeAddress,
   podcastSources,
@@ -695,6 +709,298 @@ const show = { author: 'A' }
     rankingNote({ judge: 'decision', ranked: 12, waiting: 0 }, settings())?.text ?? '',
     /decision model/,
   )
+}
+
+// ── an article saved as audio ────────────────────────────────────────────
+
+{
+  const article = (over = {}) => story({ media: null, files: { audio: 'aud1' }, ...over })
+  assert.deepEqual(playRequestForStory(article(), 'Longform', 'karmayoga://blob/x', 1.25), {
+    what: { type: 'story', id: 'st1' },
+    fileId: 'aud1',
+    kind: 'audio',
+    title: 'Episode one',
+    source: 'Longform',
+    artwork: 'karmayoga://blob/x',
+    durationMs: null,
+    speed: 1.25,
+  })
+  assert.equal(playRequestForStory(article({ title: '  ' }), 'S')?.title, 'Untitled article')
+  assert.equal(
+    playRequestForStory(article({ files: {} }), 'S'),
+    null,
+    'not saved as audio: nothing to play',
+  )
+  assert.equal(
+    playRequestForStory(article({ files: { media: 'file1' } }), 'S'),
+    null,
+    'an episode file is not an article’s audio',
+  )
+  // An episode plays its episode, whatever else it has.
+  assert.equal(
+    playRequestForStory(story({ files: { media: 'file1', audio: 'aud1' } }), 'S')?.fileId,
+    'file1',
+  )
+  assert.equal(
+    playRequestForStory(story({ files: { audio: 'aud1' } }), 'S'),
+    null,
+    'an episode not downloaded yet is not played from an audio file it does not use',
+  )
+}
+
+// ── background work ──────────────────────────────────────────────────────
+
+{
+  const work = (over = {}) => ({
+    kind: 'transcript',
+    storyId: 'st1',
+    fileId: null,
+    title: 'T',
+    state: 'working',
+    progress: 0.5,
+    ...over,
+  })
+
+  assert.equal(workLine(work()), 'Transcribing 50%')
+  assert.equal(workLine(work({ progress: null })), 'Transcribing')
+  assert.equal(workLine(work({ state: 'waiting', progress: null })), 'Waiting to transcribe')
+  assert.equal(workLine(work({ state: 'failed' })), 'Transcription failed')
+  assert.equal(workLine(work({ kind: 'article', progress: 0.25 })), 'Writing the article 25%')
+  assert.equal(
+    workLine(work({ kind: 'article', state: 'failed' })),
+    'The article could not be written',
+  )
+  assert.equal(workLine(work({ kind: 'audio', state: 'waiting' })), 'Waiting to save as audio')
+  assert.equal(workLine(work({ kind: 'audio' })), 'Saving as audio 50%')
+  assert.equal(workLine(work({ kind: 'audio', state: 'failed' })), 'Saving as audio failed')
+  assert.equal(workLine(undefined), '')
+  assert.equal(workLine(null), '')
+
+  // Never 100: work that has done all of it is still being written to Files.
+  assert.equal(workPercent(work({ progress: 1 })), 99)
+  assert.equal(workPercent(work({ progress: 0.999 })), 99)
+  assert.equal(workPercent(work({ progress: 0.5 })), 50)
+  assert.equal(workPercent(work({ progress: 0 })), null, 'nothing done is not a percentage')
+  assert.equal(workPercent(work({ progress: null })), null)
+  assert.equal(workPercent(work({ progress: Number.NaN })), null)
+  assert.equal(workPercent(work({ state: 'waiting' })), null)
+  assert.equal(workPercent(work({ state: 'failed' })), null)
+  assert.equal(workPercent(undefined), null)
+
+  assert.ok(workActive(work()))
+  assert.ok(workActive(work({ state: 'waiting' })))
+  assert.ok(!workActive(work({ state: 'failed' })))
+
+  assert.ok(sameWork(work(), work({ progress: 0.9, state: 'waiting' })), 'progress is not identity')
+  assert.ok(!sameWork(work(), work({ kind: 'article' })))
+  assert.ok(!sameWork(work(), work({ storyId: 'st2' })))
+  assert.ok(
+    sameWork({ kind: 'audio', storyId: 's' }, { kind: 'audio', storyId: 's', fileId: null }),
+    'absent and null are the same story or file',
+  )
+
+  const list = [
+    work({ storyId: 'a', state: 'failed', progress: null }),
+    work({ storyId: 'a', state: 'waiting', progress: null }),
+    work({ kind: 'article', storyId: 'a' }),
+    work({ storyId: null, fileId: 'f1' }),
+  ]
+  assert.equal(
+    findWork(list, { story: 'a' }, 'transcript')?.state,
+    'waiting',
+    'work still to be done is shown before work that failed',
+  )
+  assert.equal(findWork(list, { story: 'a' }, 'article')?.kind, 'article')
+  assert.equal(
+    findWork(list, { story: 'a' })?.state,
+    'waiting',
+    'with no kind named, the first still to be done',
+  )
+  assert.equal(findWork(list, { file: 'f1' })?.fileId, 'f1')
+  assert.equal(findWork(list, { file: 'f1' }, 'audio'), undefined)
+  assert.equal(findWork(list, { story: 'nope' }), undefined)
+  assert.equal(findWork(list, {}), undefined, 'nothing asked about is nothing found')
+  assert.equal(findWork(list, { story: null, file: null }), undefined)
+  assert.equal(
+    findWork([work({ state: 'failed' })], { story: 'st1' })?.state,
+    'failed',
+    'a failure alone is still shown, for the button to say so',
+  )
+}
+
+{
+  const prop = (value, type = 'text') => ({ 'feed.transcript': { type, value } })
+  assert.equal(transcriptOfFile({ properties: prop('tr1') }), 'tr1')
+  assert.equal(transcriptOfFile({}), null)
+  assert.equal(transcriptOfFile({ properties: {} }), null)
+  assert.equal(transcriptOfFile({ properties: prop('') }), null)
+  assert.equal(transcriptOfFile({ properties: prop(3, 'number') }), null)
+  assert.equal(
+    transcriptOfFile({ properties: { 'feed.transcript_of': { type: 'text', value: 'rec' } } }),
+    null,
+    'the file a transcript is of is not a transcript',
+  )
+
+  const present = { state: 'present' }
+  assert.ok(canTranscribeFile({ kind: 'audio', status: present }))
+  assert.ok(canTranscribeFile({ kind: 'video', status: present }))
+  assert.ok(!canTranscribeFile({ kind: 'document', status: present }))
+  assert.ok(!canTranscribeFile({ kind: 'image', status: present }))
+  assert.ok(!canTranscribeFile({ kind: 'audio', status: { state: 'trashed' } }))
+  assert.ok(!canTranscribeFile({ kind: 'audio', status: { state: 'missing' } }))
+}
+
+// ── History ──────────────────────────────────────────────────────────────
+
+{
+  assert.equal(scopeTitle({ kind: 'history' }, []), 'History')
+  assert.equal(scopeUnread({ kind: 'history' }, []), 0)
+
+  // Local clocks throughout, so a headline never depends on the zone the test runs in.
+  const now = new Date(2026, 10, 22, 15, 0)
+  const at = (days, hour, minute = 0) => new Date(2026, 10, 22 - days, hour, minute).toISOString()
+  const rec = (id, lastAt, over = {}) => ({
+    id,
+    what: { type: 'story', id: `s-${id}` },
+    title: `Title ${id}`,
+    source: 'Show',
+    url: '',
+    mode: 'read',
+    firstAt: lastAt,
+    lastAt,
+    progress: 0,
+    finished: false,
+    ...over,
+  })
+
+  const days = groupHistory(
+    [
+      rec('old', at(10, 9)),
+      rec('b', at(0, 9)),
+      rec('c', at(0, 14)),
+      rec('late', at(1, 23, 30)),
+      rec('mid', at(3, 12)),
+    ],
+    now,
+  )
+  assert.deepEqual(
+    days.map((d) => d.items.map((i) => i.id)),
+    [['c', 'b'], ['late'], ['mid'], ['old']],
+    'newest day first, and newest first within it',
+  )
+  assert.deepEqual(
+    days.map((d) => d.day),
+    ['2026-11-22', '2026-11-21', '2026-11-19', '2026-11-12'],
+    'a day is the local one: half past eleven at night is still that night',
+  )
+  assert.equal(days[0].label, 'Today')
+  assert.equal(days[1].label, 'Yesterday')
+  assert.ok(!/\d/.test(days[2].label), `a weekday name this week, not "${days[2].label}"`)
+  assert.ok(/\d/.test(days[3].label), `a date past a week, not "${days[3].label}"`)
+
+  const odd = groupHistory([rec('x', 'not a date'), rec('y', at(0, 8))], now)
+  assert.deepEqual(
+    odd.map((d) => d.label),
+    ['Today', 'Earlier'],
+    'a record with no usable time goes last, under its own heading',
+  )
+  assert.equal(groupHistory([], now).length, 0)
+  const tie = groupHistory([rec('a', at(0, 9)), rec('b', at(0, 9))], now)
+  assert.deepEqual(
+    tie[0].items.map((i) => i.id),
+    ['b', 'a'],
+    'the same moment is ordered by id, so a reload never shuffles the rows',
+  )
+  const given = [rec('1', at(5, 9)), rec('2', at(0, 9))]
+  groupHistory(given, now)
+  assert.deepEqual(
+    given.map((r) => r.id),
+    ['1', '2'],
+    'the list it was given is left as it was',
+  )
+
+  assert.equal(dayOfInstant(at(0, 9)), '2026-11-22')
+  assert.equal(dayOfInstant('nonsense'), '')
+
+  const items = [
+    rec('1', at(0, 9), { title: 'Night trains', source: 'The Slow Hour' }),
+    rec('2', at(0, 8), {
+      title: 'Pencils',
+      source: 'Longform',
+      url: 'https://longform.example/pencil',
+    }),
+  ]
+  const kept = (query) => filterHistory(items, query).map((r) => r.id)
+  assert.deepEqual(kept(''), ['1', '2'], 'nothing typed is everything')
+  assert.deepEqual(kept('  '), ['1', '2'])
+  assert.deepEqual(kept('slow trains'), ['1'], 'every word, from the title and the source')
+  assert.deepEqual(kept('LONGFORM.example'), ['2'], 'the address counts, in any case')
+  assert.deepEqual(kept('zebra'), [])
+  assert.notEqual(filterHistory(items, ''), items, 'a copy, so sorting it cannot move the store’s')
+
+  const storyRef = { type: 'story', id: 's' }
+  assert.equal(historyMark({ what: storyRef, mode: 'watch' }), 'film')
+  assert.equal(historyMark({ what: storyRef, mode: 'listen', mediaFile: 'f' }), 'podcast')
+  assert.equal(historyMark({ what: storyRef, mode: 'listen' }), 'volume', 'an article read aloud')
+  assert.equal(historyMark({ what: { type: 'file', id: 'f' }, mode: 'listen' }), 'music')
+  assert.equal(historyMark({ what: { type: 'item', id: 'i' }, mode: 'read' }), 'book')
+  assert.equal(historyMark({ what: { type: 'file', id: 'f' }, mode: 'read' }), 'file')
+  assert.equal(historyMark({ what: storyRef, mode: 'read' }), 'newspaper')
+  assert.equal(historyModeWord('read'), 'Read')
+  assert.equal(historyModeWord('listen'), 'Listened to')
+  assert.equal(historyModeWord('watch'), 'Watched')
+
+  assert.deepEqual(historyProgress({ mode: 'read', progress: 1, finished: true }), {
+    fraction: 1,
+    finished: true,
+    label: 'Finished',
+  })
+  const heard = historyProgress({
+    mode: 'listen',
+    progress: 0.33,
+    finished: false,
+    positionMs: 3 * MIN,
+    durationMs: 9 * MIN,
+  })
+  assert.equal(heard.label, '6 min left')
+  assert.ok(Math.abs(heard.fraction - 1 / 3) < 1e-9)
+  assert.equal(historyProgress({ mode: 'read', progress: 0.4, finished: false }).label, '40%')
+  assert.deepEqual(historyProgress({ mode: 'read', progress: 0, finished: false }), {
+    fraction: 0,
+    finished: false,
+    label: 'Opened',
+  })
+  assert.equal(
+    historyProgress({ mode: 'watch', progress: 0, finished: false }).label,
+    'Started',
+    'a recording that was begun was started, not opened',
+  )
+}
+
+// ── What a body was written from ─────────────────────────────────────────
+
+{
+  const doc = (tag) =>
+    `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="x">${tag}<style>a{}</style></head><body><p>Hi</p></body></html>`
+  assert.equal(
+    bodyOriginOf(doc('<meta name="news-body-origin" content="transcript">')),
+    'transcript',
+  )
+  assert.equal(bodyOriginOf(doc("<meta name='news-body-origin' content='extracted'>")), 'extracted')
+  assert.equal(
+    bodyOriginOf(doc('<meta name="news-body-origin" content="hackerNews">')),
+    'hackerNews',
+  )
+  assert.equal(bodyOriginOf(doc('')), null, 'a document that does not say, does not')
+  assert.equal(bodyOriginOf(doc('<meta name="news-body-origin" content="nonsense">')), null)
+  assert.equal(
+    bodyOriginOf(
+      '<html><head></head><body><meta name="news-body-origin" content="transcript"></body></html>',
+    ),
+    null,
+    'only the head speaks: a body that quotes the tag says nothing of where it came from',
+  )
+  assert.equal(bodyOriginOf('<p>no head at all</p>'), null)
 }
 
 await close()

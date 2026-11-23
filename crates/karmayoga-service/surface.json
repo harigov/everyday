@@ -5409,6 +5409,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "listening_work",
+      "orScope": null,
+      "returns": "WorkItem[]",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "id",
@@ -7581,6 +7592,23 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "StoryId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "render_story_audio",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "template",
           "required": true,
           "type": "Template"
@@ -9681,6 +9709,11 @@
           "name": "on",
           "required": true,
           "type": "boolean"
+        },
+        {
+          "name": "podcast",
+          "required": false,
+          "type": "PodcastBrief | null"
         }
       ],
       "changes": {
@@ -10837,6 +10870,40 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "StoryId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "transcribe_episode",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "FileId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "transcribe_file",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "threads",
           "required": true,
           "type": "ThreadId[]"
@@ -11281,6 +11348,23 @@
       "orScope": null,
       "returns": "SearchResult[]",
       "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "StoryId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "write_article",
+      "orScope": null,
+      "returns": "void",
+      "scope": "news",
       "sensitive": false,
       "streams": false
     },

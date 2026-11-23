@@ -810,14 +810,27 @@ async fn carry_out(
     mode: Mode,
 ) {
     if !may_wait(service, routine) {
-        resume(service, vault, routine, run, prompt, mode).await;
+        // In the tick. A podcast's audio takes minutes, and everything else
+        // the scheduler does would wait for it, so it is made beside the tick,
+        // with the routine held in flight until it is done.
+        if let Some(rendering) = resume(service, vault, routine, run, prompt, mode).await {
+            let (svc, vault, routine) = (service.clone(), vault.clone(), routine.clone());
+            service.detach_run(hold, async move {
+                render_podcast(&svc, &vault, &routine, rendering).await;
+            });
+        }
         return;
     }
     let claim = service.claim_run(run.id.to_string());
     let (svc, vault, routine) = (service.clone(), vault.clone(), routine.clone());
     service.detach_run(hold, async move {
         let _claim = claim;
-        resume(&svc, &vault, &routine, run, prompt, mode).await;
+        // Already beside the tick, and held in flight until this task ends:
+        // the audio is made here, not in a task of its own, whose hold the end
+        // of this one would take away.
+        if let Some(rendering) = resume(&svc, &vault, &routine, run, prompt, mode).await {
+            render_podcast(&svc, &vault, &routine, rendering).await;
+        }
     });
 }
 
@@ -909,7 +922,7 @@ async fn run_brief(
         }
     }
     let ahead = match spec.brief {
-        BriefKind::Morning | BriefKind::Weekly => now.date(),
+        BriefKind::Morning | BriefKind::Weekly | BriefKind::Podcast => now.date(),
         BriefKind::Evening => now.date().tomorrow().unwrap_or(now.date()),
     };
     let extras = crate::brief::extras(service, vault, &spec, tier, ahead).await;
@@ -928,6 +941,24 @@ async fn run_brief(
         }
         return;
     };
+
+    // A podcast with nothing to tell is not made: the model would be asked
+    // to write a quarter of an hour about nothing, and the person to listen
+    // to it. Said in the log, as every other brief that does not happen is.
+    if spec.brief == BriefKind::Podcast
+        && digest.podcast.as_ref().is_none_or(|p| p.stories.is_empty())
+    {
+        let mut reason =
+            "nothing new has arrived in the Feed since the last daily podcast".to_string();
+        if !digest.gaps.is_empty() {
+            reason.push_str(&format!(" ({})", digest.gaps.join("; ")));
+        }
+        match queued {
+            Some(run) => skip_queued(service, vault, run, &reason).await,
+            None => skip_dream(service, vault, routine, slot, &reason).await,
+        }
+        return;
+    }
 
     let saved = match queued {
         Some(run) => Ok(run),
@@ -1203,6 +1234,9 @@ fn plural(n: usize) -> &'static str {
 /// Split from [`execute`] so that a run somebody queued by hand and a run the
 /// clock started go down exactly the same path -- including the sweep of a row
 /// whose process died, which arrives here as a row that is already saved.
+///
+/// Answers the daily podcast it wrote, if it did, for its caller to have said
+/// aloud: see [`render_podcast`].
 async fn resume(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
@@ -1210,7 +1244,7 @@ async fn resume(
     mut run: RoutineRun,
     prompt: String,
     mode: Mode,
-) {
+) -> Option<Rendering> {
     let (drafting, read_only) = match &mode {
         Mode::Routine => (None, false),
         Mode::Dream(drafting) => (Some(drafting.clone()), false),
@@ -1246,7 +1280,7 @@ async fn resume(
             stamp_async(vault, routine, slot).await;
         }
         service.events().changed(run_change());
-        return;
+        return None;
     }
 
     // The transcript. Named after the routine so the rail's thread list reads,
@@ -1342,7 +1376,10 @@ async fn resume(
     if let Some(slot) = run.slot {
         stamp_async(vault, routine, slot).await;
     }
-    if news {
+    // A podcast is ready when it can be played, not when it is written: its
+    // announcement waits for its audio, below.
+    let rendering = has_script_to_say(&run);
+    if news && !rendering {
         announce(service, routine, &run);
     }
     // What the run *wrote*, and then the run itself. Only the second of these
@@ -1363,6 +1400,133 @@ async fn resume(
             ids,
             origin: Some("assistant".to_string()),
         });
+    }
+    service.events().changed(run_change());
+
+    // Said aloud next, by whoever called this: a quarter of an hour of speech
+    // takes the voice minutes, and where it is done matters to what else the
+    // scheduler can do meanwhile -- see `carry_out`.
+    rendering.then_some(Rendering { run, news })
+}
+
+/// A daily podcast that was written, kept and delivered, and is waiting to be
+/// said aloud.
+struct Rendering {
+    run: RoutineRun,
+    /// Whether its run is news, and so announced when its audio is ready.
+    news: bool,
+}
+
+/// Whether `run` is a daily podcast that was written and has a script to say.
+fn has_script_to_say(run: &RoutineRun) -> bool {
+    run.outcome == Outcome::Done
+        && run.brief.as_deref().is_some_and(|b| b.kind == BriefKind::Podcast && b.script.is_some())
+}
+
+/// Say a podcast's script into audio, keep the audio on the brief, and put it
+/// first in Up Next -- the last steps of a daily podcast, after it was written,
+/// kept and delivered.
+///
+/// A failure at any of them leaves the written podcast as it is and says why
+/// on the run, where the log shows it: a voice that is not set up, a disk that
+/// is full. The audio is only ever missing, never the brief. A brief with no
+/// audio has not told anybody anything, so the next podcast covers its
+/// stories again (`karmayoga_core::brief::podcast_digest`).
+async fn render_podcast(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    routine: &Routine,
+    rendering: Rendering,
+) {
+    use karmayoga_core::news::{AddedBy, ContentRef};
+    let Rendering { run, news } = rendering;
+    let Some(brief) = run.brief.as_deref() else { return };
+    let Some(script) = brief.script.clone() else { return };
+    let name = karmayoga_core::brief::podcast_title(brief.day);
+    // Left off when the scheduler is told to stop, as a run waiting on an
+    // answer is: a quarter of an hour of speech takes minutes, and quitting
+    // should not wait for them. Dropped, the render writes nothing.
+    let mut stopping = service.runs_withdrawn();
+    let stopped = async move {
+        loop {
+            if *stopping.borrow_and_update() {
+                return;
+            }
+            if stopping.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    let rendered = tokio::select! {
+        rendered = crate::speech::render::render_script(
+            service,
+            &script,
+            karmayoga_core::news::podcast::DAILY_DIR,
+            &name,
+            &|_| {},
+        ) => rendered,
+        () = stopped => Err(crate::error::CommandError::new(
+            crate::error::codes::CANCELLED,
+            "the application was closing",
+        )),
+    };
+
+    let mut reason = String::new();
+    let mut audio = None;
+    match rendered {
+        Ok(file) => {
+            audio = Some(file.id);
+            // The file is the render's to leave and the caller's to announce:
+            // the Files app and the player learn of it here, before Up Next
+            // names it.
+            service.events().changed(Change {
+                kind: Kind::File,
+                op: Op::Created,
+                id: Some(file.id.to_string()),
+                ids: Vec::new(),
+                origin: None,
+            });
+            // Put first, so that playing Up Next plays it.
+            if let Err(e) = crate::news::queue::add(
+                service,
+                ContentRef::File(file.id),
+                karmayoga_core::QueuePlace::Next,
+                AddedBy::Daily,
+            )
+            .await
+            {
+                reason = format!(
+                    "the audio is in Files, but could not be put in Up Next: {}",
+                    e.message
+                );
+            }
+        }
+        Err(e) => reason = format!("the audio could not be made: {}", e.message),
+    }
+    if !reason.is_empty() {
+        tracing::warn!(routine = %routine.name, %reason, "a daily podcast has no audio");
+    }
+
+    // The run as it is now -- somebody may have looked at it, or the
+    // deliveries may have been recorded since -- not the copy this started with.
+    let id = run.id;
+    let kept = blocking({
+        let vault = vault.clone();
+        move || {
+            let mut run = vault.run(id)?;
+            if let Some(brief) = run.brief.as_deref_mut() {
+                brief.audio = audio;
+            }
+            run.reason = reason;
+            vault.save_run(&run)?;
+            Ok(run)
+        }
+    })
+    .await;
+    if let Ok(run) = &kept
+        && news
+    {
+        announce(service, routine, run);
     }
     service.events().changed(run_change());
 }

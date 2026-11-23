@@ -23,11 +23,14 @@ import type {
   Enclosure,
   EnclosureKind,
   FileEntry,
+  FileId,
   KeepPolicy,
   PodcastSettings,
   QueueItem,
   Story,
+  StoryId,
   TranscribePolicy,
+  WorkItem,
 } from './types'
 
 // ── Time ─────────────────────────────────────────────────────────────────
@@ -120,27 +123,34 @@ export function enclosureKind(media: Pick<Enclosure, 'mime' | 'url'>): Enclosure
     : 'audio'
 }
 
-/** What the player plays for a story's downloaded episode; `null` when it has none. */
+/**
+ * What the player plays for a story; `null` when there is nothing to play.
+ *
+ * An episode plays its downloaded file. An article has none -- it is heard
+ * through Listen -- unless it was saved as audio, and then it plays that, so
+ * "Save as audio" turns an article into something the player and Up Next treat
+ * like any other recording.
+ */
 export function playRequestForStory(
   story: Story,
   sourceTitle: string,
   artwork?: string | null,
   speed?: number | null,
 ): PlayRequest | null {
-  const fileId = story.files?.media
   const media = story.media
-  // Both, or neither: an enclosure with no file is an episode not yet
-  // downloaded, and a file with no enclosure is not something this story says
-  // how to play.
-  if (!fileId || !media) return null
+  // An enclosure with no file is an episode not yet downloaded, and a file
+  // with no enclosure is not something this story says how to play -- unless
+  // it is the article's own audio.
+  const fileId = media ? story.files?.media : story.files?.audio
+  if (!fileId) return null
   return {
     what: { type: 'story', id: story.id },
     fileId,
-    kind: enclosureKind(media),
-    title: story.title.trim() || 'Untitled episode',
+    kind: media ? enclosureKind(media) : 'audio',
+    title: story.title.trim() || (media ? 'Untitled episode' : 'Untitled article'),
     source: sourceTitle,
     artwork: artwork || null,
-    durationMs: media.durationMs ?? null,
+    durationMs: media?.durationMs ?? null,
     speed: speed ?? null,
   }
 }
@@ -332,6 +342,104 @@ export function dropBefore(
 /** A speed as a person writes it: `1×`, `1.5×`. */
 export function speedLabel(speed: number): string {
   return `${Number(speed.toFixed(2))}×`
+}
+
+// ── Work done for a story or a file ──────────────────────────────────────
+//
+// Transcribing, writing an episode up as an article and saving an article as
+// audio all run in the background and answer one list (`listening_work`). What
+// a row or a button says about its piece of work is decided here, once, so a
+// ring that says 100 per cent while the file is not there yet, or a failure
+// read as "waiting", is not something three components can each get wrong.
+
+/** Whether a piece of work is still to be done: waiting its turn, or under way. */
+export function workActive(item: Pick<WorkItem, 'state'>): boolean {
+  return item.state === 'waiting' || item.state === 'working'
+}
+
+/** Whether two pieces of work are the same job: the same kind, for the same story or file. */
+export function sameWork(
+  a: Pick<WorkItem, 'kind' | 'storyId' | 'fileId'>,
+  b: Pick<WorkItem, 'kind' | 'storyId' | 'fileId'>,
+): boolean {
+  return (
+    a.kind === b.kind &&
+    (a.storyId ?? null) === (b.storyId ?? null) &&
+    (a.fileId ?? null) === (b.fileId ?? null)
+  )
+}
+
+/**
+ * The work asked for a story or a file, of `kind` when one is named.
+ *
+ * Work still to be done is preferred to work that failed: asking again leaves
+ * the failed one in the list until the new one replaces it, and a button
+ * should show the attempt that is going, not the one that is over.
+ */
+export function findWork(
+  list: readonly WorkItem[],
+  target: { story?: StoryId | null; file?: FileId | null },
+  kind?: WorkItem['kind'],
+): WorkItem | undefined {
+  const story = target.story ?? null
+  const file = target.file ?? null
+  if (story === null && file === null) return undefined
+  const mine = list.filter(
+    (w) =>
+      (kind === undefined || w.kind === kind) &&
+      (story !== null ? (w.storyId ?? null) === story : (w.fileId ?? null) === file),
+  )
+  return mine.find(workActive) ?? mine[0]
+}
+
+/**
+ * How much of a piece of work is done, 0 to 99, or `null` when it cannot be
+ * said. Never 100, for the reason a download's is not: work that has done all
+ * of it is still being written to the files folder.
+ */
+export function workPercent(
+  item: Pick<WorkItem, 'state' | 'progress'> | null | undefined,
+): number | null {
+  if (!item || item.state !== 'working') return null
+  const progress = item.progress
+  if (progress === null || progress === undefined || !Number.isFinite(progress) || progress <= 0) {
+    return null
+  }
+  return Math.min(99, Math.floor(Math.min(1, progress) * 100))
+}
+
+/** What a piece of work says beside what it is for: "Transcribing 43%", "Waiting to transcribe". */
+export function workLine(
+  item: Pick<WorkItem, 'kind' | 'state' | 'progress'> | null | undefined,
+): string {
+  if (!item) return ''
+  const pct = workPercent(item)
+  const rate = pct === null ? '' : ` ${pct}%`
+  if (item.kind === 'transcript') {
+    if (item.state === 'waiting') return 'Waiting to transcribe'
+    return item.state === 'failed' ? 'Transcription failed' : `Transcribing${rate}`
+  }
+  if (item.kind === 'article') {
+    if (item.state === 'waiting') return 'Waiting to write the article'
+    if (item.state === 'failed') return 'The article could not be written'
+    return `Writing the article${rate}`
+  }
+  if (item.state === 'waiting') return 'Waiting to save as audio'
+  return item.state === 'failed' ? 'Saving as audio failed' : `Saving as audio${rate}`
+}
+
+/** The property the service puts on a recording once it has been transcribed. */
+export const TRANSCRIPT_PROPERTY = 'feed.transcript'
+
+/** The transcript of a file in Files, when it has one: the file it was written to. */
+export function transcriptOfFile(file: Pick<FileEntry, 'properties'>): FileId | null {
+  const value = file.properties?.[TRANSCRIPT_PROPERTY]
+  return value?.type === 'text' && value.value !== '' ? value.value : null
+}
+
+/** Whether a file in Files is something that can be transcribed: a recording or a film that is there. */
+export function canTranscribeFile(file: Pick<FileEntry, 'kind' | 'status'>): boolean {
+  return (file.kind === 'audio' || file.kind === 'video') && file.status.state === 'present'
 }
 
 // ── The settings form ────────────────────────────────────────────────────

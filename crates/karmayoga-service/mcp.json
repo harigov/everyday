@@ -1668,11 +1668,12 @@
         "additionalProperties": false,
         "properties": {
           "kind": {
-            "description": "Which brief: the morning one, the evening one, or the weekly one (Sundays: today and the week ahead). Omit for the newest of any.",
+            "description": "Which brief: the morning one, the evening one, the weekly one (Sundays: today and the week ahead) or the daily podcast. Omit for the newest of any.",
             "enum": [
               "morning",
               "evening",
-              "weekly"
+              "weekly",
+              "podcast"
             ],
             "type": "string"
           }
@@ -3855,6 +3856,41 @@
       "title": "Read thread"
     },
     {
+      "domain": "news",
+      "effect": "read",
+      "name": "recall",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "finished_only": {
+            "description": "Only what they finished: read, heard or watched to the end.",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Words to look for in what they read, heard or watched: in each thing's title and where it is from, and in the words the Feed kept of it. Every word counts, any case aside. Put exact wording in double quotes. Leave out to answer by when alone.",
+            "type": "string"
+          },
+          "since": {
+            "description": "Only what was last read, heard or watched on or after this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "until": {
+            "description": "Only what was last read, heard or watched on or before this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "Recall"
+    },
+    {
       "domain": "agent",
       "effect": "write",
       "name": "remember",
@@ -4261,11 +4297,12 @@
         "additionalProperties": false,
         "properties": {
           "kind": {
-            "description": "Which brief: morning (the day ahead), evening (the day's close and tomorrow) or weekly (Sunday mornings: today and the week ahead).",
+            "description": "Which brief: morning (the day ahead), evening (the day's close and tomorrow), weekly (Sunday mornings: today and the week ahead) or podcast (a daily script to listen to, made from what arrived in their Feed, spoken into audio and put first in Up Next).",
             "enum": [
               "morning",
               "evening",
-              "weekly"
+              "weekly",
+              "podcast"
             ],
             "type": "string"
           },
@@ -5771,6 +5808,41 @@
       "scope": "health",
       "sensitivity": "ordinary",
       "title": "Visit facts"
+    },
+    {
+      "domain": "news",
+      "effect": "read",
+      "name": "what_was_said",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after_s": {
+            "description": "Seconds of what was said after that moment to include. Defaults to 20.",
+            "type": "integer"
+          },
+          "at_ms": {
+            "description": "Where in the recording, in milliseconds from its start. The turn's note on what is playing gives it: pass that position.",
+            "type": "integer"
+          },
+          "before_s": {
+            "description": "Seconds of what was said before that moment to include. Defaults to 90.",
+            "type": "integer"
+          },
+          "file_id": {
+            "description": "A recording in their files, from the turn's note on what is playing or find_files. Give this or story_id.",
+            "type": "string"
+          },
+          "story_id": {
+            "description": "The episode, from the turn's note on what is playing, list_stories or recall. Give this or file_id.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "What was said"
     },
     {
       "domain": "journals",

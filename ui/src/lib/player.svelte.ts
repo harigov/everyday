@@ -23,6 +23,14 @@
 //   3. The queue moves on from what was heard to the end and from nothing
 //      else. Stop, an error, a lock and a replaced session do not advance it.
 //
+// A conversation with the assistant out loud shares the speakers, so a voice
+// session pauses whatever is playing -- this and Listen -- and, when it ends,
+// picks it up where it was (`pauseForVoice`, `resumeAfterVoice`; Settings →
+// Feed says whether to). `voice.svelte.ts` calls them: this file cannot
+// import it, since the voice store reads the screen and the screen reads
+// this. And `playingAt` is what is playing, sent with every message so
+// "what did he just say?" has a place in a recording to be answered from.
+//
 // CONTRACT (laid by the supervisor; agent F implements the bodies, agents G1
 // and G2 code against the public names): keep every public name and
 // signature below.
@@ -40,6 +48,7 @@ import type {
   EnclosureKind,
   FileId,
   ListenSource,
+  PlayingAt,
   ProgressReport,
   QueueItem,
   Span,
@@ -156,6 +165,19 @@ class Player {
 
   /** What the queue is playing aloud through Listen, so its end is the queue's. */
   #listened: ContentRef | null = null
+
+  /**
+   * What a voice session paused, to be picked up when it ends: the media
+   * that was playing and the story Listen was reading, either or neither.
+   */
+  #held: { media: ContentRef | null; listen: ListenSource | null } | null = null
+  /**
+   * The second the media is at, whole. Read by `playingAt`, so what is
+   * on screen is told again when the position has moved on -- once a second,
+   * where `positionMs` changes four times a second -- and the position sent
+   * with a typed message is never more than a second old.
+   */
+  #second = $state(0)
 
   constructor() {
     app.onLock(() => this.#lock())
@@ -445,6 +467,7 @@ class Player {
     if (!el || !this.current) return
     const ms = Math.round(el.currentTime * 1000)
     this.positionMs = ms
+    this.#second = Math.floor(ms / 1000)
     if (this.playing && !el.seeking) {
       if (this.#heardFrom === null) {
         this.#heardFrom = ms
@@ -516,7 +539,10 @@ class Player {
 
   #seeked(): void {
     const el = this.#el
-    if (el) this.positionMs = Math.round(el.currentTime * 1000)
+    if (el) {
+      this.positionMs = Math.round(el.currentTime * 1000)
+      this.#second = Math.floor(this.positionMs / 1000)
+    }
     this.#updatePosition()
   }
 
@@ -711,6 +737,78 @@ class Player {
     if (next) await this.playItem(next)
   }
 
+  // ── a conversation ───────────────────────────────────────────────────
+
+  /**
+   * What is being heard or watched, for the screen the assistant is told
+   * about: the media's thing with where it has got to and whether it is
+   * paused, or -- when Listen is reading a story aloud and nothing is
+   * playing -- the story and whether it is paused, with no position. `null`
+   * when there is nothing, and for what Listen reads that is not content: a
+   * mail thread, a brief.
+   *
+   * Reads the media element for the position rather than `positionMs`, which
+   * moves four times a second and would have every screen redrawn with it;
+   * `#second` is what asks to be asked again.
+   */
+  playingAt(): PlayingAt | null {
+    void this.#second
+    const current = this.current
+    const source = listening.active ? listening.source : null
+    const story = source?.type === 'story' ? source : null
+    // Whatever is making a sound is what is playing: each starting pauses the
+    // other, so only a story Listen has paused or been paused can be beside
+    // media that is loaded.
+    if (current && (this.playing || !story)) {
+      const el = this.#el
+      const duration = this.durationMs > 0 ? this.durationMs : (current.durationMs ?? null)
+      return {
+        what: current.what,
+        positionMs: el ? Math.round(el.currentTime * 1000) : this.positionMs,
+        durationMs: duration,
+        // `pause()` is answered at once by the element and a moment later by
+        // the `pause` event that clears `playing`.
+        paused: !this.playing || !!el?.paused,
+      }
+    }
+    if (story) {
+      // Paused for a conversation: the shell is told, and says so a moment later.
+      const held = this.#held?.listen
+      const paused = listening.state === 'paused' || (!!held && listening.isReading(held))
+      return { what: { type: 'story', id: story.storyId }, paused }
+    }
+    return null
+  }
+
+  /**
+   * A voice session is starting: whatever is playing -- the media, a story
+   * Listen reads aloud -- is paused, and remembered so that it can be picked
+   * up. Asked before the screen is described to the session, so it says
+   * paused.
+   */
+  pauseForVoice(): void {
+    const media = this.playing && this.current ? this.current.what : null
+    const reading = listening.active && listening.state !== 'paused' ? listening.source : null
+    if (media) this.pause()
+    if (reading) listening.pause()
+    this.#held = media || reading ? { media, listen: reading } : null
+  }
+
+  /**
+   * The voice session is over: pick up what it paused, if Settings → Feed
+   * says to and nothing else has taken its place -- not what was stopped
+   * meanwhile, nor what somebody started or restarted by hand. `pickUp` is
+   * false when there is to be nothing to carry on, as at a lock.
+   */
+  resumeAfterVoice(pickUp = true): void {
+    const held = this.#held
+    this.#held = null
+    if (!held || !pickUp || !(upnext.settings?.resumeAfterVoice ?? true)) return
+    if (held.media && this.current && this.isCurrent(held.media) && !this.playing) this.resume()
+    const reading = held.listen
+    if (reading && listening.isReading(reading) && listening.state === 'paused') listening.resume()
+  }
+
   // ── lifetime ─────────────────────────────────────────────────────────
 
   /** Write down where it is, and wait for every report on its way. */
@@ -725,6 +823,7 @@ class Player {
     this.#token += 1
     this.#unsent = false
     this.#listened = null
+    this.#held = null
     this.#unload()
     this.#sending = Promise.resolve()
   }

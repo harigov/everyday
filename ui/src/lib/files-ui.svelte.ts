@@ -16,6 +16,7 @@
 import { agent } from './agent.svelte'
 import { api } from './api'
 import { isReadable } from './documents'
+import { openTranscript } from './episodes'
 import { feed } from './feed.svelte'
 import { files } from './files.svelte'
 import { health } from './health.svelte'
@@ -25,7 +26,7 @@ import { SEP, tidyMenu, type MenuItem } from './menu'
 import { notes } from './notes.svelte'
 import { notify } from './notify.svelte'
 import { player } from './player.svelte'
-import { playRequestForFile } from './podcast'
+import { canTranscribeFile, playRequestForFile, transcriptOfFile, workLine } from './podcast'
 import { app } from './state.svelte'
 import { isoDate, todayIso } from './time'
 import { upnext } from './upnext.svelte'
@@ -210,6 +211,15 @@ class FilesUi {
   /** Albums looked for once, for menus built before the store has them. */
   #albumsAsked = false
 
+  constructor() {
+    // A recording transcribed: the transcript is a new file beside it, and
+    // the recording's own record says where it is now. The listing and the
+    // inspector are read again -- once, here, whoever is showing them.
+    upnext.onWorkDone((item) => {
+      if (item.fileId) void files.changed()
+    })
+  }
+
   askName(ask: NameAsk) {
     this.name = ask
   }
@@ -298,6 +308,14 @@ export function fileMenu(file: FileEntry, hooks: MenuHooks = {}): MenuItem[] {
   )
   const allQueued = queueable.length > 0 && queueable.every((f) => upnext.isQueued(refOf(f)))
   const playing = !many && player.isPlaying(refOf(file))
+  /** The transcript this recording has, if the file it names is still there, and the
+   *  transcribing that is going. */
+  const transcript = !many ? upnext.linkedFile(transcriptOfFile(file)) : null
+  const transcribing = !many ? upnext.workFor({ file: file.id }, 'transcript') : undefined
+  /** Recordings and films among the targets that have no transcript yet. */
+  const untranscribed = targets.filter(
+    (f) => canTranscribeFile(f) && upnext.linkedFile(transcriptOfFile(f)) === null,
+  )
 
   return tidyMenu([
     !many && { label: 'Open', icon: 'eye', run: () => files.open(file.id) },
@@ -313,6 +331,23 @@ export function fileMenu(file: FileEntry, hooks: MenuHooks = {}): MenuItem[] {
         if (request.kind === 'video') player.expanded = true
       },
     },
+    // A recording written down is read like a document; one that is not can be.
+    transcript !== null && {
+      label: 'Open transcript',
+      icon: 'quote',
+      run: () => void openTranscript(transcript),
+    },
+    transcript === null &&
+      untranscribed.length > 0 &&
+      (transcribing && transcribing.state !== 'failed'
+        ? { label: workLine(transcribing), icon: 'quote', disabled: true }
+        : {
+            label: many ? `Transcribe ${untranscribed.length} recordings` : 'Transcribe',
+            icon: 'quote',
+            run: async () => {
+              for (const f of untranscribed) await upnext.transcribeFile(f.id)
+            },
+          }),
     queueable.length > 0 && {
       label: allQueued ? 'Remove from Up Next' : 'Add to Up Next',
       icon: 'queue-add',
@@ -441,7 +476,13 @@ export async function showFileMenu(e: MouseEvent, file: FileEntry, hooks: MenuHo
   e.preventDefault()
   e.stopPropagation()
   const at = { x: e.clientX, y: e.clientY }
-  await filesUi.ensureAlbums()
+  // The work is looked at once, so a recording being transcribed says so; and
+  // the transcript it links is looked up, since it may be in the trash.
+  await Promise.all([
+    filesUi.ensureAlbums(),
+    upnext.ensureWork(),
+    upnext.checkLinks([transcriptOfFile(file)]),
+  ])
   menu.showAt(at.x, at.y, fileMenu(file, hooks))
 }
 

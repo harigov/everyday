@@ -14,7 +14,19 @@
 // between two modules that both construct things when they load.
 
 import type { FeedFilter, FeedFolder, FeedScope, FeedSort } from './feed.svelte'
-import type { FeedSettings, HnList, NewsSource, RankingStatus, SourceSummary, Story } from './types'
+import { friendlyDate } from './format'
+import type { IconName } from './icons'
+import { episodeProgress, type EpisodeProgress } from './podcast'
+import { isoDate } from './time'
+import type {
+  Consumption,
+  FeedSettings,
+  HnList,
+  NewsSource,
+  RankingStatus,
+  SourceSummary,
+  Story,
+} from './types'
 
 // ── Words ────────────────────────────────────────────────────────────────
 
@@ -198,6 +210,7 @@ export function scopeTitle(scope: FeedScope, sources: SourceSummary[]): string {
   if (scope.kind === 'upnext') return 'Up Next'
   if (scope.kind === 'recommended') return 'Recommended'
   if (scope.kind === 'podcasts') return 'Podcasts'
+  if (scope.kind === 'history') return 'History'
   if (scope.kind === 'folder') return scope.name.trim() || UNFILED
   const found = sources.find((s) => s.source.id === scope.id)
   return found ? sourceLabel(found.source) : 'Feed'
@@ -208,8 +221,8 @@ export function scopeUnread(scope: FeedScope, sources: SourceSummary[]): number 
   if (scope.kind === 'source') {
     return sources.find((s) => s.source.id === scope.id)?.unread ?? 0
   }
-  // Up Next and Recommended are lists of their own, counted by what they hold.
-  if (scope.kind === 'upnext' || scope.kind === 'recommended') return 0
+  // Up Next, Recommended and History are lists of their own, counted by what they hold.
+  if (scope.kind === 'upnext' || scope.kind === 'recommended' || scope.kind === 'history') return 0
   if (scope.kind === 'podcasts') {
     return podcastSources(sources).reduce((n, s) => n + s.unread, 0)
   }
@@ -372,6 +385,127 @@ export function alsoOn(story: Pick<Story, 'also'>, sources: SourceSummary[]): Al
 export function alsoLine(story: Pick<Story, 'also'>, sources: SourceSummary[]): string {
   const places = alsoOn(story, sources).map((p) => (p.detail ? `${p.name} · ${p.detail}` : p.name))
   return places.length > 0 ? `Also on ${places.join(', ')}` : ''
+}
+
+// ── History ──────────────────────────────────────────────────────────────
+//
+// What was read, heard and watched, newest first, in days. A record carries its
+// own title, source and address and outlives its story, so everything a row
+// says comes from the record and nothing here asks for the story.
+
+/** One day of History: a heading, and what was taken in that day, newest first. */
+export interface HistoryDay {
+  /** The local calendar day, `YYYY-MM-DD`; empty for records with no usable time. */
+  day: string
+  /** "Today", "Yesterday", a weekday this week, then a date. */
+  label: string
+  items: Consumption[]
+}
+
+/** The local calendar day an instant falls on, or empty when it is not an instant. */
+export function dayOfInstant(instant: string): string {
+  const at = new Date(instant)
+  return Number.isNaN(at.getTime()) ? '' : isoDate(at)
+}
+
+/** Most recently touched first; a record with no usable time last, ties by id. */
+function byRecent(a: Consumption, b: Consumption): number {
+  const x = Date.parse(a.lastAt)
+  const y = Date.parse(b.lastAt)
+  const one = Number.isNaN(x) ? Number.NEGATIVE_INFINITY : x
+  const other = Number.isNaN(y) ? Number.NEGATIVE_INFINITY : y
+  if (one !== other) return one > other ? -1 : 1
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
+}
+
+/**
+ * The record folded into days, newest day first.
+ *
+ * A day is the local calendar day of the record's last touch -- what somebody
+ * would call "yesterday" -- so a thing heard at half past eleven at night is
+ * on that night's day, not on the UTC one it happens to fall on. `now` is for
+ * the headings and is handed in so a test never mixes its clock with the real
+ * one.
+ */
+export function groupHistory(items: readonly Consumption[], now = new Date()): HistoryDay[] {
+  const days: HistoryDay[] = []
+  for (const record of [...items].sort(byRecent)) {
+    const day = dayOfInstant(record.lastAt)
+    let group = days.at(-1)
+    if (!group || group.day !== day) {
+      group = { day, label: day ? friendlyDate(day, now) : 'Earlier', items: [] }
+      days.push(group)
+    }
+    group.items.push(record)
+  }
+  return days
+}
+
+/**
+ * The records that match what was typed in the bar: every word found in the
+ * title, the source or the address. An empty query is everything.
+ */
+export function filterHistory(items: readonly Consumption[], query: string): Consumption[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return [...items]
+  return items.filter((record) => {
+    const haystack = [record.title, record.source, record.url].join('\n').toLowerCase()
+    return words.every((word) => haystack.includes(word))
+  })
+}
+
+/** The mark in front of a row: how the thing was taken in, and what it was. */
+export function historyMark(record: Pick<Consumption, 'what' | 'mode' | 'mediaFile'>): IconName {
+  if (record.mode === 'watch') return 'film'
+  if (record.mode === 'listen') {
+    if (record.what.type === 'file') return 'music'
+    // An episode has its file; an article heard through Listen has none.
+    return record.mediaFile ? 'podcast' : 'volume'
+  }
+  if (record.what.type === 'item') return 'book'
+  return record.what.type === 'file' ? 'file' : 'newspaper'
+}
+
+/** What was done, in words, for a label: "Read", "Listened to", "Watched". */
+export function historyModeWord(mode: Consumption['mode']): string {
+  return mode === 'watch' ? 'Watched' : mode === 'listen' ? 'Listened to' : 'Read'
+}
+
+/**
+ * How far a record got, as a row says it: "Finished", "12 min left", "40%". A
+ * record with nothing to measure -- opened, and no more -- says so, in the
+ * word for what was done, so a row is never blank where the rest have a bar.
+ */
+export function historyProgress(
+  record: Pick<Consumption, 'mode' | 'progress' | 'finished' | 'positionMs' | 'durationMs'>,
+): EpisodeProgress {
+  const along = episodeProgress(record)
+  if (along?.finished) return { ...along, label: 'Finished' }
+  if (along) return along
+  return { fraction: 0, finished: false, label: record.mode === 'read' ? 'Opened' : 'Started' }
+}
+
+// ── What a body was written from ─────────────────────────────────────────
+
+/** Where a story's body came from: `BodyOrigin` in the core. */
+export type BodyOrigin = 'feed' | 'extracted' | 'hackerNews' | 'transcript'
+
+const BODY_ORIGINS: readonly BodyOrigin[] = ['feed', 'extracted', 'hackerNews', 'transcript']
+
+/**
+ * Where the body in a story's document came from, from the `news-body-origin`
+ * meta tag the service writes into its head; `null` when the document does not
+ * say. The origin rides in the document and not in a header because the
+ * document is what both the shell's own protocol and the web server hand over,
+ * and a header would need each of them to learn it.
+ */
+export function bodyOriginOf(html: string): BodyOrigin | null {
+  const end = html.search(/<\/head>/i)
+  if (end < 0) return null
+  const found = /<meta\s+name=["']news-body-origin["']\s+content=["']([A-Za-z]+)["']/i.exec(
+    html.slice(0, end),
+  )
+  return BODY_ORIGINS.find((origin) => origin === found?.[1]) ?? null
 }
 
 // ── The reading pane ─────────────────────────────────────────────────────

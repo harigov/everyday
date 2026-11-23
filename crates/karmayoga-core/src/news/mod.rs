@@ -41,7 +41,9 @@ pub mod listening;
 pub mod opml;
 pub mod podcast;
 pub mod schedule;
+pub mod script;
 pub mod settings;
+pub mod transcript;
 
 pub use listening::{
     AddedBy, ConsumeMode, ConsumedQuery, Consumption, ContentRef, QueueEntry, Span,

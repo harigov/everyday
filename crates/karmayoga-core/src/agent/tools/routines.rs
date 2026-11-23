@@ -150,8 +150,10 @@ pub(super) static TOOLS: &[Tool] = &[
                     "kind",
                     one_of(
                         "Which brief: morning (the day ahead), evening (the day's close and \
-                         tomorrow) or weekly (Sunday mornings: today and the week ahead).",
-                        &["morning", "evening", "weekly"]
+                         tomorrow), weekly (Sunday mornings: today and the week ahead) or \
+                         podcast (a daily script to listen to, made from what arrived in their \
+                         Feed, spoken into audio and put first in Up Next).",
+                        &["morning", "evening", "weekly", "podcast"]
                     )
                 ),
                 ("on", flag("True to switch it on, false to switch it off.")),
@@ -160,9 +162,9 @@ pub(super) static TOOLS: &[Tool] = &[
         ),
         "Switch one of the person's daily briefs on or off. A brief is set up by the app, \
          not written as a routine: use this rather than create_routine when they ask for a \
-         morning, evening or weekly brief. Its time, where it is sent and its routine id come \
-         back; change the time or delivery with update_routine, and what it covers in \
-         Settings \u{2192} Briefs.",
+         morning, evening or weekly brief, or a daily podcast. Its time, where it is sent and \
+         its routine id come back; change the time or delivery with update_routine, and what \
+         it covers (for the podcast: which feeds and how long) in Settings \u{2192} Briefs.",
         run_set_brief
     ),
     tool!(
@@ -173,9 +175,10 @@ pub(super) static TOOLS: &[Tool] = &[
             vec![(
                 "kind",
                 one_of(
-                    "Which brief: the morning one, the evening one, or the weekly one \
-                     (Sundays: today and the week ahead). Omit for the newest of any.",
-                    &["morning", "evening", "weekly"]
+                    "Which brief: the morning one, the evening one, the weekly one \
+                     (Sundays: today and the week ahead) or the daily podcast. Omit for the \
+                     newest of any.",
+                    &["morning", "evening", "weekly", "podcast"]
                 )
             )],
             &[]
@@ -671,10 +674,9 @@ fn run_run_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn run_set_brief(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let kind = args
-        .opt_str("kind")
-        .and_then(BriefKind::parse)
-        .ok_or_else(|| Error::Invalid("set_brief: kind is morning, evening or weekly.".into()))?;
+    let kind = args.opt_str("kind").and_then(BriefKind::parse).ok_or_else(|| {
+        Error::Invalid("set_brief: kind is morning, evening, weekly or podcast.".into())
+    })?;
     let on = args.opt_bool("on").ok_or_else(|| Error::Invalid("set_brief: say on.".into()))?;
     let routine = ctx.vault.set_brief(kind, on)?;
     let mut out = done(
@@ -689,6 +691,16 @@ fn run_set_brief(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
             map.insert(
                 "note".into(),
                 json!("on its day it takes the morning brief's place, so there is one brief"),
+            );
+        }
+        if kind == BriefKind::Podcast && on {
+            map.insert(
+                "note".into(),
+                json!(
+                    "it is made from what has arrived in their Feed since the last one, \
+                     spoken into audio and put first in Up Next; which feeds and how long it \
+                     runs are set in Settings \u{2192} Briefs"
+                ),
             );
         }
     }
@@ -706,11 +718,13 @@ fn run_get_brief(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }
     let kind = match args.opt_str("kind") {
         Some(k) => Some(BriefKind::parse(k).ok_or_else(|| {
-            Error::Invalid("get_brief: kind is \"morning\", \"evening\" or \"weekly\".".into())
+            Error::Invalid(
+                "get_brief: kind is \"morning\", \"evening\", \"weekly\" or \"podcast\".".into(),
+            )
         })?),
         None => None,
     };
-    let Some(run) = ctx.vault.briefs(kind, 1)?.into_iter().next() else {
+    let Some(run) = crate::brief::newest(ctx.vault, kind)? else {
         let which = kind.map(|k| k.name().to_lowercase()).unwrap_or_else(|| "brief".into());
         return Err(Error::Invalid(format!(
             "get_brief: there is no {which} yet. Briefs are switched on in Settings \u{2192} \
@@ -731,6 +745,19 @@ fn run_get_brief(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if !may_read_mail && brief.parts.iter().any(|p| p.section == Some(BriefSection::Mail)) {
         brief.parts.retain(|p| p.section != Some(BriefSection::Mail));
         note = Some("Its mail section is left out: mail is not shared with you.");
+    }
+    // The podcast has no mail section: its newsletters are told among the
+    // rest, so a caller that may not read mail gets its headline and nothing
+    // of what it says when any of it came from there.
+    if !may_read_mail
+        && brief.digest.podcast.as_ref().is_some_and(|p| {
+            p.stories.iter().any(|s| s.from == crate::brief::ExcerptFrom::Newsletter)
+        })
+    {
+        brief.parts.clear();
+        note = Some(
+            "Its topics are left out: it draws on newsletters from mail, which is not shared with you.",
+        );
     }
     let mut out = json!({
         "kind": brief.kind.as_str(),

@@ -109,8 +109,9 @@ pub enum VoiceInput {
     Played { utterance: u64 },
     /// While muted nothing is listened to, and what is being said goes on.
     Muted(bool),
-    /// What the person has on screen now, for the next turn.
-    Screen(Option<OnScreen>),
+    /// What the person has on screen now, for the next turn. Boxed: what
+    /// is on screen is far the largest thing a transport hands a session.
+    Screen(Option<Box<OnScreen>>),
     /// Say this, in the assistant's voice, after whatever is already queued:
     /// why a call the assistant made is being made. Not a turn -- it is in
     /// the conversation already, or need not be -- so the person can talk

@@ -12,7 +12,9 @@
 //! files, another did not. One rule set lives here instead:
 //!
 //! * A **story** is something to hear or watch when its enclosure is audio or
-//!   video, and something to read otherwise. One that has expired is gone.
+//!   video, something to hear when it has audio of its own -- an article
+//!   turned into audio ([`StoryFiles::audio`](crate::news::StoryFiles::audio))
+//!   -- and something to read otherwise. One that has expired is gone.
 //! * A **file** is something to hear, watch or read -- audio, video or a
 //!   document -- and must be in the folder: not in the trash, not missing. A
 //!   picture or an unrecognised file is refused with words, and so is one of
@@ -27,6 +29,11 @@
 //! folder. [`ContentFacts::download`] is therefore set whenever an episode
 //! has no *present* file, and [`ContentFacts::media_file`] is the file only
 //! when it is present.
+//!
+//! An article's audio is made, not fetched, so there is nothing to download
+//! for it: with no present file it is simply an article, read. And an episode
+//! is its enclosure's even when audio was made of its show notes: the
+//! recording is what is heard.
 
 use super::Vault;
 use crate::error::{Error, Result};
@@ -98,19 +105,28 @@ pub fn folder_name(file: &FileEntry) -> String {
 }
 
 /// How a story is taken in: heard or watched when its enclosure is audio or
-/// video, read when it carries nothing to play.
-fn story_mode(story: &Story) -> ConsumeMode {
+/// video, heard when it has audio of its own, read when it carries nothing to
+/// play.
+fn story_mode(story: &Story, has_audio: bool) -> ConsumeMode {
     match story.media.as_ref().filter(|m| m.is_playable()).map(|m| m.kind()) {
         Some(EnclosureKind::Audio) => ConsumeMode::Listen,
         Some(EnclosureKind::Video) => ConsumeMode::Watch,
+        None if has_audio => ConsumeMode::Listen,
         None => ConsumeMode::Read,
     }
 }
 
-/// A story's facts, given its source's name and whether the file it links to
-/// as its episode is there.
-fn story_facts(story: &Story, source: &str, media_present: bool) -> ContentFacts {
+/// A story's facts, given its source's name, whether the file it links to as
+/// its episode is there, and the file it links to as its own audio, if that
+/// is there.
+fn story_facts(
+    story: &Story,
+    source: &str,
+    media_present: bool,
+    audio: Option<&FileEntry>,
+) -> ContentFacts {
     let playable = story.media.as_ref().filter(|m| m.is_playable());
+    let own_audio = audio.filter(|a| playable.is_none() && matches!(a.status, FileStatus::Present));
     let title = [story.title.trim(), story.url.trim()]
         .into_iter()
         .find(|t| !t.is_empty())
@@ -120,9 +136,11 @@ fn story_facts(story: &Story, source: &str, media_present: bool) -> ContentFacts
         title: title.to_string(),
         source: source.trim().to_string(),
         url: story.url.clone(),
-        mode: story_mode(story),
-        duration_ms: playable.and_then(|m| m.duration_ms),
-        media_file: story.files.media.filter(|_| media_present),
+        mode: story_mode(story, own_audio.is_some()),
+        duration_ms: playable
+            .map(|m| m.duration_ms)
+            .unwrap_or_else(|| own_audio.and_then(|a| a.media.duration_ms)),
+        media_file: story.files.media.filter(|_| media_present).or(own_audio.map(|a| a.id)),
         text_file: story.files.text.or(story.files.transcript),
         download: (playable.is_some() && !media_present).then_some(story.id),
         story: Some(story.clone()),
@@ -209,7 +227,15 @@ impl Vault {
                     Some(file) => self.file_is_present(file)?,
                     None => false,
                 };
-                Ok(story_facts(&story, &source, present))
+                // Looked for only where it would be heard: an episode is its
+                // enclosure's.
+                let audio = match story.files.audio {
+                    Some(file) if story.media.as_ref().is_none_or(|m| !m.is_playable()) => {
+                        self.present_file(file)?
+                    }
+                    _ => None,
+                };
+                Ok(story_facts(&story, &source, present, audio.as_ref()))
             }
             ContentRef::File(id) => file_facts(&self.file(id)?),
             ContentRef::Item(id) => {
@@ -223,6 +249,16 @@ impl Vault {
     /// An entry for Up Next made from what `what` says about itself.
     pub fn queue_entry_for(&self, what: ContentRef, added_by: AddedBy) -> Result<QueueEntry> {
         Ok(self.describe_content(what)?.queue_entry(added_by))
+    }
+
+    /// `file`, if it is in the files folder to be played; `None` when the
+    /// catalog does not know it or it is in the trash or missing.
+    fn present_file(&self, file: FileId) -> Result<Option<FileEntry>> {
+        match self.file(file) {
+            Ok(entry) if matches!(entry.status, FileStatus::Present) => Ok(Some(entry)),
+            Ok(_) | Err(Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// Whether `file` is in the files folder to be played: the catalog knows
@@ -306,6 +342,7 @@ mod tests {
             &story("Ep 1", Some(enclosure("https://x/a.mp3", "audio/mpeg", Some(60_000)))),
             " The Show ",
             false,
+            None,
         );
         assert_eq!(audio.mode, ConsumeMode::Listen);
         assert_eq!(audio.source, "The Show");
@@ -316,10 +353,11 @@ mod tests {
             &story("Ep 2", Some(enclosure("https://x/a.mp4", "", None))),
             "Show",
             false,
+            None,
         );
         assert_eq!(video.mode, ConsumeMode::Watch);
 
-        let article = story_facts(&story("Post", None), "Blog", false);
+        let article = story_facts(&story("Post", None), "Blog", false, None);
         assert_eq!(article.mode, ConsumeMode::Read);
         assert_eq!(article.download, None);
 
@@ -328,6 +366,7 @@ mod tests {
             &story("Notes", Some(enclosure("https://x/n.pdf", "application/pdf", None))),
             "Show",
             false,
+            None,
         );
         assert_eq!(pdf.mode, ConsumeMode::Read);
         assert_eq!(pdf.download, None);
@@ -339,13 +378,13 @@ mod tests {
         let linked = FileId::new();
         s.files = StoryFiles { media: Some(linked), ..Default::default() };
 
-        let there = story_facts(&s, "Show", true);
+        let there = story_facts(&s, "Show", true, None);
         assert_eq!(there.download, None);
         assert_eq!(there.media_file, Some(linked));
 
         // Linked, but the file was trashed or went missing: not downloaded,
         // and no recording to point at.
-        let gone = story_facts(&s, "Show", false);
+        let gone = story_facts(&s, "Show", false, None);
         assert_eq!(gone.download, Some(s.id));
         assert_eq!(gone.media_file, None);
     }
@@ -355,16 +394,16 @@ mod tests {
         let mut s = story("  ", None);
         s.url = "https://example.com/post".into();
         s.files.transcript = Some(FileId::new());
-        let facts = story_facts(&s, "", true);
+        let facts = story_facts(&s, "", true, None);
         assert_eq!(facts.title, "https://example.com/post");
         assert_eq!(facts.url, "https://example.com/post");
         assert_eq!(facts.text_file, s.files.transcript);
         s.url.clear();
-        assert_eq!(story_facts(&s, "", true).title, "Untitled story");
+        assert_eq!(story_facts(&s, "", true, None).title, "Untitled story");
         // The article kept as Markdown is its words, before the transcript.
         let kept = FileId::new();
         s.files.text = Some(kept);
-        assert_eq!(story_facts(&s, "", true).text_file, Some(kept));
+        assert_eq!(story_facts(&s, "", true, None).text_file, Some(kept));
     }
 
     #[test]
@@ -436,6 +475,7 @@ mod tests {
             &story("Ep", Some(enclosure("https://x/a.mp3", "audio/mpeg", Some(5_000)))),
             "Show",
             false,
+            None,
         );
         let entry = facts.queue_entry(AddedBy::Assistant);
         assert_eq!(entry.what, facts.what);
@@ -443,5 +483,37 @@ mod tests {
         assert_eq!(entry.mode, ConsumeMode::Listen);
         assert_eq!(entry.duration_ms, Some(5_000));
         assert_eq!(entry.added_by, AddedBy::Assistant);
+    }
+
+    #[test]
+    fn an_article_with_audio_of_its_own_is_heard_from_it() {
+        let mut article = story("Post", None);
+        let audio = file("2026-03-09 Post.opus", "Feed/Audio/Blog", FileKind::Audio, Some(95_000));
+        article.files.audio = Some(audio.id);
+        let facts = story_facts(&article, "Blog", false, Some(&audio));
+        assert_eq!(facts.mode, ConsumeMode::Listen);
+        assert_eq!(facts.duration_ms, Some(95_000), "as long as the file says");
+        assert_eq!(facts.media_file, Some(audio.id));
+        assert_eq!(facts.download, None, "it is made, not fetched");
+        assert_eq!(facts.queue_entry(AddedBy::Person).duration_ms, Some(95_000));
+
+        // The file went missing or into the trash: an article, to read.
+        let mut trashed = audio.clone();
+        trashed.status = FileStatus::Trashed {
+            at: Timestamp::from_second(1_790_000_000).unwrap(),
+            from: "Post.opus".into(),
+        };
+        let facts = story_facts(&article, "Blog", false, Some(&trashed));
+        assert_eq!((facts.mode, facts.media_file), (ConsumeMode::Read, None));
+        assert_eq!(story_facts(&article, "Blog", false, None).mode, ConsumeMode::Read);
+
+        // An episode is its enclosure's, whatever else was made of it.
+        let mut episode =
+            story("Ep", Some(enclosure("https://x/a.mp3", "audio/mpeg", Some(60_000))));
+        episode.files.audio = Some(audio.id);
+        let facts = story_facts(&episode, "Show", false, Some(&audio));
+        assert_eq!(facts.duration_ms, Some(60_000));
+        assert_eq!(facts.media_file, None);
+        assert_eq!(facts.download, Some(episode.id));
     }
 }

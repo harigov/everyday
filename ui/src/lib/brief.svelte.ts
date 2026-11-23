@@ -1,5 +1,7 @@
-// The daily briefs: the two routines behind them, what they wrote, and the
+// The daily briefs: the routines behind them, what they wrote, and the
 // three things done with one -- switch it on, make one now, listen to it.
+// The daily podcast is the fourth kind: a brief whose product is a script
+// and its audio, played in the player rather than read aloud by Listen.
 //
 // Drawn in three places from this one store: the Overview's Brief page, the
 // brief card on its Home page, and Settings → Briefs. A `routine` or
@@ -13,8 +15,8 @@ import { listening } from './listen.svelte'
 import { app, handle, isLocked } from './state.svelte'
 import type { BriefKind, Routine, RoutineInfo, RoutineRun, RoutineRunId } from './types'
 
-/** How many briefs are kept loaded: a fortnight of mornings and evenings. */
-const HISTORY = 28
+/** How many briefs are kept loaded: a fortnight of mornings, evenings and podcasts. */
+const HISTORY = 42
 
 /** What `making` holds for a brief asked for whose run is not queued yet. */
 const PENDING = 'pending' as RoutineRunId
@@ -29,7 +31,7 @@ const GIVE_UP_MS = 20 * 60_000
 class BriefState {
   /** What the briefs wrote, newest first. Finished runs, each with a brief. */
   briefs = $state<RoutineRun[]>([])
-  /** Every routine, as `list_routines` gives them; the two briefs are found
+  /** Every routine, as `list_routines` gives them; the briefs are found
    *  among them with `routineOf`. */
   routines = $state<RoutineInfo[]>([])
   loading = $state(false)
@@ -53,9 +55,13 @@ class BriefState {
     return app.supportsRoutines
   }
 
-  /** The newest brief of either kind. */
+  /**
+   * The newest brief of the day: a morning, evening or weekly one. Not the
+   * daily podcast, which is made in the small hours and is not what Home's
+   * card or the Brief page opens on -- it has its own pill.
+   */
   get latest(): RoutineRun | null {
-    return this.briefs[0] ?? null
+    return this.briefs.find((r) => !!r.brief && r.brief.kind !== 'podcast') ?? null
   }
 
   /** The newest brief of one kind. */

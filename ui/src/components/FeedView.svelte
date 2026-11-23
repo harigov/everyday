@@ -12,12 +12,15 @@
   // stories too, but chosen and ordered by the Feed: the same two panes, with
   // its own column. Up Next is not a list of stories at all -- it is
   // episodes, files and articles in the order they will be taken in -- so it
-  // is a page of its own, whole width, with nothing to read beside it.
+  // is a page of its own, whole width, with nothing to read beside it. So is
+  // History, what was read, heard and watched, by day: a record, not a list
+  // to read down, and its rows open a story in its own source's list.
 
   import { feed } from '../lib/feed.svelte'
   import { upnext } from '../lib/upnext.svelte'
   import AddSource from './AddSource.svelte'
   import EmptyState from './EmptyState.svelte'
+  import HistoryView from './HistoryView.svelte'
   import Icon from './Icon.svelte'
   import PodcastDirectory from './PodcastDirectory.svelte'
   import RecommendedView from './RecommendedView.svelte'
@@ -36,6 +39,9 @@
   void feed.start().finally(() => (ready = true))
   // Up Next's count is in the sidebar, which is there before any page is.
   void upnext.load()
+  // Background work -- transcripts, articles, audio -- is looked at once, so
+  // a row that is being transcribed says so the first time it is drawn.
+  void upnext.ensureWork()
 
   const empty = $derived(ready && feed.sources.length === 0)
   const story = $derived(feed.story)
@@ -55,6 +61,9 @@
 {#if scope === 'upnext'}
   <!-- Whether or not anything is followed: files and library items queue too. -->
   <UpNextView />
+{:else if scope === 'history'}
+  <!-- Whether or not anything is followed: files and library items are taken in too. -->
+  <HistoryView />
 {:else if empty}
   <main class="main">
     <EmptyState lead="Nothing followed yet.">

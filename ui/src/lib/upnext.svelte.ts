@@ -1,6 +1,6 @@
-// Up Next, Recommended, downloads and Settings → Feed: the data behind the
-// player's queue, the Feed's Up Next and Recommended pages, and the episode
-// buttons everywhere. See `docs/plans/podcasts.md`.
+// Up Next, Recommended, downloads, background work, History and Settings →
+// Feed: the data behind the player's queue, the Feed's Up Next, Recommended and
+// History pages, and the episode buttons everywhere. See `docs/plans/podcasts.md`.
 //
 // The service is the truth: everything here is a copy, reloaded when a
 // `queue`, `consumption` or `story` change arrives (`live.svelte.ts`), and
@@ -13,36 +13,52 @@
 //      answered, and a refusal reloads it, so the list never keeps a lie.
 //   2. A read lands only if nothing newer was asked for since. Up Next is
 //      reloaded after nearly every write, and two answers can cross.
-//   3. Nothing runs by itself. The one timer is the download poll, armed only
-//      while an episode is waiting or downloading and disarmed the moment none
-//      is; nothing starts at load.
+//   3. Nothing runs by itself. The timers are the download poll and the work
+//      poll (transcripts, articles written from them, audio versions), each
+//      armed only while something is waiting or under way and disarmed the
+//      moment nothing is; nothing starts at load.
 //
 // CONTRACT (laid by the supervisor; agents G1 and G2 code against the public
 // names): every public name and signature below is fixed; extras are listed
 // at the end of the class.
 
 import { api } from './api'
+import { findWork, sameWork, workActive } from './podcast'
 import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { debounce } from './store/debounce'
 import { latest } from './store/latest'
 import { guardedRefresh } from './store/refresh'
-import type {
-  ConsumeMode,
-  Consumption,
-  ContentRef,
-  DownloadStatus,
-  FeedSettings,
-  ProgressReport,
-  QueueEntryId,
-  QueueItem,
-  QueuePlace,
-  RankingStatus,
-  Recommendation,
-  StoryId,
+import {
+  VaultError,
+  type ConsumeMode,
+  type Consumption,
+  type ConsumptionId,
+  type ContentRef,
+  type DownloadStatus,
+  type FeedSettings,
+  type FileId,
+  type ProgressReport,
+  type QueueEntryId,
+  type QueueItem,
+  type QueuePlace,
+  type RankingStatus,
+  type Recommendation,
+  type Story,
+  type StoryId,
+  type WorkItem,
 } from './types'
 
 /** How often the downloads are asked after while one is under way. */
 const DOWNLOAD_POLL_MS = 1000
+
+/** The same for background work: a transcript, an article, an audio version. */
+const WORK_POLL_MS = 1000
+
+/** How many records a page of History asks for. */
+const HISTORY_PAGE = 100
+
+/** The most the service will return at once, which bounds how much a reload covers. */
+const HISTORY_MOST = 500
 
 /** How many recommendations a page asks for. The service ranks far fewer than it stores. */
 const RECOMMENDED = 60
@@ -76,6 +92,13 @@ function unheld(timer: ReturnType<typeof setTimeout>): ReturnType<typeof setTime
   return timer
 }
 
+/**
+ * What changed about an episode or an article under the Feed's list: its files
+ * (a download, a transcript, an audio version arrived or left) or, as well, its
+ * body (an article was written from a transcript).
+ */
+export type EpisodeChange = 'files' | 'body'
+
 /** What a thing is called in a lookup: `story:<id>`, as the service's `ContentRef::key`. */
 export function refKey(what: ContentRef): string {
   return `${what.type}:${what.id}`
@@ -99,6 +122,20 @@ class UpNext {
   settings = $state<FeedSettings | null>(null)
   /** Episodes downloading, waiting, or failed. */
   downloads = $state<DownloadStatus[]>([])
+  /** Transcripts, articles and audio versions waiting, under way, or failed. */
+  work = $state<WorkItem[]>([])
+  /** History: what was read, heard and watched, newest first. */
+  history = $state<Consumption[]>([])
+  historyLoading = $state(false)
+  historyError = $state<string | null>(null)
+  /** There may be records older than the ones loaded. */
+  historyMore = $state(false)
+  /**
+   * Whether each file a story or a recording links to is still there, by id, as
+   * the vault last said. Replaced whole, so a reader of one id is told when any
+   * changes. See `linkedFile`.
+   */
+  #links = $state<Record<FileId, boolean>>({})
 
   /**
    * What is known of how far each thing was taken in, by `refKey`: what Up
@@ -125,10 +162,32 @@ class UpNext {
   #consumedLoaded = false
   #consumedAt = 0
   #consumedGeneration = latest()
+  #workGeneration = latest()
+  #historyGeneration = latest()
+  /** A page of History on its way; a reload retires it. */
+  #historyPaging = latest()
+  #historyMoreBusy = false
+  /** The History page is on screen, so a `consumption` change reads it again. */
+  #historyOpen = false
+  #workAsked = false
+  #workLoaded = false
+  /** Links being looked up now, so one is not asked for twice at once. */
+  #linksBusy = new Set<FileId>()
   #pollTimer: ReturnType<typeof setTimeout> | null = null
+  #workTimer: ReturnType<typeof setTimeout> | null = null
   #rerankTimer: ReturnType<typeof setTimeout> | null = null
   /** Whom to tell that an episode changed under the Feed's own list. */
-  #episodeListeners = new Set<(stories: StoryId[]) => void>()
+  #episodeListeners = new Set<(stories: StoryId[], change: EpisodeChange) => void>()
+  /** Whom to tell that a piece of work is over. */
+  #workListeners = new Set<(item: WorkItem) => void>()
+  /**
+   * Stories an article was written for from a transcript in this window. The
+   * document the pane draws says what its body was written from when the
+   * service says so; this is what is known when it does not.
+   */
+  #written = new Set<StoryId>()
+  /** Episodes to write up as an article once their transcript is there. */
+  #articleAfter = new Set<StoryId>()
   #settle = debounce(() => void this.#reloadForConsumption(), CONSUMPTION_SETTLE_MS)
 
   constructor() {
@@ -149,7 +208,11 @@ class UpNext {
     this.#downloadsGeneration.next()
     this.#settingsGeneration.next()
     this.#consumedGeneration.next()
+    this.#workGeneration.next()
+    this.#historyGeneration.next()
+    this.#historyPaging.next()
     this.#disarmPoll()
+    this.#disarmWorkPoll()
     if (this.#rerankTimer) clearTimeout(this.#rerankTimer)
     this.#rerankTimer = null
     this.#settle.cancel()
@@ -161,6 +224,19 @@ class UpNext {
     this.ranking = null
     this.settings = null
     this.downloads = []
+    this.work = []
+    this.history = []
+    this.historyLoading = false
+    this.historyError = null
+    this.historyMore = false
+    this.#historyMoreBusy = false
+    this.#historyOpen = false
+    this.#workAsked = false
+    this.#workLoaded = false
+    this.#links = {}
+    this.#linksBusy.clear()
+    this.#written.clear()
+    this.#articleAfter.clear()
     this.#known = {}
     this.#recommendedProgress = {}
     this.#successors.clear()
@@ -422,6 +498,327 @@ class UpNext {
     return this.downloads.find((d) => d.storyId === story)
   }
 
+  // ── transcripts, articles and audio ──────────────────────────────────
+  //
+  // Three kinds of work the service does in the background, one at a time, for
+  // a story or a file: write down what was said in a recording, write an
+  // episode up as an article from that, and record an article in a voice. The
+  // service answers a request at once and raises a change when the work is
+  // done; what a button needs in between is the list of work, which is read
+  // again every second while any is waiting or under way.
+
+  /** The work asked for a story or a file, of `kind` when one is named. */
+  workFor(
+    target: { story?: StoryId | null; file?: FileId | null },
+    kind?: WorkItem['kind'],
+  ): WorkItem | undefined {
+    return findWork(this.work, target, kind)
+  }
+
+  /**
+   * Read the work once, the first time anything that shows it is on screen.
+   * Idempotent: a row asks for it, and a list of rows is a list of asks.
+   */
+  async ensureWork(): Promise<void> {
+    if (this.#workAsked) return
+    this.#workAsked = true
+    await this.refreshWork()
+  }
+
+  /**
+   * Ask for the work and, while any is waiting or under way, again every
+   * second. When a piece has left the list -- it was done -- what it made is
+   * news to whoever shows it: the Feed patches the story, Files its list.
+   */
+  async refreshWork(): Promise<void> {
+    if (!app.supportsNews) return
+    const token = this.#workGeneration.next()
+    try {
+      const list = await api.listeningWork()
+      if (!this.#workGeneration.isCurrent(token)) return
+      const before = this.work
+      this.work = list
+      this.#workLoaded = true
+      this.#workMoved(before, list)
+    } catch (e) {
+      await quietly(e)
+      this.#disarmWorkPoll()
+      return
+    }
+    this.#armWorkPoll()
+  }
+
+  /** Write down what was said in an episode. */
+  async transcribe(story: StoryId): Promise<void> {
+    await this.#ask(() => api.transcribeEpisode(story), { kind: 'transcript', storyId: story })
+  }
+
+  /** Write down what was said in a recording or a film in Files. */
+  async transcribeFile(file: FileId): Promise<void> {
+    await this.#ask(() => api.transcribeFile(file), { kind: 'transcript', fileId: file })
+  }
+
+  /** Write an episode up as an article from its transcript. */
+  async writeArticle(story: StoryId): Promise<void> {
+    await this.#ask(() => api.writeArticle(story), { kind: 'article', storyId: story })
+  }
+
+  /**
+   * Read an episode as an article: written from its transcript, which is made
+   * first when there is none. The two are one wish -- nobody wants a
+   * transcript to look at -- so the second follows the first by itself.
+   */
+  async readAsArticle(story: Pick<Story, 'id' | 'files'>): Promise<void> {
+    if (story.files?.transcript) {
+      await this.writeArticle(story.id)
+      return
+    }
+    this.#articleAfter.add(story.id)
+    const asked = await this.#ask(() => api.transcribeEpisode(story.id), {
+      kind: 'transcript',
+      storyId: story.id,
+    })
+    if (!asked) this.#articleAfter.delete(story.id)
+  }
+
+  /** Record an article in a voice, and keep it in Files. */
+  async renderAudio(story: StoryId): Promise<void> {
+    await this.#ask(() => api.renderStoryAudio(story), { kind: 'audio', storyId: story })
+  }
+
+  /** Whether an article was written from a transcript by this window: see `#written`. */
+  wroteFromTranscript(story: StoryId): boolean {
+    return this.#written.has(story)
+  }
+
+  /** Be told when a piece of work is over. Answers the way to stop being told. */
+  onWorkDone(listener: (item: WorkItem) => void): () => void {
+    this.#workListeners.add(listener)
+    return () => this.#workListeners.delete(listener)
+  }
+
+  /** A `story` or `file` change arrived: work may have finished, or been started elsewhere. */
+  async workChanged(): Promise<void> {
+    if (this.#workLoaded) await this.refreshWork()
+  }
+
+  /**
+   * Ask for `job` and then for the work, so the button that asked shows it at
+   * once. Answers whether it was asked for: a refusal is said the usual way
+   * and is not work.
+   */
+  async #ask(
+    call: () => Promise<void>,
+    job: Pick<WorkItem, 'kind' | 'storyId' | 'fileId'>,
+  ): Promise<boolean> {
+    const have = this.work.find((w) => sameWork(w, job))
+    if (have && workActive(have)) return true
+    try {
+      await call()
+    } catch (e) {
+      await handle(e)
+      return false
+    }
+    await this.refreshWork()
+    return true
+  }
+
+  /** What the list of work gaining or losing a piece means to the rest. */
+  #workMoved(before: WorkItem[], after: WorkItem[]): void {
+    // A transcript that could not be made leaves nothing to write up from.
+    for (const failed of after) {
+      if (failed.state === 'failed' && failed.kind === 'transcript' && failed.storyId) {
+        this.#articleAfter.delete(failed.storyId)
+      }
+    }
+    for (const gone of before) {
+      if (!workActive(gone) || after.some((w) => sameWork(w, gone))) continue
+      for (const listener of [...this.#workListeners]) {
+        try {
+          listener(gone)
+        } catch {
+          // A listener's trouble is its own.
+        }
+      }
+      const story = gone.storyId
+      if (!story) continue
+      if (gone.kind === 'article') this.#written.add(story)
+      // The story's files changed -- and, for an article, its body.
+      this.#tellEpisodeChanged([story], gone.kind === 'article' ? 'body' : 'files')
+      // An episode that has an audio version now plays from Up Next.
+      if (gone.kind === 'audio' && this.#itemsLoaded) void this.load()
+      // The transcript is there: write it up, unless the service already is.
+      if (
+        gone.kind === 'transcript' &&
+        this.#articleAfter.delete(story) &&
+        !findWork(after, { story }, 'article')
+      ) {
+        void this.writeArticle(story)
+      }
+    }
+  }
+
+  /** Ask again in a second if anything is still waiting or under way. */
+  #armWorkPoll(): void {
+    this.#disarmWorkPoll()
+    if (!this.work.some(workActive)) return
+    this.#workTimer = unheld(
+      setTimeout(() => {
+        this.#workTimer = null
+        void this.refreshWork()
+      }, WORK_POLL_MS),
+    )
+  }
+
+  #disarmWorkPoll(): void {
+    if (this.#workTimer) clearTimeout(this.#workTimer)
+    this.#workTimer = null
+  }
+
+  // ── linked files ─────────────────────────────────────────────────────
+  //
+  // A story links the transcript and the audio made for it, and a recording
+  // links its transcript, by a file's id; the link is not the file. Whoever
+  // trashes the file in Files leaves the link where it was until the service
+  // sweeps it, and a button that goes by the link alone offers to open what is
+  // not there and never offers to make it again. So where an action is drawn
+  // for the story that is open or the file that is inspected, the file is
+  // looked up -- and a file that is trashed, missing or unknown to the vault
+  // is treated as if there were no link.
+
+  /**
+   * `id` when the file it names is there to be opened, `null` when there is no
+   * link or the vault says the file is gone. A file not looked up yet is taken
+   * as there: showing "Open transcript" for the moment it takes to ask is
+   * better than a button that changes its mind for every story that is opened.
+   */
+  linkedFile(id: FileId | null | undefined): FileId | null {
+    if (!id) return null
+    return this.#links[id] === false ? null : id
+  }
+
+  /**
+   * Ask the vault whether each of these files is there, and remember the answer.
+   * Looked up every time and not once: this is called as a story is opened, and
+   * a file trashed since the last look is the case this exists for. A refusal
+   * other than "no such file" -- a network that is down -- leaves what was known.
+   */
+  async checkLinks(ids: readonly (FileId | null | undefined)[]): Promise<void> {
+    if (!app.supportsNews) return
+    const wanted = [...new Set(ids.filter((id): id is FileId => !!id))]
+    await Promise.all(wanted.filter((id) => !this.#linksBusy.has(id)).map((id) => this.#lookUp(id)))
+  }
+
+  /** A `file` change arrived: every link that has been looked up is looked up again. */
+  async recheckLinks(): Promise<void> {
+    await this.checkLinks(Object.keys(this.#links))
+  }
+
+  /** A `file` change arrived: what it may have finished or taken away is looked at again. */
+  async filesChanged(): Promise<void> {
+    await Promise.all([this.workChanged(), this.recheckLinks()])
+  }
+
+  async #lookUp(id: FileId): Promise<void> {
+    this.#linksBusy.add(id)
+    try {
+      const detail = await api.getFile(id)
+      this.#links = { ...this.#links, [id]: detail.file.status.state === 'present' }
+    } catch (e) {
+      if (e instanceof VaultError && e.code === 'not_found') {
+        this.#links = { ...this.#links, [id]: false }
+      } else {
+        await quietly(e)
+      }
+    } finally {
+      this.#linksBusy.delete(id)
+    }
+  }
+
+  // ── history ──────────────────────────────────────────────────────────
+
+  /**
+   * Say whether the History page is on screen. While it is, a `consumption`
+   * change reads the record again; while it is not, nothing does.
+   */
+  watchHistory(open: boolean): void {
+    this.#historyOpen = open
+  }
+
+  /**
+   * Read History from the newest record. `keep` covers as many records as are
+   * loaded -- a background change must not shrink a list somebody has scrolled
+   * down -- and a fresh read is one page.
+   */
+  async loadHistory(keep = false): Promise<void> {
+    if (!app.supportsNews) return
+    // A page on its way belongs to the list being replaced.
+    this.#historyPaging.next()
+    await guardedRefresh(
+      this.#historyGeneration,
+      async (isCurrent) => {
+        const limit = keep
+          ? Math.min(HISTORY_MOST, Math.max(HISTORY_PAGE, this.history.length))
+          : HISTORY_PAGE
+        const list = await api.listConsumed({ limit })
+        if (!isCurrent()) return
+        this.history = list
+        this.historyMore = list.length >= limit
+        this.historyError = null
+      },
+      {
+        setLoading: (v) => (this.historyLoading = v),
+        onError: (e) => this.#historyFailed(e),
+      },
+    )
+  }
+
+  /** The page of records older than the last one loaded, appended. */
+  async loadMoreHistory(): Promise<void> {
+    const last = this.history.at(-1)
+    if (!last || !this.historyMore || this.#historyMoreBusy || !app.supportsNews) return
+    this.#historyMoreBusy = true
+    const token = this.#historyPaging.next()
+    try {
+      const page = await api.listConsumed({ until: last.lastAt, limit: HISTORY_PAGE })
+      // A reload while this was on its way retired the token.
+      if (!this.#historyPaging.isCurrent(token) || this.history.at(-1)?.id !== last.id) return
+      const have = new Set(this.history.map((c) => c.id))
+      this.history = [...this.history, ...page.filter((c) => !have.has(c.id))]
+      this.historyMore = page.length >= HISTORY_PAGE
+    } catch (e) {
+      await this.#historyFailed(e)
+    } finally {
+      this.#historyMoreBusy = false
+    }
+  }
+
+  /**
+   * Forget that something was read, heard or watched: its record goes, and
+   * with it how far it got. The thing itself, and any file made from it, stay.
+   * Taken off the screen first and put right by the service afterwards.
+   */
+  async forget(id: ConsumptionId): Promise<void> {
+    const gone = this.history.find((c) => c.id === id)
+    if (gone) this.history = this.history.filter((c) => c.id !== id)
+    try {
+      await api.forgetConsumption(id)
+    } catch (e) {
+      await handle(e, () => this.loadHistory(true))
+      return
+    }
+    // What was known of how far it got, here and in Up Next, is no longer so.
+    if (gone) {
+      const key = refKey(gone.what)
+      if (this.#known[key]?.id === id) {
+        const next = { ...this.#known }
+        delete next[key]
+        this.#known = next
+      }
+    }
+    void this.#reloadForConsumption()
+  }
+
   // ── ranking ──────────────────────────────────────────────────────────
 
   /** Forget every rank and start again. */
@@ -469,7 +866,7 @@ class UpNext {
   }
 
   /** The file these episodes were downloaded to arrived or left: what the Feed shows of them changed. */
-  onEpisodeChange(listener: (stories: StoryId[]) => void): () => void {
+  onEpisodeChange(listener: (stories: StoryId[], change: EpisodeChange) => void): () => void {
     this.#episodeListeners.add(listener)
     return () => this.#episodeListeners.delete(listener)
   }
@@ -534,14 +931,18 @@ class UpNext {
 
   /** A `consumption` change arrived: what is loaded is read again, once the burst is over. */
   consumptionChanged(): Promise<void> {
-    const held = this.#itemsLoaded || this.#recommendedLoaded || this.#consumedLoaded
+    const held =
+      this.#itemsLoaded || this.#recommendedLoaded || this.#consumedLoaded || this.#historyOpen
     if (held) this.#settle.call()
     return Promise.resolve()
   }
 
-  /** A `story` change arrived: an episode may have finished downloading. */
+  /** A `story` change arrived: an episode may have finished downloading, or been transcribed. */
   async storyChanged(): Promise<void> {
-    if (this.downloads.length > 0) await this.refreshDownloads()
+    await Promise.all([
+      this.downloads.length > 0 ? this.refreshDownloads() : undefined,
+      this.workChanged(),
+    ])
   }
 
   // ── private ──────────────────────────────────────────────────────────
@@ -551,7 +952,17 @@ class UpNext {
       this.#itemsLoaded ? this.load() : undefined,
       this.#recommendedLoaded ? this.loadRecommended() : undefined,
       this.#consumedLoaded ? this.loadConsumed(true) : undefined,
+      this.#historyOpen ? this.loadHistory(true) : undefined,
     ])
+  }
+
+  /** A read of History that failed: a lock is the lock screen's; anything else, the page's to say. */
+  async #historyFailed(e: unknown): Promise<void> {
+    if (isLocked(e)) {
+      await quietly(e)
+      return
+    }
+    this.historyError = errorMessage(e)
   }
 
   /** A read that failed: a lock is the lock screen's; anything else is the page's to say. */
@@ -622,10 +1033,10 @@ class UpNext {
     return 'read'
   }
 
-  #tellEpisodeChanged(stories: StoryId[]): void {
+  #tellEpisodeChanged(stories: StoryId[], change: EpisodeChange = 'files'): void {
     for (const listener of [...this.#episodeListeners]) {
       try {
-        listener(stories)
+        listener(stories, change)
       } catch {
         // A listener's trouble is its own.
       }
