@@ -28,6 +28,17 @@
 //!
 //! What the person sees meanwhile is the panel's card, which never has the
 //! keyboard.
+//!
+//! Reading what is selected, for "improve this" said in a conversation, is the
+//! same problem the other way round and is solved the same way. X11 reads the
+//! PRIMARY selection and Windows and macOS press a copy, as writing help does
+//! ([`crate::writing::desktop::selection_for_voice`]): Ctrl+Insert on Windows,
+//! because nobody pressed a key to ask and Ctrl+C interrupts a console with
+//! nothing selected, Cmd+C on macOS. Wayland has no PRIMARY to read
+//! without the keyboard, so the RemoteDesktop session asks for the clipboard
+//! again, presses Ctrl+Insert in the field that has the keyboard, and reads
+//! what the field copied ([`crate::portal::copy_selection`]); the field keeps
+//! its selection, so the paste that follows goes over it.
 
 use tauri::AppHandle;
 
@@ -49,6 +60,24 @@ pub async fn paste(app: &AppHandle, text: &str, token: Option<String>) -> Result
     #[cfg(not(target_os = "linux"))]
     let _ = token;
     crate::writing::desktop::paste(app, None, text).await
+}
+
+/// What is selected in whatever has the keyboard, without taking the
+/// keyboard from it -- see `karmayoga_service::agent::Typist::selected_text`.
+/// Empty when nothing is selected; an error says why it could not be read, in
+/// words for the card.
+///
+/// Nothing is shown and no activation token is needed, so it works from a
+/// conversation the wake word began. On Wayland the selection is copied
+/// through the portal, which leaves the clipboard holding it; elsewhere it is
+/// read without touching the clipboard (X11) or with it put back (Windows and
+/// macOS).
+pub async fn selected_text(app: &AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    if crate::writing::wayland_session(app) {
+        return wayland::selected_text().await;
+    }
+    Ok(crate::writing::desktop::selection_for_voice(app).await.unwrap_or_default())
 }
 
 /// Put `text` on the clipboard, for a Copy button whose card could not do it
@@ -156,6 +185,23 @@ mod wayland {
             }
         })
         .await;
+    }
+
+    /// What the field that has the keyboard has selected, copied through the
+    /// clipboard portal. Writing help's restore token is used and kept, so the
+    /// desktop is asked once for the paste and the copy both.
+    pub async fn selected_text() -> Result<String, String> {
+        let restore = crate::writing::load_config().restore_token;
+        let copied = crate::portal::copy_selection(restore).await;
+        // As in [`paste`]: kept whatever came of the copy, but never in place
+        // of one with nothing.
+        if copied.restore_token.is_some() {
+            crate::writing::remember_restore_token(copied.restore_token);
+        }
+        if let Err(e) = &copied.result {
+            tracing::info!(error = %e, "could not read what was selected through the portal");
+        }
+        copied.result
     }
 
     pub async fn paste(app: &AppHandle, text: &str, token: Option<String>) -> Result<(), String> {

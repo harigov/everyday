@@ -17124,6 +17124,21 @@
             "const": "dictate",
             "description": "Spoken, not selected: the `original` is what the speech model heard\nand the `result` is that written up -- filler gone, the speaker's own\ncorrections applied, punctuated -- to be typed where they were.",
             "type": "string"
+          },
+          {
+            "const": "simplify",
+            "description": "Plainer: simpler words and shorter sentences, the same meaning. Asked\nfor out loud over a selection (\"simplify this\").",
+            "type": "string"
+          },
+          {
+            "const": "custom",
+            "description": "Whatever [`WritingAssist::instruction`] says -- \"make this friendlier\",\n\"make it sound less annoyed\" -- asked for out loud over a selection.\nThe instruction is required, and kept to [`MAX_INSTRUCTION_CHARS`].",
+            "type": "string"
+          },
+          {
+            "const": "compose",
+            "description": "Written, not rewritten: the `original` is what the person asked for\nout loud (\"write that I'm not feeling well and will reach out\ntomorrow\"), [`WritingAssist::instruction`] says what kind of message\n(an email, a chat message, a text) and to whom, and the `result` is the\nmessage, in their voice, typed where they were typing. Nothing was\nselected, so the `original` is held to [`MAX_REQUEST_CHARS`] rather than\na selection's [`MAX_TEXT_CHARS`].",
+            "type": "string"
           }
         ]
       },
@@ -17187,6 +17202,13 @@
       "id": {
         "format": "uuid",
         "type": "string"
+      },
+      "instruction": {
+        "description": "What was asked in the person's own words, for an action that is not\none of the fixed ones: the instruction of a [`WritingAction::Custom`]\nrewrite, or what kind of message a [`WritingAction::Compose`] is and to\nwhom (\"an email to Sam\"). `None` for the rest.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "model": {
         "default": "",

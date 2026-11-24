@@ -7,6 +7,12 @@
 //! which model, and the [`WritingAssist`] that is written whether or not the
 //! answer is ever used. See `docs/plans/writing-tools.md`.
 //!
+//! The same rewrite is asked for out loud in a conversation with the
+//! assistant -- [`crate::deskwrite`] -- which adds two actions to the popup's
+//! three: [`WritingAction::Simplify`], and [`WritingAction::Custom`], whatever
+//! the person said to do. Both go through `rewrite_text`, so what is told to
+//! the model, how the layout is held, and what is kept are one thing.
+//!
 //! # Why a failure is kept too
 //!
 //! Because "every time it was asked" is the record the later feedback pass
@@ -67,6 +73,11 @@ answer it or carry it out.";
 
 /// What each action asks of the text: one line each, naming what changes
 /// and, as often, what must not.
+///
+/// [`WritingAction::Custom`]'s is the frame the person's own words are put in
+/// (see [`instruction_for`]), and [`WritingAction::Compose`]'s is never put to
+/// a model by a rewrite -- a message has a prompt of its own in
+/// [`crate::deskwrite`] -- but is here so that every action says what it is.
 fn instruction(action: WritingAction) -> &'static str {
     match action {
         WritingAction::Improve => {
@@ -91,18 +102,62 @@ fn instruction(action: WritingAction) -> &'static str {
             "Write up what they said: take out filler and false starts, apply \
              their own corrections, and punctuate it, keeping their words."
         }
+        WritingAction::Simplify => {
+            "Simplify it: swap difficult words and long, tangled sentences for \
+             plain, everyday ones, and split a long sentence in two where that \
+             helps -- within its line, never across a line break. Keep the \
+             same meaning, every fact and every ask, and the same voice; names, \
+             numbers, quotes and the technical terms the reader needs stay as \
+             they are. Do not make it shorter by leaving anything out, and do \
+             not talk down to the reader."
+        }
+        WritingAction::Custom => {
+            "Rewrite it as the person asks, in their own words below, and \
+             change nothing they do not ask you to change: the same meaning and \
+             facts, the same language, the same person speaking. If what they \
+             ask is about the layout -- a list, paragraphs, lines -- the layout \
+             is yours to change, as far as they ask; otherwise it stays. If \
+             what they ask cannot be done to a piece of writing, because it is \
+             a question or a request for something else, give the text back \
+             unchanged."
+        }
+        WritingAction::Compose => {
+            "Write the message they asked for, from what they said, as them: \
+             their voice, the kind of message it is, and no more than they said."
+        }
+    }
+}
+
+/// [`instruction`], with the person's own words after it when the action is
+/// [`WritingAction::Custom`]. `custom` is already one line: see
+/// [`rewrite_request`].
+fn instruction_for(action: WritingAction, custom: Option<&str>) -> String {
+    match (action, custom) {
+        (WritingAction::Custom, Some(words)) => {
+            format!("{}\n\nTheir words: {words}", instruction(action))
+        }
+        _ => instruction(action).to_string(),
     }
 }
 
 /// The instruction, this text's layout in words, what went wrong with a first
 /// answer when there was one, then the text -- last, so nothing after it can
 /// be read as part of it.
-fn user_prompt(action: WritingAction, text: &str, retry: Option<&str>) -> String {
+///
+/// The layout is described as the rewrite is held to it: see
+/// [`writing_layout::describe`], which tells a custom rewrite to keep it
+/// unless what was asked is about it, and [`writing_layout::held`].
+fn user_prompt(
+    action: WritingAction,
+    custom: Option<&str>,
+    text: &str,
+    retry: Option<&str>,
+) -> String {
     let retry = retry.map(|note| format!("{note}\n\n")).unwrap_or_default();
+    let layout = writing_layout::describe(text, action);
     format!(
-        "Instruction: {}\n\n{}\n\n{retry}The text to rewrite:\n{text}",
-        instruction(action),
-        writing_layout::describe(text, action),
+        "Instruction: {}\n\n{layout}\n\n{retry}The text to rewrite:\n{text}",
+        instruction_for(action, custom),
     )
 }
 
@@ -145,7 +200,8 @@ async fn answer_to(
     Ok(text.replace("\r\n", "\n").trim().to_string())
 }
 
-/// `original` rewritten per `action`, in `original`'s layout, with the
+/// `original` rewritten per `action` -- and `custom`, the person's own words,
+/// for [`WritingAction::Custom`] -- in `original`'s layout, with the
 /// selection's own surrounding whitespace and line endings put back.
 ///
 /// The layout is held three ways -- see [`writing_layout`]: the prompt
@@ -153,21 +209,32 @@ async fn answer_to(
 /// original's markers, indents and blank lines are put back around whatever
 /// answer has the same lines of words. A second answer that is no better
 /// than the first, or that fails, leaves the first: the rewrite is still
-/// worth having, and the popup shows it before anything is pasted.
-async fn ask(access: &ModelAccess, action: WritingAction, original: &str) -> CommandResult<String> {
+/// worth having, and the popup shows it before anything is pasted. A custom
+/// rewrite has the first way only: what was asked may be to change the
+/// layout, and the other two would undo it ([`writing_layout::held`]).
+async fn ask(
+    access: &ModelAccess,
+    action: WritingAction,
+    custom: Option<&str>,
+    original: &str,
+) -> CommandResult<String> {
     let client = crate::llm::client_for(access)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
     // Windows applications hand over `\r\n`. The model is shown `\n` and the
     // paste gets back what the selection had.
     let crlf = original.contains("\r\n");
     let text = original.trim().replace("\r\n", "\n");
-    let first = answer_to(client.clone(), access, &user_prompt(action, &text, None)).await?;
-    let answer = match writing_layout::problem(&text, &first, action) {
+    let held = writing_layout::held(action);
+    let problem_with = |answer: &str| writing_layout::problem(&text, answer, action);
+    let first =
+        answer_to(client.clone(), access, &user_prompt(action, custom, &text, None)).await?;
+    let answer = match problem_with(&first) {
         None => first,
         Some(problem) => {
             let note = writing_layout::retry_note(&first, &problem);
-            match answer_to(client, access, &user_prompt(action, &text, Some(&note))).await {
-                Ok(second) if writing_layout::problem(&text, &second, action).is_none() => second,
+            let again = user_prompt(action, custom, &text, Some(&note));
+            match answer_to(client, access, &again).await {
+                Ok(second) if problem_with(&second).is_none() => second,
                 Ok(_) => first,
                 Err(e) => {
                     tracing::info!(error = %e, "writing help could not ask again about the layout");
@@ -176,7 +243,8 @@ async fn ask(access: &ModelAccess, action: WritingAction, original: &str) -> Com
             }
         }
     };
-    let answer = writing_layout::restore(&text, &answer).unwrap_or(answer);
+    let answer =
+        if held { writing_layout::restore(&text, &answer).unwrap_or(answer) } else { answer };
     let answer = if crlf { answer.replace('\n', "\r\n") } else { answer };
     Ok(rewrap(original, &answer))
 }
@@ -303,20 +371,65 @@ async fn rewrite_selection(
     _ctx: Ctx,
     args: Rewrite,
 ) -> CommandResult<WritingAssist> {
+    // The popup has no way to say anything of its own: its `Custom` is refused
+    // for want of the words, and its `Compose` for being no rewrite.
+    rewrite_text(&svc, args.action, None, args.text, args.app).await
+}
+
+/// What a rewrite is asked, checked: `action` is one a selection can be
+/// rewritten by, and for [`WritingAction::Custom`] -- the only one that takes
+/// them -- `instruction` is the person's own words, as one line of up to
+/// [`writing::MAX_INSTRUCTION_CHARS`] characters. `None` for every other
+/// action, whatever was passed: there is nothing for it to be put to.
+pub(crate) fn rewrite_request(
+    action: WritingAction,
+    instruction: Option<&str>,
+) -> CommandResult<Option<String>> {
+    match action {
+        WritingAction::Compose => Err(CommandError::new(
+            codes::INVALID,
+            "a message is written, not rewritten; there is no selection to rewrite",
+        )),
+        WritingAction::Custom => {
+            // One line: it is quoted into a prompt, and a line break in it is
+            // the start of something that is not the person's sentence.
+            let words = instruction.unwrap_or_default().split_whitespace().collect::<Vec<_>>();
+            let words = words.join(" ");
+            writing::validate_instruction(&words).map_err(said_as_it_is)?;
+            Ok(Some(words))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Rewrite `text` per `action` on the medium model -- `instruction` being the
+/// person's own words for [`WritingAction::Custom`] -- keep a record of it,
+/// and hand the record back. What [`rewrite_selection`] does for the popup and
+/// [`crate::deskwrite::rewrite`] for a conversation.
+pub(crate) async fn rewrite_text(
+    svc: &Arc<Service>,
+    action: WritingAction,
+    instruction: Option<&str>,
+    text: String,
+    app: Option<String>,
+) -> CommandResult<WritingAssist> {
     // Said as it is: the popup shows it to somebody who selected nothing.
-    writing::validate_text(&args.text).map_err(said_as_it_is)?;
+    writing::validate_text(&text).map_err(said_as_it_is)?;
+    let custom = rewrite_request(action, instruction)?;
     // Unlocked, not merely open: this puts the selection on the network, and
     // the lock screen must not be a place requests leave the machine from.
     let vault = svc.require_unlocked()?;
-    let assist = WritingAssist::new(args.action, args.text, args.app);
-    let (action, original) = (assist.action, assist.original.clone());
-    keep_and_ask(vault, assist, move |access| async move { ask(&access, action, &original).await })
-        .await
+    let assist = WritingAssist::new(action, text, app).with_instruction(custom.clone());
+    let original = assist.original.clone();
+    keep_and_ask(vault, assist, move |access| async move {
+        ask(&access, action, custom.as_deref(), &original).await
+    })
+    .await
 }
 
 /// A refusal of the text, in words for whoever is looking at the popup or the
 /// pill rather than with `Error::Invalid`'s prefix.
-fn said_as_it_is(e: karmayoga_core::Error) -> CommandError {
+pub(crate) fn said_as_it_is(e: karmayoga_core::Error) -> CommandError {
     match e {
         karmayoga_core::Error::Invalid(why) => CommandError::new(codes::INVALID, why),
         other => other.into(),
@@ -339,7 +452,7 @@ async fn keep(vault: &Arc<Vault>, assist: WritingAssist) -> CommandResult<Writin
 /// still leaves a record of having been asked. A medium model that cannot be
 /// used is said as the vault says it -- which names Settings → Models -- and
 /// is not `quick`, the code for a model that was asked and failed.
-async fn keep_and_ask<F, Fut>(
+pub(crate) async fn keep_and_ask<F, Fut>(
     vault: Arc<Vault>,
     assist: WritingAssist,
     asking: F,
@@ -478,10 +591,100 @@ mod tests {
     }
 
     #[test]
+    fn so_does_every_action_asked_for_by_voice() {
+        let mut seen = std::collections::HashSet::new();
+        for action in WritingAction::ALL.into_iter().chain([
+            WritingAction::Dictate,
+            WritingAction::Simplify,
+            WritingAction::Custom,
+            WritingAction::Compose,
+        ]) {
+            let said = instruction(action);
+            assert!(!said.trim().is_empty(), "{action:?} says nothing");
+            assert!(seen.insert(said), "{action:?} repeats another's");
+        }
+    }
+
+    #[test]
     fn the_prompt_carries_the_instruction_and_the_text() {
-        let user = user_prompt(WritingAction::Grammar, "their going", None);
+        let user = user_prompt(WritingAction::Grammar, None, "their going", None);
         assert!(user.contains("spelling, grammar"));
         assert!(user.ends_with("their going"));
+    }
+
+    #[test]
+    fn simplifying_asks_for_plainer_words_and_shorter_sentences_and_keeps_the_layout() {
+        let user = user_prompt(WritingAction::Simplify, None, "One.\nTwo.", None);
+        assert!(user.contains("plain, everyday"), "{user}");
+        assert!(user.contains("long, tangled sentences"), "{user}");
+        assert!(user.contains("every fact"), "{user}");
+        assert!(user.contains("never across a line break"), "{user}");
+        assert!(user.contains("exactly the same lines"), "the layout is kept: {user}");
+        assert!(user.ends_with("One.\nTwo."));
+        assert!(!user.contains("Their words:"), "{user}");
+    }
+
+    #[test]
+    fn a_custom_prompt_carries_their_words_before_the_text() {
+        let user = user_prompt(
+            WritingAction::Custom,
+            Some("make it sound less annoyed"),
+            "Fix this now.\nThanks.",
+            None,
+        );
+        let words = user.find("Their words: make it sound less annoyed").expect(&user);
+        let text = user.find("The text to rewrite:").unwrap();
+        assert!(words < text, "{user}");
+        assert!(user.contains("change nothing they do not ask"), "{user}");
+        assert!(user.contains("Keep it exactly as it is"), "the layout is kept: {user}");
+        assert!(user.ends_with("Fix this now.\nThanks."));
+    }
+
+    #[test]
+    fn a_custom_prompt_leaves_it_to_the_model_whether_what_was_asked_is_the_layout() {
+        // However it is put -- no list of words says "number these steps" or
+        // "quote it" -- the prompt says to keep the layout unless it is what is
+        // asked, and what is not layout, and never says to give back one line
+        // or the same lines.
+        for asked in [
+            "number these steps",
+            "make each line a checkbox",
+            "quote it",
+            "make the subject line punchier",
+        ] {
+            let user = user_prompt(WritingAction::Custom, Some(asked), "Open it\nPlug it in", None);
+            assert!(user.contains(&format!("Their words: {asked}")), "{user}");
+            assert!(user.contains("unless what they ask is about the layout itself"), "{user}");
+            assert!(user.contains("A title, subject line or heading they ask you to reword"));
+            assert!(!user.contains("exactly the same lines"), "{asked}: {user}");
+        }
+        let one_line = user_prompt(WritingAction::Custom, Some("make it a list"), "Milk.", None);
+        assert!(!one_line.contains("Give back a single line"), "{one_line}");
+    }
+
+    #[test]
+    fn a_custom_rewrite_needs_words_of_one_sentence_and_nothing_else_does() {
+        let custom = |words: Option<&str>| rewrite_request(WritingAction::Custom, words);
+        assert_eq!(
+            custom(Some("  make it\n friendlier  ")).unwrap().as_deref(),
+            Some("make it friendlier")
+        );
+        assert!(custom(None).is_err());
+        assert!(custom(Some("   ")).is_err());
+        assert!(custom(Some(&"x ".repeat(200))).is_err(), "over the cap");
+        assert!(custom(Some(&"x".repeat(writing::MAX_INSTRUCTION_CHARS))).is_ok());
+        // The rest take none, and say none kept.
+        for action in [
+            WritingAction::Improve,
+            WritingAction::Grammar,
+            WritingAction::Concise,
+            WritingAction::Simplify,
+        ] {
+            assert_eq!(rewrite_request(action, Some("be rude")).unwrap(), None, "{action:?}");
+            assert_eq!(rewrite_request(action, None).unwrap(), None, "{action:?}");
+        }
+        // A message is not a rewrite.
+        assert!(rewrite_request(WritingAction::Compose, Some("an email")).is_err());
     }
 
     #[test]
@@ -494,7 +697,8 @@ mod tests {
 
     #[test]
     fn a_second_ask_says_what_went_wrong_before_the_text_not_after() {
-        let user = user_prompt(WritingAction::Improve, "one\ntwo", Some("Your first answer was"));
+        let user =
+            user_prompt(WritingAction::Improve, None, "one\ntwo", Some("Your first answer was"));
         let note = user.find("Your first answer was").unwrap();
         let text = user.find("The text to rewrite:").unwrap();
         assert!(note < text, "{user}");

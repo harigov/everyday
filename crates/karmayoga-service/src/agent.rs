@@ -106,6 +106,7 @@
 //!   [`Role::System`] line and shown to the model as a note from the
 //!   application -- see [`application_note`].
 
+use crate::deskwrite::MessageKind;
 use crate::events::Kind;
 use crate::maps::{GET_DIRECTIONS, SEARCH_PLACES};
 use crate::service::Service;
@@ -128,6 +129,7 @@ use karmayoga_core::proposal::{ProposalKind, ProposalSource};
 use karmayoga_core::quick::{ExtractAnswer, QuickContext, RESEARCH_EXTRACT};
 use karmayoga_core::record::RecordKind;
 use karmayoga_core::websearch::SearchResult;
+use karmayoga_core::writing::{WritingAction, WritingOutcome};
 use karmayoga_core::{ConversationId, FileId, KindId, MessageId, Vault};
 use rig_agent::agent::hook::{
     ModelTurnAction, ModelTurnFinished, ToolCall as HookToolCall, ToolCallAction, ToolResultAction,
@@ -412,12 +414,21 @@ pub trait Asker: Send + Sync + 'static {
 /// computer's desktop: how "type that I won't be available tomorrow" said to
 /// the talk key ends up in the mail they were writing. The shell that started
 /// the conversation hands one over in [`Reach::typist`]; a spoken turn with
-/// one is offered [`TYPE_TEXT`] and [`START_DICTATION`], and told what they
-/// are for.
+/// one is offered [`TYPE_TEXT`], [`START_DICTATION`], [`REWRITE_SELECTION`]
+/// and [`WRITE_MESSAGE`], and told what they are for.
 pub trait Typist: Send + Sync + 'static {
     /// Type `text` where the cursor was, as if the person had typed it. The
     /// error says why it could not be, in words fit to tell them.
     fn type_text(&self, text: String) -> futures::future::BoxFuture<'static, Result<(), String>>;
+
+    /// What is selected where the person was typing, so that "improve this"
+    /// has something to improve: copied without taking the keyboard from the
+    /// field, which keeps its selection, so that what is typed next goes over
+    /// it. Empty when nothing is selected. The error says why it could not be
+    /// read, in words fit to tell them.
+    fn selected_text(&self) -> futures::future::BoxFuture<'static, Result<String, String>> {
+        Box::pin(async { Err("Nothing here can read what is selected.".to_string()) })
+    }
 }
 
 /// How a scheduled run reaches its person: who it may ask while it works, and
@@ -436,8 +447,9 @@ pub struct Reach {
     pub sent_to: Vec<String>,
     /// What types on the person's desktop, for a conversation started there
     /// with the talk key -- see [`Typist`]. Only a spoken turn at this
-    /// computer is offered [`TYPE_TEXT`] and [`START_DICTATION`] for it, and
-    /// nothing else reads it.
+    /// computer is offered [`TYPE_TEXT`], [`START_DICTATION`],
+    /// [`REWRITE_SELECTION`] and [`WRITE_MESSAGE`] for it, and nothing else
+    /// reads it.
     pub typist: Option<Arc<dyn Typist>>,
 }
 
@@ -1228,6 +1240,11 @@ const TYPE_TEXT: &str = "type_text";
 /// [`start_dictation_tool`]. Named in the voice session's contract, which
 /// reads that it ran from [`Turned::dictate`].
 const START_DICTATION: &str = crate::voice::DICTATE_TOOL;
+/// Offered with [`TYPE_TEXT`], to the same turns -- see
+/// [`rewrite_selection_tool`].
+const REWRITE_SELECTION: &str = "rewrite_selection";
+/// Offered with [`TYPE_TEXT`], to the same turns -- see [`write_message_tool`].
+const WRITE_MESSAGE: &str = "write_message";
 /// The most [`TYPE_TEXT`] types at once: voice typing's own limit.
 const MAX_TYPED_CHARS: usize = 20_000;
 /// The tools declared in this file that change nothing, and so may be offered
@@ -2170,6 +2187,12 @@ impl ConfirmGate {
             let text = typed_text(arguments).filter(|t| t.chars().count() <= MAX_TYPED_CHARS);
             return text.and_then(|text| self.typing_question(text));
         }
+        // These two type by themselves, and the text is not in the call: the
+        // tool writes it. So the question is theirs to ask once they have it,
+        // by the same rule, from the same state -- see [`TypingRule`].
+        if name == REWRITE_SELECTION || name == WRITE_MESSAGE {
+            return None;
+        }
         let fetched = fetched_address(name, arguments);
         let own = || {
             let kind = must_confirm(self.effect_of(name, arguments), self.enabled)?;
@@ -2254,9 +2277,13 @@ impl ConfirmGate {
     /// In a conversation the wake word opened ([`Turn::woken`]), only a
     /// single line goes without asking: what said the name may have been a
     /// video, and a line break typed into a terminal or a chat is Enter.
+    ///
+    /// [`REWRITE_SELECTION`] and [`WRITE_MESSAGE`] are held to the same rule
+    /// by [`TypingRule`], which they carry, and which this and
+    /// [`typing_held`] share.
     fn typing_question(&self, text: &str) -> Option<&'static str> {
-        let lines = self.woken && text.contains(['\n', '\r']);
-        (self.spoken_request.is_none() || self.strangers_heard() || lines).then_some("desktop")
+        typing_held(self.spoken_request.is_some(), self.woken, self.strangers_heard(), text)
+            .then_some("desktop")
     }
 
     /// Has a stranger's writing reached this turn: mail, a story, a bank's
@@ -3094,6 +3121,11 @@ struct TurnMeta {
     /// [`build`], which offers [`TYPE_TEXT`] with it to a spoken turn that
     /// somebody is at.
     typist: Option<Arc<dyn Typist>>,
+    /// When what a tool types for the person is put to them first -- the
+    /// state [`ConfirmGate::typing_question`] reads, shared with it. Handed
+    /// to [`REWRITE_SELECTION`] and [`WRITE_MESSAGE`], which type by
+    /// themselves.
+    typing: TypingRule,
     /// Set when this turn may only read -- see [`Turn::read_only`]. Read by
     /// [`build`], which offers it reading tools and nothing that reaches out.
     read_only: bool,
@@ -3102,9 +3134,9 @@ struct TurnMeta {
 impl TurnMeta {
     /// What types for the person when this turn is one that somebody is
     /// talking at this computer's desktop, or `None`: the one question that
-    /// decides whether it is offered [`TYPE_TEXT`] and [`START_DICTATION`]
-    /// ([`build`]) and told what they are for ([`TYPING_NOTE`]), so that the
-    /// two cannot disagree.
+    /// decides whether it is offered [`TYPE_TEXT`], [`START_DICTATION`],
+    /// [`REWRITE_SELECTION`] and [`WRITE_MESSAGE`] ([`build`]) and told what
+    /// they are for ([`TYPING_NOTE`]), so that the two cannot disagree.
     ///
     /// Only a conversation talked here with the talk key or the wake word
     /// hands over a typist: in the window, the field with the keyboard is the
@@ -3512,14 +3544,24 @@ fn build(
     if meta.spoken && reaches_out && vault.supports_routines() {
         offered.push(read_brief_tool(vault.clone()));
     }
-    // Typing where the person was typing, and handing the microphone over to
-    // a dictation to be typed there, only for a conversation talked at this
-    // computer with the talk key or the wake word, which is what hands over a
-    // typist: in the window, the field with the keyboard is the window's own,
-    // and on a call there is no desktop. See [`TurnMeta::typist_here`].
+    // Typing where the person was typing, handing the microphone over to a
+    // dictation to be typed there, and writing for them there, only for a
+    // conversation talked at this computer with the talk key or the wake word,
+    // which is what hands over a typist: in the window, the field with the
+    // keyboard is the window's own, and on a call there is no desktop. See
+    // [`TurnMeta::typist_here`].
     if let Some(typist) = meta.typist_here() {
         offered.push(type_text_tool(typist.clone()));
         offered.push(start_dictation_tool());
+        // And changing what they have selected there, or writing a message
+        // from a few words of theirs: the two that ask the medium model for
+        // the text they then type. See [`crate::deskwrite`].
+        offered.push(rewrite_selection_tool(
+            meta.service.clone(),
+            typist.clone(),
+            meta.typing.clone(),
+        ));
+        offered.push(write_message_tool(meta.service.clone(), typist.clone(), meta.typing.clone()));
     }
     // Reading something out in full, only where something reads aloud: a
     // spoken turn, whose session reads it after the reply.
@@ -5074,9 +5116,76 @@ async fn briefing(service: &Arc<Service>, thread: ThreadId) -> CommandResult<Str
 /// is nothing in it but space. Space at the start of a line is kept: indented
 /// code, or a quoted reply, is typed as it was given.
 fn typed_text(arguments: &Value) -> Option<&str> {
-    let text = arguments.get("text").and_then(Value::as_str)?;
-    let text = text.strip_suffix('\n').map_or(text, |t| t.strip_suffix('\r').unwrap_or(t));
+    let text = minus_last_break(arguments.get("text").and_then(Value::as_str)?);
     (!text.trim().is_empty()).then_some(text)
+}
+
+/// `text` less one line break at the very end, which is never typed: no Enter
+/// is pressed.
+fn minus_last_break(text: &str) -> &str {
+    text.strip_suffix('\n').map_or(text, |t| t.strip_suffix('\r').unwrap_or(t))
+}
+
+/// Whether text about to be typed into the person's own window must be shown
+/// to them first: when their own spoken request is not there to go by
+/// (`asked`), when a stranger's words are in the turn (`strangers`), or --
+/// in a conversation the wake word opened (`woken`) -- when it has a line
+/// break. [`ConfirmGate::typing_question`] says why for [`TYPE_TEXT`]; this is
+/// the whole of the rule, for it and for [`TypingRule`] alike.
+fn typing_held(asked: bool, woken: bool, strangers: bool, text: &str) -> bool {
+    let lines = woken && text.contains(['\n', '\r']);
+    !asked || strangers || lines
+}
+
+/// [`ConfirmGate::typing_question`]'s rule for the tools that type by
+/// themselves ([`REWRITE_SELECTION`], [`WRITE_MESSAGE`]), over the same state.
+///
+/// The gate sees a call before it runs, and for these the text is not in the
+/// call: the tool gets it from the medium model, and only then knows what it
+/// would type. So the question moves into the tool, which asks this, and a
+/// text it may not type is handed back to the model to pass to [`TYPE_TEXT`] --
+/// whose gate then puts it to the person, as for any other. Neither is a way
+/// round the other.
+///
+/// Made in [`run_turn`] from the very `Arc`s the gate holds, so that a
+/// stranger's words read in the middle of the turn count here as they do
+/// there. Everything else it needs is fixed for the turn.
+#[derive(Clone, Default)]
+struct TypingRule {
+    /// The person's own spoken request is there to go by:
+    /// [`ConfirmGate::spoken_request`] is set.
+    asked: bool,
+    /// The conversation was opened by the wake word: see [`Turn::woken`].
+    woken: bool,
+    /// [`ConfirmGate::provenance`], the same one.
+    provenance: Arc<Mutex<Provenance>>,
+    /// [`ConfirmGate::mail_read_this_turn`], the same one.
+    mail_read: Arc<AtomicBool>,
+}
+
+impl TypingRule {
+    /// Whether `text` may not be typed without showing it to the person
+    /// first. Read as [`TYPE_TEXT`]'s gate reads what it is given: less one
+    /// line break at the very end, which is not typed, so that what the gate
+    /// would let through is let through here -- a rewrite of a line selected
+    /// by triple-click keeps the break the selection had, and is one line.
+    ///
+    /// Held for a stranger's words in the turn whoever wrote the text. A
+    /// fixed rewrite ("improve this") has nothing of the model's own in it,
+    /// but the call is the model's to make, which a mail read earlier in the
+    /// turn can steer, and a quoted mail that was selected can steer what the
+    /// medium model gives back.
+    fn held(&self, text: &str) -> bool {
+        let strangers = self.provenance.lock().unwrap().heard_strangers()
+            || self.mail_read.load(Ordering::Acquire);
+        typing_held(self.asked, self.woken, strangers, minus_last_break(text))
+    }
+
+    /// The model has been shown what was selected, which may be anybody's
+    /// words -- a mail, a page -- and is now in the turn like them.
+    fn selection_shown(&self) {
+        self.mail_read.store(true, Ordering::Release);
+    }
 }
 
 /// What a spoken turn that can type is told about it, after its note: the
@@ -5090,19 +5199,28 @@ fn typed_text(arguments: &Value) -> Option<&str> {
 /// the same reason never in the system prompt: only a turn from the talk key
 /// or the wake word is told it, and the preamble is the same for every turn
 /// of a conversation. Kept short because it goes with every such turn. Names
-/// [`TYPE_TEXT`] and [`START_DICTATION`] as literals, which a test holds to
-/// the constants.
+/// [`TYPE_TEXT`], [`WRITE_MESSAGE`], [`REWRITE_SELECTION`] and
+/// [`START_DICTATION`] as literals, which a test holds to the constants.
+///
+/// It is where "type" and "write" are told apart, which people use as
+/// synonyms and which are not: what is *typed* is their words, to the letter;
+/// what is *written* is a message, with the greeting and sign-off the kind of
+/// message calls for, in their voice.
 const TYPING_NOTE: &str = "They are talking to you from wherever they are on their desktop, \
-    not from Karma Yoga's window. type_text types into the text field that had the keyboard \
-    when they began -- a mail, a chat, a document, a form, in any application. When they ask \
-    you to type, write, put, insert, enter or fill in something, or to reply saying \
-    something, call type_text with it; never save a note, task or draft instead unless they \
-    ask for one. \"Here\" means that field. For a long dictation -- a document, a message, \
-    notes -- call start_dictation instead. When what is to be typed needs something found \
-    first -- an article they read, a mail, a page, a note -- find it with your tools, then \
-    type what you wrote. If the note above says what Karma Yoga's own window shows, \
-    \"this article\" or \"that mail\" can mean what is there, but it need not be the window \
-    they are typing in.";
+    not from Karma Yoga's window. Your typing tools work on the text field that had the keyboard \
+    when they began. When they say type, put, insert or fill in, dictate words, or want \
+    something literal written out -- an address, a date, a name, a number, code -- call \
+    type_text with exactly that: filler and false starts out, nothing reworded or added. A \
+    message to somebody -- write, reply saying, tell them -- is write_message, with what they \
+    said and the kind they named: email, chat (Slack, Teams), text (message, SMS, WhatsApp), or \
+    other; it adds the greeting and sign-off. To change what they have selected -- improve, \
+    simplify, shorten, fix \"this\" -- call rewrite_selection; to change a message already \
+    typed, ask them to select it and say what to change, never write it again. For a long \
+    dictation call start_dictation. Never save a note, task or draft instead unless they ask for \
+    one. \"Here\" means that field. If it needs something found first -- an article, a mail, a \
+    page, a note -- find it with your tools, then type what you wrote. If the note above says \
+    what Karma Yoga's own window shows, \"this article\" or \"that mail\" can mean what is \
+    there, but it need not be the window they are typing in.";
 
 /// Type text into the field the person is working in, in whatever
 /// application had the keyboard when they began talking -- "type that I
@@ -5114,28 +5232,36 @@ const TYPING_NOTE: &str = "They are talking to you from wherever they are on the
 /// is sent or submitted: no Enter is pressed, and the text's own last line
 /// break is left off.
 ///
+/// Exactly what it is given, which is what tells it from [`WRITE_MESSAGE`]:
+/// "type" is the person's own words to the letter, and "write" is a message
+/// composed from them. It is also where [`REWRITE_SELECTION`] and
+/// [`WRITE_MESSAGE`] send a text they may not type themselves
+/// ([`TypingRule`]), so that the person is asked about it here.
+///
 /// The description says what [`TYPING_NOTE`] says, because a model is as
 /// likely to read one as the other and a tool that does not say what it is
 /// for is one among a hundred and fifty.
 fn type_text_tool(typist: Arc<dyn Typist>) -> PortableDynamicTool {
     PortableDynamicTool::new(
         TYPE_TEXT,
-        "Type text into the text field the person is working in -- whatever had the keyboard \
-         when they started talking to you: a mail, a chat, a document, a form, in any \
-         application -- as if they had typed it themselves. It is how words get where they \
-         are working: use it whenever they ask you to type, write, put, insert, enter or fill \
-         in something, or to reply saying something (\"type that I won't be available \
-         tomorrow\", \"write a quick reply saying yes, Friday works\", \"put my address \
-         here\"), and never save a note or a draft in its place unless they ask for one. \
-         \"Here\" means that field. When what they want typed has to be looked up first \
-         (\"write a two-line snippet of that article here\"), find it with your other tools, \
-         then type what you wrote. Give the exact text. When they dictated it, it is \
-         their words: filler and false starts out, their own corrections applied, punctuated \
-         and capitalised, but not reworded, and nothing added -- no greeting or sign-off they \
-         did not say. When they asked you to write something, it is what you wrote, in their \
-         voice. It is typed at the cursor, and nothing is sent or submitted. Afterwards say \
-         in a few words that it is typed, not what it says. For more than a sentence or two \
-         of dictation, use start_dictation instead.",
+        "Type exactly the text given into the text field the person is working in -- whatever had \
+         the keyboard when they started talking to you: a mail, a chat, a document, a form, in \
+         any application -- as if they had typed it themselves. Use it whenever they ask you to \
+         type, put, insert, enter or fill in something, or dictate words (\"type that I won't be \
+         available tomorrow\", \"put my address here\"), to write out something literal (\"write \
+         today's date in this box\": an address, a date, a name, a number, a heading, code), and \
+         for text you worked out from something you looked up (\"write a two-line snippet of that \
+         article here\": find it with your other tools, then type what you wrote). Never save a \
+         note or a draft in its place unless they ask for one. \"Here\" means that field. Give \
+         the exact text. When they dictated it, it is their words: filler and false starts out, \
+         their own corrections applied, punctuated and capitalised, but not reworded, and nothing \
+         added -- no greeting or sign-off they did not say. When they ask you to write a message \
+         to somebody or a reply (\"write that I'm running late\", \"reply saying yes, Friday \
+         works\"), use write_message instead, and rewrite_selection to change what is selected. \
+         When one of those hands you text and says to type it, type exactly that. It is typed at \
+         the cursor, and nothing is sent or submitted. Afterwards say in a few words that it is \
+         typed, not what it says. For more than a sentence or two of dictation, use \
+         start_dictation instead.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -5210,6 +5336,349 @@ fn start_dictation_tool() -> PortableDynamicTool {
                              they are done. Say only a couple of words, such as \"Go ahead.\", \
                              and nothing else.",
                 })))
+            })
+        },
+    )
+}
+
+/// What is selected where the person was typing, read through `typist` --
+/// and an error that tells the model what to say when nothing is.
+async fn selection_of(typist: &dyn Typist) -> Result<String, ToolExecutionError> {
+    let selected = typist.selected_text().await.map_err(ToolExecutionError::other)?;
+    if selected.trim().is_empty() {
+        return Err(ToolExecutionError::other(
+            "Nothing is selected where they were typing. Ask them to select the text they \
+             mean, and then to ask again.",
+        ));
+    }
+    Ok(selected)
+}
+
+/// Type `text` for the person now, or say it may not be: `Ok(true)` when it
+/// has been typed, `Ok(false)` when [`TypingRule::held`] says it must be put
+/// to them first, in which case nothing is typed and the caller hands the
+/// text to the model to pass to [`TYPE_TEXT`]. Text there is nothing in, or
+/// too much of, is an error, as [`TYPE_TEXT`] makes it.
+async fn type_or_hold(
+    typist: &dyn Typist,
+    rule: &TypingRule,
+    text: &str,
+) -> Result<bool, ToolExecutionError> {
+    if text.trim().is_empty() {
+        return Err(ToolExecutionError::other("the model gave back nothing to type"));
+    }
+    let length = text.chars().count();
+    if length > MAX_TYPED_CHARS {
+        return Err(ToolExecutionError::other(format!(
+            "that is {length} characters; at most {MAX_TYPED_CHARS} are typed at once"
+        )));
+    }
+    if rule.held(text) {
+        return Ok(false);
+    }
+    typist.type_text(text.to_string()).await.map_err(ToolExecutionError::other)?;
+    Ok(true)
+}
+
+/// Whether `selected` is still what is selected where the person was typing,
+/// compared as the words and not the space around them. A rewrite is ready
+/// seconds after the selection was read, and the person may have clicked
+/// somewhere else, or into another window, by then: what is typed would go
+/// over whatever is selected *now*. A selection that cannot be read again is
+/// not known to be the same.
+async fn still_selected(typist: &dyn Typist, selected: &str) -> bool {
+    typist.selected_text().await.is_ok_and(|now| now.trim() == selected.trim())
+}
+
+/// Say what became of a written text, on its record. Not the tool's to fail
+/// over: the record is a history for the person to read, and a text that was
+/// typed has been typed whatever becomes of it.
+async fn settle_quietly(
+    service: &Arc<Service>,
+    id: karmayoga_core::WritingId,
+    outcome: WritingOutcome,
+) {
+    if let Err(e) = crate::deskwrite::settle(service, id, outcome).await {
+        tracing::debug!(error = %e.message, "could not say what became of a written text");
+    }
+}
+
+/// What [`REWRITE_SELECTION`] was asked for, from its arguments: the action,
+/// and the instruction only for [`WritingAction::Custom`], which is the one
+/// that needs it, kept as writing help keeps it -- one line of up to
+/// [`karmayoga_core::writing::MAX_INSTRUCTION_CHARS`], which is checked here,
+/// before the selection is read, and not after the person's clipboard has been
+/// used for nothing. One given with a fixed action is not used: it would be
+/// the model's words in a rewrite that is otherwise the person's alone.
+fn rewriting(arguments: &Value) -> Result<(WritingAction, Option<String>), ToolExecutionError> {
+    let how = arguments.get("how").and_then(Value::as_str).unwrap_or_default().trim();
+    let action = match how {
+        "improve" => WritingAction::Improve,
+        "simplify" => WritingAction::Simplify,
+        "concise" => WritingAction::Concise,
+        "grammar" => WritingAction::Grammar,
+        "other" => WritingAction::Custom,
+        _ => {
+            return Err(ToolExecutionError::invalid_args(
+                "how is one of improve, simplify, concise, grammar or other",
+            ));
+        }
+    };
+    let instruction = arguments.get("instruction").and_then(Value::as_str);
+    let instruction = crate::domains::writing::rewrite_request(action, instruction)
+        .map_err(|e| ToolExecutionError::invalid_args(e.message))?;
+    Ok((action, instruction))
+}
+
+/// What [`WRITE_MESSAGE`] was asked for, from its arguments: what to say, what
+/// kind of message it is, and who it is for. A kind that is missing, or not
+/// one of the four, is `other`: a message written as a short, friendly one is
+/// a better answer than an error to somebody who is waiting to hear it typed.
+fn message_asked(
+    arguments: &Value,
+) -> Result<(String, MessageKind, Option<String>), ToolExecutionError> {
+    let said = |key: &str| {
+        arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty())
+    };
+    let Some(what) = said("what") else {
+        return Err(ToolExecutionError::invalid_args(
+            "say what to write in what, in their words, as fully as they said it",
+        ));
+    };
+    let kind = arguments
+        .get("kind")
+        .and_then(|k| serde_json::from_value(k.clone()).ok())
+        .unwrap_or(MessageKind::Other);
+    Ok((what.to_string(), kind, said("to").map(str::to_string)))
+}
+
+/// The answer to a call that typed nothing because the person is to be shown
+/// the text first: the text, and what to do with it.
+fn held_output(text: &str, then: &str) -> ToolOutput {
+    ToolOutput::json(serde_json::json!({
+        "ok": true,
+        "typed": false,
+        "text": text,
+        "note": format!(
+            "Not typed yet: they must be shown it first. Call type_text now with exactly this \
+             text and nothing else changed; {then} Do not read it out."
+        ),
+    }))
+}
+
+/// Change what the person has selected, in whatever application it is in, and
+/// type the result over it -- "improve this", "make this concise", "make it
+/// friendlier". The shell reads the selection ([`Typist::selected_text`]) and
+/// types the answer ([`Typist::type_text`], which replaces it: the field keeps
+/// its selection); [`crate::deskwrite::rewrite`] is what asks the medium
+/// model, and keeps the record writing help's popup keeps, which is settled
+/// here as the popup settles its own.
+///
+/// Offered with [`TYPE_TEXT`], to the same turns alone
+/// ([`TurnMeta::typist_here`]). The selection never goes to the model that is
+/// holding the conversation, and neither does the rewrite -- it may be
+/// somebody else's words, a mail or a page, and it is in neither the person's
+/// nor the model's to read out -- unless the person has to be shown it first
+/// ([`TypingRule::held`]): then the model is handed the text to pass to
+/// [`TYPE_TEXT`], whose gate asks, and what it was shown is counted as a
+/// stranger's, as a mail read is.
+///
+/// Three things are settled before the person's clipboard is used or the
+/// medium model is asked: the instruction is checked, and a request that may
+/// be the assistant's own voice coming back ([`TypingRule::asked`]) is
+/// refused outright -- nothing is read, because it is never typed straight in
+/// and a copy presses keys in whatever window has them. And one after: a
+/// rewrite is ready seconds later, and goes over the selection only if it is
+/// still the one it was made from ([`still_selected`]). Declared here because
+/// it needs the typist and the rule, not the vault.
+fn rewrite_selection_tool(
+    service: Arc<Service>,
+    typist: Arc<dyn Typist>,
+    rule: TypingRule,
+) -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        REWRITE_SELECTION,
+        "Rewrite the text the person has selected, in place, in whatever application it is in: \
+         improve it, simplify it, make it concise, correct its grammar, or change it any other \
+         way they ask. Use it whenever they ask to change, fix, shorten, simplify, polish, \
+         proofread or translate what is selected -- \"this\", \"the selected text\", \"what I \
+         highlighted\" (\"improve this\", \"make this concise\", \"correct the grammar\", \
+         \"make it friendlier\", \"say this more formally\"). It reads the selection itself, \
+         so never ask them to read it out, and the rewrite replaces it. Give how: improve \
+         (clearer and better put), simplify (plainer words, shorter sentences), concise \
+         (shorter, every fact kept), grammar (spelling, grammar and punctuation only), or \
+         other, with instruction saying what they asked for in their words. When nothing is \
+         selected it says so: ask them to select the text first. Afterwards say in a few words \
+         that it is done, not what it says. For words that are not a change to what is \
+         selected, use type_text or write_message.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "how": {
+                    "type": "string",
+                    "enum": ["improve", "simplify", "concise", "grammar", "other"],
+                    "description": "What to do to it. other for anything else they ask."
+                },
+                "instruction": {
+                    "type": "string",
+                    "description": "What they asked for, in their words (\"make it friendlier\", \
+                                    \"translate it to Spanish\"). Required when how is other; \
+                                    left out otherwise."
+                }
+            },
+            "required": ["how"],
+            "additionalProperties": false,
+        }),
+        move |arguments: serde_json::Value| {
+            let (service, typist, rule) = (service.clone(), typist.clone(), rule.clone());
+            Box::pin(async move {
+                let (action, instruction) = rewriting(&arguments)?;
+                if !rule.asked {
+                    return Err(ToolExecutionError::other(
+                        "That may have been your own voice coming back, so nothing was read \
+                         and nothing was changed. Ask them to say it again.",
+                    ));
+                }
+                let selected = selection_of(typist.as_ref()).await?;
+                let written =
+                    crate::deskwrite::rewrite(&service, &selected, action, instruction.as_deref())
+                        .await
+                        .map_err(|e| ToolExecutionError::other(e.message))?;
+                if !still_selected(typist.as_ref(), &selected).await {
+                    settle_quietly(&service, written.id, WritingOutcome::Cancelled).await;
+                    return Err(ToolExecutionError::other(
+                        "The selection changed before the rewrite was ready, so nothing was \
+                         replaced. Ask them to select the text again, and to ask again.",
+                    ));
+                }
+                // As the model made it, line breaks and all: it goes over a
+                // selection that had its own, which `rewrite` has put back.
+                match type_or_hold(typist.as_ref(), &rule, &written.text).await {
+                    Ok(true) => {
+                        settle_quietly(&service, written.id, WritingOutcome::Replaced).await;
+                        Ok(ToolOutput::json(serde_json::json!({
+                            "ok": true,
+                            "replaced": true,
+                            "note": "The selection is replaced with the rewrite. Say in a few \
+                                     words that it is done -- not what it says, and do not \
+                                     read it out.",
+                        })))
+                    }
+                    // Not settled: it is shown to them first, as `type_text`
+                    // types it, and its record stays as it is until then.
+                    Ok(false) => {
+                        rule.selection_shown();
+                        Ok(held_output(&written.text, "once they agree it replaces the selection."))
+                    }
+                    Err(e) => {
+                        settle_quietly(&service, written.id, WritingOutcome::Cancelled).await;
+                        Err(e)
+                    }
+                }
+            })
+        },
+    )
+}
+
+/// Write a message from a few words of the person's and type it where they
+/// were typing -- "write that I'm not feeling well and will reach out
+/// tomorrow", "reply on Slack saying yes". [`crate::deskwrite::compose`] asks
+/// the medium model for the message, in their voice, with the greeting and
+/// sign-off its kind calls for; this types it, as [`TYPE_TEXT`] types, and
+/// nothing is sent. Its record is settled as [`REWRITE_SELECTION`]'s is.
+///
+/// Offered with [`TYPE_TEXT`], to the same turns alone, and told apart from it
+/// by what the person said: "type" is their words to the letter, "write" a
+/// message to somebody is this, and filling in a field -- an address, a date --
+/// is "type" whatever verb they use. What it wrote comes back to the model,
+/// unlike a rewrite, because it is the person's own words in their own voice,
+/// not a stranger's; but what is typed is not selected, and nothing can
+/// replace it, so the model is told to ask them to select it and say what to
+/// change ([`REWRITE_SELECTION`]) rather than write it again on top. And what
+/// the rule ([`TypingRule::held`]) will not let it type goes to [`TYPE_TEXT`]
+/// instead, to be shown to the person.
+fn write_message_tool(
+    service: Arc<Service>,
+    typist: Arc<dyn Typist>,
+    rule: TypingRule,
+) -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        WRITE_MESSAGE,
+        "Write a message for the person from what they said it should say, the way they would \
+         write it, and type it where they are typing -- a mail, a chat, a text, anywhere. Use \
+         it when they ask you to write something to somebody, to reply, or to tell someone \
+         something, in a few words that you are to put properly: \"write that I'm not feeling \
+         well and will reach out tomorrow\", \"reply saying yes, Friday works\", \"tell Sam I'm \
+         running late\". The greeting, the sign-off and the warmth are yours to supply, as the \
+         kind of message calls for -- which is what makes it different from type_text, which \
+         types exactly what it is given: when they ask you to type or dictate words, use that \
+         instead. Give what they asked to be said in what, in their words, as fully as they \
+         said it. Give kind: email when they say email or mail; chat for Slack, Teams, Discord \
+         or another chat app; text for a text message, SMS, iMessage, WhatsApp, or when they \
+         just say message; other when they do not say. Give to when they name who it is for. \
+         It is only for a message to somebody -- an email, a chat or text message, a reply: to \
+         fill in a field or write out something literal -- an address, a date, a name, a \
+         number, a heading, code -- use type_text with exactly that. It is typed at the \
+         cursor, and nothing is sent. Afterwards say in a few words that it is typed, not \
+         what it says. It cannot be changed by writing it again: if they want it changed, ask \
+         them to select it and say what to change, then use rewrite_selection.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "what": {
+                    "type": "string",
+                    "description": "What they asked to be said, in their words and as fully as \
+                                    they said it -- every fact, name and time -- not shortened \
+                                    or written up."
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["email", "chat", "text", "other"],
+                    "description": "email for an email; chat for Slack, Teams, Discord; text for \
+                                    a text message, SMS, WhatsApp, or \"message\" said alone; \
+                                    other when they did not say."
+                },
+                "to": {
+                    "type": "string",
+                    "description": "Who it is for, when they named somebody."
+                }
+            },
+            "required": ["what", "kind"],
+            "additionalProperties": false,
+        }),
+        move |arguments: serde_json::Value| {
+            let (service, typist, rule) = (service.clone(), typist.clone(), rule.clone());
+            Box::pin(async move {
+                let (what, kind, to) = message_asked(&arguments)?;
+                let written = crate::deskwrite::compose(&service, &what, kind, to.as_deref())
+                    .await
+                    .map_err(|e| ToolExecutionError::other(e.message))?;
+                // No Enter is pressed: its own last line break is left off,
+                // as for `type_text`, and so is any other space around it.
+                let text = written.text.trim();
+                match type_or_hold(typist.as_ref(), &rule, text).await {
+                    Ok(true) => {
+                        settle_quietly(&service, written.id, WritingOutcome::Replaced).await;
+                        let typed: String = text.chars().take(120).collect();
+                        Ok(ToolOutput::json(serde_json::json!({
+                            "ok": true,
+                            "typed": typed,
+                            "text": text,
+                            "note": "It is typed where they were typing. Say so in a few words \
+                                     -- not what it says. It is not selected, so it cannot be \
+                                     changed by writing it again: if they want it changed, ask \
+                                     them to select it and say what to change, then use \
+                                     rewrite_selection.",
+                        })))
+                    }
+                    Ok(false) => {
+                        Ok(held_output(text, "once they agree it is typed where they were."))
+                    }
+                    Err(e) => {
+                        settle_quietly(&service, written.id, WritingOutcome::Cancelled).await;
+                        Err(e)
+                    }
+                }
             })
         },
     )
@@ -6664,6 +7133,13 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // says about which tools are direct: today that is always exactly
     // `["create_note"]`, and the cap is fixed at one regardless.
     let note_budget = drafting.is_some().then(|| Arc::new(AtomicU32::new(1)));
+    // What the gate and the tools that type by themselves both read to know
+    // whether a stranger's words are in the turn, so they are made before
+    // either: see [`TypingRule`]. Whether the person's own spoken request is
+    // there to go by is likewise settled once.
+    let provenance = Arc::new(Mutex::new(provenance));
+    let mail_read = Arc::new(AtomicBool::new(screen_quotes_mail || sees_pictures || earlier_words));
+    let asked_aloud = spoken && voice_approves && via.is_none();
     let meta = TurnMeta {
         service: service.clone(),
         conversation,
@@ -6678,6 +7154,12 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         asker: reach.asker.clone(),
         spoken,
         typist: reach.typist.clone(),
+        typing: TypingRule {
+            asked: asked_aloud,
+            woken,
+            provenance: provenance.clone(),
+            mail_read: mail_read.clone(),
+        },
         read_only,
     };
     // Where the conversation is happening goes in the preamble, which is the
@@ -6736,7 +7218,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         // a job's follow-up was not asked for by anybody who is.
         confirm_web: settings.confirm_web || nobody_watching || follow_up.is_some(),
         watched: !nobody_watching && follow_up.is_none(),
-        spoken_request: (spoken && voice_approves && via.is_none()).then(|| prompt.clone()),
+        spoken_request: asked_aloud.then(|| prompt.clone()),
         woken,
         unattended: nobody_watching,
         job: job.is_some(),
@@ -6753,11 +7235,9 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         park_unattended: settings.park_unattended,
         asker: reach.asker.clone(),
         ledger: ledger.clone(),
-        mail_read_this_turn: Arc::new(AtomicBool::new(
-            screen_quotes_mail || sees_pictures || earlier_words,
-        )),
+        mail_read_this_turn: mail_read,
         together: Arc::default(),
-        provenance: Arc::new(Mutex::new(provenance)),
+        provenance,
         safe_sites: Arc::new(Mutex::new(settings.safe_sites.clone())),
         site_trusted: site_trusted.clone(),
         note_budget,
@@ -7862,6 +8342,16 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
         // The card's own words say it; the note is for the model.
         END_VOICE_MODE | START_DICTATION => return String::new(),
         TYPE_TEXT => return str_of("typed").trim().to_string(),
+        // What was done to what is selected is in their window; what was
+        // written is shown, as what is typed is. A text held back to be shown
+        // first is not yet either.
+        REWRITE_SELECTION if result.get("replaced") == Some(&Value::Bool(true)) => {
+            return "Rewrote the selection".to_string();
+        }
+        WRITE_MESSAGE if !str_of("typed").is_empty() => {
+            return str_of("typed").trim().to_string();
+        }
+        REWRITE_SELECTION | WRITE_MESSAGE => return "Not typed yet".to_string(),
         SUMMARIZE_THREAD | READ_ALOUD | READ_BRIEF => {
             return str_of("title").trim().chars().take(120).collect();
         }
@@ -10222,6 +10712,7 @@ mod tests {
             asker: None,
             spoken,
             typist,
+            typing: TypingRule::default(),
             read_only: false,
         }
     }
@@ -10256,36 +10747,53 @@ mod tests {
     /// does not exist.
     #[test]
     fn the_typing_note_names_the_tools_it_is_about_and_what_to_do_with_them() {
-        assert!(TYPING_NOTE.contains(TYPE_TEXT), "{TYPING_NOTE}");
-        assert!(TYPING_NOTE.contains(START_DICTATION), "{TYPING_NOTE}");
+        for tool in [TYPE_TEXT, START_DICTATION, WRITE_MESSAGE, REWRITE_SELECTION] {
+            assert!(TYPING_NOTE.contains(tool), "{tool} is missing: {TYPING_NOTE}");
+        }
         assert_eq!(START_DICTATION, "start_dictation", "the session's contract names it too");
         for said in [
             "wherever they are on their desktop",
             "not from Karma Yoga's window",
             "had the keyboard",
-            "type, write, put, insert, enter or fill in",
-            "reply saying",
+            "type, put, insert or fill in",
+            "call type_text with exactly that",
+            "nothing reworded or added",
+            "an address, a date, a name, a number, code",
+            "a message to somebody -- write, reply saying, tell them -- is write_message",
+            "email, chat (slack, teams), text (message, sms, whatsapp)",
+            "greeting and sign-off",
+            "improve, simplify, shorten, fix \"this\" -- call rewrite_selection",
+            "to change a message already typed, ask them to select it",
+            "never write it again",
             "never save a note, task or draft",
             "\"Here\" means that field",
             "find it with your tools, then type what you wrote",
             "need not be the window they are typing in",
         ] {
-            assert!(TYPING_NOTE.contains(said), "{said:?} is missing: {TYPING_NOTE}");
+            assert!(
+                TYPING_NOTE.to_lowercase().contains(&said.to_lowercase()),
+                "{said:?} is missing: {TYPING_NOTE}"
+            );
         }
-        // It goes with every such turn, so it is not allowed to grow.
+        // It goes with every such turn, so it is not allowed to grow: this is
+        // the old note and the two tools it now tells the model about, and
+        // what is a message and what is not.
         let words = TYPING_NOTE.split_whitespace().count();
-        assert!(words < 180, "{words} words");
-        // The tool says the same as the note, and points at the other.
+        assert!(words < 235, "{words} words");
+        // The tool says the same as the note, and points at the others.
         let keyboard: Arc<dyn Typist> =
             Arc::new(Keyboard { typed: Mutex::new(Vec::new()), refuses: false });
         let typing = type_text_tool(keyboard).definition().description;
         for said in [
-            "type, write, put, insert, enter or fill in",
-            "reply saying",
-            "never save a note or a draft in its place",
+            "type, put, insert, enter or fill in",
+            "Never save a note or a draft in its place",
             "\"Here\" means that field",
             "find it with your other tools, then type what you wrote",
             "not reworded",
+            "to write out something literal",
+            "use write_message instead",
+            "rewrite_selection to change what is selected",
+            "type exactly that",
             "use start_dictation",
         ] {
             assert!(typing.contains(said), "{said:?} is missing: {typing}");
@@ -10321,6 +10829,470 @@ mod tests {
         assert!(description.contains("Go ahead."), "{description}");
         assert!(description.contains("type that part first with type_text"), "{description}");
         assert!(description.contains("stop dictating"), "{description}");
+    }
+
+    // ---- writing by voice: rewrite_selection and write_message ---------------
+
+    /// A desktop with something selected, or something wrong with reading it,
+    /// that counts how often it was read and remembers what it was asked to
+    /// type. A selection that `moves` is another from the second read on.
+    struct Selecting {
+        selection: Result<String, String>,
+        moves: Option<String>,
+        reads: std::sync::atomic::AtomicUsize,
+        typed: Mutex<Vec<String>>,
+    }
+
+    impl Selecting {
+        fn with(selection: &str) -> Arc<Self> {
+            Arc::new(Self {
+                selection: Ok(selection.into()),
+                moves: None,
+                reads: Default::default(),
+                typed: Mutex::new(Vec::new()),
+            })
+        }
+
+        /// What is selected is `selection` until it is read once, and `then`
+        /// after.
+        fn moving(selection: &str, then: &str) -> Arc<Self> {
+            Arc::new(Self {
+                selection: Ok(selection.into()),
+                moves: Some(then.into()),
+                reads: Default::default(),
+                typed: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn reads(&self) -> usize {
+            self.reads.load(Ordering::Acquire)
+        }
+
+        fn typed(&self) -> Vec<String> {
+            self.typed.lock().unwrap().clone()
+        }
+    }
+
+    impl Typist for Selecting {
+        fn type_text(
+            &self,
+            text: String,
+        ) -> futures::future::BoxFuture<'static, Result<(), String>> {
+            self.typed.lock().unwrap().push(text);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn selected_text(&self) -> futures::future::BoxFuture<'static, Result<String, String>> {
+            let earlier = self.reads.fetch_add(1, Ordering::AcqRel);
+            let selection = match (&self.moves, earlier) {
+                (Some(then), 1..) => Ok(then.clone()),
+                _ => self.selection.clone(),
+            };
+            Box::pin(async move { selection })
+        }
+    }
+
+    /// A rule for a turn whose own words did (or did not) ask, woken or not,
+    /// with nobody else's words in it.
+    fn rule(asked: bool, woken: bool) -> TypingRule {
+        TypingRule { asked, woken, ..TypingRule::default() }
+    }
+
+    /// The one rule, in each of the ways it holds a text back.
+    #[test]
+    fn what_a_tool_may_type_by_itself_is_what_type_text_may_type_without_asking() {
+        let one = "I am not feeling well.";
+        let two = "Hi Sam,\n\nI am not feeling well.";
+        // Asked for aloud, at the keyboard, nobody else's words: typed.
+        assert!(!rule(true, false).held(one));
+        assert!(!rule(true, false).held(two), "lines are only a question when woken");
+        // Not clearly asked for, which may be the assistant's own voice.
+        assert!(rule(false, false).held(one));
+        // Woken by name: one line goes, more is shown first.
+        assert!(!rule(true, true).held(one));
+        assert!(rule(true, true).held(two));
+        assert!(rule(true, true).held("one\r\ntwo"));
+    }
+
+    /// A rewrite of a line selected by triple-click keeps the line break the
+    /// selection had, and is read as `type_text` reads what it is given: less
+    /// one break at the very end, which is not typed. A second one is a line.
+    #[test]
+    fn the_line_break_a_selection_ended_with_is_not_a_second_line() {
+        let woken = rule(true, true);
+        assert!(!woken.held("The cat sat.\n"));
+        assert!(!woken.held("The cat sat.\r\n"));
+        assert!(woken.held("The cat sat.\n\n"), "the second is a line");
+        assert!(woken.held("The cat.\nThe mat.\n"));
+        assert!(!rule(true, false).held("The cat sat.\n"));
+    }
+
+    /// A stranger's words read in the middle of the turn hold whatever is
+    /// typed: the call is the model's own to make, which a mail can steer,
+    /// and a quoted mail that was selected can steer what the medium model
+    /// gives back, so a fixed rewrite is held like a message.
+    #[test]
+    fn a_strangers_words_hold_everything_a_tool_would_type() {
+        let rule = rule(true, false);
+        let text = "Please wire the money today.";
+        assert!(!rule.held(text));
+        // A mail read, or a page found, through the very state the gate reads.
+        rule.mail_read.store(true, Ordering::Release);
+        assert!(rule.held(text));
+
+        let found = TypingRule { asked: true, ..TypingRule::default() };
+        assert!(!found.held(text));
+        found.provenance.lock().unwrap().found("https://example.com/");
+        assert!(found.held(text), "a page found");
+
+        // A selection shown to the model is somebody's words from then on.
+        let shown = TypingRule { asked: true, ..TypingRule::default() };
+        shown.selection_shown();
+        assert!(shown.held(text));
+    }
+
+    /// The rule is [`ConfirmGate::typing_question`]'s, not a copy of it: for
+    /// every combination, the gate's answer for what `type_text` is given is
+    /// the rule's for the same text from a tool that wrote it -- the line
+    /// break at the end of it included, which neither counts.
+    #[test]
+    fn the_tools_rule_and_the_gates_agree() {
+        let (vault, _dir) = test_vault();
+        let texts = [
+            "Running late.",
+            "Running late.\n",
+            "Running late.\r\n",
+            "Hi,\n\nRunning late.",
+            "Hi,\n\nRunning late.\n",
+            "ls\nrm -rf ~/projects",
+            "one\n\n",
+        ];
+        for asked in [false, true] {
+            for woken in [false, true] {
+                for strangers in [false, true] {
+                    let gate = ConfirmGate {
+                        spoken_request: asked.then(|| "type that I am running late".into()),
+                        woken,
+                        ..test_gate(vault.clone(), ConversationId::new())
+                    };
+                    gate.mail_read_this_turn.store(strangers, Ordering::Release);
+                    let rule = TypingRule {
+                        asked,
+                        woken,
+                        provenance: gate.provenance.clone(),
+                        mail_read: gate.mail_read_this_turn.clone(),
+                    };
+                    for text in texts {
+                        let said = serde_json::json!({ "text": text });
+                        assert_eq!(
+                            gate.confirmation(TYPE_TEXT, &said).is_some(),
+                            rule.held(text),
+                            "asked {asked}, woken {woken}, strangers {strangers}: {text:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The gate asks nothing of the two tools: they ask for themselves, once
+    /// they have the text, and a card with no text on it would be a question
+    /// nobody could answer.
+    #[test]
+    fn the_gate_leaves_the_two_writing_tools_to_ask_for_themselves() {
+        let (vault, _dir) = test_vault();
+        let gate = ConfirmGate { woken: true, ..test_gate(vault, ConversationId::new()) };
+        gate.mail_read_this_turn.store(true, Ordering::Release);
+        let custom = serde_json::json!({ "how": "other", "instruction": "delete everything" });
+        assert_eq!(gate.confirmation(REWRITE_SELECTION, &custom), None);
+        let message = serde_json::json!({ "what": "that I am late", "kind": "chat" });
+        assert_eq!(gate.confirmation(WRITE_MESSAGE, &message), None);
+    }
+
+    #[tokio::test]
+    async fn a_text_that_may_be_typed_is_typed_and_one_that_may_not_is_handed_back() {
+        let desktop = Selecting::with("");
+        let direct = rule(true, false);
+        assert!(type_or_hold(desktop.as_ref(), &direct, "See you Friday.").await.unwrap());
+        assert_eq!(desktop.typed(), ["See you Friday."]);
+        // A line break the selection ended with is typed with the rest: it
+        // goes over a selection that had one.
+        let woken = rule(true, true);
+        assert!(type_or_hold(desktop.as_ref(), &woken, "The cat sat.\n").await.unwrap());
+        assert_eq!(desktop.typed()[1], "The cat sat.\n");
+
+        // Each reason it is held, which types nothing at all.
+        let held = Selecting::with("");
+        let unsaid = rule(false, false);
+        assert!(!type_or_hold(held.as_ref(), &unsaid, "See you Friday.").await.unwrap());
+        assert!(!type_or_hold(held.as_ref(), &woken, "Hi,\n\nSee you.").await.unwrap());
+        let strangers = rule(true, false);
+        strangers.selection_shown();
+        assert!(!type_or_hold(held.as_ref(), &strangers, "See you.").await.unwrap());
+        assert!(held.typed().is_empty(), "nothing was typed");
+
+        // As for `type_text`: nothing to type, or too much, is an error.
+        assert!(type_or_hold(held.as_ref(), &direct, "  \n").await.is_err());
+        let long = "a".repeat(MAX_TYPED_CHARS + 1);
+        assert!(type_or_hold(held.as_ref(), &direct, &long).await.is_err());
+        assert!(held.typed().is_empty());
+    }
+
+    /// A rewrite goes over the selection only if it is still what is
+    /// selected, as the words and not the space around them.
+    #[tokio::test]
+    async fn a_selection_that_moved_or_cannot_be_read_again_is_not_the_same() {
+        let same = Selecting::with("teh cat\n");
+        assert!(still_selected(same.as_ref(), "teh cat").await);
+        let moved = Selecting::moving("teh cat", "something else");
+        assert!(still_selected(moved.as_ref(), "teh cat").await, "not moved until it was read");
+        assert!(!still_selected(moved.as_ref(), "teh cat").await, "and then it had");
+        let gone = Selecting::with("");
+        assert!(!still_selected(gone.as_ref(), "teh cat").await);
+        let unreadable = Selecting {
+            selection: Err("The desktop would not let Karma Yoga copy.".into()),
+            moves: None,
+            reads: Default::default(),
+            typed: Mutex::new(Vec::new()),
+        };
+        assert!(!still_selected(&unreadable, "teh cat").await);
+    }
+
+    /// Nothing selected is told to the model as something to ask the person
+    /// for, and a desktop that cannot read it says why.
+    #[tokio::test]
+    async fn nothing_selected_says_to_select_something_first() {
+        let nothing = Selecting::with("  \n");
+        let message = selection_of(nothing.as_ref()).await.expect_err("nothing").to_string();
+        assert!(message.contains("Nothing is selected"), "{message}");
+        assert!(message.contains("select the text"), "{message}");
+
+        let kept = Selecting::with("teh cat");
+        assert_eq!(selection_of(kept.as_ref()).await.unwrap(), "teh cat");
+        assert!(kept.typed().is_empty(), "reading it types nothing");
+
+        let broken = Selecting {
+            selection: Err("The desktop would not let Karma Yoga copy.".into()),
+            moves: None,
+            reads: Default::default(),
+            typed: Mutex::new(Vec::new()),
+        };
+        let why = selection_of(&broken).await.expect_err("refused").to_string();
+        assert!(why.contains("would not let Karma Yoga copy"), "{why}");
+    }
+
+    /// The tool with nothing selected stops before it asks any model, and
+    /// types nothing; with `other` and no usable instruction, or when the
+    /// request may be an echo, it stops before it reads the selection at all.
+    #[tokio::test]
+    async fn rewrite_selection_with_nothing_selected_or_nothing_asked_types_nothing() {
+        let desktop = Selecting::with("");
+        let tool =
+            rewrite_selection_tool(Arc::new(Service::new()), desktop.clone(), rule(true, false));
+        let said = tool.execute(serde_json::json!({ "how": "improve" })).await;
+        let message = said.expect_err("nothing selected").to_string();
+        assert!(message.contains("Nothing is selected"), "{message}");
+        assert_eq!(desktop.reads(), 1, "it was read to find that out");
+
+        let before = desktop.reads();
+        let said = tool.execute(serde_json::json!({ "how": "other" })).await;
+        let message = said.expect_err("no instruction").to_string();
+        assert!(message.contains("say what to change"), "{message}");
+        let said = tool.execute(serde_json::json!({ "how": "other", "instruction": " " })).await;
+        assert!(said.is_err());
+        let long = "make it friendlier ".repeat(30);
+        let said = tool.execute(serde_json::json!({ "how": "other", "instruction": long })).await;
+        let message = said.expect_err("too long").to_string();
+        assert!(message.contains("keep it to one sentence"), "{message}");
+        assert!(tool.execute(serde_json::json!({ "how": "polish" })).await.is_err());
+        assert!(tool.execute(serde_json::json!({})).await.is_err());
+        assert_eq!(desktop.reads(), before, "none of those read the selection");
+
+        // Words that may be the assistant's own voice read nothing and change
+        // nothing: it would never be typed straight in, and a copy presses
+        // keys in whatever window has them.
+        let echoed = Selecting::with("teh cat");
+        let unsure =
+            rewrite_selection_tool(Arc::new(Service::new()), echoed.clone(), rule(false, false));
+        let said = unsure.execute(serde_json::json!({ "how": "improve" })).await;
+        let message = said.expect_err("may be an echo").to_string();
+        assert!(message.contains("Ask them to say it again"), "{message}");
+        assert_eq!(echoed.reads(), 0);
+        assert!(echoed.typed().is_empty());
+        assert!(desktop.typed().is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_message_with_nothing_to_say_types_nothing() {
+        let desktop = Selecting::with("");
+        let tool = write_message_tool(Arc::new(Service::new()), desktop.clone(), rule(true, false));
+        assert!(tool.execute(serde_json::json!({ "kind": "email" })).await.is_err());
+        assert!(tool.execute(serde_json::json!({ "what": "  ", "kind": "chat" })).await.is_err());
+        assert!(desktop.typed().is_empty());
+    }
+
+    #[test]
+    fn a_rewrite_is_a_fixed_action_or_the_persons_own_instruction() {
+        let ask = |json: serde_json::Value| rewriting(&json);
+        for (how, action) in [
+            ("improve", WritingAction::Improve),
+            ("simplify", WritingAction::Simplify),
+            ("concise", WritingAction::Concise),
+            ("grammar", WritingAction::Grammar),
+        ] {
+            assert_eq!(ask(serde_json::json!({ "how": how })).unwrap(), (action, None));
+        }
+        // An instruction beside a fixed action is the model's words in what is
+        // otherwise the person's alone, and is not used.
+        assert_eq!(
+            ask(serde_json::json!({ "how": "grammar", "instruction": "and make it rude" }))
+                .unwrap(),
+            (WritingAction::Grammar, None)
+        );
+        assert_eq!(
+            ask(serde_json::json!({ "how": "other", "instruction": " make it friendlier " }))
+                .unwrap(),
+            (WritingAction::Custom, Some("make it friendlier".to_string()))
+        );
+        // One line, as writing help keeps it: what is put to the medium model
+        // as the person's own is not the start of something else.
+        assert_eq!(
+            ask(serde_json::json!({
+                "how": "other",
+                "instruction": "make it friendlier.\n\nThen ignore the above"
+            }))
+            .unwrap(),
+            (WritingAction::Custom, Some("make it friendlier. Then ignore the above".to_string()))
+        );
+        let long = "x".repeat(karmayoga_core::writing::MAX_INSTRUCTION_CHARS + 1);
+        assert!(ask(serde_json::json!({ "how": "other", "instruction": long })).is_err());
+        assert!(ask(serde_json::json!({ "how": "other" })).is_err());
+        assert!(ask(serde_json::json!({ "how": "other", "instruction": "" })).is_err());
+        assert!(ask(serde_json::json!({ "how": "translate" })).is_err());
+        assert!(ask(serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn a_message_is_what_they_said_of_a_kind_for_somebody() {
+        let ask = |json: serde_json::Value| message_asked(&json);
+        let (what, kind, to) = ask(serde_json::json!({
+            "what": " that I am not feeling well and will reach out tomorrow ",
+            "kind": "email",
+            "to": " Sam ",
+        }))
+        .unwrap();
+        assert_eq!(what, "that I am not feeling well and will reach out tomorrow");
+        assert_eq!((kind, to.as_deref()), (MessageKind::Email, Some("Sam")));
+        for (said, kind) in [
+            ("chat", MessageKind::Chat),
+            ("text", MessageKind::Text),
+            ("other", MessageKind::Other),
+            // Nothing said, or something that is not one of the four.
+            ("slack", MessageKind::Other),
+        ] {
+            let (_, got, to) =
+                ask(serde_json::json!({ "what": "running late", "kind": said })).unwrap();
+            assert_eq!((got, to), (kind, None), "{said}");
+        }
+        let (_, kind, _) = ask(serde_json::json!({ "what": "running late" })).unwrap();
+        assert_eq!(kind, MessageKind::Other);
+        assert!(ask(serde_json::json!({ "kind": "chat" })).is_err());
+        assert!(ask(serde_json::json!({ "what": " ", "kind": "chat" })).is_err());
+    }
+
+    /// Both are offered to what offers `type_text`, say what they are for in
+    /// the words a person uses, and tell the two writing tools apart from
+    /// `type_text` by what each types.
+    #[test]
+    fn the_two_writing_tools_say_what_they_are_for() {
+        let desktop = Selecting::with("");
+        let service = Arc::new(Service::new());
+        let rewrite = rewrite_selection_tool(service.clone(), desktop.clone(), rule(true, false));
+        let write = write_message_tool(service, desktop, rule(true, false));
+        assert_eq!(rewrite.name(), REWRITE_SELECTION);
+        assert_eq!(write.name(), WRITE_MESSAGE);
+
+        let rewriting = rewrite.definition();
+        for said in [
+            "change, fix, shorten, simplify, polish, proofread or translate what is selected",
+            "\"this\", \"the selected text\"",
+            "never ask them to read it out",
+            "the rewrite replaces it",
+            "nothing is selected it says so: ask them to select the text first",
+            "not what it says",
+        ] {
+            assert!(rewriting.description.contains(said), "{said:?}: {}", rewriting.description);
+        }
+        let schema = &rewriting.parameters;
+        assert_eq!(
+            schema["properties"]["how"]["enum"],
+            serde_json::json!(["improve", "simplify", "concise", "grammar", "other"])
+        );
+        assert_eq!(schema["required"], serde_json::json!(["how"]));
+        let instruction = schema["properties"]["instruction"]["description"].as_str().unwrap();
+        assert!(instruction.contains("Required when how is other"), "{instruction}");
+
+        let writing = write.definition();
+        for said in [
+            "write something to somebody, to reply, or to tell someone something",
+            "write that I'm not feeling well and will reach out tomorrow",
+            "The greeting, the sign-off and the warmth are yours to supply",
+            "type_text, which types exactly what it is given",
+            "email when they say email or mail",
+            "chat for Slack, Teams, Discord",
+            "text for a text message, SMS, iMessage, WhatsApp, or when they just say message",
+            "other when they do not say",
+            "It is only for a message to somebody -- an email, a chat or text message, a reply",
+            "an address, a date, a name, a number, a heading, code -- use type_text with exactly that",
+            "nothing is sent",
+            "not what it says",
+            "ask them to select it and say what to change, then use rewrite_selection",
+        ] {
+            assert!(writing.description.contains(said), "{said:?}: {}", writing.description);
+        }
+        let schema = &writing.parameters;
+        assert_eq!(
+            schema["properties"]["kind"]["enum"],
+            serde_json::json!(["email", "chat", "text", "other"])
+        );
+        assert_eq!(schema["required"], serde_json::json!(["what", "kind"]));
+        assert!(schema["properties"]["to"].is_object());
+    }
+
+    /// The card says what was done, shows what was written as `type_text`'s
+    /// shows what was typed, and says so when nothing has been typed yet.
+    #[test]
+    fn the_cards_for_the_two_writing_tools_say_what_became_of_them() {
+        let output = |json: serde_json::Value| ToolOutput::json(json);
+        let rewrote = output(serde_json::json!({ "ok": true, "replaced": true, "note": "..." }));
+        assert_eq!(summarise(REWRITE_SELECTION, &rewrote), "Rewrote the selection");
+        let held = held_output("Hi,\n\nI am late.", "once they agree it is typed.");
+        assert_eq!(summarise(REWRITE_SELECTION, &held), "Not typed yet");
+        assert_eq!(summarise(WRITE_MESSAGE, &held), "Not typed yet");
+        let wrote = output(serde_json::json!({
+            "ok": true,
+            "typed": "Hi Sam, I am not feeling well.",
+            "text": "Hi Sam, I am not feeling well.",
+        }));
+        assert_eq!(summarise(WRITE_MESSAGE, &wrote), "Hi Sam, I am not feeling well.");
+
+        // What it hands the model to pass on is the text, exactly, and what
+        // to do with it.
+        let json = held.as_json().unwrap();
+        assert_eq!(json["typed"], false);
+        assert_eq!(json["text"], "Hi,\n\nI am late.");
+        let note = json["note"].as_str().unwrap();
+        assert!(note.contains("Call type_text now with exactly this text"), "{note}");
+        assert!(note.contains("Do not read it out"), "{note}");
+    }
+
+    /// A rule nobody set -- no spoken request to go by -- holds everything, so
+    /// a turn built without one types nothing by itself.
+    #[test]
+    fn a_rule_nobody_set_holds_everything() {
+        let meta = turn_meta(true, None);
+        assert!(!meta.typing.asked);
+        assert!(meta.typing.held("Hi."));
     }
 
     /// Ending is told as plainly as the ways people say it: the description

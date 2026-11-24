@@ -537,6 +537,7 @@ const CHANGING: &[&str] = &[
     "reply",
     "reschedule",
     "respond",
+    "rewrite",
     "save",
     "schedule",
     "send",

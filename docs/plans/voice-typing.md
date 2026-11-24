@@ -164,6 +164,58 @@ no window focused GNOME still read the text after Ctrl+V (likely the
 compositor's own clipboard keeping), so there "nothing took it" is not seen:
 it is reported as typed, as the helper window's paste always was.
 
+## Reading the selection by voice
+
+"Improve this", said in a conversation after selecting text in any
+application, needs the selection read the way the dictation is typed: without
+a window of ours taking the keyboard, because a conversation the wake word
+began has no activation token. `voicetyping::paste::selected_text` does it,
+and the rewrite is then typed over the selection with the paste above, which
+works because the field never lost it.
+
+X11 reads the PRIMARY selection, as writing help does. Windows and macOS press
+a copy and put the clipboard back, as it does -- but Ctrl+Insert on Windows,
+not Ctrl+C, because nobody pressed a key to ask and in a console with nothing
+selected Ctrl+C is an interrupt (writing help's own popup keeps Ctrl+C); macOS's
+Cmd+C interrupts nothing. Wayland has no PRIMARY to read unfocused, so
+`portal::copy_selection` opens the same kind of session as `paste_text` (one
+helper, `start_with_clipboard`, starts both: keyboard and clipboard, writing
+help's restore token, so the desktop still asks once), subscribes to the
+`Clipboard` portal's `SelectionOwnerChanged`, presses **Ctrl+Insert**, waits up
+to 1.5 s for a change of owner that is not the session's and offers text, and
+reads it with `SelectionRead`. The types are the ones the paste offers
+(`TEXT_MIME_TYPES`), UTF-8 ones preferred, so `text/plain;charset=utf-8`,
+`UTF8_STRING`, `text/plain`, `STRING`, `TEXT`; `STRING` is Latin-1 by
+convention and is read as that unless it is valid UTF-8 as it stands. No
+change in time means nothing was selected and the text is empty.
+
+Ctrl+Insert, not Ctrl+C, because it is copy in GTK, Qt, browsers, Electron and
+VTE terminals alike, and in a terminal Ctrl+C would interrupt the program
+running there. A selection of more than 64 KB, or one a window does not finish
+handing over in 2 s, is refused rather than cut short, because a rewrite of the
+front pasted over the whole would lose the rest. The window's copy replaces
+what was on the clipboard, and the session does not put it back.
+
+Known limits:
+
+- **An editor that copies a line when nothing is selected.** VS Code, and the
+  editors built on it, copy the line the caret is on, and a rewrite pasted at
+  the caret would type that line twice. VS Code marks such a copy
+  (`isFromEmptySelection: true` in its `vscode-editor-data`), so the copy is
+  taken as nothing selected. Chromium does not offer that type to the desktop
+  by itself but pickled with the page's other custom types under
+  `chromium/x-web-custom-data`, so both are read; the pickle's layout is
+  Chromium's, read from its source and not yet checked against a real VS Code.
+  JetBrains editors and Sublime copy a line the same way and mark it in no way
+  that can be read, so a rewrite there with nothing selected types the line
+  again.
+- **X11's PRIMARY outlives a deselection** in some programs, which keep the
+  last text selected there after it is deselected, so "improve this" can be
+  offered text that is no longer selected. Writing help reads the same way and
+  has the same limit.
+- **Terminals that do not bind Ctrl+Insert** (kitty, alacritty, foot) receive
+  it as an escape sequence, copy nothing, and so read as nothing selected.
+
 ## Checked
 
 - A private headless GNOME 50 with the real app, the portal dialogs and

@@ -11,6 +11,13 @@
 //! speech model heard as the `original` and the written-up text as the
 //! `result`. See `docs/plans/dictation.md`.
 //!
+//! So is writing by voice, in a conversation with the assistant: a selection
+//! rewritten as it was asked to be said aloud ([`WritingAction::Simplify`], or
+//! [`WritingAction::Custom`] with the person's own
+//! [`instruction`](WritingAssist::instruction)), and a message written from
+//! what was said ([`WritingAction::Compose`], `original` being the words
+//! spoken). See `docs/plans/writing-tools.md`, "By voice".
+//!
 //! # Why every one is kept
 //!
 //! Because the pairs are the point. "Correct grammar" over a few hundred
@@ -37,6 +44,19 @@ pub const MAX_TEXT_CHARS: usize = 8_000;
 /// it is typed rather than rewritten in place, and is cut off by the clock.
 pub const MAX_DICTATION_CHARS: usize = 20_000;
 
+/// Longest what was said out loud to ask for a message may be, in
+/// characters: the instruction of a [`WritingAction::Compose`]. A few minutes
+/// of talk, rambling and corrections included, which the model is asked to cut
+/// down; about what a spoken instruction to a mail draft is let run to.
+pub const MAX_REQUEST_CHARS: usize = 6_000;
+
+/// Longest the person's own instruction may be, in characters: what they said
+/// to a [`WritingAction::Custom`] rewrite ("make it sound less annoyed"), or the
+/// line that says what a [`WritingAction::Compose`] message is. A sentence, not
+/// a brief: anything longer is a second piece of writing to be rewritten, and
+/// is the shape a pasted instruction takes.
+pub const MAX_INSTRUCTION_CHARS: usize = 300;
+
 /// Longest an error kept on a failed assist may be. It is a line for whoever
 /// reads the history, not a transcript.
 const MAX_ERROR_CHARS: usize = 500;
@@ -57,6 +77,21 @@ pub enum WritingAction {
     /// and the `result` is that written up -- filler gone, the speaker's own
     /// corrections applied, punctuated -- to be typed where they were.
     Dictate,
+    /// Plainer: simpler words and shorter sentences, the same meaning. Asked
+    /// for out loud over a selection ("simplify this").
+    Simplify,
+    /// Whatever [`WritingAssist::instruction`] says -- "make this friendlier",
+    /// "make it sound less annoyed" -- asked for out loud over a selection.
+    /// The instruction is required, and kept to [`MAX_INSTRUCTION_CHARS`].
+    Custom,
+    /// Written, not rewritten: the `original` is what the person asked for
+    /// out loud ("write that I'm not feeling well and will reach out
+    /// tomorrow"), [`WritingAssist::instruction`] says what kind of message
+    /// (an email, a chat message, a text) and to whom, and the `result` is the
+    /// message, in their voice, typed where they were typing. Nothing was
+    /// selected, so the `original` is held to [`MAX_REQUEST_CHARS`] rather than
+    /// a selection's [`MAX_TEXT_CHARS`].
+    Compose,
 }
 
 impl WritingAction {
@@ -72,6 +107,9 @@ impl WritingAction {
             WritingAction::Grammar => "grammar",
             WritingAction::Concise => "concise",
             WritingAction::Dictate => "dictate",
+            WritingAction::Simplify => "simplify",
+            WritingAction::Custom => "custom",
+            WritingAction::Compose => "compose",
         }
     }
 
@@ -82,6 +120,9 @@ impl WritingAction {
             WritingAction::Grammar => "Correct grammar",
             WritingAction::Concise => "Make it concise",
             WritingAction::Dictate => "Dictation",
+            WritingAction::Simplify => "Simplify",
+            WritingAction::Custom => "Rewrite",
+            WritingAction::Compose => "Write a message",
         }
     }
 }
@@ -138,6 +179,12 @@ pub struct WritingAssist {
     /// Why it failed, when it did.
     #[serde(default)]
     pub error: Option<String>,
+    /// What was asked in the person's own words, for an action that is not
+    /// one of the fixed ones: the instruction of a [`WritingAction::Custom`]
+    /// rewrite, or what kind of message a [`WritingAction::Compose`] is and to
+    /// whom ("an email to Sam"). `None` for the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
 }
 
 impl WritingAssist {
@@ -155,7 +202,15 @@ impl WritingAssist {
             model: String::new(),
             outcome: WritingOutcome::Pending,
             error: None,
+            instruction: None,
         }
+    }
+
+    /// This, asked with `instruction` -- see [`WritingAssist::instruction`].
+    /// Blank is none.
+    pub fn with_instruction(mut self, instruction: Option<String>) -> Self {
+        self.instruction = instruction.map(|i| i.trim().to_string()).filter(|i| !i.is_empty());
+        self
     }
 
     /// Record the model's answer.
@@ -203,11 +258,24 @@ impl WritingAssist {
                 validate_dictation(&self.original)?;
                 MAX_DICTATION_CHARS
             }
+            WritingAction::Compose => {
+                validate_request(&self.original)?;
+                MAX_TEXT_CHARS
+            }
             _ => {
                 validate_text(&self.original)?;
                 MAX_TEXT_CHARS
             }
         };
+        // A blank one is none: `with_instruction` never keeps one, and a record
+        // that somehow has one is read as having had none.
+        match self.instruction.as_deref().filter(|i| !i.trim().is_empty()) {
+            Some(instruction) => validate_instruction(instruction)?,
+            None if self.action == WritingAction::Custom => {
+                return Err(Error::Invalid("say what to change about it".into()));
+            }
+            None => {}
+        }
         if self.result.chars().count() > limit * 2 {
             return Err(Error::Invalid("the rewritten text is too long to keep".into()));
         }
@@ -241,6 +309,39 @@ pub fn validate_dictation(text: &str) -> Result<()> {
     if n > MAX_DICTATION_CHARS {
         return Err(Error::Invalid(format!(
             "that dictation is {n} characters; up to {MAX_DICTATION_CHARS} are typed at once"
+        )));
+    }
+    Ok(())
+}
+
+/// Is `text` -- what was said out loud to ask for a message -- something a
+/// message can be written from? The [`WritingAction::Compose`] counterpart of
+/// [`validate_text`].
+pub fn validate_request(text: &str) -> Result<()> {
+    if text.trim().is_empty() {
+        return Err(Error::Invalid("say what the message should say".into()));
+    }
+    let n = text.chars().count();
+    if n > MAX_REQUEST_CHARS {
+        return Err(Error::Invalid(format!(
+            "that is {n} characters; a message is written from up to {MAX_REQUEST_CHARS}"
+        )));
+    }
+    Ok(())
+}
+
+/// Is `instruction` something to put to a model as the person's own? Blank is
+/// no instruction, and a long one is not a sentence of theirs: see
+/// [`MAX_INSTRUCTION_CHARS`].
+pub fn validate_instruction(instruction: &str) -> Result<()> {
+    if instruction.trim().is_empty() {
+        return Err(Error::Invalid("say what to change about it".into()));
+    }
+    let n = instruction.chars().count();
+    if n > MAX_INSTRUCTION_CHARS {
+        return Err(Error::Invalid(format!(
+            "that instruction is {n} characters; keep it to one sentence, up to \
+             {MAX_INSTRUCTION_CHARS}"
         )));
     }
     Ok(())
@@ -314,8 +415,79 @@ mod tests {
 
     #[test]
     fn actions_are_named_on_the_wire_as_they_are_in_code() {
-        for action in WritingAction::ALL.into_iter().chain([WritingAction::Dictate]) {
+        let by_voice = [WritingAction::Simplify, WritingAction::Custom, WritingAction::Compose];
+        for action in WritingAction::ALL.into_iter().chain([WritingAction::Dictate]).chain(by_voice)
+        {
             assert_eq!(serde_json::to_value(action).unwrap(), action.name());
         }
+    }
+
+    #[test]
+    fn the_popup_offers_only_what_it_always_has() {
+        for action in [WritingAction::Simplify, WritingAction::Custom, WritingAction::Compose] {
+            assert!(!WritingAction::ALL.contains(&action), "{action:?} is asked for by voice");
+        }
+    }
+
+    #[test]
+    fn a_custom_rewrite_needs_an_instruction_of_a_sentence() {
+        let kept = |instruction: Option<String>| {
+            let mut a = WritingAssist::new(WritingAction::Custom, "ok then", None)
+                .with_instruction(instruction);
+            a.answer("scripted", "Fine, then.");
+            a.validate()
+        };
+        assert!(kept(Some("make it friendlier".into())).is_ok());
+        assert!(kept(None).is_err(), "no instruction is not a custom rewrite");
+        assert!(kept(Some("  \n ".into())).is_err(), "and neither is a blank one");
+        assert!(kept(Some("x".repeat(MAX_INSTRUCTION_CHARS))).is_ok());
+        assert!(kept(Some("x".repeat(MAX_INSTRUCTION_CHARS + 1))).is_err());
+        // The instruction is kept trimmed, and blank is none.
+        let a = WritingAssist::new(WritingAction::Custom, "x", None)
+            .with_instruction(Some("  shorter \n".into()));
+        assert_eq!(a.instruction.as_deref(), Some("shorter"));
+    }
+
+    #[test]
+    fn a_simplified_selection_is_held_to_a_selections_size() {
+        let mut a = WritingAssist::new(WritingAction::Simplify, "a".repeat(MAX_TEXT_CHARS), None);
+        a.answer("scripted", "b".repeat(MAX_TEXT_CHARS));
+        a.validate().unwrap();
+        a.original.push('a');
+        assert!(a.validate().is_err());
+    }
+
+    #[test]
+    fn a_composed_message_is_written_from_what_was_said_not_from_a_selection() {
+        let said = "word ".repeat(MAX_REQUEST_CHARS / 5);
+        assert!(validate_text(&said).is_ok(), "within a selection's size");
+        let mut a = WritingAssist::new(WritingAction::Compose, said, None)
+            .with_instruction(Some("an email to Sam".into()));
+        a.answer("scripted", "Hi Sam,\n\nI am not feeling well.\n\nHari");
+        a.validate().unwrap();
+
+        // More than a request may be, though not too much for a selection.
+        let mut long =
+            WritingAssist::new(WritingAction::Compose, "a".repeat(MAX_REQUEST_CHARS + 1), None);
+        long.answer("scripted", "Hi.");
+        assert!(long.validate().is_err());
+        assert!(validate_request("  \n").is_err(), "nothing was said");
+        assert!(validate_request(&"a".repeat(MAX_REQUEST_CHARS)).is_ok());
+        assert!(validate_request(&"a".repeat(MAX_REQUEST_CHARS + 1)).is_err());
+
+        // Without an instruction is fine: it only says what kind of message.
+        let mut plain = WritingAssist::new(WritingAction::Compose, "say hello", None);
+        plain.answer("scripted", "Hello!");
+        plain.validate().unwrap();
+    }
+
+    #[test]
+    fn the_instruction_is_not_written_when_there_is_none() {
+        let a = WritingAssist::new(WritingAction::Improve, "x", None);
+        assert!(!serde_json::to_string(&a).unwrap().contains("instruction"));
+        let b = a.with_instruction(Some("an email".into()));
+        let back: WritingAssist =
+            serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert_eq!(back.instruction.as_deref(), Some("an email"));
     }
 }

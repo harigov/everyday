@@ -8,7 +8,7 @@
 //! type and then lets it. Everything here is those two doors, and the
 //! `Clipboard` portal that rides on the second: a remote-desktop session may
 //! also offer the clipboard's contents, which a window of ours would
-//! otherwise have to be focused to do.
+//! otherwise have to be focused to do, and take what another window copied.
 //!
 //! The first door reports a key being let go as well as pressed, which is
 //! what hold-to-talk voice typing needs; the palette and writing help ignore
@@ -40,7 +40,8 @@ use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
 use ashpd::desktop::remote_desktop::{DeviceType, KeyState, RemoteDesktop, SelectDevicesOptions};
 use ashpd::desktop::{PersistMode, Session};
 use ashpd::enumflags2::BitFlags;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
+use tokio::net::unix::pipe;
 use tokio::sync::{Mutex, OnceCell, mpsc, watch};
 
 /// Register this process under the first application id that has a desktop
@@ -405,9 +406,10 @@ pub fn readable_trigger(description: &str) -> String {
 
 // ---- RemoteDesktop ----------------------------------------------------------
 
-/// The XKB keysyms for the two keys a paste is.
+/// The XKB keysyms for the keys a paste (Ctrl+V) and a copy (Ctrl+Insert) are.
 const KEYSYM_CONTROL_L: i32 = 0xffe3;
 const KEYSYM_V: i32 = 0x76;
+const KEYSYM_INSERT: i32 = 0xff63;
 
 /// How much longer to wait before pressing anything when the desktop had to
 /// ask first: its dialog has to close and the keyboard find its way back.
@@ -429,15 +431,17 @@ fn settle_before_press(asked: bool, settle: Duration) -> Duration {
     if asked { settle + ASKED_SETTLE } else { settle }
 }
 
-/// Press Ctrl+V, in whatever window has the keyboard.
-async fn press_paste(
+/// Press Ctrl and `key` together, then let go of both, in whatever window has
+/// the keyboard.
+async fn press_with_control(
     portal: &RemoteDesktop,
     session: &Session<RemoteDesktop>,
+    key: i32,
 ) -> Result<(), String> {
     for (keysym, state) in [
         (KEYSYM_CONTROL_L, KeyState::Pressed),
-        (KEYSYM_V, KeyState::Pressed),
-        (KEYSYM_V, KeyState::Released),
+        (key, KeyState::Pressed),
+        (key, KeyState::Released),
         (KEYSYM_CONTROL_L, KeyState::Released),
     ] {
         portal
@@ -446,6 +450,14 @@ async fn press_paste(
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Press Ctrl+V, in whatever window has the keyboard.
+async fn press_paste(
+    portal: &RemoteDesktop,
+    session: &Session<RemoteDesktop>,
+) -> Result<(), String> {
+    press_with_control(portal, session, KEYSYM_V).await
 }
 
 /// Press Ctrl+V in whatever window has the keyboard, through a
@@ -604,10 +616,14 @@ impl Answers {
 /// asks for it after `UTF8_STRING` was on offer takes what it is given.)
 /// Nothing for a type it was not offered as.
 fn payload_for<'a>(text: &'a str, mime: &str) -> Option<&'a [u8]> {
-    TEXT_MIME_TYPES
-        .iter()
-        .any(|offered| offered.eq_ignore_ascii_case(mime))
-        .then_some(text.as_bytes())
+    text_type_index(mime).map(|_| text.as_bytes())
+}
+
+/// Where `mime` is in [`TEXT_MIME_TYPES`], however it is cased -- GTK is not
+/// always careful about the case of a charset. `None` for a type that is not
+/// text.
+fn text_type_index(mime: &str) -> Option<usize> {
+    TEXT_MIME_TYPES.iter().position(|text| text.eq_ignore_ascii_case(mime))
 }
 
 /// Write all of `bytes` to `fd`, then close it, which is how the reader knows
@@ -715,18 +731,22 @@ async fn serve<Fut: std::future::Future<Output = bool>>(
     }
 }
 
-/// Everything [`paste_text`] does inside its session, up to the point where
-/// it is closed. `token` is filled with the session's restore token as soon as
-/// the session has one.
-async fn paste_text_in(
+/// Start `session` with a keyboard and the clipboard, which a paste and a copy
+/// both need: the keyboard chosen -- remembered with `restore`, which starts it
+/// without asking again -- the clipboard asked for, the session started.
+/// Whether the person had to be asked.
+///
+/// `refused` is what is said when they answered no. `token` is filled with the
+/// session's restore token as soon as the session has one, so that an error
+/// after it does not lose it.
+async fn start_with_clipboard(
     portal: &RemoteDesktop,
     clipboard: &Clipboard,
     session: &Session<RemoteDesktop>,
-    text: &str,
     restore: Option<&str>,
-    settle: Duration,
+    refused: &str,
     token: &mut Option<String>,
-) -> Result<(), PasteTextError> {
+) -> Result<bool, PasteTextError> {
     use PasteTextError::{Stopped, Unavailable};
     let unavailable = |e: ashpd::Error| Unavailable(e.to_string());
 
@@ -748,7 +768,7 @@ async fn paste_text_in(
         portal.start(session, None, Default::default()).await.and_then(|r| r.response()).map_err(
             |e| match e {
                 ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled) => {
-                    Stopped("typing into other applications was not allowed".to_string())
+                    Stopped(refused.to_string())
                 }
                 other => unavailable(other),
             },
@@ -762,6 +782,33 @@ async fn paste_text_in(
     if !started.is_clipboard_enabled() {
         return Err(Unavailable("the desktop did not share its clipboard with the session".into()));
     }
+    Ok(asked)
+}
+
+/// Everything [`paste_text`] does inside its session, up to the point where
+/// it is closed. `token` is filled with the session's restore token as soon as
+/// the session has one.
+async fn paste_text_in(
+    portal: &RemoteDesktop,
+    clipboard: &Clipboard,
+    session: &Session<RemoteDesktop>,
+    text: &str,
+    restore: Option<&str>,
+    settle: Duration,
+    token: &mut Option<String>,
+) -> Result<(), PasteTextError> {
+    use PasteTextError::{Stopped, Unavailable};
+    let unavailable = |e: ashpd::Error| Unavailable(e.to_string());
+
+    let asked = start_with_clipboard(
+        portal,
+        clipboard,
+        session,
+        restore,
+        "typing into other applications was not allowed",
+        token,
+    )
+    .await?;
 
     // Listened for before the text is offered, so no request can come first.
     let ours = format!("{session:?}");
@@ -847,6 +894,340 @@ pub async fn paste_text(text: &str, restore: Option<String>, settle: Duration) -
     }
     .await;
     TextPaste { restore_token: token, result: started }
+}
+
+/// How long to wait, after Ctrl+Insert, for the window to copy. One that has
+/// not by then either has nothing selected or never took the key, and either
+/// way there is nothing to read.
+const COPY_WAIT: Duration = Duration::from_millis(1500);
+
+/// How long the window has to hand over the text once it has been asked.
+const READ_WAIT: Duration = Duration::from_secs(2);
+
+/// How long to let the desktop finish starting the session before pressing,
+/// when it did not have to ask the person anything.
+const COPY_SETTLE: Duration = Duration::from_millis(100);
+
+/// The most bytes of a selection to take. Over that is refused, not cut:
+/// rewriting the front of a selection and pasting it over the whole would
+/// lose the rest. (A rewrite takes 8,000 characters, at most 32 KB of them.)
+const SELECTION_LIMIT: usize = 64 * 1024;
+
+/// The type VS Code files its own account of a copy under, in a JSON object
+/// whose `isFromEmptySelection` says the copy was of the line the caret was on
+/// because nothing was selected.
+const EDITOR_DATA_TYPE: &str = "vscode-editor-data";
+
+/// Where a window built on Chromium (VS Code is one, as are Electron's
+/// applications) keeps the types a page sets by hand -- `vscode-editor-data`
+/// among them -- when it copies: Chromium does not offer them to the desktop
+/// as types of their own, but pickled together under this one.
+const CUSTOM_DATA_TYPE: &str = "chromium/x-web-custom-data";
+
+/// What [`copy_selection`] came to: the session's restore token, kept apart
+/// from the outcome for [`TextPaste`]'s reason, and what was selected.
+pub struct CopiedText {
+    /// The restore token the session ended with, when it got as far as
+    /// starting and the desktop sent one. Keep it for the next session.
+    pub restore_token: Option<String>,
+    /// The selected text -- empty when nothing was selected -- or why it could
+    /// not be read, in words fit for the person.
+    pub result: Result<String, String>,
+}
+
+/// A failure to read the selection, as the sentence the person is told.
+fn unread(why: impl std::fmt::Display) -> String {
+    format!("Couldn't read what is selected ({why}).")
+}
+
+/// Why the bytes of a copy could not all be had.
+#[derive(Debug, PartialEq, Eq)]
+enum Unread {
+    /// More than [`SELECTION_LIMIT`].
+    TooLong,
+    /// The window did not finish handing it over in time -- and what had come
+    /// is not a shorter selection.
+    TooSlow,
+    /// The pipe could not be read.
+    Failed(String),
+}
+
+impl std::fmt::Display for Unread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLong => f.write_str("it is far too long"),
+            Self::TooSlow => f.write_str("the application took too long to hand it over"),
+            Self::Failed(why) => write!(f, "the clipboard could not be read: {why}"),
+        }
+    }
+}
+
+/// What the `Clipboard` portal says when the selection changes hands: whose
+/// session it is told to, the types now on offer, and whether that session is
+/// the one offering them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnerChange {
+    session: String,
+    mime_types: Vec<String>,
+    session_is_owner: Option<bool>,
+}
+
+/// A window's copy of text: the type to read it as, and the type to read an
+/// editor's own account of the copy from, when the window gave one.
+#[derive(Debug, PartialEq, Eq)]
+struct WindowCopy {
+    text_type: String,
+    editor_type: Option<String>,
+}
+
+/// Whether `mime` is a type that says it is UTF-8.
+fn names_utf8(mime: &str) -> bool {
+    let mime = mime.to_ascii_lowercase();
+    mime.contains("utf-8") || mime.contains("utf8")
+}
+
+/// The type to read text offered as `offered` as, spelt as it was offered:
+/// one of [`TEXT_MIME_TYPES`] -- those that say they are UTF-8 first, in the
+/// list's order, then the rest, since `text/plain` does not say what it is
+/// and `STRING` and `TEXT` are Latin-1 and the locale's. `None` for an offer
+/// with no text in it: an image, a list of files.
+fn text_type_to_read(offered: &[String]) -> Option<&str> {
+    offered
+        .iter()
+        .filter_map(|o| text_type_index(o).map(|index| (o.as_str(), index)))
+        .min_by_key(|&(o, index)| (!names_utf8(o), index))
+        .map(|(o, _)| o)
+}
+
+/// The type to read an editor's account of a copy from, if one was offered:
+/// the type itself, else the container that may hold it.
+fn editor_data_type(offered: &[String]) -> Option<&str> {
+    [EDITOR_DATA_TYPE, CUSTOM_DATA_TYPE].iter().find_map(|wanted| {
+        offered.iter().map(String::as_str).find(|o| o.eq_ignore_ascii_case(wanted))
+    })
+}
+
+/// What `change` is, when it is a window copying text to the session `ours`.
+/// Not an offer the session made itself (it makes none, but one of its own
+/// would not be a window's copy), not another session's, and not an offer
+/// with no text in it.
+fn window_copy(ours: &str, change: &OwnerChange) -> Option<WindowCopy> {
+    if change.session != ours || change.session_is_owner == Some(true) {
+        return None;
+    }
+    Some(WindowCopy {
+        text_type: text_type_to_read(&change.mime_types)?.to_string(),
+        editor_type: editor_data_type(&change.mime_types).map(str::to_string),
+    })
+}
+
+/// Wait for a window to copy text. `None` when the changes end without one.
+async fn next_copy(
+    changes: &mut (impl futures_util::Stream<Item = OwnerChange> + Unpin),
+    ours: &str,
+) -> Option<WindowCopy> {
+    while let Some(change) = changes.next().await {
+        if let Some(copy) = window_copy(ours, &change) {
+            return Some(copy);
+        }
+    }
+    None
+}
+
+/// Read a pipe a copy is handed over on to its end, and no further than
+/// `limit` bytes or `within` the time. Waits on the pipe rather than blocking
+/// a thread on it: a window that never closes its end would hold the thread
+/// for good.
+async fn read_capped(fd: OwnedFd, limit: usize, within: Duration) -> Result<Vec<u8>, Unread> {
+    use std::io::ErrorKind;
+    let failed = |e: std::io::Error| Unread::Failed(e.to_string());
+    let pipe = pipe::Receiver::from_owned_fd(fd).map_err(failed)?;
+    let reading = async {
+        let mut got = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            pipe.readable().await.map_err(failed)?;
+            match pipe.try_read(&mut chunk) {
+                // The window closed its end: that is all of it.
+                Ok(0) => return Ok(got),
+                Ok(n) if got.len() + n > limit => return Err(Unread::TooLong),
+                Ok(n) => got.extend_from_slice(&chunk[..n]),
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
+                Err(e) => return Err(failed(e)),
+            }
+        }
+    };
+    tokio::time::timeout(within, reading).await.unwrap_or(Err(Unread::TooSlow))
+}
+
+/// The text of a copy read as `mime`, without the NULs some old X clients end
+/// their text with.
+///
+/// UTF-8, any byte that is not valid turned into the replacement character --
+/// except `STRING`, which is Latin-1 by convention and so is read as that,
+/// unless it is valid UTF-8 as it stands: what a client that sends UTF-8 under
+/// that name sends, and what Latin-1 text with an accent in it almost never is.
+fn decode(bytes: &[u8], mime: &str) -> String {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(utf8) => utf8.to_string(),
+        Err(_) if mime.eq_ignore_ascii_case("STRING") => {
+            bytes.iter().map(|&byte| char::from(byte)).collect()
+        }
+        Err(_) => String::from_utf8_lossy(bytes).into_owned(),
+    };
+    text.trim_end_matches('\0').to_string()
+}
+
+/// A little-endian `u32` at `at` in `data`, moving `at` past it.
+fn read_u32(data: &[u8], at: &mut usize) -> Option<u32> {
+    let end = at.checked_add(4)?;
+    let number = u32::from_le_bytes(data.get(*at..end)?.try_into().ok()?);
+    *at = end;
+    Some(number)
+}
+
+/// A string in Chromium's pickle: its length in UTF-16 units, the units
+/// themselves, and padding to the next four bytes.
+fn read_string16(data: &[u8], at: &mut usize) -> Option<String> {
+    let units = usize::try_from(read_u32(data, at)?).ok()?;
+    let end = at.checked_add(units.checked_mul(2)?)?;
+    let units: Vec<u16> =
+        data.get(*at..end)?.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+    *at = end.next_multiple_of(4);
+    Some(String::from_utf16_lossy(&units))
+}
+
+/// What a Chromium-built window filed under `wanted` in the pickle of the
+/// types a page set by hand when it copied: a size, a count, then each type
+/// and its data as a string.
+fn custom_data_entry(data: &[u8], wanted: &str) -> Option<String> {
+    // Past the size the pickle begins with.
+    let mut at = 4;
+    for _ in 0..read_u32(data, &mut at)? {
+        let name = read_string16(data, &mut at)?;
+        let value = read_string16(data, &mut at)?;
+        if name == wanted {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Whether `data`, read as the editor's type `mime`, says that what was
+/// copied was a line taken because nothing was selected.
+fn marks_empty_selection(mime: &str, data: &[u8]) -> bool {
+    let editor_data = if mime.eq_ignore_ascii_case(CUSTOM_DATA_TYPE) {
+        custom_data_entry(data, EDITOR_DATA_TYPE)
+    } else {
+        Some(String::from_utf8_lossy(data).into_owned())
+    };
+    editor_data
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|editor| editor.get("isFromEmptySelection")?.as_bool())
+        == Some(true)
+}
+
+/// Whether the editor that copied says it had nothing selected and copied
+/// the line the caret was on instead, as VS Code and the editors built on it
+/// do on Ctrl+Insert. A rewrite of that line pasted at the caret would type
+/// the line a second time, so it is taken as nothing selected. An editor
+/// whose account cannot be read is taken to have given none.
+async fn copied_a_line_for_nothing(
+    clipboard: &Clipboard,
+    session: &Session<RemoteDesktop>,
+    copy: &WindowCopy,
+) -> bool {
+    let Some(mime) = &copy.editor_type else { return false };
+    let Ok(fd) = clipboard.selection_read(session, mime).await else { return false };
+    let Ok(data) = read_capped(fd.into(), SELECTION_LIMIT, READ_WAIT).await else { return false };
+    marks_empty_selection(mime, &data)
+}
+
+/// Everything [`copy_selection`] does inside its session, up to the point
+/// where it is closed. `token` is filled with the session's restore token as
+/// soon as the session has one.
+async fn copy_selection_in(
+    portal: &RemoteDesktop,
+    clipboard: &Clipboard,
+    session: &Session<RemoteDesktop>,
+    restore: Option<&str>,
+    token: &mut Option<String>,
+) -> Result<String, String> {
+    let asked = start_with_clipboard(
+        portal,
+        clipboard,
+        session,
+        restore,
+        "reading from other applications was not allowed",
+        token,
+    )
+    .await
+    .map_err(unread)?;
+
+    // Listened for before the key is pressed, so the copy cannot come first.
+    let ours = format!("{session:?}");
+    let mut changes = Box::pin(
+        clipboard.receive_selection_owner_changed::<RemoteDesktop>().await.map_err(unread)?,
+    )
+    .map(|(from, change)| OwnerChange {
+        session: format!("{from:?}"),
+        mime_types: change.mime_types().to_vec(),
+        session_is_owner: change.session_is_owner(),
+    });
+    tokio::time::sleep(settle_before_press(asked, COPY_SETTLE)).await;
+    // Whatever the clipboard did on its own meanwhile -- a clipboard manager
+    // taking it over, say -- is not the window copying its selection.
+    while changes.next().now_or_never().flatten().is_some() {}
+    press_with_control(portal, session, KEYSYM_INSERT).await.map_err(unread)?;
+
+    let copy = match tokio::time::timeout(COPY_WAIT, next_copy(&mut changes, &ours)).await {
+        Ok(Some(copy)) => copy,
+        // Nothing copied: nothing was selected.
+        Err(_) => return Ok(String::new()),
+        Ok(None) => return Err(unread("the desktop stopped listening for the clipboard")),
+    };
+    if copied_a_line_for_nothing(clipboard, session, &copy).await {
+        return Ok(String::new());
+    }
+    let fd = clipboard.selection_read(session, &copy.text_type).await.map_err(unread)?;
+    let bytes = read_capped(fd.into(), SELECTION_LIMIT, READ_WAIT).await.map_err(unread)?;
+    Ok(decode(&bytes, &copy.text_type))
+}
+
+/// Read what is selected in whatever window has the keyboard, without taking
+/// the keyboard from it: a RemoteDesktop session that asks for the clipboard,
+/// presses Ctrl+Insert, waits for the clipboard to change hands, and reads the
+/// text back through the `Clipboard` portal. The window keeps its selection,
+/// so a paste after this goes over it. No window of ours is shown, so no
+/// activation token is needed -- what reading it from a conversation the wake
+/// word began has to do without.
+///
+/// Ctrl+Insert, not Ctrl+C: it is copy in GTK, Qt, browsers, Electron and VTE
+/// terminals alike, and in a terminal Ctrl+C would interrupt the program
+/// running there.
+///
+/// `restore` is [`paste`]'s. Where nothing was selected the window copies
+/// nothing and the text comes back empty. The clipboard is left holding the
+/// copy, as any copy does; what it held before is not put back.
+pub async fn copy_selection(restore: Option<String>) -> CopiedText {
+    // With the pastes: a copy and a paste racing would each answer the
+    // other's reading of the clipboard.
+    let _one_at_a_time = ONE_AT_A_TIME.lock().await;
+    register().await;
+    let mut token = None;
+    let result = async {
+        let clipboard = Clipboard::new().await.map_err(unread)?;
+        let portal = RemoteDesktop::new().await.map_err(unread)?;
+        let session = portal.create_session(Default::default()).await.map_err(unread)?;
+        let result =
+            copy_selection_in(&portal, &clipboard, &session, restore.as_deref(), &mut token).await;
+        // Closed straight away, as in [`paste`]: nothing more is needed of
+        // the keyboard, and the badge in the top bar goes with it.
+        let _ = session.close().await;
+        result
+    }
+    .await;
+    CopiedText { restore_token: token, result }
 }
 
 #[cfg(test)]
@@ -1004,5 +1385,298 @@ mod tests {
             said.push(taken);
         }
         assert_eq!(said, [true, false]);
+    }
+
+    fn offered(types: &[&str]) -> Vec<String> {
+        types.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn the_best_text_type_on_offer_is_read() {
+        let all =
+            offered(&["TEXT", "STRING", "text/plain", "UTF8_STRING", "text/plain;charset=utf-8"]);
+        assert_eq!(text_type_to_read(&all), Some("text/plain;charset=utf-8"));
+        // Whatever order they come in, and whatever else is offered.
+        let x11 = offered(&["TARGETS", "TEXT", "STRING", "UTF8_STRING", "text/html"]);
+        assert_eq!(text_type_to_read(&x11), Some("UTF8_STRING"));
+        let plain = offered(&["image/png", "STRING", "text/plain"]);
+        assert_eq!(text_type_to_read(&plain), Some("text/plain"));
+        assert_eq!(text_type_to_read(&offered(&["TEXT", "STRING"])), Some("STRING"));
+        assert_eq!(text_type_to_read(&offered(&["TEXT"])), Some("TEXT"));
+    }
+
+    #[test]
+    fn everything_read_is_something_that_is_offered_and_the_other_way_round() {
+        // One list of types, so that what is typed and what is read cannot
+        // part ways.
+        for mime in TEXT_MIME_TYPES {
+            assert_eq!(text_type_to_read(&offered(&[mime])), Some(mime));
+        }
+        assert!(text_type_index("text/html").is_none());
+    }
+
+    #[test]
+    fn a_type_is_read_as_the_window_spelt_it() {
+        let gtk = offered(&["text/html", "text/plain;charset=UTF-8"]);
+        assert_eq!(text_type_to_read(&gtk), Some("text/plain;charset=UTF-8"));
+    }
+
+    #[test]
+    fn an_offer_with_no_text_has_nothing_to_read() {
+        assert_eq!(text_type_to_read(&[]), None);
+        assert_eq!(text_type_to_read(&offered(&["image/png", "text/uri-list"])), None);
+        // Text, but not as anything a window of today asks for or gives.
+        assert_eq!(text_type_to_read(&offered(&["text/html", "text/rtf"])), None);
+    }
+
+    fn change(session: &str, types: &[&str], owner: Option<bool>) -> OwnerChange {
+        OwnerChange {
+            session: session.to_string(),
+            mime_types: offered(types),
+            session_is_owner: owner,
+        }
+    }
+
+    /// The copy a window made of text, as read as `text_type`.
+    fn copy_of(text_type: &str, editor_type: Option<&str>) -> WindowCopy {
+        WindowCopy { text_type: text_type.to_string(), editor_type: editor_type.map(String::from) }
+    }
+
+    #[test]
+    fn only_another_windows_copy_of_text_is_a_copy() {
+        let text = ["text/plain;charset=utf-8", "text/html"];
+        let read_as = Some(copy_of("text/plain;charset=utf-8", None));
+        // The window copied: owner is not this session, or the desktop did
+        // not say.
+        assert_eq!(window_copy("ours", &change("ours", &text, Some(false))), read_as);
+        assert_eq!(window_copy("ours", &change("ours", &text, None)), read_as);
+        // The session's own offer.
+        assert_eq!(window_copy("ours", &change("ours", &text, Some(true))), None);
+        // Another session's.
+        assert_eq!(window_copy("ours", &change("other", &text, Some(false))), None);
+        // Something copied that is not text.
+        assert_eq!(window_copy("ours", &change("ours", &["image/png"], Some(false))), None);
+        assert_eq!(window_copy("ours", &change("ours", &[], Some(false))), None);
+    }
+
+    #[test]
+    fn an_editors_own_account_of_a_copy_is_read_when_it_gives_one() {
+        let direct = change("ours", &["text/plain", "vscode-editor-data"], Some(false));
+        assert_eq!(
+            window_copy("ours", &direct),
+            Some(copy_of("text/plain", Some("vscode-editor-data")))
+        );
+        // As Chromium offers it: pickled with the page's other types.
+        let chromium = change("ours", &["UTF8_STRING", "chromium/x-web-custom-data"], Some(false));
+        assert_eq!(
+            window_copy("ours", &chromium),
+            Some(copy_of("UTF8_STRING", Some("chromium/x-web-custom-data")))
+        );
+        // The type itself first, when both are there.
+        let both =
+            change("ours", &["chromium/x-web-custom-data", "vscode-editor-data", "STRING"], None);
+        assert_eq!(window_copy("ours", &both), Some(copy_of("STRING", Some("vscode-editor-data"))));
+        // And no account for a window that gives none.
+        let plain = change("ours", &["text/plain"], Some(false));
+        assert_eq!(window_copy("ours", &plain), Some(copy_of("text/plain", None)));
+    }
+
+    #[tokio::test]
+    async fn the_wait_for_a_copy_skips_what_is_not_one() {
+        use futures_util::stream;
+        let mut changes = stream::iter([
+            change("other", &["text/plain"], Some(false)),
+            change("ours", &["UTF8_STRING"], Some(true)),
+            // A window clearing the clipboard before it sets it.
+            change("ours", &[], Some(false)),
+            change("ours", &["image/png"], Some(false)),
+            change("ours", &["STRING", "UTF8_STRING"], Some(false)),
+            change("ours", &["text/plain;charset=utf-8"], Some(false)),
+        ]);
+        assert_eq!(next_copy(&mut changes, "ours").await, Some(copy_of("UTF8_STRING", None)));
+        // The next is the one after it, not the same again.
+        assert_eq!(
+            next_copy(&mut changes, "ours").await,
+            Some(copy_of("text/plain;charset=utf-8", None))
+        );
+        assert_eq!(next_copy(&mut changes, "ours").await, None);
+    }
+
+    #[tokio::test]
+    async fn the_wait_for_a_copy_that_never_comes_ends_with_the_changes() {
+        use futures_util::stream;
+        let mut none = stream::iter([change("ours", &["image/png"], Some(false))]);
+        assert_eq!(next_copy(&mut none, "ours").await, None);
+    }
+
+    /// A pipe as `SelectionRead` hands one over: the end the copy is read
+    /// from, and the end the window writes.
+    fn read_pipe() -> (OwnedFd, std::io::PipeWriter) {
+        let (reader, writer) = std::io::pipe().unwrap();
+        (reader.into(), writer)
+    }
+
+    #[tokio::test]
+    async fn a_copy_is_read_to_where_the_window_closes_its_end() {
+        let (fd, mut writer) = read_pipe();
+        writer.write_all("select me, héllo".as_bytes()).unwrap();
+        drop(writer);
+        let got = read_capped(fd, 1024, Duration::from_secs(2)).await.unwrap();
+        assert_eq!(decode(&got, "UTF8_STRING"), "select me, héllo");
+    }
+
+    #[tokio::test]
+    async fn a_copy_of_nothing_is_empty() {
+        let (fd, writer) = read_pipe();
+        drop(writer);
+        assert_eq!(read_capped(fd, 1024, Duration::from_secs(2)).await, Ok(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn a_copy_that_arrives_in_pieces_is_read_whole() {
+        let (fd, mut writer) = read_pipe();
+        let text = "word ".repeat(10_000);
+        let sent = text.clone();
+        let writing = std::thread::spawn(move || {
+            for piece in sent.as_bytes().chunks(1000) {
+                writer.write_all(piece).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let got = read_capped(fd, SELECTION_LIMIT, Duration::from_secs(5)).await.unwrap();
+        writing.join().unwrap();
+        assert_eq!(decode(&got, "text/plain;charset=utf-8"), text);
+    }
+
+    #[tokio::test]
+    async fn a_copy_over_the_limit_is_refused_and_not_cut() {
+        let (fd, mut writer) = read_pipe();
+        writer.write_all(&[b'a'; 100]).unwrap();
+        drop(writer);
+        assert_eq!(read_capped(fd, 99, Duration::from_secs(2)).await, Err(Unread::TooLong));
+        // Exactly the limit is fine.
+        let (fd, mut writer) = read_pipe();
+        writer.write_all(&[b'a'; 99]).unwrap();
+        drop(writer);
+        assert_eq!(read_capped(fd, 99, Duration::from_secs(2)).await.unwrap().len(), 99);
+    }
+
+    #[tokio::test]
+    async fn a_copy_that_never_finishes_is_not_a_shorter_one() {
+        let (fd, mut writer) = read_pipe();
+        writer.write_all(b"the first half").unwrap();
+        // Held open past the wait: the window is still writing, or stuck.
+        let got = read_capped(fd, 1024, Duration::from_millis(150)).await;
+        assert_eq!(got, Err(Unread::TooSlow));
+        drop(writer);
+    }
+
+    #[tokio::test]
+    async fn something_that_is_not_a_pipe_is_not_read() {
+        let fd: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        assert!(matches!(
+            read_capped(fd, 1024, Duration::from_secs(1)).await,
+            Err(Unread::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn a_copy_is_decoded_as_utf8_and_loses_its_nuls() {
+        for mime in ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT"] {
+            assert_eq!(decode("héllo\nwörld".as_bytes(), mime), "héllo\nwörld");
+            // Not UTF-8: the replacement character, not an error or a gap.
+            assert_eq!(decode(b"caf\xe9", mime), "caf\u{fffd}");
+            // A trailing NUL, as an old X client sends one.
+            assert_eq!(decode(b"text\0", mime), "text");
+            assert_eq!(decode(b"", mime), "");
+        }
+    }
+
+    #[test]
+    fn a_copy_read_as_string_is_latin_1_unless_it_is_utf8() {
+        // "café" as ISO 8859-1 has a lone 0xe9, which is not UTF-8.
+        assert_eq!(decode(b"caf\xe9", "STRING"), "café");
+        assert_eq!(decode(b"caf\xe9", "string"), "café");
+        assert_eq!(decode(b"\xa3 5\xb0\0", "STRING"), "£ 5°");
+        // A client that sends UTF-8 under the name is read as what it sent.
+        assert_eq!(decode("café".as_bytes(), "STRING"), "café");
+        assert_eq!(decode(b"plain ascii", "STRING"), "plain ascii");
+    }
+
+    /// Chromium's pickle of the types a page set by hand: its size, a count,
+    /// and each type and its data as UTF-16 with its length and padding.
+    fn custom_data(entries: &[(&str, &str)]) -> Vec<u8> {
+        fn string16(out: &mut Vec<u8>, text: &str) {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            out.extend((units.len() as u32).to_le_bytes());
+            out.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+            out.resize(out.len().next_multiple_of(4), 0);
+        }
+        let mut payload = (entries.len() as u32).to_le_bytes().to_vec();
+        for (name, value) in entries {
+            string16(&mut payload, name);
+            string16(&mut payload, value);
+        }
+        let mut pickle = (payload.len() as u32).to_le_bytes().to_vec();
+        pickle.extend(payload);
+        pickle
+    }
+
+    #[test]
+    fn an_editor_that_copied_a_line_for_nothing_says_so() {
+        let empty = br#"{"version":1,"isFromEmptySelection":true,"multicursorText":null,"mode":"markdown"}"#;
+        let selected = br#"{"version":1,"isFromEmptySelection":false,"mode":"rust"}"#;
+        assert!(marks_empty_selection("vscode-editor-data", empty));
+        assert!(!marks_empty_selection("vscode-editor-data", selected));
+        // No such key, the wrong kind of value, and what is not JSON at all.
+        assert!(!marks_empty_selection("vscode-editor-data", br#"{"mode":"rust"}"#));
+        assert!(!marks_empty_selection(
+            "vscode-editor-data",
+            br#"{"isFromEmptySelection":"true"}"#
+        ));
+        assert!(!marks_empty_selection("vscode-editor-data", b"isFromEmptySelection"));
+        assert!(!marks_empty_selection("vscode-editor-data", b""));
+    }
+
+    #[test]
+    fn the_account_is_found_among_the_types_chromium_pickles() {
+        let json = r#"{"version":1,"isFromEmptySelection":true,"mode":"plaintext"}"#;
+        let pickled = custom_data(&[("text/x-other", "ünrelated"), ("vscode-editor-data", json)]);
+        assert!(marks_empty_selection("chromium/x-web-custom-data", &pickled));
+        let selected = custom_data(&[("vscode-editor-data", r#"{"isFromEmptySelection":false}"#)]);
+        assert!(!marks_empty_selection("chromium/x-web-custom-data", &selected));
+        // Some other page's custom data, with no account of a copy in it.
+        let other = custom_data(&[("text/x-other", json)]);
+        assert!(!marks_empty_selection("chromium/x-web-custom-data", &other));
+        assert!(!marks_empty_selection("chromium/x-web-custom-data", &custom_data(&[])));
+    }
+
+    #[test]
+    fn a_pickle_that_ends_early_or_lies_about_its_size_is_not_read() {
+        let pickled = custom_data(&[("vscode-editor-data", r#"{"isFromEmptySelection":true}"#)]);
+        assert_eq!(
+            custom_data_entry(&pickled, "vscode-editor-data").as_deref(),
+            Some(r#"{"isFromEmptySelection":true}"#)
+        );
+        // Cut anywhere short of the end: nothing, and no panic.
+        // (Not into the padding after the last string, which is not read.)
+        for end in 0..pickled.len() - 3 {
+            assert_eq!(custom_data_entry(&pickled[..end], "vscode-editor-data"), None, "{end}");
+        }
+        // A count, and a length, far past the data.
+        let mut lying = custom_data(&[]);
+        lying[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(custom_data_entry(&lying, "vscode-editor-data"), None);
+        let huge = [0u8, 0, 0, 0, 1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
+        assert_eq!(custom_data_entry(&huge, "vscode-editor-data"), None);
+    }
+
+    #[test]
+    fn a_failure_to_read_is_a_sentence_for_the_person() {
+        assert_eq!(
+            unread("the desktop did not hand over a keyboard"),
+            "Couldn't read what is selected (the desktop did not hand over a keyboard)."
+        );
+        assert_eq!(unread(Unread::TooLong), "Couldn't read what is selected (it is far too long).");
     }
 }

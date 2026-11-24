@@ -18,6 +18,23 @@
 //!   model goes wrong here -- and it is put right without asking again.
 //!
 //! Line endings are the caller's: everything here takes and gives `\n`.
+//!
+//! # What is held, per action
+//!
+//! Improving, correcting and simplifying keep every line of words, in order;
+//! making it concise may leave lines out but never add or split one.
+//!
+//! A rewrite the person described in their own words
+//! ([`WritingAction::Custom`]) is told to keep the layout unless what they
+//! asked is about the layout -- and is held to nothing more than that. Whether
+//! "number these steps", "make each line a checkbox" or "quote it" is about
+//! the layout is a reading of language, and a word list gets it wrong both
+//! ways; and every check here that acts on an answer ([`restore`] above all)
+//! would undo exactly what was asked when it was. So the model decides, from
+//! the prompt ([`describe`]), and [`held`] says that nothing here checks,
+//! asks again or puts anything back afterwards. A message written from speech
+//! ([`WritingAction::Compose`]) has no original to keep the shape of: its
+//! `original` is what was said.
 
 use karmayoga_core::writing::WritingAction;
 
@@ -180,14 +197,11 @@ fn quoted(kinds: &[String]) -> String {
     kinds.iter().take(4).map(|k| format!("\"{k}\"")).collect::<Vec<_>>().join(", ")
 }
 
-/// The selection's layout in words, and what the answer must do with it, for
-/// the prompt. `text` is the selection with the whitespace around it trimmed
-/// off, as the model is shown it.
-pub fn describe(text: &str, action: WritingAction) -> String {
-    let shape = Shape::of(text);
+/// How a selection's layout reads in words: "5 lines with words on them, 2
+/// blank lines, ...". `None` for a single line with nothing around it.
+fn shape_in_words(shape: &Shape) -> Option<Vec<String>> {
     if shape.filled <= 1 && shape.blank == 0 {
-        return "Its layout: a single line. Give back a single line, with no line break added."
-            .to_string();
+        return None;
     }
     let mut parts = vec![plural(shape.filled, "line with words on it", "lines with words on them")];
     if shape.blank > 0 {
@@ -204,21 +218,71 @@ pub fn describe(text: &str, action: WritingAction) -> String {
     if shape.indented > 0 {
         parts.push(format!("{} indented", plural(shape.indented, "line", "lines")));
     }
+    Some(parts)
+}
+
+/// The selection's layout in words, and what the answer must do with it, for
+/// the prompt. `text` is the selection with the whitespace around it trimmed
+/// off, as the model is shown it.
+pub fn describe(text: &str, action: WritingAction) -> String {
     let keep = match action {
         // Dictation has no layout to keep -- see `domains::writing::dictate` --
         // and is never described; it is held to the strictest rule if it is.
-        WritingAction::Improve | WritingAction::Grammar | WritingAction::Dictate => {
+        WritingAction::Improve
+        | WritingAction::Grammar
+        | WritingAction::Dictate
+        | WritingAction::Simplify => {
             "Your answer must have exactly the same lines in the same order: the same lines \
              with words, the same blank lines between them, and every marker and indent where \
              it is. Do not join two lines or split one, even where a sentence runs across a \
              line break."
         }
+        // Nothing checks this one afterwards -- see `held` -- so it is said in
+        // full, including what is not layout, which a check would have to guess.
+        WritingAction::Custom => {
+            let now = match shape_in_words(&Shape::of(text)) {
+                Some(parts) => parts.join(", "),
+                None => "a single line".to_string(),
+            };
+            return format!(
+                "Its layout now: {now}. Keep it exactly as it is -- every line break, blank \
+                 line, marker and indent -- unless what they ask is about the layout itself: \
+                 numbering, bullets, checkboxes, quoting, a list, paragraphs, lines, headings. \
+                 Then change the layout as far as they ask, and nowhere else. A title, subject \
+                 line or heading they ask you to reword is words, not layout: reword it and \
+                 leave it where it is."
+            );
+        }
         WritingAction::Concise => {
             "You may leave out a whole line or list item. Do not join lines, split one, add a \
              blank line, or take the marker off any item you keep."
         }
+        // What a message is written from is speech, which has no layout. Never
+        // asked about: `deskwrite::compose` has a prompt of its own.
+        WritingAction::Compose => {
+            return "It has no layout of its own to keep: lay the message out as its kind of \
+                    message is."
+                .to_string();
+        }
+    };
+    let Some(parts) = shape_in_words(&Shape::of(text)) else {
+        return "Its layout: a single line. Give back a single line, with no line break added."
+            .to_string();
     };
     format!("Its layout: {}. {keep}", parts.join(", "))
+}
+
+/// Is an answer to `action` checked against the original's layout, asked for
+/// again when it broke it, and given the original's markers, indents and blank
+/// lines afterwards? Every action's is, but two.
+///
+/// [`WritingAction::Custom`] is not: it may be asked to change the layout
+/// ("number these steps", "make it a list"), and any of the three would undo
+/// the very change asked for, silently. Its prompt says to keep the layout
+/// unless that is what is asked ([`describe`]), and that is all there is.
+/// [`WritingAction::Compose`] has no original layout.
+pub fn held(action: WritingAction) -> bool {
+    !matches!(action, WritingAction::Custom | WritingAction::Compose)
 }
 
 /// How `answer` broke the layout of `original`, said to the model for one
@@ -236,13 +300,20 @@ pub fn problem(original: &str, answer: &str, action: WritingAction) -> Option<St
         return None;
     }
     match action {
-        WritingAction::Improve | WritingAction::Grammar | WritingAction::Dictate => (now.filled != was.filled).then(|| {
+        WritingAction::Improve
+        | WritingAction::Grammar
+        | WritingAction::Dictate
+        | WritingAction::Simplify => (now.filled != was.filled).then(|| {
             format!(
                 "the text has {} and your answer has {}. Every line must stay a line of its own",
                 plural(was.filled, "line with words on it", "lines with words on them"),
                 now.filled,
             )
         }),
+        // Nothing to compare a message written from speech with, and what
+        // somebody asked to have done to a selection in their own words may be
+        // a change of its layout: see `held`.
+        WritingAction::Compose | WritingAction::Custom => None,
         WritingAction::Concise => {
             if now.filled > was.filled {
                 Some(format!(
@@ -397,5 +468,82 @@ mod tests {
         assert!(said.contains("1 line indented"), "{said}");
         assert!(describe("just words", WritingAction::Grammar).contains("single line"));
         assert!(describe(text, WritingAction::Concise).contains("leave out a whole line"));
+    }
+
+    #[test]
+    fn simplifying_keeps_every_line_like_an_improvement() {
+        let text = "Hi,\n\n- a\n- b";
+        assert_eq!(
+            describe(text, WritingAction::Simplify),
+            describe(text, WritingAction::Improve),
+            "told the same"
+        );
+        assert!(problem("One\nTwo", "One and two", WritingAction::Simplify).is_some());
+        assert!(problem("One\nTwo", "Uno\nDos", WritingAction::Simplify).is_none());
+        assert!(held(WritingAction::Simplify));
+    }
+
+    #[test]
+    fn a_message_written_from_speech_has_no_layout_to_hold() {
+        let said = describe("write that i am ill\nand will call", WritingAction::Compose);
+        assert!(said.contains("no layout of its own"), "{said}");
+        assert!(!said.contains("same lines"), "{said}");
+        assert_eq!(problem("one\ntwo", "one", WritingAction::Compose), None);
+        assert!(!held(WritingAction::Compose));
+    }
+
+    #[test]
+    fn every_action_that_rewrites_a_selection_is_held_but_a_custom_one() {
+        for action in [
+            WritingAction::Improve,
+            WritingAction::Grammar,
+            WritingAction::Concise,
+            WritingAction::Simplify,
+            WritingAction::Dictate,
+        ] {
+            assert!(held(action), "{action:?}");
+        }
+        assert!(!held(WritingAction::Custom));
+    }
+
+    /// What was asked may be to change the layout, in words no list would have:
+    /// whatever a custom rewrite answers with is the answer, line for line.
+    #[test]
+    fn a_custom_answer_is_never_checked_or_corrected() {
+        let original = "Open the box\nRemove the foam\nPlug it in";
+        let numbered = "1. Open the box\n2. Remove the foam\n3. Plug it in";
+        // Nothing to ask again about, however many lines the answer has...
+        assert_eq!(problem(original, numbered, WritingAction::Custom), None);
+        assert_eq!(
+            problem(original, "Open it, remove the foam, plug it in", WritingAction::Custom),
+            None
+        );
+        assert_eq!(problem(original, "- a\n\n- b\n- c\n- d", WritingAction::Custom), None);
+        // ... and `restore` is what would have undone it, which is why the
+        // caller does not call it for one.
+        assert_eq!(
+            restore(original, numbered).unwrap(),
+            original,
+            "restore would strip the numbers a custom rewrite was asked to add"
+        );
+        assert!(!held(WritingAction::Custom));
+    }
+
+    #[test]
+    fn a_custom_prompt_says_what_to_keep_and_what_is_not_layout() {
+        let said = describe("Fix the title\nand the rest.", WritingAction::Custom);
+        assert!(said.contains("2 lines with words on them"), "{said}");
+        assert!(said.contains("Keep it exactly as it is"), "{said}");
+        assert!(said.contains("unless what they ask is about the layout itself"), "{said}");
+        for asked_for in ["numbering", "checkboxes", "quoting", "bullets", "paragraphs"] {
+            assert!(said.contains(asked_for), "{asked_for}: {said}");
+        }
+        assert!(said.contains("A title, subject line or heading they ask you to reword"), "{said}");
+        // A single line may be asked to become several, so it is not told to
+        // stay one.
+        let single = describe("Just words.", WritingAction::Custom);
+        assert!(single.contains("a single line"), "{single}");
+        assert!(!single.contains("Give back a single line"), "{single}");
+        assert!(!single.contains("exactly the same lines"), "{single}");
     }
 }

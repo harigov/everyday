@@ -577,6 +577,29 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
         text: running ? 'Typing' : done ? 'Typed' : 'Type',
         detail: arg(args, 'text'),
       }
+    // What was selected where the person was typing, rewritten in place.
+    case 'rewrite_selection': {
+      const how = arg(args, 'how')
+      const [doing, did, todo]: [string, string, string] =
+        how === 'simplify'
+          ? ['Simplifying', 'Simplified', 'Simplify']
+          : how === 'concise'
+            ? ['Shortening', 'Shortened', 'Shorten']
+            : how === 'grammar'
+              ? ['Correcting', 'Corrected', 'Correct']
+              : ['Rewriting', 'Rewrote', 'Rewrite']
+      return {
+        text: running ? doing : done ? did : todo,
+        detail: 'the selected text',
+      }
+    }
+    // A message written from what they said, in their voice, typed where
+    // they were typing.
+    case 'write_message':
+      return {
+        text: running ? 'Writing' : done ? 'Wrote' : 'Write',
+        detail: arg(args, 'kind') === 'email' ? 'an email' : 'a message',
+      }
     // What they say next is typed where they were typing, until they say
     // they are done -- see `docs/plans/voice-reliability.md`.
     case 'start_dictation':
