@@ -17,6 +17,7 @@
 //! The audio itself is never a record. It is a spool of sealed chunk files
 //! that exists until the note does. See `docs/plans/meeting-notes.md`.
 
+pub mod brief;
 pub mod detect;
 pub mod echo;
 pub mod filing;
@@ -644,6 +645,8 @@ pub struct MeetingSettings {
     /// speech model's, though the recogniser is told it: it is about what is
     /// said in meetings, and goes with the invite's names it is told beside.
     pub vocabulary: Vec<String>,
+    /// The brief prepared before each meeting -- see [`brief`].
+    pub brief: brief::MeetingBriefSettings,
 }
 
 impl Default for MeetingSettings {
@@ -674,6 +677,7 @@ impl Default for MeetingSettings {
             auto_record: false,
             summary_budget: None,
             vocabulary: Vec::new(),
+            brief: brief::MeetingBriefSettings::default(),
         }
     }
 }

@@ -57,6 +57,8 @@
   /** When its reminder is next due, while one is waiting. */
   const reminder = $derived(nextReminder(task))
   const assistants = $derived(task.assignee === 'assistant')
+  /** Who it is to be raised with at the next meeting they are at, when anybody. */
+  const raiseWith = $derived(task.raiseWith ?? [])
   const project = $derived(todo.projectOf(task.projectId))
   /** The project badge is noise inside a project and orientation outside it. */
   const showProject = $derived(project !== null && todo.scope.kind !== 'project')
@@ -227,7 +229,7 @@
           <span class="titletext">{task.title}</span>
         </span>
 
-        {#if task.dueDate || task.estimateMinutes || task.tags.length || showProject || task.status === 'blocked' || task.status === 'doing' || reminder || assistants}
+        {#if task.dueDate || task.estimateMinutes || task.tags.length || showProject || task.status === 'blocked' || task.status === 'doing' || reminder || assistants || raiseWith.length}
           <span class="meta">
             {#if showProject && project}
               <span class="chip project" style="--dot: {project.color}">
@@ -237,6 +239,15 @@
             {#if assistants}
               <span class="chip assistant" title="The assistant does this one itself">
                 <Icon name="sparkle" size={11} weight={1.7} />Assistant
+              </span>
+            {/if}
+            {#if raiseWith.length > 0}
+              <span
+                class="chip raise"
+                title="To raise with {raiseWith.map((p) => p.name).join(', ')} at your next meeting"
+              >
+                <Icon name="people" size={11} weight={1.7} />
+                {raiseWith[0]!.name}{raiseWith.length > 1 ? ` +${raiseWith.length - 1}` : ''}
               </span>
             {/if}
             {#if task.status === 'doing'}<span class="chip state doing">Doing</span>{/if}
@@ -588,6 +599,9 @@
   .chip.assistant {
     color: var(--accent);
     background: color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+  .chip.raise {
+    color: var(--fg-subtle);
   }
   .dot {
     width: 6px;

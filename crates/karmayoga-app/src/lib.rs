@@ -39,18 +39,17 @@ mod micwatch;
 mod navigation;
 mod notice;
 mod offers;
+mod panel;
 mod player;
 #[cfg(target_os = "linux")]
 mod portal;
 mod protocol;
-mod recnotice;
 mod remote;
 mod remotes;
 mod screentime;
 mod sharing;
 mod state;
-#[cfg(target_os = "linux")]
-mod topcard;
+mod talk;
 mod transfer;
 mod tray;
 mod voice;
@@ -81,12 +80,12 @@ pub(crate) const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_se
 /// Entry point shared by the desktop binary and the mobile harnesses.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // This program run again to draw the meeting card under X11: before
-    // anything else, logging included, since its stdout is how it talks to
-    // the app. See `topcard`.
+    // This program run again to draw the panel under X11: before anything
+    // else, logging included, since its stdout is how it talks to the app.
+    // See `panel::topcard`.
     #[cfg(target_os = "linux")]
-    if std::env::args_os().nth(1).is_some_and(|arg| arg == topcard::CHILD_FLAG) {
-        topcard::run_child();
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == panel::topcard::CHILD_FLAG) {
+        panel::topcard::run_child();
     }
 
     tracing_subscriber::fmt()
@@ -148,6 +147,8 @@ pub fn run() {
         // Offers to take notes, from the calendar or the microphone -- see
         // `offers` and `micwatch`.
         .manage(offers::Offers::default())
+        // The panel in the corner of the screen -- see `panel`.
+        .manage(panel::Panels::default())
         .manage(micwatch::MicWatch::default())
         // This machine's screen time -- see `screentime`.
         .manage(screentime::ScreenTime::default())
@@ -325,15 +326,20 @@ pub fn run() {
             writing::writing_open_main,
             writing::writing_settings,
             writing::set_writing_settings,
-            // Voice typing into whatever field has the keyboard: its pill and
-            // its setting. See `voicetyping`.
-            voicetyping::voice_typing_state,
-            voicetyping::voice_typing_stop,
-            voicetyping::voice_typing_cancel,
-            voicetyping::voice_typing_copy,
-            voicetyping::voice_typing_open_main,
+            // Voice typing into whatever field has the keyboard: its setting.
+            // What it shows is a card in the panel. See `voicetyping`.
             voicetyping::voice_typing_settings,
             voicetyping::set_voice_typing_settings,
+            // Talking to the assistant from anywhere, with the talk key. See
+            // `talk`.
+            talk::talk_settings,
+            talk::set_talk_settings,
+            talk::talk_toggle,
+            // The panel in the corner of the screen, and its page. See
+            // `panel`.
+            panel::panel_state,
+            panel::panel_action,
+            panel::panel_resize,
             // The two that are not JSON in and JSON out: one takes a raw
             // body, the other answers with a stream. Reading bytes back is
             // neither -- that is the `karmayoga://` handler in `protocol.rs`.
@@ -392,7 +398,6 @@ pub fn run() {
             dictation::dictation_cancel,
             offers::meeting_offer_answer,
             offers::meeting_offers,
-            offers::recording_notice,
             // Screen time on this machine. See `screentime.rs`.
             screentime::screentime_status,
             screentime::screentime_set_tracking,
@@ -413,7 +418,9 @@ pub fn run() {
             // Writing help's popup is not the application: closing it is
             // dismissing it, and it goes when the main window does, or a
             // hidden popup would keep the process alive with no way back.
-            if window.label() == writing::LABEL || window.label() == voicetyping::pill::LABEL {
+            if [writing::LABEL, voicetyping::pill::LABEL, panel::window::LABEL]
+                .contains(&window.label())
+            {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
@@ -427,7 +434,7 @@ pub fn run() {
                 return;
             }
             if let WindowEvent::Destroyed = event {
-                for label in [writing::LABEL, voicetyping::pill::LABEL] {
+                for label in [writing::LABEL, voicetyping::pill::LABEL, panel::window::LABEL] {
                     if let Some(popup) = window.app_handle().get_webview_window(label) {
                         let _ = popup.destroy();
                     }

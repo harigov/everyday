@@ -102,6 +102,9 @@ impl EventSink for WindowSink {
 
     fn lock_state(&self, locked: bool) {
         self.emit(LOCK_EVENT, locked);
+        // A conversation from the talk key ends with the lock, and its models
+        // are held ready only while the vault is open. See `talk`.
+        crate::talk::on_lock_state(&self.app, locked);
         // Locking must take a decrypted meeting title off the tray at once,
         // not on the next tick -- `tray::meeting_line` already answers
         // `None` once `vault.is_unlocked()` is false, so this call is what
@@ -127,5 +130,9 @@ impl EventSink for WindowSink {
 
     fn meeting_offer(&self, offer: MeetingOffer) {
         crate::offers::on_calendar_offer(&self.app, offer);
+    }
+
+    fn meeting_brief(&self, brief: karmayoga_core::meeting::brief::MeetingBrief) {
+        crate::offers::on_meeting_brief(&self.app, brief);
     }
 }

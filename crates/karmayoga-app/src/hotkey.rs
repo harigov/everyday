@@ -1,13 +1,15 @@
 //! The keys that reach Karma Yoga from anywhere on the desktop.
 //!
-//! Three of them. One raises the window with the palette open: the difference
+//! Four of them. One raises the window with the palette open: the difference
 //! between "the app has a palette" and "there is somewhere to put a
 //! thought", because the second one has to work while somebody is looking at
 //! a different application entirely. The second is writing help over text
 //! selected in whatever application that is -- see [`crate::writing`]. The
 //! third is voice typing into whatever text field has the keyboard -- see
-//! [`crate::voicetyping`] -- and is the only one that cares when the key is
-//! let go as well as when it is pressed, because it can be held to talk.
+//! [`crate::voicetyping`]. The fourth starts a spoken conversation with the
+//! assistant from anywhere -- see [`crate::talk`]. Those two care when the
+//! key is let go as well as when it is pressed, because either can be held
+//! to talk.
 //!
 //! # Why the palette raises the window rather than drawing its own
 //!
@@ -60,6 +62,7 @@ pub enum Binding {
     Palette,
     Writing,
     VoiceTyping,
+    Talk,
 }
 
 impl Binding {
@@ -69,7 +72,14 @@ impl Binding {
             Binding::Palette => "palette",
             Binding::Writing => "writing",
             Binding::VoiceTyping => "voice-typing",
+            Binding::Talk => "talk",
         }
+    }
+
+    /// Whether letting go of the key means anything: the two that can be
+    /// held to talk.
+    fn hears_release(self) -> bool {
+        matches!(self, Binding::VoiceTyping | Binding::Talk)
     }
 
     /// What the desktop's shortcut dialog says it does.
@@ -79,6 +89,7 @@ impl Binding {
             Binding::Palette => "Open Karma Yoga's command palette",
             Binding::Writing => "Improve, correct or shorten the selected text",
             Binding::VoiceTyping => "Type what you say into the focused text field",
+            Binding::Talk => "Talk to the assistant",
         }
     }
 }
@@ -168,6 +179,7 @@ struct Inner {
     palette: bool,
     writing: Option<Shortcut>,
     voice_typing: Option<Shortcut>,
+    talk: Option<Shortcut>,
     /// Set once `install` has found a GlobalShortcuts portal; every claim
     /// goes through it from then on.
     #[cfg(target_os = "linux")]
@@ -203,6 +215,7 @@ impl Inner {
             Binding::Palette => self.palette,
             Binding::Writing => self.writing.is_some(),
             Binding::VoiceTyping => self.voice_typing.is_some(),
+            Binding::Talk => self.talk.is_some(),
         }
     }
 
@@ -212,6 +225,7 @@ impl Inner {
             Binding::Palette => Some(palette_shortcut()),
             Binding::Writing => self.writing,
             Binding::VoiceTyping => self.voice_typing,
+            Binding::Talk => self.talk,
         }
     }
 
@@ -222,6 +236,7 @@ impl Inner {
             Binding::Palette => describe_palette(),
             Binding::Writing => self.writing.as_ref().map(describe).unwrap_or_default(),
             Binding::VoiceTyping => self.voice_typing.as_ref().map(describe).unwrap_or_default(),
+            Binding::Talk => self.talk.as_ref().map(describe).unwrap_or_default(),
         }
     }
 
@@ -362,6 +377,12 @@ impl Hotkeys {
         self.set_chosen(app, Binding::VoiceTyping, shortcut)
     }
 
+    /// Claim the talk key -- `None` gives it back. Like voice typing's, it
+    /// hears the key let go too, so that it can be held to talk.
+    pub fn set_talk(&self, app: &AppHandle, shortcut: Option<Shortcut>) -> CommandResult<()> {
+        self.set_chosen(app, Binding::Talk, shortcut)
+    }
+
     /// Claim one of the keys somebody chooses the combination of -- writing
     /// help's or voice typing's -- or give it back with `None`.
     fn set_chosen(
@@ -375,6 +396,7 @@ impl Hotkeys {
             let slot = match binding {
                 Binding::Writing => &mut inner.writing,
                 Binding::VoiceTyping => &mut inner.voice_typing,
+                Binding::Talk => &mut inner.talk,
                 Binding::Palette => unreachable!("the palette's combination is fixed"),
             };
             let old = std::mem::replace(slot, shortcut);
@@ -398,7 +420,7 @@ impl Hotkeys {
     /// waiting on it; through the plugin it is handed back to be done once
     /// the lock is released.
     fn plan(inner: &mut Inner, binding: Binding) -> PluginStep {
-        // Through the portal, all three keys are asked for once, whatever is
+        // Through the portal, all four keys are asked for once, whatever is
         // switched on, and switching one off only stops it doing anything.
         //
         // Because the desktop remembers the last set of keys it was asked
@@ -415,6 +437,7 @@ impl Hotkeys {
             {
                 let writing = crate::writing::load_config().shortcut;
                 let voice_typing = crate::voicetyping::load_config().shortcut;
+                let talk = crate::talk::load_config().shortcut;
                 portal.want(vec![
                     crate::portal::Wanted {
                         id: Binding::Palette.id(),
@@ -430,6 +453,11 @@ impl Hotkeys {
                         id: Binding::VoiceTyping.id(),
                         description: Binding::VoiceTyping.description(),
                         preferred: crate::portal::xdg_trigger(&voice_typing),
+                    },
+                    crate::portal::Wanted {
+                        id: Binding::Talk.id(),
+                        description: Binding::Talk.description(),
+                        preferred: crate::portal::xdg_trigger(&talk),
                     },
                 ]);
                 inner.portal_asked = true;
@@ -467,10 +495,11 @@ impl Hotkeys {
                         // Both arrive, and acting on each would open the palette
                         // and immediately close it again.
                         //
-                        // Voice typing hears both: it is held to talk. Some platforms
-                        // repeat a held key's Pressed event; `voicetyping::key` is
+                        // Voice typing and the talk key hear both: either can
+                        // be held to talk. Some platforms repeat a held key's
+                        // Pressed event; `voicetyping::key` and `talk::key` are
                         // told about that, so nothing is filtered here.
-                        if !pressed && binding != Binding::VoiceTyping {
+                        if !pressed && !binding.hears_release() {
                             return;
                         }
                         activate(&handle, binding, pressed, None, None);
@@ -503,8 +532,8 @@ fn activate(
     if !app.state::<Hotkeys>().inner.lock().expect("hotkeys lock").wanted(binding) {
         return;
     }
-    // Only voice typing has anything to do when a key is let go.
-    if !pressed && binding != Binding::VoiceTyping {
+    // Only the keys that can be held have anything to do when let go.
+    if !pressed && !binding.hears_release() {
         return;
     }
     match binding {
@@ -516,6 +545,7 @@ fn activate(
         }
         Binding::Writing => crate::writing::trigger(app, token),
         Binding::VoiceTyping => crate::voicetyping::key(app, pressed, token, stamp),
+        Binding::Talk => crate::talk::key(app, pressed, token, stamp),
     }
 }
 
@@ -556,6 +586,7 @@ pub fn install(app: &AppHandle) {
     crate::voicetyping::watch_key_repeat();
     let writing = crate::writing::configured_shortcut();
     let voice_typing = crate::voicetyping::configured_shortcut();
+    let talk = crate::talk::configured_shortcut();
     #[cfg(target_os = "linux")]
     if crate::writing::wayland_session(app) {
         let handle = app.clone();
@@ -580,6 +611,7 @@ pub fn install(app: &AppHandle) {
                         "palette" => Binding::Palette,
                         "writing" => Binding::Writing,
                         "voice-typing" => Binding::VoiceTyping,
+                        "talk" => Binding::Talk,
                         _ => return,
                     };
                     activate(&handle, binding, pressed, token, Some(stamp));
@@ -596,6 +628,7 @@ pub fn install(app: &AppHandle) {
             // is worth here.
             let _ = hotkeys.set_writing(&handle, writing);
             let _ = hotkeys.set_voice_typing(&handle, voice_typing);
+            let _ = hotkeys.set_talk(&handle, talk);
         });
         return;
     }
@@ -603,6 +636,7 @@ pub fn install(app: &AppHandle) {
     let _ = hotkeys.set_palette(app, true);
     let _ = hotkeys.set_writing(app, writing);
     let _ = hotkeys.set_voice_typing(app, voice_typing);
+    let _ = hotkeys.set_talk(app, talk);
 }
 
 /// Whether the palette's key is claimed right now -- whether a hidden window
@@ -639,6 +673,13 @@ mod tests {
     #[test]
     fn the_default_writing_shortcut_parses() {
         assert!(parse(DEFAULT_WRITING).is_ok());
+    }
+
+    #[test]
+    fn the_default_talk_shortcut_parses_and_is_nobody_elses() {
+        let talk = parse(crate::talk::DEFAULT_SHORTCUT).expect("it parses");
+        assert_ne!(talk, parse(DEFAULT_WRITING).unwrap());
+        assert_ne!(talk, parse(crate::voicetyping::DEFAULT_SHORTCUT).unwrap());
     }
 
     #[test]

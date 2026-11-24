@@ -26,7 +26,7 @@
 //! 3. Grant `allow-<name>` to every window whose page calls it: always to
 //!    `capabilities/default.json` (the main window and the app windows get
 //!    every command), and to the narrow windows' files
-//!    (`capabilities/writing.json`, `voice-typing.json`, `recording.json`) only
+//!    (`capabilities/writing.json`, `voice-typing.json`, `panel.json`) only
 //!    if their own page calls it. A command nobody grants is refused for
 //!    everyone, which shows up as "Command ... not allowed by ACL" in the
 //!    window's console and nowhere else.
@@ -86,13 +86,16 @@ const APP_COMMANDS: &[&str] = &[
     "writing_settings",
     "set_writing_settings",
     // Voice typing into whatever field has the keyboard.
-    "voice_typing_state",
-    "voice_typing_stop",
-    "voice_typing_cancel",
-    "voice_typing_copy",
-    "voice_typing_open_main",
     "voice_typing_settings",
     "set_voice_typing_settings",
+    // Talking to the assistant from anywhere, with the talk key.
+    "talk_settings",
+    "set_talk_settings",
+    "talk_toggle",
+    // The panel in the corner of the screen.
+    "panel_state",
+    "panel_action",
+    "panel_resize",
     // The ones that are not JSON in and JSON out.
     "put_blob",
     "clipboard_image",
@@ -141,10 +144,9 @@ const APP_COMMANDS: &[&str] = &[
     "dictation_start",
     "dictation_stop",
     "dictation_cancel",
-    // Meeting offers and the corner card.
+    // Meeting offers.
     "meeting_offer_answer",
     "meeting_offers",
-    "recording_notice",
     // Screen time on this machine.
     "screentime_status",
     "screentime_set_tracking",

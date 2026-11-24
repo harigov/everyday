@@ -236,6 +236,10 @@ pub async fn tick(service: &Arc<Service>) {
         .await;
     }
 
+    // Briefs for the meetings about to start: gathered and written on tasks
+    // of their own, and raised when done. See `crate::meeting::brief`.
+    crate::meeting::brief::tick(service, &vault).await;
+
     // The two model-assisted mail features that run unasked, on their own
     // schedule rather than a tool call's -- see `crate::mailai`'s module
     // docs for why neither is a tool, and why each keeps its own per-minute

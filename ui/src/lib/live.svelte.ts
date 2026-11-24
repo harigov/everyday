@@ -17,7 +17,7 @@
 // every store learning about the event system; one router means adding an app
 // is adding a line here.
 
-import { onChange, onLockState, onPalette, onShowInMain, type ShowInMain } from './api'
+import { onChange, onLockState, onPalette, onShowInMain, onTalk, type ShowInMain } from './api'
 import { ownOrigin, pinned } from './appwindow'
 import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
@@ -40,6 +40,7 @@ import { screentime } from './screentime.svelte'
 import { isSettingsTab, panels } from './panels.svelte'
 import { app } from './state.svelte'
 import { templates } from './templates.svelte'
+import { player } from './player.svelte'
 import { todo } from './todo.svelte'
 import { targets as goalTargets } from './targets.svelte'
 import { tracking } from './tracking.svelte'
@@ -450,6 +451,12 @@ class Live {
       // should not put a list of its contents on screen.
       onPalette(() => {
         if (app.screen === 'main') panels.openPalette()
+      })
+      // A conversation from the talk key has the speakers while it lasts:
+      // what the player was playing waits, as it does for voice mode here.
+      onTalk((active) => {
+        if (active) player.pauseForVoice()
+        else player.resumeAfterVoice()
       })
       // A window of one app handing over what is not its app -- see
       // `appwindow.ts`. Past the lock screen only, for the palette's reason,

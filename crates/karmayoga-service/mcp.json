@@ -87,6 +87,36 @@
       "title": "Add lab result"
     },
     {
+      "domain": "tasks",
+      "effect": "write",
+      "name": "add_talking_point",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "notes": {
+            "description": "Detail that does not fit in the point.",
+            "type": "string"
+          },
+          "person": {
+            "description": "Who it is to be raised with: a name (\"Josh\") or an email address. It is kept as it was said.",
+            "type": "string"
+          },
+          "point": {
+            "description": "What to raise, as a short phrase: \"Talk about the Q3 budget\". It is the task's title and is shown as it is written.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "point"
+        ],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "Add talking point"
+    },
+    {
       "domain": "news",
       "effect": "write",
       "name": "add_to_up_next",
@@ -2856,6 +2886,29 @@
       "scope": "news",
       "sensitivity": "ordinary",
       "title": "List stories"
+    },
+    {
+      "domain": "tasks",
+      "effect": "read",
+      "name": "list_talking_points",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "person": {
+            "description": "Only points for this person: a name or an email address. Omit for everybody.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "tasks",
+      "sensitivity": "ordinary",
+      "title": "List talking points"
     },
     {
       "domain": "tasks",

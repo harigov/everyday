@@ -46,8 +46,8 @@ use jiff::civil::{Date, Time};
 use karmayoga_core::store::JournalStore;
 use karmayoga_core::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use karmayoga_core::task::{
-    Assignee, BlockKind, BlockSubject, Priority, Project, ProjectStatus, Task, TaskStatus,
-    TimeBlock,
+    Assignee, BlockKind, BlockSubject, Priority, Project, ProjectStatus, Task, TaskPerson,
+    TaskStatus, TimeBlock,
 };
 use karmayoga_core::{BlockId, ProjectId, Result, TaskId};
 use std::collections::BTreeMap;
@@ -229,6 +229,9 @@ fn render_task(
     if let Some(sent) = task.reminded_at {
         let _ = write!(hidden, "; reminded:{}", doc::stamp(sent));
     }
+    if !task.raise_with.is_empty() {
+        let _ = write!(hidden, "; with:{}", people_text(&task.raise_with));
+    }
     let _ = writeln!(out, " <!-- {hidden} -->");
 
     if !task.notes.trim().is_empty() {
@@ -242,6 +245,18 @@ fn render_task(
         count += render_task(out, child, children, depth + 1);
     }
     count
+}
+
+/// Who a task is to be raised with, as the hidden comment carries it: the
+/// people as JSON, with the three characters that would end a field (`;`) or
+/// the comment (`>`), or start another (`<`), written as JSON's own escapes
+/// so the text still reads back as the same JSON.
+fn people_text(people: &[TaskPerson]) -> String {
+    serde_json::to_string(people)
+        .unwrap_or_default()
+        .replace(';', "\\u003b")
+        .replace('>', "\\u003e")
+        .replace('<', "\\u003c")
 }
 
 /// `90` becomes `1h30`, `45` becomes `45m`. What the capture line takes.
@@ -290,6 +305,7 @@ struct Parsed {
     assignee: Assignee,
     remind: Option<jiff::Timestamp>,
     reminded: Option<jiff::Timestamp>,
+    with: Vec<TaskPerson>,
 }
 
 fn read_project(
@@ -377,6 +393,7 @@ fn read_project(
         task.assignee = parsed.assignee;
         task.remind_at = parsed.remind;
         task.reminded_at = parsed.reminded;
+        task.raise_with = parsed.with;
         task.sort_order = order;
         task.created_at = parsed.created.unwrap_or(task.created_at);
         task.updated_at = jiff::Timestamp::now();
@@ -485,6 +502,7 @@ fn parse_task_line(depth: usize, done: bool, rest: &str) -> Parsed {
         assignee: Assignee::Owner,
         remind: None,
         reminded: None,
+        with: Vec::new(),
     };
 
     // The hidden fields first, so the visible half is parsed without them.
@@ -505,6 +523,7 @@ fn parse_task_line(depth: usize, done: bool, rest: &str) -> Parsed {
             }
             "remind" => parsed.remind = value.parse().ok(),
             "reminded" => parsed.reminded = value.parse().ok(),
+            "with" => parsed.with = serde_json::from_str(value).unwrap_or_default(),
             _ => {}
         }
     }
@@ -733,6 +752,11 @@ mod tests {
         task.assignee = Assignee::Assistant;
         task.remind_at = Some("2026-09-11T16:00:00Z".parse().unwrap());
         task.reminded_at = Some("2026-09-11T16:00:12Z".parse().unwrap());
+        task.raise_with = vec![TaskPerson {
+            name: "Josh; the <one> from sales".into(),
+            contact: None,
+            email: Some("josh@example.com".into()),
+        }];
 
         let mut out = String::new();
         render_task(&mut out, &task, &BTreeMap::new(), 0);
@@ -756,6 +780,7 @@ mod tests {
         assert_eq!(back[0].assignee, Assignee::Assistant);
         assert_eq!(back[0].remind, task.remind_at);
         assert_eq!(back[0].reminded, task.reminded_at);
+        assert_eq!(back[0].with, task.raise_with, "a name with ; and <> survives the comment");
     }
 
     #[test]

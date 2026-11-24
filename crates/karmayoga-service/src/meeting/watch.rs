@@ -170,23 +170,35 @@ fn eligible<'a>(
     calendars: &'a [Calendar],
     event: &Event,
 ) -> CoreResult<Option<&'a Calendar>> {
-    if !detect::is_meeting(event, owners) {
-        return Ok(None);
-    }
-    let Some(calendar) = calendars.iter().find(|c| c.id == event.calendar_id) else {
+    let Some(calendar) = a_meeting_of_ours(settings, owners, calendars, event) else {
         return Ok(None);
     };
-    if !calendar_allowed(&settings.calendars, calendar) {
-        return Ok(None);
-    }
-    if settings.skipped_series.contains(&detect::series_key_of(&event.uid, event.series.as_deref()))
-    {
-        return Ok(None);
-    }
     if already_recorded(vault, event)? {
         return Ok(None);
     }
     Ok(Some(calendar))
+}
+
+/// The part of [`eligible`] that needs nothing but the event and the
+/// settings: it is a meeting, its calendar exists and passes the filter, and
+/// its series is not skipped. The calendar it is on, if so. Also what decides
+/// which meetings get a brief (`crate::meeting::brief`), which is wanted
+/// before anything is recorded.
+pub(crate) fn a_meeting_of_ours<'a>(
+    settings: &MeetingSettings,
+    owners: &[String],
+    calendars: &'a [Calendar],
+    event: &Event,
+) -> Option<&'a Calendar> {
+    if !detect::is_meeting(event, owners) {
+        return None;
+    }
+    let calendar = calendars.iter().find(|c| c.id == event.calendar_id)?;
+    if !calendar_allowed(&settings.calendars, calendar) {
+        return None;
+    }
+    let series = detect::series_key_of(&event.uid, event.series.as_deref());
+    (!settings.skipped_series.contains(&series)).then_some(calendar)
 }
 
 fn tick_inner(svc: &Arc<Service>, vault: &Vault) -> CoreResult<()> {

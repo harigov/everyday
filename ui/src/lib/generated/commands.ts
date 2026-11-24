@@ -197,6 +197,7 @@ import type {
   Medication,
   MedicationId,
   MeetingActivity,
+  MeetingBrief,
   MeetingNow,
   MeetingSettings,
   MeetingSettingsView,
@@ -840,6 +841,7 @@ export interface Commands {
   }
   medicationAlerts: { args: { from: string; to: string; tz: string }; result: RuleAlert[] }
   meetingActivity: { args: { from: string; to: string; tz?: string }; result: MeetingActivity }
+  meetingBrief: { args: { calendarId: CalendarId; uid: string }; result: MeetingBrief | null }
   meetingNow: { args: Record<string, never>; result: MeetingNow }
   meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
@@ -896,6 +898,7 @@ export interface Commands {
   plaidSetup: { args: Record<string, never>; result: PlaidSetup }
   podcastGenres: { args: Record<string, never>; result: PodcastGenre[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
+  prepareMeetingBrief: { args: { eventId: EventId }; result: MeetingBrief }
   preparePicture: { args: { blob: string; filename?: string }; result: Attachment }
   previewAttachment: {
     args: { messageId: MailMessageId; index: number }
@@ -1553,6 +1556,7 @@ export const COMMAND_NAMES = {
   medicationAdherence: 'medication_adherence',
   medicationAlerts: 'medication_alerts',
   meetingActivity: 'meeting_activity',
+  meetingBrief: 'meeting_brief',
   meetingNow: 'meeting_now',
   meetingSettings: 'meeting_settings',
   mergeTrackers: 'merge_trackers',
@@ -1592,6 +1596,7 @@ export const COMMAND_NAMES = {
   plaidSetup: 'plaid_setup',
   podcastGenres: 'podcast_genres',
   pollAutoLock: 'poll_auto_lock',
+  prepareMeetingBrief: 'prepare_meeting_brief',
   preparePicture: 'prepare_picture',
   previewAttachment: 'preview_attachment',
   previewImport: 'preview_import',
@@ -2144,6 +2149,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'medication_adherence',
   'medication_alerts',
   'meeting_activity',
+  'meeting_brief',
   'meeting_now',
   'meeting_settings',
   'merge_trackers',
@@ -2183,6 +2189,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'plaid_setup',
   'podcast_genres',
   'poll_auto_lock',
+  'prepare_meeting_brief',
   'prepare_picture',
   'preview_attachment',
   'preview_import',

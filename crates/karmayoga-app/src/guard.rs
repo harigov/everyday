@@ -16,8 +16,8 @@
 //! runs any of the service's hundreds by name, so a window that may `call` at
 //! all could run any of them: [`window_may_call`] is the same list again for
 //! `call`, for the windows that are not the main window or an app window. The
-//! writing popup runs two service commands, the voice typing pill and the
-//! meeting card none, and a window this table does not know runs none either.
+//! writing popup runs two service commands, voice typing's paste window and
+//! the panel none, and a window this table does not know runs none either.
 //! A new narrow window has to be added here, which is the point: its calls are
 //! decided when somebody writes it, not inherited.
 //!
@@ -83,16 +83,17 @@ use crate::state::AppState;
 /// * the writing popup (`ui/src/writing/WritingPopup.svelte`) runs the rewrite
 ///   itself and, when the person dismisses it while the model is still
 ///   thinking, settles it;
-/// * the voice typing pill talks to the shell through commands of its own and
-///   runs no service command;
-/// * the meeting card is the same.
+/// * voice typing's window is only a paste helper now, whose page draws
+///   nothing and calls nothing;
+/// * the panel (`ui/src/panel/panel.ts`) talks to the shell through commands
+///   of its own and runs no service command.
 ///
 /// `acl::` tests read those pages and fail if this table and what they
 /// name come apart.
 const NARROW_WINDOWS: &[(&str, &[&str])] = &[
     (crate::writing::LABEL, &["rewrite_selection", "settle_writing_assist"]),
     (crate::voicetyping::pill::LABEL, &[]),
-    (crate::recnotice::LABEL, &[]),
+    (crate::panel::window::LABEL, &[]),
 ];
 
 /// The service commands the narrow window called `label` may run through
@@ -682,8 +683,8 @@ mod tests {
     }
 
     #[test]
-    fn the_pill_and_the_card_may_call_nothing() {
-        for label in ["voice-typing", "recording-notice"] {
+    fn the_pill_and_the_panel_may_call_nothing() {
+        for label in ["voice-typing", "panel"] {
             assert!(!window_may_call(label, "rewrite_selection"), "{label}");
             assert!(!window_may_call(label, "add_connection"), "{label}");
             assert!(narrow_window_calls(label).is_empty(), "{label}");

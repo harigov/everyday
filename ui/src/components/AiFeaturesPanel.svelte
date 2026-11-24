@@ -14,8 +14,9 @@
   // which model it runs on.
   //
   // Three tabs, by where the work happens: in Mail, in the other apps (the
-  // small model's quick asks), and anywhere on this computer (writing help
-  // and voice typing, which answer a key pressed in any application).
+  // small model's quick asks), and anywhere on this computer (writing help,
+  // voice typing and the voice assistant, which answer a key pressed in any
+  // application).
   // Everything here applies the moment it is ticked, as each of these did
   // where it lived before, so the page has no Save.
   //
@@ -38,6 +39,7 @@
     AccountView,
     MailAi,
     QuickAskRow,
+    TalkSettings,
     VoiceTypingKeyMode,
     VoiceTypingSettings,
     WritingSettings,
@@ -295,6 +297,90 @@
     }
   }
 
+  /**
+   * The voice assistant: the OS-wide key that opens a spoken conversation with
+   * the assistant from anywhere. Left out where there is no shell to ask, like
+   * the two above.
+   */
+  let talk = $state<TalkSettings | null>(null)
+  let talkNotice = $state<string | null>(null)
+  let talkKey = $state('')
+  let talkBusy = $state(false)
+  let talkTrying = $state(false)
+
+  const TALK_MODES: { value: VoiceTypingKeyMode; label: string }[] = [
+    { value: 'toggle', label: 'Press to start and end' },
+    { value: 'hold', label: 'Hold to talk' },
+  ]
+
+  /** How long after a conversation ends a press still carries it on, in minutes. */
+  const TALK_CONTINUE = [0, 5, 10, 30]
+
+  /** The choices, and the one in force if it is none of them -- set by hand in the file. */
+  const talkContinue = $derived(
+    talk && !TALK_CONTINUE.includes(talk.continueMinutes)
+      ? [...TALK_CONTINUE, talk.continueMinutes].sort((a, b) => a - b)
+      : TALK_CONTINUE,
+  )
+
+  function continueLabel(minutes: number): string {
+    return minutes === 0 ? 'Never' : `${minutes} minutes`
+  }
+
+  void api
+    .talkSettings()
+    .then((s) => {
+      talk = s
+      talkKey = s.shortcut
+    })
+    .catch(() => (talk = null))
+
+  /** `null` leaves a field as it is, as the command does. */
+  async function saveTalk(
+    enabled: boolean,
+    shortcut: string | null = null,
+    mode: VoiceTypingKeyMode | null = null,
+    keepReady: boolean | null = null,
+    continueMinutes: number | null = null,
+  ) {
+    talkNotice = null
+    talkBusy = true
+    try {
+      talk = await api.setTalkSettings(enabled, shortcut, mode, keepReady, continueMinutes)
+      talkKey = talk.shortcut
+    } catch (e) {
+      talkNotice = errorMessage(e)
+    } finally {
+      talkBusy = false
+    }
+  }
+
+  /** "Try it": the same thing the key does, from here -- start, or end the one under way. */
+  async function tryTalk() {
+    talkNotice = null
+    talkTrying = true
+    try {
+      await api.talkToggle()
+    } catch (e) {
+      talkNotice = errorMessage(e)
+    } finally {
+      talkTrying = false
+    }
+  }
+
+  /**
+   * What the key is doing, when it is wanted: the problem, or -- where the
+   * desktop keeps the binding -- where to change it. Nothing when it is off or
+   * simply working.
+   */
+  function talkStatus(t: TalkSettings): string | null {
+    if (!t.enabled) return null
+    if (!t.key.registered) return t.key.problem || 'The desktop has not taken the key yet.'
+    return t.key.desktopManaged
+      ? 'The desktop keeps this key. Change it in the desktop’s own keyboard settings.'
+      : null
+  }
+
   // ── The tabs ─────────────────────────────────────────────────────────
 
   type Sub = 'mail' | 'apps' | 'computer'
@@ -305,7 +391,11 @@
     [
       { id: 'mail' as Sub, label: 'Mail', show: app.supportsMail },
       { id: 'apps' as Sub, label: 'In the apps', show: true },
-      { id: 'computer' as Sub, label: 'On this computer', show: !!(writing || voiceTyping) },
+      {
+        id: 'computer' as Sub,
+        label: 'On this computer',
+        show: !!(writing || voiceTyping || talk),
+      },
     ].filter((t) => t.show),
   )
 
@@ -571,6 +661,108 @@
         </label>
       </section>
     {/if}
+
+    {#if talk}
+      <section>
+        <span class="eyebrow">Voice assistant</span>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={talk.enabled}
+            disabled={talkBusy}
+            onchange={(e) => saveTalk(e.currentTarget.checked)}
+          />
+          <span>
+            <b>Talk to the assistant from anywhere with {talk.key.shortcut || talk.shortcut}</b>
+            <small>
+              Press the key anywhere to talk to the assistant; the answer is spoken and shown in the
+              corner of the screen. It uses the speech models in Settings → Models and the
+              assistant's own model, and carries on in a chat of its own.
+            </small>
+            {#if talkStatus(talk)}
+              <small class="note">{talkStatus(talk)}</small>
+            {/if}
+            {#if talkNotice}<small class="note">{talkNotice}</small>{/if}
+          </span>
+        </label>
+        {#if talk.enabled && !talk.key.desktopManaged}
+          <form
+            onsubmit={(e) => {
+              e.preventDefault()
+              void saveTalk(true, talkKey)
+            }}
+          >
+            <input
+              class="field"
+              aria-label="Voice assistant shortcut"
+              placeholder="Ctrl+Alt+A"
+              bind:value={talkKey}
+            />
+            <div class="row">
+              <button
+                class="btn btn-primary"
+                type="submit"
+                disabled={talkBusy || !talkKey.trim() || talkKey.trim() === talk.shortcut}
+              >
+                Use this shortcut
+              </button>
+            </div>
+          </form>
+        {/if}
+        <div class="segmented" class:disabled={!talk.enabled}>
+          {#each TALK_MODES as m (m.value)}
+            <button
+              class="seg"
+              class:on={talk.mode === m.value}
+              disabled={talkBusy || !talk.enabled}
+              onclick={() => saveTalk(true, null, m.value)}
+            >
+              {m.label}
+            </button>
+          {/each}
+        </div>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={talk.keepReady}
+            disabled={talkBusy || !talk.enabled}
+            onchange={(e) => saveTalk(true, null, null, e.currentTarget.checked)}
+          />
+          <span>
+            <b>Keep ready</b>
+            <small>
+              Keeps the speech models loaded so it answers at once. They stay in memory for as long
+              as the vault is unlocked.
+            </small>
+          </span>
+        </label>
+        <label class="setting" class:disabled={!talk.enabled}>
+          <span class="setting-label">Carry on the last conversation if it ended within</span>
+          <select
+            class="field pick"
+            disabled={talkBusy || !talk.enabled}
+            value={talk.continueMinutes}
+            onchange={(e) => saveTalk(true, null, null, null, Number(e.currentTarget.value))}
+          >
+            {#each talkContinue as minutes (minutes)}
+              <option value={minutes}>{continueLabel(minutes)}</option>
+            {/each}
+          </select>
+        </label>
+        <div class="row start">
+          <button
+            class="btn btn-outline"
+            disabled={talkTrying || !talk.enabled}
+            onclick={() => void tryTalk()}
+          >
+            Try it
+          </button>
+          <small class="try">
+            Starts a conversation now, as the key would. Press it again to end the conversation.
+          </small>
+        </div>
+      </section>
+    {/if}
   {/if}
 
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
@@ -707,6 +899,35 @@
     gap: var(--sp-2);
     justify-content: flex-end;
     margin-top: var(--sp-3);
+  }
+  .row.start {
+    align-items: center;
+    justify-content: flex-start;
+    margin-top: 0;
+  }
+  .try {
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
+
+  .setting {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .setting.disabled {
+    opacity: 0.5;
+  }
+  .setting-label {
+    font-size: var(--text-sm);
+    font-weight: 550;
+    color: var(--fg-muted);
+  }
+  select.pick {
+    width: auto;
+    min-width: 10rem;
+    align-self: flex-start;
   }
 
   .notice {

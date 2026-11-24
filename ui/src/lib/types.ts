@@ -1779,6 +1779,18 @@ export interface Task {
    * earlier than `remindAt`, so moving `remindAt` later sends it again.
    */
   remindedAt?: string | null
+  /** Who this is to be raised with: "talk about the budget with Josh when I
+   *  meet him next". The brief before the next meeting with any of them lists
+   *  it. Absent for an ordinary task. */
+  raiseWith?: TaskPerson[]
+}
+
+/** Somebody a task is to be raised with. */
+export interface TaskPerson {
+  name: string
+  /** Their card on the Contacts shelf, when one was found. */
+  contact?: ItemId
+  email?: string
 }
 
 export type Assignee = 'owner' | 'assistant'
@@ -3314,6 +3326,22 @@ export interface VoiceTypingSettings {
   key: KeyStatus
   /** How the answer is pasted on this desktop. */
   platform: 'wayland' | 'x11' | 'windows' | 'macos'
+}
+
+/** The talk key's per-machine setting: a spoken conversation with the
+ *  assistant from anywhere, shown in the panel in the corner of the screen. */
+export interface TalkSettings {
+  enabled: boolean
+  /** The combination chosen here -- what is offered to the desktop. */
+  shortcut: string
+  /** Press to start and again to end, or hold to talk. */
+  mode: VoiceTypingKeyMode
+  /** Keep the speech models loaded while the vault is unlocked. */
+  keepReady: boolean
+  /** A press within this many minutes of the last conversation carries it
+   *  on; `0` always starts a new one. */
+  continueMinutes: number
+  key: KeyStatus
 }
 
 // ── The tray ───────────────────────────────────────────────────────────
@@ -5415,6 +5443,71 @@ export interface MeetingSettings {
   /** Names, products and acronyms to spell right in every meeting. Saved
    *  trimmed, each once, at most 100; the panel edits it one per line. */
   vocabulary: string[]
+  /** The brief prepared before each meeting. */
+  brief: MeetingBriefSettings
+}
+
+/** How meeting briefs are made. */
+export interface MeetingBriefSettings {
+  /** Prepare a brief before each meeting with other people in it. */
+  enabled: boolean
+  /** How long before a meeting its brief is prepared, in minutes. */
+  leadMinutes: number
+  /** Look on the web for an organisation nothing in the vault knows about.
+   *  Sends only the organisation's name. */
+  web: boolean
+}
+
+/** What to know before a meeting: agenda, who is coming, context, and what
+ *  the person meant to raise. Made by the service before the meeting. */
+export interface MeetingBrief {
+  /** `event:{calendarId}:{uid}`, the key the meeting's offer has too. */
+  key: string
+  eventId: EventId
+  calendarId: CalendarId
+  uid: string
+  title: string
+  start: string
+  end: string
+  location?: string
+  /** One sentence on what the meeting is for. */
+  summary?: string
+  agenda: string[]
+  people: MeetingBriefPerson[]
+  context: string[]
+  talkingPoints: TalkingPoint[]
+  sources: MeetingBriefSource[]
+  /** Written up by a model, rather than the facts alone. */
+  written: boolean
+  /** What could not be looked at, in words. */
+  gaps: string[]
+  preparedAt: string
+}
+
+export interface MeetingBriefPerson {
+  name: string
+  email?: string
+  contact?: ItemId
+  /** Who they are, in a line. */
+  line: string
+}
+
+export interface TalkingPoint {
+  taskId: TaskId
+  text: string
+  /** Who it is to be raised with. */
+  with: string
+  done: boolean
+}
+
+export type MeetingBriefSourceKind =
+  'invite' | 'mail' | 'note' | 'meeting' | 'contact' | 'task' | 'web'
+
+export interface MeetingBriefSource {
+  kind: MeetingBriefSourceKind
+  /** A record's id, or a page's address. */
+  id: string
+  title: string
 }
 
 /** What `meetingSettings` answers: the settings, and what they add up to. */

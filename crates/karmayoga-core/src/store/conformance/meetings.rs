@@ -87,6 +87,11 @@ fn blank_settings() -> MeetingSettings {
         auto_record: false,
         summary_budget: None,
         vocabulary: vec!["Kubernetes".into()],
+        brief: crate::meeting::brief::MeetingBriefSettings {
+            enabled: false,
+            lead_minutes: 5,
+            web: false,
+        },
     }
 }
 

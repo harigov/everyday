@@ -20,10 +20,13 @@
   because the wrong app happened to be open.
 -->
 <script lang="ts">
-  import type { MeetingOfferAnswer } from '../lib/api'
+  import { untrack } from 'svelte'
+  import { api, type MeetingOfferAnswer } from '../lib/api'
   import { dayHeading, timeOfDay } from '../lib/format'
   import { meetings } from '../lib/meetings.svelte'
   import { panels } from '../lib/panels.svelte'
+  import type { MeetingBrief } from '../lib/types'
+  import { settledBrief } from '../lib/meetingbrief'
 
   const offer = $derived(meetings.offers[0] ?? null)
   const more = $derived(meetings.offers.length - 1)
@@ -70,6 +73,50 @@
     return [offer.calendarName, when].filter(Boolean).join(' · ')
   })
 
+  // What to know walking in, as one quiet line under the offer: the brief the
+  // service made for the meeting, when it made one. Asked for once per offer
+  // -- an offer is a minute from its meeting, and the brief was prepared a
+  // quarter of an hour before that -- and only for a calendar meeting, which
+  // is the only kind a brief is made for. No brief, or no answer, is no line.
+  let brief = $state<MeetingBrief | null>(null)
+  const briefFor = $derived(offer?.calendarId && offer.uid ? offer.key : null)
+
+  $effect(() => {
+    const key = briefFor
+    brief = null
+    const ask = untrack(() => offer)
+    if (!key || !ask?.calendarId || !ask.uid) return
+    let live = true
+    void api
+      .meetingBrief(ask.calendarId, ask.uid)
+      .then(settledBrief)
+      .then((found) => {
+        if (live) brief = found
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  })
+
+  /** The first names of who is coming, as many as fit a line. */
+  function withLine(people: MeetingBrief['people']): string {
+    const names = people.map((p) => p.name.split(/\s+/)[0] ?? p.name)
+    const shown = names.slice(0, 3).join(', ')
+    return names.length > 3 ? `With ${shown} and ${names.length - 3} more` : `With ${shown}`
+  }
+
+  /** The brief in a line: what it is for, else who is coming, else the first agenda item. */
+  const briefLine = $derived.by(() => {
+    if (!brief) return null
+    const about =
+      brief.summary ||
+      (brief.people.length > 0 ? withLine(brief.people) : (brief.agenda[0] ?? null))
+    const raise = brief.talkingPoints.filter((p) => !p.done).length
+    const things = raise === 1 ? '1 thing to raise' : `${raise} things to raise`
+    return [about, raise > 0 ? things : null].filter(Boolean).join(' · ') || null
+  })
+
   async function answer(which: MeetingOfferAnswer) {
     if (!offer) return
     takeError = null
@@ -97,6 +144,7 @@
         <strong>{offer.autoRecord ? 'Start recording?' : 'Taking a call? Take notes'}</strong>
       {/if}
       <span>{detail}</span>
+      {#if briefLine}<span class="brief">{briefLine}</span>{/if}
       {#if !ready}<span>Meeting notes aren’t set up yet.</span>{/if}
       {#if more > 0}<span class="more">+{more} more</span>{/if}
       {#if failure}<p class="error">{failure}</p>{/if}
@@ -184,6 +232,17 @@
     font-size: var(--text-xs);
   }
   .text .more {
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+  }
+  /* Two lines at most: a brief's summary is a sentence, and the offer is a
+     question that wants answering, not reading. */
+  .text span.brief {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
     color: var(--fg-subtle);
     font-size: var(--text-xs);
   }

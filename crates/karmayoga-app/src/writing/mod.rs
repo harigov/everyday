@@ -543,6 +543,12 @@ pub async fn set_writing_settings(
     if claim.is_some() && crate::voicetyping::claimed_shortcut() == claim {
         return Err(CommandError::new("invalid", "that is already voice typing's shortcut"));
     }
+    // Nor can the talk key share it, while that is on: the desktop's claim
+    // succeeds without registering anything for a combination already
+    // registered, and the key would go on starting a conversation.
+    if claim.is_some() && crate::voicetyping::talk_shortcut() == claim {
+        return Err(CommandError::new("invalid", "that is already the talk key's shortcut"));
+    }
     save_config(&config).map_err(|e| CommandError::new("writing", e))?;
     let hotkeys = app.state::<Hotkeys>();
     let answer = hotkeys.answer();

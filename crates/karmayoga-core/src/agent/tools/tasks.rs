@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::id::{ProjectId, TaskId};
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::store::tasks::{ParentScope, ProjectScope, TaskQuery};
-use crate::task::{Assignee, Priority, Project, ProjectStatus, Task, TaskStatus};
+use crate::task::{Assignee, Priority, Project, ProjectStatus, Task, TaskPerson, TaskStatus};
 use crate::timestamped::Timestamped;
 
 // `pub(super)` rather than private: `agent::tools`'s own argument-parsing
@@ -254,6 +254,61 @@ pub(super) static TOOLS: &[Tool] = &[
         run_delete_task,
         Some(describe_delete_task),
         Some(build_delete_task)
+    ),
+    tool!(
+        "add_talking_point",
+        Write,
+        Tasks,
+        schema(
+            vec![
+                (
+                    "person",
+                    text(
+                        "Who it is to be raised with: a name (\"Josh\") or an email address. \
+                         It is kept as it was said."
+                    )
+                ),
+                (
+                    "point",
+                    text(
+                        "What to raise, as a short phrase: \"Talk about the Q3 budget\". It \
+                         is the task's title and is shown as it is written."
+                    )
+                ),
+                ("notes", text("Detail that does not fit in the point.")),
+            ],
+            &["person", "point"]
+        ),
+        "Note something to bring up with somebody the next time they meet: 'let me talk \
+         about the budget with Josh when I meet him next', 'I need to ask Priya about the \
+         launch'. It is a task with that person on it, listed on the brief before their next \
+         meeting with them and ticked off there, which completes it. It is not a reminder at \
+         a time: for 'remind me at five' use create_task with remind_time. If more than one \
+         contact has that name the answer says so: ask which one, and give their email \
+         address.",
+        run_add_talking_point
+    ),
+    tool!(
+        "list_talking_points",
+        Read,
+        Tasks,
+        schema(
+            vec![
+                (
+                    "person",
+                    text(
+                        "Only points for this person: a name or an email address. Omit for \
+                         everybody."
+                    )
+                ),
+                limit_arg(),
+            ],
+            &[]
+        ),
+        "What they have noted to raise with people -- the open tasks with somebody to \
+         raise them with -- each with who. Ticking one off is update_task with status \
+         done. For what is coming up at a meeting, the meeting's brief lists them.",
+        run_list_talking_points
     ),
 ];
 
@@ -796,4 +851,110 @@ fn build_delete_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
         |id| ctx.vault.task(id),
         |t: Task| format!("Delete task: {}", t.title),
     )
+}
+
+// ---- talking points -------------------------------------------------------
+
+/// Who `said` is, as a [`TaskPerson`]: the name or address as it was said,
+/// and the card on the Contacts shelf when exactly one fits.
+///
+/// An address is matched to the card that holds it; a name to the card of
+/// that name or nickname, or whose name has it among its words -- but only if
+/// exactly one fits. Two Joshes is a question for the person, not a guess:
+/// the point is still made, against the name alone, which will come up at any
+/// meeting a Josh is at, and the answer says so, so the assistant can ask
+/// which one and the person give an address.
+///
+/// Only the card's id is kept, and the address only when it was given. A
+/// task is the Tasks domain's, which a client may hold without the library,
+/// so nothing read off a card -- its name, its addresses -- goes on the task
+/// or into the answer; the brief looks the card up when it needs to know who
+/// is meant (see [`crate::meeting::brief::Guest::matches`]). For the same
+/// reason the note about two matches does not say who they are.
+fn resolve_person(ctx: &ToolContext<'_>, said: &str) -> (TaskPerson, Option<String>) {
+    use crate::keepintouch::{NameMatch, match_guest, match_name};
+
+    let mut person = TaskPerson::said(said);
+    let contacts = if ctx.vault.supports_library() {
+        ctx.vault.contacts().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut note = None;
+    let card = if let Some(email) = &person.email {
+        match_guest(email, &contacts)
+    } else {
+        match match_name(&person.name, &contacts) {
+            NameMatch::One(id) => Some(id),
+            NameMatch::Several(_) => {
+                note = Some(format!(
+                    "several contacts match {:?}, so it is noted against the name alone and \
+                     will come up at any meeting somebody of that name is at. Ask which one \
+                     they mean and, if they say, give the email address.",
+                    person.name
+                ));
+                None
+            }
+            NameMatch::Nobody => None,
+        }
+    };
+    person.contact = card;
+    (person, note)
+}
+
+fn run_add_talking_point(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let said = args.str("person")?;
+    let point = args.str("point")?;
+    let (person, note) = resolve_person(ctx, said);
+    if person.name.trim().is_empty() {
+        return Err(args.bad("`person` must be a name or an email address"));
+    }
+
+    let mut t = Task::new(point.trim());
+    t.notes = args.opt_str("notes").unwrap_or_default().to_string();
+    t.raise_with = vec![person.clone()];
+    ctx.vault.save_task(&t)?;
+
+    let mut out = done("created", "talking point", &t.title, t.id.to_string())?;
+    let m = out.as_object_mut().unwrap();
+    m.insert("with".into(), json!(person.name));
+    if let Some(note) = note {
+        m.insert("note".into(), json!(note));
+    }
+    Ok(out)
+}
+
+fn run_list_talking_points(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let wanted = args.opt_str("person").map(TaskPerson::said);
+    let limit = args.limit() as usize;
+
+    let mut rows: Vec<Task> = ctx
+        .vault
+        .tasks(&TaskQuery::open())?
+        .into_iter()
+        .filter(|t| !t.raise_with.is_empty())
+        .filter(|t| {
+            wanted.as_ref().is_none_or(|w| {
+                t.raise_with.iter().any(|p| crate::meeting::brief::same_person(p, w))
+            })
+        })
+        .collect();
+    rows.sort_by_key(|t| t.created_at);
+    rows.truncate(limit);
+
+    let points: Vec<Value> = rows
+        .iter()
+        .map(|t| {
+            let mut v = json!({
+                "task_id": t.id.to_string(),
+                "point": t.title,
+                "with": t.raise_with.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            });
+            if !t.notes.trim().is_empty() {
+                v.as_object_mut().unwrap().insert("notes".into(), json!(t.notes));
+            }
+            v
+        })
+        .collect();
+    Ok(json!({ "count": points.len(), "points": points }))
 }

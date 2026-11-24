@@ -277,6 +277,10 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     "start_project",
     "update_job",
     "report_progress",
+    // What the person wants to bring up with somebody is theirs to say; a
+    // dream choosing who they should talk to, and about what, would put
+    // words in their mouth at their next meeting.
+    "add_talking_point",
     // Every mail write except drafting (which runs for real, see
     // `mail::DRAFT_WRITERS`) and `send_draft` (which is proposable) refuses
     // outright: nobody is there to say yes to a mailbox being reorganised

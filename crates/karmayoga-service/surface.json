@@ -5903,6 +5903,28 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "calendarId",
+          "required": true,
+          "type": "CalendarId"
+        },
+        {
+          "name": "uid",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "meeting_brief",
+      "orScope": null,
+      "returns": "MeetingBrief | null",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -6628,6 +6650,23 @@
       "orScope": null,
       "returns": "boolean",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "eventId",
+          "required": true,
+          "type": "EventId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "prepare_meeting_brief",
+      "orScope": null,
+      "returns": "MeetingBrief",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

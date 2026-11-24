@@ -29,14 +29,14 @@ export default defineConfig({
     sourcemap: false,
     chunkSizeWarningLimit: 900,
     // The application, and three small pages -- writing help's popup, the
-    // meeting card and voice typing's pill -- each a window of its own that loads
-    // none of the application. See src/writing/, src/recording/ and
-    // src/voicetyping/.
+    // panel in the corner of the screen and voice typing's paste window --
+    // each a window of its own that loads none of the application. See
+    // src/writing/, src/panel/ and src/voicetyping/.
     rollupOptions: {
       input: {
         main: 'index.html',
         writing: 'writing.html',
-        recording: 'recording.html',
+        panel: 'panel.html',
         'voice-typing': 'voice-typing.html',
       },
     },
