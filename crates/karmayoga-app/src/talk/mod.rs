@@ -718,6 +718,11 @@ impl Typist for Keyboard {
             crate::voicetyping::paste::paste(&app, &text, token).await
         })
     }
+
+    fn selected_text(&self) -> futures_util::future::BoxFuture<'static, Result<String, String>> {
+        let app = self.0.clone();
+        Box::pin(async move { crate::voicetyping::paste::selected_text(&app).await })
+    }
 }
 
 /// Open the session for conversation `seq`: learn what to call the assistant,

@@ -126,6 +126,48 @@ refused the keyboard, and nothing was typed.
   `screenNow()` when told the conversation began (`karmayoga://talk`), so
   "that article" can be the one open in the Feed.
 
+## 5. Writing by voice (Nov 24 2026)
+
+Hari's follow-up: select text anywhere and say "improve this", "simplify
+this", "make this concise", "correct the grammar" or any other change; and
+"write that I'm not feeling well and will reach out tomorrow" for a proper
+message in his voice. "Type" is his exact words; "write" is a message made
+properly, shaped by whether he says email, Slack or message.
+
+- **Reading the selection without focus** (`portal::copy_selection`): the
+  RemoteDesktop session with the clipboard presses **Ctrl+Insert** -- copy in
+  GTK, Qt, browsers, Electron and terminals, where Ctrl+C would interrupt
+  what runs -- waits for the clipboard to change hands and reads it with
+  `SelectionRead`. The field keeps its selection, so the paste after it
+  replaces it. Elsewhere, writing help's own selection read. Behind
+  `Typist::selected_text`.
+- **The model's tools** (`agent.rs`): `rewrite_selection(how, instruction)`
+  (improve, simplify, concise, grammar, or other in their words) and
+  `write_message(what, kind, to)` (email, chat, text, other), offered beside
+  `type_text`. The typing note says which is which. Neither hands the
+  selection to the model.
+- **The writing** (`deskwrite`): a rewrite is writing help's own editor
+  prompt and layout check on the medium model (new `WritingAction::Simplify`
+  and `Custom` with `WritingAssist::instruction`); a message is written in
+  his voice from mail's voice machinery (style guide, learned notes, his own
+  "how I sound") where an account allows writing, plainly warm otherwise,
+  with kind rules: an email has a greeting and sign-off, a chat message and a
+  text have none. Both kept as `WritingAssist` records like the popup's.
+- **The same typing rule**: what `type_text` would put on a card -- a
+  stranger's words in the turn, or a line break in a woken conversation --
+  these two hand back for `type_text` instead of typing (`TypingRule`,
+  sharing `typing_held` with the gate). With no clear spoken request (maybe
+  the assistant's own voice), `rewrite_selection` reads nothing at all; and
+  it reads the selection again before typing, typing nothing if it moved.
+  Every voice rewrite and message is kept and settled (`deskwrite::settle`):
+  typed, handed back (pending) or abandoned.
+
+Checked in the headless GNOME 50 shell: "their going home tomorow" selected
+in gnome-text-editor read back exactly through the portal right after the
+one dialog, a rewrite pasted over it replaced exactly the selection, nothing
+selected read as empty, and Ctrl+Insert into gnome-terminal left a running
+`sleep` alive.
+
 ## Ownership (Nov 23 2026, five Sonnet agents)
 
 | Agent | Owns |

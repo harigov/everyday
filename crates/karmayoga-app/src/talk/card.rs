@@ -548,6 +548,12 @@ pub fn tool_line(tool: &str) -> String {
     if tool == karmayoga_service::voice::DICTATE_TOOL {
         return "Getting ready to type…".to_string();
     }
+    if tool == "rewrite_selection" {
+        return "Rewriting what you selected…".to_string();
+    }
+    if tool == "write_message" {
+        return "Writing it…".to_string();
+    }
     let lower = tool.to_lowercase();
     let words: Vec<&str> = lower.split('_').collect();
     let has = |names: &[&str]| {
@@ -1113,6 +1119,8 @@ mod tests {
         assert_eq!(tool_line("generate_image"), "Drawing a picture…");
         assert_eq!(tool_line(karmayoga_core::agent::END_VOICE_TOOL), "Wrapping up…");
         assert_eq!(tool_line(karmayoga_service::voice::DICTATE_TOOL), "Getting ready to type…");
+        assert_eq!(tool_line("rewrite_selection"), "Rewriting what you selected…");
+        assert_eq!(tool_line("write_message"), "Writing it…");
         assert_eq!(tool_line("frobnicate"), "Working on it…");
     }
 

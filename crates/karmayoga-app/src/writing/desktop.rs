@@ -30,15 +30,32 @@ const COMMAND: Key = Key::Control;
 
 /// Press `key` with the command modifier, having first let go of every
 /// modifier the shortcut may still be holding.
-fn press_with_command(key: char) -> Result<(), String> {
+fn press_with_command(key: Key) -> Result<(), String> {
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
     for held in [Key::Shift, Key::Control, Key::Alt, Key::Meta] {
         let _ = enigo.key(held, Direction::Release);
     }
     enigo.key(COMMAND, Direction::Press).map_err(|e| e.to_string())?;
-    let typed = enigo.key(Key::Unicode(key), Direction::Click).map_err(|e| e.to_string());
+    let typed = enigo.key(key, Direction::Click).map_err(|e| e.to_string());
     let _ = enigo.key(COMMAND, Direction::Release);
     typed
+}
+
+/// Press the shortcut that copies the selection.
+///
+/// Ctrl+C where somebody has just asked for writing help by pressing its key;
+/// but a voice conversation reaches this without a key press, and in a Windows
+/// console Ctrl+C with nothing selected is an interrupt. With `quietly` it is
+/// Ctrl+Insert there instead: copy in everything that has a copy, and nothing
+/// at all in a console with nothing selected. macOS's Cmd+C interrupts nothing.
+fn press_copy(quietly: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if quietly {
+        return press_with_command(Key::Insert);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = quietly;
+    press_with_command(Key::Unicode('c'))
 }
 
 // ---- the clipboard ----------------------------------------------------------
@@ -71,8 +88,9 @@ mod clipboard {
     use crate::writing::read_selection;
     use tauri::AppHandle;
 
-    /// The text selected right now, wherever it is.
-    pub async fn selection(app: &AppHandle) -> Option<String> {
+    /// The text selected right now, wherever it is. Nothing is pressed, so
+    /// there is no `quietly` to ask for.
+    pub async fn selection(app: &AppHandle, _quietly: bool) -> Option<String> {
         read_selection(app, true).await.ok().flatten()
     }
 
@@ -178,9 +196,11 @@ mod portable {
         };
     }
 
-    /// The text selected right now: copied with a pressed Ctrl+C (Cmd+C),
-    /// with the clipboard as it was put back afterwards.
-    pub async fn selection(app: &AppHandle) -> Option<String> {
+    /// The text selected right now: copied with a pressed Ctrl+C (Cmd+C) --
+    /// or, `quietly`, whatever [`super::press_copy`] presses for a caller
+    /// nobody pressed a key for -- with the clipboard as it was put back
+    /// afterwards.
+    pub async fn selection(app: &AppHandle, quietly: bool) -> Option<String> {
         let before = save(app).await;
         // A marker the copy has to replace, so a copy that does nothing --
         // no selection, or an application that ignores the key -- reads as
@@ -195,7 +215,7 @@ mod portable {
         if before.restorable() {
             let _ = set_text(app, marker.clone()).await;
         }
-        let pressed = super::on_main(app, || super::press_with_command('c')).await;
+        let pressed = super::on_main(app, move || super::press_copy(quietly)).await;
         let mut copied = None;
         if matches!(pressed, Ok(Ok(()))) {
             let started = Instant::now();
@@ -215,11 +235,21 @@ mod portable {
 #[cfg(not(target_os = "linux"))]
 use portable as clipboard;
 
+/// The text selected right now, wherever it is -- the PRIMARY selection on
+/// X11, a pressed Ctrl+Insert (Cmd+C) on Windows and macOS -- for a caller
+/// with no popup of its own to read it for and no key press of the person's
+/// to follow (voice mode's "improve this"): Ctrl+Insert rather than Ctrl+C,
+/// which interrupts a Windows console with nothing selected. `None` when
+/// nothing is selected, or it could not be read.
+pub(crate) async fn selection_for_voice(app: &AppHandle) -> Option<String> {
+    clipboard::selection(app, true).await
+}
+
 // ---- open and paste ------------------------------------------------------------
 
 pub(super) async fn open(app: &AppHandle, window: &WebviewWindow) -> Result<Captured, String> {
     let pointer = app.cursor_position().ok();
-    let text = clipboard::selection(app).await;
+    let text = clipboard::selection(app, false).await;
 
     let (w, h) = desktop_size();
     let _ = window.set_size(LogicalSize::new(w, h));
@@ -329,7 +359,7 @@ pub(crate) async fn paste(
     };
     tokio::time::sleep(Duration::from_millis(settle)).await;
 
-    let pressed = on_main(app, || press_with_command('v')).await?;
+    let pressed = on_main(app, || press_with_command(Key::Unicode('v'))).await?;
     // The application reads the clipboard when it handles the key, which is
     // not necessarily straight away.
     tokio::time::sleep(Duration::from_millis(350)).await;

@@ -1300,7 +1300,8 @@ export interface Job {
 }
 
 /** What writing help was asked to do to the selected text, or `dictate`: write up what was said. */
-export type WritingAction = 'improve' | 'grammar' | 'concise' | 'dictate'
+export type WritingAction =
+  'improve' | 'grammar' | 'concise' | 'dictate' | 'simplify' | 'custom' | 'compose'
 
 /** What became of writing help's answer. */
 export type WritingOutcome = 'pending' | 'replaced' | 'copied' | 'cancelled' | 'failed'
@@ -1322,6 +1323,9 @@ export interface WritingAssist {
   outcome: WritingOutcome
   /** Why it failed, when it did. */
   error?: string | null
+  /** What was asked in the person's own words: a `custom` rewrite's
+   *  instruction, or what kind of message a `compose` is and to whom. */
+  instruction?: string | null
 }
 
 export interface WritingQuery {

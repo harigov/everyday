@@ -14,7 +14,7 @@ later pass can tell somebody which mistakes they keep making.
 
 | Half | Code | Does |
 |---|---|---|
-| Record | `karmayoga-core/src/writing.rs`, `store/writing.rs`, `vault/writing.rs`; table `writing_assists` (schema **v17**) | `WritingAssist { action, original, result, app, model, outcome, error }`. Sealed except `created_us`. |
+| Record | `karmayoga-core/src/writing.rs`, `store/writing.rs`, `vault/writing.rs`; table `writing_assists` (schema **v17**) | `WritingAssist { action, original, result, app, model, outcome, error, instruction }` (`instruction` only for [By voice](#by-voice)). Sealed except `created_us`. |
 | Service | `karmayoga-service/src/domains/writing.rs` | `rewrite_selection` (medium model, keeps the record before and after asking, failures included; scope `Quick`, like a quick ask: it spends tokens and is not the assistant), `settle_writing_assist` and `list_writing_assists` (scope `All`: the history is text from any app, mail included). Needs an *unlocked* vault. |
 | Shell | `karmayoga-app/src/writing/{mod,wayland,desktop}.rs`, `portal.rs`, `hotkey.rs` | The key, the popup window, reading the selection, the paste. |
 | Popup | `ui/writing.html`, `ui/src/writing/` | A second page and window, sharing nothing with the main one but `call`. |
@@ -120,6 +120,115 @@ focus-stealing prevention gives it no keyboard and the "2" meant for the
 popup replaces the selection. macOS hides the whole app before pasting, so
 focus returns to the other application, not to the main window. That path
 needs Accessibility permission once.
+
+## By voice
+
+> **Built** Nov 24 2026, on `fix-voice-assistant-wake-typing-dictation`. Not
+> yet tried against a real model or a real selection by ear.
+
+In a conversation talked at the desktop -- the talk key, or the wake word --
+the same two things the popup does are asked for out loud, and a third that
+the popup cannot do: writing a message.
+
+| Said | Tool (agent T's, `agent.rs`) | What runs | Model |
+|---|---|---|---|
+| "improve this", "correct the grammar", "make this concise", "simplify this" | `rewrite_selection` (`how` = `improve`, `grammar`, `concise`, `simplify`) | `deskwrite::rewrite` | medium |
+| "make this friendlier", "make it sound less annoyed", anything else about a selection | `rewrite_selection` (`how` = `other`, with `instruction`) | `deskwrite::rewrite`, `WritingAction::Custom` | medium |
+| "write that I'm not feeling well and will reach out tomorrow" | `write_message` (`what`, `kind`, `to`) | `deskwrite::compose` | medium |
+| "type that I'm not feeling well" | `type_text` | the shell types it; no model | none |
+
+Typing and writing are different, and people use the words as synonyms:
+*typing* is the person's exact words (filler out, nothing reworded or added);
+*writing* is a proper message, with the greeting and sign-off the kind of
+message calls for. The assistant is told which is which (`TYPING_NOTE`).
+
+The shell reads the selection and types the answer (agent A2). The service
+half, in `karmayoga-service/src/deskwrite.rs`, asks the model and keeps the
+record. Both need an *unlocked* vault, for the reason a popup rewrite does.
+
+### Rewriting a selection
+
+`deskwrite::rewrite(text, action, instruction)` is the popup's rewrite
+(`domains::writing::rewrite_text`, which `rewrite_selection` also calls) with
+two more actions, and the same everything else: the editor `SYSTEM` prompt,
+the layout held three ways (except for Custom, below), the record kept before
+and after asking, the selection's own leading and trailing whitespace put
+back.
+
+- **Simplify**: plainer words, shorter sentences (split *within* a line, never
+  across one), the same meaning, every fact and ask, the same voice. Not a
+  summary: nothing is left out. It keeps the layout like Improve.
+- **Custom**: the person's own words go to the model after a frame that says
+  to change nothing they do not ask to change ("Their words: make it sound
+  less annoyed"). Required, one line, at most 300 characters
+  (`MAX_INSTRUCTION_CHARS`; a longer one is a second piece of writing, which
+  is also the shape a pasted instruction takes). Kept on the record as
+  `instruction`.
+- **Layout under Custom** (`writing_layout::describe`, `held`): the prompt
+  says what this selection's layout is, to keep it exactly unless what they ask
+  is about the layout itself (numbering, bullets, checkboxes, quoting, a list,
+  paragraphs, lines, headings), and that a title, subject line or heading they
+  ask to have *reworded* is words, not layout. That is all there is: the answer
+  is **not** checked, asked for again, or given the original's markers and
+  blank lines afterwards, which is what the other actions get. Whether a
+  request is about the layout is a reading of language ("number these steps",
+  "make each line a checkbox", "quote it", "fix the title"), a word list got it
+  wrong both ways, and `restore` silently undoing the numbers just added is
+  worse than a reword that joins two lines. The model decides.
+- `Dictate` and `Compose` are refused here. A selection that is blank or over
+  8,000 characters is refused as the popup refuses it, before anyone is
+  asked and with nothing kept.
+
+### Writing a message
+
+`deskwrite::compose(said, kind, to)` writes a new message from what was said,
+as a `MessageKind`:
+
+| Kind | Form |
+|---|---|
+| `email` | A greeting ("Hi Sam," when a name is given, else their usual), short paragraphs, a sign-off with their name in their style. No subject line, no signature block (the mail program may add one). |
+| `chat` | Slack, Teams, Discord: one to three sentences, casual, "Hey Sam" only if natural. No sign-off, no signature, none of an email's formalities even where their emails have them. |
+| `text` | SMS, WhatsApp, iMessage: the shortest, a sentence or two, no sign-off. |
+| `other` | Nobody said: a short, friendly, chat-like message. |
+
+In every kind: in the language spoken, in the first person as them, and
+nothing invented -- a reason, time, date, name, number, link or promise they
+did not give is a short `[bracketed]` gap instead. The answer is only the
+message. What was said is the last thing in the prompt.
+
+**The voice, and its gate.** Their voice is their sent mail
+(`mailvoice::voice_context`: style guide, a few example emails, what was
+learned from their replies, and what they said in Settings → Mail writing).
+Reading it is what an account agreed to with its *writing help* switch and the
+acknowledgement of the model's endpoints, so `compose` reads the **first
+account, in the order they were added, for which
+`mail_ai_allowed(account, <the model's own acknowledgement>, Writing)` holds**
+-- checked against the very snapshot the request is made under, as
+`mailai::mail_model` does. There is no default account to prefer. Where none
+has agreed, no mail is read at all: the message is written warm and plain (the
+fixed rules less their talk of example emails, plus the "never use these
+phrases" list), and an email is signed with the first name in the profile, or
+closed with no name where there is none. The mail rate limiter is spent when
+mail is read, as `draft_with_ai` does. A voice that cannot be read falls back
+to plain rather than failing.
+
+The voice is fitted to the message: the signature is blanked (the message is
+typed into whatever they are writing in), and so is the "written from"
+address (which account it goes out of is not known, and the one lending its
+voice was only the first to agree); for anything but an email the name is
+blanked too, since there is nothing to sign. The style
+guide and the person's instructions are about email, so the kind's form is said
+twice -- once in full with the task, and once in a line directly above what
+was said, where it outranks "open with Hi {name}", "close with Best,".
+Answers are cleaned as every message written for them is (`VoiceContext::clean`).
+
+**The record.** Both are kept as a `WritingAssist`, before and after asking,
+failures included: a rewrite as `simplify`/`custom` with the selection as
+`original`; a message as `compose`, with what was said as `original` (up to
+6,000 characters, `MAX_REQUEST_CHARS`), `instruction` saying what kind and to
+whom ("an email to Sam", "a chat message"), and the message as `result`. The
+`app` is not known to the service. `outcome` stays `pending`: nothing settles
+these, because the shell types and does not report back.
 
 ## Tested
 
