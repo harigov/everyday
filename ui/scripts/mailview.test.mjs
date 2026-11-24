@@ -217,6 +217,31 @@ assert.equal(
     "Outlook's forward looks like its reply; the subject tells them apart",
   )
   assert.equal(read(OUTLOOK_WEB, { subject: 'RE: FW: Hello' }).hasHistory, true, 'a reply to one')
+
+  // Every reply in a thread that began as a forward quotes the forward. That
+  // is history like any other, not a forward of the reply's own.
+  const replyToForward = GMAIL.replace('Earlier words.', forwarded)
+  const quoting = read(replyToForward, { subject: 'Re: Fwd: Hi' })
+  assert.ok(quoting.hasHistory, 'a reply quoting a forward folds')
+  assert.ok(!quoting.html.includes('The news'), 'the forward it quotes goes with the rest')
+  assert.equal(
+    read(GMAIL, { subject: 'Fwd: Hi' }).hasHistory,
+    true,
+    'a reply under a subject still saying "Fwd:" is told by its "wrote:"',
+  )
+  assert.equal(read(forwarded, { subject: 'Fwd: Hi' }).hasHistory, false, 'a forward still is not')
+
+  // An iPhone puts "On ... wrote:" in a quote of its own, and the words it
+  // introduces in the next one along: the two go together.
+  const iphone =
+    '<div dir="ltr">Yes please.</div><div dir="ltr"><br></div><div dir="ltr">Sent from my ' +
+    'iPhone</div><div dir="ltr"><br><blockquote type="cite">On Oct 29, 2026, at 9:00 AM, Tom ' +
+    '&lt;tom@example.com&gt; wrote:<br><br></blockquote></div><blockquote type="cite">' +
+    '<div dir="ltr">Earlier words.</div></blockquote>'
+  const phone = read(iphone)
+  assert.ok(phone.hasHistory, 'an iPhone reply folds')
+  assert.ok(!/wrote:|Earlier words/.test(phone.html), 'its header with it')
+  assert.ok(phone.html.includes('Sent from my iPhone'), 'and nothing of the reply')
 }
 
 // ── Written, or designed ──────────────────────────────────────────────

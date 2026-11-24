@@ -441,6 +441,35 @@
           </span>
         </button>
         {#if isOpen}
+          <!-- This message's own answers: the thread's toolbar answers the
+               newest, and a reply to something said further up is written
+               to that, quoting it. -->
+          <div class="answer" role="group" aria-label="Answer this message">
+            <button
+              class="act"
+              title="Reply to this message"
+              aria-label="Reply to this message"
+              onclick={() => void mail.reply(message.id, false)}
+            >
+              <Icon name="reply" size={15} />
+            </button>
+            <button
+              class="act"
+              title="Reply all to this message"
+              aria-label="Reply all to this message"
+              onclick={() => void mail.reply(message.id, true)}
+            >
+              <Icon name="reply-all" size={15} />
+            </button>
+            <button
+              class="act"
+              title="Forward this message"
+              aria-label="Forward this message"
+              onclick={() => void mail.forward(message.id)}
+            >
+              <Icon name="forward" size={15} />
+            </button>
+          </div>
           <button
             class="more"
             class:shown={detailsOpen.has(message.id)}
@@ -878,6 +907,26 @@
   }
   .state.sent {
     color: var(--journal-accent, var(--accent));
+  }
+
+  /* Reply, Reply all and Forward for this one message, beside its date. */
+  .answer {
+    flex: none;
+    display: flex;
+    gap: 2px;
+    margin-top: 4px;
+  }
+  .act {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+  }
+  .act:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
   }
 
   /* Out of the way until someone wants the full addresses. */

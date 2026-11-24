@@ -68,6 +68,7 @@ import { sorting } from './sorting.svelte'
 import { app, handle, quietly } from './state.svelte'
 import { applySingleChange } from './store/live-patch'
 import { guardedRefresh } from './store/refresh'
+import { VaultError } from './types'
 import type {
   AccountId,
   CategoryCount,
@@ -169,6 +170,11 @@ class MailState {
    *  when it works out how far down to ask, or it would ask for one row more
    *  each time for every row held on to. */
   #putBack = new Set<ThreadId>()
+  /** A tab has just been picked, and the reload that settles it is the one
+   *  that closes the open thread if the new list does not have it -- where
+   *  any other reload keeps it (see `refresh`). Kept until a reload lands
+   *  rather than passed to one, since a sync's reload can overtake it. */
+  #listPicked = false
   selectedThread = $state<ThreadId | null>(null)
   /**
    * Threads picked together -- Ctrl/Cmd+click toggles one, Shift+click takes
@@ -329,6 +335,7 @@ class MailState {
     this.category = categoryPref.get()
     this.#lingering.clear()
     this.#putBack.clear()
+    this.#listPicked = false
     this.selectedThread = null
     this.checked = new Set()
     this.#anchor = null
@@ -557,11 +564,13 @@ class MailState {
    * every mail account when none are named.
    *
    * `MailNav`'s two-second poll takes over from here for as long as any
-   * account is mid-pass, and reloads the list and the counts on the way
-   * back to idle. A pass that was over before status was even read back --
-   * nothing new on the server, or the mock, whose `sync_account` resolves
-   * only once its pretend pass is done -- never gives that poll a falling
-   * edge to see, so this reloads them itself in that case.
+   * account is mid-pass, and reloads the mailboxes and their counts on the
+   * way back to idle; the list hears from the pass itself, as it does from
+   * any pass that changed something (`#applyChanges`). A pass that was over
+   * before status was even read back -- nothing new on the server, or the
+   * mock, whose `sync_account` resolves only once its pretend pass is done
+   * -- never gives that poll a falling edge to see, so this reloads the list
+   * and the counts itself in that case: somebody pressed the button.
    */
   async syncAll(accountIds?: AccountId[]) {
     // A second press while the first is still settling would only wake the
@@ -637,6 +646,7 @@ class MailState {
     this.#lingering.clear()
     this.#putBack.clear()
     this.clearChecked()
+    this.#listPicked = true
     void this.refresh()
   }
 
@@ -676,19 +686,20 @@ class MailState {
   /**
    * Which of the rows a page left out have really gone from this mailbox --
    * archived on a phone, say, or by the assistant -- rather than merely been
-   * hidden by a toggle or lying past the end of the page. Only what is being
-   * held on to is worth asking about: everything lingering, and with a toggle
-   * on, the open thread, since the page's silence about it now means nothing.
-   * Asked without the toggles, which are what is being seen past.
+   * hidden by a toggle, sorted into another tab or pushed past the end of the
+   * page by mail arriving above them. Only what is being held on to is worth
+   * asking about: everything lingering, and `open` -- the thread being read,
+   * when `refresh` wants to know. Asked without the toggles or the tab, which
+   * are what is being seen past.
    */
   async #goneFrom(
     target: { mailboxIds: MailboxId[]; snoozed: boolean },
-    page: readonly Thread[],
+    served: ReadonlySet<ThreadId>,
+    open: ThreadId | null,
   ): Promise<ReadonlySet<ThreadId>> {
-    const listed = new Set(page.map((t) => t.id))
     const held = new Set(this.#lingering)
-    if (this.only.size > 0 && this.selectedThread) held.add(this.selectedThread)
-    const asking = [...held].filter((id) => !listed.has(id))
+    if (open) held.add(open)
+    const asking = [...held].filter((id) => !served.has(id))
     if (asking.length === 0) return new Set()
     const still = new Set(
       await mailApi.threadsListed(target.mailboxIds, { snoozed: target.snoozed }, asking),
@@ -715,12 +726,21 @@ class MailState {
    * neither shrinks the list nor loses track of a thread that is merely
    * further down it than page one reaches (finding 2).
    *
-   * Because this refetches the whole loaded range rather than a narrow first
-   * page, the open thread's absence from the result is trustworthy: it means
-   * the backend no longer has it here -- deleted, or moved out of this
-   * mailbox -- not merely "not on this page", which is what the previous,
-   * page-one-only check was mistaking it for. Except with a toggle on, or for
-   * a row held on to: there it says nothing, so `#goneFrom` asks by id.
+   * The thread being read is not a reload's to take away. Most reloads are
+   * nobody's doing -- a sync pass, every minute or so, or a change made
+   * elsewhere -- and the page can leave the open thread out for reasons that
+   * say nothing about it: mail arriving above it pushes it past the end of
+   * what is loaded, the sorting moves it to another tab, it no longer
+   * matches a toggle, or it was never a row here at all, opened from a
+   * search, a notification or another app. So its row stays while it is
+   * open, and it closes only once `#goneFrom` says it has left this mailbox
+   * -- archived on a phone, or by the assistant -- and not even then while a
+   * reply is being written under it: closing the sheet under somebody's
+   * words is the one thing a background reload must never do. The reply
+   * finished or put down, the next reload lets it go.
+   *
+   * A tab somebody has just picked is the exception (`#listPicked`): there
+   * the open thread goes if the new list does not have it, as it always has.
    */
   async refresh() {
     // The top of an Inbox comes along with every reload of it -- opening it,
@@ -733,7 +753,10 @@ class MailState {
     // every account's mailbox of its role at once. `null` here is exactly
     // the old `!mailboxId`.
     const target = listTarget(this.mailbox, this.mailboxes)
-    if (!target) return
+    if (!target) {
+      this.#listPicked = false
+      return
+    }
     await guardedRefresh(
       this.#refreshGeneration,
       async (isCurrent) => {
@@ -747,10 +770,24 @@ class MailState {
         // Deduped even within one page: a thread filed in two of a unified
         // row's mailboxes must never be two rows with one key.
         const rows = mergeSearchPage([], page.threads)
-        const gone = await this.#goneFrom(target, rows)
-        if (!isCurrent()) return
-        for (const id of gone) this.#lingering.delete(id)
         const served = new Set(rows.map((t) => t.id))
+        const picked = this.#listPicked
+        // A row of this list's that the page has left out: whether the open
+        // thread has left the mailbox, or only the page, the tab or a toggle,
+        // is asked by id. In a tab just picked, only with a toggle on, as
+        // before -- without one, not being on the page is enough.
+        const wasRow = (id: ThreadId | null): id is ThreadId =>
+          id !== null && !served.has(id) && this.threads.some((t) => t.id === id)
+        const asked = this.selectedThread
+        const askOpen = picked ? this.only.size > 0 && asked !== null : wasRow(asked)
+        const gone = await this.#goneFrom(target, served, askOpen ? asked : null)
+        if (!isCurrent()) return
+        this.#listPicked = false
+        for (const id of gone) this.#lingering.delete(id)
+        const open = this.selectedThread
+        const writing = this.composeInline
+        const holding = !picked && wasRow(open) && (!gone.has(open) || writing)
+        const held = holding ? new Set([...this.#lingering, open]) : this.#lingering
         // The open thread may never have had a row here to keep, if it was
         // opened from elsewhere: the copy in the reading pane does as well.
         const reading = this.openThread?.thread
@@ -758,7 +795,7 @@ class MailState {
           reading && !this.threads.some((t) => t.id === reading.id)
             ? [...this.threads, reading]
             : this.threads
-        this.threads = keepLingering(rows, shown, this.#lingering)
+        this.threads = keepLingering(rows, shown, held)
         this.#putBack = new Set(this.threads.map((t) => t.id).filter((id) => !served.has(id)))
         this.nextCursor = page.nextCursor ?? null
         // A follow-up drawn over the page is a row on screen as much as one
@@ -769,18 +806,32 @@ class MailState {
           const kept = [...this.checked].filter((id) => listed.has(id))
           if (kept.length !== this.checked.size) this.checked = new Set(kept)
         }
-        const open = this.selectedThread
         const unlisted =
-          this.only.size === 0 && !this.#lingering.has(open ?? '') && !listed.has(open ?? '')
-        if (open && (gone.has(open) || unlisted)) {
+          picked &&
+          this.only.size === 0 &&
+          !this.#lingering.has(open ?? '') &&
+          !listed.has(open ?? '')
+        const left = gone.has(open ?? '') && !listed.has(open ?? '')
+        // Whatever kept it listed until now -- a row, a follow-up drawn over
+        // the page, a row held on to -- a reply under it keeps it open.
+        if (open && (left || unlisted) && (picked || !writing)) {
           // A reply being written under it has nowhere left to be drawn: set
           // aside, and said so, rather than left in `composing` out of sight.
+          // Only ever in a tab just picked.
           if (this.composeInline) this.#park()
           this.selectedThread = null
           this.openThread = null
         }
       },
-      { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
+      {
+        setLoading: (v) => (this.loading = v),
+        // A tab's reload that failed has settled nothing, and the next one
+        // is a sync's, not a pick: it must not close what is open by then.
+        onError: (e) => {
+          this.#listPicked = false
+          return handle(e)
+        },
+      },
     )
   }
 
@@ -925,6 +976,8 @@ class MailState {
     if (this.composing && !this.composeInline) this.#park()
     this.selectedThread = id
     this.#unseenIn = null
+    // Opened after a tab was picked: no longer what the pick may close.
+    this.#listPicked = false
     this.#openVersion++
     this.summary = null
     // Opening one thread is leaving the many behind -- see `checked`.
@@ -2254,7 +2307,14 @@ class MailState {
       if (version !== this.#openVersion) this.#scheduleOpenThreadReload()
       else this.#showNewer(detail)
     } catch (e) {
-      // Gone: the list's own refresh is what closes it.
+      // Deleted -- expunged on the server, say. The list closes a thread it
+      // drew once it has left (`refresh`), but not one it never had, opened
+      // from a search or another app: this is what closes that. Not under a
+      // reply being written, which is the person's to send or put down.
+      if (e instanceof VaultError && e.code === 'not_found') {
+        if (this.selectedThread === id && !this.composeInline) this.closeThread()
+        return
+      }
       await quietly(e)
     }
   }

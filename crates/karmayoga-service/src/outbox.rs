@@ -1041,12 +1041,20 @@ fn draft_changed(svc: &Arc<Service>, id: DraftId) {
     });
 }
 
-/// Take one of a draft's own server copies out of the vault, by the mailbox
-/// name and uid the draft remembered it under: every filing of it where a
-/// draft lives ([`draft_place`]), since on Gmail the one message is in Drafts
-/// and All Mail both. Left in All Mail alone, it no longer matched its
-/// draft's copy and came back as a draft card of its own until a sync pass
-/// reaped it.
+/// Take one of a draft's own server copies out of the vault, by its
+/// `Message-ID`, or the mailbox name and uid the draft remembered it under:
+/// every filing of it where a draft lives ([`draft_place`]), since on Gmail
+/// the one message is in Drafts and All Mail both. Left in All Mail alone, it
+/// no longer matched its draft's copy and came back as a draft card of its
+/// own until a sync pass reaped it.
+///
+/// Not by uid, which finds nothing on Gmail -- or the wrong message: sync
+/// files a draft under the Drafts label at All Mail's uid, not the Drafts uid
+/// the upload was given (see [`DraftServerCopy::is`]). Every copy an autosave
+/// replaced stayed in its thread, as somebody else's draft, while the person
+/// was still writing the one it was a copy of.
+///
+/// [`DraftServerCopy::is`]: karmayoga_core::mail::DraftServerCopy::is
 ///
 /// A removal that fails is logged and the rest go on: what was removed before
 /// it still has pack frames and index entries for the caller to forget.
@@ -1059,7 +1067,18 @@ fn forget_copy(
     let Some(drafts) = mailboxes.iter().find(|m| m.remote_name == copy.mailbox) else {
         return Ok(Vec::new());
     };
-    let Some(message) = vault.message_by_uid(drafts.id, copy.uid)? else {
+    // By `Message-ID` when the copy has a real one, through the keyed index
+    // sync stores every message under -- one lookup -- and by uid only when
+    // it has none. A copy never synced is not found, and has nothing here to
+    // forget.
+    let found = match copy.real_message_id() {
+        Some(id) => match vault.mail_message_by_header(account, id)? {
+            Some(id) => Some(vault.mail_message(id)?),
+            None => None,
+        },
+        None => vault.message_by_uid(drafts.id, copy.uid)?,
+    };
+    let Some(message) = found else {
         return Ok(Vec::new());
     };
     let mut removed = Vec::new();

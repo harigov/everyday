@@ -71,15 +71,15 @@
     }
     // A sync that just finished may have discovered mailboxes that did not
     // exist at the last fetch -- a newly-created label, a folder IMAP only
-    // reports once it holds something -- and has very likely brought new
-    // mail into the list on screen. Refreshed once, on the falling edge,
+    // reports once it holds something. Refreshed once, on the falling edge,
     // rather than on every idle tick: the mailboxes, and with them the
-    // unread counts (`refreshMailboxes` asks for those itself), and the open
-    // list, which `refreshMailboxes` leaves alone once something is open.
+    // unread counts (`refreshMailboxes` asks for those itself). Not the list:
+    // a pass that brought anything into it says so with a change of its own
+    // before it goes idle, and `mail.svelte.ts`'s `#applyChanges` reloads it
+    // then -- a second reload here only drew the same list again.
     if (wasSyncing) {
       wasSyncing = false
       void mail.refreshMailboxes()
-      void mail.refresh()
     }
   })
 

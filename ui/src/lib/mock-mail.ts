@@ -1083,7 +1083,7 @@ export function mockInboxSenders({
 
 export function mockGetThread(id: ThreadId): ThreadDetail {
   const thread = seed.threads.find((t) => t.id === id)
-  if (!thread) throw new VaultError('notFound', 'no such thread')
+  if (!thread) throw new VaultError('not_found', 'no such thread')
   const all: MailMessageDetail[] = messagesOf(id).map((message) => ({
     ...message,
     attachments: seed.attachments.get(message.id) ?? [],

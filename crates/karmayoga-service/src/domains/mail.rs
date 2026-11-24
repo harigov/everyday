@@ -880,10 +880,11 @@ async fn delete_thread_draft(
                     if let Some(own) = draft.server_copy {
                         let mailboxes = vault.mailboxes(draft.account_id)?;
                         copies.retain(|&c| {
+                            let Ok(message) = vault.mail_message(c) else { return true };
                             !filed_in(&vault, &mailboxes, c).is_ok_and(|filed| {
-                                filed
-                                    .iter()
-                                    .any(|(m, uid)| m.remote_name == own.mailbox && *uid == own.uid)
+                                let at =
+                                    filed.iter().map(|(m, uid)| (m.remote_name.as_str(), *uid));
+                                own.is(&message, at)
                             })
                         });
                     }
@@ -2088,10 +2089,11 @@ fn filed_in<'a>(
 /// drafts, as the cards [`ThreadDraft`] describes.
 ///
 /// A copy belongs to the draft whose last upload it is
-/// ([`Draft::server_copy`]). A draft being written gets a card when it
-/// answers a message here or has a copy here; one sent, queued or thrown
-/// away does not, and neither do its copies, which are on their way off the
-/// server. A copy left only in Trash or Spam is a draft thrown away.
+/// ([`Draft::server_copy`], found by [`DraftServerCopy::is`]). A draft being
+/// written gets a card when it answers a message here or has a copy here; one
+/// sent, queued or thrown away does not, and neither do its copies, which are
+/// on their way off the server. A copy left only in Trash or Spam is a draft
+/// thrown away.
 ///
 /// A copy no draft claims is another device's draft, or an old autosave this
 /// app's earlier builds left behind. Nothing tells the two apart for certain,
@@ -2114,7 +2116,7 @@ fn thread_drafts(
         }
         let owner = own.iter().find(|d| {
             d.server_copy.as_ref().is_some_and(|c| {
-                filed.iter().any(|(m, uid)| m.remote_name == c.mailbox && *uid == c.uid)
+                c.is(&message, filed.iter().map(|(m, uid)| (m.remote_name.as_str(), *uid)))
             })
         });
         let detail = MessageDetail { attachments: attachments_for(vault, &message), message };

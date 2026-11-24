@@ -273,6 +273,14 @@ function isHeaderBlock(lines: Line[], at: number): boolean {
   )
 }
 
+/** The nearest `blockquote` around token `at`, or -1. */
+function enclosingQuote(tokens: Token[], at: number): number {
+  for (let p = tokens[at]?.parent ?? -1; p >= 0; p = tokens[p]?.parent ?? -1) {
+    if (tokens[p]?.tag === 'blockquote') return p
+  }
+  return -1
+}
+
 /** Up out of every wrapper that holds nothing before this token, so a fold
  *  takes a header's rule and its padded box along with its words. */
 function climb(html: string, tokens: Token[], from: number): number {
@@ -313,10 +321,15 @@ function isStampedFooter(text: string): boolean {
  * is shown whole -- the same trailing-only choice Gmail makes.
  *
  * A forward is shown whole as well: the "history" of a forward is what was
- * sent.
+ * sent. Told by what the history starts with -- a forward's own marker, or,
+ * under a subject that says forward, anything but a reply's "On ... wrote:"
+ * -- and not by a forward somewhere inside it: every reply in a thread that
+ * began as a forward quotes that forward, and was shown whole for it, history
+ * and all, message after message. Nor by the subject alone, which some
+ * programs leave saying "Fwd:" on every reply after.
  */
 function historyStart(html: string, tokens: Token[], subject: string): number | null {
-  if (/^\s*(fwd?|wg|tr|rv)\s*:/i.test(subject)) return null
+  const forwardSubject = /^\s*(fwd?|wg|tr|rv)\s*:/i.test(subject)
 
   // Where a candidate starts, and the token after the last of what it quotes.
   const candidates = new Map<number, number>()
@@ -348,10 +361,15 @@ function historyStart(html: string, tokens: Token[], subject: string): number | 
       candidates.set(line.token, -1)
     } else if (isWroteLine(line.text)) {
       const at = climb(html, tokens, line.token)
-      const opener = tokens[at]
-      if (opener?.tag === 'blockquote') {
-        // The header is inside the quote it belongs to, as Apple Mail writes it.
-        candidates.set(at, opener.pair < 0 ? tokens.length : opener.pair + 1)
+      const own = enclosingQuote(tokens, line.token)
+      if (own >= 0) {
+        // The header is inside the quote it belongs to, as Apple Mail writes it
+        // -- or alone in a quote of its own, as an iPhone writes it, with the
+        // words it introduces in the next one along.
+        const close = tokens[own]?.pair ?? -1
+        const alone = close >= 0 && (lines[n + 1]?.token ?? tokens.length) > close
+        const end = close < 0 ? tokens.length : close + 1
+        candidates.set(at, alone && quoteIsNext(close, n) ? throughNextQuote(close) : end)
       } else if (DATED.test(line.text) || quoteIsNext(at, n)) {
         candidates.set(at, throughNextQuote(at))
       }
@@ -363,13 +381,12 @@ function historyStart(html: string, tokens: Token[], subject: string): number | 
   for (const at of [...candidates.keys()].sort((a, b) => a - b)) {
     const end = candidates.get(at) ?? -1
     if (end < 0) return null
-    const firstWords = decodeEntities(
-      html.slice(tokens[at]?.at ?? 0, (tokens[at]?.at ?? 0) + 400).replace(/<[^>]*>/g, ' '),
-    )
-    if (/forwarded message/i.test(firstWords)) return null
     // An empty marker, which Outlook leaves on mail it did not quote anything in:
     // nothing to fold, and a control that opens nothing.
     if (!hasSubstance(html, tokens, at, end)) continue
+    const first = lines.find((line) => line.token >= at)?.text ?? ''
+    if (/forwarded message/i.test(first)) return null
+    if (forwardSubject && !isWroteLine(first)) return null
     if (!hasSubstance(html, tokens, 0, at)) return null
     if (!hasSubstance(html, tokens, end, tokens.length)) return at
     const after = tokens.slice(end).filter((t) => t.kind === 'text')

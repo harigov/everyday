@@ -31,7 +31,7 @@ stubBrowser({
 })
 
 const {
-  modules: [mailModule, stateModule, liveApplyModule, mailApi, { api }, mockMail],
+  modules: [mailModule, stateModule, liveApplyModule, mailApi, { api }, mockMail, { VaultError }],
   close,
 } = await load(
   [
@@ -41,6 +41,7 @@ const {
     '/src/lib/mail-api.ts',
     '/src/lib/api.ts',
     '/src/lib/mock-mail.ts',
+    '/src/lib/types.ts',
   ],
   { svelte: true },
 )
@@ -113,10 +114,74 @@ assert.equal(mail.loading, false, 'loading settles back to false once the load l
   assert.equal(mail.selectedMailbox, 'unified:inbox', 'and leaves the open list where it was')
 }
 
-// A selection that has left the reloaded page is dropped.
-mail.selectedThread = 'not-a-real-id'
-await mail.refresh()
-assert.equal(mail.selectedThread, null, 'a selection not in the reloaded page is cleared')
+// A thread the list never had -- opened from a search, a notification or
+// another app -- is not the list's to close, and a reply written under it is
+// not either: a sync pass reloads the list every minute or so.
+{
+  const sent = mail.mailboxes.find((m) => m.role === 'sent')
+  const { threads: inSent } = await mailApi.listThreads(sent.id, { snoozed: false }, null, 50)
+  const elsewhere = inSent.find((t) => !mail.threads.some((row) => row.id === t.id))
+  assert.ok(elsewhere, 'the seed has a sent thread the inbox does not list')
+  await mail.openThreadById(elsewhere.id)
+  await mail.reply(mail.openThread.messages.at(-1).id, false)
+  const writing = mail.composing
+  await mail.refresh()
+  assert.equal(mail.openThread?.thread.id, elsewhere.id, 'still open after a reload')
+  assert.equal(mail.composing, writing, 'and still being written in')
+  assert.ok(!mail.threads.some((t) => t.id === elsewhere.id), 'without a row put in the list')
+  mail.closeCompose()
+
+  // Deleted, though, it goes: the read of it a pass asks for finds nothing.
+  const getThread = api.thread
+  api.thread = () => Promise.reject(new VaultError('not_found', 'no such thread'))
+  applierFor('mail')([{ kind: 'thread', op: 'updated', origin: 'remote' }])
+  await new Promise((r) => setTimeout(r, 700))
+  api.thread = getThread
+  assert.equal(mail.openThread, null, 'a thread deleted elsewhere closes')
+  assert.equal(mail.selectedThread, null)
+
+  // A row the page leaves out that the mailbox still has -- pushed past the
+  // end of what is loaded by mail arriving above it, or sorted into another
+  // tab -- stays open while it is read, and listed.
+  // One already read: the unread toggle's checks further down need the rest.
+  const pushed = mail.threads.findLast((t) => t.unreadCount === 0)
+  await mail.openThreadById(pushed.id)
+  const across = api.threadsAcross
+  api.threadsAcross = async (...args) => {
+    const page = await across(...args)
+    return { ...page, threads: page.threads.filter((t) => t.id !== pushed.id) }
+  }
+  await mail.refresh()
+  api.threadsAcross = across
+  assert.equal(mail.openThread?.thread.id, pushed.id, 'a row past the page stays open')
+  assert.ok(
+    mail.threads.some((t) => t.id === pushed.id),
+    'and listed',
+  )
+  mail.closeThread()
+  await mail.refresh()
+
+  // A tab whose reload failed settled nothing, and what is opened after it is
+  // not the pick's to close when a sync's reload comes.
+  api.threadsAcross = () => Promise.reject(new Error('busy'))
+  mail.setCategory('newsletter')
+  await mail.refresh()
+  api.threadsAcross = across
+  app.error = null
+  await mail.openThreadById(elsewhere.id)
+  await mail.reply(mail.openThread.messages.at(-1).id, false)
+  await mail.refresh()
+  assert.equal(
+    mail.openThread?.thread.id,
+    elsewhere.id,
+    'after a failed tab, a sync closes nothing',
+  )
+  assert.ok(mail.composing, 'and the reply stays')
+  mail.closeCompose()
+  mail.closeThread()
+  mail.setCategory(null)
+  await mail.refresh()
+}
 
 // ── Follow-ups at the top of the Inbox ───────────────────────────────
 //
@@ -865,17 +930,42 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 900))
   assert.equal(mail.selectedThread, null, 'and the pane does not go on showing it')
   assert.equal(mail.openThread, null)
 
-  // The same with a reply half written under it: set aside, not stranded.
+  // Not with a reply half written under it: that stays where it is being
+  // written, the row with it, until the reply is finished or put down.
   const replyingTo = mail.threads[0].id
   await mail.openThreadById(replyingTo)
   await mail.reply(mail.openThread.messages.at(-1).id, false)
   assert.equal(mail.composeInline, true)
   await mailApi.archiveMany([replyingTo])
   await mail.refresh()
+  assert.equal(mail.openThread?.thread.id, replyingTo, 'a reply being written keeps it open')
+  assert.ok(mail.composing, 'and the reply')
+  assert.ok(
+    mail.threads.some((t) => t.id === replyingTo),
+    'and its row',
+  )
+  mail.closeCompose()
+  await mail.refresh()
+  assert.equal(mail.openThread, null, 'put down, it lets the thread go')
+  assert.ok(!mail.threads.some((t) => t.id === replyingTo))
+
+  // A tab somebody picks while writing does close it: set aside, not stranded.
+  mail.setOnly(new Set())
+  await mail.refresh()
+  // One already read, so the unread the checks below take turns with stay so.
+  const onTab = mail.threads.find((t) => t.category !== 'newsletter' && t.unreadCount === 0)
+  await mail.openThreadById(onTab.id)
+  await mail.reply(mail.openThread.messages.at(-1).id, false)
+  mail.setCategory('newsletter')
+  await mail.refresh()
   assert.equal(mail.openThread, null)
   assert.equal(mail.composing, null, 'no draft left in `composing` with nowhere to draw it')
   assert.ok(mail.parkedDraft, 'and it is said to be saved')
   mail.parkedDraft = null
+  mail.setCategory(null)
+  await mail.refresh()
+  mail.toggleOnly('unread')
+  await mail.refresh()
 
   // Undone, or reversed: what lingered lets go, so that being read elsewhere
   // afterwards takes it out as it should.

@@ -696,12 +696,17 @@
   $effect(() => {
     const el = host
     if (!el) return
+    // Who it is to, as the sheet opens. `untrack`ed: read here, the first
+    // recipient added to a new message rebuilt the editor from `initialBody`,
+    // throwing away every word typed before it and pulling the caret out of
+    // the To field.
+    const addressed = untrack(() => working.to.length > 0)
     // A message with words in it opens after the last of them, which is not the
     // end of the document: the signature is under them, and what is typed into
     // it stays there, unseen by Write and Improve.
     const afterWords =
       !underThread &&
-      working.to.length > 0 &&
+      addressed &&
       Boolean(
         splitSignature(initialBody.own)
           .words.replace(/<[^>]*>/g, '')
@@ -795,7 +800,7 @@
       // once (a forward's recipients can follow); a draft with words of its
       // own already, after the last of them. A new message, with nobody to
       // send it to yet, leaves focus to the To field instead.
-      autofocus: underThread || (working.to.length > 0 && !afterWords) ? 'start' : false,
+      autofocus: underThread || (addressed && !afterWords) ? 'start' : false,
       onCreate: ({ editor: created }) => {
         inlineBlobs = new Set(picturesIn(created.state.doc).keys())
         if (!afterWords) return
@@ -2206,6 +2211,14 @@
     flex-direction: column;
     min-height: 72px;
     padding: var(--sp-2) 0;
+  }
+  /* Never squeezed. With the quote open under a long reply, the two are
+     taller than the pane's body, and a flex item shrinks to fit: the editor
+     went down to its 72px, and every line past that was drawn over the quote
+     instead of pushing it down. The body scrolls instead. */
+  .body > .prose,
+  .body > .quote {
+    flex-shrink: 0;
   }
   /* A message quoting nothing: the editor fills the body, so a click
      anywhere in the empty space below the last line still lands in it. By
