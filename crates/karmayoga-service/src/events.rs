@@ -671,6 +671,12 @@ pub trait EventSink: Send + Sync {
     fn meeting_offer(&self, offer: MeetingOffer) {
         let _ = offer;
     }
+
+    /// A meeting's brief is ready -- see [`crate::meeting::brief`]. The
+    /// desktop shell puts it on the meeting card; nothing else listens.
+    fn meeting_brief(&self, brief: karmayoga_core::meeting::brief::MeetingBrief) {
+        let _ = brief;
+    }
 }
 
 /// A sink that drops everything. What a service runs with until one is set.

@@ -372,6 +372,42 @@ pub struct Task {
     /// [`Task::next_reminder`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reminded_at: Option<Timestamp>,
+    /// Who this is to be raised with: "talk about the budget with Josh when
+    /// I meet him next". The brief before the next meeting with any of them
+    /// lists it (`crate::meeting::brief`), and ticking it off there completes
+    /// the task. Empty for an ordinary task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raise_with: Vec<TaskPerson>,
+}
+
+/// Somebody a task is to be raised with. See [`Task::raise_with`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPerson {
+    /// Their name as it was said: "Josh".
+    pub name: String,
+    /// Their card on the Contacts shelf, when one was found for the name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<crate::id::ItemId>,
+    /// Their address, when it was given -- which is what a meeting's invite
+    /// names them by. Never copied off the card: a task is the Tasks domain's
+    /// and a card is the library's, so the brief looks the card up when it
+    /// needs to know which addresses are theirs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+impl TaskPerson {
+    /// Somebody as the words said them: `Josh`, `josh@acme.com` or `Josh
+    /// Smith <josh@acme.com>`. A bare address is its own name until a card
+    /// gives a better one. Nothing is looked up: finding the card is the
+    /// caller's, which has the vault.
+    pub fn said(text: &str) -> Self {
+        let (name, email) = crate::meeting::identify::parse_attendee(text);
+        let name = name.or_else(|| email.clone()).unwrap_or_default();
+        Self { name, contact: None, email }
+    }
 }
 
 /// Who a task is for.
@@ -567,7 +603,16 @@ impl Task {
             assignee: Assignee::Owner,
             remind_at: None,
             reminded_at: None,
+            raise_with: Vec::new(),
         }
+    }
+
+    /// The people this task is to be raised with that `is_here` says are at
+    /// the meeting (or wherever) being asked about. Empty when it is for
+    /// nobody there, which is also what an ordinary task, with nobody in
+    /// [`Task::raise_with`], answers.
+    pub fn raised_with(&self, mut is_here: impl FnMut(&TaskPerson) -> bool) -> Vec<&TaskPerson> {
+        self.raise_with.iter().filter(|p| is_here(p)).collect()
     }
 
     /// When this task's reminder is next due, if one is waiting.
@@ -1100,5 +1145,48 @@ mod tests {
         let text = t.searchable_text();
         assert!(text.contains("aisle"));
         assert!(text.contains("travel"));
+    }
+
+    #[test]
+    fn somebody_said_in_words_is_a_name_or_an_address() {
+        let josh = TaskPerson::said("Josh");
+        assert_eq!((josh.name.as_str(), josh.email), ("Josh", None));
+        let by_address = TaskPerson::said("  Josh@Acme.com ");
+        assert_eq!(
+            by_address.name, "josh@acme.com",
+            "an address is its own name until a card says"
+        );
+        assert_eq!(by_address.email.as_deref(), Some("josh@acme.com"));
+        let both = TaskPerson::said("Josh Smith <JOSH@acme.com>");
+        assert_eq!(both.name, "Josh Smith");
+        assert_eq!(both.email.as_deref(), Some("josh@acme.com"));
+        assert!(both.contact.is_none());
+        assert_eq!(TaskPerson::said("  ").name, "");
+    }
+
+    #[test]
+    fn a_task_says_which_of_its_people_are_here() {
+        let mut t = Task::new("talk about the budget");
+        assert!(t.raised_with(|_| true).is_empty(), "an ordinary task is for nobody");
+        t.raise_with = vec![TaskPerson::said("Josh"), TaskPerson::said("Priya")];
+        let here = t.raised_with(|p| p.name == "Priya");
+        assert_eq!(here.len(), 1);
+        assert_eq!(here[0].name, "Priya");
+        assert!(t.raised_with(|_| false).is_empty());
+    }
+
+    #[test]
+    fn raise_with_is_left_out_when_empty_and_survives_a_round_trip() {
+        let mut t = Task::new("x");
+        let plain = serde_json::to_value(&t).unwrap();
+        assert!(plain.get("raiseWith").is_none(), "{plain}");
+        t.raise_with = vec![TaskPerson::said("Josh <josh@acme.com>")];
+        let round: Task = serde_json::from_value(serde_json::to_value(&t).unwrap()).unwrap();
+        assert_eq!(round.raise_with, t.raise_with);
+        // A task sealed before the field existed still reads.
+        let mut old = serde_json::to_value(Task::new("old")).unwrap();
+        old.as_object_mut().unwrap().remove("raiseWith");
+        let read: Task = serde_json::from_value(old).unwrap();
+        assert!(read.raise_with.is_empty());
     }
 }

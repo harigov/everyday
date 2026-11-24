@@ -4,8 +4,10 @@
 //! typed into whatever text field had the keyboard: heard by the speech model
 //! chosen in Settings → Models, written up on the medium model -- filler out,
 //! the speaker's own corrections applied, punctuated -- and pasted there. A
-//! small pill at the bottom of the screen says what is happening: listening,
-//! with a level meter; writing; done. See `docs/plans/voice-typing.md`.
+//! card in the panel ([`crate::panel`]) says what is happening: listening,
+//! with the words as they are heard and a level meter; writing; done; or, when
+//! nothing could be typed, why, with the text and a Copy button. See
+//! `docs/plans/voice-typing.md` and `docs/plans/panel.md`.
 //!
 //! Not to be confused with [`crate::dictation`], mail's write-by-voice inside
 //! Karma Yoga's own window, whose listening session this shares.
@@ -18,9 +20,10 @@
 //! ([`crate::audio::engine`], `karmayoga_service::speech::dictate`).
 //!
 //! The one thing it must not do that writing help does is ask for the
-//! keyboard while it listens: the text goes to the field that has it. (GNOME
-//! on Wayland hands the pill the keyboard anyway, and hiding it hands it back
-//! to that field -- see [`pill`].)
+//! keyboard while it listens: the text goes to the field that has it. The card
+//! is the panel's, which never takes the keyboard; the one window of voice
+//! typing's own is the helper that sets the clipboard on Wayland, shown only
+//! for that moment (see [`pill`]).
 
 pub mod paste;
 pub mod pill;
@@ -37,20 +40,18 @@ use karmayoga_service::speech::dictate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::Shortcut;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::audio::engine::{AudioEngine, EngineEvent, EngineOptions, EngineSink};
 use crate::hotkey::{self, Binding, Hotkeys, KeyStatus};
+use crate::panel::{self, Action, Line, Owner, Panel, Tone};
 use crate::state::AppState;
 
-/// Tells the pill what to show. Its other half is `ui/src/voicetyping/main.ts`.
-pub const STATE_EVENT: &str = "karmayoga://voice-typing/state";
-
-/// How loud the microphone is, about twenty times a second while listening:
-/// a number from 0 to 1, for the pill's meter.
-pub const LEVEL_EVENT: &str = "karmayoga://voice-typing/level";
+/// The id of voice typing's card in the panel. There is one microphone, so one
+/// dictation at a time and never more than one card.
+const CARD: &str = "voice-typing";
 
 /// The key unless somebody chooses another. M for the microphone; two
 /// modifiers for the reason writing help's has them. Not `Ctrl+Alt+D`, the
@@ -137,6 +138,23 @@ pub fn claimed_shortcut() -> Option<Shortcut> {
         .ok()
 }
 
+/// The talk key's shortcut while the talk key is switched on, or `None` when
+/// it is off or its setting no longer parses. What voice typing's and writing
+/// help's setters check a new key against: the talk key's own
+/// [`crate::talk::configured_shortcut`] gives way to theirs at startup, so it
+/// is not the answer to "does somebody have this key" -- and asking it would
+/// have the three ask one another.
+pub(crate) fn talk_shortcut() -> Option<Shortcut> {
+    talk_shortcut_of(&crate::talk::load_config())
+}
+
+fn talk_shortcut_of(config: &crate::talk::Config) -> Option<Shortcut> {
+    if !config.enabled {
+        return None;
+    }
+    hotkey::parse(&config.shortcut).ok()
+}
+
 /// The shortcut to claim at startup: [`claimed_shortcut`], unless writing
 /// help is on and has the same one. Both settings are checked against each
 /// other when they are saved, but a file edited by hand or a writing shortcut
@@ -151,13 +169,12 @@ pub fn configured_shortcut() -> Option<Shortcut> {
     Some(ours)
 }
 
-// ---- what the pill shows -------------------------------------------------------
+// ---- what the card shows -------------------------------------------------------
 
 /// Where a dictation has got to, in the order it gets there: a phase never
 /// goes back to an earlier one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Phase {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Phase {
     /// The microphone is opening and the speech model loading. What is said
     /// meanwhile is kept.
     Starting,
@@ -167,35 +184,127 @@ pub enum Phase {
     Transcribing,
     /// The medium model is writing it up.
     Writing,
-    /// Typed. The pill goes a moment later.
+    /// Typed. The card goes a moment later.
     Done,
     /// Nothing typed: `message` says why, and `text` holds whatever there
-    /// was to type, for the pill's Copy button.
+    /// was to type, for the card's Copy button.
     Failed,
 }
 
-/// What the pill shows. Sent whole on every change.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TypingState {
+/// What a dictation's card says: everything [`card`] draws it from, and kept
+/// whole so that anything that changes -- the phase, the words heard, how the
+/// key works -- can redraw it.
+#[derive(Debug, Clone, PartialEq)]
+struct Typing {
     /// Which dictation this is, counted from 1 for the life of the process,
-    /// so the pill can tell a new one from the last.
-    pub seq: u64,
-    pub phase: Phase,
-    /// How the key works right now: in hold mode the pill says "let go to
-    /// stop"; hands-free after a tap, it says "press to stop".
-    pub mode: KeyMode,
+    /// so that a late word of one is not taken for the next.
+    seq: u64,
+    phase: Phase,
+    /// How the key works right now: in hold mode the card says "let go to
+    /// finish"; hands-free after a tap, it says "press to finish".
+    mode: KeyMode,
     /// Listening hands-free (toggle mode, or hold mode after a tap).
-    pub hands_free: bool,
+    hands_free: bool,
     /// The key, as it should be written on screen -- the desktop's own
-    /// answer where it keeps the binding -- for "press Ctrl+Alt+M to stop".
-    pub key: String,
-    /// For `Failed`, why; for `Done`, a note when there is one ("copied").
-    pub message: Option<String>,
+    /// answer where it keeps the binding -- for "press Ctrl+Alt+M to finish".
+    key: String,
+    /// For `Failed`, why.
+    message: Option<String>,
     /// For `Failed`, the text that could not be typed, when there was some.
-    pub text: Option<String>,
-    /// How the pill is drawn -- see [`pill::PillMode`].
-    pub pill: pill::PillMode,
+    text: Option<String>,
+    /// Everything the speech model has made of what was said so far.
+    heard: String,
+}
+
+/// The card for a dictation, as a function of nothing but where it has got
+/// to, so that every phase can be tested.
+fn card(typing: &Typing) -> Panel {
+    let button = |id: &str, label: &str, primary: bool| Action {
+        id: id.into(),
+        label: label.into(),
+        primary,
+        copy: None,
+    };
+    let mut panel = Panel {
+        id: CARD.into(),
+        owner: Owner::VoiceTyping,
+        tone: Tone::Working,
+        kicker: "Voice typing".into(),
+        title: String::new(),
+        count: None,
+        body: None,
+        lines: Vec::new(),
+        meter: false,
+        sections: Vec::new(),
+        actions: vec![button("cancel", "Cancel", false)],
+        busy: true,
+    };
+    // What was heard, as one running line, while there is anything. Still
+    // coming only while the microphone is open.
+    let said = |pending: bool| match typing.heard.trim() {
+        "" => Vec::new(),
+        words => vec![Line { who: None, text: words.into(), pending }],
+    };
+    match typing.phase {
+        Phase::Starting => panel.title = "Getting ready…".into(),
+        Phase::Listening => {
+            panel.tone = Tone::Listening;
+            panel.title = "Listening".into();
+            panel.body = Some(hint(typing));
+            panel.lines = said(true);
+            panel.meter = true;
+            panel.busy = false;
+            panel.actions = vec![button("stop", "Stop", true), button("cancel", "Cancel", false)];
+        }
+        Phase::Transcribing => {
+            panel.title = "Working out the words…".into();
+            panel.lines = said(false);
+        }
+        Phase::Writing => {
+            panel.title = "Writing…".into();
+            panel.lines = said(false);
+        }
+        Phase::Done => {
+            panel.tone = Tone::Success;
+            panel.title = "Typed".into();
+            panel.busy = false;
+            panel.actions.clear();
+        }
+        Phase::Failed => {
+            let message = typing.message.as_deref().map(str::trim).filter(|m| !m.is_empty());
+            let text = typing.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
+            panel.tone = Tone::Trouble;
+            panel.title = message.unwrap_or("Nothing was typed.").into();
+            panel.busy = false;
+            panel.actions.clear();
+            if let Some(text) = text {
+                panel.lines = vec![Line { who: None, text: text.into(), pending: false }];
+                let copy = Action { copy: Some(text.into()), ..button("copy", "Copy", true) };
+                panel.actions.push(copy);
+            } else if message.is_some_and(needs_the_window) {
+                panel.actions.push(button("open", "Open Karma Yoga", true));
+            }
+            panel.actions.push(button("dismiss", "Dismiss", false));
+        }
+    }
+    panel
+}
+
+/// The small line under "Listening": how to end it, for how the key works
+/// right now.
+fn hint(typing: &Typing) -> String {
+    if typing.mode == KeyMode::Hold && !typing.hands_free {
+        "Let go to finish".into()
+    } else {
+        format!("Press {} to finish", typing.key)
+    }
+}
+
+/// Whether a failure is one only the main window can put right: the vault is
+/// locked, or no model is set up and Settings is where to do it.
+fn needs_the_window(message: &str) -> bool {
+    let message = message.to_lowercase();
+    ["settings", "locked", "unlock"].iter().any(|word| message.contains(word))
 }
 
 // ---- the session ------------------------------------------------------------------
@@ -207,7 +316,7 @@ const TAP: Duration = Duration::from_millis(400);
 /// How long the last words are waited for once the session has been told to
 /// stop. The session gives up on a recogniser sooner than this (its own
 /// `FINISH_WAIT`); this is only so a session that never answers cannot hold
-/// the pill up. Waiting for the speech model to load is not limited by it.
+/// the card up. Waiting for the speech model to load is not limited by it.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long the microphone stays open after the key says stop: a device hands
@@ -215,7 +324,7 @@ const FINISH_TIMEOUT: Duration = Duration::from_secs(60);
 /// that little.
 const TAIL: Duration = Duration::from_millis(150);
 
-/// How long the pill stays after what it shows has no button to press.
+/// How long the card stays after what it shows has no button to press.
 const DONE_LINGER: Duration = Duration::from_millis(700);
 const NOTHING_LINGER: Duration = Duration::from_millis(2500);
 const FAILURE_LINGER: Duration = Duration::from_secs(8);
@@ -228,7 +337,7 @@ const COPY_LINGER: Duration = Duration::from_secs(20);
 const QUIET_DB: f32 = -55.0;
 const LOUD_DB: f32 = -10.0;
 
-/// The level goes to the pill this often, however often the microphone
+/// The level goes to the card this often, however often the microphone
 /// reports.
 const LEVEL_EVERY: Duration = Duration::from_millis(50);
 
@@ -244,7 +353,7 @@ enum Msg {
     Opened(CommandResult<UnboundedSender<DictationInput>>),
     /// What the session says, from the moment it is open.
     Session(DictationEvent),
-    /// The key or the pill's stop button says that is enough.
+    /// The key or the card's Stop button says that is enough.
     Finish,
 }
 
@@ -258,7 +367,7 @@ struct Session {
     hands_free: bool,
     /// Hold mode: when the key went down and has not come up since.
     down_since: Option<Instant>,
-    /// The configured key, for the pill when the desktop says nothing.
+    /// The configured key, for the card when the desktop says nothing.
     shortcut: String,
     inbox: UnboundedSender<Msg>,
     /// Ends the dictation where it stands. `None` for the moment between
@@ -266,7 +375,7 @@ struct Session {
     task: Option<tauri::async_runtime::JoinHandle<()>>,
 }
 
-/// What could not be typed, kept so the pill's Copy button has something to
+/// What could not be typed, kept so the card's Copy button has something to
 /// copy and the record is settled whichever way it ends.
 struct Pending {
     seq: u64,
@@ -278,8 +387,8 @@ struct Pending {
 #[derive(Default)]
 struct Inner {
     session: Option<Session>,
-    /// What the pill shows, `None` once it has gone.
-    last: Option<TypingState>,
+    /// What the card shows, `None` once it has gone.
+    last: Option<Typing>,
     /// The latest activation token the key brought. Wayland only.
     token: Option<String>,
     pending: Option<Pending>,
@@ -293,19 +402,19 @@ struct Inner {
 
 /// One press of the key, or the keyboard repeating it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Edge {
+pub(crate) struct Edge {
     /// When it got here.
-    at: Instant,
+    pub(crate) at: Instant,
     /// When the desktop says it happened, where it says: the portal's own
     /// timestamp, which a busy runtime does not delay.
-    stamp: Option<Duration>,
+    pub(crate) stamp: Option<Duration>,
     /// It was the keyboard repeating the key, not the press.
-    repeat: bool,
+    pub(crate) repeat: bool,
 }
 
 /// How the desktop repeats a held key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Repeats {
+pub(crate) enum Repeats {
     /// Not known: not GNOME, or GNOME's setting not read yet.
     Unknown,
     /// Switched off: a held key says it is down once.
@@ -325,7 +434,7 @@ enum Repeats {
 /// go before the key -- Ctrl+Alt+M with Ctrl up first -- which is how people
 /// often let go; taking the key to be down until a release came ignored every
 /// press after the first.
-fn first_press(
+pub(crate) fn first_press(
     down: &mut Option<Edge>,
     pressed: bool,
     at: Instant,
@@ -348,7 +457,7 @@ const STAMPED_SLACK: Duration = Duration::from_millis(150);
 
 /// The same, timed by when presses got here rather than by the desktop's
 /// own timestamps: either may have waited on a busy runtime.
-const ARRIVAL_SLACK: Duration = Duration::from_millis(400);
+pub(crate) const ARRIVAL_SLACK: Duration = Duration::from_millis(400);
 
 /// How soon after the key last said it was down a press is taken for a
 /// repeat where the desktop's way of repeating is not known: past the
@@ -378,7 +487,7 @@ fn is_repeat(last: &Edge, at: Instant, stamp: Option<Duration>, repeats: Repeats
 /// no settings.
 static REPEATS: Mutex<Repeats> = Mutex::new(Repeats::Unknown);
 
-fn key_repeats() -> Repeats {
+pub(crate) fn key_repeats() -> Repeats {
     *REPEATS.lock().expect("key repeat lock")
 }
 
@@ -504,8 +613,8 @@ impl Session {
 }
 
 /// The dictation key went down (`pressed`) or came up. `token` is the
-/// activation token the desktop sent with it, on Wayland: what lets the pill
-/// take the keyboard for the moment a paste needs it. `stamp` is when the
+/// activation token the desktop sent with it, on Wayland: what lets the paste
+/// window take the keyboard for the moment a paste needs it. `stamp` is when the
 /// desktop says it happened, where it says.
 pub fn key(app: &AppHandle, pressed: bool, token: Option<String>, stamp: Option<Duration>) {
     // Read before the lock: the hotkeys take a lock of their own.
@@ -615,7 +724,7 @@ fn carry_out(
                 inbox: inbox.clone(),
                 task: None,
             });
-            // A failure still on the pill is over: its text is not going to
+            // A failure still on the card is over: its text is not going to
             // be copied now.
             let abandoned = inner.pending.take();
             drop(inner);
@@ -635,15 +744,22 @@ fn carry_out(
     }
 }
 
-// ---- what the pill shows -------------------------------------------------------------
+// ---- what the card shows -------------------------------------------------------------
 
-/// Show `phase` on the pill and remember it, for a dictation that is still
+/// Show `phase` on the card and remember it, for a dictation that is still
 /// the current one. `false` means it is not -- it was cancelled, or another
 /// has begun -- and whatever the caller was doing is no longer wanted.
 ///
 /// A phase earlier than the one the session is in is not shown: the key may
 /// already have asked for the end while the microphone was still opening.
 /// Done and Failed end the session.
+///
+/// The panel is told with the lock held. A cancel takes the card down under
+/// the same lock, so the card cannot be put back after it by a dictation that
+/// was cancelled between being checked and being shown. The panel itself
+/// shows nothing that has not changed, so a phase said again -- the key
+/// working differently once a tap has made it hands-free -- redraws only when
+/// the card reads differently.
 fn emit(
     app: &AppHandle,
     seq: u64,
@@ -654,7 +770,6 @@ fn emit(
     // Asked of the other states before the lock is taken, so none of them is
     // ever waited for with it held.
     let key = app.state::<Hotkeys>().status(app, Binding::VoiceTyping).shortcut;
-    let pill = pill::mode(app);
     let dictation = app.state::<VoiceTyping>();
     let mut inner = dictation.lock();
     let Some(session) = inner.session.as_mut().filter(|s| s.seq == seq) else { return false };
@@ -662,40 +777,56 @@ fn emit(
         return true;
     }
     session.phase = phase;
-    let state = TypingState {
+    let (mode, hands_free) = (session.mode, session.hands_free);
+    let key = if key.is_empty() { session.shortcut.clone() } else { key };
+    // What was heard stays with the dictation from one phase to the next.
+    let heard = inner.last.as_ref().filter(|t| t.seq == seq).map(|t| t.heard.clone());
+    let typing = Typing {
         seq,
         phase,
-        mode: session.mode,
-        hands_free: session.hands_free,
-        key: if key.is_empty() { session.shortcut.clone() } else { key },
+        mode,
+        hands_free,
+        key,
         message,
         text,
-        pill,
+        heard: heard.unwrap_or_default(),
     };
     if matches!(phase, Phase::Done | Phase::Failed) {
         inner.session = None;
     }
-    inner.last = Some(state.clone());
-    let _ = app.emit_to(pill::LABEL, STATE_EVENT, &state);
+    panel::show(app, card(&typing));
+    inner.last = Some(typing);
     true
 }
 
-/// Take the pill down, if it is still showing dictation `seq`.
-fn dismiss(app: &AppHandle, seq: u64) {
-    let mine = {
-        let mut inner = locked(app);
-        let mine = inner.last.as_ref().is_some_and(|s| s.seq == seq);
-        if mine {
-            inner.last = None;
-        }
-        mine
+/// Show what the speech model has made of what was said so far, on the card
+/// of dictation `seq` if it is still up and has not been typed. Said once per
+/// utterance, so this is rare; the same words again change nothing.
+fn heard(app: &AppHandle, seq: u64, words: String) {
+    let mut inner = locked(app);
+    let Some(typing) = inner.last.as_mut().filter(|t| t.seq == seq && t.phase <= Phase::Writing)
+    else {
+        return;
     };
-    if mine {
-        pill::dismiss(app);
+    if typing.heard == words {
+        return;
+    }
+    typing.heard = words;
+    panel::show(app, card(typing));
+}
+
+/// Take the card down, if it is still showing dictation `seq`. Under the lock,
+/// as [`emit`] shows it: a dictation begun a moment later has the same card
+/// id, and must not have its card taken down by the last one's.
+fn dismiss(app: &AppHandle, seq: u64) {
+    let mut inner = locked(app);
+    if inner.last.as_ref().is_some_and(|s| s.seq == seq) {
+        inner.last = None;
+        panel::dismiss(app, CARD);
     }
 }
 
-/// Show that nothing was typed, and why; then take the pill down after
+/// Show that nothing was typed, and why; then take the card down after
 /// `linger` unless it has been dealt with by then.
 async fn fail(app: &AppHandle, seq: u64, message: &str, text: Option<String>, linger: Duration) {
     if !emit(app, seq, Phase::Failed, Some(message.to_string()), text) {
@@ -755,7 +886,7 @@ fn level(block: &[i16]) -> f32 {
     ((db - QUIET_DB) / (LOUD_DB - QUIET_DB)).clamp(0.0, 1.0)
 }
 
-/// Thins what the microphone reports to what the pill can use, keeping the
+/// Thins what the microphone reports to what the card can use, keeping the
 /// loudest of each stretch so a syllable between two updates still shows.
 struct Meter {
     last: Instant,
@@ -793,7 +924,7 @@ async fn run(
     let heard = match hear(&app, seq, inbox, messages).await {
         Ok(Some(heard)) => heard,
         Ok(None) => return,
-        // Said only now that `hear` has let go of the microphone: the pill
+        // Said only now that `hear` has let go of the microphone: the card
         // lingers on a failure, and the slot held that long refused the next
         // press ("already dictating"), voice mode and a recording.
         Err(why) => {
@@ -816,7 +947,7 @@ async fn run(
         Err(e) => {
             // What was heard is still worth having. A model that was asked
             // and failed (`quick`) fails with a line about HTTP that means
-            // nothing on a pill; it goes to the log, and the pill says what it
+            // nothing on a card; it goes to the log, and the card says what it
             // means. A locked vault or a medium model that is not set up is
             // said as the service says it, which names where to fix it.
             tracing::info!(error = %e, "a dictation could not be written up");
@@ -858,10 +989,6 @@ async fn run(
         }
         Err(why) => {
             tracing::info!(error = %why, "a dictation could not be typed");
-            // On Wayland the paste hid the pill to hand the keyboard back
-            // before it found it could not press anything; the failure and
-            // its Copy button need it up again.
-            pill::present(&app);
             fail(&app, seq, &why, Some(result), COPY_LINGER).await;
         }
     }
@@ -869,7 +996,7 @@ async fn run(
 
 /// Everything from the key to the words: open the microphone, listen, stop,
 /// and take what was heard. `None` when it was cancelled or another has
-/// begun; an error, for the pill, when it failed.
+/// begun; an error, for the card, when it failed.
 ///
 /// The listening is the same dictation session mail's write-by-voice uses
 /// (`karmayoga_service::speech::dictate`): it ends on Stop, after 15 seconds
@@ -885,7 +1012,9 @@ async fn hear(
     if !emit(app, seq, Phase::Starting, None, None) {
         return Ok(None);
     }
-    pill::present(app);
+    // Where the paste will need it, the window that sets the clipboard is made
+    // now, while the microphone opens, and not when it is wanted.
+    pill::ensure(app);
     let state = app.state::<AppState>();
     if state.is_remote() {
         let refusal = "Voice typing uses this computer's microphone and speech model, so it is not available while this window is looking at a vault on another computer.";
@@ -996,7 +1125,7 @@ async fn hear(
                     && close_at.is_none()
                     && let Some(loudness) = meter.hear(&block, Instant::now())
                 {
-                    let _ = app.emit_to(pill::LABEL, LEVEL_EVENT, loudness);
+                    panel::level(app, CARD, loudness);
                 }
                 send_audio(&session, &mut backlog, block);
             }
@@ -1017,6 +1146,7 @@ async fn hear(
             Msg::Session(DictationEvent::Trouble { message }) => {
                 tracing::warn!(error = %message, "a piece of a voice typing was not transcribed");
             }
+            Msg::Session(DictationEvent::Heard { text }) => heard(app, seq, text),
             // Ended because it was told to, or by itself -- quiet for long
             // enough, or long enough altogether -- in which case what it
             // heard is typed as if the key had been pressed.
@@ -1069,73 +1199,121 @@ impl Drop for AbortOnDrop {
     }
 }
 
-// ---- commands -------------------------------------------------------------------
+// ---- the panel ------------------------------------------------------------------
 
-/// What the pill shows right now, for a pill that has only just loaded.
-#[tauri::command]
-pub async fn voice_typing_state(app: AppHandle) -> CommandResult<Option<TypingState>> {
-    Ok(locked(&app).last.clone())
+/// What a press on one of the card's buttons asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Press {
+    /// Stop listening and type what was said.
+    Stop,
+    /// Throw the dictation away, typing nothing. Also what dismissing a
+    /// failure is: what could not be typed is let go.
+    Cancel,
+    /// Put what could not be typed on the clipboard. `copied`: the panel has
+    /// done it already, as it must on Wayland, where only the window that was
+    /// pressed may.
+    Copy { copied: bool },
+    /// Close the card and bring the main window forward.
+    Open,
+    /// A button the card does not have, or a stale press.
+    Nothing,
 }
 
-/// Stop listening and type what was said -- the pill's stop button.
-#[tauri::command]
-pub async fn voice_typing_stop(app: AppHandle) -> CommandResult<()> {
-    if let Some(session) = locked(&app).session.as_mut()
+/// What `action`, pressed on the card, asks for. The ids are those [`card`]
+/// gives its buttons.
+fn press(action: &str, copied: bool) -> Press {
+    match action {
+        "stop" => Press::Stop,
+        "cancel" | "dismiss" => Press::Cancel,
+        "copy" => Press::Copy { copied },
+        "open" => Press::Open,
+        _ => Press::Nothing,
+    }
+}
+
+/// A button on voice typing's card was pressed. `copied` says the panel has
+/// put the button's text on the clipboard itself. See
+/// [`crate::panel::on_action`].
+pub fn on_panel_action(app: &AppHandle, action: &str, copied: bool) {
+    match press(action, copied) {
+        Press::Stop => stop(app),
+        Press::Cancel => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { cancel(&app).await });
+        }
+        Press::Copy { copied } => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { copy(&app, copied).await });
+        }
+        Press::Open => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                cancel(&app).await;
+                crate::tray::raise_window(&app);
+            });
+        }
+        Press::Nothing => {
+            tracing::debug!(action, "a press on voice typing's card it has no use for")
+        }
+    }
+}
+
+/// Stop listening and type what was said -- the card's Stop button.
+fn stop(app: &AppHandle) {
+    if let Some(session) = locked(app).session.as_mut()
         && session.phase <= Phase::Listening
     {
         session.finish();
     }
-    Ok(())
 }
 
-/// End whatever there is, wherever it has got to, and take the pill down.
+/// End whatever there is, wherever it has got to, and take the card down.
 async fn cancel(app: &AppHandle) {
     let (task, pending) = {
         let mut inner = locked(app);
         inner.last = None;
+        // Down before the lock is let go, so that a dictation begun the
+        // instant after has its own card and not this one's going.
+        panel::dismiss(app, CARD);
         (inner.session.take().and_then(|s| s.task), inner.pending.take())
     };
     if let Some(task) = task {
         task.abort();
     }
-    pill::dismiss(app);
+    // A paste cancelled half way has the helper window up with the keyboard.
+    pill::release(app);
     if let Some(Pending { assist, .. }) = pending {
         settle(app, assist.as_deref(), "cancelled").await;
     }
 }
 
-/// Throw the dictation away, typing nothing -- the pill's cancel button.
-#[tauri::command]
-pub async fn voice_typing_cancel(app: AppHandle) -> CommandResult<()> {
-    cancel(&app).await;
-    Ok(())
-}
-
-/// Put a failed dictation's text on the clipboard -- the pill's Copy button.
-#[tauri::command]
-pub async fn voice_typing_copy(app: AppHandle) -> CommandResult<()> {
+/// Put a failed dictation's text on the clipboard -- the card's Copy button
+/// -- and be done with it. `copied`: the panel has put it there already.
+async fn copy(app: &AppHandle, copied: bool) {
     let wanted = {
-        let inner = locked(&app);
+        let inner = locked(app);
         inner.pending.as_ref().map(|p| (p.seq, p.text.clone()))
     };
-    let Some((seq, text)) = wanted else { return Ok(()) };
-    paste::copy(&app, &text).await.map_err(|e| CommandError::new("voice-typing", e))?;
-    let copied = locked(&app).pending.take_if(|p| p.seq == seq);
-    if let Some(Pending { assist, .. }) = copied {
-        settle(&app, assist.as_deref(), "copied").await;
+    let Some((seq, text)) = wanted else { return };
+    if !copied && let Err(why) = paste::copy(app, &text).await {
+        tracing::info!(error = %why, "a dictation's text could not be copied");
+        // Said on the card, which stays up for the person to try again or to
+        // select the text from.
+        let inner = locked(app);
+        if inner.last.as_ref().is_some_and(|t| t.seq == seq) {
+            let note = format!("Could not copy it: {why}.");
+            panel::update(app, CARD, |shown| shown.body = Some(note));
+        }
+        return;
     }
-    dismiss(&app, seq);
-    Ok(())
+    let taken = locked(app).pending.take_if(|p| p.seq == seq);
+    if let Some(Pending { assist, .. }) = taken {
+        settle(app, assist.as_deref(), "copied").await;
+    }
+    dismiss(app, seq);
 }
 
-/// Close the pill and bring the main window forward -- for a dictation that
-/// failed because the vault is locked or no model is set up.
-#[tauri::command]
-pub async fn voice_typing_open_main(app: AppHandle) -> CommandResult<()> {
-    cancel(&app).await;
-    crate::tray::raise_window(&app);
-    Ok(())
-}
+// ---- commands -------------------------------------------------------------------
 
 /// What the settings pane draws for dictation.
 #[derive(Debug, Serialize)]
@@ -1207,6 +1385,13 @@ pub async fn set_voice_typing_settings(
     if claim.is_some() && crate::writing::configured_shortcut() == claim {
         return Err(CommandError::new("invalid", "that is already writing help's shortcut"));
     }
+    // The talk key is a fourth that cannot share it. Where the combination is
+    // already registered the desktop's claim succeeds without registering
+    // anything, so without this the key would go on starting a conversation
+    // while this setting said it was voice typing's.
+    if claim.is_some() && talk_shortcut() == claim {
+        return Err(CommandError::new("invalid", "that is already the talk key's shortcut"));
+    }
     save_config(&config).map_err(|e| CommandError::new("voice-typing", e))?;
     let hotkeys = app.state::<Hotkeys>();
     let answer = hotkeys.answer();
@@ -1224,6 +1409,238 @@ mod tests {
 
     fn held(hands_free: bool, down_since: Option<Instant>) -> Stage {
         Stage::Listening { hands_free, down_since }
+    }
+
+    /// A dictation at `phase`, in toggle mode, with nothing heard yet.
+    fn typing(phase: Phase) -> Typing {
+        Typing {
+            seq: 1,
+            phase,
+            mode: KeyMode::Toggle,
+            hands_free: true,
+            key: "Ctrl+Alt+M".into(),
+            message: None,
+            text: None,
+            heard: String::new(),
+        }
+    }
+
+    fn failed(message: Option<&str>, text: Option<&str>) -> Typing {
+        Typing {
+            message: message.map(str::to_string),
+            text: text.map(str::to_string),
+            ..typing(Phase::Failed)
+        }
+    }
+
+    /// The ids of a card's buttons, left to right.
+    fn buttons(panel: &Panel) -> Vec<&str> {
+        panel.actions.iter().map(|a| a.id.as_str()).collect()
+    }
+
+    #[test]
+    fn the_talk_key_has_its_shortcut_only_while_it_is_on_and_parses() {
+        let talk = |enabled, shortcut: &str| crate::talk::Config {
+            enabled,
+            shortcut: shortcut.into(),
+            ..Default::default()
+        };
+        let default = hotkey::parse(crate::talk::DEFAULT_SHORTCUT).unwrap();
+        assert_eq!(talk_shortcut_of(&talk(true, crate::talk::DEFAULT_SHORTCUT)), Some(default));
+        assert_eq!(talk_shortcut_of(&talk(true, " Ctrl+Alt+A ")), Some(default));
+        assert_eq!(talk_shortcut_of(&talk(false, crate::talk::DEFAULT_SHORTCUT)), None);
+        assert_eq!(talk_shortcut_of(&talk(true, "not a key")), None);
+        // And it is not voice typing's own.
+        assert_ne!(Some(hotkey::parse(DEFAULT_SHORTCUT).unwrap()), Some(default));
+    }
+
+    #[test]
+    fn the_card_is_voice_typings_and_has_the_id_the_panel_knows_it_by() {
+        for phase in [
+            Phase::Starting,
+            Phase::Listening,
+            Phase::Transcribing,
+            Phase::Writing,
+            Phase::Done,
+            Phase::Failed,
+        ] {
+            let panel = card(&typing(phase));
+            assert_eq!(panel.id, "voice-typing");
+            assert_eq!(panel.owner, Owner::VoiceTyping);
+            assert_eq!(panel.kicker, "Voice typing");
+            assert!(panel.sections.is_empty() && panel.count.is_none());
+        }
+    }
+
+    #[test]
+    fn starting_says_so_and_can_only_be_cancelled() {
+        let panel = card(&typing(Phase::Starting));
+        assert_eq!(panel.tone, Tone::Working);
+        assert_eq!(panel.title, "Getting ready…");
+        assert!(panel.busy && !panel.meter);
+        assert_eq!(buttons(&panel), ["cancel"]);
+        assert!(panel.actions.iter().all(|a| !a.primary));
+    }
+
+    #[test]
+    fn listening_shows_the_meter_how_to_finish_and_stop_beside_cancel() {
+        let panel = card(&typing(Phase::Listening));
+        assert_eq!(panel.tone, Tone::Listening);
+        assert_eq!(panel.title, "Listening");
+        assert_eq!(panel.body.as_deref(), Some("Press Ctrl+Alt+M to finish"));
+        assert!(panel.meter && !panel.busy);
+        assert_eq!(buttons(&panel), ["stop", "cancel"]);
+        let primary: Vec<_> = panel.actions.iter().filter(|a| a.primary).map(|a| &a.id).collect();
+        assert_eq!(primary, ["stop"]);
+    }
+
+    #[test]
+    fn listening_says_nothing_of_words_until_there_are_some() {
+        assert!(card(&typing(Phase::Listening)).lines.is_empty());
+        let heard = Typing { heard: "  ".into(), ..typing(Phase::Listening) };
+        assert!(card(&heard).lines.is_empty());
+    }
+
+    #[test]
+    fn listening_shows_everything_heard_as_one_line_still_coming() {
+        let heard = Typing { heard: "Dear Sam, thanks for".into(), ..typing(Phase::Listening) };
+        let panel = card(&heard);
+        assert_eq!(
+            panel.lines,
+            [Line { who: None, text: "Dear Sam, thanks for".into(), pending: true }]
+        );
+    }
+
+    #[test]
+    fn the_hint_follows_how_the_key_works() {
+        let hold =
+            |hands_free| Typing { mode: KeyMode::Hold, hands_free, ..typing(Phase::Listening) };
+        // Held down: let go. Tapped, so hands-free: press the key again.
+        assert_eq!(hint(&hold(false)), "Let go to finish");
+        assert_eq!(hint(&hold(true)), "Press Ctrl+Alt+M to finish");
+        // Toggle mode is hands-free from the start.
+        assert_eq!(hint(&typing(Phase::Listening)), "Press Ctrl+Alt+M to finish");
+        // The key as the desktop writes it, whatever that is.
+        let other = Typing { key: "Shift+Ctrl+4".into(), ..typing(Phase::Listening) };
+        assert_eq!(card(&other).body.as_deref(), Some("Press Shift+Ctrl+4 to finish"));
+    }
+
+    #[test]
+    fn working_out_and_writing_keep_the_words_and_stop_the_caret() {
+        for (phase, title) in
+            [(Phase::Transcribing, "Working out the words…"), (Phase::Writing, "Writing…")]
+        {
+            let heard = Typing { heard: "Dear Sam".into(), ..typing(phase) };
+            let panel = card(&heard);
+            assert_eq!(panel.tone, Tone::Working);
+            assert_eq!(panel.title, title);
+            assert!(panel.busy && !panel.meter && panel.body.is_none());
+            assert_eq!(panel.lines, [Line { who: None, text: "Dear Sam".into(), pending: false }]);
+            assert_eq!(buttons(&panel), ["cancel"]);
+        }
+    }
+
+    #[test]
+    fn done_is_a_success_with_nothing_left_to_press() {
+        let heard = Typing { heard: "Dear Sam".into(), ..typing(Phase::Done) };
+        let panel = card(&heard);
+        assert_eq!(panel.tone, Tone::Success);
+        assert_eq!(panel.title, "Typed");
+        assert!(!panel.busy && !panel.meter);
+        assert!(panel.actions.is_empty() && panel.lines.is_empty());
+    }
+
+    #[test]
+    fn a_failure_says_why_and_offers_the_text_to_copy() {
+        let why = "the desktop would not let Karma Yoga type here";
+        let panel = card(&failed(Some(why), Some("Dear Sam,")));
+        assert_eq!(panel.tone, Tone::Trouble);
+        assert_eq!(panel.title, why);
+        assert!(!panel.busy && !panel.meter);
+        assert_eq!(panel.lines, [Line { who: None, text: "Dear Sam,".into(), pending: false }]);
+        assert_eq!(buttons(&panel), ["copy", "dismiss"]);
+        let copy = &panel.actions[0];
+        assert!(copy.primary);
+        assert_eq!(copy.copy.as_deref(), Some("Dear Sam,"));
+        assert!(!panel.actions[1].primary && panel.actions[1].copy.is_none());
+    }
+
+    #[test]
+    fn a_failure_with_nothing_to_copy_can_only_be_dismissed() {
+        let panel = card(&failed(Some("Nothing was heard."), None));
+        assert_eq!(panel.title, "Nothing was heard.");
+        assert!(panel.lines.is_empty());
+        assert_eq!(buttons(&panel), ["dismiss"]);
+        // Text that is only space is nothing.
+        assert_eq!(buttons(&card(&failed(Some("Nothing to type."), Some("  \n")))), ["dismiss"]);
+        // And a failure that said nothing still says something.
+        assert_eq!(card(&failed(None, None)).title, "Nothing was typed.");
+        assert_eq!(card(&failed(Some("  "), None)).title, "Nothing was typed.");
+    }
+
+    #[test]
+    fn a_failure_the_main_window_can_put_right_offers_to_open_it() {
+        for message in [
+            "The vault is locked.",
+            "Unlock Karma Yoga to dictate.",
+            "No medium model is set up. Choose one in Settings.",
+        ] {
+            let panel = card(&failed(Some(message), None));
+            assert_eq!(buttons(&panel), ["open", "dismiss"], "{message}");
+            assert!(panel.actions[0].primary);
+        }
+        // Text to copy is the better offer; one primary button at most.
+        let both = card(&failed(Some("The vault is locked."), Some("Dear Sam,")));
+        assert_eq!(buttons(&both), ["copy", "dismiss"]);
+        assert!(!needs_the_window("The microphone failed."));
+    }
+
+    #[test]
+    fn a_card_has_at_most_one_primary_button_and_every_button_does_something() {
+        let mut every = vec![
+            typing(Phase::Starting),
+            typing(Phase::Listening),
+            typing(Phase::Transcribing),
+            typing(Phase::Writing),
+            typing(Phase::Done),
+            failed(None, None),
+            failed(Some("Nothing was heard."), None),
+            failed(Some("The vault is locked."), None),
+            failed(Some("could not type"), Some("Dear Sam,")),
+        ];
+        every.push(Typing { mode: KeyMode::Hold, hands_free: false, ..typing(Phase::Listening) });
+        for typing in &every {
+            let panel = card(typing);
+            assert!(panel.actions.iter().filter(|a| a.primary).count() <= 1, "{typing:?}");
+            for action in &panel.actions {
+                assert_ne!(press(&action.id, false), Press::Nothing, "{} in {typing:?}", action.id);
+            }
+        }
+    }
+
+    #[test]
+    fn each_button_asks_for_what_it_says() {
+        assert_eq!(press("stop", false), Press::Stop);
+        assert_eq!(press("cancel", false), Press::Cancel);
+        assert_eq!(press("open", false), Press::Open);
+        assert_eq!(press("copy", false), Press::Copy { copied: false });
+        assert_eq!(press("nonsense", false), Press::Nothing);
+        assert_eq!(press("", true), Press::Nothing);
+    }
+
+    #[test]
+    fn dismissing_a_failure_lets_the_text_go_as_cancelling_does() {
+        assert_eq!(press("dismiss", false), press("cancel", false));
+        assert_eq!(press("dismiss", true), Press::Cancel);
+    }
+
+    #[test]
+    fn a_copy_the_panel_made_is_not_made_again() {
+        assert_eq!(press("copy", true), Press::Copy { copied: true });
+        // Only a copy says whether it was made; no other button cares.
+        for action in ["stop", "cancel", "dismiss", "open"] {
+            assert_eq!(press(action, true), press(action, false));
+        }
     }
 
     #[test]

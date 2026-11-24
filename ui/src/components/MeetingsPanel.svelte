@@ -125,6 +125,22 @@
     return current && !offered.includes(current) ? [...offered, current] : offered
   })
 
+  // ── Before a meeting ────────────────────────────────────────────────
+  //
+  // The brief is not meeting notes: it is made for a meeting with other
+  // people in it whether or not anything is recorded, so it has a switch of
+  // its own and does not wait for the speech model. It rides the same draft
+  // and the same Save as everything else here.
+
+  const BRIEF_LEADS = [5, 10, 15, 30]
+
+  /** The choices, and the one in force if it is none of them -- set by hand in the file. */
+  const briefLeads = $derived(
+    draft && !BRIEF_LEADS.includes(draft.brief.leadMinutes)
+      ? [...BRIEF_LEADS, draft.brief.leadMinutes].sort((a, b) => a - b)
+      : BRIEF_LEADS,
+  )
+
   // ── Voices ──────────────────────────────────────────────────────────
 
   let enrolling = $state(false)
@@ -238,6 +254,39 @@
           <button class="linkish" onclick={() => panels.openSettings('templates')}>
             Edit templates
           </button>
+        </p>
+      </section>
+
+      <section>
+        <span class="eyebrow">Before a meeting</span>
+        <label class="toggle">
+          <input type="checkbox" bind:checked={draft.brief.enabled} />
+          <span>
+            <b>Prepare a brief before each meeting with other people</b>
+            <small>
+              The agenda, who is coming and who they are, what your mail and notes say about them,
+              and anything you meant to raise with them. It is on the card in the corner of the
+              screen when the meeting is about to start, and on the event in Calendar. Written by
+              the medium model; without one it is the facts alone.
+            </small>
+          </span>
+        </label>
+        <label class="setting">
+          <span>Prepare it</span>
+          <select bind:value={draft.brief.leadMinutes} disabled={!draft.brief.enabled}>
+            {#each briefLeads as minutes (minutes)}
+              <option value={minutes}>{minutes} minutes before</option>
+            {/each}
+          </select>
+        </label>
+        <label class="toggle small">
+          <input type="checkbox" bind:checked={draft.brief.web} disabled={!draft.brief.enabled} />
+          <span>Look up organisations on the web</span>
+        </label>
+        <p class="hint">
+          For a guest from an organisation nothing in this vault mentions, one web search is made.
+          Only the organisation's name is sent: never anybody's name, and nothing from your mail,
+          notes or the invite.
         </p>
       </section>
     {:else if sub === 'calls'}

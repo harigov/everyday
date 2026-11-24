@@ -6,7 +6,10 @@ Settings → Models, written up on the medium model (filler out, your own
 corrections applied, punctuated, lists made into lists), and typed into the
 field that had the keyboard. In **hold** mode you hold the key while you
 talk and let go to finish; a quick tap starts listening hands-free until the
-next press. A pill at the bottom of the screen says what is happening:
+next press. A card in the panel, in the corner of the screen
+(`docs/plans/panel.md`), says what is happening -- with the words as they are
+heard since November 2026, when the pill at the bottom of the screen gave way
+to the panel:
 listening, with a level meter, then working out the words, writing, done.
 
 It is writing help ([writing-tools.md](writing-tools.md)) with a microphone
@@ -24,8 +27,8 @@ dictation", and its record is `WritingAction::Dictate`.
 | Record | `WritingAction::Dictate` in `karmayoga-core/src/writing.rs` | One `WritingAssist` per dictation: `original` is what the speech model heard, `result` what was typed. Same table, same history, same feedback pass later. No schema change: the action is sealed JSON. |
 | Service | `dictate` in `karmayoga-service/src/domains/writing.rs` | The medium model writes the transcript up (`clean: true`), or the transcript is kept as heard (`clean: false`, no model). Scope `Quick`, unlocked vault, failures kept, as for a rewrite. |
 | Speech | `speech::dictate` (`Service::dictation_open`) | Mail's write-by-voice session: voice mode's detector and recogniser, cut at pauses so most of it is worked out while the person is still talking; it ends on Stop, after 15 s of quiet or after 3 minutes, and feeds silence after somebody cut off mid-sentence so their last words are kept. |
-| Shell | `karmayoga-app/src/voicetyping/{mod,pill,paste}.rs`, `hotkey.rs`, `portal.rs` | The key (press and release), the work (mic → dictation session → `dictate` → paste), the pill window, the paste. |
-| Pill | `ui/voice-typing.html`, `ui/src/voicetyping/` | A third small page and window, like the writing popup and the meeting card. |
+| Shell | `karmayoga-app/src/voicetyping/{mod,pill,paste}.rs`, `hotkey.rs`, `portal.rs` | The key (press and release), the work (mic → dictation session → `dictate` → paste), the card in the panel, the paste window, the paste. |
+| Paste window | `ui/voice-typing.html`, `ui/src/voicetyping/` | A page that draws nothing, in a window shown only for the moment of a paste on Wayland. |
 | Setting | `~/.config/karmayoga/voice-typing.json` | On/off, the shortcut, toggle or hold, write-up on or off. Per machine. The RemoteDesktop restore token stays in `writing.json` and is shared. |
 
 ## A dictation, start to finish
@@ -35,9 +38,9 @@ dictation", and its record is `WritingAction::Dictate`.
    dictation session opens alongside; loading a local recogniser can take
    seconds the first time, and what was said meanwhile is fed to it once it
    is ready.
-2. **Listening.** About 30 ms blocks go to the session; the pill gets a
+2. **Listening.** About 30 ms blocks go to the session; the card gets a
    level about twenty times a second.
-3. **Key again** (toggle), **key up** (hold), the pill's stop button, or the
+3. **Key again** (toggle), **key up** (hold), the card's Stop button, or the
    session stopping by itself (15 s of quiet, 3 minutes). The microphone
    closes and the session hands back everything it heard, last words
    included.
@@ -52,7 +55,7 @@ so it and a meeting recording, voice mode, listening or a dictation in Karma
 Yoga's own window refuse each other both ways (one microphone); it is also
 refused in a window looking at a vault on another computer (the speech model
 is this computer's). The slot is given back before a failure is shown: the
-pill lingers on one for 8 s, and a slot held that long refused the next press
+card lingers on one for 8 s, and a slot held that long refused the next press
 as "already dictating". Audio kept while the speech model loads goes to the
 session as `DictationInput::Backlog`, which does not count towards its 15 s
 of quiet. Anything being read aloud
@@ -104,23 +107,19 @@ pause in them longer than an interval and 400 ms is taken as the key let go
 when the last repeat came. A hold let go that way before the first repeat is
 a tap, and listens on until the next press.
 
-The pill is the meeting card's kind of window: transparent, maximized, the
-pill drawn at its bottom middle and the input region cut down to the pill, so
-clicks anywhere else go through. It asks not to be focused, but GNOME on
-Wayland has no way for an application to say so and hands every newly shown
-window the keyboard (checked in a headless GNOME 50: keys typed while it
-listens reach the pill, and Escape cancels). Hiding it hands the keyboard back
-to the field it came from, which is what the paste relies on; keys typed while
-it listens go nowhere. Only a pill drawn by GNOME Shell itself (an extension)
-could avoid that. On X11 the window manager honours the hint and the field
-keeps the keyboard throughout.
+The card is the panel's: drawn on Wayland by the X11 child, which never takes
+the keyboard, so the field keeps it while somebody talks and can see its
+caret. (The pill it replaced was a webview window GNOME handed the keyboard on
+being shown; keys typed while it listened went nowhere.)
 
 The paste is the hard part: only the focused window may set the clipboard.
-So at paste time the pill's window takes the keyboard for a moment, using the
+So at paste time a window of voice typing's own (`pill.rs`, transparent, never
+otherwise shown) is shown and takes the keyboard for a moment, using the
 latest activation token the key brought, sets the clipboard, hides, and the
 keyboard goes back to the field; then Ctrl+V goes through the RemoteDesktop
 portal as writing help's does. If the desktop will not give it the keyboard,
-nothing is typed and the pill offers **Copy** instead.
+nothing is typed and the card offers **Copy**, which the panel's renderer
+does itself -- it is the window that was clicked.
 
 ## Checked
 
@@ -142,5 +141,5 @@ nothing is typed and the pill offers **Copy** instead.
 - The application being typed into is not passed to the model yet
   (`karmayoga-focus` knows it everywhere but GNOME Wayland).
 - No personal vocabulary or voice-learning in the write-up.
-- The tray icon does not change while dictating; the pill is the indicator.
+- The tray icon does not change while dictating; the card is the indicator.
 - Windows and macOS share the X11 path's code and have not been run.

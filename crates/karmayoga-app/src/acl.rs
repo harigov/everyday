@@ -37,18 +37,20 @@ const LIB_RS: &str = include_str!("lib.rs");
 const DEFAULT_CAPABILITY: &str = include_str!("../capabilities/default.json");
 const WRITING_CAPABILITY: &str = include_str!("../capabilities/writing.json");
 const VOICE_TYPING_CAPABILITY: &str = include_str!("../capabilities/voice-typing.json");
-const RECORDING_CAPABILITY: &str = include_str!("../capabilities/recording.json");
+const PANEL_CAPABILITY: &str = include_str!("../capabilities/panel.json");
 
 const WRITING_PAGE: &str = include_str!("../../../ui/src/writing/WritingPopup.svelte");
 const VOICE_TYPING_PAGE: &str = include_str!("../../../ui/src/voicetyping/VoiceTypingPill.svelte");
-const RECORDING_PAGE: &str = include_str!("../../../ui/src/recording/RecordingCard.svelte");
+/// The panel's page names its commands in one file, the rest of it being
+/// components that call that file.
+const PANEL_PAGE: &str = include_str!("../../../ui/src/panel/panel.ts");
 
 /// The narrow windows: label, capability file, and the page that runs in it.
 fn narrow_windows() -> [(&'static str, &'static str, &'static str); 3] {
     [
         (crate::writing::LABEL, WRITING_CAPABILITY, WRITING_PAGE),
         (crate::voicetyping::pill::LABEL, VOICE_TYPING_CAPABILITY, VOICE_TYPING_PAGE),
-        (crate::recnotice::LABEL, RECORDING_CAPABILITY, RECORDING_PAGE),
+        (crate::panel::window::LABEL, PANEL_CAPABILITY, PANEL_PAGE),
     ]
 }
 
@@ -157,8 +159,7 @@ fn the_glob_for_app_windows_matches_the_label_they_are_given() {
 #[test]
 fn every_window_is_in_exactly_one_capability_file() {
     let mut seen = Vec::new();
-    for json in
-        [DEFAULT_CAPABILITY, WRITING_CAPABILITY, VOICE_TYPING_CAPABILITY, RECORDING_CAPABILITY]
+    for json in [DEFAULT_CAPABILITY, WRITING_CAPABILITY, VOICE_TYPING_CAPABILITY, PANEL_CAPABILITY]
     {
         seen.extend(capability(json).0);
     }
@@ -181,7 +182,12 @@ fn each_narrow_window_is_granted_the_commands_its_page_names_and_no_others() {
             .filter(|c| page.contains(&format!("'{c}'")) || page.contains(&format!("\"{c}\"")))
             .map(|c| allow(c)));
         let (_, granted) = capability(json);
-        assert!(!named.is_empty(), "read no command from the {label} window's page");
+        // Voice typing's window is only a paste helper now, whose page draws
+        // nothing and calls nothing; every other page names at least one
+        // command, and reading none means the wrong file was read.
+        if label != crate::voicetyping::pill::LABEL {
+            assert!(!named.is_empty(), "read no command from the {label} window's page");
+        }
         assert_eq!(
             granted, named,
             "the {label} window's capability and the commands its page names have come apart"

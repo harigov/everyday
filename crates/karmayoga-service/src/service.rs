@@ -154,6 +154,10 @@ pub struct Service {
     /// appended, and which expiring recordings have already been warned
     /// about. See [`crate::runtime::meeting::MeetingRuntime`].
     meetings: MeetingRuntime,
+    /// The meeting briefs prepared this session -- see
+    /// [`crate::meeting::brief`]. Unlike `meetings`, cleared on lock and
+    /// close: a brief is the vault's own facts.
+    meeting_briefs: crate::meeting::brief::Briefs,
     /// This session's short memory of one place's forecast -- see
     /// [`crate::weather_cache`].
     weather_cache: WeatherCache,
@@ -226,6 +230,7 @@ impl Service {
             clock: RwLock::new(clock),
             documents: crate::documents::Slot::default(),
             meetings: MeetingRuntime::default(),
+            meeting_briefs: crate::meeting::brief::Briefs::default(),
             chat: crate::chat::ChatHub::default(),
             jobs: crate::jobs::JobRuntime::default(),
             reach: crate::reach::ReachState::default(),
@@ -703,6 +708,8 @@ impl Service {
         // A bank sign-in in flight holds a Plaid link token, a bearer
         // credential for as long as it lives.
         self.money.on_lock();
+        // A brief is the vault's own facts -- mail, notes, who somebody is.
+        self.meeting_briefs.clear();
         self.token_cache.clear().await;
         // The assistant's browsers: whatever a page has open in one is part
         // of a conversation the key no longer unlocks.
@@ -990,6 +997,7 @@ impl Service {
         // for why meeting session state outlives a close, and why this is
         // called anyway.
         self.meetings.on_lock();
+        self.meeting_briefs.clear();
         self.supervisor().stop_all().await;
         self.close_mail();
         self.documents.close();
@@ -1192,6 +1200,11 @@ impl Service {
     /// next tick to notice.
     pub fn meeting_offer_seen(&self, calendar: CalendarId, uid: &str) -> bool {
         self.meetings.offer_seen(calendar, uid)
+    }
+
+    /// The meeting briefs prepared this session. See [`crate::meeting::brief`].
+    pub(crate) fn meeting_briefs(&self) -> &crate::meeting::brief::Briefs {
+        &self.meeting_briefs
     }
 
     /// Record a reminder of `(calendar, key)` for an alert due `at`, and say

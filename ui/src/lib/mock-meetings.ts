@@ -93,6 +93,7 @@ let settings: MeetingSettings = {
   autoRecord: false,
   summaryBudget: null,
   vocabulary: ['Kubernetes', 'OKRs'],
+  brief: { enabled: true, leadMinutes: 15, web: true },
 }
 
 /**

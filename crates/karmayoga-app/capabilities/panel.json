@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "panel",
+  "description": "Capabilities granted to the panel, the small always-on-top window in the corner of the screen that shows a meeting about to start, voice typing listening, or a conversation from the talk key. It listens for the shell's events and calls only the three shell commands its page names (ui/src/panel/panel.ts): the cards it should show, a button pressed on one, and how tall the cards are. Not `call`: nothing the panel does goes through a service command. No dialogs, no opener, no notifications.",
+  "windows": [
+    "panel"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-panel-state",
+    "allow-panel-action",
+    "allow-panel-resize"
+  ]
+}

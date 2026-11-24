@@ -36,6 +36,7 @@ pub mod local;
 pub mod narrate;
 pub mod pcm;
 pub mod qwen;
+pub mod ready;
 pub mod render;
 pub mod resample;
 pub mod script;

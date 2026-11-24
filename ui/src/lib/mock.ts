@@ -344,6 +344,7 @@ import {
   mockTriggerStillOn,
   mockTriggerSystemSilent,
 } from './mock-meetings'
+import { mockMeetingBrief, mockPrepareMeetingBrief } from './mock-meeting-brief'
 import {
   mockCancelVoiceModelDownload,
   mockDeleteVoiceModel,
@@ -2503,6 +2504,8 @@ const tasks: Task[] = [
     dueDate: ahead(1),
     estimateMinutes: 90,
     tags: ['design'],
+    // To be put to Priya at the next meeting with her: it is on that card.
+    raiseWith: [{ name: 'Priya Raman', email: 'priya@example.com' }],
     sortOrder: 0,
   }),
   seedTask({
@@ -2512,6 +2515,7 @@ const tasks: Task[] = [
     dueDate: ahead(5),
     estimateMinutes: 180,
     tags: ['work'],
+    raiseWith: [{ name: 'Marcus' }],
     sortOrder: 1,
   }),
   seedTask({
@@ -3131,6 +3135,14 @@ const events: CalendarEvent[] = [
   eventAt('ev-2', 'c-work', 0, 11, 60, 'Design review', {
     organizer: 'Priya Raman',
     description: 'Bring the two options and the numbers behind them.',
+    // Somebody to brief on, outside the team too: the calendar's brief and
+    // the offer's both read their people from here.
+    attendees: [
+      'Priya Raman <priya@example.com>',
+      'Marcus Webb <marcus.webb@example.com>',
+      'Josh Okafor <josh@northwind.example>',
+      'me@gmail.com',
+    ],
   }),
   eventAt('ev-3', 'c-work', 0, 15, 30, 'One-to-one', { status: 'tentative' }),
   eventAt('ev-4', 'c-work', 1, 9, 15, 'Stand-up', { location: 'Meeting room 4' }),
@@ -9271,6 +9283,14 @@ export const mockInvoke = async <T>(
         Boolean(args.never),
       )
       return undefined as T
+
+    // The brief before a meeting -- `mock-meeting-brief.ts`.
+    case 'meeting_brief':
+      requireUnlocked()
+      return mockMeetingBrief(str(args.calendarId), str(args.uid), tasks) as T
+    case 'prepare_meeting_brief':
+      requireUnlocked()
+      return (await mockPrepareMeetingBrief(str(args.eventId), events, tasks)) as T
 
     // ── The shell's own tray, called by name -- see `api.ts`'s `setTrayMenu`,
     //    `hideTray` and `setTrayMeeting` ─────────────────────────────────

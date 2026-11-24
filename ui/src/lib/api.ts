@@ -208,6 +208,7 @@ import type {
   WritingSettings,
   VoiceTypingSettings,
   VoiceTypingKeyMode,
+  TalkSettings,
   McpConnection,
   ConnectionAuth,
   ConnectionId,
@@ -347,6 +348,15 @@ export interface ShowInMain {
  * has raised the main window already. See `lib/appwindow.ts`.
  */
 export let onShowInMain: (handler: (asked: ShowInMain) => void) => void = () => {}
+
+/**
+ * Register the main window's handler for a conversation started from the talk
+ * key beginning (`true`) or ending (`false`) -- see
+ * `crates/karmayoga-app/src/talk/mod.rs`'s `TALK_EVENT`. The player pauses for
+ * it, as it does for voice mode in the window. Outside Tauri there is no key,
+ * so this is a no-op.
+ */
+export let onTalk: (handler: (active: boolean) => void) => void = () => {}
 
 // ── Meeting capture, from the Tauri shell ───────────────────────────────
 //
@@ -552,6 +562,9 @@ if (SHELL) {
   }
   onShowInMain = (handler) => {
     void listen<ShowInMain>('karmayoga://show-in-main', (e) => handler(e.payload))
+  }
+  onTalk = (handler) => {
+    void listen<boolean>('karmayoga://talk', (e) => handler(e.payload))
   }
   onMeetingStatus = (handler) => {
     void listen<CaptureStatus | null>('meeting-status', (e) => handler(e.payload))
@@ -977,6 +990,30 @@ export const api = {
     clean: boolean | null = null,
   ) => invoke<VoiceTypingSettings>('set_voice_typing_settings', { enabled, shortcut, mode, clean }),
 
+  /**
+   * The talk key: a fourth OS-wide key, for a spoken conversation with the
+   * assistant from anywhere. Per machine, kept by the shell -- see
+   * `crates/karmayoga-app/src/talk/mod.rs`. Unanswered in mock mode, where
+   * the pane leaves the section out. `null` leaves a field as it is.
+   */
+  talkSettings: () => invoke<TalkSettings>('talk_settings'),
+  setTalkSettings: (
+    enabled: boolean,
+    shortcut: string | null = null,
+    mode: VoiceTypingKeyMode | null = null,
+    keepReady: boolean | null = null,
+    continueMinutes: number | null = null,
+  ) =>
+    invoke<TalkSettings>('set_talk_settings', {
+      enabled,
+      shortcut,
+      mode,
+      keepReady,
+      continueMinutes,
+    }),
+  /** Start a spoken conversation from the panel, or end the one under way. */
+  talkToggle: () => invoke<void>('talk_toggle'),
+
   // ── Meeting capture, in the Tauri shell ────────────────────────────
   //
   // Native, not a service command: the webview has no microphone
@@ -1052,6 +1089,17 @@ export const api = {
 
   meetingSettings: () => call('meetingSettings', {}),
   saveMeetingSettings: (settings: MeetingSettings) => call('saveMeetingSettings', { settings }),
+  /**
+   * What to know before a calendar meeting, as already prepared -- or `null`
+   * when nothing has been. Never makes one: the service does that a little
+   * before the meeting starts, and `prepareMeetingBrief` does it on demand.
+   * Named by the event's calendar and uid, the pair its offer carries, not
+   * by the occurrence's id, which a resync can replace.
+   */
+  meetingBrief: (calendarId: CalendarId, uid: string) => call('meetingBrief', { calendarId, uid }),
+  /** Prepare the brief for an event now, or again. Gathers, then asks the
+   *  medium model to write it up; may take several seconds. */
+  prepareMeetingBrief: (eventId: EventId) => call('prepareMeetingBrief', { eventId }),
   // `setTranscriberKey` is gone from here, though the command stays for older
   // clients: the speech model's key is set on its card in Settings → Models,
   // through `setModelKey('speech', …)`.

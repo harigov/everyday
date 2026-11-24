@@ -11593,6 +11593,13 @@
             ],
             "description": "What this task is *for*. `None` means \"whatever the project is for\",\nwhich is the usual case and the reason the field is cheap to leave\nalone."
           },
+          "raiseWith": {
+            "description": "Who this is to be raised with: \"talk about the budget with Josh when\nI meet him next\". The brief before the next meeting with any of them\nlists it (`crate::meeting::brief`), and ticking it off there completes\nthe task. Empty for an ordinary task.",
+            "items": {
+              "$ref": "#/$defs/TaskPerson"
+            },
+            "type": "array"
+          },
           "remindAt": {
             "description": "When to be reminded of it. A moment rather than a day, because\n\"remind me at five\" means five o'clock, and apart from the deadline\nbecause a reminder is usually some time before it. For the\nassistant's own task this is when it starts on it.",
             "format": "date-time",
@@ -11648,6 +11655,34 @@
           "priority",
           "createdAt",
           "updatedAt"
+        ],
+        "type": "object"
+      },
+      "TaskPerson": {
+        "description": "Somebody a task is to be raised with. See [`Task::raise_with`].",
+        "properties": {
+          "contact": {
+            "description": "Their card on the Contacts shelf, when one was found for the name.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "description": "Their address, when it was given -- which is what a meeting's invite\nnames them by. Never copied off the card: a task is the Tasks domain's\nand a card is the library's, so the brief looks the card up when it\nneeds to know which addresses are theirs.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Their name as it was said: \"Josh\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -15034,6 +15069,34 @@
           }
         ]
       },
+      "TaskPerson": {
+        "description": "Somebody a task is to be raised with. See [`Task::raise_with`].",
+        "properties": {
+          "contact": {
+            "description": "Their card on the Contacts shelf, when one was found for the name.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "description": "Their address, when it was given -- which is what a meeting's invite\nnames them by. Never copied off the card: a task is the Tasks domain's\nand a card is the library's, so the brief looks the card up when it\nneeds to know which addresses are theirs.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Their name as it was said: \"Josh\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "TaskStatus": {
         "description": "Where a task is on its way to being done.\n\nA closed set rather than user-defined columns. Board columns *are* these\nstatuses, which means \"how long do things sit in Blocked\" is a question\nthat can be asked across every project at once — the whole reason for\nwanting analytics later. Per-project columns would make that\nunanswerable.",
         "oneOf": [
@@ -15151,6 +15214,13 @@
           }
         ],
         "description": "What this task is *for*. `None` means \"whatever the project is for\",\nwhich is the usual case and the reason the field is cheap to leave\nalone."
+      },
+      "raiseWith": {
+        "description": "Who this is to be raised with: \"talk about the budget with Josh when\nI meet him next\". The brief before the next meeting with any of them\nlists it (`crate::meeting::brief`), and ticking it off there completes\nthe task. Empty for an ordinary task.",
+        "items": {
+          "$ref": "#/$defs/TaskPerson"
+        },
+        "type": "array"
       },
       "remindAt": {
         "description": "When to be reminded of it. A moment rather than a day, because\n\"remind me at five\" means five o'clock, and apart from the deadline\nbecause a reminder is usually some time before it. For the\nassistant's own task this is when it starts on it.",

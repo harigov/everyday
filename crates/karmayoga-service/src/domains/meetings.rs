@@ -144,6 +144,20 @@ pub struct DismissMeetingOffer {
     pub never: bool,
 }
 
+/// A meeting's brief by the key it shares with its offer.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingBriefRef {
+    pub calendar_id: karmayoga_core::CalendarId,
+    pub uid: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareMeetingBrief {
+    pub event_id: EventId,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetTranscript {
@@ -636,6 +650,39 @@ async fn meeting_now(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandRes
     blocking(move || Ok(watch::now(&svc, &vault)?)).await
 }
 
+/// The brief prepared this session for a meeting, if there is one -- see
+/// `crate::meeting::brief`. Never prepares one: the shell asks this for the
+/// card it is about to show, and must not wait on a model to show it. For a
+/// repeating meeting, whose occurrences share the key, the one on now or
+/// coming next.
+///
+/// Under the assistant's scope rather than Meetings': a brief is drawn from
+/// the person's mail, notes, contacts and tasks, which a token that was given
+/// the meeting notes was not given.
+async fn meeting_brief(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: MeetingBriefRef,
+) -> CommandResult<Option<karmayoga_core::meeting::brief::MeetingBrief>> {
+    let _ = svc.require()?;
+    let key = karmayoga_core::meeting::brief::key_for(args.calendar_id, &args.uid);
+    // Its talking points are read from the tasks as they are now, which is
+    // the vault, so on the blocking pool.
+    blocking(move || Ok(crate::meeting::brief::cached(&svc, &key))).await
+}
+
+/// Prepare a meeting's brief now: an event opened in the calendar, or the
+/// assistant asked what a meeting is about. Reads everything a brief is
+/// drawn from and asks a model and the web, so it is under the assistant's
+/// scope, as [`meeting_brief`] is, and not Meetings'.
+async fn prepare_meeting_brief(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: PrepareMeetingBrief,
+) -> CommandResult<karmayoga_core::meeting::brief::MeetingBrief> {
+    crate::meeting::brief::prepare(&svc, args.event_id).await
+}
+
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "meeting_settings", scope: Meetings, effect: Read,
@@ -760,6 +807,18 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "meeting_now", scope: Meetings, effect: Read,
         args: Nothing, returns: "MeetingNow", signature: &[],
         run: meeting_now,
+    },
+    command! {
+        name: "meeting_brief", scope: Agent, effect: Read,
+        args: MeetingBriefRef, returns: "MeetingBrief | null",
+        signature: &[("calendarId", "CalendarId", true), ("uid", "string", true)],
+        run: meeting_brief,
+    },
+    command! {
+        name: "prepare_meeting_brief", scope: Agent, effect: Read,
+        args: PrepareMeetingBrief, returns: "MeetingBrief",
+        signature: &[("eventId", "EventId", true)],
+        run: prepare_meeting_brief,
     },
     command! {
         name: "get_transcript", scope: Meetings, effect: Read,

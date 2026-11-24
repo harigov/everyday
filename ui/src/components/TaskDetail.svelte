@@ -13,6 +13,7 @@
   import { PRIORITIES, TASK_STATUSES } from '../lib/types'
   import type { Assignee, Priority, Purpose, QuickTaskDraft, TaskStatus } from '../lib/types'
   import { nextReminder, reminderSent } from '../lib/tasklist'
+  import { personSaid } from '../lib/taskperson'
   import { STATUS_LABELS, PRIORITY_LABELS } from '../lib/labels'
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
@@ -32,6 +33,7 @@
   let bookStart = $state('')
   let bookMinutes = $state(30)
   let tagDraft = $state('')
+  let raiseDraft = $state('')
 
   // ── breaking it down, and sizing it ──────────────────────────────────
   //
@@ -101,6 +103,29 @@
     if (!task || !tag) return
     if (task.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
     todo.patch(task.id, { tags: [...task.tags, tag] })
+  }
+
+  // Who this is to be raised with. A name is all a person needs here, but an
+  // address helps: the brief before a meeting matches who is coming by
+  // address, by their card on the Contacts shelf, or by name. So what is typed
+  // is read the way the core reads it -- `Josh Smith <josh@acme.com>` is a
+  // name and an address, a bare address is its own name -- and the service
+  // finds the card.
+  function addRaiseWith() {
+    const person = personSaid(raiseDraft)
+    raiseDraft = ''
+    if (!task || !person.name) return
+    const current = task.raiseWith ?? []
+    const same = (p: { name: string; email?: string }) =>
+      p.name.toLowerCase() === person.name.toLowerCase() ||
+      (!!person.email && p.email?.toLowerCase() === person.email)
+    if (current.some(same)) return
+    todo.patch(task.id, { raiseWith: [...current, person] })
+  }
+
+  function removeRaiseWith(index: number) {
+    if (!task) return
+    todo.patch(task.id, { raiseWith: (task.raiseWith ?? []).filter((_, i) => i !== index) })
   }
 
   /** `<input type="number">` gives '' for a cleared field, which means "none". */
@@ -336,6 +361,41 @@
           {#each todo.tags as t (t.tag)}<option value={t.tag}></option>{/each}
         </datalist>
       </div>
+
+      <div class="head"><span class="eyebrow">Raise with</span></div>
+      <div class="tags">
+        {#each task.raiseWith ?? [] as person, i (i)}
+          <span class="tag" title={person.email}>
+            {person.name}
+            <button
+              class="x"
+              title="Remove {person.name}"
+              aria-label="Remove {person.name}"
+              onclick={() => removeRaiseWith(i)}
+            >
+              <Icon name="close" size={10} weight={2} />
+            </button>
+          </span>
+        {/each}
+        <input
+          class="tagin who"
+          placeholder="Add a person"
+          title="A name or an address. Shown on the card before your next meeting with them"
+          aria-label="Raise with"
+          bind:value={raiseDraft}
+          onblur={addRaiseWith}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              addRaiseWith()
+            }
+            if (e.key === 'Escape') raiseDraft = ''
+          }}
+        />
+      </div>
+      {#if task.raiseWith?.length}
+        <p class="hint raise">Shown on the card before your next meeting with them.</p>
+      {/if}
 
       <div class="head"><span class="eyebrow">Notes</span></div>
       <textarea
@@ -635,6 +695,12 @@
     outline: none;
     border-style: solid;
     border-color: var(--accent);
+  }
+  .tagin.who {
+    width: 104px;
+  }
+  .hint.raise {
+    margin-top: var(--sp-1);
   }
 
   .notes {

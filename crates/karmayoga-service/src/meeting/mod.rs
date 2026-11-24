@@ -23,6 +23,7 @@
 //! -- are [`crate::local::files`], shared with every other model that runs
 //! on this computer.
 
+pub mod brief;
 pub mod pipeline;
 pub mod spool;
 pub mod watch;

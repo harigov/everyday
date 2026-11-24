@@ -13,6 +13,17 @@
 //! being listened to before it opens them (`crate::listen`). A window looking
 //! at another computer's vault has no voice mode: its microphone is not the
 //! vault's.
+//!
+//! # A session with no window
+//!
+//! A session's events go to an [`Outlet`]: a webview's channel, for
+//! `voice_start`, or the shell's own callback, for [`start_for_shell`] -- the
+//! talk key (`crate::talk`) opens a conversation wherever the person is
+//! looking, with the panel where the window would be. The two are the same
+//! session on the same slot and refuse each other, but a shell session
+//! belongs to no window: closing the main window does not end it
+//! ([`window_closing`]), and the window's own stop and mute commands are not
+//! how the shell reaches it ([`stop_shell`], [`set_shell_muted`]).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,7 +56,8 @@ pub enum VoiceHandle {
 /// What the window said while a session was still being opened.
 #[derive(Default)]
 pub struct Held {
-    /// The window that asked, whose closing ends the session.
+    /// The window that asked, whose closing ends the session. Empty for the
+    /// shell's own: see [`Outlet`].
     window: String,
     muted: Option<bool>,
     screen: Option<Option<Box<OnScreen>>>,
@@ -54,7 +66,8 @@ pub struct Held {
 
 /// A session under way.
 pub struct Running {
-    /// The window that started it. See [`window_closing`].
+    /// The window that started it. See [`window_closing`]. Empty for a
+    /// session the shell started, which no window's closing ends.
     window: String,
     /// Which session this is, so the pump that ends it clears only its own
     /// slot and never that of a conversation started since.
@@ -64,6 +77,65 @@ pub struct Running {
 }
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
+/// Where a session's events go, and who hears the microphone.
+#[derive(Clone)]
+pub(crate) enum Outlet {
+    /// The window that started it, through the channel it opened.
+    Window(tauri::ipc::Channel<VoiceEvent>),
+    /// The shell, with no window.
+    Shell(Shell),
+}
+
+/// Where a shell session's events go. See [`Shell::events`].
+pub(crate) type EventSink = Arc<dyn Fn(VoiceEvent) -> bool + Send + Sync>;
+
+/// What hears a shell session's microphone. See [`Shell::microphone`].
+pub(crate) type MicrophoneTap = Arc<dyn Fn(&[i16]) + Send + Sync>;
+
+/// What the shell hands a session it starts in place of a window's channel.
+#[derive(Clone)]
+pub(crate) struct Shell {
+    /// Told every event. Returns `false` when nobody is listening any more,
+    /// as a channel's send fails when its window has gone: the session is then
+    /// ended and stops making sound for no one. Called from the pump, which
+    /// is a task: it must not wait.
+    pub events: EventSink,
+    /// Shown every block of microphone audio (about 30 ms of it, echo already
+    /// removed) before the session is, for a level meter. Called from the
+    /// audio thread, so it must be quick.
+    pub microphone: Option<MicrophoneTap>,
+}
+
+impl Outlet {
+    /// Tell it `event`. `false` if nobody is listening.
+    fn send(&self, event: VoiceEvent) -> bool {
+        match self {
+            Outlet::Window(channel) => channel.send(event).is_ok(),
+            Outlet::Shell(shell) => (shell.events)(event),
+        }
+    }
+
+    /// A block of the microphone, for whoever draws its level.
+    fn heard(&self, audio: &[i16]) {
+        if let Outlet::Shell(Shell { microphone: Some(microphone), .. }) = self {
+            microphone(audio);
+        }
+    }
+}
+
+impl Running {
+    /// Started by the shell, not by a window.
+    fn is_shell(&self) -> bool {
+        self.window.is_empty()
+    }
+}
+
+impl Held {
+    fn is_shell(&self) -> bool {
+        self.window.is_empty()
+    }
+}
 
 impl Held {
     fn hold(&mut self, message: VoiceInput) {
@@ -174,6 +246,44 @@ pub async fn voice_start(
     on_screen: Option<serde_json::Value>,
     channel: tauri::ipc::Channel<VoiceEvent>,
 ) -> CommandResult<()> {
+    begin(
+        &app,
+        &state,
+        webview.label().to_string(),
+        conversation_id,
+        on_screen,
+        Outlet::Window(channel),
+    )
+    .await
+}
+
+/// Start talking in a conversation with no window: the shell's `shell` hears
+/// everything the session says until it ends. How the talk key opens one.
+///
+/// Refuses as [`voice_start`] does -- a vault on another computer, a meeting
+/// being recorded, dictating, a conversation already -- and stops anything
+/// being listened to first. Nothing is said of what is on screen: the shell
+/// does not know what is.
+pub(crate) async fn start_for_shell(
+    app: &AppHandle,
+    conversation_id: ConversationId,
+    shell: Shell,
+) -> CommandResult<()> {
+    let state = app.state::<AppState>();
+    begin(app, &state, String::new(), conversation_id, None, Outlet::Shell(shell)).await
+}
+
+/// What both ways of starting do: refuse what cannot be, claim the slot, and
+/// open the session. `window` is the label of the window that asked, or empty
+/// for the shell.
+async fn begin(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    window: String,
+    conversation_id: ConversationId,
+    on_screen: Option<serde_json::Value>,
+    outlet: Outlet,
+) -> CommandResult<()> {
     if state.is_remote() {
         return Err(CommandError::new(
             codes::UNSUPPORTED,
@@ -182,13 +292,13 @@ pub async fn voice_start(
     }
     reserve(state.voice(), state.capture(), state.dictation())?;
     if let Some(VoiceHandle::Starting(held)) = state.voice().lock().unwrap().as_mut() {
-        held.window = webview.label().to_string();
+        held.window = window;
     }
     // The speakers are this conversation's now, and its microphone would
     // otherwise hear whatever was being read.
-    crate::listen::stop_listening(&state);
+    crate::listen::stop_listening(state);
 
-    match try_start(&app, &state, conversation_id, on_screen, channel).await {
+    match try_start(app, state, conversation_id, on_screen, outlet).await {
         Ok(()) => Ok(()),
         Err(e) => {
             abandon(state.voice());
@@ -197,14 +307,14 @@ pub async fn voice_start(
     }
 }
 
-/// Everything `voice_start` does after reserving the slot, so that every early
+/// Everything `begin` does after reserving the slot, so that every early
 /// return in it is an ordinary `?` and the slot's release is in one place.
 async fn try_start(
     app: &AppHandle,
     state: &State<'_, AppState>,
     conversation_id: ConversationId,
     on_screen: Option<serde_json::Value>,
-    channel: tauri::ipc::Channel<VoiceEvent>,
+    outlet: Outlet,
 ) -> CommandResult<()> {
     let link = state.service().voice_open(conversation_id).await?;
     let karmayoga_service::voice::VoiceLink { input, output } = link;
@@ -213,19 +323,20 @@ async fn try_start(
         .send(VoiceInput::Screen(on_screen.as_ref().and_then(OnScreen::lenient).map(Box::new)));
 
     // What the devices report goes to the session, and a device failing is
-    // told to the window and ends the session.
+    // told to whoever is listening and ends the session.
     let sink: EngineSink = {
-        let channel = channel.clone();
+        let outlet = outlet.clone();
         let input = input.clone();
         Arc::new(move |event| match event {
             EngineEvent::Microphone(audio) => {
+                outlet.heard(&audio);
                 let _ = input.send(VoiceInput::Audio(audio));
             }
             EngineEvent::Played(utterance) => {
                 let _ = input.send(VoiceInput::Played { utterance });
             }
             EngineEvent::Failed(message) => {
-                let _ = channel.send(VoiceEvent::Trouble { message });
+                outlet.send(VoiceEvent::Trouble { message });
                 let _ = input.send(VoiceInput::Stop);
             }
         })
@@ -259,45 +370,54 @@ async fn try_start(
     };
     held.deliver(&input);
 
-    tauri::async_runtime::spawn(pump(app.clone(), id, output, input, engine, channel));
+    tauri::async_runtime::spawn(pump(app.clone(), id, output, input, engine, outlet));
     Ok(())
 }
 
-/// Carry a session's output to the speakers and to the window, until it ends.
+/// Carry a session's output to the speakers and to whoever is listening,
+/// until it ends.
 ///
-/// Never blocks: the speakers are told through the engine's queue, the window
-/// through the channel. The audio devices are closed, and the slot cleared,
-/// when the session says it has ended -- or has closed its output without
-/// saying so, which is reported to the window as an ending of its own.
+/// Never blocks: the speakers are told through the engine's queue, the
+/// listener through the channel or the shell's callback. The audio devices
+/// are closed, and the slot cleared, when the session says it has ended -- or
+/// has closed its output without saying so, which is told to the listener as
+/// an ending of its own.
+///
+/// The devices and the slot go before the ending is told, not after: whoever
+/// hears that the conversation is over -- a window, or a second press of the
+/// talk key a moment later -- may start another at once, and must find the
+/// slot free.
 async fn pump(
     app: AppHandle,
     id: u64,
     mut output: UnboundedReceiver<VoiceOutput>,
     input: UnboundedSender<VoiceInput>,
     engine: Arc<AudioEngine>,
-    channel: tauri::ipc::Channel<VoiceEvent>,
+    outlet: Outlet,
 ) {
-    let mut window_gone = false;
+    let mut unheard = false;
     let mut ended = false;
     while let Some(message) = output.recv().await {
         match message {
             VoiceOutput::Event(event) => {
-                let last = matches!(event, VoiceEvent::Ended { .. });
-                if channel.send(event).is_err() && !window_gone {
-                    // Nobody is listening: the window has gone. Say so to the
-                    // session, which will end, and stop making sound for no
-                    // one.
-                    window_gone = true;
-                    let _ = input.send(VoiceInput::Stop);
+                if matches!(event, VoiceEvent::Ended { .. }) {
                     engine.stop();
-                }
-                if last {
+                    release(app.state::<AppState>().voice(), id);
+                    let _ = outlet.send(event);
                     ended = true;
                     break;
                 }
+                if !outlet.send(event) && !unheard {
+                    // Nobody is listening: the window has gone. Say so to the
+                    // session, which will end, and stop making sound for no
+                    // one.
+                    unheard = true;
+                    let _ = input.send(VoiceInput::Stop);
+                    engine.stop();
+                }
             }
             VoiceOutput::Play { utterance, samples, sample_rate } => {
-                if !window_gone {
+                if !unheard {
                     engine.play(utterance, samples, sample_rate);
                 }
             }
@@ -305,24 +425,21 @@ async fn pump(
             VoiceOutput::Resume => engine.resume(),
             VoiceOutput::Clear => engine.clear(),
             VoiceOutput::Working(on) => {
-                if !window_gone {
+                if !unheard {
                     engine.working(on);
                 }
             }
         }
     }
     if !ended {
-        let _ = channel.send(VoiceEvent::Ended {
+        engine.stop();
+        release(app.state::<AppState>().voice(), id);
+        let _ = outlet.send(VoiceEvent::Ended {
             error: Some("The conversation stopped unexpectedly.".to_string()),
         });
     }
-    engine.stop();
-    release(app.state::<AppState>().voice(), id);
 }
 
-/// End the conversation. Returns once the session and the devices have been
-/// told; the session's own `Ended` follows on the channel, and the slot is
-/// free once it has. Nothing happens if nothing is being talked.
 /// End the session, and let go of the microphone and speakers now rather than
 /// when the session has finished saying goodbye.
 fn stop_now(voice: &Mutex<Option<VoiceHandle>>) {
@@ -336,6 +453,72 @@ fn stop_now(voice: &Mutex<Option<VoiceHandle>>) {
     }
 }
 
+/// [`stop_now`], for a session `which` says is the one meant -- it is told
+/// the label of the window that started it, empty for the shell -- and for no
+/// other. Whether there was one. The slot is looked at once, so a session
+/// that has ended and been replaced between a look and a stop is not stopped
+/// by mistake.
+fn stop_if(voice: &Mutex<Option<VoiceHandle>>, which: impl Fn(&str) -> bool) -> bool {
+    let engine = {
+        let mut slot = voice.lock().unwrap();
+        match slot.as_mut() {
+            Some(VoiceHandle::Running(running)) if which(&running.window) => {
+                let _ = running.input.send(VoiceInput::Stop);
+                Some(Some(running.engine.clone()))
+            }
+            Some(VoiceHandle::Starting(held)) if which(&held.window) => {
+                held.hold(VoiceInput::Stop);
+                Some(None)
+            }
+            _ => None,
+        }
+    };
+    match engine {
+        Some(engine) => {
+            if let Some(engine) = engine {
+                engine.stop();
+            }
+            true
+        }
+        None => false,
+    }
+}
+
+/// [`send_or_hold`], for a session the shell started and for no other.
+/// Whether there was one.
+fn send_or_hold_shell(voice: &Mutex<Option<VoiceHandle>>, message: VoiceInput) -> bool {
+    match voice.lock().unwrap().as_mut() {
+        Some(VoiceHandle::Running(running)) if running.is_shell() => {
+            let _ = running.input.send(message);
+            true
+        }
+        Some(VoiceHandle::Starting(held)) if held.is_shell() => {
+            held.hold(message);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// End the conversation the talk key started, and only that one: a window's
+/// own is its window's to end. Returns at once; the session's own `Ended`
+/// follows on the shell's callback, and the slot is free by then. Whether
+/// there was one.
+pub(crate) fn stop_shell(app: &AppHandle) -> bool {
+    stop_if(app.state::<AppState>().voice(), |window| window.is_empty())
+}
+
+/// Mute or unmute the conversation the talk key started. While muted nothing
+/// is listened to, and what is being said goes on; muting while somebody is
+/// being heard drops what they had said so far, which is for the caller to
+/// remember. Whether there was one.
+pub(crate) fn set_shell_muted(app: &AppHandle, muted: bool) -> bool {
+    send_or_hold_shell(app.state::<AppState>().voice(), VoiceInput::Muted(muted))
+}
+
+/// End the conversation. Returns once the session and the devices have been
+/// told; the session's own `Ended` follows on the channel, and the slot is
+/// free once it has. Nothing happens if nothing is being talked.
 #[tauri::command]
 pub async fn voice_stop(state: State<'_, AppState>) -> CommandResult<()> {
     stop_now(state.voice());
@@ -344,17 +527,13 @@ pub async fn voice_stop(state: State<'_, AppState>) -> CommandResult<()> {
 
 /// A window is closing. Closing the main one only hides it, and a microphone
 /// must not stay open behind a window nobody can see, so the session it
-/// started ends here.
+/// started ends here. A conversation the shell started has no window, so no
+/// window's closing ends it: its card on the panel is where it is ended.
 pub fn window_closing(app: &AppHandle, label: &str) {
-    let state = app.state::<AppState>();
-    let ours = match state.voice().lock().unwrap().as_ref() {
-        Some(VoiceHandle::Running(running)) => running.window == label,
-        Some(VoiceHandle::Starting(held)) => held.window == label,
-        None => false,
-    };
-    if ours {
-        stop_now(state.voice());
+    if label.is_empty() {
+        return;
     }
+    stop_if(app.state::<AppState>().voice(), |window| window == label);
 }
 
 /// While muted nothing is listened to, and what is being said goes on.
@@ -478,5 +657,69 @@ mod tests {
         assert!(voice.lock().unwrap().is_some(), "session 1 had no business with session 2's slot");
         release(&voice, 2);
         assert!(voice.lock().unwrap().is_none());
+    }
+
+    fn running_for(
+        voice: &Mutex<Option<VoiceHandle>>,
+        window: &str,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<VoiceInput> {
+        let (input, output) = tokio::sync::mpsc::unbounded_channel();
+        *voice.lock().unwrap() = Some(VoiceHandle::Running(Running {
+            id: 1,
+            window: window.to_string(),
+            input,
+            engine: Arc::new(AudioEngine::detached()),
+        }));
+        output
+    }
+
+    #[test]
+    fn a_windows_closing_does_not_end_a_conversation_the_shell_started() {
+        let voice = slot();
+        let mut heard = running_for(&voice, "");
+        assert!(!stop_if(&voice, |window| window == "main"), "no window's session is running");
+        assert!(heard.try_recv().is_err(), "the shell's session was left alone");
+        assert!(stop_if(&voice, |window| window.is_empty()), "the shell ends its own");
+        assert!(matches!(heard.try_recv(), Ok(VoiceInput::Stop)));
+    }
+
+    #[test]
+    fn the_shell_cannot_stop_or_mute_a_conversation_a_window_started() {
+        let voice = slot();
+        let mut heard = running_for(&voice, "main");
+        assert!(!send_or_hold_shell(&voice, VoiceInput::Muted(true)));
+        assert!(!stop_if(&voice, |window| window.is_empty()));
+        assert!(heard.try_recv().is_err());
+        assert!(stop_if(&voice, |window| window == "main"));
+        assert!(matches!(heard.try_recv(), Ok(VoiceInput::Stop)));
+    }
+
+    #[test]
+    fn what_the_shell_says_during_its_own_start_is_kept_and_delivered() {
+        let voice = slot();
+        reserve(&voice, &no_capture(), &no_dictation()).unwrap();
+        // `begin` leaves the window empty for the shell.
+        assert!(send_or_hold_shell(&voice, VoiceInput::Muted(true)));
+        assert!(stop_if(&voice, |window| window.is_empty()));
+
+        let Some(VoiceHandle::Starting(held)) = voice.lock().unwrap().take() else {
+            panic!("still starting");
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        held.deliver(&tx);
+        assert!(matches!(rx.try_recv(), Ok(VoiceInput::Muted(true))));
+        assert!(matches!(rx.try_recv(), Ok(VoiceInput::Stop)));
+    }
+
+    #[test]
+    fn a_start_in_flight_for_a_window_is_not_the_shells() {
+        let voice = slot();
+        reserve(&voice, &no_capture(), &no_dictation()).unwrap();
+        if let Some(VoiceHandle::Starting(held)) = voice.lock().unwrap().as_mut() {
+            held.window = "main".to_string();
+        }
+        assert!(!send_or_hold_shell(&voice, VoiceInput::Stop));
+        assert!(!stop_if(&voice, |window| window.is_empty()));
+        assert!(stop_if(&voice, |window| window == "main"));
     }
 }

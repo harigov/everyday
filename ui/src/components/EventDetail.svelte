@@ -17,7 +17,10 @@
   // planned time block pointing at it, and drops off this list the moment it
   // does, because a plan you have already made is not a thing to nag about.
 
+  import { untrack } from 'svelte'
+  import { api } from '../lib/api'
   import { calendar } from '../lib/calendar.svelte'
+  import { errorMessage } from '../lib/errors'
   import {
     dayHeading,
     formatMinutes,
@@ -45,12 +48,15 @@
   import EventEditor from './EventEditor.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import MeetingBriefView from './MeetingBriefView.svelte'
+  import { settledBrief } from '../lib/meetingbrief'
   import RepeatField from './RepeatField.svelte'
   import type {
     CalendarEvent,
     CalendarId,
     EventDraft,
     EventScope,
+    MeetingBrief,
     Recurrence,
     Task,
     TimeBlock,
@@ -231,6 +237,61 @@
   const event = $derived(
     calendar.selection?.kind === 'event' ? (selected as CalendarEvent | null) : null,
   )
+
+  // ── The brief ───────────────────────────────────────────────────────
+  //
+  // For an event with other people on it: what to know walking in -- the
+  // agenda, who is coming, what you meant to raise with them. The service
+  // makes one a little before the meeting starts and keeps it, so opening the
+  // event asks for that (`meetingBrief` never makes one); "Prepare brief"
+  // makes it now, or again, which takes the seconds a model takes. Both are
+  // in step with the event shown: an answer for the one before it is dropped.
+
+  let brief = $state<MeetingBrief | null>(null)
+  let briefBusy = $state(false)
+  let briefError = $state<string | null>(null)
+  /** Counted up as the event shown changes, so a late answer for the last one is let go. */
+  let briefRun = 0
+
+  /** Set for an event with a time and somebody else on it, and names which. */
+  const briefKey = $derived(
+    event && !event.allDay && event.status !== 'cancelled' && (event.attendees?.length ?? 0) > 0
+      ? `${event.calendarId}\n${event.uid}`
+      : null,
+  )
+
+  $effect(() => {
+    const key = briefKey
+    const run = ++briefRun
+    brief = null
+    briefBusy = false
+    briefError = null
+    const ev = untrack(() => event)
+    if (!key || !ev) return
+    void api
+      .meetingBrief(ev.calendarId, ev.uid)
+      .then(settledBrief)
+      .then((found) => {
+        if (run === briefRun) brief = found
+      })
+      // Nothing prepared is the ordinary answer, and a failure to ask is not
+      // worth a line of its own: the button is still there.
+      .catch(() => {})
+  })
+
+  async function prepareBrief(ev: CalendarEvent) {
+    const run = briefRun
+    briefError = null
+    briefBusy = true
+    try {
+      const made = await api.prepareMeetingBrief(ev.id)
+      if (run === briefRun) brief = made
+    } catch (e) {
+      if (run === briefRun) briefError = errorMessage(e)
+    } finally {
+      if (run === briefRun) briefBusy = false
+    }
+  }
 
   function span(start: string, end: string, allDay = false): string {
     if (allDay) return 'All day'
@@ -538,6 +599,37 @@
             <Icon name="globe" size={13} />
             Read-only. Changes belong on {cal?.name ?? 'the calendar this came from'}.
           </p>
+        {/if}
+
+        {#if briefKey}
+          <hr class="sep" />
+          <section class="brief" aria-label="Brief">
+            <div class="brief-head">
+              <span class="eyebrow">Brief</span>
+              <button
+                class="btn btn-sm"
+                disabled={briefBusy}
+                onclick={() => void prepareBrief(event)}
+              >
+                {#if briefBusy}
+                  <span class="spin"><Icon name="refresh" size={12} /></span>
+                  Preparing…
+                {:else}
+                  <Icon name={brief ? 'refresh' : 'sparkle'} size={12} />
+                  {brief ? 'Refresh' : 'Prepare brief'}
+                {/if}
+              </button>
+            </div>
+            {#if brief}
+              <MeetingBriefView {brief} onchange={(next: MeetingBrief) => (brief = next)} />
+            {:else if !briefBusy}
+              <p class="hint">
+                Who is coming, the agenda, and what you meant to raise with them. One is prepared on
+                its own shortly before a meeting.
+              </p>
+            {/if}
+            {#if briefError}<p class="notes-error">{briefError}</p>{/if}
+          </section>
         {/if}
 
         <div class="actions">
@@ -1002,6 +1094,21 @@
     margin: var(--sp-2) 0 0;
     color: var(--danger);
     font-size: var(--text-xs);
+  }
+
+  /* ── An event's brief ───────────────────────────────────────────────── */
+
+  .brief {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    min-width: 0;
+  }
+  .brief-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
   }
 
   /* ── The unscheduled list ───────────────────────────────────────────── */

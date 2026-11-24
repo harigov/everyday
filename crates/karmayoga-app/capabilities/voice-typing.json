@@ -1,16 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "voice-typing",
-  "description": "Capabilities granted to voice typing's pill, the small window that works over other applications. It listens for the shell's events and calls only the five shell commands its page names (ui/src/voicetyping/VoiceTypingPill.svelte). Not `call`: nothing the pill does goes through a service command. No dialogs, no opener, no notifications.",
+  "description": "Capabilities granted to voice typing's paste window: never seen, it is shown for the moment a dictation is typed on Wayland, where only a window that has the keyboard may set the clipboard (src/voicetyping/paste.rs). Its page (ui/src/voicetyping/VoiceTypingPill.svelte) draws nothing and calls nothing; what voice typing shows is a card in the panel. No dialogs, no opener, no notifications.",
   "windows": [
     "voice-typing"
   ],
   "permissions": [
-    "core:default",
-    "allow-voice-typing-state",
-    "allow-voice-typing-stop",
-    "allow-voice-typing-cancel",
-    "allow-voice-typing-copy",
-    "allow-voice-typing-open-main"
+    "core:default"
   ]
 }

@@ -39,21 +39,40 @@
 //!
 //! # The corner card
 //!
-//! With auto-record on, an offer that is ready replaces its system
-//! notification with a card in the corner of the screen ([`crate::recnotice`]).
-//! Before the meeting is joined the card offers to join and record, which
-//! a press does at once. Once the call is joined some other way -- the
-//! microphone goes live -- this module counts fifteen seconds and then
-//! starts recording, unless the card is cancelled, the vault locks, or the
-//! offer expires; "Take notes" on the card starts it without the wait. The
-//! window only draws what it is told, so closing it cannot start a
-//! recording.
+//! An offer that is ready is a card in the corner of the screen -- the
+//! panel ([`crate::panel`]) -- rather than a system notification, whether or
+//! not recording starts by itself. Which face it wears depends on whether the
+//! meeting has been joined. Before it is, the card offers to join and record,
+//! which a press does at once. Once the call is joined some other way -- the
+//! microphone goes live -- the card either counts down fifteen seconds and then
+//! starts recording (with auto-record on), unless it is cancelled, the vault
+//! locks, or the offer expires, or asks "Take notes" and waits (with it off:
+//! nothing starts by itself). "Take notes" on the card starts recording
+//! without the wait. The window only draws what it is told, so closing it
+//! cannot start a recording.
+//!
+//! # The brief on the card
+//!
+//! The service prepares a brief a little before a meeting with other people
+//! in it -- fifteen minutes, unless the person changed that -- and says so
+//! (`karmayoga_service::meeting::brief`, [`on_meeting_brief`]); it is kept
+//! here by the offer's key, so the card that goes up when the meeting starts
+//! already has it, and one that goes up without ([`fetch_brief`]) asks the
+//! service once for a brief it has already prepared. A brief that arrives
+//! while the card is up redraws it. The brief's
+//! talking points are boxes on the card; ticking one completes its task
+//! ([`on_panel_action`]). A brief is dropped with the offer it was kept for,
+//! and all of them when the vault locks: they name people and say what is
+//! being raised with them.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use karmayoga_core::id::{CalendarId, EventId, RecordingId};
+use jiff::tz::TimeZone;
+use karmayoga_core::TaskStatus;
+use karmayoga_core::id::{CalendarId, EventId, RecordingId, TaskId};
 use karmayoga_core::meeting::Recording;
+use karmayoga_core::meeting::brief::{MeetingBrief, join_service};
 use karmayoga_service::Ctx;
 use karmayoga_service::domains::meetings::MeetingNow;
 use karmayoga_service::error::{CommandError, CommandResult};
@@ -79,10 +98,6 @@ pub const SETUP_EVENT: &str = "meeting-offer-setup";
 /// Tauri event: the auto-record countdown, for the in-app banner.
 /// Payload: `{ key, seconds }`. `seconds: null` clears it.
 pub const COUNTDOWN_EVENT: &str = "meeting-countdown";
-/// Tauri event: what the corner card is showing. Payload: [`RecordingCard`]
-/// or `null` once it has gone. The card's own window listens, and so does
-/// nothing else.
-const NOTICE_EVENT: &str = "recording-notice";
 
 /// How long after joining before recording starts, unless cancelled.
 const COUNTDOWN: std::time::Duration = std::time::Duration::from_secs(15);
@@ -127,26 +142,23 @@ pub struct OfferPayload {
     pub join_url: Option<String>,
     pub ready: bool,
     pub automatic: bool,
-    /// The corner card and the countdown, when the setting is on and this
-    /// offer is asking. The shell shows that instead of a system notification.
+    /// Recording starts by itself, after a countdown, once the call is
+    /// joined: the setting is on and this offer is asking. Without it the
+    /// card asks instead and nothing starts until it is answered.
     pub auto_record: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recording_id: Option<RecordingId>,
 }
 
-/// What the corner card is showing. The card's window asks for it on load,
-/// and on Wayland it is what [`crate::topcard`] hands its own process.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecordingCard {
-    pub key: String,
-    pub title: String,
-    /// `"join"` before the meeting is joined, `"countdown"` after.
-    pub phase: String,
-    /// Seconds left on the countdown. Unused while `phase` is `"join"`.
-    pub seconds: u32,
-    /// The card's primary button opens a join link.
-    pub can_join: bool,
+/// The corner card, when one is up: whose it is and which face it wears.
+/// What it says is not kept: [`meeting_panel`] makes that from the offer, the
+/// face and the brief each time it is drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Card {
+    key: String,
+    phase: CardPhase,
+    /// Seconds left on the countdown. Unused on the other faces.
+    seconds: u32,
 }
 
 /// An answer to an offer.
@@ -255,8 +267,9 @@ struct NoticeText {
 /// offered first when there is a link to join -- the usual next thing a
 /// person does with a meeting that is starting -- and an offer that is not
 /// `ready` swaps its buttons for the one that fixes that: taking notes
-/// would only fail.
-fn notice_text(p: &OfferPayload) -> NoticeText {
+/// would only fail. When the meeting's brief is known its first line goes on
+/// the end of the body ([`brief_line`]).
+fn notice_text(p: &OfferPayload, brief: Option<&MeetingBrief>) -> NoticeText {
     let in_call_with_no_event = p.source == OfferSource::Microphone && p.event_id.is_none();
     let summary = if in_call_with_no_event {
         "Taking a call? Take notes".to_string()
@@ -284,7 +297,7 @@ fn notice_text(p: &OfferPayload) -> NoticeText {
         body.push_str(" Meeting notes aren't set up yet.");
         return NoticeText {
             summary,
-            body,
+            body: with_brief(body, brief),
             actions: vec![("setup", "Set up meeting notes"), ("notNow", "Not now")],
         };
     }
@@ -293,17 +306,82 @@ fn notice_text(p: &OfferPayload) -> NoticeText {
     } else {
         vec![("take", "Take notes"), ("notNow", "Not now")]
     };
-    NoticeText { summary, body, actions }
+    NoticeText { summary, body: with_brief(body, brief), actions }
 }
 
 /// The notification for an offer that was not a question: "Always" mode has
 /// already started the recording. The one button is how to take it back.
-fn automatic_notice_text(p: &OfferPayload) -> NoticeText {
+fn automatic_notice_text(p: &OfferPayload, brief: Option<&MeetingBrief>) -> NoticeText {
     NoticeText {
         summary: format!("Taking notes for {}", p.title),
-        body: "Started automatically".to_string(),
+        body: with_brief("Started automatically".to_string(), brief),
         actions: vec![("stop", "Stop recording")],
     }
+}
+
+/// `body` with the brief's [`brief_line`] under it, if there is a brief with
+/// anything to say.
+fn with_brief(body: String, brief: Option<&MeetingBrief>) -> String {
+    match brief.and_then(brief_line) {
+        Some(line) => format!("{body}\n{line}"),
+        None => body,
+    }
+}
+
+/// The most people a notification names before "+2".
+const NOTICE_PEOPLE: usize = 3;
+/// The longest a notification's brief line is, in characters. A banner shows
+/// a line or two of its body, and what it cuts off is not read.
+const NOTICE_LINE_CHARS: usize = 100;
+/// The longest the topic in that line is, so one long agenda item cannot push
+/// the people off the end of it.
+const NOTICE_TOPIC_CHARS: usize = 56;
+
+/// The one line of a brief a notification has room for: who is coming and the
+/// first thing worth knowing -- "With Josh, Priya · Agenda: Q3 budget".
+///
+/// What the person promised to raise comes before the agenda, because it is
+/// theirs; the agenda before the summary, because it is what the meeting is
+/// to cover. `None` for a brief that names nobody and says nothing.
+fn brief_line(brief: &MeetingBrief) -> Option<String> {
+    let mut parts = Vec::new();
+    let names: Vec<&str> =
+        brief.people.iter().map(|p| p.name.trim()).filter(|n| !n.is_empty()).collect();
+    if !names.is_empty() {
+        let shown = names[..names.len().min(NOTICE_PEOPLE)].join(", ");
+        parts.push(match names.len().saturating_sub(NOTICE_PEOPLE) {
+            0 => format!("With {shown}"),
+            more => format!("With {shown} +{more}"),
+        });
+    }
+    let topic = brief
+        .talking_points
+        .iter()
+        .find(|p| !p.done)
+        .map(|p| format!("To raise: {}", p.text.trim()))
+        .or_else(|| {
+            let first = brief.agenda.iter().map(|l| l.trim()).find(|l| !l.is_empty());
+            first.map(|a| format!("Agenda: {a}"))
+        })
+        .or_else(|| {
+            let summary = brief.summary.as_deref().map(str::trim);
+            summary.filter(|s| !s.is_empty()).map(str::to_owned)
+        });
+    parts.extend(topic.map(|t| shorten(&t, NOTICE_TOPIC_CHARS)));
+    (!parts.is_empty()).then(|| shorten(&parts.join(" \u{b7} "), NOTICE_LINE_CHARS))
+}
+
+/// `text` cut to `max` characters, on a character boundary, with an ellipsis
+/// where anything was cut.
+fn shorten(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.truncate(out.trim_end().len());
+    out.push('\u{2026}');
+    out
 }
 
 /// What to tell somebody whose recording stopped because the call did.
@@ -458,27 +536,38 @@ struct Inner {
     /// when they stop being true, and when the vault locks.
     shown: Vec<String>,
     /// The corner card, when one is up.
-    notice: Option<RecordingCard>,
+    notice: Option<Card>,
     /// Bumped whenever a countdown is replaced or cancelled, so the task
-    /// that was counting stops without starting a recording.
+    /// that was counting stops without starting a recording. The faces that
+    /// keep their time up to date ([`spawn_clock`]) answer to it too.
     countdown_gen: u64,
     /// The offer whose recording is being started right now -- by a press,
     /// or by its countdown running out -- so a press in the same instant as
     /// the countdown's end does not start it twice.
     starting: Option<String>,
+    /// Briefs by the offer's key, as the service sent them -- before the
+    /// meeting, so the card has one the moment it goes up -- with a talking
+    /// point ticked on the card marked done here as well. Dropped with the
+    /// offer, and all at once on lock.
+    briefs: HashMap<String, MeetingBrief>,
 }
 
 impl Inner {
     /// The offer the card asks to join, if the card is `key`'s and the offer
     /// is still pending.
     fn asking(&self, key: &str, now: jiff::Timestamp) -> Option<OfferPayload> {
-        let shown = self.notice.as_ref().is_some_and(|n| n.key == key && n.phase == "join");
+        let shown =
+            self.notice.as_ref().is_some_and(|n| n.key == key && n.phase == CardPhase::Join);
         shown.then(|| self.book.find(key, now).map(|p| p.payload.clone())).flatten()
     }
 
-    /// The offer the card is counting down for, if it is still pending.
-    fn counting(&self, now: jiff::Timestamp) -> Option<OfferPayload> {
-        let card = self.notice.as_ref().filter(|n| n.phase == "countdown")?;
+    /// The offer the card is showing as joined -- counting down for, or
+    /// asking about -- if it is still pending.
+    fn joined(&self, now: jiff::Timestamp) -> Option<OfferPayload> {
+        let card = self
+            .notice
+            .as_ref()
+            .filter(|n| matches!(n.phase, CardPhase::Countdown | CardPhase::Ask))?;
         self.book.find(&card.key, now).map(|p| p.payload.clone())
     }
 
@@ -494,6 +583,67 @@ impl Inner {
     fn release_start(&mut self, key: &str) {
         if self.starting.as_deref() == Some(key) {
             self.starting = None;
+        }
+    }
+
+    /// `key`'s card as it is drawn now: its face, from the offer and whatever
+    /// brief is kept for it. `None` if the card is not up, or is another
+    /// offer's, or the offer is no longer pending.
+    fn panel(
+        &self,
+        key: &str,
+        now: jiff::Timestamp,
+        zone: &TimeZone,
+    ) -> Option<crate::panel::Panel> {
+        let card = self.notice.as_ref().filter(|n| n.key == key)?;
+        let pending = self.book.find(key, now)?;
+        let brief = self.briefs.get(key);
+        Some(meeting_panel(card.phase, card.seconds, &pending.payload, brief, now, zone))
+    }
+
+    /// The card for one tick of the countdown `generation` is counting:
+    /// `seconds` left, drawn from the brief already kept. `None` once
+    /// anything has replaced or cancelled that countdown.
+    fn tick(
+        &mut self,
+        key: &str,
+        generation: u64,
+        seconds: u32,
+        now: jiff::Timestamp,
+        zone: &TimeZone,
+    ) -> Option<crate::panel::Panel> {
+        if self.countdown_gen != generation {
+            return None;
+        }
+        self.notice.as_mut().filter(|n| n.key == key)?.seconds = seconds;
+        self.panel(key, now, zone)
+    }
+
+    /// Keep `brief` for the offer it names, in place of any older one. A brief
+    /// arrives before its offer does, so there is no offer to drop it with if
+    /// the meeting never gets one; what is over is dropped here instead, the
+    /// next time a brief comes, and a brief for a meeting already over is not
+    /// kept at all.
+    fn keep_brief(&mut self, brief: MeetingBrief, now: jiff::Timestamp) {
+        self.briefs.retain(|_, b| b.end > now);
+        if brief.end > now {
+            self.briefs.insert(brief.key.clone(), brief);
+        }
+    }
+
+    /// The talking point of `key`'s brief that is `task`, and whether it is
+    /// already ticked. `None` if the brief has no such point, which is also
+    /// what a press on a card whose brief has gone looks like.
+    fn point(&self, key: &str, task: TaskId) -> Option<bool> {
+        let brief = self.briefs.get(key)?;
+        brief.talking_points.iter().find(|p| p.task_id == task).map(|p| p.done)
+    }
+
+    /// Tick `task` off in `key`'s brief.
+    fn tick_point(&mut self, key: &str, task: TaskId) {
+        let Some(brief) = self.briefs.get_mut(key) else { return };
+        for point in brief.talking_points.iter_mut().filter(|p| p.task_id == task) {
+            point.done = true;
         }
     }
 }
@@ -542,7 +692,8 @@ fn offers(app: &AppHandle) -> tauri::State<'_, Offers> {
 /// nothing to ask.
 pub fn on_calendar_offer(app: &AppHandle, offer: MeetingOffer) {
     let payload = calendar_payload(&offer, OfferSource::Calendar, None);
-    // Already in the call: the countdown, not the join card.
+    // Already in the call: the countdown or the ask to take notes, not the
+    // join card.
     offer_event(app, payload, offer.end, mic_live(app));
 }
 
@@ -553,7 +704,7 @@ fn offer_event(app: &AppHandle, payload: OfferPayload, end: jiff::Timestamp, joi
     let first = offers(app).with(|o| o.book.mark_offered(&payload.key, end, now));
     if !first {
         if joined {
-            count_down_if_asking(app, &payload.key);
+            note_joined(app, &payload.key);
         }
         return;
     }
@@ -575,7 +726,8 @@ fn offer_event(app: &AppHandle, payload: OfferPayload, end: jiff::Timestamp, joi
     {
         crate::meeting::start_automatic(app.clone(), event_id);
         emit(app, OFFER_EVENT, &payload);
-        let text = automatic_notice_text(&payload);
+        let brief = offers(app).with(|o| o.briefs.get(&payload.key).cloned());
+        let text = automatic_notice_text(&payload, brief.as_ref());
         offers(app).with(|o| o.shown.push(payload.key.clone()));
         raise_notice(app, &payload.key, &text);
         return;
@@ -593,12 +745,20 @@ fn raise(app: &AppHandle, payload: OfferPayload, expires: Option<jiff::Timestamp
     if let Some(end) = expires {
         schedule_expiry(app, key, end);
     }
-    // The corner card replaces the system notification for this offer.
-    // Always, and an offer that is not ready, keep the notification.
-    match card_phase(payload.auto_record, payload.ready, joined) {
-        Some(CardPhase::Countdown) => arm_countdown(app, &payload),
-        Some(CardPhase::Join) => show_join(app, &payload),
-        None => raise_notice(app, &payload.key, &notice_text(&payload)),
+    // The corner card replaces the system notification for this offer. One
+    // that is not ready keeps the notification: it is a prompt to set notes
+    // up, which a card with a button to start recording would be no use for.
+    let phase = card_phase(payload.auto_record, payload.ready, joined);
+    match phase {
+        Some(CardPhase::Countdown) => arm_countdown(app, &payload.key),
+        Some(phase) => show_still(app, &payload.key, phase),
+        None => {
+            let brief = offers(app).with(|o| o.briefs.get(&payload.key).cloned());
+            raise_notice(app, &payload.key, &notice_text(&payload, brief.as_ref()));
+        }
+    }
+    if phase.is_some() {
+        fetch_brief(app, &payload);
     }
 }
 
@@ -613,89 +773,454 @@ fn schedule_expiry(app: &AppHandle, key: String, end: jiff::Timestamp) {
     });
 }
 
-/// Whether the corner card is up, and which face of it.
+/// Which face the corner card wears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CardPhase {
-    /// Before the meeting is joined.
+    /// Before the meeting is joined: join it and record.
     Join,
-    /// Recording starts when the countdown ends.
+    /// Joined, with auto-record on: recording starts when the countdown ends.
     Countdown,
+    /// Joined, with auto-record off: take notes? Nothing starts by itself.
+    Ask,
 }
 
-/// `None` keeps the system notification: the setting is off, the offer is
-/// not one recording could start from, or -- for a deferred offer -- `joined`
-/// is false so a countdown does not begin the moment another recording stops.
+impl CardPhase {
+    /// The face the card goes back to after an attempt to record failed:
+    /// still asking, never counting down again -- a countdown that failed
+    /// would only fail again in fifteen seconds. A meeting that was joined
+    /// stays joined, so the ask does not offer to join it a second time.
+    fn asking(self) -> CardPhase {
+        match self {
+            CardPhase::Join => CardPhase::Join,
+            CardPhase::Countdown | CardPhase::Ask => CardPhase::Ask,
+        }
+    }
+}
+
+/// `None` keeps the system notification: the offer is not one recording could
+/// start from. Otherwise it is a card, and `joined` -- the call is on -- says
+/// which face: the ask before it, and after it either the countdown, with
+/// auto-record on, or the ask to take notes, with it off. A deferred offer is
+/// raised with `joined` false, so that a countdown does not begin the moment
+/// another recording stops.
 fn card_phase(auto_record: bool, ready: bool, joined: bool) -> Option<CardPhase> {
-    if !auto_record || !ready {
+    if !ready {
         return None;
     }
-    Some(if joined { CardPhase::Countdown } else { CardPhase::Join })
+    Some(match (joined, auto_record) {
+        (false, _) => CardPhase::Join,
+        (true, true) => CardPhase::Countdown,
+        (true, false) => CardPhase::Ask,
+    })
 }
 
 fn mic_live(app: &AppHandle) -> bool {
     app.try_state::<crate::micwatch::MicWatch>().is_some_and(|m| m.session_active())
 }
 
-fn card_for(payload: &OfferPayload, phase: &str, seconds: u32) -> RecordingCard {
-    RecordingCard {
-        key: payload.key.clone(),
-        title: payload.title.clone(),
-        phase: phase.to_string(),
-        seconds,
-        can_join: payload.join_url.is_some(),
+/// Put `key`'s card up, or change it where it is, wearing `phase`. Does
+/// nothing if the offer is no longer pending: a card with no offer behind it
+/// would have buttons that answer nothing.
+///
+/// A card that was another offer's goes down first, and the interface's
+/// banner hears the countdown, or that there is none.
+fn show_card(app: &AppHandle, key: &str, phase: CardPhase, seconds: u32) {
+    let (now, zone) = (jiff::Timestamp::now(), TimeZone::system());
+    let shown = offers(app).with(|o| {
+        o.book.find(key, now)?;
+        let gone = o.notice.replace(Card { key: key.to_string(), phase, seconds }).map(|c| c.key);
+        o.panel(key, now, &zone).map(|panel| (gone, panel))
+    });
+    let Some((gone, panel)) = shown else { return };
+    emit(
+        app,
+        COUNTDOWN_EVENT,
+        &json!({ "key": key, "seconds": (phase == CardPhase::Countdown).then_some(seconds) }),
+    );
+    if let Some(gone) = gone.filter(|g| g != key) {
+        crate::panel::dismiss(app, &gone);
+    }
+    crate::panel::show(app, panel);
+}
+
+/// Draw `key`'s card again from what is kept -- the same face, with whatever
+/// its brief says now. Nothing if the card is not up, and it is never put up
+/// by this: a brief arriving a moment after the card was answered must not
+/// bring it back.
+fn redraw(app: &AppHandle, key: &str) {
+    let (now, zone) = (jiff::Timestamp::now(), TimeZone::system());
+    if let Some(panel) = offers(app).with(|o| o.panel(key, now, &zone)) {
+        crate::panel::update(app, key, |shown| *shown = panel);
     }
 }
 
-fn publish_card(app: &AppHandle, card: Option<RecordingCard>) {
-    offers(app).with(|o| o.notice = card.clone());
-    emit(app, NOTICE_EVENT, &card);
-    match &card {
-        Some(card) => {
-            emit(
-                app,
-                COUNTDOWN_EVENT,
-                &json!({ "key": card.key, "seconds":
-                    (card.phase == "countdown").then_some(card.seconds)
-                }),
-            );
-            crate::recnotice::present(app);
+/// A card on a face that does not count down: the ask to join, or the ask to
+/// take notes.
+fn show_still(app: &AppHandle, key: &str, phase: CardPhase) {
+    let generation = offers(app).with(|o| {
+        o.countdown_gen = o.countdown_gen.wrapping_add(1);
+        o.countdown_gen
+    });
+    show_card(app, key, phase, 0);
+    spawn_clock(app, key.to_string(), generation);
+}
+
+/// How often a card that does not count down is drawn again, for the "in 2
+/// min" in its kicker.
+const CLOCK: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Keep a still card's kicker true -- "in 2 min" does not stay true while the
+/// card sits there -- until anything changes the card, which is what
+/// `generation` is for.
+fn spawn_clock(app: &AppHandle, key: String, generation: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(CLOCK).await;
+            if !offers(&app).with(|o| o.countdown_gen == generation) {
+                return;
+            }
+            redraw(&app, &key);
         }
-        None => crate::recnotice::dismiss(app),
+    });
+}
+
+/// The meeting card as the panel draws it, made from the face it wears, the
+/// offer, and the brief when there is one.
+///
+/// `seconds` is what is left on the countdown, and is read only on that face.
+/// `now` and `zone` are the clock and the person's own time zone, passed in so
+/// that this has no clock in it.
+///
+/// Before the call is joined the kicker says when the meeting is, and the
+/// body gives its hours in the person's own time and where it is; with a
+/// brief, the first thing under that is what the meeting is for. What to know
+/// -- what the person promised to raise, the agenda, who is there, and the
+/// rest folded away -- comes after, in that order and with nothing in it that
+/// is empty.
+fn meeting_panel(
+    phase: CardPhase,
+    seconds: u32,
+    payload: &OfferPayload,
+    brief: Option<&MeetingBrief>,
+    now: jiff::Timestamp,
+    zone: &TimeZone,
+) -> crate::panel::Panel {
+    use crate::panel::{Action, Owner, Panel, Tone};
+    let action = |id: &str, label: &str, primary: bool| Action {
+        id: id.into(),
+        label: label.into(),
+        primary,
+        copy: None,
+    };
+    let counting = phase == CardPhase::Countdown;
+    Panel {
+        id: payload.key.clone(),
+        owner: Owner::Meeting,
+        tone: if counting { Tone::Attention } else { Tone::Neutral },
+        kicker: kicker(phase, payload, now),
+        title: payload.title.clone(),
+        count: counting.then(|| format!("{seconds}s")),
+        body: card_body(payload, brief, zone),
+        lines: Vec::new(),
+        meter: false,
+        sections: brief.map(brief_sections).unwrap_or_default(),
+        actions: match phase {
+            CardPhase::Join => {
+                let first = if payload.join_url.is_some() {
+                    "Join and start recording"
+                } else {
+                    "Start recording"
+                };
+                vec![action("join", first, true), action("notNow", "Not now", false)]
+            }
+            CardPhase::Countdown => {
+                vec![action("take", "Take notes", true), action("notNow", "Cancel", false)]
+            }
+            CardPhase::Ask => {
+                vec![action("take", "Take notes", true), action("notNow", "Not now", false)]
+            }
+        },
+        busy: false,
     }
+}
+
+/// The small line above the card's title: "Meeting · in 2 min", or, once the
+/// countdown is running, what it counts to. A call with no event behind it is
+/// a "Call", and has no time to say.
+fn kicker(phase: CardPhase, payload: &OfferPayload, now: jiff::Timestamp) -> String {
+    if phase == CardPhase::Countdown {
+        return "Recording starts in".to_string();
+    }
+    let what = if payload.event_id.is_none() { "Call" } else { "Meeting" };
+    match payload.start {
+        Some(start) => format!("{what} \u{b7} {}", timing(start, now)),
+        None => what.to_string(),
+    }
+}
+
+/// When a meeting is, said from where the person stands: "in 2 min", "now",
+/// "started 3 min ago". A minute is whole minutes, to the nearest, so "now"
+/// is the half-minute either side of the start.
+fn timing(start: jiff::Timestamp, now: jiff::Timestamp) -> String {
+    let secs = start.as_second() - now.as_second();
+    match ((secs.abs() + 30) / 60, secs > 0) {
+        (0, _) => "now".to_string(),
+        (minutes, true) => format!("in {}", span_words(minutes)),
+        (minutes, false) => format!("started {} ago", span_words(minutes)),
+    }
+}
+
+/// "12 min", "1 h", "2 h 5 min".
+fn span_words(minutes: i64) -> String {
+    match (minutes / 60, minutes % 60) {
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours} h"),
+        (hours, minutes) => format!("{hours} h {minutes} min"),
+    }
+}
+
+/// The card's body: the meeting's hours in the person's own time and where
+/// it is, then, on a line of its own, what the brief says it is for.
+fn card_body(
+    payload: &OfferPayload,
+    brief: Option<&MeetingBrief>,
+    zone: &TimeZone,
+) -> Option<String> {
+    let hours = match (payload.start, payload.end) {
+        (Some(start), Some(end)) => Some(format!(
+            "{}\u{2013}{}",
+            start.to_zoned(zone.clone()).strftime("%H:%M"),
+            end.to_zoned(zone.clone()).strftime("%H:%M")
+        )),
+        (Some(start), None) => Some(start.to_zoned(zone.clone()).strftime("%H:%M").to_string()),
+        _ => None,
+    };
+    let place = brief
+        .and_then(|b| b.location.as_deref())
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .or_else(|| payload.join_url.as_deref().and_then(join_service).map(str::to_owned));
+    let first = [hours, place].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ");
+    let summary = brief.and_then(|b| b.summary.as_deref()).map(str::trim).filter(|s| !s.is_empty());
+    let lines: Vec<&str> =
+        [Some(first.as_str()).filter(|f| !f.is_empty()), summary].into_iter().flatten().collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// The most agenda lines the card shows. The brief keeps more, for the
+/// calendar; a card with room for twelve would be a page.
+const CARD_AGENDA: usize = 5;
+/// More people than this are folded under "More".
+const CARD_PEOPLE_OPEN: usize = 3;
+
+/// What the brief adds to the card, in the order that matters walking in:
+/// what to raise (the boxes), the agenda, who is there, and the context,
+/// which is the longest and so the one folded away. A part with nothing in it
+/// is left out.
+fn brief_sections(brief: &MeetingBrief) -> Vec<crate::panel::Section> {
+    use crate::panel::{Check, Item, Section};
+    let plain = |text: &String| Item { text: text.trim().to_string(), detail: None, check: None };
+    let lines = |lines: &[String]| -> Vec<Item> {
+        lines.iter().filter(|l| !l.trim().is_empty()).map(plain).collect()
+    };
+    let to_raise: Vec<Item> = brief
+        .talking_points
+        .iter()
+        .map(|point| Item {
+            text: point.text.trim().to_string(),
+            detail: Some(point.with.trim()).filter(|w| !w.is_empty()).map(|w| format!("with {w}")),
+            check: Some(Check { action: format!("done:{}", point.task_id), done: point.done }),
+        })
+        .collect();
+    let mut agenda = lines(&brief.agenda);
+    agenda.truncate(CARD_AGENDA);
+    let people: Vec<Item> = brief
+        .people
+        .iter()
+        .map(|p| Item {
+            text: p.name.trim().to_string(),
+            detail: Some(p.line.trim()).filter(|l| !l.is_empty()).map(str::to_owned),
+            check: None,
+        })
+        .collect();
+    let folded_people = people.len() > CARD_PEOPLE_OPEN;
+    [
+        ("To raise", to_raise, false),
+        ("Agenda", agenda, false),
+        ("With", people, folded_people),
+        ("Context", lines(&brief.context), true),
+    ]
+    .into_iter()
+    .filter(|(_, items, _)| !items.is_empty())
+    .map(|(heading, items, folded)| Section { heading: heading.to_string(), items, folded })
+    .collect()
+}
+
+/// A button on a meeting card was pressed, or a box on it ticked. See
+/// [`crate::panel::on_action`].
+///
+/// A button is answered as the notification's would be. A box is a talking
+/// point -- `done:{taskId}` -- and ticking it completes the task.
+pub fn on_panel_action(app: &AppHandle, key: &str, action: &str) {
+    if matches!(action, "take" | "join" | "notNow") {
+        on_notice_action(app, key, action);
+    } else if let Some(task) = point_of(action) {
+        let (app, key) = (app.clone(), key.to_string());
+        tauri::async_runtime::spawn(async move { complete_point(&app, &key, task).await });
+    } else {
+        tracing::debug!(key, action, "a press on a meeting card that means nothing");
+    }
+}
+
+/// The task a talking point's `done:{taskId}` action names.
+fn point_of(action: &str) -> Option<TaskId> {
+    action.strip_prefix("done:")?.parse().ok()
+}
+
+/// Complete the task behind a talking point and tick the point. A failure
+/// leaves it unticked, and the card as it was: the person can try again, and a
+/// card that said done about a task that is not would be worse than one that
+/// said nothing.
+///
+/// Only a task that is a point on this card's own brief is completed: the
+/// action comes from the page, and what a card may do is what it shows.
+async fn complete_point(app: &AppHandle, key: &str, task: TaskId) {
+    let Some(done) = offers(app).with(|o| o.point(key, task)) else {
+        tracing::debug!(key, task = %task, "a talking point that is not on the card");
+        return;
+    };
+    // Ticked already, in the brief: the page drew the box again, and what is
+    // wanted is the card as it was.
+    if !done && let Err(e) = finish_task(app, task).await {
+        tracing::warn!(error = %e, key, task = %task, "could not complete a talking point's task");
+        return;
+    }
+    offers(app).with(|o| o.tick_point(key, task));
+    redraw(app, key);
+}
+
+/// Mark task `id` done, the way the interface does: the task as the service
+/// has it, made done ([`mark_done`]), and saved back whole.
+///
+/// The task is edited as the JSON the service sent, not decoded into this
+/// build's [`karmayoga_core::Task`] and encoded again, for the reason
+/// [`turn_mic_offers_off`] gives: a field a newer vault's task has, which
+/// this build does not know, would be saved away. There is no command that
+/// changes a task's status alone.
+async fn finish_task(app: &AppHandle, id: TaskId) -> CommandResult<()> {
+    let session = app.state::<AppState>().session().as_session();
+    let mut task = session.call(Ctx::local(), "get_task", json!({ "id": id })).await?;
+    mark_done(&mut task, jiff::Timestamp::now())?;
+    session.call(Ctx::local(), "save_task", json!({ "task": task })).await?;
+    Ok(())
+}
+
+/// `task`, as `get_task` sent it, with what finishing it changes and nothing
+/// else: `status`, `completedAt` and `updatedAt`. This is what
+/// [`karmayoga_core::Completable::set_status`] does to a decoded task --
+/// stamped `now` the first time it is done, and left alone if it already was,
+/// so "finished on Tuesday" does not become "finished on Friday" -- and what
+/// the interface's `toggleDoneOf` writes.
+fn mark_done(task: &mut Value, now: jiff::Timestamp) -> CommandResult<()> {
+    let Some(fields) = task.as_object_mut() else {
+        return Err(CommandError::new("invalid", "get_task answered oddly"));
+    };
+    let stamped = fields.get("completedAt").filter(|at| !at.is_null()).cloned();
+    fields.insert("status".to_string(), json!(TaskStatus::Done));
+    fields.insert("completedAt".to_string(), stamped.unwrap_or_else(|| json!(now)));
+    fields.insert("updatedAt".to_string(), json!(now));
+    Ok(())
+}
+
+/// A meeting's brief is ready (`karmayoga_service::meeting::brief`): kept for
+/// its offer, and drawn on the card if the card is up.
+pub fn on_meeting_brief(app: &AppHandle, brief: MeetingBrief) {
+    let key = brief.key.clone();
+    offers(app).with(|o| o.keep_brief(brief, jiff::Timestamp::now()));
+    redraw(app, &key);
+}
+
+/// A card has gone up for `payload` with no brief behind it: ask the service
+/// once for one it has already prepared, and draw the card again if there is
+/// one. The service answers from what it holds and never waits on a model, so
+/// this is quick, but it is a call to a service that may be remote, and the
+/// card goes up without waiting for it.
+///
+/// Once, not on every change of face: the countdown redraws the card five
+/// times a second, from the brief kept here.
+fn fetch_brief(app: &AppHandle, payload: &OfferPayload) {
+    let (Some(calendar_id), Some(uid)) = (payload.calendar_id, payload.uid.clone()) else {
+        return;
+    };
+    if offers(app).with(|o| o.briefs.contains_key(&payload.key)) {
+        return;
+    }
+    let (app, key) = (app.clone(), payload.key.clone());
+    tauri::async_runtime::spawn(async move {
+        let session = app.state::<AppState>().session().as_session();
+        let args = json!({ "calendarId": calendar_id, "uid": uid });
+        let brief = match session.call(Ctx::local(), "meeting_brief", args).await {
+            Ok(Value::Null) => return,
+            Ok(value) => match serde_json::from_value::<MeetingBrief>(value) {
+                Ok(brief) => brief,
+                Err(e) => {
+                    tracing::debug!(error = %e, "meeting_brief answered oddly");
+                    return;
+                }
+            },
+            Err(e) => {
+                tracing::debug!(error = %e, "no brief for the meeting card");
+                return;
+            }
+        };
+        // Answered, or withdrawn, while the service was deciding: a brief
+        // kept for an offer that is gone would sit there until its meeting
+        // ended.
+        if offers(&app).with(|o| o.book.find(&key, jiff::Timestamp::now()).is_none()) {
+            return;
+        }
+        on_meeting_brief(&app, brief);
+    });
 }
 
 /// The meeting the card asks to join has been joined from the meeting
-/// itself -- the microphone went live -- so the card counts down instead.
-fn count_down_if_asking(app: &AppHandle, key: &str) {
-    if let Some(payload) = offers(app).with(|o| o.asking(key, jiff::Timestamp::now())) {
-        arm_countdown(app, &payload);
+/// itself -- the microphone went live -- so the card moves on to the joined
+/// face: the countdown with auto-record on, the ask to take notes without it.
+fn note_joined(app: &AppHandle, key: &str) {
+    let Some(payload) = offers(app).with(|o| o.asking(key, jiff::Timestamp::now())) else {
+        return;
+    };
+    match card_phase(payload.auto_record, payload.ready, true) {
+        Some(CardPhase::Countdown) => arm_countdown(app, key),
+        Some(phase) => show_still(app, key, phase),
+        None => {}
     }
 }
 
-fn show_join(app: &AppHandle, payload: &OfferPayload) {
-    offers(app).with(|o| o.countdown_gen = o.countdown_gen.wrapping_add(1));
-    publish_card(app, Some(card_for(payload, "join", 0)));
-}
-
-fn arm_countdown(app: &AppHandle, payload: &OfferPayload) {
+fn arm_countdown(app: &AppHandle, key: &str) {
     let generation = offers(app).with(|o| {
         o.countdown_gen = o.countdown_gen.wrapping_add(1);
         o.countdown_gen
     });
     let deadline = std::time::Instant::now() + COUNTDOWN;
-    publish_card(app, Some(card_for(payload, "countdown", seconds_left(deadline))));
+    show_card(app, key, CardPhase::Countdown, seconds_left(deadline));
     let app = app.clone();
-    let key = payload.key.clone();
+    let key = key.to_string();
     tauri::async_runtime::spawn(async move {
+        let zone = TimeZone::system();
         loop {
-            if !countdown_live(&app, &key, generation) {
-                return;
-            }
             let left = seconds_left(deadline);
             if left == 0 {
                 break;
             }
-            publish_card(&app, Some(countdown_card(&app, &key, left)));
+            // Drawn from the brief kept, never fetched: this is five times a
+            // second, and a card that has been replaced or cancelled stops
+            // the count.
+            if !tick_card(&app, &key, generation, left, &zone) {
+                return;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
         if !countdown_live(&app, &key, generation) {
@@ -724,40 +1249,33 @@ fn countdown_live(app: &AppHandle, key: &str, generation: u64) -> bool {
     })
 }
 
-/// The card already showing `key`, with a new number of seconds. A card
-/// that has moved on to another offer is left alone.
-fn countdown_card(app: &AppHandle, key: &str, seconds: u32) -> RecordingCard {
-    let mut card = offers(app).with(|o| {
-        o.notice.clone().filter(|n| n.key == key).unwrap_or(RecordingCard {
-            key: key.to_string(),
-            title: String::new(),
-            phase: "countdown".into(),
-            seconds,
-            can_join: false,
-        })
-    });
-    card.phase = "countdown".into();
-    card.seconds = seconds;
-    card
-}
-
-/// Take the card down if it is `key`'s, stopping its countdown. True if it
-/// was.
-fn drop_notice(app: &AppHandle, key: &str) -> bool {
-    let showing = offers(app).with(|o| o.notice.as_ref().is_some_and(|n| n.key == key));
-    if !showing {
+/// One tick of `key`'s countdown, drawn in place. `false` if the card is no
+/// longer the one `generation` is counting for -- cancelled, answered,
+/// replaced -- which ends the count. Only ever changes a card that is up: a
+/// tick landing as the card is answered must not put it back.
+fn tick_card(app: &AppHandle, key: &str, generation: u64, seconds: u32, zone: &TimeZone) -> bool {
+    let now = jiff::Timestamp::now();
+    let Some(panel) = offers(app).with(|o| o.tick(key, generation, seconds, now, zone)) else {
         return false;
-    }
-    offers(app).with(|o| o.countdown_gen = o.countdown_gen.wrapping_add(1));
-    publish_card(app, None);
-    emit(app, COUNTDOWN_EVENT, &json!({ "key": key, "seconds": null }));
+    };
+    emit(app, COUNTDOWN_EVENT, &json!({ "key": key, "seconds": seconds }));
+    crate::panel::update(app, key, |shown| *shown = panel);
     true
 }
 
-/// The card the corner window draws, if one is up.
-#[tauri::command]
-pub fn recording_notice(app: AppHandle) -> Option<RecordingCard> {
-    offers(&app).with(|o| o.notice.clone())
+/// Take the card down if it is `key`'s, stopping its countdown. The face it
+/// wore, if it was up.
+fn drop_notice(app: &AppHandle, key: &str) -> Option<CardPhase> {
+    let was = offers(app).with(|o| {
+        if o.notice.as_ref().is_none_or(|n| n.key != key) {
+            return None;
+        }
+        o.countdown_gen = o.countdown_gen.wrapping_add(1);
+        o.notice.take().map(|n| n.phase)
+    })?;
+    crate::panel::dismiss(app, key);
+    emit(app, COUNTDOWN_EVENT, &json!({ "key": key, "seconds": null }));
+    Some(was)
 }
 
 /// A notification, unless the window is in front of the person already --
@@ -796,7 +1314,10 @@ fn emit<S: serde::Serialize + Clone>(app: &AppHandle, event: &str, payload: S) {
 /// or already withdrawn), in which case nothing is said -- a second
 /// `settled` for a key the interface has forgotten is harmless but noise.
 fn settle(app: &AppHandle, key: &str) -> bool {
-    let removed = offers(app).with(|o| o.book.remove(key));
+    let removed = offers(app).with(|o| {
+        o.briefs.remove(key);
+        o.book.remove(key)
+    });
     if removed.is_some() {
         announce_settled(app, key);
         drop_notice(app, key);
@@ -807,7 +1328,13 @@ fn settle(app: &AppHandle, key: &str) -> bool {
 
 /// Settle every pending offer `pick` chooses. One tray update for the lot.
 fn settle_where(app: &AppHandle, pick: impl Fn(&Pending) -> bool) {
-    let taken = offers(app).with(|o| o.book.take_where(pick));
+    let taken = offers(app).with(|o| {
+        let taken = o.book.take_where(pick);
+        for p in &taken {
+            o.briefs.remove(&p.payload.key);
+        }
+        taken
+    });
     if taken.is_empty() {
         return;
     }
@@ -952,11 +1479,11 @@ pub fn on_mic_ended(app: &AppHandle) {
     });
     settle_where(app, |p| p.payload.source == OfferSource::Microphone);
     offers(app).with(|o| withdrawn.iter().for_each(|key| o.book.forget_offered(key)));
-    // A calendar meeting's card that began counting down when the call was
-    // joined goes back to asking: the call is over, and nobody said to record
-    // an empty room.
-    if let Some(payload) = offers(app).with(|o| o.counting(jiff::Timestamp::now())) {
-        show_join(app, &payload);
+    // A calendar meeting's card that began counting down, or asking, when the
+    // call was joined goes back to asking to join: the call is over, and
+    // nobody said to record an empty room.
+    if let Some(payload) = offers(app).with(|o| o.joined(jiff::Timestamp::now())) {
+        show_still(app, &payload.key, CardPhase::Join);
     }
     let (linked, name) =
         offers(app).with(|o| (std::mem::take(&mut o.mic_linked), o.mic_app.take()));
@@ -1034,15 +1561,17 @@ pub(crate) fn on_recording_stopped(app: &AppHandle) {
 /// The vault locked: every offer names a meeting, which is decrypted
 /// contents of the vault, so every one goes -- pending, held back, on the
 /// tray and in the notification centre -- the way a toast quoting a title
-/// does in the window. The interface empties its own list on lock already.
+/// does in the window. So do the briefs, which say who was to be at them and
+/// what was to be raised. The interface empties its own list on lock already.
 pub(crate) fn on_locked(app: &AppHandle) {
     let shown = offers(app).with(|o| {
         o.book.deferred.clear();
+        o.briefs.clear();
         o.countdown_gen = o.countdown_gen.wrapping_add(1);
         o.notice = None;
         std::mem::take(&mut o.shown)
     });
-    crate::recnotice::dismiss(app);
+    crate::panel::dismiss_owner(app, crate::panel::Owner::Meeting);
     emit(app, COUNTDOWN_EVENT, &json!({ "key": "", "seconds": null }));
     for key in shown {
         crate::notice::withdraw(app, &key);
@@ -1223,10 +1752,12 @@ async fn start(app: &AppHandle, payload: &OfferPayload) -> CommandResult<Option<
     let had_card = drop_notice(app, key);
     let result = take(app, payload).await;
     offers(app).with(|o| o.release_start(key));
-    if result.is_err() && had_card {
+    if result.is_err()
+        && let Some(face) = had_card
+    {
         let pending = offers(app).with(|o| o.book.find(key, jiff::Timestamp::now()).is_some());
         if pending {
-            show_join(app, payload);
+            show_still(app, key, face.asking());
         }
     }
     result.map(Some)
@@ -1292,6 +1823,9 @@ pub async fn meeting_offers(app: AppHandle) -> CommandResult<Vec<OfferPayload>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panel::Panel;
+    use karmayoga_core::Completable;
+    use karmayoga_core::meeting::brief::{MeetingBriefPerson, TalkingPoint};
 
     fn at(secs: i64) -> jiff::Timestamp {
         jiff::Timestamp::from_second(secs).unwrap()
@@ -1327,11 +1861,29 @@ mod tests {
     }
 
     #[test]
-    fn the_corner_card_is_the_ask_and_the_countdown_only_after_joining() {
-        assert!(card_phase(false, true, true).is_none(), "the setting off keeps the notification");
-        assert!(card_phase(true, false, true).is_none(), "not ready is a prompt to set up");
-        assert_eq!(card_phase(true, true, false), Some(CardPhase::Join));
+    fn a_ready_offer_is_always_a_card_and_counts_down_only_with_auto_record() {
+        for auto_record in [false, true] {
+            assert!(card_phase(auto_record, false, true).is_none(), "not ready: set up first");
+            assert!(card_phase(auto_record, false, false).is_none());
+            assert_eq!(
+                card_phase(auto_record, true, false),
+                Some(CardPhase::Join),
+                "before the call is joined it asks to join, whatever the setting"
+            );
+        }
         assert_eq!(card_phase(true, true, true), Some(CardPhase::Countdown));
+        assert_eq!(
+            card_phase(false, true, true),
+            Some(CardPhase::Ask),
+            "joined with auto-record off: asks, and nothing starts by itself"
+        );
+    }
+
+    #[test]
+    fn a_failed_start_goes_back_to_asking_and_never_to_a_second_countdown() {
+        assert_eq!(CardPhase::Join.asking(), CardPhase::Join);
+        assert_eq!(CardPhase::Countdown.asking(), CardPhase::Ask);
+        assert_eq!(CardPhase::Ask.asking(), CardPhase::Ask);
     }
 
     #[test]
@@ -1393,7 +1945,7 @@ mod tests {
     #[test]
     fn a_ready_calendar_offer_asks_to_take_notes() {
         let p = calendar_payload(&meeting(false, true), OfferSource::Calendar, None);
-        let text = notice_text(&p);
+        let text = notice_text(&p, None);
         assert_eq!(text.summary, "Take notes for Design sync?");
         assert_eq!(text.body, "Work \u{b7} starting now");
         assert_eq!(keys(&text), ["take", "notNow"]);
@@ -1403,7 +1955,7 @@ mod tests {
     fn a_join_link_puts_join_first() {
         let mut offer = meeting(false, true);
         offer.join_url = Some("https://meet.example.com/abc".into());
-        let text = notice_text(&calendar_payload(&offer, OfferSource::Calendar, None));
+        let text = notice_text(&calendar_payload(&offer, OfferSource::Calendar, None), None);
         assert_eq!(keys(&text), ["join", "take", "notNow"]);
         assert_eq!(text.actions[0].1, "Join & take notes");
     }
@@ -1412,46 +1964,48 @@ mod tests {
     fn a_meeting_the_microphone_noticed_says_which_application() {
         let p =
             calendar_payload(&meeting(false, true), OfferSource::Microphone, Some("Zoom".into()));
-        let text = notice_text(&p);
+        let text = notice_text(&p, None);
         assert_eq!(text.summary, "Take notes for Design sync?");
         assert_eq!(text.body, "Zoom is using your microphone");
         let anon = calendar_payload(&meeting(false, true), OfferSource::Microphone, None);
-        assert_eq!(notice_text(&anon).body, "Another app is using your microphone");
+        assert_eq!(notice_text(&anon, None).body, "Another app is using your microphone");
     }
 
     #[test]
     fn a_call_with_no_event_asks_whether_it_is_one() {
-        let text = notice_text(&mic_payload(1, Some("Zoom".into()), true));
+        let text = notice_text(&mic_payload(1, Some("Zoom".into()), true), None);
         assert_eq!(text.summary, "Taking a call? Take notes");
         assert_eq!(text.body, "Zoom is using your microphone.");
         assert_eq!(keys(&text), ["take", "notNow"]);
-        let anon = notice_text(&mic_payload(2, None, true));
+        let anon = notice_text(&mic_payload(2, None, true), None);
         assert_eq!(anon.body, "Another app is using your microphone.");
     }
 
     #[test]
     fn an_offer_that_is_not_ready_asks_to_set_up_instead() {
-        let calendar =
-            notice_text(&calendar_payload(&meeting(false, false), OfferSource::Calendar, None));
+        let calendar = notice_text(
+            &calendar_payload(&meeting(false, false), OfferSource::Calendar, None),
+            None,
+        );
         assert_eq!(calendar.body, "Work \u{b7} starting now. Meeting notes aren't set up yet.");
         assert_eq!(keys(&calendar), ["setup", "notNow"]);
         assert_eq!(calendar.actions[0].1, "Set up meeting notes");
 
-        let mic = notice_text(&mic_payload(1, Some("Zoom".into()), false));
+        let mic = notice_text(&mic_payload(1, Some("Zoom".into()), false), None);
         assert_eq!(mic.body, "Zoom is using your microphone. Meeting notes aren't set up yet.");
         assert_eq!(keys(&mic), ["setup", "notNow"]);
 
         // A join link does not bring "Join" back: nothing could be taken.
         let mut offer = meeting(false, false);
         offer.join_url = Some("https://meet.example.com/abc".into());
-        let linked = notice_text(&calendar_payload(&offer, OfferSource::Calendar, None));
+        let linked = notice_text(&calendar_payload(&offer, OfferSource::Calendar, None), None);
         assert_eq!(keys(&linked), ["setup", "notNow"]);
     }
 
     #[test]
     fn an_automatic_start_offers_to_stop() {
         let p = calendar_payload(&meeting(true, true), OfferSource::Calendar, None);
-        let text = automatic_notice_text(&p);
+        let text = automatic_notice_text(&p, None);
         assert_eq!(text.summary, "Taking notes for Design sync");
         assert_eq!(text.body, "Started automatically");
         assert_eq!(text.actions, [("stop", "Stop recording")]);
@@ -1592,43 +2146,41 @@ mod tests {
 
     // ---- the corner card ----------------------------------------------------
 
-    fn card(key: &str, phase: &str) -> RecordingCard {
-        RecordingCard {
-            key: key.into(),
-            title: "Design sync".into(),
-            phase: phase.into(),
-            seconds: 15,
-            can_join: false,
-        }
+    fn card(key: &str, phase: CardPhase) -> Card {
+        Card { key: key.into(), phase, seconds: 15 }
     }
 
     #[test]
-    fn joining_the_call_turns_the_ask_into_the_countdown() {
+    fn joining_the_call_moves_the_ask_on() {
         let mut inner = Inner::default();
         let key = pending_event(&mut inner.book, "u", OfferSource::Calendar, 100);
-        inner.notice = Some(card(&key, "join"));
+        inner.notice = Some(card(&key, CardPhase::Join));
         assert_eq!(inner.asking(&key, at(0)).map(|p| p.key), Some(key.clone()));
         assert!(inner.asking("event:cal:other", at(0)).is_none(), "another meeting's card");
 
-        inner.notice = Some(card(&key, "countdown"));
+        inner.notice = Some(card(&key, CardPhase::Countdown));
         assert!(inner.asking(&key, at(0)).is_none(), "counting down already");
+        inner.notice = Some(card(&key, CardPhase::Ask));
+        assert!(inner.asking(&key, at(0)).is_none(), "asking to take notes already");
 
-        inner.notice = Some(card(&key, "join"));
+        inner.notice = Some(card(&key, CardPhase::Join));
         inner.book.remove(&key);
         assert!(inner.asking(&key, at(0)).is_none(), "answered since");
     }
 
     #[test]
-    fn the_call_ending_finds_the_countdown_to_take_back() {
+    fn the_call_ending_finds_the_joined_card_to_take_back() {
         let mut inner = Inner::default();
         let key = pending_event(&mut inner.book, "u", OfferSource::Calendar, 100);
-        assert!(inner.counting(at(0)).is_none(), "no card");
-        inner.notice = Some(card(&key, "join"));
-        assert!(inner.counting(at(0)).is_none(), "still asking");
-        inner.notice = Some(card(&key, "countdown"));
-        assert_eq!(inner.counting(at(0)).map(|p| p.key), Some(key.clone()));
+        assert!(inner.joined(at(0)).is_none(), "no card");
+        inner.notice = Some(card(&key, CardPhase::Join));
+        assert!(inner.joined(at(0)).is_none(), "still asking to join");
+        inner.notice = Some(card(&key, CardPhase::Countdown));
+        assert_eq!(inner.joined(at(0)).map(|p| p.key), Some(key.clone()));
+        inner.notice = Some(card(&key, CardPhase::Ask));
+        assert_eq!(inner.joined(at(0)).map(|p| p.key), Some(key.clone()));
         inner.book.remove(&key);
-        assert!(inner.counting(at(0)).is_none(), "answered since");
+        assert!(inner.joined(at(0)).is_none(), "answered since");
     }
 
     #[test]
@@ -1640,5 +2192,476 @@ mod tests {
         assert!(!inner.claim_start("event:cal:u"), "only its own start releases it");
         inner.release_start("event:cal:u");
         assert!(inner.claim_start("event:cal:u"), "tried again after a failure");
+    }
+
+    // ---- what the card says ---------------------------------------------------
+
+    /// Five minutes to the start, on a feed that is an hour long, in a zone
+    /// eight hours behind UTC.
+    const NOW: i64 = 1_000;
+
+    fn pacific() -> TimeZone {
+        TimeZone::fixed(jiff::tz::offset(-8))
+    }
+
+    fn payload() -> OfferPayload {
+        let mut offer = meeting(false, true);
+        offer.start = at(NOW + 300);
+        offer.end = at(NOW + 300 + 3_600);
+        calendar_payload(&offer, OfferSource::Calendar, None)
+    }
+
+    fn brief_for(p: &OfferPayload) -> MeetingBrief {
+        MeetingBrief {
+            key: p.key.clone(),
+            event_id: p.event_id.unwrap(),
+            calendar_id: p.calendar_id.unwrap(),
+            uid: p.uid.clone().unwrap(),
+            title: p.title.clone(),
+            start: p.start.unwrap(),
+            end: p.end.unwrap(),
+            location: None,
+            summary: None,
+            agenda: Vec::new(),
+            people: Vec::new(),
+            context: Vec::new(),
+            talking_points: Vec::new(),
+            sources: Vec::new(),
+            written: false,
+            gaps: Vec::new(),
+            prepared_at: at(NOW),
+        }
+    }
+
+    fn person(name: &str, line: &str) -> MeetingBriefPerson {
+        MeetingBriefPerson { name: name.into(), email: None, contact: None, line: line.into() }
+    }
+
+    fn point(text: &str, with: &str, done: bool) -> TalkingPoint {
+        TalkingPoint { task_id: TaskId::new(), text: text.into(), with: with.into(), done }
+    }
+
+    fn draw(
+        phase: CardPhase,
+        p: &OfferPayload,
+        brief: Option<&MeetingBrief>,
+    ) -> crate::panel::Panel {
+        meeting_panel(phase, 12, p, brief, at(NOW), &pacific())
+    }
+
+    fn ids(panel: &crate::panel::Panel) -> Vec<(&str, &str, bool)> {
+        panel.actions.iter().map(|a| (a.id.as_str(), a.label.as_str(), a.primary)).collect()
+    }
+
+    #[test]
+    fn the_join_card_asks_to_join_and_says_when_the_meeting_is() {
+        let mut p = payload();
+        let card = draw(CardPhase::Join, &p, None);
+        assert_eq!(card.id, p.key);
+        assert_eq!(card.owner, crate::panel::Owner::Meeting);
+        assert_eq!(card.tone, crate::panel::Tone::Neutral);
+        assert_eq!(card.kicker, "Meeting \u{b7} in 5 min");
+        assert_eq!(card.title, "Design sync");
+        assert_eq!(card.count, None);
+        // 1_300 and 4_900 seconds after the epoch, eight hours behind it.
+        assert_eq!(card.body.as_deref(), Some("16:21\u{2013}17:21"));
+        assert!(card.sections.is_empty());
+        assert_eq!(ids(&card), [("join", "Start recording", true), ("notNow", "Not now", false)]);
+
+        p.join_url = Some("https://us02web.zoom.us/j/123".into());
+        let card = draw(CardPhase::Join, &p, None);
+        assert_eq!(card.body.as_deref(), Some("16:21\u{2013}17:21 \u{b7} Zoom"));
+        assert_eq!(
+            ids(&card),
+            [("join", "Join and start recording", true), ("notNow", "Not now", false)]
+        );
+    }
+
+    #[test]
+    fn the_countdown_card_counts_and_asks_for_attention() {
+        let p = payload();
+        let card = draw(CardPhase::Countdown, &p, None);
+        assert_eq!(card.kicker, "Recording starts in");
+        assert_eq!(card.count.as_deref(), Some("12s"));
+        assert_eq!(card.tone, crate::panel::Tone::Attention);
+        assert_eq!(ids(&card), [("take", "Take notes", true), ("notNow", "Cancel", false)]);
+    }
+
+    #[test]
+    fn the_ask_card_has_no_countdown_and_nothing_starts_by_itself() {
+        let p = payload();
+        let card = draw(CardPhase::Ask, &p, None);
+        assert_eq!(card.kicker, "Meeting \u{b7} in 5 min");
+        assert_eq!(card.count, None);
+        assert_eq!(card.tone, crate::panel::Tone::Neutral);
+        assert_eq!(ids(&card), [("take", "Take notes", true), ("notNow", "Not now", false)]);
+    }
+
+    #[test]
+    fn a_call_with_no_event_is_a_call_with_no_time() {
+        let p = mic_payload(1, Some("Zoom".into()), true);
+        let card = draw(CardPhase::Ask, &p, None);
+        assert_eq!(card.kicker, "Call");
+        assert_eq!(card.title, "Call on Zoom");
+        assert_eq!(card.body, None);
+        assert!(card.sections.is_empty());
+    }
+
+    #[test]
+    fn the_kicker_says_when_the_meeting_is_from_where_the_person_stands() {
+        let now = at(10_000);
+        assert_eq!(timing(at(10_000 + 120), now), "in 2 min");
+        assert_eq!(timing(at(10_000 + 20), now), "now");
+        assert_eq!(timing(at(10_000), now), "now");
+        assert_eq!(timing(at(10_000 - 20), now), "now");
+        assert_eq!(timing(at(10_000 + 45), now), "in 1 min");
+        assert_eq!(timing(at(10_000 - 180), now), "started 3 min ago");
+        assert_eq!(timing(at(10_000 + 3_600), now), "in 1 h");
+        assert_eq!(timing(at(10_000 - 3_900), now), "started 1 h 5 min ago");
+    }
+
+    #[test]
+    fn the_hours_are_the_persons_own() {
+        let p = payload();
+        let utc = meeting_panel(CardPhase::Join, 0, &p, None, at(NOW), &TimeZone::UTC);
+        assert_eq!(utc.body.as_deref(), Some("00:21\u{2013}01:21"));
+        let pacific = draw(CardPhase::Join, &p, None);
+        assert_eq!(pacific.body.as_deref(), Some("16:21\u{2013}17:21"));
+    }
+
+    #[test]
+    fn where_it_is_comes_from_the_brief_before_the_link() {
+        let mut p = payload();
+        p.join_url = Some("https://meet.google.com/abc-defg-hij".into());
+        let mut brief = brief_for(&p);
+        assert_eq!(
+            draw(CardPhase::Join, &p, Some(&brief)).body.as_deref(),
+            Some("16:21\u{2013}17:21 \u{b7} Google Meet"),
+            "the link's own service when the brief names no room"
+        );
+        brief.location = Some("  Room 4B  ".into());
+        brief.summary = Some("Settle the Q3 budget.".into());
+        assert_eq!(
+            draw(CardPhase::Join, &p, Some(&brief)).body.as_deref(),
+            Some("16:21\u{2013}17:21 \u{b7} Room 4B\nSettle the Q3 budget.")
+        );
+    }
+
+    #[test]
+    fn a_link_with_no_room_names_its_service_and_an_unknown_one_names_nothing() {
+        let mut p = payload();
+        p.join_url = Some("https://teams.microsoft.com/l/meetup-join/19".into());
+        assert_eq!(
+            draw(CardPhase::Join, &p, None).body.as_deref(),
+            Some("16:21\u{2013}17:21 \u{b7} Microsoft Teams")
+        );
+        p.join_url = Some("https://evil.example/zoom.us".into());
+        assert_eq!(draw(CardPhase::Join, &p, None).body.as_deref(), Some("16:21\u{2013}17:21"));
+    }
+
+    #[test]
+    fn the_brief_adds_its_parts_in_the_order_that_matters() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.talking_points = vec![point("Talk about the Q3 budget", "Josh", false)];
+        brief.agenda = vec!["Budget".into(), "Hiring".into()];
+        brief.people = vec![person("Josh", "Head of design at Acme"), person("Priya", "")];
+        brief.context = vec!["Last met on 3 November about the launch.".into()];
+        let card = draw(CardPhase::Join, &p, Some(&brief));
+        let headings: Vec<_> =
+            card.sections.iter().map(|s| (s.heading.as_str(), s.folded)).collect();
+        assert_eq!(
+            headings,
+            [("To raise", false), ("Agenda", false), ("With", false), ("Context", true)]
+        );
+
+        let raise = &card.sections[0].items[0];
+        assert_eq!(raise.text, "Talk about the Q3 budget");
+        assert_eq!(raise.detail.as_deref(), Some("with Josh"));
+        let check = raise.check.as_ref().unwrap();
+        assert_eq!(check.action, format!("done:{}", brief.talking_points[0].task_id));
+        assert!(!check.done);
+
+        let with = &card.sections[2].items;
+        assert_eq!(with[0].text, "Josh");
+        assert_eq!(with[0].detail.as_deref(), Some("Head of design at Acme"));
+        assert_eq!(with[1].detail, None, "no line, no detail");
+        assert!(with.iter().all(|i| i.check.is_none()));
+    }
+
+    #[test]
+    fn a_part_with_nothing_in_it_is_left_out() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.agenda = vec!["  ".into(), "Budget".into()];
+        let card = draw(CardPhase::Join, &p, Some(&brief));
+        assert_eq!(card.sections.len(), 1);
+        assert_eq!(card.sections[0].heading, "Agenda");
+        assert_eq!(card.sections[0].items.len(), 1, "a blank line is not an item");
+        assert!(draw(CardPhase::Join, &p, Some(&brief_for(&p))).sections.is_empty());
+    }
+
+    #[test]
+    fn the_agenda_is_five_lines_and_many_people_are_folded() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.agenda = (1..=8).map(|n| format!("Item {n}")).collect();
+        brief.people = ["A", "B", "C"].iter().map(|n| person(n, "")).collect();
+        let card = draw(CardPhase::Join, &p, Some(&brief));
+        assert_eq!(card.sections[0].items.len(), 5);
+        assert!(!card.sections[0].folded);
+        assert!(!card.sections[1].folded, "three people are shown");
+
+        brief.people.push(person("D", ""));
+        let card = draw(CardPhase::Join, &p, Some(&brief));
+        assert!(card.sections[1].folded, "four are folded");
+        assert_eq!(card.sections[1].items.len(), 4);
+    }
+
+    #[test]
+    fn a_ticked_point_is_drawn_ticked() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.talking_points = vec![point("Budget", "Josh", true), point("Hiring", "Josh", false)];
+        let card = draw(CardPhase::Ask, &p, Some(&brief));
+        let done: Vec<_> =
+            card.sections[0].items.iter().map(|i| i.check.as_ref().unwrap().done).collect();
+        assert_eq!(done, [true, false]);
+    }
+
+    #[test]
+    fn the_brief_is_drawn_on_every_face() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.agenda = vec!["Budget".into()];
+        for phase in [CardPhase::Join, CardPhase::Countdown, CardPhase::Ask] {
+            assert_eq!(draw(phase, &p, Some(&brief)).sections.len(), 1, "{phase:?}");
+        }
+    }
+
+    // ---- what the card is made from ---------------------------------------------
+
+    #[test]
+    fn a_card_is_drawn_from_the_offer_the_face_and_the_brief_kept() {
+        let mut inner = Inner::default();
+        let key = pending_event(&mut inner.book, "u", OfferSource::Calendar, 10_000);
+        let zone = pacific();
+        assert!(inner.panel(&key, at(NOW), &zone).is_none(), "no card up");
+
+        inner.notice = Some(card(&key, CardPhase::Join));
+        assert_eq!(inner.panel(&key, at(NOW), &zone).unwrap().id, key);
+        assert!(inner.panel("event:cal:other", at(NOW), &zone).is_none(), "another offer's card");
+        assert!(inner.panel(&key, at(10_000), &zone).is_none(), "the meeting is over");
+
+        let mut brief = brief_for(&inner.book.find(&key, at(NOW)).unwrap().payload);
+        brief.agenda = vec!["Budget".into()];
+        brief.key = key.clone();
+        inner.keep_brief(brief, at(NOW));
+        let panel = inner.panel(&key, at(NOW), &zone).unwrap();
+        assert_eq!(panel.sections[0].heading, "Agenda");
+
+        inner.book.remove(&key);
+        assert!(inner.panel(&key, at(NOW), &zone).is_none(), "answered since");
+    }
+
+    #[test]
+    fn a_tick_changes_the_seconds_and_nothing_else_and_only_for_its_own_countdown() {
+        let mut inner = Inner::default();
+        let key = pending_event(&mut inner.book, "u", OfferSource::Calendar, 10_000);
+        let zone = pacific();
+        inner.notice = Some(card(&key, CardPhase::Countdown));
+        inner.countdown_gen = 7;
+
+        let first = inner.tick(&key, 7, 9, at(NOW), &zone).unwrap();
+        assert_eq!(first.count.as_deref(), Some("9s"));
+        let second = inner.tick(&key, 7, 8, at(NOW), &zone).unwrap();
+        assert_eq!(second.count.as_deref(), Some("8s"));
+        assert_eq!(Panel { count: None, ..first }, Panel { count: None, ..second });
+        assert_eq!(inner.notice.as_ref().unwrap().seconds, 8, "kept, for a redraw by a brief");
+
+        assert!(inner.tick(&key, 6, 7, at(NOW), &zone).is_none(), "a countdown since replaced");
+        assert!(inner.tick("event:cal:other", 7, 7, at(NOW), &zone).is_none());
+        inner.notice = None;
+        assert!(inner.tick(&key, 7, 7, at(NOW), &zone).is_none(), "cancelled");
+    }
+
+    // ---- briefs kept ----------------------------------------------------------------
+
+    #[test]
+    fn a_brief_is_kept_for_its_offer_and_a_fresher_one_replaces_it() {
+        let mut inner = Inner::default();
+        let p = payload();
+        let mut brief = brief_for(&p);
+        inner.keep_brief(brief.clone(), at(NOW));
+        assert!(inner.briefs.contains_key(&p.key));
+        brief.agenda = vec!["Budget".into()];
+        inner.keep_brief(brief, at(NOW));
+        assert_eq!(inner.briefs.len(), 1);
+        assert_eq!(inner.briefs[&p.key].agenda, ["Budget"]);
+    }
+
+    #[test]
+    fn a_brief_for_a_meeting_that_is_over_is_not_kept_and_clears_the_old() {
+        let mut inner = Inner::default();
+        let p = payload();
+        let end = p.end.unwrap().as_second();
+        inner.keep_brief(brief_for(&p), at(NOW));
+        let mut other = brief_for(&p);
+        other.key = "event:cal:other".into();
+        other.end = at(NOW + 10);
+        inner.keep_brief(other.clone(), at(NOW));
+        assert_eq!(inner.briefs.len(), 2);
+
+        // The other meeting has ended by now, and a brief for one that has
+        // is not worth keeping either.
+        inner.keep_brief(other, at(NOW + 20));
+        assert_eq!(inner.briefs.keys().collect::<Vec<_>>(), [&p.key], "only the one still on");
+        inner.keep_brief(brief_for(&p), at(end + 1));
+        assert!(inner.briefs.is_empty());
+    }
+
+    #[test]
+    fn a_point_ticked_on_the_card_is_ticked_in_the_brief() {
+        let mut inner = Inner::default();
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.talking_points = vec![point("Budget", "Josh", false), point("Hiring", "Josh", true)];
+        let (budget, hiring) = (brief.talking_points[0].task_id, brief.talking_points[1].task_id);
+        inner.keep_brief(brief, at(NOW));
+
+        assert_eq!(inner.point(&p.key, budget), Some(false));
+        assert_eq!(inner.point(&p.key, hiring), Some(true));
+        assert_eq!(inner.point(&p.key, TaskId::new()), None, "not on this card");
+        assert_eq!(inner.point("event:cal:other", budget), None, "not this card's brief");
+
+        inner.tick_point(&p.key, budget);
+        assert_eq!(inner.point(&p.key, budget), Some(true));
+        inner.tick_point("event:cal:other", budget);
+    }
+
+    #[test]
+    fn a_talking_points_action_names_its_task() {
+        let task = TaskId::new();
+        assert_eq!(point_of(&format!("done:{task}")), Some(task));
+        assert_eq!(point_of("done:not-an-id"), None);
+        assert_eq!(point_of("done:"), None);
+        assert_eq!(point_of("take"), None);
+    }
+
+    #[test]
+    fn completing_a_task_edits_what_the_service_sent_and_loses_nothing_of_it() {
+        let open = karmayoga_core::Task::new("Talk about the Q3 budget");
+        let mut sent = serde_json::to_value(&open).unwrap();
+        // A field a newer vault's task has and this build does not.
+        sent["raisedAt"] = json!({ "room": "4B" });
+
+        mark_done(&mut sent, at(5_000)).unwrap();
+        assert_eq!(sent["raisedAt"], json!({ "room": "4B" }), "kept");
+        assert_eq!(sent["status"], "done");
+
+        // The same task as `set_status` would have made it, but for the time.
+        let done: karmayoga_core::Task = serde_json::from_value(sent).unwrap();
+        let mut expected = open.clone();
+        expected.set_status(TaskStatus::Done);
+        assert_eq!(done.status, expected.status);
+        assert_eq!(done.completed_at, Some(at(5_000)));
+        assert_eq!(done.updated_at, at(5_000));
+        let rest = karmayoga_core::Task {
+            completed_at: None,
+            updated_at: open.updated_at,
+            status: open.status,
+            ..done
+        };
+        assert_eq!(rest, open, "nothing else changed");
+    }
+
+    #[test]
+    fn a_task_that_was_finished_already_keeps_the_day_it_was() {
+        let mut sent = serde_json::to_value(karmayoga_core::Task::new("x")).unwrap();
+        sent["status"] = json!("done");
+        sent["completedAt"] = json!(at(2_000));
+        mark_done(&mut sent, at(9_000)).unwrap();
+        assert_eq!(sent["completedAt"], json!(at(2_000)));
+        assert_eq!(sent["updatedAt"], json!(at(9_000)));
+        assert!(mark_done(&mut json!("not a task"), at(9_000)).is_err());
+    }
+
+    // ---- what the notification says of a brief ------------------------------------------
+
+    #[test]
+    fn a_notification_names_who_is_coming_and_the_first_thing_to_cover() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        assert_eq!(brief_line(&brief), None, "nothing to say");
+        brief.people = vec![person("Josh", "x"), person("Priya", "")];
+        assert_eq!(brief_line(&brief).as_deref(), Some("With Josh, Priya"));
+        brief.agenda = vec!["".into(), "Q3 budget".into(), "Hiring".into()];
+        assert_eq!(
+            brief_line(&brief).as_deref(),
+            Some("With Josh, Priya \u{b7} Agenda: Q3 budget")
+        );
+        brief.summary = Some("Settle the budget.".into());
+        assert_eq!(
+            brief_line(&brief).as_deref(),
+            Some("With Josh, Priya \u{b7} Agenda: Q3 budget"),
+            "the agenda before the summary"
+        );
+        brief.agenda.clear();
+        assert_eq!(
+            brief_line(&brief).as_deref(),
+            Some("With Josh, Priya \u{b7} Settle the budget.")
+        );
+    }
+
+    #[test]
+    fn what_the_person_promised_to_raise_comes_before_the_agenda() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.agenda = vec!["Q3 budget".into()];
+        brief.talking_points =
+            vec![point("Pay rise", "Josh", true), point("Hiring", "Josh", false)];
+        assert_eq!(brief_line(&brief).as_deref(), Some("To raise: Hiring"), "the first open one");
+        brief.talking_points[1].done = true;
+        assert_eq!(brief_line(&brief).as_deref(), Some("Agenda: Q3 budget"), "none left to raise");
+    }
+
+    #[test]
+    fn a_long_brief_is_cut_to_fit_a_banner() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.people = ["Ann", "Bob", "Cat", "Dee", "Eve"].iter().map(|n| person(n, "")).collect();
+        brief.agenda = vec!["word ".repeat(60)];
+        let line = brief_line(&brief).unwrap();
+        assert!(line.starts_with("With Ann, Bob, Cat +2 \u{b7} Agenda: word"));
+        assert!(line.chars().count() <= NOTICE_LINE_CHARS, "{line}");
+        assert!(line.ends_with('\u{2026}'));
+        assert_eq!(shorten("  short  ", 10), "short");
+    }
+
+    #[test]
+    fn a_notification_carries_the_brief_under_what_it_already_says() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.people = vec![person("Josh", ""), person("Priya", "")];
+        brief.agenda = vec!["Q3 budget".into()];
+        let line = "With Josh, Priya \u{b7} Agenda: Q3 budget";
+
+        let ask = notice_text(&p, Some(&brief));
+        assert_eq!(ask.body, format!("Work \u{b7} starting now\n{line}"));
+        assert_eq!(keys(&ask), ["take", "notNow"], "the buttons are the same");
+
+        let mut not_ready = meeting(false, false);
+        not_ready.start = p.start.unwrap();
+        let setup =
+            notice_text(&calendar_payload(&not_ready, OfferSource::Calendar, None), Some(&brief));
+        assert_eq!(
+            setup.body,
+            format!("Work \u{b7} starting now. Meeting notes aren't set up yet.\n{line}")
+        );
+
+        let auto = automatic_notice_text(&p, Some(&brief));
+        assert_eq!(auto.body, format!("Started automatically\n{line}"));
+
+        assert_eq!(notice_text(&p, Some(&brief_for(&p))).body, "Work \u{b7} starting now");
     }
 }
