@@ -1476,8 +1476,10 @@ const SPOKEN_NOTE: &str = concat!(
      voice. Talk the way a warm, easy-going person talks out loud, not the way you write. \
      Keep it short: a sentence or two unless they ask for more; if the full answer is long, \
      give the gist and offer the rest. Use contractions, everyday words and sentences of \
-     different lengths. When it fits, start with a natural reaction (\"Oh, nice!\", \"Hmm, \
-     let me see.\", \"Ah, got it.\"), but not the same one every time. Let real feeling show \
+     different lengths. When it fits, start with a natural reaction (\"Oh, nice!\", \"Ah, \
+     got it.\", \"Sure!\"), but not the same one every time. The voice already fills a wait \
+     with a few words of its own -- \"Hmm, let me think.\", \"Let me check your calendar.\" \
+     -- so don't say you are thinking, looking or checking; just answer. Let real feeling show \
      in your words and punctuation: an exclamation mark when you are glad for them, a \
      question mark when you ask, an ellipsis for a thoughtful beat, a comma or a dash where \
      a speaker would pause; warm when the news is good, gentle when it is not. To stress a \

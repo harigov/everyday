@@ -12,15 +12,15 @@
 //! ```text
 //!  microphone callback ──▶ Event::Mic ────┐
 //!  speaker callback ─────▶ Event::Reference ─┤   engine thread
-//!       ▲  (what it just wrote)            ├─▶ resample ─▶ echo canceller ─▶ EngineEvent::Microphone
+//!       ▲  (what it just wrote)            ├─▶ resample ─▶ cleaner ─▶ EngineEvent::Microphone
 //!       │                                  │
 //!   PlaybackQueue ◀── Control::Play ◀──────┘ (resampled to the device's rate here)
 //! ```
 //!
-//! The reference and the canceller exist only when both devices are open and
-//! echo cancellation was asked for. Without them the microphone is still
-//! resampled to [`SAMPLE_RATE`] and framed into the same batches, as it
-//! came.
+//! The microphone is always cleaned of rumble, hum and steady hiss
+//! ([`Cleaning::Noise`]). The reference, and cancelling echo against it
+//! ([`Cleaning::Echo`]), exist only when both devices are open and echo
+//! cancellation was asked for.
 //!
 //! # Realtime rules
 //!
@@ -55,8 +55,8 @@ use karmayoga_service::speech::SAMPLE_RATE;
 use karmayoga_service::voice::cue::Bed;
 
 use super::AudioError;
-use super::echo::Canceller;
-use super::input::{self, f32_to_i16};
+use super::echo::{Canceller, Cleaning};
+use super::input;
 use super::playback::PlaybackQueue;
 use super::resample::{self, StreamResampler};
 
@@ -109,8 +109,9 @@ impl EngineOptions {
 /// What an engine reports, from its own thread.
 #[derive(Debug)]
 pub enum EngineEvent {
-    /// About 30 ms of the microphone, mono 16-bit at [`SAMPLE_RATE`], with the
-    /// speaker's echo taken out if it was asked to.
+    /// About 30 ms of the microphone, mono 16-bit at [`SAMPLE_RATE`], cleaned
+    /// of rumble and steady noise, and with the speaker's echo taken out if it
+    /// was asked to.
     Microphone(Vec<i16>),
     /// The speaker has finished playing this utterance. One that was cleared
     /// before the end is never reported.
@@ -591,11 +592,10 @@ fn run(
     // `opened` drops here, on this thread, closing the streams.
 }
 
-/// What the canceller needs besides itself: the speaker's output brought to
-/// its rate.
+/// What cancelling echo needs besides the canceller: the speaker's output
+/// brought to its rate.
 struct Echo {
     reference: StreamResampler,
-    canceller: Canceller,
     /// The delay last given to the canceller.
     last_delay: Option<i32>,
 }
@@ -604,7 +604,10 @@ struct Echo {
 struct Pipeline {
     /// Present when there is a microphone.
     microphone: Option<StreamResampler>,
-    /// Present when the canceller runs, which is when both devices are open
+    /// Present when there is a microphone: everything it hears is cleaned
+    /// here, of the speaker's echo too when `echo` is present.
+    cleaner: Option<Canceller>,
+    /// Present when echo is cancelled, which is when both devices are open
     /// and it was asked for.
     echo: Option<Echo>,
     /// Microphone audio waiting to make a batch.
@@ -617,7 +620,8 @@ struct Pipeline {
 
 impl Pipeline {
     /// For devices running at these rates, `None` for one that is not open.
-    /// With `echo` and both rates, the microphone goes through a canceller.
+    /// The microphone is always cleaned of rumble and steady noise; with
+    /// `echo` and both rates, of the speaker's echo as well.
     fn new(
         microphone_rate: Option<u32>,
         speaker_rate: Option<u32>,
@@ -628,13 +632,15 @@ impl Pipeline {
         let echo = match (microphone_rate, speaker_rate) {
             (Some(_), Some(speaker)) if echo => Some(Echo {
                 reference: StreamResampler::new(speaker, SAMPLE_RATE)?,
-                canceller: Canceller::new(),
                 last_delay: None,
             }),
             _ => None,
         };
+        let cleaning = if echo.is_some() { Cleaning::Echo } else { Cleaning::Noise };
+        let cleaner = microphone.as_ref().map(|_| Canceller::new(cleaning));
         Ok(Self {
             microphone,
+            cleaner,
             echo,
             batch: Vec::with_capacity(BATCH_SAMPLES * 2),
             resampled: Vec::new(),
@@ -751,27 +757,28 @@ impl Pipeline {
     }
 
     fn hear_reference(&mut self, samples: &[f32]) {
-        let Some(echo) = self.echo.as_mut() else { return };
+        let (Some(echo), Some(cleaner)) = (self.echo.as_mut(), self.cleaner.as_mut()) else {
+            return;
+        };
         self.resampled.clear();
         match echo.reference.push(samples, &mut self.resampled) {
-            Ok(()) => echo.canceller.push_reference(&self.resampled),
+            Ok(()) => cleaner.push_reference(&self.resampled),
             Err(e) => tracing::debug!(error = %e, "audio: could not resample the reference"),
         }
     }
 
-    /// Clean a block of microphone, if there is a canceller, and give the sink
-    /// what is ready.
+    /// Clean a block of microphone and give the sink what is ready.
     fn hear_microphone(&mut self, samples: &[f32], sink: &EngineSink) {
-        let Some(microphone) = self.microphone.as_mut() else { return };
+        let (Some(microphone), Some(cleaner)) = (self.microphone.as_mut(), self.cleaner.as_mut())
+        else {
+            return;
+        };
         self.resampled.clear();
         if let Err(e) = microphone.push(samples, &mut self.resampled) {
             tracing::debug!(error = %e, "audio: could not resample the microphone");
             return;
         }
-        match self.echo.as_mut() {
-            Some(echo) => echo.canceller.process(&self.resampled, &mut self.batch),
-            None => self.batch.extend(self.resampled.iter().map(|&s| f32_to_i16(s))),
-        }
+        cleaner.process(&self.resampled, &mut self.batch);
         if self.batch.len() >= BATCH_SAMPLES {
             let audio = std::mem::replace(&mut self.batch, Vec::with_capacity(BATCH_SAMPLES * 2));
             sink(EngineEvent::Microphone(audio));
@@ -779,7 +786,9 @@ impl Pipeline {
     }
 
     fn refresh_delay(&mut self, opened: &Opened) {
-        let (Some(echo), Some(microphone)) = (self.echo.as_mut(), self.microphone.as_ref()) else {
+        let (Some(echo), Some(microphone), Some(cleaner)) =
+            (self.echo.as_mut(), self.microphone.as_ref(), self.cleaner.as_mut())
+        else {
             return;
         };
         let delay = stream_delay_ms(
@@ -795,7 +804,7 @@ impl Pipeline {
         };
         if worth_it {
             echo.last_delay = Some(delay);
-            echo.canceller.set_delay_ms(delay);
+            cleaner.set_delay_ms(delay);
         }
     }
 }
@@ -815,6 +824,7 @@ fn to_f32(samples: &[i16]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::echo::FRAME;
 
     #[test]
     fn a_device_that_reports_no_latency_gets_the_constant() {
@@ -935,6 +945,16 @@ mod tests {
         assert!(Pipeline::new(None, Some(44_100), true).unwrap().microphone.is_none());
     }
 
+    #[test]
+    fn every_microphone_is_cleaned_and_only_one_with_a_speaker_of_echo() {
+        let cleaning = |pipeline: Pipeline| pipeline.cleaner.map(|c| c.cleaning());
+        let with = |m, s, e| cleaning(Pipeline::new(m, s, e).unwrap());
+        assert_eq!(with(Some(48_000), Some(44_100), true), Some(Cleaning::Echo));
+        assert_eq!(with(Some(48_000), Some(44_100), false), Some(Cleaning::Noise));
+        assert_eq!(with(Some(48_000), None, true), Some(Cleaning::Noise));
+        assert_eq!(with(None, Some(44_100), true), None, "nothing is listening");
+    }
+
     /// A sink that keeps what it is given.
     fn collecting() -> (EngineSink, Arc<Mutex<Vec<EngineEvent>>>) {
         let heard = Arc::new(Mutex::new(Vec::new()));
@@ -944,21 +964,22 @@ mod tests {
     }
 
     #[test]
-    fn a_microphone_with_no_canceller_is_framed_into_batches_as_it_came() {
+    fn a_microphone_alone_is_framed_into_batches_of_whole_frames() {
         let (sink, heard) = collecting();
         let mut pipeline = Pipeline::new(Some(SAMPLE_RATE), None, false).unwrap();
 
         // Less than a batch is held back.
         pipeline.hear_microphone(&vec![0.25; BATCH_SAMPLES - 1], &sink);
         assert!(heard.lock().unwrap().is_empty());
-        // The rest of one is sent, and the samples are not touched.
+        // The rest of one is sent, in the cleaner's 10 ms frames; what does
+        // not make a frame waits for the next block.
         pipeline.hear_microphone(&[0.25; 11], &sink);
         let heard = heard.lock().unwrap();
         let [EngineEvent::Microphone(batch)] = &heard[..] else {
             panic!("one batch, got {heard:?}");
         };
-        assert_eq!(batch.len(), BATCH_SAMPLES + 10);
-        assert!(batch.iter().all(|&s| s == f32_to_i16(0.25)));
+        assert_eq!(BATCH_SAMPLES % FRAME, 0, "a batch is whole frames");
+        assert_eq!(batch.len(), BATCH_SAMPLES);
     }
 
     #[test]

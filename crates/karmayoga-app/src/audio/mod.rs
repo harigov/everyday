@@ -7,10 +7,13 @@
 //!   input) with the realtime rules kept, and says what a block of it is.
 //! - [`resample`] brings audio from a device's rate to the one speech models
 //!   want, and back.
+//! - [`echo`] cleans what a microphone hears: of rumble, hum and steady hiss
+//!   always, and of the speaker's echo when there is one.
 //! - [`engine`] runs a microphone, a speaker or both for something that talks
-//!   and listens, with echo cancellation ([`echo`]) when it has both.
+//!   and listens, with its microphone cleaned and echo cancelled when it has
+//!   both.
 //!
-//! Meeting capture uses the first two and keeps its own thread, since it opens
+//! Meeting capture uses the first three and keeps its own thread, since it opens
 //! a second input (the system's audio), reopens streams that die and frames
 //! what it hears into chunks; none of that is the engine's business.
 

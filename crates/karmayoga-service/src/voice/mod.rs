@@ -26,6 +26,7 @@ pub mod assistant;
 pub mod confirm;
 pub mod cue;
 pub mod phrases;
+pub mod rehearse;
 pub mod session;
 
 use crate::agent::{AgentEvent, ConfirmAnswer, Sink};

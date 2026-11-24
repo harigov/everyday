@@ -44,7 +44,8 @@
 //! and in the chat.
 
 use super::confirm::{self, SpokenAnswer};
-use super::phrases as text;
+use super::phrases::{self as text, Errand, Phrasebook};
+use super::rehearse::Rehearsed;
 use super::{
     TurnOutcome, VoiceAssistant, VoiceEvent, VoiceInput, VoiceLink, VoiceOutput, VoiceParts,
     VoiceState,
@@ -126,12 +127,51 @@ const GOODBYE_TAIL: Duration = Duration::from_millis(1500);
 /// in the thread and in the chat.
 const MAX_SAID_TOGETHER: usize = 5;
 
+/// How long a turn may go with nothing to say before a few words are said
+/// for it ("Hmm, let me think."). Counted from when the turn began, which is
+/// after the person's silence was taken for the end of what they said and
+/// their words were understood -- they have been waiting a second and a half
+/// by then -- so a model that answers within it says nothing first, and one
+/// that takes longer does not leave them with silence and then the working
+/// sound, which waits for this.
+const FILLER_AFTER: Duration = Duration::from_millis(1200);
+
+/// How long after the last thing played another phrase may be said in the
+/// same turn, for its next tool. In between the working sound has the floor:
+/// a phrase for every one of five quick calls would be chatter.
+const AGAIN_AFTER: Duration = Duration::from_secs(5);
+
+/// The most phrases one turn says, however long it works: past these, the
+/// working sound alone.
+const MAX_PHRASES: u8 = 3;
+
+/// When a session says something of its own while the assistant works: the
+/// constants above, except in tests, most of which want none of it.
+#[derive(Debug, Clone, Copy)]
+struct Pacing {
+    /// [`FILLER_AFTER`]. `None` says nothing before there is something to
+    /// say, plays the working sound from the start, and rehearses nothing.
+    filler_after: Option<Duration>,
+    /// [`AGAIN_AFTER`].
+    again_after: Duration,
+}
+
+impl Default for Pacing {
+    fn default() -> Self {
+        Self { filler_after: Some(FILLER_AFTER), again_after: AGAIN_AFTER }
+    }
+}
+
 /// Start a session on the current Tokio runtime.
 ///
 /// Everything it needs is already built: loading models is
 /// [`Service::voice_open`](crate::service::Service)'s job, so a session starts
 /// listening at once.
 pub fn spawn(parts: VoiceParts) -> VoiceLink {
+    spawn_with(parts, Pacing::default())
+}
+
+fn spawn_with(parts: VoiceParts, pacing: Pacing) -> VoiceLink {
     let (input, input_rx) = unbounded_channel();
     let (out, output) = unbounded_channel();
     let (tx, internal) = unbounded_channel();
@@ -139,13 +179,20 @@ pub fn spawn(parts: VoiceParts) -> VoiceLink {
     // Each finished synthesis comes back through the loop, so the narrator is
     // only ever touched from it.
     let finished = tx.clone();
+    let voice = Rehearsed::new(parts.synthesiser);
     let narrator = Narrator::new(
-        parts.synthesiser,
+        voice.clone(),
         MAX_AHEAD,
         Arc::new(move |done| {
             let _ = finished.send(Internal::Synthesised(done));
         }),
     );
+    let mut phrasebook = Phrasebook::default();
+    // What a slow turn begins with, ready before the first one.
+    let to_rehearse = match pacing.filler_after {
+        Some(_) => vec![phrasebook.peek(Errand::Thinking)],
+        None => Vec::new(),
+    };
     let session = Session {
         assistant: parts.assistant,
         needs_a_click: parts.needs_a_click,
@@ -179,6 +226,10 @@ pub fn spawn(parts: VoiceParts) -> VoiceLink {
         reading: None,
         to_read: VecDeque::new(),
         next_reading: 1,
+        voice,
+        phrasebook,
+        to_rehearse,
+        pacing,
     };
     tokio::spawn(run(session, input_rx, events));
     VoiceLink { input, output }
@@ -255,8 +306,16 @@ struct TurnState {
     cancel_landed: bool,
     /// It failed, and the person has been told.
     failed: bool,
-    /// A phrase has been said for a tool. Once per turn.
-    phrase_said: bool,
+    /// When it began.
+    began: Instant,
+    /// Something of it has been queued to be said: a phrase, a sentence of
+    /// the reply, a question.
+    spoken: bool,
+    /// The moment for a few words, had nothing been said by then, has come
+    /// ([`Session::filler_at`]).
+    waited: bool,
+    /// Phrases said for it, at most [`MAX_PHRASES`].
+    phrases: u8,
     /// Sentences of the reply handed to the transport, and how many of them
     /// have played.
     reply_total: usize,
@@ -281,7 +340,10 @@ impl TurnState {
             cancelling: false,
             cancel_landed: false,
             failed: false,
-            phrase_said: false,
+            began: Instant::now(),
+            spoken: false,
+            waited: false,
+            phrases: 0,
             reply_total: 0,
             reply_played: 0,
             heard: Vec::new(),
@@ -389,6 +451,8 @@ enum Wake {
     Goodbye,
     /// [`Session::update_at`] came.
     Update,
+    /// [`Session::filler_at`] came.
+    Filler,
 }
 
 struct Session {
@@ -465,6 +529,15 @@ struct Session {
     /// What else the turn asked to have read, after it, in order.
     to_read: VecDeque<ReadAloud>,
     next_reading: u64,
+    /// The voice the narrator speaks with, which keeps the phrases rehearsed
+    /// for it -- see [`super::rehearse`].
+    voice: Arc<Rehearsed>,
+    /// Deals the few words said while the assistant works.
+    phrasebook: Phrasebook,
+    /// Phrases to rehearse once the session is only listening, when making
+    /// them takes nothing from a reply.
+    to_rehearse: Vec<&'static str>,
+    pacing: Pacing,
 }
 
 async fn run(
@@ -479,6 +552,7 @@ async fn run(
     let error = loop {
         let goodbye_at = s.goodbye_at;
         let update_at = s.update_at;
+        let filler_at = s.filler_at();
         let wake = tokio::select! {
             // Stop is read before anything else, and what was heard last: it
             // is of no use until what is already known is settled.
@@ -489,6 +563,7 @@ async fn run(
             () = gone.closed() => Wake::OutputGone,
             () = wait_until(goodbye_at) => Wake::Goodbye,
             () = wait_until(update_at) => Wake::Update,
+            () = wait_until(filler_at) => Wake::Filler,
         };
         match wake {
             // 9. A closed input is a Stop, and so is a transport that has
@@ -509,6 +584,8 @@ async fn run(
             // The beat after the last thing played is over: settled below,
             // like everything else.
             Wake::Update => {}
+            // 6. A turn has gone a while with nothing to say.
+            Wake::Filler => s.think_aloud(),
         }
         // 13. News from background work, said now if this is a gap in which to
         // say it. Before `sync`, which tells the interface what it started.
@@ -557,16 +634,27 @@ impl Session {
         // 12. The sound of working: while the assistant is working out what
         // to say and has nothing to play yet -- its words still being made
         // into a voice count -- and never while the person talks, while
-        // anything is playing or held, or while it waits on them. Told before
-        // the state, so a transport never hears it over the person.
+        // anything is playing or held, or while it waits on them. Nor while a
+        // turn that has said nothing waits for the moment to say a few words
+        // (6): those come first, and the sound is for a wait that goes on
+        // after them. Told before the state, so a transport never hears it
+        // over the person.
         let working = !self.stopping
             && matches!(
                 state,
                 VoiceState::Understanding | VoiceState::Thinking | VoiceState::Speaking
             )
             && !self.narrator.playing()
-            && !self.paused;
+            && !self.paused
+            && self.filler_at().is_none();
         self.set_working(working);
+        // Phrases are rehearsed while only listening: making one alongside a
+        // reply could hold up a sentence of it on a voice on this computer.
+        if state == VoiceState::Listening {
+            for phrase in self.to_rehearse.drain(..) {
+                self.voice.rehearse(phrase.to_string());
+            }
+        }
         // Not guarded for the sound of working: most of it is silence, a
         // speaker may not be playing it at all, and a short "stop" said while
         // a slow tool runs must be heard. A soft tone is not speech to the
@@ -1124,11 +1212,16 @@ impl Session {
                 self.confirm = None;
                 self.turn_failed(message);
             }
-            // 6. Something is about to take a while, and nothing is being
-            // said: say that it is being worked on, once.
-            AgentEvent::ToolPreparing { name, .. } => self.tool_phrase(&name),
+            // 6. Something is about to take a while: a few words for it, if
+            // this is a moment for them -- after whatever the model wrote
+            // before the call, which is a moment for its own.
+            AgentEvent::ToolPreparing { name, .. } => {
+                self.text_before_a_tool();
+                self.tool_phrase(&name);
+            }
             AgentEvent::ToolStarted { call_id, name, .. } => {
                 self.resolve_confirmation(&call_id);
+                self.text_before_a_tool();
                 self.tool_phrase(&name);
             }
             AgentEvent::ToolFinished { call_id, .. } => self.resolve_confirmation(&call_id),
@@ -1167,20 +1260,86 @@ impl Session {
         self.emit(VoiceEvent::Agent { event });
     }
 
+    // ---- saying something while it works -----------------------------------
+
+    /// (3) A tool call ends the text before it, so whatever the splitter was
+    /// holding back to see what came next is a sentence now. Held, "Let me
+    /// check your calendar." waited for the words after the call, and was
+    /// said in front of the answer, long after it was meant.
+    fn text_before_a_tool(&mut self) {
+        let Some(t) = self.turn.as_mut() else { return };
+        if let Some(tail) = t.splitter.finish() {
+            self.enqueue_reply(tail);
+        }
+    }
+
+    /// (6) A tool is about to run. Ending the conversation takes no time, and
+    /// "One moment" -- or "Hmm, let me think" while the goodbye is written --
+    /// says the opposite of what is happening.
     fn tool_phrase(&mut self, tool: &str) {
-        // Ending the conversation takes no time, and "One moment" before a
-        // goodbye says the opposite of what is happening.
-        if tool == super::END_TOOL {
-            return;
+        if tool != super::END_TOOL {
+            self.fill(Errand::of(tool));
+        } else if let Some(t) = self.turn.as_mut() {
+            t.waited = true;
         }
-        let said = self.turn.as_ref().is_none_or(|t| t.phrase_said);
-        if said || self.audio_outstanding() {
-            return;
-        }
+    }
+
+    /// (6) When the turn under way, having said nothing at all, has waited
+    /// long enough for a few words to be said for it. Until then the working
+    /// sound waits too.
+    fn filler_at(&self) -> Option<Instant> {
+        let after = self.pacing.filler_after?;
+        let t =
+            self.turn.as_ref().filter(|t| !t.done && !t.cancelling && !t.spoken && !t.waited)?;
+        Some(t.began + after)
+    }
+
+    /// (6) That moment has come: "Hmm, let me think." -- unless it is not a
+    /// moment for words after all, when the working sound has it.
+    fn think_aloud(&mut self) {
         if let Some(t) = self.turn.as_mut() {
-            t.phrase_said = true;
+            t.waited = true;
         }
-        self.say(text::tool_phrase(tool).to_string());
+        self.fill(Errand::Thinking);
+    }
+
+    /// (6) Say a few words for what the assistant is busy with, if this is a
+    /// moment for them, and have the next for the same errand rehearsed.
+    fn fill(&mut self, errand: Errand) {
+        if !self.may_fill() {
+            return;
+        }
+        let phrase = self.phrasebook.deal(errand);
+        if let Some(t) = self.turn.as_mut() {
+            t.phrases += 1;
+        }
+        self.say(phrase.to_string());
+        if self.pacing.filler_after.is_some() {
+            let next = self.phrasebook.peek(errand);
+            self.to_rehearse.push(next);
+        }
+    }
+
+    /// (6) Whether a phrase may be said now. Only for a turn still working,
+    /// with nothing else being said or about to be, nobody talking or being
+    /// understood, and no question waiting on them. The first words of a
+    /// turn may come at once -- its reply's count, so a model that said "let
+    /// me check" itself is not echoed -- and later ones only once the working
+    /// sound has had the floor for [`AGAIN_AFTER`].
+    fn may_fill(&self) -> bool {
+        let Some(t) = self.turn.as_ref() else { return false };
+        if t.done || t.cancelling || t.failed || t.phrases >= MAX_PHRASES {
+            return false;
+        }
+        if self.stopping
+            || self.speaking
+            || self.understanding > 0
+            || self.confirm.is_some()
+            || self.audio_outstanding()
+        {
+            return false;
+        }
+        !t.spoken || self.last_played.is_some_and(|at| at.elapsed() >= self.pacing.again_after)
     }
 
     // ---- confirmations -------------------------------------------------------
@@ -1303,6 +1462,9 @@ impl Session {
     /// any of them cannot have the voice say what is not there. See
     /// [`script`].
     fn enqueue(&mut self, text: String, kind: Kind) -> u64 {
+        if let Some(t) = self.turn.as_mut().filter(|t| !t.done) {
+            t.spoken = true;
+        }
         let text = if kind == Kind::Reply { text } else { script::inert(&text) };
         self.narrator.say(text, kind)
     }
@@ -1640,6 +1802,9 @@ mod tests {
         /// Every piece of what is read fails, as a model gone wrong does.
         fail_reading: Mutex<bool>,
         pulled: Arc<AtomicUsize>,
+        /// How long a turn takes between one event and the next, as a model
+        /// working through its tools does. None at all unless set.
+        between: Mutex<Option<Duration>>,
     }
 
     struct FakeAssistant(Arc<Record>);
@@ -1668,8 +1833,12 @@ mod tests {
                 matches!(e, AgentEvent::ToolStarted { name, .. } if name == crate::voice::END_TOOL)
             });
             let read_aloud = std::mem::take(&mut *record.read_aloud.lock().unwrap());
+            let between = *record.between.lock().unwrap();
             Box::pin(async move {
-                for event in script.events {
+                for (at, event) in script.events.into_iter().enumerate() {
+                    if let Some(between) = between.filter(|_| at > 0) {
+                        tokio::time::sleep(between).await;
+                    }
                     (sink)(event);
                 }
                 if script.hang {
@@ -1825,10 +1994,20 @@ mod tests {
         seen: Vec<VoiceOutput>,
     }
 
+    /// What most tests run with: nothing said before there is something to
+    /// say, and the working sound from the start, as before there were
+    /// fillers. A tool phrase still comes, once in a turn this quick.
+    const QUIET: Pacing = Pacing { filler_after: None, again_after: AGAIN_AFTER };
+
     impl Rig {
         /// A session whose assistant plays `scripts` in turn and whose
         /// microphone hears `heard` in turn.
         async fn start(scripts: Vec<Script>, heard: &[&str]) -> Rig {
+            Self::start_paced(scripts, heard, QUIET).await
+        }
+
+        /// [`Rig::start`], saying things of its own on `pacing`.
+        async fn start_paced(scripts: Vec<Script>, heard: &[&str], pacing: Pacing) -> Rig {
             let record = Arc::new(Record::default());
             record.scripts.lock().unwrap().extend(scripts);
             let asked = Arc::new(Mutex::new(Vec::new()));
@@ -1838,15 +2017,18 @@ mod tests {
                 Box::new(FakeDetector { modes: modes.clone() }),
                 Arc::new(FakeHearing(Mutex::new(heard.iter().map(|h| h.to_string()).collect()))),
             );
-            let link = spawn(VoiceParts {
-                live,
-                synthesiser: Arc::new(FakeSynthesiser {
-                    asked: asked.clone(),
-                    fails: voice_fails.clone(),
-                }),
-                assistant: Arc::new(FakeAssistant(record.clone())),
-                needs_a_click: confirm::NEEDS_A_CLICK,
-            });
+            let link = spawn_with(
+                VoiceParts {
+                    live,
+                    synthesiser: Arc::new(FakeSynthesiser {
+                        asked: asked.clone(),
+                        fails: voice_fails.clone(),
+                    }),
+                    assistant: Arc::new(FakeAssistant(record.clone())),
+                    needs_a_click: confirm::NEEDS_A_CLICK,
+                },
+                pacing,
+            );
             let mut rig = Rig { link, record, asked, modes, voice_fails, seen: Vec::new() };
             rig.until("the first state", |o| is_state(o, VoiceState::Listening)).await;
             rig
@@ -2589,9 +2771,157 @@ mod tests {
         let mut rig = Rig::start(vec![script], &["search for it"]).await;
         rig.talk();
         rig.play_out().await;
-        assert_eq!(rig.said(), [text::tool_phrase("web_search")]);
+        let said = rig.said();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(Errand::Web.phrases().contains(&said[0].as_str()), "{said:?}");
         // A phrase of the session's own is not the reply, so it is not kept.
         assert!(rig.record.cuts.lock().unwrap().is_empty());
+    }
+
+    fn preparing(call_id: &str, tool: &str) -> AgentEvent {
+        AgentEvent::ToolPreparing { call_id: call_id.into(), name: tool.into() }
+    }
+
+    /// What was played, by the text it was made from: every sentence the voice
+    /// made, less what was only rehearsed and never handed over.
+    fn played_count(rig: &Rig) -> usize {
+        rig.count(|o| matches!(o, VoiceOutput::Play { .. }))
+    }
+
+    /// Fillers soon, and another phrase as soon as the last has played.
+    const EAGER: Pacing =
+        Pacing { filler_after: Some(Duration::from_millis(50)), again_after: Duration::ZERO };
+
+    #[tokio::test]
+    async fn a_turn_slow_to_say_anything_thinks_aloud_before_the_working_sound() {
+        let mut rig =
+            Rig::start_paced(vec![long_reply_after_a_tool()], &["what is the weather"], EAGER)
+                .await;
+        rig.talk();
+        let at = rig.next_play().await;
+        // Said in place of the working sound, which held off for it.
+        let states = working_at_each_state(&rig.seen);
+        assert!(states.contains(&(VoiceState::Thinking, false)), "{states:?}");
+        assert!(!states.contains(&(VoiceState::Thinking, true)), "{states:?}");
+        let said = rig.said();
+        assert!(said.iter().any(|s| Errand::Thinking.phrases().contains(&s.as_str())), "{said:?}");
+        // Once it has played and the turn works on, the working sound has it.
+        rig.send(VoiceInput::Played { utterance: at });
+        rig.until("working", |o| matches!(o, VoiceOutput::Working(true))).await;
+        rig.send(VoiceInput::Stop);
+        while let Some(output) = rig.next().await {
+            rig.seen.push(output);
+        }
+        assert_eq!(played_count(&rig), 1, "one filler, however long it works");
+    }
+
+    #[tokio::test]
+    async fn a_quick_reply_comes_with_nothing_in_front_of_it() {
+        let slow_filler =
+            Pacing { filler_after: Some(Duration::from_secs(30)), again_after: AGAIN_AFTER };
+        let mut rig = Rig::start_paced(
+            vec![short_reply("m1", &format!("{FIRST} {SECOND}"))],
+            &["what is the weather"],
+            slow_filler,
+        )
+        .await;
+        rig.talk();
+        rig.play_out().await;
+        assert_eq!(played_count(&rig), 2, "the reply's two sentences, and nothing else");
+        // The filler it did not need was only rehearsed.
+        let said = rig.said();
+        assert!(said.iter().all(|s| s == FIRST
+            || s == SECOND
+            || Errand::Thinking.phrases().contains(&s.as_str())));
+    }
+
+    #[tokio::test]
+    async fn a_model_that_says_it_is_checking_is_not_echoed() {
+        let script = Script {
+            events: vec![
+                started("m1"),
+                delta("Let me check your calendar."),
+                preparing("c1", "list_events"),
+                delta("You're free at three."),
+            ],
+            hang: false,
+            finish: Some("m1"),
+            error: None,
+        };
+        let mut rig = Rig::start(vec![script], &["am I free"]).await;
+        rig.talk();
+        rig.play_out().await;
+        // Its words before the call, said before the call and not again in
+        // front of the answer, with nothing of the session's own beside them.
+        assert_eq!(rig.said(), ["Let me check your calendar.", "You're free at three."]);
+    }
+
+    #[tokio::test]
+    async fn each_tool_after_a_wait_has_its_own_words_up_to_a_few() {
+        let script = Script {
+            events: vec![
+                started("m1"),
+                preparing("c1", "list_events"),
+                preparing("c2", "search_mail"),
+                preparing("c3", "web_search"),
+                preparing("c4", "list_tasks"),
+                preparing("c5", "list_notes"),
+            ],
+            hang: false,
+            finish: Some("m1"),
+            error: None,
+        };
+        // No filler, which would be one of the few.
+        let pacing = Pacing { filler_after: None, again_after: Duration::ZERO };
+        let mut rig = Rig::start_paced(vec![script], &["get me ready for tomorrow"], pacing).await;
+        *rig.record.between.lock().unwrap() = Some(Duration::from_millis(150));
+        rig.talk();
+        rig.play_out().await;
+        let said = rig.said();
+        assert_eq!(said.len(), MAX_PHRASES as usize, "{said:?}");
+        for (phrase, errand) in said.iter().zip([Errand::Calendar, Errand::Mail, Errand::Web]) {
+            assert!(errand.phrases().contains(&phrase.as_str()), "{phrase} for {errand:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_being_ended_does_not_think_aloud_before_its_goodbye() {
+        // The goodbye is written slower than the filler would come, and the
+        // tool that ends the conversation is called before it would.
+        let pacing =
+            Pacing { filler_after: Some(Duration::from_millis(300)), again_after: Duration::ZERO };
+        let mut rig =
+            Rig::start_paced(vec![goodbye("m1", "Talk soon.")], &["that's all I have"], pacing)
+                .await;
+        *rig.record.between.lock().unwrap() = Some(Duration::from_millis(200));
+        rig.talk();
+        let utterance = rig.next_play().await;
+        rig.send(VoiceInput::Played { utterance });
+        rig.until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))).await;
+        assert_eq!(played_count(&rig), 1, "the goodbye alone: {:?}", rig.said());
+        assert_eq!(rig.said().last().map(String::as_str), Some("Talk soon."));
+    }
+
+    #[tokio::test]
+    async fn tools_in_quick_succession_share_one_phrase() {
+        let script = Script {
+            events: vec![
+                started("m1"),
+                preparing("c1", "list_events"),
+                preparing("c2", "search_mail"),
+                preparing("c3", "web_search"),
+            ],
+            hang: false,
+            finish: Some("m1"),
+            error: None,
+        };
+        let mut rig = Rig::start(vec![script], &["get me ready for tomorrow"]).await;
+        *rig.record.between.lock().unwrap() = Some(Duration::from_millis(100));
+        rig.talk();
+        rig.play_out().await;
+        let said = rig.said();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(Errand::Calendar.phrases().contains(&said[0].as_str()), "{said:?}");
     }
 
     #[tokio::test]

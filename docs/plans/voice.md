@@ -68,6 +68,30 @@ goes into the same thread as what is typed.
   half a second, then a low swell, every 1.6 s, faded out when it stops. Never
   while the person talks, while anything plays or is held, or while the
   assistant waits on them (a question, a card).
+- **Words first, then the pulse** (Nov 23 2026). Hari found the pulse alone
+  mechanical: a person says "let me see" or "let me check your calendar". So
+  the session says a few words of its own (`voice::phrases`), and the pulse is
+  for a wait that goes on after them:
+  - a turn that has said nothing 1.2 s after it began says a thinking phrase
+    ("Hmm, let me think."), and the pulse holds off until then;
+  - a tool says a phrase for what it touches, mail, calendar, tasks, the web,
+    the vault's own words, or a change, which promises nothing ("Okay, one
+    sec."), since the call may still be asked about or fail;
+  - the first words of a turn come at once; later ones only for a tool
+    starting 5 s or more after the last thing played, and at most three a
+    turn.
+
+  The words come from the app, not the model. Asked to say "let me check"
+  itself, a model does so only sometimes (reasoning models least), its words
+  can only come when its stream does, they are kept in the reply, and nothing
+  covers the wait before its first word. So each errand has several phrases,
+  dealt in a fresh shuffle each round so none comes twice running, and the next
+  one is made into a voice while the session is only listening
+  (`voice::rehearse`), so it plays the moment it is wanted. The note to a
+  spoken turn tells the model the voice fills waits and not to say it is
+  checking. When it does anyway, its words count as the turn's first, and a
+  tool call ends the text before it, so they are said before the call rather
+  than held back to come out in front of the answer.
 - **Mail and articles, the way the apps tell them.** `summarize_thread`
   summarises a thread or a newsletter with the Mail app's own Summarise prompt,
   cache and per-account switch -- in a spoken turn, the Listen button's spoken
@@ -153,7 +177,9 @@ meant to be built on them without new plumbing.
 
 `karmayoga-app`'s `audio` module is the same idea for the devices: `input` and
 `resample` serve meeting capture and the engine alike, and `AudioEngine` runs a
-microphone, a speaker or both, with echo cancellation when it has both.
+microphone, a speaker or both, with echo cancellation when it has both. Every
+microphone, the engine's and meeting capture's, is cleaned of rumble, mains hum
+and steady hiss by `echo::Cleaning::Noise` even with nothing playing.
 
 **Where the next features attach.** Dictation and voice control: an `AudioEngine`
 with only the microphone into `Service::live_transcription`, acting on
@@ -189,8 +215,16 @@ tasks. Nothing the loop awaits may block it from hearing `Stop`.
    becomes the sentences whose `Played` arrived: `keep_heard`, then `ReplyCut`. The
    model's memory of the conversation then matches what was heard. Tool phrases are
    not part of it.
-6. **While a tool runs.** The first `ToolPreparing` or `ToolStarted` of a turn with
-   nothing queued says `tool_phrase(name)`, once per turn.
+6. **While it works.** `ToolPreparing` or `ToolStarted` first ends the text
+   before the call (the splitter's held tail is a sentence), then says a phrase
+   for `Errand::of(name)` (never for `end_voice_mode`). A turn that has queued
+   nothing to say `FILLER_AFTER` (1.2 s) after it began says an
+   `Errand::Thinking` phrase. Either only while the turn is working, nothing is
+   queued or playing, nobody is talking or being understood and no question
+   waits; the turn's first words at once, later ones `AGAIN_AFTER` (5 s) after
+   the last thing played, at most `MAX_PHRASES` (3). `Phrasebook` deals them;
+   the next for the same errand, and at start a thinking one, is rehearsed once
+   the session is `Listening`.
 7. **Confirmations.** On `ConfirmationRequired`:
    - `may_answer_aloud(kind)`: queue `question(kind, subject)`, state `Asking` once
      it has played. Only speech whose `Started` came after that `Played` counts, so
@@ -236,7 +270,8 @@ tasks. Nothing the loop awaits may block it from hearing `Stop`.
     chat can write it before the reading is over.
 12. **The sound of working.** `VoiceOutput::Working(true)` while the state is
     `Understanding`, `Thinking` or `Speaking` with nothing yet handed to the
-    transport to play (`Narrator::playing`), and nothing held; `false` as soon
+    transport to play (`Narrator::playing`), nothing held, and no turn waiting
+    for its moment to think aloud (6); `false` as soon
     as anything plays, the person talks, or the session stops. Sent before the
     state it goes with. The detector stays `Open` for it: most of it is
     silence, a desktop without a speaker plays none of it, and a short "stop"
