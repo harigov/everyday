@@ -68,7 +68,10 @@ impl Held {
         match message {
             DictationInput::Stop => self.stop = true,
             DictationInput::Cancel => self.cancel = true,
-            DictationInput::Audio(_) | DictationInput::Backlog(_) | DictationInput::Failed(_) => {}
+            DictationInput::Audio(_)
+            | DictationInput::Backlog(_)
+            | DictationInput::Failed(_)
+            | DictationInput::EndAfterPause(_) => {}
         }
     }
 

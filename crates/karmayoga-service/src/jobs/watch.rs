@@ -869,6 +869,7 @@ impl Look {
             via: None,
             spoken: false,
             voice_approves: false,
+            woken: false,
             job: Some(JobTurn { id, question: self.what(), context }),
             follow_up: None,
             about_job: None,

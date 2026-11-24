@@ -45,6 +45,7 @@ pub mod tempo;
 pub mod text;
 pub mod transcribe;
 pub mod utterance;
+pub mod wake;
 pub mod wav;
 
 /// The rate of everything that is listened to: 16 kHz mono, as every speech

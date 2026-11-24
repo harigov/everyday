@@ -9,7 +9,7 @@
 use karmayoga_service::agent::AgentEvent;
 use karmayoga_service::voice::{VoiceEvent, VoiceState};
 
-use crate::panel::{Action, Line, Owner, Panel, Tone};
+use crate::panel::{Action, Item, Line, Owner, Panel, Section, Tone};
 
 /// The small line above the title, until the assistant has a name.
 pub const KICKER: &str = "Assistant";
@@ -57,6 +57,10 @@ pub struct Confirm {
     pub site: Option<String>,
     /// What is about to happen, as the session names it.
     subject: String,
+    /// It asks to type `subject` where the person was typing (the question
+    /// kind `"desktop"`): shown whole, a row to a line, since a line break
+    /// typed into a terminal or a chat is Enter.
+    typing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,12 +232,13 @@ impl State {
                     self.confirm = None;
                 }
             }
-            AgentEvent::ConfirmationRequired { call_id, subject, site, .. } => {
+            AgentEvent::ConfirmationRequired { call_id, subject, site, kind, .. } => {
                 self.tool = None;
                 self.confirm = Some(Confirm {
                     call_id: call_id.clone(),
                     site: site.clone(),
                     subject: subject.clone(),
+                    typing: kind == "desktop",
                 });
             }
             AgentEvent::Finished { message_id } => {
@@ -304,6 +309,14 @@ impl State {
             None => {}
         }
         if let Some(confirm) = &self.confirm {
+            if confirm.typing {
+                let lines = confirm.subject.lines().count();
+                return Some(if lines > 1 {
+                    format!("Types these {lines} lines where you were typing.")
+                } else {
+                    "Types this where you were typing.".to_string()
+                });
+            }
             return Some(head(&confirm.subject, SUBJECT_MAX));
         }
         if let Some(trouble) = &self.trouble {
@@ -360,6 +373,21 @@ impl State {
             ) || self.tool.is_some())
     }
 
+    /// What a typing question would type, whole and a row to a line, where
+    /// the card scrolls rather than cuts it short.
+    fn sections(&self) -> Vec<Section> {
+        let Some(confirm) = self.confirm.as_ref().filter(|c| c.typing && self.over.is_none())
+        else {
+            return Vec::new();
+        };
+        let items = confirm
+            .subject
+            .lines()
+            .map(|line| Item { text: line.to_string(), detail: None, check: None })
+            .collect();
+        vec![Section { heading: "To type".to_string(), items, folded: false }]
+    }
+
     fn actions(&self) -> Vec<Action> {
         if self.over.is_some() {
             return Vec::new();
@@ -404,7 +432,7 @@ pub fn build(state: &State) -> Panel {
         body: state.body(),
         lines: state.lines(),
         meter: state.meter(),
-        sections: Vec::new(),
+        sections: state.sections(),
         actions: state.actions(),
         busy: state.busy(),
     }
@@ -431,6 +459,9 @@ fn phase_title(phase: VoiceState) -> &'static str {
 pub fn tool_line(tool: &str) -> String {
     if tool == karmayoga_core::agent::END_VOICE_TOOL {
         return "Wrapping up…".to_string();
+    }
+    if tool == "type_text" {
+        return "Typing it…".to_string();
     }
     let lower = tool.to_lowercase();
     let words: Vec<&str> = lower.split('_').collect();
@@ -879,6 +910,31 @@ mod tests {
         let body = build(&state).body.unwrap();
         assert!(body.ends_with('…'));
         assert!(body.chars().count() <= SUBJECT_MAX + 1);
+    }
+
+    /// What would be typed is shown whole, a row to a line: a line break is
+    /// Enter in a terminal, and a tail cut off could be anything.
+    #[test]
+    fn a_typing_question_shows_the_whole_text_a_line_to_a_row() {
+        let last = "a long line ".repeat(40);
+        let mut state = state_in(VoiceState::WaitingForClick);
+        state.hear(&VoiceEvent::Agent {
+            event: AgentEvent::ConfirmationRequired {
+                call_id: "c1".into(),
+                name: "type_text".into(),
+                subject: format!("ls\n{last}"),
+                arguments: serde_json::json!({}),
+                kind: "desktop".into(),
+                site: None,
+                can_park: false,
+            },
+        });
+        let card = build(&state);
+        assert_eq!(card.body.as_deref(), Some("Types these 2 lines where you were typing."));
+        let [section] = &card.sections[..] else { panic!("one list, got {:?}", card.sections) };
+        let rows: Vec<&str> = section.items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(rows, ["ls", last.as_str()]);
+        assert!(!section.folded);
     }
 
     #[test]

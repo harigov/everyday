@@ -29,6 +29,7 @@ mod hotkey;
 mod legacy;
 mod listen;
 mod listener;
+mod machine_config;
 mod mcp;
 // `pub`: `meeting::begin_headless` is the window-free core of
 // `meeting_start`/`start_automatic` -- see its own doc -- and an E2E test
@@ -54,6 +55,7 @@ mod transfer;
 mod tray;
 mod voice;
 mod voicetyping;
+mod wake;
 mod web;
 mod windows;
 mod writing;
@@ -200,6 +202,9 @@ pub fn run() {
             // Another application taking the microphone is the second way a
             // call is noticed, beside the calendar. See `micwatch`.
             micwatch::spawn(&handle);
+            // Listening for the assistant's name, when that is switched on,
+            // whenever nothing else needs the microphone. See `wake`.
+            wake::install(&handle);
             // Which app has focus, sent as screen time, and the door the
             // browser and GNOME extensions send theirs through. See
             // `screentime`.
@@ -335,6 +340,8 @@ pub fn run() {
             talk::talk_settings,
             talk::set_talk_settings,
             talk::talk_toggle,
+            wake::wake_settings,
+            wake::set_wake_settings,
             // The panel in the corner of the screen, and its page. See
             // `panel`.
             panel::panel_state,

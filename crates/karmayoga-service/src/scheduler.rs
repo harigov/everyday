@@ -1330,6 +1330,7 @@ async fn resume(
         via: None,
         spoken: false,
         voice_approves: false,
+        woken: false,
         reach,
         job: None,
         follow_up: None,
@@ -1591,7 +1592,7 @@ async fn reach_for(
         }) as Arc<dyn Asker>),
         _ => None,
     };
-    Reach { asker, sent_to }
+    Reach { asker, sent_to, typist: None }
 }
 
 /// Run `turn` to its end, or stop it once it has *worked* for

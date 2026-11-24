@@ -207,6 +207,7 @@ import type {
   WebStatus,
   WritingSettings,
   VoiceTypingSettings,
+  WakeSettings,
   VoiceTypingKeyMode,
   TalkSettings,
   McpConnection,
@@ -988,7 +989,15 @@ export const api = {
     shortcut: string | null = null,
     mode: VoiceTypingKeyMode | null = null,
     clean: boolean | null = null,
-  ) => invoke<VoiceTypingSettings>('set_voice_typing_settings', { enabled, shortcut, mode, clean }),
+    finishAfterPause: number | null = null,
+  ) =>
+    invoke<VoiceTypingSettings>('set_voice_typing_settings', {
+      enabled,
+      shortcut,
+      mode,
+      clean,
+      finishAfterPause,
+    }),
 
   /**
    * The talk key: a fourth OS-wide key, for a spoken conversation with the
@@ -1013,6 +1022,19 @@ export const api = {
     }),
   /** Start a spoken conversation from the panel, or end the one under way. */
   talkToggle: () => invoke<void>('talk_toggle'),
+
+  /**
+   * The wake word: calling the assistant by name instead of pressing the
+   * talk key. Per machine, kept by the shell -- see
+   * `crates/karmayoga-app/src/wake.rs`. Unanswered in mock mode. `null`
+   * leaves a field as it is.
+   */
+  wakeSettings: () => invoke<WakeSettings>('wake_settings'),
+  setWakeSettings: (
+    enabled: boolean,
+    names: string | null = null,
+    pauseInCalls: boolean | null = null,
+  ) => invoke<WakeSettings>('set_wake_settings', { enabled, names, pauseInCalls }),
 
   // ── Meeting capture, in the Tauri shell ────────────────────────────
   //

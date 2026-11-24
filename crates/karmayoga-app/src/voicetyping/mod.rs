@@ -28,15 +28,15 @@
 pub mod paste;
 pub mod pill;
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use karmayoga_service::ctx::Ctx;
 use karmayoga_service::error::{CommandError, CommandResult, codes};
+use karmayoga_service::speech::detect::Tuning;
 use karmayoga_service::speech::dictate::{
-    DictationEnd, DictationEvent, DictationInput, DictationLink,
+    DictationEnd, DictationEvent, DictationInput, DictationLink, DictationState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -83,6 +83,11 @@ pub struct Config {
     /// Write up what was heard on the medium model. Off types the transcript
     /// as the speech model heard it.
     pub clean: bool,
+    /// Listening hands-free (toggle mode, or hold mode after a tap), stop
+    /// and type once the person has been quiet this many seconds after
+    /// saying something. `0` waits for the key. Never while the key is held:
+    /// letting go is the end then.
+    pub finish_after_pause: f32,
 }
 
 impl Default for Config {
@@ -92,38 +97,41 @@ impl Default for Config {
             shortcut: DEFAULT_SHORTCUT.into(),
             mode: KeyMode::Toggle,
             clean: true,
+            finish_after_pause: DEFAULT_PAUSE_SECONDS,
         }
     }
 }
 
-const FILE: &str = "voice-typing.json";
+/// How long a pause finishes a dictation unless somebody chooses otherwise:
+/// long enough for a breath and a comma, short enough that stopping talking
+/// feels like the end of it.
+const DEFAULT_PAUSE_SECONDS: f32 = 2.0;
 
-fn config_path() -> PathBuf {
-    karmayoga_vault::config_dir().join(FILE)
+/// The longest pause that may be chosen. Past this, pressing the key is
+/// quicker, and the session's own quiet limit is not far off.
+const MAX_PAUSE_SECONDS: f32 = 10.0;
+
+/// What the dictation session is asked to wait after somebody's last word
+/// is heard to end, for a pause of `seconds` in all -- `None` for none. The
+/// detector reports the end of what was said only after its own quiet
+/// ([`Tuning::DICTATION`]), so that much of the pause has passed already; a
+/// pause shorter than that is the detector's.
+fn pause_after_speech(seconds: f32) -> Option<Duration> {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return None;
+    }
+    let after = seconds.min(MAX_PAUSE_SECONDS) - Tuning::DICTATION.end_of_turn_seconds;
+    Some(Duration::from_secs_f32(after.max(0.0)))
 }
 
+const FILE: &str = "voice-typing.json";
+
 fn save_config(config: &Config) -> Result<(), String> {
-    let path = config_path();
-    if let Some(dir) = path.parent() {
-        karmayoga_core::fsutil::create_private_dir(dir).map_err(|e| e.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
-    // Private from the moment it exists, as writing help's file is: the two
-    // are kept alike, and nothing here needs anybody else to read it.
-    karmayoga_core::fsutil::write_atomic_private(
-        &path,
-        &bytes,
-        &karmayoga_core::fsutil::unique_tag(),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::machine_config::save(FILE, config)
 }
 
 pub fn load_config() -> Config {
-    std::fs::read(config_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::machine_config::load(FILE)
 }
 
 /// Voice typing's shortcut while it is switched on, or `None` when it is off or
@@ -205,6 +213,8 @@ struct Typing {
     mode: KeyMode,
     /// Listening hands-free (toggle mode, or hold mode after a tap).
     hands_free: bool,
+    /// Hands-free, a pause finishes it ([`Config::finish_after_pause`]).
+    pauses: bool,
     /// The key, as it should be written on screen -- the desktop's own
     /// answer where it keeps the binding -- for "press Ctrl+Alt+M to finish".
     key: String,
@@ -295,6 +305,8 @@ fn card(typing: &Typing) -> Panel {
 fn hint(typing: &Typing) -> String {
     if typing.mode == KeyMode::Hold && !typing.hands_free {
         "Let go to finish".into()
+    } else if typing.pauses {
+        format!("Pause or press {} to finish", typing.key)
     } else {
         format!("Press {} to finish", typing.key)
     }
@@ -355,6 +367,9 @@ enum Msg {
     Session(DictationEvent),
     /// The key or the card's Stop button says that is enough.
     Finish,
+    /// The key was tapped in hold mode: listening goes on hands-free, and a
+    /// pause may finish it now.
+    HandsFree,
 }
 
 /// A dictation under way, from the key going down until it is typed or has
@@ -365,6 +380,8 @@ struct Session {
     mode: KeyMode,
     phase: Phase,
     hands_free: bool,
+    /// Hands-free, a pause finishes it ([`Config::finish_after_pause`]).
+    pauses: bool,
     /// Hold mode: when the key went down and has not come up since.
     down_since: Option<Instant>,
     /// The configured key, for the card when the desktop says nothing.
@@ -695,6 +712,7 @@ fn carry_out(
             let Some(session) = inner.session.as_mut() else { return };
             session.hands_free = true;
             session.down_since = None;
+            let _ = session.inbox.send(Msg::HandsFree);
             let (seq, phase) = (session.seq, session.phase);
             drop(inner);
             emit(app, seq, phase, None, None);
@@ -719,6 +737,7 @@ fn carry_out(
                 mode: config.mode,
                 phase: Phase::Starting,
                 hands_free: !held,
+                pauses: pause_after_speech(config.finish_after_pause).is_some(),
                 down_since: held.then_some(now),
                 shortcut: config.shortcut.clone(),
                 inbox: inbox.clone(),
@@ -777,7 +796,7 @@ fn emit(
         return true;
     }
     session.phase = phase;
-    let (mode, hands_free) = (session.mode, session.hands_free);
+    let (mode, hands_free, pauses) = (session.mode, session.hands_free, session.pauses);
     let key = if key.is_empty() { session.shortcut.clone() } else { key };
     // What was heard stays with the dictation from one phase to the next.
     let heard = inner.last.as_ref().filter(|t| t.seq == seq).map(|t| t.heard.clone());
@@ -786,6 +805,7 @@ fn emit(
         phase,
         mode,
         hands_free,
+        pauses,
         key,
         message,
         text,
@@ -921,7 +941,9 @@ async fn run(
     inbox: UnboundedSender<Msg>,
     messages: UnboundedReceiver<Msg>,
 ) {
-    let heard = match hear(&app, seq, inbox, messages).await {
+    let hands_free = config.mode != KeyMode::Hold;
+    let pause = pause_after_speech(config.finish_after_pause);
+    let heard = match hear(&app, seq, inbox, messages, pause, hands_free).await {
         Ok(Some(heard)) => heard,
         Ok(None) => return,
         // Said only now that `hear` has let go of the microphone: the card
@@ -1002,12 +1024,17 @@ async fn run(
 /// (`karmayoga_service::speech::dictate`): it ends on Stop, after 15 seconds
 /// of quiet or after three minutes, and keeps the last words of somebody cut
 /// off mid-sentence. This adds the microphone opening before the session, so
-/// that what is said while the speech model loads is kept, and the meter.
+/// that what is said while the speech model loads is kept, and the meter --
+/// and, while `hands_free`, asks the session to end on a pause of `pause`
+/// after somebody's words ([`pause_after_speech`]): stopping talking is then
+/// the end, as the key would be.
 async fn hear(
     app: &AppHandle,
     seq: u64,
     inbox: UnboundedSender<Msg>,
     mut messages: UnboundedReceiver<Msg>,
+    pause: Option<Duration>,
+    mut hands_free: bool,
 ) -> Result<Option<String>, String> {
     if !emit(app, seq, Phase::Starting, None, None) {
         return Ok(None);
@@ -1133,6 +1160,9 @@ async fn hear(
                 if !backlog.is_empty() {
                     let _ = input.send(DictationInput::Backlog(std::mem::take(&mut backlog)));
                 }
+                if hands_free && pause.is_some() {
+                    let _ = input.send(DictationInput::EndAfterPause(pause));
+                }
                 // The key said stop while the model loaded, and the
                 // microphone has closed since: what was said is all there.
                 if close_at.is_some() && engine.is_none() {
@@ -1141,15 +1171,34 @@ async fn hear(
                 }
                 session = Some(input);
             }
+            Msg::HandsFree => {
+                hands_free = true;
+                if let (Some(input), Some(_)) = (&session, pause) {
+                    let _ = input.send(DictationInput::EndAfterPause(pause));
+                }
+            }
             Msg::Opened(Err(e)) => return Err(e.message),
             Msg::Trouble(message) => return Err(message),
             Msg::Session(DictationEvent::Trouble { message }) => {
                 tracing::warn!(error = %message, "a piece of a voice typing was not transcribed");
             }
             Msg::Session(DictationEvent::Heard { text }) => heard(app, seq, text),
-            // Ended because it was told to, or by itself -- quiet for long
-            // enough, or long enough altogether -- in which case what it
-            // heard is typed as if the key had been pressed.
+            // It stopped listening by itself -- a pause after the words, a
+            // long quiet, the time limit -- and hears nothing more: the card
+            // stops saying it is listening now, not once the last words are
+            // in, and the microphone closes as if the key had been pressed.
+            Msg::Session(DictationEvent::State { state: DictationState::Finishing }) => {
+                if close_at.is_none() {
+                    close_at = Some(tokio::time::Instant::now());
+                    if !emit(app, seq, Phase::Transcribing, None, None) {
+                        return Ok(None);
+                    }
+                }
+            }
+            // Ended because it was told to, or by itself -- a pause after
+            // the words, quiet for long enough, or long enough altogether --
+            // in which case what it heard is typed as if the key had been
+            // pressed.
             Msg::Session(DictationEvent::Ended { reason, text, error }) => {
                 break (reason, text, error);
             }
@@ -1159,7 +1208,10 @@ async fn hear(
     drop(engine);
     let (reason, text, error) = ended;
     match reason {
-        DictationEnd::Stopped | DictationEnd::Silence | DictationEnd::TimeLimit => Ok(Some(text)),
+        DictationEnd::Stopped
+        | DictationEnd::Paused
+        | DictationEnd::Silence
+        | DictationEnd::TimeLimit => Ok(Some(text)),
         DictationEnd::Cancelled => Ok(None),
         DictationEnd::Failed => Err(error.unwrap_or_else(|| "The speech model failed.".into())),
     }
@@ -1324,6 +1376,7 @@ pub struct VoiceTypingSettings {
     pub shortcut: String,
     pub mode: KeyMode,
     pub clean: bool,
+    pub finish_after_pause: f32,
     pub key: KeyStatus,
     /// `wayland`, `x11`, `windows` or `macos`.
     pub platform: &'static str,
@@ -1348,6 +1401,7 @@ fn settings(app: &AppHandle) -> VoiceTypingSettings {
         shortcut: config.shortcut,
         mode: config.mode,
         clean: config.clean,
+        finish_after_pause: config.finish_after_pause,
         key: app.state::<Hotkeys>().status(app, Binding::VoiceTyping),
         platform: platform(app),
     }
@@ -1358,8 +1412,8 @@ pub async fn voice_typing_settings(app: AppHandle) -> CommandResult<VoiceTypingS
     Ok(settings(&app))
 }
 
-/// Switch dictation on or off, or change its key, how the key works, or
-/// whether what is heard is written up.
+/// Switch dictation on or off, or change its key, how the key works,
+/// whether what is heard is written up, or how long a pause finishes it.
 #[tauri::command]
 pub async fn set_voice_typing_settings(
     app: AppHandle,
@@ -1367,6 +1421,7 @@ pub async fn set_voice_typing_settings(
     shortcut: Option<String>,
     mode: Option<KeyMode>,
     clean: Option<bool>,
+    finish_after_pause: Option<f32>,
 ) -> CommandResult<VoiceTypingSettings> {
     let mut config = load_config();
     if let Some(shortcut) = shortcut {
@@ -1376,6 +1431,15 @@ pub async fn set_voice_typing_settings(
     config.enabled = enabled;
     config.mode = mode.unwrap_or(config.mode);
     config.clean = clean.unwrap_or(config.clean);
+    if let Some(seconds) = finish_after_pause {
+        if !seconds.is_finite() || !(0.0..=MAX_PAUSE_SECONDS).contains(&seconds) {
+            return Err(CommandError::new(
+                "invalid",
+                format!("a pause is between 0 and {MAX_PAUSE_SECONDS} seconds"),
+            ));
+        }
+        config.finish_after_pause = seconds;
+    }
     let claim = if enabled {
         Some(hotkey::parse(&config.shortcut).map_err(|e| CommandError::new("invalid", e))?)
     } else {
@@ -1418,6 +1482,7 @@ mod tests {
             phase,
             mode: KeyMode::Toggle,
             hands_free: true,
+            pauses: false,
             key: "Ctrl+Alt+M".into(),
             message: None,
             text: None,
@@ -1431,6 +1496,41 @@ mod tests {
             text: text.map(str::to_string),
             ..typing(Phase::Failed)
         }
+    }
+
+    #[test]
+    fn a_pause_that_finishes_it_says_so_only_while_nothing_is_held() {
+        let pausing = Typing { pauses: true, ..typing(Phase::Listening) };
+        assert_eq!(hint(&pausing), "Pause or press Ctrl+Alt+M to finish");
+        let held = Typing { mode: KeyMode::Hold, hands_free: false, ..pausing.clone() };
+        assert_eq!(hint(&held), "Let go to finish");
+        let tapped = Typing { mode: KeyMode::Hold, hands_free: true, ..pausing };
+        assert_eq!(hint(&tapped), "Pause or press Ctrl+Alt+M to finish");
+    }
+
+    #[test]
+    fn the_pause_asked_of_the_session_is_what_the_detector_has_not_waited_already() {
+        let detector = Tuning::DICTATION.end_of_turn_seconds;
+        let after = |seconds: f32| pause_after_speech(seconds).map(|d| d.as_secs_f32());
+        assert_eq!(after(0.0), None);
+        assert_eq!(after(-1.0), None);
+        assert_eq!(after(f32::NAN), None);
+        assert!((after(2.0).unwrap() - (2.0 - detector)).abs() < 1e-3);
+        // Shorter than the detector's own wait: that wait is the pause.
+        assert_eq!(after(0.5), Some(0.0));
+        // Longer than the longest that may be chosen: the longest.
+        assert!((after(60.0).unwrap() - (MAX_PAUSE_SECONDS - detector)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_setting_saved_before_pauses_finished_it_gets_the_default() {
+        let old: Config = serde_json::from_str(
+            r#"{"enabled": true, "shortcut": "Ctrl+Alt+M", "mode": "toggle", "clean": true}"#,
+        )
+        .unwrap();
+        assert_eq!(old.finish_after_pause, DEFAULT_PAUSE_SECONDS);
+        let off: Config = serde_json::from_str(r#"{"finishAfterPause": 0}"#).unwrap();
+        assert_eq!(pause_after_speech(off.finish_after_pause), None);
     }
 
     /// The ids of a card's buttons, left to right.

@@ -53,12 +53,12 @@ mod conversation;
 mod key;
 mod level;
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use karmayoga_core::ConversationId;
+use karmayoga_service::agent::Typist;
 use karmayoga_service::ctx::Ctx;
 use karmayoga_service::error::{CommandError, CommandResult};
 use karmayoga_service::speech::ready::SpeechReady;
@@ -91,8 +91,9 @@ pub const DEFAULT_SHORTCUT: &str = "Ctrl+Alt+A";
 const DRAW_EVERY: Duration = Duration::from_millis(100);
 
 /// How often a conversation is looked at to see whether it has been left
-/// alone long enough to end.
-const IDLE_TICK: Duration = Duration::from_secs(5);
+/// alone long enough to end: often enough that one the wake word began ends
+/// close to its fifteen seconds.
+const IDLE_TICK: Duration = Duration::from_secs(1);
 
 /// How long "Conversation ended" stays up.
 const ENDED_LINGER: Duration = Duration::from_secs(2);
@@ -137,30 +138,12 @@ impl Default for Config {
 
 const FILE: &str = "talk.json";
 
-fn config_path() -> PathBuf {
-    karmayoga_vault::config_dir().join(FILE)
-}
-
 fn save_config(config: &Config) -> Result<(), String> {
-    let path = config_path();
-    if let Some(dir) = path.parent() {
-        karmayoga_core::fsutil::create_private_dir(dir).map_err(|e| e.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
-    karmayoga_core::fsutil::write_atomic_private(
-        &path,
-        &bytes,
-        &karmayoga_core::fsutil::unique_tag(),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::machine_config::save(FILE, config)
 }
 
 pub fn load_config() -> Config {
-    std::fs::read(config_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::machine_config::load(FILE)
 }
 
 /// The shortcut to claim at startup: the talk key's while it is switched on,
@@ -194,11 +177,15 @@ struct Inner {
     live: Option<Live>,
     /// The last conversation to end, for carrying on.
     last: Option<conversation::Last>,
+    /// The newest activation token the key brought (Wayland): what lets the
+    /// window that sets the clipboard take the keyboard for the moment a
+    /// "type that ..." needs it. See [`Keyboard`].
+    token: Option<String>,
 }
 
 impl Inner {
     const fn new() -> Self {
-        Self { down: None, watching: false, live: None, last: None }
+        Self { down: None, watching: false, live: None, last: None, token: None }
     }
 }
 
@@ -225,6 +212,9 @@ struct Live {
     /// The main window has been told this conversation began, and not yet that
     /// it ended. See [`announce`].
     announced: bool,
+    /// Begun by the wake word rather than the key: over after
+    /// [`conversation::WOKEN_IDLE_AFTER`] of quiet, without a note.
+    woke: bool,
 }
 
 impl Live {
@@ -246,6 +236,7 @@ impl Live {
             release_gen: 0,
             mute_when_heard: false,
             announced: false,
+            woke: false,
         };
         live.sync_hint();
         live
@@ -536,14 +527,17 @@ async fn linger(app: AppHandle, seq: u64, wait: Duration) {
 /// token the desktop sent with it, on Wayland; `stamp` is when the desktop
 /// says it happened, where it says.
 pub fn key(app: &AppHandle, pressed: bool, token: Option<String>, stamp: Option<Duration>) {
-    // A press brings no window up, so the token has nothing to focus.
-    let _ = token;
     // Read before the lock: the hotkeys take a lock of their own.
     let releases = app.state::<Hotkeys>().reports_releases();
     let now = Instant::now();
     // A desktop that stamps nothing may send zero.
     let stamp = stamp.filter(|s| !s.is_zero());
     let mut inner = lock();
+    // A press brings no window up, so nothing takes the keyboard with it now;
+    // it is kept for typing, the newest being the one most likely still good.
+    if token.is_some() {
+        inner.token = token;
+    }
     let edge =
         key::classify(&mut inner.down, pressed, now, stamp, crate::voicetyping::key_repeats());
     if edge == key::Edge::Repeat {
@@ -627,6 +621,9 @@ enum Begin {
     Key { at: Instant, releases: bool },
     /// The button in Settings, or the tray's item: a press ends it.
     Command,
+    /// The wake word ([`crate::wake`]), with what was said after it, which
+    /// is the conversation's first turn unless it is empty.
+    Wake { said: String },
 }
 
 /// Open a conversation: the card goes up at once, saying it is getting ready,
@@ -636,6 +633,10 @@ enum Begin {
 /// models are still loading finds something to be let go of.
 fn begin(app: &AppHandle, how: Begin) {
     let config = load_config();
+    let said = match &how {
+        Begin::Wake { said } => Some(said.clone()),
+        _ => None,
+    };
     let (posture, now) = match how {
         Begin::Key { at, releases } => {
             if !config.enabled {
@@ -643,7 +644,7 @@ fn begin(app: &AppHandle, how: Begin) {
             }
             (key::Posture::starting(config.mode, releases, at), at)
         }
-        Begin::Command => (key::Posture::Toggled, Instant::now()),
+        Begin::Command | Begin::Wake { .. } => (key::Posture::Toggled, Instant::now()),
     };
     let mut inner = lock();
     if inner.live.as_ref().is_some_and(Live::active) {
@@ -655,18 +656,44 @@ fn begin(app: &AppHandle, how: Begin) {
     let mut card = card::State::new();
     card.key = config.shortcut.trim().to_string();
     let mut live = Live::new(seq, conversation, posture, card, now);
+    live.woke = said.is_some();
+    if live.woke {
+        // Only a press brings a token, and a press before this one is not
+        // what this conversation types for.
+        inner.token = None;
+    }
     queue_draw(app, &mut live);
     set_live(app, &mut inner, Some(live));
     drop(inner);
-    tauri::async_runtime::spawn(open(app.clone(), seq, conversation));
+    tauri::async_runtime::spawn(open(app.clone(), seq, conversation, said));
     tauri::async_runtime::spawn(watch_idle(app.clone(), seq));
+}
+
+/// Types for a conversation the talk key started -- "type that I'm running
+/// late" -- into whatever had the keyboard: the field the person was in, which
+/// the panel never takes it from. Voice typing's paste, with the key's newest
+/// activation token. See `karmayoga_service::agent::Typist`.
+struct Keyboard(AppHandle);
+
+impl Typist for Keyboard {
+    fn type_text(
+        &self,
+        text: String,
+    ) -> futures_util::future::BoxFuture<'static, Result<(), String>> {
+        let app = self.0.clone();
+        Box::pin(async move {
+            let token = lock().token.clone();
+            crate::voicetyping::paste::paste(&app, &text, token).await
+        })
+    }
 }
 
 /// Open the session for conversation `seq`: learn what to call the assistant,
 /// then ask [`voice::start_for_shell`], whose events come back to
 /// [`on_event`]. If it cannot be had -- the microphone is a meeting's, speech
 /// is not set up -- the card says so for a few seconds.
-async fn open(app: AppHandle, seq: u64, conversation: ConversationId) {
+async fn open(app: AppHandle, seq: u64, conversation: ConversationId, said: Option<String>) {
+    let woken = said.is_some();
     let name = app
         .state::<AppState>()
         .service()
@@ -707,9 +734,12 @@ async fn open(app: AppHandle, seq: u64, conversation: ConversationId) {
             }
         })
     };
-    match voice::start_for_shell(&app, conversation, Shell { events, microphone: Some(microphone) })
-        .await
-    {
+    // Where typing will need it, the window that sets the clipboard is made
+    // now, hidden, as voice typing makes it while the microphone opens.
+    crate::voicetyping::pill::ensure(&app);
+    let typist: Arc<dyn Typist> = Arc::new(Keyboard(app.clone()));
+    let shell = Shell { events, microphone: Some(microphone), typist: Some(typist), woken };
+    match voice::start_for_shell(&app, conversation, shell).await {
         Ok(()) => {
             let mut inner = lock();
             match live_for(&mut inner, seq).filter(|live| live.active()) {
@@ -720,6 +750,10 @@ async fn open(app: AppHandle, seq: u64, conversation: ConversationId) {
                     // An end that was asked for while the session was opening.
                     if live.card.ending {
                         voice::stop_shell(&app);
+                    } else if let Some(said) = said.filter(|s| !s.trim().is_empty()) {
+                        // What came after the wake word: the first turn.
+                        live.quiet_since = Instant::now();
+                        voice::shell_heard(&app, said);
                     }
                 }
                 // Taken down while it opened -- the vault locked -- or over
@@ -796,8 +830,11 @@ async fn watch_idle(app: AppHandle, seq: u64) {
         tokio::time::sleep(IDLE_TICK).await;
         let mut inner = lock();
         let Some(live) = live_for(&mut inner, seq).filter(|live| live.active()) else { return };
-        if conversation::idle_expired(live.card.phase, live.quiet_since, Instant::now()) {
-            let fx = finish(live, Some(IDLE_NOTE));
+        let after = conversation::idle_after(live.card.phase, live.woke);
+        if conversation::idle_expired(live.card.phase, live.quiet_since, Instant::now(), after) {
+            // Woken by name, it was always going to end soon: no note.
+            let note = (!live.woke).then_some(IDLE_NOTE);
+            let fx = finish(live, note);
             apply(&app, live, fx);
             return;
         }
@@ -867,6 +904,20 @@ fn answer(app: &AppHandle, action: &str) {
             tracing::debug!(error = %e, "a spoken question's answer could not be given");
         }
     });
+}
+
+/// Begin a conversation because the assistant was called by name: what was
+/// said after the name, if anything, is its first turn, and it ends after a
+/// short quiet. See [`crate::wake`]. Nothing happens while one is going on.
+pub fn wake(app: &AppHandle, said: String) {
+    begin(app, Begin::Wake { said });
+}
+
+/// Whether a conversation is going on -- what the wake word's listener waits
+/// for the end of before it listens again. A card left up after one ended
+/// does not count.
+pub fn is_talking() -> bool {
+    lock().live.as_ref().is_some_and(Live::active)
 }
 
 /// The vault locked or unlocked: a conversation ends with the lock, and the

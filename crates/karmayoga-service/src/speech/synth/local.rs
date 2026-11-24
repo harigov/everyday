@@ -4,11 +4,45 @@
 //! Everything that needs a model is behind the `speech` feature; a build
 //! without it can still be configured with a local voice and is told, when it
 //! tries to load one, that it cannot.
+//!
+//! # How freely Phonon says a sentence
+//!
+//! Phonon draws each moment of a sentence from noise, and two settings decide
+//! how that noise is used. The temperature is how far from the most likely
+//! next moment the model may go ([`TEMPERATURE`]). The seed is which noise it
+//! gets: `ptts` gives every sentence the same one unless told otherwise, so
+//! every sentence began from the same noise; each is now seeded from its own
+//! words ([`seed_for`]). Neither moves the tune of a sentence much: how a
+//! sentence rises and falls is mostly the model's reading of its words, and
+//! what most made a reply sound read out was each sentence being made on its
+//! own ([`crate::speech::narrate`] says them together).
 
 use super::Synthesiser;
 use crate::error::{CommandError, CommandResult, codes};
 use karmayoga_core::speech::PHONON_SPEAKERS;
 use std::sync::Arc;
+
+/// How far from its most likely next moment of sound Phonon may go. `ptts`
+/// uses 0.3 unless told; Phonon's own config asks for 0.8. Measured on twelve
+/// replies in two speakers, 0.3 to 0.8 changed neither how well Parakeet
+/// heard them (0.4 to 1.2% of words, the same name missed at each) nor how
+/// far the pitch moved (within a tenth of a semitone) nor the length of a
+/// clip (by a sixth of a second at most): the difference is in the detail of
+/// the sound, near enough what the model was made with.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+const TEMPERATURE: f32 = 0.7;
+
+/// The seed `text`'s noise is drawn from: its own words. Each sentence is
+/// said its own way, and the same sentence the same way every time, so one
+/// that comes out wrong can be made again to hear why. FNV-1a, whose every
+/// value is fixed by its definition: the standard library's hasher may change
+/// between Rust releases, and the promise with it.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+fn seed_for(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
 
 /// The name Phonon knows speaker number `speaker` by. Settings refuse a
 /// number past the last speaker, so one here is a config that skipped them,
@@ -72,6 +106,7 @@ pub(super) async fn build(
 
 #[cfg(feature = "speech")]
 mod engine {
+    use super::{TEMPERATURE, seed_for};
     use crate::error::{CommandError, CommandResult, codes};
     use crate::local::files as models;
     use crate::local::resident::Resident;
@@ -172,6 +207,7 @@ mod engine {
         let mut builder =
             ptts::synth::Synth::builder(config, &paths.weights, ptts::preprocess::Lang::En)
                 .tokenizer_file(&paths.tokenizer)
+                .temperature(TEMPERATURE)
                 .quant(ptts::synth::Quant::Q80)
                 .device(ptts::synth::DeviceKind::Cpu);
         for (name, file) in &paths.speakers {
@@ -245,7 +281,8 @@ mod engine {
                 return Err(nothing_to_say());
             }
             let engine = VOICES.get(self.voice, || load(self.voice))?;
-            let options = ptts::synth::SpeechOptions::default().voice(self.speaker);
+            let options =
+                ptts::synth::SpeechOptions::default().voice(self.speaker).seed(seed_for(&text));
             let (pcm, sample_rate) = {
                 let tts = engine.tts.lock().unwrap_or_else(|e| e.into_inner());
                 let pcm = tts
@@ -287,6 +324,16 @@ mod tests {
         assert_eq!(speaker_name(0).unwrap(), "Harper");
         assert_eq!(speaker_name(1).unwrap(), PHONON_SPEAKERS[1]);
         assert_eq!(speaker_name(24).unwrap(), PHONON_SPEAKERS[24]);
+    }
+
+    #[test]
+    fn each_sentence_has_a_seed_of_its_own_and_keeps_it() {
+        let first = seed_for("Okay, I've moved it to Friday.");
+        assert_eq!(first, seed_for("Okay, I've moved it to Friday."));
+        assert_ne!(first, seed_for("Okay, I've moved it to Thursday."));
+        assert_ne!(first, seed_for("Let me see."));
+        // FNV-1a's own published value: no toolchain can move it.
+        assert_eq!(seed_for("a"), 0xaf63_dc4c_8601_ec8c);
     }
 
     #[test]

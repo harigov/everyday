@@ -92,6 +92,9 @@ const APP_COMMANDS: &[&str] = &[
     "talk_settings",
     "set_talk_settings",
     "talk_toggle",
+    // Calling the assistant by name instead of pressing the talk key.
+    "wake_settings",
+    "set_wake_settings",
     // The panel in the corner of the screen.
     "panel_state",
     "panel_action",

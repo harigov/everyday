@@ -41,8 +41,9 @@
 //! moves off it. The bounded channel and the shared status the rest of the
 //! app reads carry only plain data, which has no such restriction.
 //!
-//! The input stream itself, the downmix and the resampler are `crate::audio`'s,
-//! which the assistant's voice mode uses too. What stays here is what only a
+//! The input stream itself, the downmix, the resampler and the microphone's
+//! cleaning are `crate::audio`'s, which the assistant's voice mode uses too.
+//! What stays here is what only a
 //! recording does: a second track, reopening a stream that died, level meters
 //! and framing into chunks.
 
@@ -63,6 +64,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::audio::echo::{Canceller, Cleaning, FRAME};
 use crate::audio::input::{self, f32_to_i16};
 use crate::audio::resample::StreamResampler;
 
@@ -657,10 +659,11 @@ fn open_mic(
 }
 
 /// Record the microphone alone, for `seconds`, resampled to [`SAMPLE_RATE`]
-/// mono exactly like a call's mic track -- what `meeting.rs`'s `voice_enrol`
-/// command hands the service. No system track, no chunk framing, no sink: a
-/// voiceprint sample is one short clip, not a call, and it must not pick up
-/// whoever the microphone is not.
+/// mono and cleaned exactly like a call's mic track, so a voiceprint is taken
+/// from the same sound it is later matched against -- what `meeting.rs`'s
+/// `voice_enrol` command hands the service. No system track, no chunk
+/// framing, no sink: a voiceprint sample is one short clip, not a call, and it
+/// must not pick up whoever the microphone is not.
 ///
 /// Blocking for the whole of `seconds`; call this off the async runtime the
 /// way every other disk- or device-bound call in this crate is called.
@@ -677,6 +680,7 @@ pub fn record_mic_only(seconds: u32) -> Result<Vec<i16>, CaptureError> {
     let (stream, _returns) = open_mic(&host, tx)?;
 
     let mut resampler: Option<StreamResampler> = None;
+    let mut cleaner = Canceller::new(Cleaning::Noise);
     let mut out: Vec<i16> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(u64::from(seconds));
     let outcome: Result<(), CaptureError> = (|| {
@@ -688,7 +692,7 @@ pub fn record_mic_only(seconds: u32) -> Result<Vec<i16>, CaptureError> {
                     }
                     let mut resampled = Vec::new();
                     resampler.as_mut().expect("just set").push(&samples, &mut resampled)?;
-                    out.extend(resampled.into_iter().map(f32_to_i16));
+                    cleaner.process(&resampled, &mut out);
                 }
                 Ok(Event::Audio { .. }) => {} // the system track, if somehow raised: ignored
                 Ok(Event::Error { message, .. }) => return Err(CaptureError(message)),
@@ -705,7 +709,7 @@ pub fn record_mic_only(seconds: u32) -> Result<Vec<i16>, CaptureError> {
     if let Some(mut resampler) = resampler {
         let mut tail = Vec::new();
         resampler.flush(&mut tail)?;
-        out.extend(tail.into_iter().map(f32_to_i16));
+        cleaner.process(&tail, &mut out);
     }
     Ok(out)
 }
@@ -959,6 +963,10 @@ pub fn start(
 
 struct TrackState {
     resampler: Option<StreamResampler>,
+    /// The microphone's: rumble, hum and steady hiss out, as every other
+    /// microphone in the app has them taken out. The system track is what was
+    /// played, and is left as it came.
+    cleaner: Option<Canceller>,
     framer: ChunkFramer,
     meter: LevelMeter,
     silence: SilenceTracker,
@@ -969,6 +977,7 @@ impl TrackState {
     fn new(track: Track) -> Self {
         Self {
             resampler: None,
+            cleaner: (track == Track::Mic).then(|| Canceller::new(Cleaning::Noise)),
             framer: ChunkFramer::new(track),
             meter: LevelMeter::new(),
             silence: SilenceTracker::default(),
@@ -998,10 +1007,19 @@ impl TrackState {
         elapsed_ms: u64,
         sink: &mut dyn ChunkSink,
     ) -> Result<(), CaptureError> {
-        if resampled_f32.is_empty() {
+        let pcm: Vec<i16> = match &mut self.cleaner {
+            Some(cleaner) => {
+                // Whole 10 ms frames only; the rest waits for the next block,
+                // and the few ms of it at the very end are dropped.
+                let mut pcm = Vec::with_capacity(resampled_f32.len() + FRAME);
+                cleaner.process(resampled_f32, &mut pcm);
+                pcm
+            }
+            None => resampled_f32.iter().map(|&s| f32_to_i16(s)).collect(),
+        };
+        if pcm.is_empty() {
             return Ok(());
         }
-        let pcm: Vec<i16> = resampled_f32.iter().map(|&s| f32_to_i16(s)).collect();
         self.meter.push(&pcm);
         self.silence.update(self.meter.is_silent(), elapsed_ms);
         for chunk in self.framer.push(&pcm, elapsed_ms) {
@@ -1634,6 +1652,17 @@ mod tests {
         // The chunker's own tests cover exact sizing; here just confirm the
         // seam moves data through.
         assert!(sink.chunks.iter().map(|c| c.3).sum::<usize>() > 0);
+    }
+
+    #[test]
+    fn the_microphone_track_is_cleaned_of_rumble_and_the_system_track_is_not() {
+        let desk = sine(48_000, 3.0, 20.0, 0.3);
+        let mut sink = VecSink::new();
+        let (mut mic, mut system) = (TrackState::new(Track::Mic), TrackState::new(Track::System));
+        mic.ingest(&desk, 48_000, 0, &mut sink).unwrap();
+        system.ingest(&desk, 48_000, 0, &mut sink).unwrap();
+        let (mic, system) = (mic.meter.level(), system.meter.level());
+        assert!(mic < system / 100.0, "mic {mic}, system {system}");
     }
 
     #[test]

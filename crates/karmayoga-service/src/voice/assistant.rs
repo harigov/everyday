@@ -7,7 +7,7 @@
 //! needs from [`crate::speech`] and starts it.
 
 use super::{BoxFuture, TurnOutcome, VoiceAssistant, VoiceLink, VoiceParts, session};
-use crate::agent::{ConfirmAnswer, Reach, Sink, Turn};
+use crate::agent::{ConfirmAnswer, Reach, Sink, Turn, Typist};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::listen::ReadAloud;
 use crate::service::{Service, blocking};
@@ -34,6 +34,13 @@ pub struct ServiceAssistant {
     /// the person is, as a typed turn from that chat is. `None` at this
     /// computer.
     pub via: Option<Via>,
+    /// What types where the person was typing, for a conversation started
+    /// on this computer's desktop with the talk key: each turn is offered
+    /// `type_text` with it. See [`Typist`].
+    pub typist: Option<Arc<dyn Typist>>,
+    /// Opened by the wake word, not a key or a click: see
+    /// [`Turn::woken`](crate::agent::Turn::woken).
+    pub woken: bool,
 }
 
 impl VoiceAssistant for ServiceAssistant {
@@ -47,6 +54,8 @@ impl VoiceAssistant for ServiceAssistant {
         let service = self.service.clone();
         let conversation = self.conversation;
         let via = self.via.clone();
+        let typist = self.typist.clone();
+        let woken = self.woken;
         let origin = if via.is_some() { CALL_ORIGIN } else { ORIGIN };
         // What they asked for is theirs to have done -- unless it may be an
         // echo, or they are on a call through a chat, where a destructive
@@ -75,7 +84,8 @@ impl VoiceAssistant for ServiceAssistant {
                 // What the model writes is read aloud, and it is told so.
                 spoken: true,
                 voice_approves,
-                reach: Reach::default(),
+                woken,
+                reach: Reach { typist, ..Reach::default() },
                 job: None,
                 follow_up: None,
                 about_job: None,
@@ -189,6 +199,30 @@ impl Service {
         conversation: ConversationId,
         via: Option<Via>,
     ) -> CommandResult<VoiceLink> {
+        self.open_voice(conversation, via, None, false).await
+    }
+
+    /// [`Service::voice_open`], for a conversation started on this
+    /// computer's desktop rather than in a window -- the talk key -- where
+    /// "type that ..." types into whatever the person was typing in, through
+    /// `typist`. `woken` when the wake word opened it rather than the key:
+    /// see [`Turn::woken`](crate::agent::Turn::woken).
+    pub async fn voice_open_typing(
+        self: &Arc<Self>,
+        conversation: ConversationId,
+        typist: Arc<dyn Typist>,
+        woken: bool,
+    ) -> CommandResult<VoiceLink> {
+        self.open_voice(conversation, None, Some(typist), woken).await
+    }
+
+    async fn open_voice(
+        self: &Arc<Self>,
+        conversation: ConversationId,
+        via: Option<Via>,
+        typist: Option<Arc<dyn Typist>>,
+        woken: bool,
+    ) -> CommandResult<VoiceLink> {
         self.require_unlocked()?;
         // The voice first: listening starts a recogniser loading, which a
         // voice that is missing would leave running for a session that never
@@ -207,6 +241,9 @@ impl Service {
                 service: self.clone(),
                 conversation,
                 via: via.clone(),
+                // A call has no desktop to type on.
+                typist: typist.filter(|_| via.is_none()),
+                woken,
             }),
         });
         // So background updates can be said in it. See `crate::reach`.

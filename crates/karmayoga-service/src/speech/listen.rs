@@ -237,6 +237,11 @@ pub fn spawn(parts: ListenParts) -> ListenLink {
 /// A narrator whose finished sentences come back through the session's loop,
 /// marked with the `epoch` it belongs to. Each sentence's tag is its index in
 /// the whole text.
+///
+/// Sentences are made one at a time, never said together as voice mode's
+/// are ([`Narrator::joining`]): the reader shows the sentence being said and
+/// skips by sentences, and in a clip of several it could only show the first
+/// until the clip was over.
 fn narrator_for(
     synthesiser: Arc<dyn Synthesiser>,
     epoch: u64,

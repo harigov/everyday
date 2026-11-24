@@ -30,6 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use karmayoga_core::ConversationId;
 use karmayoga_core::agent::onscreen::OnScreen;
+use karmayoga_service::agent::Typist;
 use karmayoga_service::error::{CommandError, CommandResult, codes};
 use karmayoga_service::voice::{VoiceEvent, VoiceInput, VoiceOutput};
 use tauri::{AppHandle, Manager, State};
@@ -61,6 +62,8 @@ pub struct Held {
     window: String,
     muted: Option<bool>,
     screen: Option<Option<Box<OnScreen>>>,
+    /// Words said before the session opened -- see [`shell_heard`].
+    spoken: Option<String>,
     stop: bool,
 }
 
@@ -105,6 +108,14 @@ pub(crate) struct Shell {
     /// removed) before the session is, for a level meter. Called from the
     /// audio thread, so it must be quick.
     pub microphone: Option<MicrophoneTap>,
+    /// What types where the person was typing, so that "type that ..." does
+    /// -- see `karmayoga_service::agent::Typist`. The talk key's; a window's
+    /// session has none, the field with the keyboard being the window's own.
+    pub typist: Option<Arc<dyn Typist>>,
+    /// The wake word began it, not the key: what is said in it approves no
+    /// change and has more than a line shown before it is typed -- see
+    /// `karmayoga_service::agent::Turn::woken`.
+    pub woken: bool,
 }
 
 impl Outlet {
@@ -143,6 +154,7 @@ impl Held {
             VoiceInput::Muted(muted) => self.muted = Some(muted),
             VoiceInput::Screen(screen) => self.screen = Some(screen),
             VoiceInput::Stop => self.stop = true,
+            VoiceInput::Spoken(text) => self.spoken = Some(text),
             // The desktop never asks the session to say something of its own.
             VoiceInput::Audio(_)
             | VoiceInput::Played { .. }
@@ -158,6 +170,9 @@ impl Held {
         }
         if let Some(screen) = self.screen {
             let _ = input.send(VoiceInput::Screen(screen));
+        }
+        if let Some(text) = self.spoken {
+            let _ = input.send(VoiceInput::Spoken(text));
         }
         if self.stop {
             let _ = input.send(VoiceInput::Stop);
@@ -316,7 +331,14 @@ async fn try_start(
     on_screen: Option<serde_json::Value>,
     outlet: Outlet,
 ) -> CommandResult<()> {
-    let link = state.service().voice_open(conversation_id).await?;
+    let (typist, woken) = match &outlet {
+        Outlet::Shell(shell) => (shell.typist.clone(), shell.woken),
+        Outlet::Window(_) => (None, false),
+    };
+    let link = match typist {
+        Some(typist) => state.service().voice_open_typing(conversation_id, typist, woken).await?,
+        None => state.service().voice_open(conversation_id).await?,
+    };
     let karmayoga_service::voice::VoiceLink { input, output } = link;
 
     let _ = input
@@ -506,6 +528,13 @@ fn send_or_hold_shell(voice: &Mutex<Option<VoiceHandle>>, message: VoiceInput) -
 /// there was one.
 pub(crate) fn stop_shell(app: &AppHandle) -> bool {
     stop_if(app.state::<AppState>().voice(), |window| window.is_empty())
+}
+
+/// Hand the conversation the talk key started what the person said before it
+/// opened -- the words after the wake word -- to be its first turn. Whether
+/// there was one.
+pub(crate) fn shell_heard(app: &AppHandle, text: String) -> bool {
+    send_or_hold_shell(app.state::<AppState>().voice(), VoiceInput::Spoken(text))
 }
 
 /// Mute or unmute the conversation the talk key started. While muted nothing

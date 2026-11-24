@@ -60,6 +60,8 @@
     "allow-talk-settings",
     "allow-set-talk-settings",
     "allow-talk-toggle",
+    "allow-wake-settings",
+    "allow-set-wake-settings",
     "allow-panel-state",
     "allow-panel-action",
     "allow-panel-resize",

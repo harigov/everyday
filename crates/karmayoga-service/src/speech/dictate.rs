@@ -6,9 +6,11 @@
 //! decides what the words are for. Mail's "write by voice" is the first user.
 //!
 //! A session ends when it is told to stop, when nobody has said anything for
-//! [`SILENCE_LIMIT`], or when it has run for [`TIME_LIMIT`]. Both limits are
-//! counted in audio fed, not wall-clock time, so the tests can run them in a
-//! moment. The words of an utterance still being transcribed when it stops are
+//! [`SILENCE_LIMIT`], or when it has run for [`TIME_LIMIT`] -- and, when its
+//! transport asks for it ([`DictationInput::EndAfterPause`]), when somebody
+//! who has said something pauses for long enough: voice typing's "pause to
+//! finish". All are counted in audio fed, not wall-clock time, so the tests
+//! can run them in a moment. The words of an utterance still being transcribed when it stops are
 //! waited for, so nothing said is lost.
 //!
 //! Nothing is kept: the audio goes to the recogniser and is dropped.
@@ -51,6 +53,9 @@ pub enum DictationEnd {
     Silence,
     /// It ran for [`TIME_LIMIT`].
     TimeLimit,
+    /// Somebody said something and then paused for as long as
+    /// [`DictationInput::EndAfterPause`] said would end it.
+    Paused,
     /// Asked to cancel: the words are not wanted.
     Cancelled,
     /// The microphone or the recogniser failed.
@@ -95,6 +100,16 @@ pub enum DictationInput {
     Backlog(Vec<i16>),
     /// Stop listening, and finish with what was heard.
     Stop,
+    /// From now on, once something has been heard, end the session
+    /// ([`DictationEnd::Paused`]) when the quiet after the last thing said has
+    /// lasted this long; `None` waits to be told to stop again. The quiet is
+    /// counted from the end of an utterance, which the detector reports only
+    /// after a quiet of its own (the end of turn in
+    /// [`Tuning::DICTATION`](crate::speech::detect::Tuning::DICTATION)), so the
+    /// person has been quiet for that and this together. Nothing said, or only
+    /// sounds with no words in them, never ends it this way: the person is
+    /// still finding their first words, and [`SILENCE_LIMIT`] is for that.
+    EndAfterPause(Option<Duration>),
     /// Stop listening, and throw away what was heard.
     Cancel,
     /// The microphone failed, in words for the person.
@@ -127,9 +142,9 @@ pub fn spawn(live: LiveTranscription) -> DictationLink {
     DictationLink { input, events }
 }
 
-/// Samples in a stretch of audio.
+/// Samples in a stretch of audio, to the millisecond.
 fn samples_in(span: Duration) -> u64 {
-    span.as_secs() * u64::from(SAMPLE_RATE)
+    (span.as_millis() as u64) * u64::from(SAMPLE_RATE) / 1000
 }
 
 /// What a session has heard, and how it is going.
@@ -143,6 +158,9 @@ struct Session {
     fed: u64,
     /// Audio fed since the start or the last time anything began or ended.
     quiet: u64,
+    /// How much quiet after something said ends the session, in samples:
+    /// [`DictationInput::EndAfterPause`].
+    pause: Option<u64>,
 }
 
 impl Session {
@@ -169,6 +187,13 @@ impl Session {
         }
     }
 
+    /// Somebody has said something and then been quiet for as long as ends
+    /// it.
+    fn paused(&self) -> bool {
+        self.pause
+            .is_some_and(|pause| !self.hearing && !self.text.is_empty() && self.quiet >= pause)
+    }
+
     /// The end of the session, with the words or without.
     fn end(&self, reason: DictationEnd, error: Option<String>) {
         let text =
@@ -184,7 +209,8 @@ async fn run(
     events: UnboundedSender<DictationEvent>,
 ) {
     let LiveTranscription { control, events: mut live_events } = live;
-    let mut session = Session { events, text: String::new(), hearing: false, fed: 0, quiet: 0 };
+    let mut session =
+        Session { events, text: String::new(), hearing: false, fed: 0, quiet: 0, pause: None };
     let silence_limit = samples_in(SILENCE_LIMIT);
     let time_limit = samples_in(TIME_LIMIT);
     if !session.send(DictationEvent::State { state: DictationState::Listening }) {
@@ -201,6 +227,9 @@ async fn run(
                     return;
                 }
                 Some(DictationInput::Stop) => break (DictationEnd::Stopped, None),
+                Some(DictationInput::EndAfterPause(pause)) => {
+                    session.pause = pause.map(samples_in);
+                }
                 Some(DictationInput::Failed(message)) => {
                     break (DictationEnd::Failed, Some(message));
                 }
@@ -220,6 +249,12 @@ async fn run(
                     }
                     if !session.hearing && session.quiet >= silence_limit {
                         break (DictationEnd::Silence, None);
+                    }
+                    // Checked as the audio comes rather than when the words
+                    // do: the quiet is what decides, and words that arrive
+                    // after it has run out end it at the next piece of audio.
+                    if session.paused() {
+                        break (DictationEnd::Paused, None);
                     }
                 }
             },
@@ -494,6 +529,81 @@ mod tests {
         assert_eq!(reason, DictationEnd::Silence);
         assert_eq!(text, "said 2");
         assert_eq!(error, None);
+    }
+
+    #[tokio::test]
+    async fn a_pause_after_words_ends_it_once_asked_to() {
+        let (mut link, _) = open(scripted(vec![vec![Detected::Started, ended(2, 0)]]));
+        link.input.send(DictationInput::EndAfterPause(Some(Duration::from_millis(800)))).unwrap();
+        blip(&link);
+        until_heard(&mut link, "said 2").await;
+        // Not yet: quiet, but not for long enough.
+        audio(&link, Duration::from_millis(500));
+        let early = tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                if let Some(DictationEvent::Ended { .. }) = link.events.recv().await {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(early.is_err(), "it ended before the pause was long enough");
+        audio(&link, Duration::from_millis(400));
+        let (reason, text, error) = finish(&mut link).await;
+        assert_eq!((reason, text.as_str(), error), (DictationEnd::Paused, "said 2", None));
+    }
+
+    #[tokio::test]
+    async fn without_being_asked_a_pause_ends_nothing() {
+        let (mut link, _) = open(scripted(vec![vec![Detected::Started, ended(2, 0)]]));
+        blip(&link);
+        until_heard(&mut link, "said 2").await;
+        audio(&link, Duration::from_secs(5));
+        link.input.send(DictationInput::Stop).unwrap();
+        let (reason, _, _) = finish(&mut link).await;
+        assert_eq!(reason, DictationEnd::Stopped);
+    }
+
+    #[tokio::test]
+    async fn quiet_before_any_words_is_not_the_pause_that_ends_it() {
+        // Nothing said, then a sound with no words in it.
+        let steps =
+            vec![vec![], vec![Detected::Started, Detected::Ended { samples: vec![], start_ms: 0 }]];
+        let (mut link, _) = open(scripted(steps));
+        link.input.send(DictationInput::EndAfterPause(Some(Duration::from_millis(500)))).unwrap();
+        audio(&link, Duration::from_secs(3));
+        blip(&link);
+        until_state(&mut link, DictationState::Hearing).await;
+        until_state(&mut link, DictationState::Listening).await;
+        audio(&link, Duration::from_secs(3));
+        link.input.send(DictationInput::Stop).unwrap();
+        let (reason, text, _) = finish(&mut link).await;
+        assert_eq!((reason, text.as_str()), (DictationEnd::Stopped, ""));
+    }
+
+    #[tokio::test]
+    async fn talking_again_before_the_pause_runs_out_carries_on() {
+        let steps = vec![
+            vec![Detected::Started, ended(2, 0)],
+            vec![],
+            vec![Detected::Started],
+            vec![],
+            vec![ended(3, 4_000)],
+        ];
+        let (mut link, _) = open(scripted(steps));
+        link.input.send(DictationInput::EndAfterPause(Some(Duration::from_secs(1)))).unwrap();
+        blip(&link);
+        until_heard(&mut link, "said 2").await;
+        audio(&link, Duration::from_millis(600));
+        blip(&link);
+        until_state(&mut link, DictationState::Hearing).await;
+        // A long sentence: talking is not a pause.
+        audio(&link, Duration::from_secs(5));
+        blip(&link);
+        until_heard(&mut link, "said 2 said 3").await;
+        audio(&link, Duration::from_millis(1100));
+        let (reason, text, _) = finish(&mut link).await;
+        assert_eq!((reason, text.as_str()), (DictationEnd::Paused, "said 2 said 3"));
     }
 
     #[tokio::test]
