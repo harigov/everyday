@@ -2,13 +2,15 @@
 //! listen to, the daily podcast. See `docs/plans/podcasts.md` (phase 2) and
 //! `karmayoga_core::news::script`.
 //!
-//! Each line goes to its speaker's voice ([`crate::speech::synth`]) a sentence
-//! at a time, the way Listen reads text: the splitter that cuts a reply for
-//! voice mode cuts each line, the last sentence of a line is marked as ending
-//! it, and the voice's [`Delivery`](crate::speech::synth) leaves the pause
-//! after each sentence that its ending asks for -- a breath at a comma, a
-//! beat at a full stop, longer where a paragraph or an item of a list ends.
-//! A change of speaker is given a little more. What comes back is written as
+//! Each line goes to its speaker's voice ([`crate::speech::synth`]) a few
+//! sentences at a time: the splitter that cuts a reply for voice mode cuts
+//! each line, the last sentence of a line is marked as ending it, and as many
+//! sentences in a row as fit in one clip are said together
+//! ([`joins`](crate::speech::text::joins)), so the voice carries one on into
+//! the next. The voice's [`Delivery`](crate::speech::synth) leaves the pause
+//! after each clip that its ending asks for -- a beat at a full stop, longer
+//! where a paragraph or an item of a list ends. A change of speaker is given
+//! a little more. What comes back is written as
 //! Opus in an Ogg file -- a few megabytes for a quarter of an hour -- with the
 //! `speech` feature, or WAV without it, and kept in the files folder.
 //!
@@ -40,7 +42,7 @@ use crate::speech::pcm;
 use crate::speech::resample;
 use crate::speech::script::{self, LINE_END};
 use crate::speech::synth::{Speech, Synthesiser, build_synthesiser_with};
-use crate::speech::text::sentences;
+use crate::speech::text::{MAX_CLIP, joins, sentences};
 use karmayoga_core::FileEntry;
 use karmayoga_core::files::{FileOrigin, ImportOptions, MediaInfo};
 use karmayoga_core::news::script::Script;
@@ -189,6 +191,46 @@ async fn say(voice: &dyn Synthesiser, sentence: &str) -> CommandResult<Option<Sp
     }
 }
 
+/// A line's sentences in the clips they are said in: as many in a row as fit
+/// in [`MAX_CLIP`], never past the end of a paragraph or an item of a list.
+/// Nothing is waiting to hear the first, so every clip is as long as it may
+/// be.
+fn clips(said: &[String]) -> Vec<&[String]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < said.len() {
+        let mut end = start + 1;
+        let mut len = said[start].chars().count();
+        while end < said.len() && joins(&said[end - 1], len, &said[end], MAX_CLIP) {
+            len += 1 + said[end].chars().count();
+            end += 1;
+        }
+        out.push(&said[start..end]);
+        start = end;
+    }
+    out
+}
+
+/// A clip said: its sentences together, or, when the voice will not say them
+/// together, each on its own, as [`say`] says one.
+async fn say_clip(voice: &dyn Synthesiser, clip: &[String]) -> CommandResult<Vec<Speech>> {
+    if let [sentence] = clip {
+        return Ok(say(voice, sentence).await?.into_iter().collect());
+    }
+    match say(voice, &clip.join(" ")).await {
+        Ok(Some(speech)) => return Ok(vec![speech]),
+        Ok(None) => {}
+        Err(e) => {
+            tracing::debug!(error = %e, "render: sentences said together failed; saying them one at a time")
+        }
+    }
+    let mut out = Vec::new();
+    for sentence in clip {
+        out.extend(say(voice, sentence).await?);
+    }
+    Ok(out)
+}
+
 /// Everything `script` says, in order, recorded.
 async fn record(
     voices: &Voices,
@@ -208,8 +250,8 @@ async fn record(
     let mut last_speaker: Option<&str> = None;
     for (speaker, said) in &lines {
         let voice = voices.of(speaker);
-        for sentence in said {
-            if let Some(speech) = say(voice, sentence).await? {
+        for clip in clips(said) {
+            for speech in say_clip(voice, clip).await? {
                 let recorder = match &mut recorder {
                     Some(recorder) => recorder,
                     None => recorder
@@ -224,7 +266,7 @@ async fn record(
                 recorder.push(&samples)?;
                 last_speaker = Some(speaker);
             }
-            done += weight(sentence);
+            done += clip.iter().map(|s| weight(s)).sum::<usize>();
             progress((done as f32 / total as f32).min(1.0));
         }
     }
@@ -647,6 +689,23 @@ mod tests {
         }
     }
 
+    /// A voice that will not say two sentences at once, and remembers what it
+    /// was handed.
+    #[derive(Default)]
+    struct OneAtATime(Mutex<Vec<String>>);
+
+    impl Synthesiser for OneAtATime {
+        fn synthesise<'a>(&'a self, text: &'a str) -> BoxFuture<'a, CommandResult<Speech>> {
+            self.0.lock().unwrap().push(text.to_string());
+            let result = if text.contains(". ") {
+                Err(CommandError::new(codes::INVALID, "one at a time"))
+            } else {
+                Ok(Speech { samples: vec![1000; 2400], sample_rate: 24_000 })
+            };
+            Box::pin(async move { result })
+        }
+    }
+
     fn voices(configured: Arc<dyn Synthesiser>) -> Voices {
         Voices { configured, own: HashMap::new() }
     }
@@ -702,8 +761,38 @@ mod tests {
         assert!(line_sentences("  ").is_empty());
     }
 
+    #[test]
+    fn a_line_is_said_in_clips_as_long_as_may_be_and_never_past_a_paragraph() {
+        let long = "a".repeat(150);
+        let said = vec![
+            "One.".to_string(),
+            format!("Two.{LINE_END}"),
+            "Three.".to_string(),
+            long.clone(),
+            long,
+        ];
+        assert_eq!(clips(&said), vec![&said[0..2], &said[2..4], &said[4..5]]);
+        assert!(clips(&[]).is_empty());
+    }
+
     #[tokio::test]
-    async fn every_line_goes_to_its_speaker_s_voice_a_sentence_at_a_time() {
+    async fn sentences_the_voice_will_not_say_together_are_said_one_at_a_time() {
+        let voice = Arc::new(OneAtATime::default());
+        let script = Script::narrated("T", "One thing here. Another thing there.");
+        let said = record(&voices(voice.clone()), &script, &no_progress()).await.unwrap();
+        assert_eq!(
+            *voice.0.lock().unwrap(),
+            [
+                format!("One thing here. Another thing there.{LINE_END}"),
+                "One thing here.".to_string(),
+                format!("Another thing there.{LINE_END}"),
+            ]
+        );
+        assert!(said.duration_ms >= 190, "both said: {} ms", said.duration_ms);
+    }
+
+    #[tokio::test]
+    async fn every_line_goes_to_its_speaker_s_voice_its_sentences_together() {
         let (a, b) = (Tone::new(220.0, 24_000), Tone::new(330.0, 24_000));
         let mut voices = voices(a.clone());
         voices.own.insert("sam".into(), b.clone());
@@ -716,8 +805,7 @@ mod tests {
         assert_eq!(
             a.heard(),
             [
-                "Welcome to the show, everyone.".to_string(),
-                format!("Glad to be here.{LINE_END}"),
+                format!("Welcome to the show, everyone. Glad to be here.{LINE_END}"),
                 format!("Back to it now.{LINE_END}"),
             ]
         );

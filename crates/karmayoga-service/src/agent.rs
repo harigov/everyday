@@ -408,6 +408,17 @@ pub trait Asker: Send + Sync + 'static {
     ) -> futures::future::BoxFuture<'static, Option<String>>;
 }
 
+/// What types into the text field the person is working in, on this
+/// computer's desktop: how "type that I won't be available tomorrow" said to
+/// the talk key ends up in the mail they were writing. The shell that started
+/// the conversation hands one over in [`Reach::typist`]; a spoken turn with
+/// one is offered [`TYPE_TEXT`].
+pub trait Typist: Send + Sync + 'static {
+    /// Type `text` where the cursor was, as if the person had typed it. The
+    /// error says why it could not be, in words fit to tell them.
+    fn type_text(&self, text: String) -> futures::future::BoxFuture<'static, Result<(), String>>;
+}
+
 /// How a scheduled run reaches its person: who it may ask while it works, and
 /// where its last word will be sent. Empty -- the default, and every turn that
 /// is not a routine's -- is a run with nobody to ask whose result stays in the
@@ -422,6 +433,10 @@ pub struct Reach {
     /// model -- "their Matrix chat", "email" -- so it writes the reply as
     /// the message it will be.
     pub sent_to: Vec<String>,
+    /// What types on the person's desktop, for a conversation started there
+    /// with the talk key -- see [`Typist`]. Only a spoken turn at this
+    /// computer is offered [`TYPE_TEXT`] for it, and nothing else reads it.
+    pub typist: Option<Arc<dyn Typist>>,
 }
 
 /// Confirmations waiting on a person, and the turns that could be stopped.
@@ -1202,6 +1217,11 @@ const SUMMARIZE_THREAD: &str = "summarize_thread";
 const READ_ALOUD: &str = "read_aloud";
 /// Offered wherever the calendar is -- see [`meeting_brief_tool`].
 const MEETING_BRIEF: &str = "meeting_brief";
+/// Offered to a spoken turn from the talk key alone -- see
+/// [`type_text_tool`].
+const TYPE_TEXT: &str = "type_text";
+/// The most [`TYPE_TEXT`] types at once: voice typing's own limit.
+const MAX_TYPED_CHARS: usize = 20_000;
 /// The tools declared in this file that change nothing, and so may be offered
 /// to a turn that may only read ([`Turn::read_only`]). Every other tool
 /// declared here is kept from one.
@@ -1406,6 +1426,8 @@ impl AgentHook for ConfirmGate {
             }
             "rewrite" => self.rewrite_subject(&name, &arguments),
             "keep" => self.keep_subject(&name, &arguments),
+            // What would be typed, all of it: the card is where it is read.
+            "desktop" => typed_text(&arguments).unwrap_or_default().to_string(),
             _ => self.describe(&name, &arguments),
         };
         self.put_to_person(kind, subject, call_id, name, arguments).await
@@ -2133,6 +2155,9 @@ impl ConfirmGate {
         // through `web_search`", and `must_confirm_fetch` for the page. The
         // other calls that fetch an address -- a feed, a lookup, a cover --
         // are held to the same check; see `fetched_address`.
+        if name == TYPE_TEXT {
+            return self.typing_question();
+        }
         let fetched = fetched_address(name, arguments);
         let own = || {
             let kind = must_confirm(self.effect_of(name, arguments), self.enabled)?;
@@ -2201,6 +2226,20 @@ impl ConfirmGate {
             Some(category) => format!("{count} transactions \u{2192} {category}"),
             None => format!("{count} transactions"),
         }
+    }
+
+    /// Whether what the model wants typed into the person's own window
+    /// ([`TYPE_TEXT`]) must be shown to them first, as a `"desktop"`
+    /// question with the whole text. Not when they asked for it out loud, at
+    /// this computer, in words that cannot be an echo
+    /// ([`ConfirmGate::spoken_request`]), and nothing a stranger wrote is in
+    /// the turn: "type that I'm running late" is the yes. Otherwise it is.
+    /// The field is whatever had the keyboard -- a terminal as easily as a
+    /// mail -- and a mail or a page read on the way can ask for anything to
+    /// be typed there, as the model's own words; and words heard over the
+    /// assistant's own voice may be that voice coming back.
+    fn typing_question(&self) -> Option<&'static str> {
+        (self.spoken_request.is_none() || self.strangers_heard()).then_some("desktop")
     }
 
     /// Has a stranger's writing reached this turn: mail, a story, a bank's
@@ -3033,6 +3072,10 @@ struct TurnMeta {
     /// Set when this turn is being talked -- see [`Turn::spoken`]. Read by
     /// [`build`], which offers [`END_VOICE_MODE`] only then.
     spoken: bool,
+    /// What types on the person's desktop -- see [`Reach::typist`]. Read by
+    /// [`build`], which offers [`TYPE_TEXT`] with it to a spoken turn that
+    /// somebody is at.
+    typist: Option<Arc<dyn Typist>>,
     /// Set when this turn may only read -- see [`Turn::read_only`]. Read by
     /// [`build`], which offers it reading tools and nothing that reaches out.
     read_only: bool,
@@ -3428,6 +3471,19 @@ fn build(
     // is talking, a call included.
     if meta.spoken && reaches_out && vault.supports_routines() {
         offered.push(read_brief_tool(vault.clone()));
+    }
+    // Typing where the person was typing, only for a conversation talked at
+    // this computer with the talk key, which is what hands over a typist: in
+    // the window, the field with the keyboard is the window's own, and on a
+    // call there is no desktop.
+    if meta.spoken
+        && !is_dream
+        && !meta.unattended
+        && !meta.from_chat
+        && !meta.read_only
+        && let Some(typist) = &meta.typist
+    {
+        offered.push(type_text_tool(typist.clone()));
     }
     // Reading something out in full, only where something reads aloud: a
     // spoken turn, whose session reads it after the reply.
@@ -4977,6 +5033,68 @@ async fn briefing(service: &Arc<Service>, thread: ThreadId) -> CommandResult<Str
 /// it, and read by the voice session after this turn's reply, a sentence at
 /// a time, so they can talk over it or stop it as they would the reply.
 ///
+/// The text a [`TYPE_TEXT`] call would type: its `text`, trimmed, or `None`
+/// when there is nothing in it.
+fn typed_text(arguments: &Value) -> Option<&str> {
+    arguments.get("text").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty())
+}
+
+/// Type text into the field the person is working in, in whatever
+/// application had the keyboard when they pressed the talk key -- "type that
+/// I won't be available tomorrow". The shell does the typing ([`Typist`]): on
+/// the clipboard, a paste, as voice typing types. Offered to a spoken turn
+/// from the talk key alone, and put to the person first unless their own
+/// words asked for it with nothing of a stranger's in the turn (see
+/// [`ConfirmGate::typing_question`]). Nothing is sent or submitted: no Enter
+/// is pressed, and the text's own last line break is left off.
+fn type_text_tool(typist: Arc<dyn Typist>) -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        TYPE_TEXT,
+        "Type text into the text field the person is working in -- whatever had the keyboard \
+         when they started talking to you: a mail, a chat, a document, in any application -- \
+         as if they had typed it themselves. Use it when they ask you to type, write or put \
+         something there (\"type that I won't be available tomorrow\", \"write a quick reply \
+         saying yes, Friday works\"). Give the exact text. When they dictated it, it is their \
+         words: filler and false starts out, their own corrections applied, punctuated and \
+         capitalised, but not reworded, and nothing added -- no greeting or sign-off they did \
+         not say. When they asked you to write something, it is what you wrote, in their \
+         voice. It is typed at the cursor, and nothing is sent or submitted. Afterwards say \
+         in a few words that it is typed, not what it says.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Exactly what to type. Line breaks for separate lines or paragraphs."
+                }
+            },
+            "required": ["text"],
+            "additionalProperties": false,
+        }),
+        move |arguments: serde_json::Value| {
+            let typist = typist.clone();
+            Box::pin(async move {
+                let Some(text) = typed_text(&arguments) else {
+                    return Err(ToolExecutionError::invalid_args("there is nothing to type"));
+                };
+                let length = text.chars().count();
+                if length > MAX_TYPED_CHARS {
+                    return Err(ToolExecutionError::invalid_args(format!(
+                        "that is {length} characters; at most {MAX_TYPED_CHARS} are typed at once"
+                    )));
+                }
+                let typed: String = text.chars().take(120).collect();
+                typist.type_text(text.to_string()).await.map_err(ToolExecutionError::other)?;
+                Ok(ToolOutput::json(serde_json::json!({
+                    "ok": true,
+                    "typed": typed,
+                    "note": "It is typed where they were typing. Say so in a few words.",
+                })))
+            })
+        },
+    )
+}
+
 /// Offered to a spoken turn alone. Declared here for `end_voice_mode`'s
 /// reason: the session reads [`Turned::read_aloud`] from the call that ran.
 /// The text never reaches the model -- only its title does -- so a long
@@ -6440,6 +6558,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         drafting,
         asker: reach.asker.clone(),
         spoken,
+        typist: reach.typist.clone(),
         read_only,
     };
     let agent =
@@ -7583,6 +7702,7 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
         }
         // The card's own words say it; the note is for the model.
         END_VOICE_MODE => return String::new(),
+        TYPE_TEXT => return str_of("typed").trim().to_string(),
         SUMMARIZE_THREAD | READ_ALOUD | READ_BRIEF => {
             return str_of("title").trim().chars().take(120).collect();
         }
@@ -7893,6 +8013,7 @@ mod tests {
         let reach = Reach {
             asker: Some(Arc::new(Nobody)),
             sent_to: vec!["their Matrix chat".into(), "email".into()],
+            typist: None,
         };
         let said = unattended_context(&reach);
         assert!(said.contains("Call ask_owner"));
@@ -9811,6 +9932,82 @@ mod tests {
     }
 
     // ---- what a spoken request approves --------------------------------------
+
+    /// Typing into the person's own window is done when they asked for it out
+    /// loud, with nothing of a stranger's in the turn; otherwise the whole
+    /// text is put to them first.
+    #[test]
+    fn typing_where_they_were_is_shown_first_unless_their_own_words_asked() {
+        let (vault, _dir) = test_vault();
+        let text = serde_json::json!({ "text": "I won't be available tomorrow." });
+        // Not said aloud, or said over the assistant's own voice.
+        let unsaid = test_gate(vault.clone(), ConversationId::new());
+        assert_eq!(unsaid.confirmation(TYPE_TEXT, &text), Some("desktop"));
+        // Said, it is typed.
+        let said = ConfirmGate {
+            spoken_request: Some("type that I won't be available tomorrow".into()),
+            ..test_gate(vault.clone(), ConversationId::new())
+        };
+        assert_eq!(said.confirmation(TYPE_TEXT, &text), None);
+        // Once a stranger's words are in, whatever was said: the mail may be
+        // what wants something typed.
+        said.mail_read_this_turn.store(true, Ordering::Release);
+        assert_eq!(said.confirmation(TYPE_TEXT, &text), Some("desktop"));
+    }
+
+    struct Keyboard {
+        typed: Mutex<Vec<String>>,
+        refuses: bool,
+    }
+
+    impl Typist for Keyboard {
+        fn type_text(
+            &self,
+            text: String,
+        ) -> futures::future::BoxFuture<'static, Result<(), String>> {
+            self.typed.lock().unwrap().push(text);
+            let refuses = self.refuses;
+            Box::pin(async move {
+                if refuses {
+                    Err("the desktop would not let Karma Yoga type here".into())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn type_text_types_the_text_without_its_last_line_break() {
+        let keyboard = Arc::new(Keyboard { typed: Mutex::new(Vec::new()), refuses: false });
+        let tool = type_text_tool(keyboard.clone());
+        let output = tool
+            .execute(
+                serde_json::json!({ "text": "  I won't be available tomorrow.\nFriday works.\n" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            *keyboard.typed.lock().unwrap(),
+            ["I won't be available tomorrow.\nFriday works."]
+        );
+        assert_eq!(summarise(TYPE_TEXT, &output), "I won't be available tomorrow.\nFriday works.");
+        // Nothing to type types nothing.
+        assert!(tool.execute(serde_json::json!({ "text": "  " })).await.is_err());
+        assert!(tool.execute(serde_json::json!({})).await.is_err());
+        let long = "a".repeat(MAX_TYPED_CHARS + 1);
+        assert!(tool.execute(serde_json::json!({ "text": long })).await.is_err());
+        assert_eq!(keyboard.typed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_desktop_that_will_not_be_typed_on_says_why() {
+        let keyboard = Arc::new(Keyboard { typed: Mutex::new(Vec::new()), refuses: true });
+        let refused =
+            type_text_tool(keyboard).execute(serde_json::json!({ "text": "hello" })).await;
+        let message = refused.expect_err("refused").to_string();
+        assert!(message.contains("would not let Karma Yoga type here"), "{message}");
+    }
 
     /// Tasks, events, things on a shelf and notes, changed because the person
     /// said so, are changed: the request is the yes. Once a stranger's words

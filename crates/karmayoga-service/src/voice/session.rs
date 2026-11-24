@@ -68,10 +68,10 @@ use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
 
-/// How many sentences may be synthesised or queued with the transport at once.
-/// One is playing and one is ready behind it, so there is never a gap, and a
-/// long reply is not all synthesised before the person has had the chance to
-/// say stop.
+/// How many clips -- a sentence, or several said together -- may be
+/// synthesised or queued with the transport at once. One is playing and one
+/// is ready behind it, so there is never a gap, and a long reply is not all
+/// synthesised before the person has had the chance to say stop.
 const MAX_AHEAD: usize = 2;
 
 /// How far back what was said counts as something that might be coming back
@@ -180,13 +180,17 @@ fn spawn_with(parts: VoiceParts, pacing: Pacing) -> VoiceLink {
     // only ever touched from it.
     let finished = tx.clone();
     let voice = Rehearsed::new(parts.synthesiser);
+    // The reply's sentences are said together, and so are those of something
+    // read aloud; a phrase of the session's own or a question never is: a
+    // phrase was rehearsed alone, and a question is waited on by its id.
     let narrator = Narrator::new(
         voice.clone(),
         MAX_AHEAD,
         Arc::new(move |done| {
             let _ = finished.send(Internal::Synthesised(done));
         }),
-    );
+    )
+    .joining(|a, b| a == b && matches!(a, Kind::Reply | Kind::Reading));
     let mut phrasebook = Phrasebook::default();
     // What a slow turn begins with, ready before the first one.
     let to_rehearse = match pacing.filler_after {
@@ -737,6 +741,15 @@ impl Session {
             VoiceInput::Update(text) => {
                 if !self.stopping && !text.trim().is_empty() {
                     self.updates.push_back(text);
+                }
+            }
+            // 2. Heard before there was a session, by the wake word's
+            // listener, with nothing of ours playing: their own words.
+            VoiceInput::Spoken(text) => {
+                let text = text.trim().to_string();
+                let busy = self.turn.as_ref().is_some_and(|t| !t.done) || self.audio_outstanding();
+                if !self.stopping && !text.is_empty() && !busy {
+                    self.start_turn(Said { text, clear: true });
                 }
             }
             // Handled by the loop, which must not leave it to us.
@@ -2294,6 +2307,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sentences_behind_the_first_are_said_together_and_a_clip_cut_off_was_not_heard() {
+        // Three whole sentences at once, and the reply still going.
+        let reply = Script {
+            events: vec![
+                started("m1"),
+                delta(&format!("{FIRST} Then it clears. By evening it is dry. And on")),
+            ],
+            hang: true,
+            finish: Some("m1"),
+            error: None,
+        };
+        let mut rig = Rig::start(
+            vec![reply, short_reply("m2", "Your calendar is free all day tomorrow.")],
+            &["what is the weather", "actually tell me about my calendar tomorrow"],
+        )
+        .await;
+        rig.talk();
+        let first = rig.next_play().await;
+        rig.next_play().await;
+        // The first alone, as soon as it could be; the two behind it together.
+        assert_eq!(rig.said(), [FIRST, "Then it clears. By evening it is dry."]);
+
+        // The first is heard, and the clip behind it is talked over.
+        rig.send(VoiceInput::Played { utterance: first });
+        rig.begin();
+        rig.until("the pause", |o| matches!(o, VoiceOutput::Pause)).await;
+        rig.end();
+        rig.until("the new turn", |o| {
+            matches!(o, VoiceOutput::Event(VoiceEvent::Heard { text })
+                if text == "actually tell me about my calendar tomorrow")
+        })
+        .await;
+        // Neither sentence of the clip was heard, so neither is kept.
+        assert_eq!(*rig.record.cuts.lock().unwrap(), [("m1".to_string(), FIRST.to_string())]);
+        rig.play_out().await;
+    }
+
+    #[tokio::test]
     async fn the_screen_and_what_was_heard_have_the_words_and_the_voice_the_marks() {
         let marked = "Say hello to {Siobhan|shiv-AWN} for me, it has been a while.";
         let mut rig = Rig::start(
@@ -3082,6 +3133,24 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    async fn words_heard_before_the_session_are_its_first_turn() {
+        let mut rig = Rig::start(vec![short_reply("m1", FIRST)], &[]).await;
+        // What the wake word's listener heard after the name.
+        rig.send(VoiceInput::Spoken("  type I won't be available tomorrow ".into()));
+        rig.play_out().await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["type I won't be available tomorrow"]);
+        assert_eq!(rig.heard_texts(), ["type I won't be available tomorrow"]);
+        // Nothing of ours was playing: their own words, which may approve.
+        assert_eq!(*rig.record.clear.lock().unwrap(), [true]);
+        assert_eq!(rig.said(), [FIRST]);
+        // Nothing to say starts nothing.
+        rig.send(VoiceInput::Spoken("   ".into()));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        rig.drain();
+        assert_eq!(rig.record.prompts.lock().unwrap().len(), 1);
+    }
+
     // ---- the sound of working ---------------------------------------------
 
     /// Whether the working sound was on as each state was announced.
@@ -3204,14 +3273,14 @@ mod tests {
             .filter(|(_, o)| matches!(o, VoiceOutput::Play { .. }))
             .map(|(at, _)| at)
             .collect();
-        assert!(heard_whole < plays[2], "before the second sentence of the reading played");
+        assert!(heard_whole < plays[2], "before the second clip of the reading played");
+        // What waited behind the reading's first sentence was said together.
         assert_eq!(
             rig.said(),
             [
                 "Here is the Morning Brew.",
                 "Markets rose today.",
-                "Oil fell.",
-                "In other news, it rained."
+                "Oil fell. In other news, it rained."
             ]
         );
         // Nothing of it is the reply, so nothing of the reply is cut.

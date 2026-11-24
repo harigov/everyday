@@ -4,7 +4,8 @@
 //! [`SentenceSplitter`] cuts text, streamed or whole, into sentences, so the
 //! first can be spoken while the rest is still being written or read, and
 //! [`speakable`] turns each into something a voice can say. [`sentences`] is
-//! the whole of a text at once, for writing that is already complete.
+//! the whole of a text at once, for writing that is already complete, and
+//! [`joins`] says which sentences a voice may be handed together.
 //!
 //! # Cutting sentences while they stream
 //!
@@ -139,6 +140,24 @@ pub fn sentences(text: &str) -> Vec<String> {
     let mut out = splitter.push(text);
     out.extend(splitter.finish());
     out
+}
+
+/// The most text a voice is handed in one go when sentences are said
+/// together ([`joins`]): as much as one sentence may be.
+pub const MAX_CLIP: usize = MAX_SENTENCE;
+
+/// Whether `next` may be said in one go after `last`, the last sentence of a
+/// clip that already holds `len` characters, keeping the clip to `room`.
+///
+/// A voice handed one sentence at a time starts every one afresh: the same
+/// pitch at the start of each, the same fall at the end, like somebody
+/// reading out a list. Handed several, it carries one sentence on into the
+/// next, as a person does. Never after a sentence that ended a line, though:
+/// the pause after an item of a list or a paragraph is longer than any a
+/// voice leaves between sentences, and only the end of what a voice is handed
+/// gets the pause its ending asks for ([`script::pause_after`]).
+pub fn joins(last: &str, len: usize, next: &str, room: usize) -> bool {
+    !last.trim_end().ends_with(LINE_END) && len + 1 + next.chars().count() <= room
 }
 
 /// The byte offset of the `n`th character of `text`, or its end.
@@ -1172,5 +1191,21 @@ mod tests {
         assert!(splitter.replace("").is_empty());
         let said = splitter.push("The first sentence is here. Second one comes next. ");
         assert_eq!(said, ["Second one comes next."]);
+    }
+
+    #[test]
+    fn sentences_are_said_together_up_to_the_room_and_never_past_a_line() {
+        let first = "You've got two things today.";
+        let next = "The dentist is at ten.";
+        let len = first.chars().count();
+        assert!(joins(first, len, next, MAX_CLIP));
+        // A space between them, and no more than the room.
+        let exactly = len + 1 + next.chars().count();
+        assert!(joins(first, len, next, exactly));
+        assert!(!joins(first, len, next, exactly - 1));
+        assert!(!joins(first, len, next, 0));
+        // An item of a list, or the end of a paragraph, keeps its own pause.
+        let line = format!("{first}{LINE_END}");
+        assert!(!joins(&line, len + 1, next, MAX_CLIP));
     }
 }

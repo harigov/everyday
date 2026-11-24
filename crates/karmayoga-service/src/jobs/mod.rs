@@ -772,7 +772,7 @@ async fn execute(
         // for. A project may ask the person in their chat, when one is
         // running. What a job's final reply is sent to is not said here: its
         // answer comes back through the follow-up, not the reply.
-        reach: Reach { asker: executor.asker(service, &job), sent_to: Vec::new() },
+        reach: Reach { asker: executor.asker(service, &job), sent_to: Vec::new(), typist: None },
     };
 
     let turn = tokio::time::timeout(executor.timeout(), crate::agent::run_turn(turn));

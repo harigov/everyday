@@ -432,6 +432,9 @@ pub fn tool_line(tool: &str) -> String {
     if tool == karmayoga_core::agent::END_VOICE_TOOL {
         return "Wrapping up…".to_string();
     }
+    if tool == "type_text" {
+        return "Typing it…".to_string();
+    }
     let lower = tool.to_lowercase();
     let words: Vec<&str> = lower.split('_').collect();
     let has = |names: &[&str]| {

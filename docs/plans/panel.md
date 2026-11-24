@@ -148,6 +148,21 @@ Per-machine `talk.json`: `enabled` (off), `shortcut`, `mode` (toggle | hold),
   for the conversation, as it does for voice mode.
 * `keep_ready`: while enabled and the vault unlocked, hold
   `Service::speech_keep_ready()` (`karmayoga_service::speech::ready`).
+* **"Type that ..."** (Nov 23 2026): the talk key's session is opened with a
+  typist (`Service::voice_open_typing`, `karmayoga_service::agent::Typist`,
+  carried in `Reach::typist`), and its spoken turns are offered `type_text`.
+  The model gives the exact text -- dictated words cleaned of filler and
+  punctuated, not reworded, or what it was asked to write -- and the shell
+  types it with voice typing's paste (`voicetyping::paste`, the helper window
+  made when the session opens, the key's newest activation token) into
+  whatever had the keyboard, which the panel never takes. No Enter is pressed
+  and the text's last line break is dropped. It types at once when the
+  person's own clear words asked (`ConfirmGate::spoken_request`) and nothing a
+  stranger wrote is in the turn; otherwise a `"desktop"` question shows the
+  whole text on the card first (Allow / Don't allow, never answered aloud): a
+  mail or page read on the way can ask for anything to be typed, and the
+  field may be a terminal. Not offered in the window's voice mode (the
+  keyboard is the window's) or on a call (no desktop).
 
 ## Who owns what (Nov 23 build)
 

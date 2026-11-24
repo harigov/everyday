@@ -31,12 +31,39 @@
 //! generation it was made for and [`Narrator::finished`] answers
 //! [`Narrated::Stale`] to one from before. Ids carry on counting through a
 //! clear: a stale result can never be taken for a new sentence.
+//!
+//! # Sentences said together
+//!
+//! A voice handed one sentence at a time starts every one afresh, which
+//! sounds like a list being read out ([`text::joins`]). An owner that asks for
+//! it ([`Narrator::joining`]) has the sentences waiting behind a clip that is
+//! already playing made together, as one clip, while anything said into
+//! silence -- the first sentence of a reply -- is still made alone, so that it
+//! starts as soon as it can. A clip may be at most [`GROWTH`] times as long as
+//! the one ahead of it, since it is made while that one is said, and never
+//! more than [`text::MAX_CLIP`].
+//!
+//! A clip comes back as one [`Sentence`]: the last one's id, their words
+//! joined, and the first one's tag; and is played as that. When that id is
+//! [played](Narrator::played), each sentence in it comes back on its own, as
+//! it would have one at a time, so the owner's account of what was heard is
+//! the same, only coarser: a clip stopped half way was not heard. A clip
+//! that cannot be made is made again a sentence at a time, so that a sentence
+//! the voice refuses does not take its neighbours with it.
 
 use super::synth::{Speech, Synthesiser};
+use super::text::{self, MAX_CLIP};
 use crate::error::{CommandError, CommandResult, codes};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+
+/// How many times as long as the clip ahead of it the next may be. The next
+/// is made while that one is said, so it must be made in the time that one
+/// takes to say: every voice here makes speech at least twice as fast as it is
+/// said (Kokoro, the slowest on this computer, four times), so one twice as
+/// long is ready in time.
+const GROWTH: usize = 2;
 
 /// One sentence's synthesis finishing: handed back to [`Narrator::finished`].
 #[derive(Debug)]
@@ -63,7 +90,9 @@ pub enum Narrated<T> {
     /// It could not be said, and has been skipped. `error` is `None` when the
     /// voice answered with nothing to play.
     Failed { sentence: Sentence<T>, error: Option<CommandError> },
-    /// It was for something cleared since.
+    /// Nothing for the owner to do: it was for something cleared since, or
+    /// sentences said together that could not be, which are being made again
+    /// one at a time.
     Stale,
 }
 
@@ -77,22 +106,31 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// Whether two sentences in a row, by their tags, may be said together.
+type Joins<T> = Box<dyn Fn(&T, &T) -> bool + Send + Sync>;
+
 /// Turns queued sentences into audio one at a time, a limited way ahead of
 /// what has been played.
 pub struct Narrator<T> {
     synthesiser: Arc<dyn Synthesiser>,
+    /// How many clips may wait to be played.
     max_ahead: usize,
     done: Arc<dyn Fn(Synthesised) + Send + Sync>,
+    /// `None` says every sentence alone.
+    joins: Option<Joins<T>>,
     next_id: u64,
     /// Which queue results belong to.
     generation: u64,
     /// Waiting to be made.
     queued: VecDeque<Sentence<T>>,
-    /// Being made: one at a time, in order. The task is aborted if the queue
-    /// is cleared.
-    making: Option<(Sentence<T>, JoinHandle<()>)>,
-    /// Made, and not yet played.
-    ready: VecDeque<Sentence<T>>,
+    /// Being made: one clip at a time, in order -- one sentence, or several
+    /// said together. The task is aborted if the queue is cleared.
+    making: Option<(Vec<Sentence<T>>, JoinHandle<()>)>,
+    /// Made, and not yet played: clips, each one or more sentences.
+    ready: VecDeque<Vec<Sentence<T>>>,
+    /// Sentences up to this id are made one at a time: they were in a clip
+    /// that could not be made.
+    alone_through: Option<u64>,
 }
 
 impl<T: Clone + Send + 'static> Narrator<T> {
@@ -107,12 +145,22 @@ impl<T: Clone + Send + 'static> Narrator<T> {
             synthesiser,
             max_ahead: max_ahead.max(1),
             done,
+            joins: None,
             next_id: 0,
             generation: 0,
             queued: VecDeque::new(),
             making: None,
             ready: VecDeque::new(),
+            alone_through: None,
         }
+    }
+
+    /// Have sentences waiting behind a clip that is playing made together,
+    /// two in a row only when `joins` says their tags may be: see the module
+    /// docs.
+    pub fn joining(mut self, joins: impl Fn(&T, &T) -> bool + Send + Sync + 'static) -> Self {
+        self.joins = Some(Box::new(joins));
+        self
     }
 
     /// Queue a sentence, and answer its id. Starts making it at once if
@@ -134,30 +182,43 @@ impl<T: Clone + Send + 'static> Narrator<T> {
         if done.generation != self.generation {
             return Narrated::Stale;
         }
-        let Some((sentence, _)) = self.making.take_if(|(s, _)| s.id == done.id) else {
+        let Some((mut clip, _)) =
+            self.making.take_if(|(clip, _)| clip.last().is_some_and(|s| s.id == done.id))
+        else {
             return Narrated::Stale;
         };
         let narrated = match done.result {
             Ok(speech) if !speech.samples.is_empty() => {
-                self.ready.push_back(sentence.clone());
+                let sentence = together(&clip);
+                self.ready.push_back(clip);
                 Narrated::Ready { sentence, speech }
             }
-            Ok(_) => Narrated::Failed { sentence, error: None },
-            Err(error) => Narrated::Failed { sentence, error: Some(error) },
+            // Several that could not be said together: each again, alone.
+            result if clip.len() > 1 => {
+                if let Err(e) = result {
+                    tracing::debug!(error = %e, "sentences said together failed; saying them one at a time");
+                }
+                self.alone_through = clip.last().map(|s| s.id);
+                for sentence in clip.into_iter().rev() {
+                    self.queued.push_front(sentence);
+                }
+                Narrated::Stale
+            }
+            result => Narrated::Failed { sentence: clip.remove(0), error: result.err() },
         };
         self.pump();
         narrated
     }
 
     /// `id` has been played, and so has everything before it: answers those
-    /// sentences, in order, and starts the next synthesis if there is room for
-    /// it now. An id that is not waiting to be played -- cleared since, or
-    /// never made -- names nothing, and nothing is answered.
+    /// sentences, in order, each on its own, and starts the next synthesis if
+    /// there is room for it now. An id that is not waiting to be played --
+    /// cleared since, or never made -- names nothing, and nothing is answered.
     pub fn played(&mut self, id: u64) -> Vec<Sentence<T>> {
-        let Some(at) = self.ready.iter().position(|s| s.id == id) else {
+        let Some(at) = self.ready.iter().position(|clip| clip.iter().any(|s| s.id == id)) else {
             return Vec::new();
         };
-        let played: Vec<Sentence<T>> = self.ready.drain(..=at).collect();
+        let played: Vec<Sentence<T>> = self.ready.drain(..=at).flatten().collect();
         self.pump();
         played
     }
@@ -170,6 +231,7 @@ impl<T: Clone + Send + 'static> Narrator<T> {
             task.abort();
         }
         self.ready.clear();
+        self.alone_through = None;
     }
 
     /// Whether anything made has been handed over to be played and has not
@@ -183,15 +245,32 @@ impl<T: Clone + Send + 'static> Narrator<T> {
         !self.queued.is_empty() || self.making.is_some() || !self.ready.is_empty()
     }
 
-    /// Start the next sentence's synthesis, if one is not under way and not
-    /// too many are waiting to be played.
+    /// Start the next clip's synthesis, if one is not under way and not too
+    /// many are waiting to be played: the next sentence, and those after it
+    /// that may be said with it.
     fn pump(&mut self) {
         if self.making.is_some() || self.ready.len() >= self.max_ahead {
             return;
         }
-        let Some(sentence) = self.queued.pop_front() else { return };
-        let (generation, id) = (self.generation, sentence.id);
-        let text = sentence.text.clone();
+        let Some(first) = self.queued.pop_front() else { return };
+        let alone = self.alone_through.is_some_and(|through| first.id <= through);
+        let mut clip = vec![first];
+        if let Some(joins) = self.joins.as_ref().filter(|_| !alone) {
+            // Into silence, as soon as it can be; behind a clip, as much as
+            // can be made while that one is said.
+            let room = self.ready.back().map_or(0, |ahead| length(ahead) * GROWTH).min(MAX_CLIP);
+            let mut len = length(&clip);
+            while let Some(next) = self.queued.front() {
+                let last = &clip[clip.len() - 1];
+                if !joins(&last.tag, &next.tag) || !text::joins(&last.text, len, &next.text, room) {
+                    break;
+                }
+                len += 1 + next.text.chars().count();
+                clip.extend(self.queued.pop_front());
+            }
+        }
+        let generation = self.generation;
+        let Sentence { id, text, .. } = together(&clip);
         let synthesiser = self.synthesiser.clone();
         let done = self.done.clone();
         let task = tokio::spawn(async move {
@@ -208,8 +287,21 @@ impl<T: Clone + Send + 'static> Narrator<T> {
             };
             done(Synthesised { generation, id, result });
         });
-        self.making = Some((sentence, task));
+        self.making = Some((clip, task));
     }
+}
+
+/// A clip as the one sentence it is made and played as: the last one's id,
+/// which is the one to say has been played, their words joined, and the first
+/// one's tag.
+fn together<T: Clone>(clip: &[Sentence<T>]) -> Sentence<T> {
+    let text = clip.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+    Sentence { id: clip[clip.len() - 1].id, text, tag: clip[0].tag.clone() }
+}
+
+/// How many characters a clip's words come to, joined.
+fn length<T>(clip: &[Sentence<T>]) -> usize {
+    clip.iter().map(|s| s.text.chars().count()).sum::<usize>() + clip.len().saturating_sub(1)
 }
 
 #[cfg(test)]
@@ -232,8 +324,9 @@ mod tests {
     }
 
     /// A voice that says what its words ask of it: `fail`, `empty`, `panic`
-    /// and `hang` go wrong in the ways their names say, and anything else is
-    /// one sample the length of the sentence.
+    /// and `hang` go wrong in the ways their names say, the word `refuse`
+    /// fails whatever is said with it, and anything else is one sample the
+    /// length of the sentence.
     #[derive(Default)]
     struct Fake {
         started: Mutex<Vec<String>>,
@@ -253,6 +346,9 @@ mod tests {
                         let _flag = DropFlag(abandoned);
                         std::future::pending::<()>().await;
                         unreachable!()
+                    }
+                    other if other.split(' ').any(|word| word == "refuse") => {
+                        Err(CommandError::new(codes::NETWORK, "not that"))
                     }
                     other => Ok(Speech { samples: vec![other.len() as i16], sample_rate: 16_000 }),
                 }
@@ -277,6 +373,12 @@ mod tests {
             }),
         );
         Rig { narrator, results, voice }
+    }
+
+    /// A rig whose narrator says sentences with the same tag together.
+    fn joining_rig(max_ahead: usize) -> Rig {
+        let Rig { narrator, results, voice } = rig(max_ahead);
+        Rig { narrator: narrator.joining(|a, b| a == b), results, voice }
     }
 
     impl Rig {
@@ -479,6 +581,122 @@ mod tests {
         rig.narrator.clear();
         assert!(rig.narrator.played(id).is_empty());
         assert!(!rig.narrator.outstanding());
+    }
+
+    #[tokio::test]
+    async fn the_first_sentence_is_made_alone_and_those_waiting_behind_it_together() {
+        let mut rig = joining_rig(2);
+        let first = "Okay, here is what I found for you.";
+        rig.narrator.say(first.into(), "reply");
+        rig.narrator.say("The dentist is at ten.".into(), "reply");
+        rig.narrator.say("Lunch is at one.".into(), "reply");
+        rig.settle().await;
+        assert_eq!(rig.started(), vec![first], "said into silence, so alone");
+
+        assert_eq!(ready_id(&rig.finish().await), 0);
+        match rig.finish().await {
+            Narrated::Ready { sentence, .. } => assert_eq!(
+                sentence,
+                Sentence {
+                    id: 2,
+                    text: "The dentist is at ten. Lunch is at one.".into(),
+                    tag: "reply"
+                }
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(rig.started()[1], "The dentist is at ten. Lunch is at one.");
+
+        // Played as the last one's id, each comes back on its own.
+        assert_eq!(rig.narrator.played(0).len(), 1);
+        let played = rig.narrator.played(2);
+        assert_eq!(
+            played.iter().map(|s| (s.id, s.text.as_str())).collect::<Vec<_>>(),
+            vec![(1, "The dentist is at ten."), (2, "Lunch is at one.")]
+        );
+        assert!(!rig.narrator.outstanding());
+    }
+
+    #[tokio::test]
+    async fn max_ahead_counts_clips_not_the_sentences_in_them() {
+        let mut rig = joining_rig(2);
+        rig.narrator.say("Okay, here is what I found for you.".into(), "reply");
+        rig.narrator.say("The dentist is at ten.".into(), "reply");
+        rig.narrator.say("Lunch is at one.".into(), "reply");
+        rig.finish().await;
+        rig.finish().await;
+        rig.narrator.played(0);
+        // One clip of two sentences waits: there is room for another.
+        rig.narrator.say("And that's all.".into(), "reply");
+        assert_eq!(ready_id(&rig.finish().await), 3);
+    }
+
+    #[tokio::test]
+    async fn a_clip_is_at_most_twice_the_one_ahead_of_it_and_never_past_the_cap() {
+        let mut rig = joining_rig(2);
+        rig.narrator.say("Okay.".into(), "reply");
+        rig.narrator.say("Sure thing.".into(), "reply");
+        rig.narrator.say("Next one.".into(), "reply");
+        rig.finish().await;
+        // Ten characters of room behind "Okay.": the first waiting is made
+        // whatever its length, but nothing joins it.
+        assert_eq!(ready_id(&rig.finish().await), 1);
+        rig.narrator.played(1);
+        assert_eq!(ready_id(&rig.finish().await), 2);
+        rig.narrator.played(2);
+
+        let long = "a".repeat(200);
+        let hundred = "b".repeat(100);
+        rig.narrator.say(long.clone(), "reply");
+        for _ in 0..3 {
+            rig.narrator.say(hundred.clone(), "reply");
+        }
+        rig.finish().await;
+        // Twice 200 is more than the cap: two hundreds fit in it, not three.
+        match rig.finish().await {
+            Narrated::Ready { sentence, .. } => {
+                assert_eq!(sentence.text, format!("{hundred} {hundred}"));
+                assert!(sentence.text.chars().count() <= MAX_CLIP);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_line_s_end_and_a_different_tag_end_a_clip() {
+        // Room for three clips, so each is made behind another, with room to
+        // join what comes after it.
+        let mut rig = joining_rig(3);
+        rig.narrator.say("Okay, here is what I found for you today.".into(), "reply");
+        rig.narrator.say("First, the dentist.¶".into(), "reply");
+        rig.narrator.say("Then lunch.".into(), "reply");
+        rig.narrator.say("Let me check.".into(), "own");
+        rig.finish().await;
+        assert_eq!(ready_id(&rig.finish().await), 1, "an item of a list keeps its own pause");
+        assert_eq!(ready_id(&rig.finish().await), 2, "the session's own words are not the reply");
+        rig.narrator.played(2);
+        assert_eq!(ready_id(&rig.finish().await), 3);
+    }
+
+    #[tokio::test]
+    async fn sentences_that_cannot_be_said_together_are_said_one_at_a_time() {
+        let mut rig = joining_rig(4);
+        rig.narrator.say("Okay, here is what I found for you.".into(), "reply");
+        rig.narrator.say("One.".into(), "reply");
+        rig.narrator.say("refuse".into(), "reply");
+        rig.narrator.say("Three.".into(), "reply");
+        rig.finish().await;
+        assert!(matches!(rig.finish().await, Narrated::Stale));
+        assert_eq!(rig.started()[1], "One. refuse Three.");
+
+        // Each again, alone: only the one the voice refuses is lost.
+        assert_eq!(ready_id(&rig.finish().await), 1);
+        match rig.finish().await {
+            Narrated::Failed { sentence, error: Some(_) } => assert_eq!(sentence.id, 2),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(ready_id(&rig.finish().await), 3);
+        assert_eq!(rig.started()[2..].to_vec(), vec!["One.", "refuse", "Three."]);
     }
 
     #[tokio::test]

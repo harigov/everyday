@@ -131,6 +131,12 @@ pub enum VoiceInput {
     /// counted ("And 2 more."). Talked over, it is cut like any speech and not
     /// said again. Not a turn. See [`crate::reach`].
     Update(String),
+    /// Words the person said before the session opened -- what came after
+    /// the wake word ([`crate::speech::wake`]) -- to be taken as heard: a turn
+    /// on them, as if they had said them now, with nothing of the session's
+    /// own audible when they began. Nothing happens if a turn is already
+    /// running or anything is being said.
+    Spoken(String),
     /// End the session.
     Stop,
 }

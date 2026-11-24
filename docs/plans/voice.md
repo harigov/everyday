@@ -92,6 +92,10 @@ goes into the same thread as what is typed.
   checking. When it does anyway, its words count as the turn's first, and a
   tool call ends the text before it, so they are said before the call rather
   than held back to come out in front of the answer.
+- **"Type that" from the talk key** (Nov 23 2026). A session the shell opens
+  for the talk key types into the field the person was in (`type_text`, see
+  `panel.md`): at once for their own clear words with no stranger's in the
+  turn, otherwise shown on the card first.
 - **Mail and articles, the way the apps tell them.** `summarize_thread`
   summarises a thread or a newsletter with the Mail app's own Summarise prompt,
   cache and per-account switch -- in a spoken turn, the Listen button's spoken
@@ -124,6 +128,29 @@ goes into the same thread as what is typed.
   sound with no fade: commas came out at 60 ms, sentences said together ran
   into each other, and the voice was heard stopping short and jumping on.
   The scale is 1.
+- **Sentences behind the first are said together** (Nov 23 2026). A voice
+  handed one sentence at a time starts every one afresh -- the same pitch at
+  the start of each, the same fall at the end -- which is what made a reply
+  sound read out. The narrator (`speech::narrate`, `Narrator::joining`) makes
+  the reply's sentences that are waiting behind a clip already playing into
+  one clip, and so for something read aloud; the first sentence, and anything
+  said into silence, is still made alone, so a reply starts as soon as it
+  did. A clip is at most twice as long as the one ahead of it (it is made
+  while that one plays: Phonon makes speech about nine times as fast as it
+  is said on this computer, Kokoro four) and at most 240 characters, and
+  never goes past a line's end, whose longer pause only a clip's end gets.
+  Tool phrases and questions are never joined: a phrase is rehearsed alone,
+  and a question is waited on by its id. What was heard of a cut reply is
+  counted in clips: one talked over half way counts as not heard. A clip the
+  voice cannot make is made again a sentence at a time. A rendered article or
+  podcast joins as much as fits in a line. Listen does not join: the reader
+  shows and skips by sentence.
+- **Phonon's own temperature, and a seed per sentence** (Nov 23 2026).
+  `ptts` used temperature 0.3 and one fixed seed for every sentence; Phonon's
+  config asks for 0.8. It is now 0.7, and each sentence is seeded from its
+  own words. Measured, neither changes much -- not how well Parakeet hears it,
+  how far the pitch moves, or the length of a clip -- so the joining above is
+  what to listen for.
 - **Words it would say wrong are said the person's way.** A spoken reply
   writes a word the voice is likely to get wrong as `{word|respelling}` --
   plain letters, hyphens between syllables, the stressed one in capitals:

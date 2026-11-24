@@ -191,7 +191,8 @@ async fn a_spoken_turn_that_says_goodbye_ends_the_conversation_out_loud() {
         fake_model(Script { calls: vec![END_TOOL.to_string()], then: "Talk soon.".into() }).await;
     let (svc, _dir) = service(&model.endpoint);
     let conversation = ConversationId::new();
-    let assistant = ServiceAssistant { service: svc.clone(), conversation, via: None };
+    let assistant =
+        ServiceAssistant { service: svc.clone(), conversation, via: None, typist: None };
 
     let outcome = assistant.turn("That's all I have.".into(), true, None, quiet()).await.unwrap();
 
@@ -209,8 +210,12 @@ async fn a_spoken_turn_that_says_goodbye_ends_the_conversation_out_loud() {
 async fn a_spoken_turn_that_carries_on_does_not() {
     let model = fake_model(Script { calls: Vec::new(), then: "It is sunny.".into() }).await;
     let (svc, _dir) = service(&model.endpoint);
-    let assistant =
-        ServiceAssistant { service: svc.clone(), conversation: ConversationId::new(), via: None };
+    let assistant = ServiceAssistant {
+        service: svc.clone(),
+        conversation: ConversationId::new(),
+        via: None,
+        typist: None,
+    };
 
     let outcome = assistant.turn("What is the weather?".into(), true, None, quiet()).await.unwrap();
 

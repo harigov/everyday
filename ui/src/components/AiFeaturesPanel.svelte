@@ -42,6 +42,7 @@
     TalkSettings,
     VoiceTypingKeyMode,
     VoiceTypingSettings,
+    WakeSettings,
     WritingSettings,
   } from '../lib/types'
   import SubTabs from './SubTabs.svelte'
@@ -249,6 +250,20 @@
     { value: 'hold', label: 'Hold to talk' },
   ]
 
+  /** Seconds of quiet after speaking that finish a dictation; 0 waits for the key. */
+  const VOICE_TYPING_PAUSES = [0, 1.5, 2, 3, 5]
+
+  /** The choices, with one saved outside them (by hand, or by an older list) kept on it. */
+  const voiceTypingPauses = $derived(
+    voiceTyping && !VOICE_TYPING_PAUSES.includes(voiceTyping.finishAfterPause)
+      ? [...VOICE_TYPING_PAUSES, voiceTyping.finishAfterPause].sort((a, b) => a - b)
+      : VOICE_TYPING_PAUSES,
+  )
+
+  function pauseLabel(seconds: number): string {
+    return seconds === 0 ? 'Never — press the key' : `After ${seconds} seconds`
+  }
+
   void api
     .voiceTypingSettings()
     .then((s) => {
@@ -262,11 +277,18 @@
     shortcut: string | null = null,
     mode: VoiceTypingKeyMode | null = null,
     clean: boolean | null = null,
+    finishAfterPause: number | null = null,
   ) {
     voiceTypingNotice = null
     voiceTypingBusy = true
     try {
-      voiceTyping = await api.setVoiceTypingSettings(enabled, shortcut, mode, clean)
+      voiceTyping = await api.setVoiceTypingSettings(
+        enabled,
+        shortcut,
+        mode,
+        clean,
+        finishAfterPause,
+      )
       voiceTypingKey = voiceTyping.shortcut
       if (voiceTyping.enabled && !voiceTyping.key.registered && voiceTyping.key.problem) {
         voiceTypingNotice = voiceTyping.key.problem
@@ -355,6 +377,59 @@
     }
   }
 
+  /**
+   * The wake word: calling the assistant by name, with the microphone
+   * listened to whenever nothing else needs it. Left out where there is no
+   * shell to ask, like the keys above.
+   */
+  let wake = $state<WakeSettings | null>(null)
+  let wakeNotice = $state<string | null>(null)
+  let wakeNames = $state('')
+  let wakeBusy = $state(false)
+
+  void api
+    .wakeSettings()
+    .then((s) => {
+      wake = s
+      wakeNames = s.names
+    })
+    .catch(() => (wake = null))
+
+  async function saveWake(
+    enabled: boolean,
+    names: string | null = null,
+    pauseInCalls: boolean | null = null,
+  ) {
+    wakeNotice = null
+    wakeBusy = true
+    try {
+      wake = await api.setWakeSettings(enabled, names, pauseInCalls)
+      wakeNames = wake.names
+    } catch (e) {
+      wakeNotice = errorMessage(e)
+    } finally {
+      wakeBusy = false
+    }
+  }
+
+  /** The name it listens for, as the switch says it. */
+  function wakeName(w: WakeSettings): string {
+    const first = w.names.split(',')[0]?.trim()
+    return first || w.assistantName.trim() || 'its name'
+  }
+
+  /** What the switch's small print says: how it is used, or why it is not listening. */
+  function wakeBlurb(w: WakeSettings): string {
+    if (w.enabled && w.problem) return w.problem
+    if (w.enabled && !w.listening && w.waiting) return w.waiting
+    const name = wakeName(w)
+    const how =
+      `Say “${name}” and then what you want — “${name}, type I won’t be available tomorrow” — ` +
+      'and it answers as the talk key would. The microphone is listened to whenever nothing ' +
+      'else is using it; what is said without the name is never kept or sent anywhere.'
+    return w.enabled && w.listening ? `Listening now. ${how}` : how
+  }
+
   /** "Try it": the same thing the key does, from here -- start, or end the one under way. */
   async function tryTalk() {
     talkNotice = null
@@ -394,7 +469,7 @@
       {
         id: 'computer' as Sub,
         label: 'On this computer',
-        show: !!(writing || voiceTyping || talk),
+        show: !!(writing || voiceTyping || talk || wake),
       },
     ].filter((t) => t.show),
   )
@@ -644,6 +719,19 @@
             </button>
           {/each}
         </div>
+        <label class="setting" class:disabled={!voiceTyping.enabled}>
+          <span class="setting-label">Type it when you stop talking</span>
+          <select
+            class="field pick"
+            disabled={voiceTypingBusy || !voiceTyping.enabled}
+            value={voiceTyping.finishAfterPause}
+            onchange={(e) => saveVoiceTyping(true, null, null, null, Number(e.currentTarget.value))}
+          >
+            {#each voiceTypingPauses as seconds (seconds)}
+              <option value={seconds}>{pauseLabel(seconds)}</option>
+            {/each}
+          </select>
+        </label>
         <label class="toggle">
           <input
             type="checkbox"
@@ -761,6 +849,72 @@
             Starts a conversation now, as the key would. Press it again to end the conversation.
           </small>
         </div>
+      </section>
+    {/if}
+
+    {#if wake}
+      <section>
+        <span class="eyebrow">Wake word</span>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={wake.enabled}
+            disabled={wakeBusy}
+            onchange={(e) => saveWake(e.currentTarget.checked)}
+          />
+          <span>
+            <b>Answer when called by name: “{wakeName(wake)}”</b>
+            <small>
+              {#if wakeNotice}
+                {wakeNotice}
+              {:else}
+                {wakeBlurb(wake)}
+              {/if}
+            </small>
+          </span>
+        </label>
+        {#if wake.enabled}
+          <form
+            onsubmit={(e) => {
+              e.preventDefault()
+              void saveWake(true, wakeNames)
+            }}
+          >
+            <input
+              class="field"
+              aria-label="Names it answers to"
+              placeholder={wake.assistantName || 'Siri'}
+              bind:value={wakeNames}
+            />
+            <div class="row">
+              <button
+                class="btn btn-primary"
+                type="submit"
+                disabled={wakeBusy || wakeNames.trim() === wake.names}
+              >
+                Use {wakeNames.includes(',') ? 'these names' : 'this name'}
+              </button>
+            </div>
+          </form>
+          <small class="try">
+            Empty answers to the assistant’s own name. Several, separated by commas, for a name the
+            speech model spells more than one way.
+          </small>
+          <label class="toggle">
+            <input
+              type="checkbox"
+              checked={wake.pauseInCalls}
+              disabled={wakeBusy}
+              onchange={(e) => saveWake(true, null, e.currentTarget.checked)}
+            />
+            <span>
+              <b>Stop listening during calls</b>
+              <small>
+                While another application has the microphone, what is said is for the call.
+              </small>
+            </span>
+          </label>
+        {/if}
       </section>
     {/if}
   {/if}

@@ -1,12 +1,12 @@
 # Voice typing: speak into any text field
 
 Press **Ctrl+Alt+M** anywhere on the desktop, say what you want to type, and
-press it again. What you said is heard by the speech model chosen in
+stop talking -- or press it again. What you said is heard by the speech model chosen in
 Settings → Models, written up on the medium model (filler out, your own
 corrections applied, punctuated, lists made into lists), and typed into the
 field that had the keyboard. In **hold** mode you hold the key while you
 talk and let go to finish; a quick tap starts listening hands-free until the
-next press. A card in the panel, in the corner of the screen
+next press or a pause. A card in the panel, in the corner of the screen
 (`docs/plans/panel.md`), says what is happening -- with the words as they are
 heard since November 2026, when the pill at the bottom of the screen gave way
 to the panel:
@@ -29,7 +29,7 @@ dictation", and its record is `WritingAction::Dictate`.
 | Speech | `speech::dictate` (`Service::dictation_open`) | Mail's write-by-voice session: voice mode's detector and recogniser, cut at pauses so most of it is worked out while the person is still talking; it ends on Stop, after 15 s of quiet or after 3 minutes, and feeds silence after somebody cut off mid-sentence so their last words are kept. |
 | Shell | `karmayoga-app/src/voicetyping/{mod,pill,paste}.rs`, `hotkey.rs`, `portal.rs` | The key (press and release), the work (mic → dictation session → `dictate` → paste), the card in the panel, the paste window, the paste. |
 | Paste window | `ui/voice-typing.html`, `ui/src/voicetyping/` | A page that draws nothing, in a window shown only for the moment of a paste on Wayland. |
-| Setting | `~/.config/karmayoga/voice-typing.json` | On/off, the shortcut, toggle or hold, write-up on or off. Per machine. The RemoteDesktop restore token stays in `writing.json` and is shared. |
+| Setting | `~/.config/karmayoga/voice-typing.json` | On/off, the shortcut, toggle or hold, write-up on or off, the pause that finishes it (`finishAfterPause`, seconds, 0 = the key only). Per machine. The RemoteDesktop restore token stays in `writing.json` and is shared. |
 
 ## A dictation, start to finish
 
@@ -40,7 +40,8 @@ dictation", and its record is `WritingAction::Dictate`.
    is ready.
 2. **Listening.** About 30 ms blocks go to the session; the card gets a
    level about twenty times a second.
-3. **Key again** (toggle), **key up** (hold), the card's Stop button, or the
+3. **Key again** (toggle), **key up** (hold), the card's Stop button, a
+   **pause** after the words while hands-free (2 s unless changed), or the
    session stopping by itself (15 s of quiet, 3 minutes). The microphone
    closes and the session hands back everything it heard, last words
    included.
@@ -61,6 +62,22 @@ session as `DictationInput::Backlog`, which does not count towards its 15 s
 of quiet. Anything being read aloud
 stops first. The record takes up to 20,000 characters, far more than three
 minutes of speech.
+
+## Pause to finish
+
+Asked for on Nov 23 2026: stopping talking should be enough. While listening
+hands-free -- toggle mode, or hold mode after a tap, never while the key is
+held -- voice typing asks the session for `DictationInput::EndAfterPause`,
+and the session ends (`DictationEnd::Paused`) once somebody who has said
+something has been quiet for long enough, as if the key had been pressed.
+The setting is the pause in all, 2 s by default (Off, 1.5, 2, 3 or 5 in
+Settings → AI features); the detector has already waited its own end of
+turn (1.2 s, `Tuning::DICTATION`) before it reports the end of the words, so
+the session is asked for only the rest. Quiet is counted in audio fed, like
+the session's other limits. Nothing said, or a cough the recogniser finds no
+words in, never ends it this way: the person is still finding their first
+words, and the 15 s limit is for that. The card says "Pause or press
+Ctrl+Alt+M to finish". Mail's write-by-voice does not ask for it.
 
 ## The key
 

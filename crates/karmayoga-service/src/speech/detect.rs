@@ -275,6 +275,21 @@ trait RawVad: Send {
     fn reset(&mut self);
 }
 
+/// How much of the audio after a segment Silero ended is kept on it: 200 ms.
+///
+/// Silero ends a segment where it stops being sure of speech, which can be
+/// before the last sound of the last word has died away -- a soft final
+/// syllable, a name said alone. Kokoro saying "Siri." came back as "Si"
+/// without it. A segment is only finished after the quiet that ends a turn,
+/// so what follows it is that quiet, and there is always this much of it.
+#[cfg(feature = "speech")]
+const TAIL_SAMPLES: usize = 3_200;
+
+/// How much of what was heard is kept for [`TAIL_SAMPLES`] to be taken from:
+/// more than a turn's ending quiet ever is.
+#[cfg(feature = "speech")]
+const HEARD_SAMPLES: usize = 16_000 * 4;
+
 /// Silero through sherpa-onnx.
 #[cfg(feature = "speech")]
 struct SileroVad {
@@ -282,13 +297,32 @@ struct SileroVad {
     /// What `detector` was made from, to make it again.
     config: sherpa_onnx::VadModelConfig,
     buffer_seconds: f32,
+    /// The last [`HEARD_SAMPLES`] of what was accepted, for a segment's tail.
+    heard: std::collections::VecDeque<f32>,
+    /// Samples accepted since the detector was made or reset: where the end
+    /// of `heard` is, on the clock a segment's start is read against.
+    fed: u64,
 }
 
 #[cfg(feature = "speech")]
 impl SileroVad {
     fn new(config: sherpa_onnx::VadModelConfig, buffer_seconds: f32) -> Option<Self> {
         let detector = sherpa_onnx::VoiceActivityDetector::create(&config, buffer_seconds)?;
-        Some(Self { detector, config, buffer_seconds })
+        Some(Self {
+            detector,
+            config,
+            buffer_seconds,
+            heard: std::collections::VecDeque::with_capacity(HEARD_SAMPLES),
+            fed: 0,
+        })
+    }
+
+    /// Up to [`TAIL_SAMPLES`] of what was heard from sample `from` on.
+    fn after(&self, from: u64) -> impl Iterator<Item = f32> + '_ {
+        let first = self.fed - self.heard.len() as u64;
+        let skip = from.saturating_sub(first);
+        let take = if from < first { 0 } else { TAIL_SAMPLES };
+        self.heard.iter().copied().skip(skip as usize).take(take)
     }
 }
 
@@ -296,6 +330,10 @@ impl SileroVad {
 impl RawVad for SileroVad {
     fn accept(&mut self, window: &[f32]) {
         self.detector.accept_waveform(window);
+        self.heard.extend(window.iter().copied());
+        let over = self.heard.len().saturating_sub(HEARD_SAMPLES);
+        self.heard.drain(..over);
+        self.fed += window.len() as u64;
     }
 
     fn speaking(&self) -> bool {
@@ -308,15 +346,16 @@ impl RawVad for SileroVad {
         // made, and the C++ it comes from does not say that a reset begins
         // the count again. A new detector does, for certain, and is a small
         // model, so a reset is a new one.
-        let segment = Segment {
-            start: u64::try_from(front.start()).unwrap_or(0),
-            samples: front.samples().to_vec(),
-        };
+        let start = u64::try_from(front.start()).unwrap_or(0);
+        let mut samples = front.samples().to_vec();
+        samples.extend(self.after(start + samples.len() as u64));
         self.detector.pop();
-        Some(segment)
+        Some(Segment { start, samples })
     }
 
     fn reset(&mut self) {
+        self.heard.clear();
+        self.fed = 0;
         match sherpa_onnx::VoiceActivityDetector::create(&self.config, self.buffer_seconds) {
             Some(fresh) => self.detector = fresh,
             None => {

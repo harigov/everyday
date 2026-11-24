@@ -335,6 +335,17 @@ impl MicWatch {
     pub fn session_active(&self) -> bool {
         self.shared.active.load(Ordering::Relaxed)
     }
+
+    /// Whether another application has the microphone running right now,
+    /// read straight from the sound server's list -- without the
+    /// [`SETTLE`] it takes before that counts as a call, and the
+    /// [`RELEASE_GRACE`] before it stops counting. What the wake word steps
+    /// aside for ([`crate::wake`]), which should neither listen to the first
+    /// seconds of a call nor stay deaf for most of a minute after one.
+    /// Always `false` where nothing is watched.
+    pub fn others_using(&self) -> bool {
+        !self.shared.users().is_empty()
+    }
 }
 
 /// Start watching, for the life of the process. A no-op off Linux

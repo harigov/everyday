@@ -3323,6 +3323,9 @@ export interface VoiceTypingSettings {
   mode: VoiceTypingKeyMode
   /** Write up what was heard on the medium model; off types it exactly as heard. */
   clean: boolean
+  /** Listening hands-free, stop and type after this many seconds of quiet
+   *  following what was said; 0 waits for the key. */
+  finishAfterPause: number
   key: KeyStatus
   /** How the answer is pasted on this desktop. */
   platform: 'wayland' | 'x11' | 'windows' | 'macos'
@@ -3342,6 +3345,25 @@ export interface TalkSettings {
    *  on; `0` always starts a new one. */
   continueMinutes: number
   key: KeyStatus
+}
+
+/** The wake word's per-machine setting: calling the assistant by name
+ *  instead of pressing the talk key. */
+export interface WakeSettings {
+  enabled: boolean
+  /** The names it answers to, separated by commas; empty uses the assistant's own. */
+  names: string
+  /** The assistant's own name -- listened for when `names` is empty. Empty
+   *  while the vault is locked or the assistant has none. */
+  assistantName: string
+  /** Stop listening while another application -- a call -- has the microphone. */
+  pauseInCalls: boolean
+  /** The microphone is open and the name is being listened for. */
+  listening: boolean
+  /** Why it could not listen when it last tried. */
+  problem: string | null
+  /** Why it is not listening right now, while switched on -- a moment that will pass. */
+  waiting: string | null
 }
 
 // ── The tray ───────────────────────────────────────────────────────────
@@ -4916,7 +4938,11 @@ export interface ProposalPolicy {
  * as the person's own wishes -- a memory, the profile, a skill, a routine, a
  * task for the assistant, an accepted proposal -- written after a stranger's
  * words were read this conversation: the subject's first line says what, and
- * the lines after it are the whole text that would be saved. See
+ * the lines after it are the whole text that would be saved. `'desktop'` is
+ * the talk key's assistant about to type into the window the person was
+ * working in, in another application -- asked unless their own words asked
+ * for it with nothing of a stranger's in the turn; the subject is the whole
+ * text. See
  * `agent::tools::mail`'s module docs in the
  * Rust core, `ConfirmGate` in the service, and the service's `browser`
  * module, for the whole of the reasoning behind each.
@@ -4932,6 +4958,7 @@ export const CONFIRM_KINDS = [
   'rewrite',
   'connection',
   'keep',
+  'desktop',
 ] as const
 export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 
@@ -5321,7 +5348,7 @@ export type DictationState = 'listening' | 'hearing' | 'finishing'
 
 /** Why a dictation session ended --
  *  `karmayoga_service::speech::dictate::DictationEnd`. */
-export type DictationEnd = 'stopped' | 'silence' | 'timeLimit' | 'cancelled' | 'failed'
+export type DictationEnd = 'stopped' | 'paused' | 'silence' | 'timeLimit' | 'cancelled' | 'failed'
 
 /**
  * What a dictation session tells the window --
