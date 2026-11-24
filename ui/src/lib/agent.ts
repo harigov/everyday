@@ -570,6 +570,20 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
         text: running ? 'Ending voice mode' : done ? 'Ended voice mode' : 'End voice mode',
         detail: null,
       }
+    // Typed where the person was typing, in whatever application had the
+    // keyboard when they began talking to the assistant.
+    case 'type_text':
+      return {
+        text: running ? 'Typing' : done ? 'Typed' : 'Type',
+        detail: arg(args, 'text'),
+      }
+    // What they say next is typed where they were typing, until they say
+    // they are done -- see `docs/plans/voice-reliability.md`.
+    case 'start_dictation':
+      return {
+        text: running ? 'Starting dictation' : done ? 'Started dictation' : 'Start dictation',
+        detail: null,
+      }
     case 'browser_open': {
       const url = arg(args, 'url')
       return {

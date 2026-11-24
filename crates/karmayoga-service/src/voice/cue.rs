@@ -61,6 +61,67 @@ pub fn working_loop(sample_rate: u32) -> Vec<f32> {
         .collect()
 }
 
+/// The listening sound's two notes, in the order they play: E5 and then A5, a
+/// fourth up, which is the interval of a question being opened for an answer
+/// rather than of a result arriving.
+const CHIME_NOTES: [f32; 2] = [659.25, 880.0];
+
+/// How long each note swells and fades. Short enough that the whole sound is
+/// over before the person has finished taking a breath to speak.
+const CHIME_NOTE_SECONDS: f32 = 0.09;
+
+/// The silence between the two notes, so they are heard as two.
+const CHIME_GAP_SECONDS: f32 = 0.03;
+
+/// The silence after the second note, where its ringing would die away. It
+/// gives the sound a quiet end, so that it is over -- for the ear, and for the
+/// echo canceller's reference alike -- a beat before the person is likely to
+/// speak.
+const CHIME_TAIL_SECONDS: f32 = 0.04;
+
+/// How much of each note's octave above is added to it, against 1.0 for the
+/// note: enough to make a bell of a plain tone, not enough to be bright.
+const CHIME_OVERTONE: f32 = 0.25;
+
+/// The loudest the listening sound gets, as a fraction of full scale (about
+/// -15 dBFS): a little over the working sound's, since this is the one sound
+/// that is meant to be noticed, and still well under a voice.
+const CHIME_PEAK: f32 = 0.18;
+
+/// The sound that says "listening": played once when a conversation the wake
+/// word began with the name alone has opened, so the person knows to speak
+/// (see [`super::VoiceInput::Chime`]). At `sample_rate`, mono, in
+/// `-1.0..=1.0`.
+///
+/// Two soft rising notes, about a quarter of a second in all, each a swell
+/// and fade of a raised cosine so that neither has an edge to click on, with
+/// silence at both ends so the whole starts and ends at zero. Like the working
+/// sound it is made once, where allocating is allowed, and only read after.
+pub fn listening_chime(sample_rate: u32) -> Vec<f32> {
+    let rate = sample_rate.max(1) as f32;
+    let note = ((CHIME_NOTE_SECONDS * rate) as usize).max(1);
+    let gap = (CHIME_GAP_SECONDS * rate) as usize;
+    let tail = (CHIME_TAIL_SECONDS * rate) as usize;
+    let weight = 1.0 + CHIME_OVERTONE;
+    let mut samples = Vec::with_capacity(CHIME_NOTES.len() * (note + gap) + tail);
+    for (index, hz) in CHIME_NOTES.iter().enumerate() {
+        samples.extend((0..note).map(|i| {
+            let phase = i as f32 / note as f32;
+            let envelope = 0.5 - 0.5 * (std::f32::consts::TAU * phase).cos();
+            let t = i as f32 / rate;
+            let tone = ((std::f32::consts::TAU * hz * t).sin()
+                + CHIME_OVERTONE * (std::f32::consts::TAU * 2.0 * hz * t).sin())
+                / weight;
+            CHIME_PEAK * envelope * tone
+        }));
+        if index + 1 < CHIME_NOTES.len() {
+            samples.resize(samples.len() + gap, 0.0);
+        }
+    }
+    samples.resize(samples.len() + tail, 0.0);
+    samples
+}
+
 /// The working sound as a transport plays it. See the module doc.
 pub struct Bed {
     samples: Vec<f32>,
@@ -149,6 +210,69 @@ mod tests {
         let loudest = peak(&round);
         assert!(loudest > 0.05 && loudest <= PEAK + 1e-6, "{loudest}");
         assert_eq!(*round.last().unwrap(), 0.0, "it loops without a step");
+    }
+
+    /// How many times `samples` crosses zero: twice a cycle of a note, which
+    /// is how a note's pitch is read without a transform.
+    fn crossings(samples: &[f32]) -> usize {
+        samples.windows(2).filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0)).count()
+    }
+
+    #[test]
+    fn the_listening_chime_is_about_a_quarter_of_a_second_at_any_rate() {
+        for rate in [8_000, 16_000, 22_050, 24_000, 44_100, 48_000] {
+            let chime = listening_chime(rate);
+            let seconds = chime.len() as f32 / rate as f32;
+            assert!((seconds - 0.25).abs() < 0.002, "{rate} Hz: {seconds} s");
+        }
+        assert!(listening_chime(0).len() <= 4, "no rate is next to no sound, not a crash");
+    }
+
+    #[test]
+    fn the_listening_chime_is_soft_but_not_silent() {
+        for rate in [16_000, 48_000] {
+            let loudest = peak(&listening_chime(rate));
+            assert!(loudest > 0.1 && loudest <= CHIME_PEAK + 1e-6, "{rate} Hz: {loudest}");
+        }
+    }
+
+    #[test]
+    fn the_listening_chime_starts_and_ends_in_silence() {
+        for rate in [16_000, 44_100, 48_000] {
+            let chime = listening_chime(rate);
+            assert_eq!(chime[0], 0.0, "{rate} Hz");
+            assert_eq!(*chime.last().unwrap(), 0.0, "{rate} Hz");
+            let tail = (CHIME_TAIL_SECONDS * rate as f32) as usize;
+            assert!(chime[chime.len() - tail..].iter().all(|&s| s == 0.0), "{rate} Hz");
+        }
+    }
+
+    #[test]
+    fn the_listening_chime_has_nothing_to_click_on() {
+        // No step from one sample to the next bigger than a full-strength tone
+        // an octave above the higher note could take.
+        let rate = 48_000;
+        let steepest = CHIME_PEAK * std::f32::consts::TAU * 2.0 * CHIME_NOTES[1] / rate as f32;
+        let chime = listening_chime(rate);
+        let widest = chime.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0, f32::max);
+        assert!(widest <= steepest, "a step of {widest}, a tone's steepest is {steepest}");
+    }
+
+    #[test]
+    fn the_listening_chime_is_two_notes_rising_with_a_gap_between() {
+        let rate = 48_000;
+        let chime = listening_chime(rate);
+        let note = (CHIME_NOTE_SECONDS * rate as f32) as usize;
+        let gap = (CHIME_GAP_SECONDS * rate as f32) as usize;
+        let (first, between, second) =
+            (&chime[..note], &chime[note..note + gap], &chime[note + gap..note + gap + note]);
+        assert!(between.iter().all(|&s| s == 0.0), "two notes, not one");
+        assert!(peak(first) > 0.1 && peak(second) > 0.1);
+        assert!(crossings(second) > crossings(first), "the second note is the higher");
+        // Roughly the pitches they were written at: two crossings a cycle.
+        let hz = |samples: &[f32]| crossings(samples) as f32 / 2.0 / CHIME_NOTE_SECONDS;
+        assert!((hz(first) - CHIME_NOTES[0]).abs() < 40.0, "{}", hz(first));
+        assert!((hz(second) - CHIME_NOTES[1]).abs() < 40.0, "{}", hz(second));
     }
 
     #[test]

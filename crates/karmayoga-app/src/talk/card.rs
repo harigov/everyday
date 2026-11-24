@@ -22,16 +22,25 @@ const HEARD_MAX: usize = 240;
 /// read, is the newest.
 const REPLY_MAX: usize = 420;
 
+/// How much of what a dictation has typed, from its end: the newest words are
+/// the ones to check against what is on the screen.
+const TYPED_MAX: usize = 240;
+
 /// How much of what a call is about to do is shown while it waits to be
 /// allowed.
 const SUBJECT_MAX: usize = 200;
 
 /// What the card's body says when nothing else needs saying: which key does
-/// what next.
+/// what next, or, for a conversation the wake word began, what to say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hint {
     /// The next press ends the conversation.
     End,
+    /// The name began it, with no key in the person's hand: saying that they
+    /// are done ends it (the session hears "that's all" itself). While the
+    /// microphone is muted there is nothing to say it to, and the card gives
+    /// [`Hint::End`]'s line instead.
+    Say,
     /// Hold mode, microphone shut: holding the key talks.
     Hold,
     /// Hold mode, key down: letting go sends what was said.
@@ -95,6 +104,11 @@ pub struct State {
     confirm: Option<Confirm>,
     trouble: Option<String>,
     over: Option<Over>,
+    /// What they say is being typed where they were typing, not answered.
+    dictating: bool,
+    /// What a dictation has typed, a stretch after another. Shown while it
+    /// goes on; the next dictation begins it afresh.
+    typed: String,
 }
 
 impl State {
@@ -113,6 +127,8 @@ impl State {
             confirm: None,
             trouble: None,
             over: None,
+            dictating: false,
+            typed: String::new(),
         }
     }
 
@@ -140,6 +156,12 @@ impl State {
     /// Whether the conversation is over, and its card only lingering.
     pub fn is_over(&self) -> bool {
         self.over.is_some()
+    }
+
+    /// Whether a dictation is going on: what is said is typed as it is heard,
+    /// and the pauses in it are somebody thinking of what to say next.
+    pub fn dictating(&self) -> bool {
+        self.dictating
     }
 
     /// Take in something the session said.
@@ -178,15 +200,49 @@ impl State {
                 }
             }
             VoiceEvent::Trouble { message } => self.trouble = Some(message.clone()),
+            VoiceEvent::Dictation { active } => {
+                // A new dictation starts from nothing: what an earlier one
+                // typed is not what this one is writing.
+                if *active && !self.dictating {
+                    self.typed.clear();
+                }
+                self.dictating = *active;
+            }
+            VoiceEvent::Typed { text } => self.typed(text),
             VoiceEvent::Ended { error } => {
                 self.tool = None;
                 self.confirm = None;
+                self.dictating = false;
                 self.over = Some(match error {
                     Some(error) => Over::Failed(error.clone()),
                     None => Over::Ended,
                 });
             }
         }
+    }
+
+    /// A stretch of a dictation went in: after what went in before it, with a
+    /// space between where neither has one, since a stretch is what was said
+    /// between two pauses and the next begins a new word.
+    fn typed(&mut self, text: &str) {
+        let solid = |c: Option<char>| c.is_some_and(|c| !c.is_whitespace());
+        if solid(self.typed.chars().next_back()) && solid(text.chars().next()) {
+            self.typed.push(' ');
+        }
+        self.typed.push_str(text);
+    }
+
+    /// A dictation is going on, and the card is not past saying so.
+    fn dictation_going(&self) -> bool {
+        self.dictating && self.over.is_none()
+    }
+
+    /// A dictation is going on and the microphone is open to hear it end:
+    /// what the title, the tone and the hint are of. A muted one is still
+    /// typed from -- the text it has typed is shown -- but it cannot be told
+    /// to stop.
+    fn dictation_shown(&self) -> bool {
+        self.dictation_going() && !self.muted
     }
 
     fn reply_is(&self, message_id: &str) -> bool {
@@ -276,6 +332,9 @@ impl State {
         if self.muted && self.phase == VoiceState::Listening {
             return "Muted".to_string();
         }
+        if self.dictation_shown() {
+            return "Dictating".to_string();
+        }
         phase_title(self.phase).to_string()
     }
 
@@ -292,6 +351,11 @@ impl State {
         }
         if self.trouble.is_some() {
             return Tone::Trouble;
+        }
+        // Whatever is going on behind it -- a stretch being understood, one
+        // being typed -- the microphone is open, and the card says so.
+        if self.dictation_shown() {
+            return Tone::Listening;
         }
         match self.phase {
             VoiceState::Listening | VoiceState::Hearing if !self.muted => Tone::Listening,
@@ -328,9 +392,15 @@ impl State {
         if self.ending {
             return None;
         }
+        if self.dictation_shown() {
+            return Some("Say “stop dictating” when you're done".to_string());
+        }
         let key = if self.key.trim().is_empty() { "the talk key" } else { self.key.trim() };
         Some(match self.hint {
             Hint::End => format!("Press {key} to end"),
+            // Nothing is heard while it is muted: the key is what is left.
+            Hint::Say if self.muted => format!("Press {key} to end"),
+            Hint::Say => "Say “that's all” when you're done".to_string(),
             Hint::Hold => format!("Hold {key} to talk"),
             Hint::Release => format!("Let go of {key} when you've finished"),
         })
@@ -339,6 +409,18 @@ impl State {
     fn lines(&self) -> Vec<Line> {
         let mut lines = Vec::new();
         if matches!(self.over, Some(Over::Refused(_))) {
+            return lines;
+        }
+        // While it goes on the card is about what is being typed: what was
+        // said and answered before it began is not what is happening.
+        if self.dictation_going() {
+            if !self.typed.trim().is_empty() {
+                lines.push(Line {
+                    who: Some("Typed".to_string()),
+                    text: tail(&self.typed, TYPED_MAX),
+                    pending: true,
+                });
+            }
             return lines;
         }
         if let Some(heard) = self.heard.as_deref().filter(|h| !h.trim().is_empty()) {
@@ -462,6 +544,9 @@ pub fn tool_line(tool: &str) -> String {
     }
     if tool == "type_text" {
         return "Typing it…".to_string();
+    }
+    if tool == karmayoga_service::voice::DICTATE_TOOL {
+        return "Getting ready to type…".to_string();
     }
     let lower = tool.to_lowercase();
     let words: Vec<&str> = lower.split('_').collect();
@@ -677,6 +762,198 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_the_name_began_says_how_to_end_it_by_voice() {
+        let mut state = state_in(VoiceState::Listening);
+        state.hint = Hint::Say;
+        let card = build(&state);
+        assert_eq!(card.body.as_deref(), Some("Say “that's all” when you're done"));
+        assert_eq!(ids(&card), ["end", "mute", "open"], "the buttons are the same");
+
+        // Muted, nothing is heard: the key is what is left to end it with.
+        state.muted = true;
+        assert_eq!(build(&state).body.as_deref(), Some("Press Ctrl+Alt+A to end"));
+        state.key.clear();
+        assert_eq!(build(&state).body.as_deref(), Some("Press the talk key to end"));
+    }
+
+    #[test]
+    fn what_needs_saying_comes_before_how_to_end_it() {
+        let mut state = state_in(VoiceState::Thinking);
+        state.hint = Hint::Say;
+        state.hear(&VoiceEvent::Agent {
+            event: AgentEvent::ToolStarted {
+                call_id: "c1".into(),
+                name: "search_mail".into(),
+                arguments: serde_json::json!({}),
+            },
+        });
+        assert_eq!(build(&state).body.as_deref(), Some("Searching your mail…"));
+        state.hear(&VoiceEvent::Trouble { message: "Sorry, that didn't work.".into() });
+        assert_eq!(build(&state).body.as_deref(), Some("Sorry, that didn't work."));
+        state.hear(&VoiceEvent::Ended { error: None });
+        assert_eq!(build(&state).body, None, "an ended card has no instructions");
+    }
+
+    fn dictating() -> State {
+        let mut state = state_in(VoiceState::Listening);
+        state.hear(&VoiceEvent::Heard { text: "take this down".into() });
+        state.hear(&started("m1"));
+        state.hear(&delta("Go ahead."));
+        state.hear(&finished("m1"));
+        state.hear(&VoiceEvent::Dictation { active: true });
+        state
+    }
+
+    fn typed(text: &str) -> VoiceEvent {
+        VoiceEvent::Typed { text: text.to_string() }
+    }
+
+    #[test]
+    fn a_dictation_is_titled_and_toned_and_says_how_to_stop_it() {
+        let state = dictating();
+        assert!(state.dictating());
+        let card = build(&state);
+        assert_eq!(card.title, "Dictating");
+        assert_eq!(card.tone, Tone::Listening);
+        assert_eq!(card.body.as_deref(), Some("Say “stop dictating” when you're done"));
+        assert!(card.meter, "the microphone is open, and is shown to be");
+        assert!(card.lines.is_empty(), "what was said before it is not what is happening");
+        assert_eq!(ids(&card), ["end", "mute", "open"]);
+    }
+
+    #[test]
+    fn what_a_dictation_has_typed_is_a_line_that_is_still_coming() {
+        let mut state = dictating();
+        state.hear(&typed("Hi Sam, I can't make Friday."));
+        let card = build(&state);
+        let [line] = &card.lines[..] else { panic!("one line, got {:?}", card.lines) };
+        assert_eq!(line.who.as_deref(), Some("Typed"));
+        assert_eq!(line.text, "Hi Sam, I can't make Friday.");
+        assert!(line.pending, "more is on its way");
+
+        state.hear(&typed("Could we do Monday instead?"));
+        assert_eq!(
+            build(&state).lines[0].text,
+            "Hi Sam, I can't make Friday. Could we do Monday instead?",
+            "each stretch after the last"
+        );
+    }
+
+    #[test]
+    fn stretches_are_joined_with_a_space_unless_one_is_there() {
+        let mut state = dictating();
+        state.hear(&typed("Hello"));
+        state.hear(&typed("world."));
+        assert_eq!(state.typed, "Hello world.");
+        state.hear(&typed(" Next, "));
+        state.hear(&typed("this."));
+        assert_eq!(state.typed, "Hello world. Next, this.");
+        state.hear(&typed("\nNew line."));
+        assert_eq!(state.typed, "Hello world. Next, this.\nNew line.");
+        assert_eq!(build(&state).lines[0].text, "Hello world. Next, this. New line.");
+    }
+
+    #[test]
+    fn a_long_dictation_shows_its_end_cut_at_a_word() {
+        let words: Vec<String> = (0..300).map(|i| format!("word{i}")).collect();
+        let mut state = dictating();
+        state.hear(&typed(&words.join(" ")));
+        let text = build(&state).lines[0].text.clone();
+        assert!(text.starts_with("…word"), "{text}");
+        assert!(text.ends_with("word299"));
+        assert!(text.chars().count() <= TYPED_MAX + 1);
+    }
+
+    #[test]
+    fn a_dictation_that_ends_gives_the_card_back_to_the_conversation() {
+        let mut state = dictating();
+        state.hear(&typed("Some words."));
+        state.hear(&VoiceEvent::Dictation { active: false });
+        assert!(!state.dictating());
+        let card = build(&state);
+        assert_eq!(card.title, "Listening");
+        assert_eq!(card.body.as_deref(), Some("Press Ctrl+Alt+A to end"));
+        let who: Vec<_> = card.lines.iter().map(|l| l.who.as_deref()).collect();
+        assert_eq!(who, [Some("You"), Some("Assistant")], "what was said before, and no typing");
+    }
+
+    #[test]
+    fn typing_that_arrives_after_the_dictation_ended_is_not_shown() {
+        let mut state = dictating();
+        state.hear(&VoiceEvent::Dictation { active: false });
+        state.hear(&typed("the last stretch"));
+        assert_eq!(build(&state).lines.len(), 2);
+    }
+
+    #[test]
+    fn the_next_dictation_starts_from_nothing() {
+        let mut state = dictating();
+        state.hear(&typed("First."));
+        state.hear(&VoiceEvent::Dictation { active: false });
+        state.hear(&VoiceEvent::Dictation { active: true });
+        assert!(build(&state).lines.is_empty());
+        state.hear(&typed("Second."));
+        assert_eq!(build(&state).lines[0].text, "Second.");
+        // Told it has begun again, it has not begun again.
+        state.hear(&VoiceEvent::Dictation { active: true });
+        assert_eq!(build(&state).lines[0].text, "Second.");
+    }
+
+    #[test]
+    fn a_dictation_is_listening_whatever_the_session_is_busy_with() {
+        let mut state = dictating();
+        for phase in [VoiceState::Hearing, VoiceState::Understanding, VoiceState::Thinking] {
+            state.hear(&VoiceEvent::State { state: phase });
+            let card = build(&state);
+            assert_eq!(card.title, "Dictating", "{phase:?}");
+            assert_eq!(card.tone, Tone::Listening, "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn a_muted_dictation_cannot_be_told_to_stop_but_still_shows_what_it_typed() {
+        let mut state = dictating();
+        state.hear(&typed("Some words."));
+        state.muted = true;
+        let card = build(&state);
+        assert_eq!(card.title, "Muted");
+        assert_eq!(card.tone, Tone::Neutral);
+        assert_eq!(card.body.as_deref(), Some("Press Ctrl+Alt+A to end"));
+        assert_eq!(card.lines[0].text, "Some words.");
+        assert!(!card.meter);
+
+        state.hear(&VoiceEvent::State { state: VoiceState::Hearing });
+        assert_eq!(build(&state).title, "Listening…", "the phase's own, not Dictating");
+    }
+
+    #[test]
+    fn ending_and_ended_win_over_a_dictation() {
+        let mut state = dictating();
+        state.hear(&typed("Some words."));
+        state.ending = true;
+        let card = build(&state);
+        assert_eq!(card.title, "Ending…");
+        assert_eq!(card.body, None);
+
+        state.hear(&VoiceEvent::Ended { error: None });
+        assert!(!state.dictating(), "the conversation is over, and so is the dictation");
+        let card = build(&state);
+        assert_eq!(card.title, "Conversation ended");
+        assert_eq!(card.tone, Tone::Success);
+        assert!(card.lines.iter().all(|l| l.who.as_deref() != Some("Typed")));
+    }
+
+    #[test]
+    fn trouble_while_dictating_is_still_seen() {
+        let mut state = dictating();
+        state.hear(&VoiceEvent::Trouble { message: "That could not be typed.".into() });
+        let card = build(&state);
+        assert_eq!(card.tone, Tone::Trouble);
+        assert_eq!(card.body.as_deref(), Some("That could not be typed."));
+        assert_eq!(card.title, "Dictating");
+    }
+
+    #[test]
     fn the_assistants_own_name_is_the_kicker_and_its_lines_speaker() {
         let mut state = state_in(VoiceState::Speaking);
         state.name_it("  Robin ");
@@ -835,6 +1112,7 @@ mod tests {
         assert_eq!(tool_line("browser_open"), "Looking at the web…");
         assert_eq!(tool_line("generate_image"), "Drawing a picture…");
         assert_eq!(tool_line(karmayoga_core::agent::END_VOICE_TOOL), "Wrapping up…");
+        assert_eq!(tool_line(karmayoga_service::voice::DICTATE_TOOL), "Getting ready to type…");
         assert_eq!(tool_line("frobnicate"), "Working on it…");
     }
 

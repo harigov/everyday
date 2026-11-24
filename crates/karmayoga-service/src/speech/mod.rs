@@ -45,6 +45,7 @@ pub mod tempo;
 pub mod text;
 pub mod transcribe;
 pub mod utterance;
+pub mod voicing;
 pub mod wake;
 pub mod wav;
 

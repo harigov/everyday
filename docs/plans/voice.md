@@ -275,8 +275,8 @@ tasks. Nothing the loop awaits may block it from hearing `Stop`.
     (read from the calls that ran, never for a stopped turn), and once its reply has
     played -- nothing outstanding, nobody talking or being transcribed -- and 1.5 s
     more have passed for the last word to leave the speaker or the phone, the
-    session stops as for `Stop`. Words said over the goodbye that are not an echo or a stop
-    word start a turn, which takes the ending back. Only the talking ends: the
+    session stops as for `Stop`. Words said over the goodbye that are not an echo, a stop
+    word or courtesy (15) start a turn, which takes the ending back. Only the talking ends: the
     thread stays. On a call through a chat, ending the session hangs up.
 11. **Reading aloud.** A turn whose `read_aloud` ran reports what it chose,
     each call in order (`TurnOutcome::read_aloud`, never for a stopped turn),
@@ -323,6 +323,67 @@ tasks. Nothing the loop awaits may block it from hearing `Stop`.
     the session's own speech, not part of any reply. In quiet hours the router
     holds updates rather than handing them over, then gives them to the
     sessions that were open when they were held.
+
+14. **The listening chime.** `VoiceInput::Chime`, asked for by the shell when
+    the wake word opened the conversation with the name alone, becomes
+    `VoiceOutput::Chime` for the transport to play (`cue::listening_chime`),
+    unless the session is stopping or ending. Nothing is made of the moment
+    after it: the chime has no words for an echo check to match, and words that
+    follow it are the person's own and clear to approve what they ask for ("type
+    I'm running late"), so it is not counted as audio in the air.
+15. **A plain goodbye ends it.** Whole utterances only, looked at after the
+    echo checks (so the session's own goodbye coming back is not another
+    goodbye) and before a stop word (`phrases::is_closing`: "that's all",
+    "nothing else", "I don't have anything else", "I'm done", "bye", "talk
+    to you later", with "no", "okay", "thanks" and the like round them;
+    never "that's it", "no" or "no thanks", which are as often an answer).
+    The session stops whatever is running as a stop word does (`interrupt(None)`:
+    the turn cancelled, audio and any question cleared, the stored reply cut
+    to what was heard), says one of a few goodbyes of its own
+    (`Errand::Goodbye`, dealt like the others), and sets `ending`, so
+    10 ends the session once it has played. No turn begins and nothing is
+    announced as `Heard`. While it is ending, an utterance that is only
+    courtesy (`phrases::is_courtesy`: thanks, bye, "you too", "okay",
+    "got it", a murmur, or another closer) is heard and let go: it neither
+    takes the goodbye back nor says another. Real words still do. What follows
+    the wake word (`VoiceInput::Spoken`) is looked at the same way: a filler
+    is nothing, a plain goodbye ends it without a turn.
+16. **Fillers, fragments and murmurs.** Looked at in `on_words`, in this
+    order: nothing, or nothing but fillers ("um", "hmm", "oh":
+    `is_filler`), is nothing, and is not an unclear answer to a question
+    either; an utterance that began while audio was actually playing
+    (`over_playing`, not its tail: a word a moment after the reply is an
+    answer, "Friday" to "Thursday or Friday?") and is one or two words that are
+    all in what was said in the last three seconds, in order
+    (`is_echo_fragment`), is an echo and is let go -- never a stop word, which a
+    reply may contain, nor a word that answers (yes, no, yeah, yep, nope, sure,
+    okay); a backchannel
+    ("mm-hmm", "uh-huh", "right", "got it": `is_backchannel`) said over
+    audio that was actually playing when it began (`Utterance::over_playing`,
+    not merely its tail in the air) lets the reply go on. "Yes", "yeah" and
+    "okay" are not murmurs: they answer.
+17. **Dictation.** A turn whose outcome says `dictate` (`start_dictation`,
+    for a session that can type) and that was not talked over begins one:
+    `VoiceEvent::Dictation { active: true }`. While it lasts no turn begins,
+    no update is said and there is no working sound; each utterance is
+    echo-checked as above, and then is its own end ("stop dictating",
+    "that's all", "I'm done", a stop word: "Done." or the like is said), a
+    goodbye (`is_closing` and not an end of dictation, or an end of dictation
+    with a goodbye in it, "that's all, bye": it is typed up to, then ends as in
+    15), or text. Text is made by `phrases::dictated`
+    (fillers out, "new line" and "new paragraph" as breaks, a capital after
+    a break, a space in front when it runs on from the last) at the moment
+    it is heard, and typed through `VoiceAssistant::type_text`, strictly in
+    order and one at a time, each told as `VoiceEvent::Typed`. Typing that
+    fails is `Trouble`, a short sorry, and the end of the dictation, with
+    what waited behind it dropped. What was said before "stop dictating" is
+    typed before it is over, and a goodbye said after it waits for that
+    (`said_goodbye` does not end the session while anything is being typed or
+    queued). `start_dictation`, like `end_voice_mode`, is given no tool phrase:
+    "Okay, one sec." in front of "Go ahead." says nothing. A session that stops in the middle of one
+    emits `Dictation { active: false }` first. The real assistant types
+    through the conversation's typist, with no line break when the wake word
+    opened it.
 
 ## The desktop transport (`karmayoga-app/src/voice`)
 

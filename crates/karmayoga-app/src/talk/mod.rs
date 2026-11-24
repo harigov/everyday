@@ -98,6 +98,13 @@ const IDLE_TICK: Duration = Duration::from_secs(1);
 /// How long "Conversation ended" stays up.
 const ENDED_LINGER: Duration = Duration::from_secs(2);
 
+/// How long the first turn of a conversation the wake word began waits for
+/// the main window to say what it shows ([`screen_shared`]): "write a snippet
+/// of this article here" is about what is open there. The window answers the
+/// moment it is told the conversation began, well inside this; a window that
+/// is hidden says nothing, and the turn goes ahead without it.
+const SCREEN_WAIT: Duration = Duration::from_millis(400);
+
 /// How long a card that says something went wrong stays up: there is a
 /// reason to read.
 const TROUBLE_LINGER: Duration = Duration::from_secs(6);
@@ -213,8 +220,14 @@ struct Live {
     /// it ended. See [`announce`].
     announced: bool,
     /// Begun by the wake word rather than the key: over after
-    /// [`conversation::WOKEN_IDLE_AFTER`] of quiet, without a note.
+    /// [`conversation::WOKEN_IDLE_AFTER`] of quiet (unless a dictation is
+    /// going on), without a note, and told on its card to say it is done
+    /// rather than to press a key.
     woke: bool,
+    /// What came after the wake word, waiting to be the first turn until the
+    /// main window has said what it shows -- see [`screen_shared`] -- or
+    /// [`SCREEN_WAIT`] has passed.
+    first_turn: Option<String>,
 }
 
 impl Live {
@@ -237,6 +250,7 @@ impl Live {
             mute_when_heard: false,
             announced: false,
             woke: false,
+            first_turn: None,
         };
         live.sync_hint();
         live
@@ -272,14 +286,27 @@ impl Live {
         !self.card.is_over()
     }
 
-    /// The card's hint follows how the key is held.
+    /// The card's hint follows how the key is held, and how the conversation
+    /// began.
     fn sync_hint(&mut self) {
-        self.card.hint = hint_for(self.posture);
+        self.card.hint = hint_for(self.posture, self.woke);
+    }
+
+    /// How long it may be left alone before it ends. See
+    /// [`conversation::idle_after`].
+    fn idle_limit(&self) -> Duration {
+        conversation::idle_after(self.card.phase, self.woke, self.card.dictating())
     }
 }
 
-fn hint_for(posture: key::Posture) -> card::Hint {
+/// What the card's body says to do, for a conversation in `posture` that the
+/// wake word began (`woke`) or the key or the button did. Nobody who called
+/// the assistant by name has a key in their hand, so they are told what to
+/// say instead -- but only while a press is what ends it: a key held or
+/// muted is the key's own conversation whatever began it.
+fn hint_for(posture: key::Posture, woke: bool) -> card::Hint {
     match posture {
+        key::Posture::Toggled | key::Posture::Free if woke => card::Hint::Say,
         key::Posture::Toggled | key::Posture::Free => card::Hint::End,
         key::Posture::Held { .. } => card::Hint::Release,
         key::Posture::Muted => card::Hint::Hold,
@@ -435,7 +462,11 @@ fn hear(live: &mut Live, event: &VoiceEvent, now: Instant) -> Effects {
                 fx.muted = Some(true);
             }
         }
-        VoiceEvent::Heard { .. } => live.quiet_since = now,
+        // Somebody is there: what they said, or what is being typed from what
+        // they said, or a dictation begun or ended on their say-so.
+        VoiceEvent::Heard { .. } | VoiceEvent::Typed { .. } | VoiceEvent::Dictation { .. } => {
+            live.quiet_since = now;
+        }
         VoiceEvent::Ended { .. } => {
             live.mute_when_heard = false;
             fx.ended = true;
@@ -657,6 +688,7 @@ fn begin(app: &AppHandle, how: Begin) {
     card.key = config.shortcut.trim().to_string();
     let mut live = Live::new(seq, conversation, posture, card, now);
     live.woke = said.is_some();
+    live.sync_hint();
     if live.woke {
         // Only a press brings a token, and a press before this one is not
         // what this conversation types for.
@@ -750,10 +782,30 @@ async fn open(app: AppHandle, seq: u64, conversation: ConversationId, said: Opti
                     // An end that was asked for while the session was opening.
                     if live.card.ending {
                         voice::stop_shell(&app);
-                    } else if let Some(said) = said.filter(|s| !s.trim().is_empty()) {
-                        // What came after the wake word: the first turn.
-                        live.quiet_since = Instant::now();
-                        voice::shell_heard(&app, said);
+                    } else {
+                        match opening(said) {
+                            // What came after the wake word: the first turn.
+                            // Held for a moment: the window, just told the
+                            // conversation began, sends what it shows, and the
+                            // turn is about that.
+                            Opening::Turn(said) => {
+                                live.quiet_since = Instant::now();
+                                live.first_turn = Some(said);
+                                let app = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    tokio::time::sleep(SCREEN_WAIT).await;
+                                    first_turn(&app, Some(seq));
+                                });
+                            }
+                            // The name alone: the person is not looking at the
+                            // corner, so they are told by sound that it is
+                            // listening, and the quiet is counted from then.
+                            Opening::Chime => {
+                                live.quiet_since = Instant::now();
+                                voice::shell_chime(&app);
+                            }
+                            Opening::Nothing => {}
+                        }
                     }
                 }
                 // Taken down while it opened -- the vault locked -- or over
@@ -766,6 +818,54 @@ async fn open(app: AppHandle, seq: u64, conversation: ConversationId, said: Opti
         }
         Err(error) => refuse(&app, seq, &error),
     }
+}
+
+/// What a conversation does as soon as its session is open.
+#[derive(Debug, PartialEq, Eq)]
+enum Opening {
+    /// The wake word, and what came after it: that is the first turn.
+    Turn(String),
+    /// The wake word and nothing after it: the listening sound says it has
+    /// been heard and is listening.
+    Chime,
+    /// The key or the button: the person is looking at the card, and the key
+    /// in their hand is the sign.
+    Nothing,
+}
+
+/// What a conversation opened with `said` -- `Some` when the wake word began
+/// it, with what came after the name, which may be nothing -- does now it is
+/// open.
+fn opening(said: Option<String>) -> Opening {
+    match said {
+        Some(said) if !said.trim().is_empty() => Opening::Turn(said),
+        Some(_) => Opening::Chime,
+        None => Opening::Nothing,
+    }
+}
+
+/// Begin the first turn that waits on the main window's screen, if there is
+/// one still waiting: conversation `seq`'s, or whichever is going on.
+fn first_turn(app: &AppHandle, seq: Option<u64>) {
+    let said = {
+        let mut inner = lock();
+        let live = match seq {
+            Some(seq) => live_for(&mut inner, seq),
+            None => inner.live.as_mut(),
+        };
+        let Some(live) = live.filter(|live| live.active()) else { return };
+        let Some(said) = live.first_turn.take() else { return };
+        live.quiet_since = Instant::now();
+        said
+    };
+    voice::shell_heard(app, said);
+}
+
+/// The main window has handed the session what it shows
+/// (`voice_set_screen`): a first turn waiting on it begins now, after it. See
+/// [`SCREEN_WAIT`].
+pub fn screen_shared(app: &AppHandle) {
+    first_turn(app, None);
 }
 
 /// Tell the main window a conversation began or ended -- see [`TALK_EVENT`].
@@ -830,10 +930,11 @@ async fn watch_idle(app: AppHandle, seq: u64) {
         tokio::time::sleep(IDLE_TICK).await;
         let mut inner = lock();
         let Some(live) = live_for(&mut inner, seq).filter(|live| live.active()) else { return };
-        let after = conversation::idle_after(live.card.phase, live.woke);
+        let after = live.idle_limit();
         if conversation::idle_expired(live.card.phase, live.quiet_since, Instant::now(), after) {
-            // Woken by name, it was always going to end soon: no note.
-            let note = (!live.woke).then_some(IDLE_NOTE);
+            // Woken by name, it was always going to end soon: no note. A
+            // dictation that was waited on for the long time has one.
+            let note = (!live.woke || live.card.dictating()).then_some(IDLE_NOTE);
             let fx = finish(live, note);
             apply(&app, live, fx);
             return;
@@ -1152,9 +1253,44 @@ mod tests {
         let now = Instant::now();
         let live = live(Posture::Toggled, now);
         assert_eq!(live.card.hint, card::Hint::End);
-        assert_eq!(hint_for(Posture::Held { since: now }), card::Hint::Release);
-        assert_eq!(hint_for(Posture::Muted), card::Hint::Hold);
-        assert_eq!(hint_for(Posture::Free), card::Hint::End);
+        assert_eq!(hint_for(Posture::Held { since: now }, false), card::Hint::Release);
+        assert_eq!(hint_for(Posture::Muted, false), card::Hint::Hold);
+        assert_eq!(hint_for(Posture::Free, false), card::Hint::End);
+    }
+
+    #[test]
+    fn a_conversation_the_name_began_shows_what_to_say_where_the_others_show_the_key() {
+        let now = Instant::now();
+        let mut live = live(Posture::Toggled, now);
+        assert_eq!(live.card.hint, card::Hint::End);
+        live.woke = true;
+        live.sync_hint();
+        assert_eq!(live.card.hint, card::Hint::Say);
+        assert_eq!(
+            card::build(&live.card).body.as_deref(),
+            Some("Say “that's all” when you're done")
+        );
+        // The mute button changes nothing about it: the card falls back to the
+        // key itself, which is the only thing a muted microphone leaves.
+        toggle_mute(&mut live);
+        assert_eq!(live.card.hint, card::Hint::Say);
+        assert_eq!(card::build(&live.card).body.as_deref(), Some("Press Ctrl+Alt+A to end"));
+
+        // The key's own postures keep their own hints, whatever began them.
+        assert_eq!(hint_for(Posture::Held { since: now }, true), card::Hint::Release);
+        assert_eq!(hint_for(Posture::Muted, true), card::Hint::Hold);
+        assert_eq!(hint_for(Posture::Free, true), card::Hint::Say);
+        assert_eq!(hint_for(Posture::Toggled, false), card::Hint::End);
+    }
+
+    #[test]
+    fn only_the_name_alone_is_answered_with_the_listening_sound() {
+        let turn = |said: &str| Opening::Turn(said.to_string());
+        assert_eq!(opening(None), Opening::Nothing, "the key and the button have the card in view");
+        assert_eq!(opening(Some(String::new())), Opening::Chime);
+        assert_eq!(opening(Some("  \n ".into())), Opening::Chime, "a breath is not words");
+        assert_eq!(opening(Some("type I'm late".into())), turn("type I'm late"));
+        assert_eq!(opening(Some(" ok ".into())), turn(" ok "), "what was said, as it was");
     }
 
     #[test]
@@ -1297,6 +1433,67 @@ mod tests {
         // Everything else the session says is not the person.
         hear(&mut live, &VoiceEvent::Trouble { message: "x".into() }, even_later + IDLE_TICK);
         assert_eq!(live.quiet_since, even_later);
+    }
+
+    #[test]
+    fn typing_and_dictating_are_the_person_doing_something() {
+        let start = Instant::now();
+        let mut live = live(Posture::Toggled, start);
+        let mut later = start;
+        for event in [
+            VoiceEvent::Dictation { active: true },
+            VoiceEvent::Typed { text: "Hello.".into() },
+            VoiceEvent::Typed { text: "Again.".into() },
+            VoiceEvent::Dictation { active: false },
+        ] {
+            later += Duration::from_secs(40);
+            let fx = hear(&mut live, &event, later);
+            assert_eq!(live.quiet_since, later, "{event:?}");
+            assert!(fx.draw, "{event:?}");
+            assert!(!fx.ended, "{event:?}");
+        }
+    }
+
+    #[test]
+    fn a_woken_conversation_that_is_dictating_is_not_ended_for_a_short_quiet() {
+        let start = Instant::now();
+        let mut live = live(Posture::Toggled, start);
+        live.woke = true;
+        live.sync_hint();
+        hear(&mut live, &state(VoiceState::Listening), start);
+        assert_eq!(live.idle_limit(), conversation::WOKEN_IDLE_AFTER);
+
+        hear(&mut live, &VoiceEvent::Dictation { active: true }, start);
+        assert!(live.card.dictating());
+        assert_eq!(
+            live.idle_limit(),
+            conversation::IDLE_AFTER,
+            "a dictation thinks between sentences"
+        );
+        let pause = start + conversation::WOKEN_IDLE_AFTER + Duration::from_secs(5);
+        assert!(!conversation::idle_expired(
+            live.card.phase,
+            live.quiet_since,
+            pause,
+            live.idle_limit()
+        ));
+
+        // Done, it is a woken conversation again, its quiet counted from then.
+        let done = start + Duration::from_secs(60);
+        hear(&mut live, &VoiceEvent::Dictation { active: false }, done);
+        assert_eq!(live.idle_limit(), conversation::WOKEN_IDLE_AFTER);
+        let soon = done + conversation::WOKEN_IDLE_AFTER;
+        assert!(conversation::idle_expired(
+            live.card.phase,
+            live.quiet_since,
+            soon,
+            live.idle_limit()
+        ));
+
+        // A conversation that ended in the middle of one is not dictating.
+        hear(&mut live, &VoiceEvent::Dictation { active: true }, done);
+        hear(&mut live, &VoiceEvent::Ended { error: None }, done);
+        assert!(!live.card.dictating());
     }
 
     #[test]

@@ -14,6 +14,11 @@
 //!
 //! Under the speech, when there is none, the sound of the assistant working
 //! ([`Bed`]) can play: built on the engine thread, only filled here.
+//!
+//! Over everything, once, the listening sound
+//! ([`listening_chime`](karmayoga_service::voice::cue::listening_chime)) can
+//! be played: it is not speech, so it is neither reported nor held, and it is
+//! mixed in rather than queued, so it never cuts speech off or waits for it.
 
 use std::collections::VecDeque;
 
@@ -40,6 +45,12 @@ pub struct PlaybackQueue {
     spent: Vec<Vec<f32>>,
     /// The sound of working, once it has been asked for.
     bed: Option<Bed>,
+    /// The listening sound, at the speaker's rate; empty for a queue with
+    /// nothing to play it on.
+    chime: Vec<f32>,
+    /// How much of it has gone to the device: `chime.len()` or more when it
+    /// is not sounding.
+    chime_at: usize,
 }
 
 impl Default for PlaybackQueue {
@@ -56,6 +67,8 @@ impl PlaybackQueue {
             finished: Vec::with_capacity(SPARE),
             spent: Vec::with_capacity(SPARE),
             bed: None,
+            chime: Vec::new(),
+            chime_at: 0,
         }
     }
 
@@ -65,10 +78,28 @@ impl PlaybackQueue {
         Self { bed: Some(bed), ..Self::new() }
     }
 
+    /// The same, able to play the listening sound too: `chime` is made for
+    /// the speaker's rate where making it may allocate, and only read once
+    /// the callback has it.
+    pub fn with_chime(mut self, chime: Vec<f32>) -> Self {
+        self.chime_at = chime.len();
+        self.chime = chime;
+        self
+    }
+
     /// Play the sound of working while nothing else plays, or stop it.
     pub fn set_working(&mut self, on: bool) {
         if let Some(bed) = self.bed.as_mut() {
             bed.set(on);
+        }
+    }
+
+    /// Play the listening sound, once, from its start, over whatever else is
+    /// playing. Nothing if the queue has no such sound, and nothing again
+    /// while it is sounding already: restarting it mid-note would click.
+    pub fn play_chime(&mut self) {
+        if self.chime_at >= self.chime.len() {
+            self.chime_at = 0;
         }
     }
 
@@ -98,9 +129,12 @@ impl PlaybackQueue {
     /// Throw away everything queued, and the hold too: what is said next is
     /// not meant to wait on a pause that was about what was said before.
     /// Utterances thrown away are not reported as finished -- they were not
-    /// played.
+    /// played. The listening sound, if it is sounding, is thrown away too:
+    /// whatever asked to clear is about the person talking, and it is no
+    /// longer wanted.
     pub fn clear(&mut self) {
         self.paused = false;
+        self.chime_at = self.chime.len();
         while let Some(segment) = self.segments.pop_front() {
             self.spent.push(segment.samples);
         }
@@ -108,7 +142,9 @@ impl PlaybackQueue {
 
     /// Write the next `out.len()` mono samples, silence for whatever there is
     /// not (or all of it, when paused) -- or the sound of working, if it is
-    /// on and nothing is queued or held. Returns how many were speech.
+    /// on and nothing is queued or held -- and the listening sound over any
+    /// of it, if it is sounding: not speech, and not held by a pause, which is
+    /// about speech. Returns how many were speech.
     ///
     /// Every utterance whose last sample lands in `out`, even exactly at its
     /// end, is finished by the time this returns.
@@ -142,7 +178,23 @@ impl PlaybackQueue {
             Some(bed) => bed.fill_idle(rest, !self.paused && self.segments.is_empty()),
             None => rest.fill(0.0),
         }
+        self.mix_chime(out);
         written
+    }
+
+    /// Add the next of the listening sound, if it is sounding, to `out`. A sum
+    /// that would go past full scale is held there: it is soft, and so is
+    /// nearly everything it is played over, but the device's range is not
+    /// something to find out by overshooting.
+    fn mix_chime(&mut self, out: &mut [f32]) {
+        let Some(rest) = self.chime.get(self.chime_at..).filter(|rest| !rest.is_empty()) else {
+            return;
+        };
+        let count = rest.len().min(out.len());
+        for (sample, tone) in out.iter_mut().zip(rest) {
+            *sample = (*sample + tone).clamp(-1.0, 1.0);
+        }
+        self.chime_at += count;
     }
 
     /// Whether [`take_finished`](Self::take_finished) has anything. Cheap, so
@@ -365,6 +417,117 @@ mod tests {
         let mut out = [1.0; 200];
         queue.fill(&mut out);
         assert!(out[100..].iter().all(|&s| s == 0.0), "faded out and gone");
+    }
+
+    #[test]
+    fn the_listening_sound_plays_once_and_is_not_reported() {
+        let mut queue = PlaybackQueue::new().with_chime(vec![0.25, 0.5, 0.25]);
+        let mut out = [9.0; 4];
+        queue.fill(&mut out);
+        assert_eq!(out, [0.0; 4], "nothing until it is asked for");
+
+        queue.play_chime();
+        let mut out = [0.0; 2];
+        assert_eq!(queue.fill(&mut out), 0, "none of it is speech");
+        assert_eq!(out, [0.25, 0.5]);
+        let mut out = [0.0; 4];
+        queue.fill(&mut out);
+        assert_eq!(out, [0.25, 0.0, 0.0, 0.0], "the rest of it, then silence");
+        queue.fill(&mut out);
+        assert_eq!(out, [0.0; 4], "once, not round again");
+        assert!(!queue.has_finished(), "it is not an utterance anybody waits on");
+        assert!(finished(&mut queue).is_empty());
+    }
+
+    #[test]
+    fn the_listening_sound_is_mixed_over_speech_and_never_cuts_it_off() {
+        let mut queue = PlaybackQueue::new().with_chime(vec![0.25; 2]);
+        queue.push(1, vec![0.5; 4]);
+        queue.fill(&mut [0.0; 1]);
+        queue.play_chime();
+
+        let mut out = [0.0; 4];
+        assert_eq!(queue.fill(&mut out), 3, "all that was left of the speech");
+        assert_eq!(out, [0.75, 0.75, 0.5, 0.0], "both, and the speech goes on to its end");
+        assert_eq!(finished(&mut queue), vec![1], "reported when its last sample has gone");
+    }
+
+    #[test]
+    fn the_listening_sound_is_not_held_by_a_pause_and_is_never_past_full_scale() {
+        let mut queue = PlaybackQueue::new().with_chime(vec![0.5; 2]);
+        queue.push(1, vec![0.9; 4]);
+        queue.pause();
+        queue.play_chime();
+        let mut out = [9.0; 3];
+        assert_eq!(queue.fill(&mut out), 0);
+        assert_eq!(out, [0.5, 0.5, 0.0], "speech is held; the sound is not speech");
+
+        queue.resume();
+        queue.play_chime();
+        let mut out = [0.0; 2];
+        queue.fill(&mut out);
+        assert_eq!(out, [1.0, 1.0], "0.9 and 0.5 are held at full scale");
+    }
+
+    #[test]
+    fn the_listening_sound_over_the_working_sound_is_both() {
+        let chime = vec![0.25, -0.25, 0.125];
+        let mut with = PlaybackQueue::with_working_sound(Bed::new(1_000)).with_chime(chime.clone());
+        let mut without = PlaybackQueue::with_working_sound(Bed::new(1_000));
+        for queue in [&mut with, &mut without] {
+            queue.set_working(true);
+            // Past its pause and into the pulse.
+            queue.fill(&mut [0.0; 600]);
+        }
+        with.play_chime();
+        let (mut sounded, mut alone) = ([0.0; 5], [0.0; 5]);
+        with.fill(&mut sounded);
+        without.fill(&mut alone);
+        assert!(alone.iter().any(|&s| s != 0.0), "the bed is in the pulse");
+        for (i, tone) in chime.iter().enumerate() {
+            assert!((sounded[i] - (alone[i] + tone)).abs() < 1e-6, "sample {i}");
+        }
+        assert_eq!(sounded[3..], alone[3..], "and then it is the bed alone");
+    }
+
+    #[test]
+    fn asking_again_while_it_sounds_does_not_restart_it() {
+        let mut queue = PlaybackQueue::new().with_chime(vec![0.1, 0.2, 0.3, 0.4]);
+        queue.play_chime();
+        let mut out = [0.0; 2];
+        queue.fill(&mut out);
+        queue.play_chime();
+        queue.fill(&mut out);
+        assert_eq!(out, [0.3, 0.4], "it carried on from where it was");
+        // Once it has gone, it can be asked for again.
+        queue.play_chime();
+        queue.fill(&mut out);
+        assert_eq!(out, [0.1, 0.2]);
+    }
+
+    #[test]
+    fn clearing_stops_the_listening_sound() {
+        let mut queue = PlaybackQueue::new().with_chime(vec![0.25; 4]);
+        queue.play_chime();
+        queue.fill(&mut [0.0; 2]);
+        queue.clear();
+        let mut out = [9.0; 4];
+        queue.fill(&mut out);
+        assert_eq!(out, [0.0; 4]);
+        // And it is there to be asked for again after.
+        queue.play_chime();
+        let mut out = [0.0; 4];
+        queue.fill(&mut out);
+        assert_eq!(out, [0.25; 4]);
+    }
+
+    #[test]
+    fn a_queue_with_no_listening_sound_plays_nothing_for_it() {
+        let mut queue = PlaybackQueue::new();
+        queue.play_chime();
+        let mut out = [9.0; 4];
+        queue.fill(&mut out);
+        assert_eq!(out, [0.0; 4]);
     }
 
     #[test]

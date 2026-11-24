@@ -99,6 +99,7 @@ impl VoiceAssistant for ServiceAssistant {
                 stopped: turned.stopped,
                 ended_voice: turned.ended_voice,
                 read_aloud: turned.read_aloud,
+                dictate: turned.dictate,
             })
         })
     }
@@ -140,6 +141,46 @@ impl VoiceAssistant for ServiceAssistant {
         let service = self.service.clone();
         Box::pin(async move { service.read_aloud_text(what).await })
     }
+
+    /// Type a stretch of a dictation through the same typist `type_text` uses,
+    /// so it lands where that would. In a conversation the wake word opened
+    /// no line break is typed ([`without_line_breaks`]).
+    fn type_text(&self, text: String) -> BoxFuture<'static, Result<(), String>> {
+        let typist = self.typist.clone();
+        let woken = self.woken;
+        Box::pin(async move {
+            let Some(typist) = typist else {
+                return Err("I can't type from here.".to_string());
+            };
+            let text = if woken { without_line_breaks(&text) } else { text };
+            typist.type_text(text).await
+        })
+    }
+}
+
+/// `text` with every run of line breaks made one space.
+///
+/// What a conversation the wake word began types has none: what said the name
+/// may have been a video, and a line break typed into a terminal or a chat is
+/// Enter. `type_text` the tool is held to the same rule without asking first
+/// (`ConfirmGate::typing_question`); a dictation has nobody to ask, and so
+/// leaves the breaks out, where it could otherwise send a message half
+/// written.
+fn without_line_breaks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_break = false;
+    for c in text.chars() {
+        if matches!(c, '\r' | '\n') {
+            if !in_break && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            in_break = true;
+        } else {
+            in_break = false;
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Make the stored reply `message_id` read `heard`, and say whether anything
@@ -249,5 +290,22 @@ impl Service {
         // So background updates can be said in it. See `crate::reach`.
         self.register_voice(conversation, via, link.input.clone());
         Ok(link)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_of_line_breaks_is_one_space() {
+        assert_eq!(without_line_breaks("Dear Bob,\n\nI am late."), "Dear Bob, I am late.");
+        assert_eq!(without_line_breaks("one\r\ntwo\rthree\nfour"), "one two three four");
+        // Not a second space where there is one already.
+        assert_eq!(without_line_breaks("Hello. \nWorld"), "Hello. World");
+        // Only breaks: only a space, which is harmless where it lands.
+        assert_eq!(without_line_breaks("\n\n"), " ");
+        assert_eq!(without_line_breaks("one line"), "one line");
+        assert_eq!(without_line_breaks(""), "");
     }
 }

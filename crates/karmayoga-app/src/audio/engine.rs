@@ -36,7 +36,10 @@
 //!
 //! Whatever the output callback wrote, silence included, is copied out
 //! downmixed, brought to 16 kHz and handed to the canceller as the reference
-//! for the microphone. See `echo.rs`.
+//! for the microphone. See `echo.rs`. Silence is not all it can be: the working
+//! sound and the listening sound are mixed into the block before it is
+//! copied, so the canceller hears them as it hears speech, and a chime the
+//! microphone picks up is taken out of it like any other echo.
 //!
 //! # Failures
 //!
@@ -52,7 +55,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, SupportedStreamConfig};
 use karmayoga_service::speech::SAMPLE_RATE;
-use karmayoga_service::voice::cue::Bed;
+use karmayoga_service::voice::cue::{Bed, listening_chime};
 
 use super::AudioError;
 use super::echo::{Canceller, Cleaning};
@@ -132,6 +135,7 @@ enum Control {
     Resume,
     Clear,
     Working(bool),
+    Chime,
     Stop,
 }
 
@@ -194,6 +198,18 @@ impl AudioEngine {
     /// playing, or stop it. See `karmayoga_service::voice::cue`.
     pub fn working(&self, on: bool) {
         let _ = self.control.send(Control::Working(on));
+    }
+
+    /// Play the listening sound (`karmayoga_service::voice::cue::listening_chime`)
+    /// once, now. Not speech: nothing is reported when it has played, and it
+    /// is heard by the echo canceller as everything played is. Nothing is
+    /// played by an engine without a speaker.
+    ///
+    /// It is mixed over whatever is playing rather than queued behind it, so
+    /// it never waits on speech nor cuts any off, and [`clear`](Self::clear)
+    /// ends it.
+    pub fn chime(&self) {
+        let _ = self.control.send(Control::Chime);
     }
 
     /// Close the devices. Does not wait for it; safe to say twice.
@@ -366,10 +382,14 @@ fn open(host: &cpal::Host, options: EngineOptions) -> Result<Opened, AudioError>
     };
 
     let (tx, events) = std::sync::mpsc::sync_channel::<Event>(CHANNEL_CAPACITY);
-    // A speaker can play the sound of working, made now for its rate rather
-    // than when it is first wanted, under the lock its callback tries for.
+    // A speaker can play the sound of working and the listening sound, made
+    // now for its rate rather than when first wanted, under the lock its
+    // callback tries for. One with no speaker has neither to play.
     let queue = Arc::new(Mutex::new(match &speaker {
-        Some((_, config)) => PlaybackQueue::with_working_sound(Bed::new(config.sample_rate())),
+        Some((_, config)) => {
+            let rate = config.sample_rate();
+            PlaybackQueue::with_working_sound(Bed::new(rate)).with_chime(listening_chime(rate))
+        }
         None => PlaybackQueue::new(),
     }));
     let finished = Arc::new(AtomicBool::new(false));
@@ -742,6 +762,7 @@ impl Pipeline {
                 opened.finished.store(true, Ordering::Release);
             }
             Control::Working(on) => lock(&opened.queue).set_working(on),
+            Control::Chime => lock(&opened.queue).play_chime(),
             Control::Stop => {}
         }
     }
@@ -889,6 +910,28 @@ mod tests {
         assert_eq!(data, [0.5, 0.5, -0.5, -0.5, 0.25, 0.25, 0.0, 0.0]);
         assert_eq!(mono, vec![0.5, -0.5, 0.25, 0.0]);
         assert!(finished.load(Ordering::Acquire), "utterance 1 ended inside the block");
+    }
+
+    #[test]
+    fn the_listening_sound_is_in_the_block_and_so_in_the_reference() {
+        let queue = Mutex::new(PlaybackQueue::new().with_chime(vec![0.25; 3]));
+        let finished = AtomicBool::new(false);
+        queue.lock().unwrap().play_chime();
+
+        let mut data = [0.0f32; 8]; // four stereo frames
+        let mut mono = Vec::new();
+        write_block::<f32>(&mut data, 2, &mut mono, &queue, &finished);
+
+        assert_eq!(data, [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.0, 0.0]);
+        assert_eq!(
+            mono,
+            vec![0.25, 0.25, 0.25, 0.0],
+            "what was played is what the canceller hears"
+        );
+        assert!(
+            !finished.load(Ordering::Acquire),
+            "it is not an utterance, so nothing is reported"
+        );
     }
 
     #[test]

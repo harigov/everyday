@@ -138,6 +138,32 @@ portal as writing help's does. If the desktop will not give it the keyboard,
 nothing is typed and the card offers **Copy**, which the panel's renderer
 does itself -- it is the window that was clicked.
 
+That window needs an activation token, and a conversation the wake word began
+has none (nobody pressed a key), so "Jimmy, type ..." was refused the
+keyboard and typed nothing. Since Nov 23 2026 the paste goes first through the
+`Clipboard` portal instead (`portal::paste_text`), with no window of ours
+shown at all: one RemoteDesktop session selects the keyboard, asks for the
+clipboard (`RequestClipboard`, after `SelectDevices` and before `Start`),
+starts, offers the text as the clipboard's contents (`SetSelection`:
+`text/plain;charset=utf-8`, `text/plain`, `UTF8_STRING`, `STRING`, `TEXT`),
+presses Ctrl+V, and answers the focused application's `SelectionTransfer` by
+writing the text to the pipe `SelectionWrite` hands over. It uses writing
+help's restore token, so the desktop asks once for both. The helper window is
+the fallback only when the desktop has no clipboard portal or will not share
+it (nothing was pressed). If Ctrl+V was pressed and no application asked for
+the text within 2 s, the card says so and nothing else is tried: an
+application that was only slow would type it twice. The clipboard is the
+session's and goes when it closes, so what the person had copied is not put
+back.
+
+Checked Nov 23 2026 in a private headless GNOME 50 against
+gnome-text-editor: the one dialog ("Allow Remote Interaction", "Allow
+Clipboard Access") on the first paste, Unicode and line breaks typed once, and
+the restore token it returned starting the next session with no dialog. With
+no window focused GNOME still read the text after Ctrl+V (likely the
+compositor's own clipboard keeping), so there "nothing took it" is not seen:
+it is reported as typed, as the helper window's paste always was.
+
 ## Checked
 
 - A private headless GNOME 50 with the real app, the portal dialogs and

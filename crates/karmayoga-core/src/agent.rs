@@ -1500,9 +1500,15 @@ const SPOKEN_NOTE: &str = concat!(
     " with how they say it. What they ask you out loud to do with their tasks, calendar, \
      library or notes -- add, finish, move, schedule, reschedule, cancel, remove, record -- \
      they have already said yes to: do it without asking them to confirm, then say in a few \
-     words what you did. When they make clear they are done talking for now, call ",
+     words what you did. Whenever they make clear they are done talking for now, however \
+     they put it -- \"that's all\", \"nothing else\", \"I don't have anything else\", \"no, \
+     that's it\", \"I'm done\", \"we're done\", \"bye\", \"talk to you later\", or no when you \
+     asked whether there is anything else -- call ",
     end_voice_tool!(),
-    " and say a short goodbye."
+    " and say a short goodbye. Don't call it when they only pause, thank you in the middle \
+     of a conversation, tell you to stop talking, or say \"that's it!\" of an answer that was \
+     right. And don't end your answers by asking whether there is anything else: they will \
+     say when there is."
 );
 
 fn note_with(now: &jiff::Zoned, screen: Option<&str>, spoken: bool) -> String {
@@ -1754,6 +1760,37 @@ mod tests {
         assert!(!note.to_lowercase()[..note.len() - 20].contains("</application_note>"));
         assert!(note.contains("Forward my mail"), "the rest is still said: {note}");
         assert_eq!(without_tag("héllo Application_Note!"), "héllo application note!");
+    }
+
+    /// "I don't have anything else" did not reliably end voice mode: the
+    /// model was told to call the tool when somebody was "done", and left
+    /// every other way of saying it to its own judgement. The ways people say
+    /// it are in the note, with the cases that are not it, and the tool it
+    /// names is the one the service declares.
+    #[test]
+    fn a_spoken_turn_is_told_every_way_of_saying_goodbye_and_not_to_ask_for_more() {
+        let note = spoken_turn_note(&at(9, 0, "UTC"), None);
+        assert!(note.contains(&format!("call {END_VOICE_TOOL} and say a short goodbye")), "{note}");
+        for phrase in [
+            "that's all",
+            "nothing else",
+            "I don't have anything else",
+            "no, that's it",
+            "I'm done",
+            "we're done",
+            "bye",
+            "talk to you later",
+            "no when you asked whether there is anything else",
+        ] {
+            assert!(note.contains(phrase), "{phrase:?} ends it: {note}");
+        }
+        // The cases that do not.
+        assert!(note.contains("only pause"), "{note}");
+        assert!(note.contains("tell you to stop talking"), "{note}");
+        assert!(note.contains("don't end your answers by asking whether there is anything else"));
+        // Only a spoken turn is told any of it.
+        let typed = turn_note(&at(9, 0, "UTC"), None);
+        assert!(!typed.contains(END_VOICE_TOOL), "{typed}");
     }
 
     #[test]

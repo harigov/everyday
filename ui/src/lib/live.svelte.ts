@@ -45,6 +45,7 @@ import { todo } from './todo.svelte'
 import { targets as goalTargets } from './targets.svelte'
 import { tracking } from './tracking.svelte'
 import { upnext } from './upnext.svelte'
+import { voice } from './voice.svelte'
 import type { ChangeEvent, ChangeKind } from './types'
 
 /**
@@ -454,9 +455,14 @@ class Live {
       })
       // A conversation from the talk key has the speakers while it lasts:
       // what the player was playing waits, as it does for voice mode here.
+      // And what this window shows is what "that article" may mean, so the
+      // conversation is told it -- only while the window is showing at all
+      // and past the lock screen.
       onTalk((active) => {
-        if (active) player.pauseForVoice()
-        else player.resumeAfterVoice()
+        if (active) {
+          player.pauseForVoice()
+          if (app.screen === 'main' && document.visibilityState === 'visible') voice.shareScreen()
+        } else player.resumeAfterVoice()
       })
       // A window of one app handing over what is not its app -- see
       // `appwindow.ts`. Past the lock screen only, for the palette's reason,

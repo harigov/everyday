@@ -64,6 +64,8 @@ pub struct Held {
     screen: Option<Option<Box<OnScreen>>>,
     /// Words said before the session opened -- see [`shell_heard`].
     spoken: Option<String>,
+    /// The listening sound was asked for -- see [`shell_chime`].
+    chime: bool,
     stop: bool,
 }
 
@@ -155,6 +157,7 @@ impl Held {
             VoiceInput::Screen(screen) => self.screen = Some(screen),
             VoiceInput::Stop => self.stop = true,
             VoiceInput::Spoken(text) => self.spoken = Some(text),
+            VoiceInput::Chime => self.chime = true,
             // The desktop never asks the session to say something of its own.
             VoiceInput::Audio(_)
             | VoiceInput::Played { .. }
@@ -170,6 +173,9 @@ impl Held {
         }
         if let Some(screen) = self.screen {
             let _ = input.send(VoiceInput::Screen(screen));
+        }
+        if self.chime {
+            let _ = input.send(VoiceInput::Chime);
         }
         if let Some(text) = self.spoken {
             let _ = input.send(VoiceInput::Spoken(text));
@@ -451,6 +457,11 @@ async fn pump(
                     engine.working(on);
                 }
             }
+            VoiceOutput::Chime => {
+                if !unheard {
+                    engine.chime();
+                }
+            }
         }
     }
     if !ended {
@@ -537,6 +548,14 @@ pub(crate) fn shell_heard(app: &AppHandle, text: String) -> bool {
     send_or_hold_shell(app.state::<AppState>().voice(), VoiceInput::Spoken(text))
 }
 
+/// Have the conversation the talk key started play its listening sound --
+/// see `karmayoga_service::voice::VoiceInput::Chime`: the wake word opened it
+/// with the name alone, and the person is to know they are heard. Whether
+/// there was one.
+pub(crate) fn shell_chime(app: &AppHandle) -> bool {
+    send_or_hold_shell(app.state::<AppState>().voice(), VoiceInput::Chime)
+}
+
 /// Mute or unmute the conversation the talk key started. While muted nothing
 /// is listened to, and what is being said goes on; muting while somebody is
 /// being heard drops what they had said so far, which is for the caller to
@@ -575,13 +594,19 @@ pub async fn voice_set_muted(state: State<'_, AppState>, muted: bool) -> Command
 /// What the person has on screen now, for the assistant's next turn. Read as
 /// leniently as `send_message` reads it: a part that does not parse costs only
 /// itself.
+///
+/// A conversation the wake word began holds its first turn until this has
+/// come, so that turn is about what the window shows -- see
+/// `crate::talk::screen_shared`.
 #[tauri::command]
 pub async fn voice_set_screen(
+    app: AppHandle,
     state: State<'_, AppState>,
     on_screen: Option<serde_json::Value>,
 ) -> CommandResult<()> {
     let screen = on_screen.as_ref().and_then(OnScreen::lenient).map(Box::new);
     send_or_hold(state.voice(), VoiceInput::Screen(screen));
+    crate::talk::screen_shared(&app);
     Ok(())
 }
 

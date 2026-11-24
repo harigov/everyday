@@ -529,6 +529,9 @@ impl Speech {
             VoiceOutput::Pause => self.outbound.pause(),
             VoiceOutput::Resume => self.outbound.resume(),
             VoiceOutput::Working(on) => self.outbound.working(on),
+            // Only a conversation the wake word began asks for it, and a
+            // call is never one.
+            VoiceOutput::Chime => {}
             VoiceOutput::Clear => {
                 self.outbound.clear();
                 self.converting.clear();
