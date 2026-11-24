@@ -17,9 +17,9 @@ use jiff::{SignedDuration, Timestamp};
 use karmayoga_core::account::{Account, Provider};
 use karmayoga_core::id::{AccountId, DraftId, MailMessageId, MailboxId, PackId, ThreadId};
 use karmayoga_core::mail::{
-    Address, AttendeeResponse, CategorySource, Draft, DraftCalendarPart, DraftState, Invite,
-    InviteMethod, Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget,
-    Origin,
+    Address, AttendeeResponse, CategorySource, Draft, DraftCalendarPart, DraftServerCopy,
+    DraftState, Invite, InviteMethod, Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind,
+    OpState, OpTarget, Origin,
 };
 use karmayoga_core::packstore::PackRef;
 use karmayoga_core::store::mail::IngestMessage;
@@ -1819,6 +1819,58 @@ async fn drafts_nobody_here_claims_are_a_card_each() {
     let all: Vec<String> = copies.concat();
     assert!(all.contains(&json!(phone.to_string()).to_string()));
     assert!(all.contains(&json!(web.to_string()).to_string()));
+}
+
+/// Gmail files a draft's copy under its Drafts label at All Mail's uid, never
+/// the Drafts uid its upload was given. Such a copy is still the draft's own,
+/// found by its `Message-ID`: its card in the thread, not somebody else's
+/// draft beside the one being written -- and once the next autosave has
+/// replaced it, gone from the thread at once rather than at the next sync.
+#[tokio::test]
+async fn a_drafts_copy_filed_at_another_uid_is_still_its_own() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let drafts = seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+    let thread = ThreadId::new();
+    seed_in_thread(&svc, account, thread, inbox, 1);
+    let vault = svc.get().unwrap();
+    let mut reply = Draft::new(account, "me@example.com", Origin::Person);
+    reply.to = vec![Address::bare("sender@example.com")];
+    reply.body_html = "<p>Half a thought</p>".into();
+    vault.save_draft(&reply).unwrap();
+    let draft_id = reply.id;
+    call(&svc, "save_draft", json!({ "draft": reply })).await;
+    let mut session = FakeSession::default();
+    let sender = FakeSender::default();
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.done, 1, "{report:?}");
+
+    // What sync brought back of that upload: the same message, at another uid.
+    let copy = draft_copy(&svc, account, thread, drafts, 90_001, false, None);
+    let header = vault.mail_message(copy).unwrap().message_id_header;
+    vault
+        .with_draft(draft_id, |d| {
+            let message_id = Some(header.clone());
+            d.server_copy = Some(DraftServerCopy { mailbox: "Drafts".into(), uid: 7, message_id });
+            true
+        })
+        .unwrap();
+    let cards = |detail: &Value| detail["drafts"].as_array().unwrap().clone();
+    let detail = call(&svc, "get_thread", json!({ "id": thread.to_string() })).await;
+    let shown = cards(&detail);
+    assert_eq!(shown.len(), 1, "one draft, one card: {detail}");
+    assert_eq!(shown[0]["draft"]["id"], json!(draft_id.to_string()));
+    assert_eq!(shown[0]["ownCopy"], json!(copy.to_string()));
+
+    // The next autosave's upload -- thirty seconds on, past the coalescing
+    // `save_draft` does -- replaces it on the server, and so here.
+    let append = Op::new(account, OpKind::AppendDraft, OpTarget::Draft(draft_id), Origin::Person);
+    vault.enqueue_op(&append).unwrap();
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.done, 1, "{report:?}");
+    let detail = call(&svc, "get_thread", json!({ "id": thread.to_string() })).await;
+    assert!(cards(&detail).is_empty(), "the copy it replaced has left the thread: {detail}");
 }
 
 /// Carrying on with another device's draft takes its whole text, from the

@@ -818,6 +818,42 @@ pub struct DraftServerCopy {
     pub message_id: Option<String>,
 }
 
+impl DraftServerCopy {
+    /// This copy's own `Message-ID`, when it has a real one: not the `uid:N`
+    /// stand-in sync gives a message without one -- which `edit_thread_draft`
+    /// takes over along with the rest, and which names nothing outside the
+    /// mailbox it came from (see `Vault::mail_message_by_header`).
+    pub fn real_message_id(&self) -> Option<&str> {
+        self.message_id.as_deref().filter(|id| !id.is_empty() && !id.starts_with("uid:"))
+    }
+
+    /// Is `message` -- stored by sync, filed at `filed` -- this copy?
+    ///
+    /// By `Message-ID` when the copy has a real one: each upload mints its
+    /// own, and it is the one thing that survives Gmail, which files a draft
+    /// under its Drafts label at All Mail's uid, never the Drafts uid
+    /// `APPENDUID` gave the upload -- so by uid, every copy there was
+    /// nobody's, and showed in its thread as somebody else's draft while it
+    /// was still being written. And then by that alone, since a uid there can
+    /// as easily name another draft. By mailbox and uid only for a copy with
+    /// no real `Message-ID` to go by.
+    pub fn is<'a>(
+        &self,
+        message: &Message,
+        filed: impl IntoIterator<Item = (&'a str, u32)>,
+    ) -> bool {
+        fn bare(id: &str) -> &str {
+            id.trim().trim_start_matches('<').trim_end_matches('>')
+        }
+        match self.real_message_id() {
+            Some(id) => bare(id) == bare(&message.message_id_header),
+            None => {
+                filed.into_iter().any(|(mailbox, uid)| mailbox == self.mailbox && uid == self.uid)
+            }
+        }
+    }
+}
+
 /// A `text/calendar` part to attach when this draft is sent — today, always
 /// an iTIP `REPLY` built by `karmayoga_mail::invite::build_reply` for
 /// `respond_to_invite`, kept on the draft rather than passed alongside it so

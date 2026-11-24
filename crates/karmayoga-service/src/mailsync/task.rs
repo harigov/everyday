@@ -426,7 +426,10 @@ where
                     // the vault, and is news only once: the failure can be
                     // ready in the same poll as the note's wake-up, and the
                     // loop above may have broken out without announcing it.
+                    // And what it changed is told to an open list, banner or
+                    // not: nothing else reloads it until a pass goes through.
                     announce_new_mail(&svc, &statuses, account_id);
+                    tell_changed(&svc, &statuses, account_id);
                     return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
                         .await;
                 }
@@ -436,6 +439,7 @@ where
             // op may be left `InFlight`, and only a restart's
             // `recover_inflight_ops` takes that back.
             if let Some(e) = send_due.failed {
+                tell_changed(&svc, &statuses, account_id);
                 statuses.set_error(account_id, e.to_string());
                 return Err(e.to_string().into());
             }
@@ -450,9 +454,7 @@ where
             // window needs telling once -- and none at all for a pass that
             // found nothing new, which with a one-minute interval is nearly
             // every pass.
-            if statuses.take_changed(account_id) {
-                svc.events().changed(Change::new(Kind::Thread, Op::Updated));
-            }
+            tell_changed(&svc, &statuses, account_id);
             // Whatever was noted after the last announcement during the pass
             // -- the replies settled once every mailbox is stored, most
             // often. Taken even when nothing was noted, so a pass that found
@@ -716,13 +718,29 @@ async fn arrived<S: MailSession>(
 ) -> karmayoga_mail::session::Result<()> {
     let statuses = ctx.statuses;
     let account_id = ctx.account_id;
-    passes::quick_pass(ctx, session, target, labels, threads, || svc.warm_decision_model()).await?;
-    if statuses.take_changed(account_id) {
-        svc.events().changed(Change::new(Kind::Thread, Op::Updated));
-    }
+    let passed =
+        passes::quick_pass(ctx, session, target, labels, threads, || svc.warm_decision_model())
+            .await;
+    // Told even when the pass failed part way: what it stored is in the vault.
+    tell_changed(svc, statuses, account_id);
+    passed?;
     announce_new_mail(svc, statuses, account_id);
     sort_arrivals(svc, statuses, account_id);
     Ok(())
+}
+
+/// One change for an open list, when anything a pass stored has not been told
+/// to it yet -- see [`StatusRegistry::mark_changed`].
+///
+/// [`StatusRegistry::mark_changed`]: crate::mailsync::status::StatusRegistry::mark_changed
+fn tell_changed(
+    svc: &Arc<Service>,
+    statuses: &crate::mailsync::status::StatusRegistry,
+    account_id: AccountId,
+) {
+    if statuses.take_changed(account_id) {
+        svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+    }
 }
 
 /// Hand the threads new inbox mail arrived in to the model's sorting, ahead of
