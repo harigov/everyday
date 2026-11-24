@@ -5312,6 +5312,12 @@ export type VoiceEvent =
   | { type: 'replyHeard'; messageId: MessageId }
   /** Something went wrong, and the session carries on. */
   | { type: 'trouble'; message: string }
+  /** A dictation began (`active`) or finished: what is said meanwhile is
+   *  typed where the person was typing, not answered. Only a session from the
+   *  talk key or the wake word ever has one. */
+  | { type: 'dictation'; active: boolean }
+  /** A stretch of a dictation has been typed. */
+  | { type: 'typed'; text: string }
   /** The session is over; `error` says why when it did not end on request. */
   | { type: 'ended'; error: string | null }
 

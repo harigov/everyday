@@ -122,7 +122,7 @@ pipewire = "0.10"
 # `remote_desktop` module names its types; nothing here records a screen.
 # `wayland` so the main window can be named as the parent of the desktop's
 # shortcut dialog, which otherwise opens behind it.
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts", "remote_desktop", "screencast", "wayland"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts", "remote_desktop", "screencast", "wayland", "clipboard"] }
 # The webview's own toolkit, already in the build through Tauri. Writing help
 # reads the selection and places its popup through it directly: the
 # PRIMARY selection, the pointer's position on the overlay, and the

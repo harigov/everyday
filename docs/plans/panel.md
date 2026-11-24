@@ -139,7 +139,27 @@ Per-machine `talk.json`: `enabled` (off), `shortcut`, `mode` (toggle | hold),
   `confirm_tool_call`; buttons End, Mute, Open (raise the main window on the
   conversation).
 * Ends on a second press (toggle), the assistant's `end_voice_mode`, the
+  person saying they are done (the session hears "that's all" itself), the
   lock, or two minutes with nothing said.
+* **A conversation the wake word began** (`talk::wake`, `docs/plans/wake-word.md`)
+  has the same card with a different hint: "Say “that's all” when you're
+  done" (`card::Hint::Say`, where the key's is "Press Ctrl+Alt+A to end"),
+  since nobody who called it by name has a key in their hand; muted, the
+  key's line again. It ends after 15 s of listening rather than two minutes.
+  Opened with the name alone, it plays the listening chime
+  (`voice::shell_chime`) once the session is open.
+* **Dictation** (`VoiceEvent::Dictation`, `VoiceEvent::Typed`,
+  `docs/plans/voice-reliability.md` section 4): while the person dictates,
+  what they say is typed where they were typing, and the card is about that:
+  title "Dictating", the listening tone, one line "Typed" with the tail of
+  what has been typed so far (and a caret: more is coming), body "Say “stop
+  dictating” when you're done". What was said and answered before it began is
+  not shown while it goes on, and is back when it ends; a new dictation
+  begins with nothing typed. Muted, the title and hint are the muted
+  conversation's (nothing could hear "stop"), though the typed line stays.
+  A dictation has the full two minutes' quiet even in a woken conversation
+  (`conversation::idle_after`'s `dictating`: somebody dictating stops to think),
+  and a stretch typed counts as the person being there.
 * Hold mode: key down opens the microphone (or unmutes); letting go mutes only
   once the utterance is captured -- muting mid-utterance drops it -- so the
   microphone stays open 250 ms and then until the state leaves Hearing. A tap

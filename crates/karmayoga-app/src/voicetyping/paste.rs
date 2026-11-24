@@ -6,11 +6,26 @@
 //! The difference is that nothing of ours should have the keyboard.
 //! Everywhere but Wayland that does not matter -- any application may set the
 //! clipboard and press a key. On Wayland only the focused window may set the
-//! clipboard, so the helper window ([`super::pill`]: transparent, drawing
-//! nothing, made hidden when the dictation began) is shown for that moment
-//! and asks for the keyboard, with the activation token the key press
-//! brought, sets it, and goes, handing the keyboard back to the field; then
-//! Ctrl+V is pressed through the RemoteDesktop portal, as writing help does.
+//! clipboard, and there are two ways round that.
+//!
+//! The first way is tried first: the RemoteDesktop session that presses
+//! Ctrl+V also asks for the clipboard (the `Clipboard` portal,
+//! [`crate::portal::paste_text`]), offers the text as its contents and hands
+//! it over when the focused application asks. No window of ours is shown, so
+//! no activation token is needed -- which matters, because a conversation the
+//! wake word began has none (no key was pressed), and GNOME does not give the
+//! keyboard to a window shown without one.
+//!
+//! The second, for a desktop with no clipboard portal, is the helper window
+//! ([`super::pill`]: transparent, drawing nothing, made hidden when the
+//! dictation began): shown for that moment, it asks for the keyboard, with the
+//! activation token the key press brought, sets the clipboard, and goes,
+//! handing the keyboard back to the field; then Ctrl+V is pressed through the
+//! RemoteDesktop portal, as writing help does. It is used only when the first
+//! way was unavailable: never after it pressed Ctrl+V and no application took
+//! the text, because an application that was only slow would then type it
+//! twice.
+//!
 //! What the person sees meanwhile is the panel's card, which never has the
 //! keyboard.
 
@@ -20,9 +35,12 @@ use tauri::AppHandle;
 /// activation token the dictation key brought (Wayland). An error says why it
 /// could not be typed, in words for the card.
 ///
-/// On Wayland the helper window is shown and hidden again by this, and the
-/// clipboard is left holding the text, as after writing help's paste: putting
-/// the old contents back would need the keyboard again.
+/// On Wayland the clipboard portal is tried first; the text is the session's
+/// clipboard while it lasts and does not stay on it, and what the clipboard
+/// held before is not put back. Without a clipboard portal the helper window
+/// is shown and hidden again, and the clipboard is left holding the text, as
+/// after writing help's paste: putting the old contents back would need the
+/// keyboard again.
 pub async fn paste(app: &AppHandle, text: &str, token: Option<String>) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     if crate::writing::wayland_session(app) {
@@ -69,6 +87,11 @@ mod wayland {
     /// How long to give the keyboard to find its way back to the field once the
     /// window is gone, before pressing Ctrl+V. As in writing help.
     const SETTLE: Duration = Duration::from_millis(200);
+
+    /// The same, for the paste through the clipboard portal. No window was
+    /// shown, so the keyboard never left the field: this is only the time for
+    /// the desktop to tell it the clipboard is new.
+    const PORTAL_SETTLE: Duration = Duration::from_millis(100);
 
     const REFUSED: &str = "the desktop would not let Karma Yoga type here";
     const REFUSED_COPY: &str = "the desktop would not let Karma Yoga copy it";
@@ -136,6 +159,34 @@ mod wayland {
     }
 
     pub async fn paste(app: &AppHandle, text: &str, token: Option<String>) -> Result<(), String> {
+        let restore = crate::writing::load_config().restore_token;
+        let pasted = crate::portal::paste_text(text, restore, PORTAL_SETTLE).await;
+        // The session's token is new whatever came of the paste, and the old
+        // one may be spent: keep it, but never in place of one with nothing.
+        if pasted.restore_token.is_some() {
+            crate::writing::remember_restore_token(pasted.restore_token);
+        }
+        match pasted.result {
+            Ok(()) => Ok(()),
+            Err(e) if e.falls_back() => {
+                tracing::info!(
+                    error = %e,
+                    "no clipboard portal to paste through; using voice typing's own window"
+                );
+                paste_through_window(app, text, token).await
+            }
+            // Pressed, and nothing took the text -- or the person said no.
+            Err(e) => Err(e.message().to_string()),
+        }
+    }
+
+    /// The paste for a desktop with no clipboard portal: the helper window
+    /// takes the keyboard for a moment and sets the clipboard itself.
+    async fn paste_through_window(
+        app: &AppHandle,
+        text: &str,
+        token: Option<String>,
+    ) -> Result<(), String> {
         let window = helper_window(app)?;
         if !take_keyboard(app, &window, token, FOCUS_TIMEOUT).await? {
             tracing::info!("voice typing's paste window was not given the keyboard; nothing typed");

@@ -412,7 +412,8 @@ pub trait Asker: Send + Sync + 'static {
 /// computer's desktop: how "type that I won't be available tomorrow" said to
 /// the talk key ends up in the mail they were writing. The shell that started
 /// the conversation hands one over in [`Reach::typist`]; a spoken turn with
-/// one is offered [`TYPE_TEXT`].
+/// one is offered [`TYPE_TEXT`] and [`START_DICTATION`], and told what they
+/// are for.
 pub trait Typist: Send + Sync + 'static {
     /// Type `text` where the cursor was, as if the person had typed it. The
     /// error says why it could not be, in words fit to tell them.
@@ -435,7 +436,8 @@ pub struct Reach {
     pub sent_to: Vec<String>,
     /// What types on the person's desktop, for a conversation started there
     /// with the talk key -- see [`Typist`]. Only a spoken turn at this
-    /// computer is offered [`TYPE_TEXT`] for it, and nothing else reads it.
+    /// computer is offered [`TYPE_TEXT`] and [`START_DICTATION`] for it, and
+    /// nothing else reads it.
     pub typist: Option<Arc<dyn Typist>>,
 }
 
@@ -1222,6 +1224,10 @@ const MEETING_BRIEF: &str = "meeting_brief";
 /// Offered to a spoken turn from the talk key alone -- see
 /// [`type_text_tool`].
 const TYPE_TEXT: &str = "type_text";
+/// Offered with [`TYPE_TEXT`], to the same turns -- see
+/// [`start_dictation_tool`]. Named in the voice session's contract, which
+/// reads that it ran from [`Turned::dictate`].
+const START_DICTATION: &str = crate::voice::DICTATE_TOOL;
 /// The most [`TYPE_TEXT`] types at once: voice typing's own limit.
 const MAX_TYPED_CHARS: usize = 20_000;
 /// The tools declared in this file that change nothing, and so may be offered
@@ -3093,6 +3099,28 @@ struct TurnMeta {
     read_only: bool,
 }
 
+impl TurnMeta {
+    /// What types for the person when this turn is one that somebody is
+    /// talking at this computer's desktop, or `None`: the one question that
+    /// decides whether it is offered [`TYPE_TEXT`] and [`START_DICTATION`]
+    /// ([`build`]) and told what they are for ([`TYPING_NOTE`]), so that the
+    /// two cannot disagree.
+    ///
+    /// Only a conversation talked here with the talk key or the wake word
+    /// hands over a typist: in the window, the field with the keyboard is the
+    /// window's own, and on a call there is no desktop. A dream, a scheduled
+    /// run, a job, a turn that may only read and a chat have nobody at a
+    /// keyboard to type for.
+    fn typist_here(&self) -> Option<&Arc<dyn Typist>> {
+        let here = self.spoken
+            && self.drafting.is_none()
+            && !self.unattended
+            && !self.from_chat
+            && !self.read_only;
+        if here { self.typist.as_ref() } else { None }
+    }
+}
+
 /// Whether `tool` is offered given whether the person has let the assistant
 /// look through their files. Anything outside [`tools::Domain::Files`]
 /// always is: this decides nothing else.
@@ -3484,18 +3512,14 @@ fn build(
     if meta.spoken && reaches_out && vault.supports_routines() {
         offered.push(read_brief_tool(vault.clone()));
     }
-    // Typing where the person was typing, only for a conversation talked at
-    // this computer with the talk key, which is what hands over a typist: in
-    // the window, the field with the keyboard is the window's own, and on a
-    // call there is no desktop.
-    if meta.spoken
-        && !is_dream
-        && !meta.unattended
-        && !meta.from_chat
-        && !meta.read_only
-        && let Some(typist) = &meta.typist
-    {
+    // Typing where the person was typing, and handing the microphone over to
+    // a dictation to be typed there, only for a conversation talked at this
+    // computer with the talk key or the wake word, which is what hands over a
+    // typist: in the window, the field with the keyboard is the window's own,
+    // and on a call there is no desktop. See [`TurnMeta::typist_here`].
+    if let Some(typist) = meta.typist_here() {
         offered.push(type_text_tool(typist.clone()));
+        offered.push(start_dictation_tool());
     }
     // Reading something out in full, only where something reads aloud: a
     // spoken turn, whose session reads it after the reply.
@@ -4664,11 +4688,16 @@ fn update_plan_tool() -> PortableDynamicTool {
 fn end_voice_tool() -> PortableDynamicTool {
     PortableDynamicTool::new(
         END_VOICE_MODE,
-        "End the spoken conversation. Call it when the person makes clear they have nothing \
-         more to say for now -- \"that's it\", \"that's all I have\", \"I'm done\", \"thanks, \
-         bye\" -- not when they only pause, thank you mid-conversation, or tell you to stop \
-         talking. Then say a short goodbye: it is read out, and the voice stops after it. \
-         The conversation itself stays, so they can carry on by typing or talking later.",
+        "End the spoken conversation. Call it whenever the person makes clear they have \
+         nothing more to say for now, however they put it: \"that's all\", \"nothing else\", \"I \
+         don't have anything else\", \"no, that's it\", \"I'm done\", \"we're done\", \"bye\", \
+         \"thanks, bye\", \"talk to you later\", or saying no when you asked whether there is \
+         anything else. Not when they only pause, thank you in the middle of a conversation, \
+         tell you to stop talking, or say \"that's it!\" of an answer that was right. Then say \
+         a short goodbye: it is read out, and the voice stops after it. Do not end your \
+         answers by asking whether there is anything else -- they will say when there is -- \
+         and do not wait for them to say goodbye twice. The conversation itself stays, so they \
+         can carry on by typing or talking later.",
         serde_json::json!({
             "type": "object",
             "properties": {},
@@ -5050,27 +5079,63 @@ fn typed_text(arguments: &Value) -> Option<&str> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// What a spoken turn that can type is told about it, after its note: the
+/// person is talking from wherever they are on the desktop, not from this
+/// application's window, and nothing else in the turn says so. Without it
+/// "type that I'll be late" was met with a saved note, or a question, because
+/// `type_text` was one tool among a hundred and fifty and the model had no
+/// reason to think anybody was typing anywhere.
+///
+/// Plain words after the turn's own note, as the background note is, and for
+/// the same reason never in the system prompt: only a turn from the talk key
+/// or the wake word is told it, and the preamble is the same for every turn
+/// of a conversation. Kept short because it goes with every such turn. Names
+/// [`TYPE_TEXT`] and [`START_DICTATION`] as literals, which a test holds to
+/// the constants.
+const TYPING_NOTE: &str = "They are talking to you from wherever they are on their desktop, \
+    not from Karma Yoga's window. type_text types into the text field that had the keyboard \
+    when they began -- a mail, a chat, a document, a form, in any application. When they ask \
+    you to type, write, put, insert, enter or fill in something, or to reply saying \
+    something, call type_text with it; never save a note, task or draft instead unless they \
+    ask for one. \"Here\" means that field. For a long dictation -- a document, a message, \
+    notes -- call start_dictation instead. When what is to be typed needs something found \
+    first -- an article they read, a mail, a page, a note -- find it with your tools, then \
+    type what you wrote. If the note above says what Karma Yoga's own window shows, \
+    \"this article\" or \"that mail\" can mean what is there, but it need not be the window \
+    they are typing in.";
+
 /// Type text into the field the person is working in, in whatever
-/// application had the keyboard when they pressed the talk key -- "type that
-/// I won't be available tomorrow". The shell does the typing ([`Typist`]): on
+/// application had the keyboard when they began talking -- "type that I
+/// won't be available tomorrow". The shell does the typing ([`Typist`]): on
 /// the clipboard, a paste, as voice typing types. Offered to a spoken turn
-/// from the talk key alone, and put to the person first unless their own
-/// words asked for it with nothing of a stranger's in the turn (see
-/// [`ConfirmGate::typing_question`]). Nothing is sent or submitted: no Enter
-/// is pressed, and the text's own last line break is left off.
+/// from the talk key or the wake word alone ([`TurnMeta::typist_here`]), and
+/// put to the person first unless their own words asked for it with nothing
+/// of a stranger's in the turn (see [`ConfirmGate::typing_question`]). Nothing
+/// is sent or submitted: no Enter is pressed, and the text's own last line
+/// break is left off.
+///
+/// The description says what [`TYPING_NOTE`] says, because a model is as
+/// likely to read one as the other and a tool that does not say what it is
+/// for is one among a hundred and fifty.
 fn type_text_tool(typist: Arc<dyn Typist>) -> PortableDynamicTool {
     PortableDynamicTool::new(
         TYPE_TEXT,
         "Type text into the text field the person is working in -- whatever had the keyboard \
-         when they started talking to you: a mail, a chat, a document, in any application -- \
-         as if they had typed it themselves. Use it when they ask you to type, write or put \
-         something there (\"type that I won't be available tomorrow\", \"write a quick reply \
-         saying yes, Friday works\"). Give the exact text. When they dictated it, it is their \
-         words: filler and false starts out, their own corrections applied, punctuated and \
-         capitalised, but not reworded, and nothing added -- no greeting or sign-off they did \
-         not say. When they asked you to write something, it is what you wrote, in their \
+         when they started talking to you: a mail, a chat, a document, a form, in any \
+         application -- as if they had typed it themselves. It is how words get where they \
+         are working: use it whenever they ask you to type, write, put, insert, enter or fill \
+         in something, or to reply saying something (\"type that I won't be available \
+         tomorrow\", \"write a quick reply saying yes, Friday works\", \"put my address \
+         here\"), and never save a note or a draft in its place unless they ask for one. \
+         \"Here\" means that field. When what they want typed has to be looked up first \
+         (\"write a two-line snippet of that article here\"), find it with your other tools, \
+         then type what you wrote. Give the exact text. When they dictated it, it is \
+         their words: filler and false starts out, their own corrections applied, punctuated \
+         and capitalised, but not reworded, and nothing added -- no greeting or sign-off they \
+         did not say. When they asked you to write something, it is what you wrote, in their \
          voice. It is typed at the cursor, and nothing is sent or submitted. Afterwards say \
-         in a few words that it is typed, not what it says.",
+         in a few words that it is typed, not what it says. For more than a sentence or two \
+         of dictation, use start_dictation instead.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -5100,6 +5165,50 @@ fn type_text_tool(typist: Arc<dyn Typist>) -> PortableDynamicTool {
                     "ok": true,
                     "typed": typed,
                     "note": "It is typed where they were typing. Say so in a few words.",
+                })))
+            })
+        },
+    )
+}
+
+/// Hand the microphone over to a dictation: once this turn's reply has been
+/// said, what the person says is typed where they were typing, a stretch at
+/// a time, as they say it, until they say they are done. For a document, a
+/// long message or reply, notes -- anything longer than a breath, which the
+/// pause that ends a turn would otherwise cut into separate turns, each
+/// answered over the last.
+///
+/// Offered with [`TYPE_TEXT`], to the same turns alone
+/// ([`TurnMeta::typist_here`]), and declared here for `end_voice_mode`'s
+/// reason: it touches nothing in the vault, so it asks nothing of the person
+/// -- what is typed afterwards is their own speech, not the model's words --
+/// and the session reads that it ran from [`Turned::dictate`]. The session
+/// does the dictating; this only says that it should begin, and the model
+/// says a couple of words so that the person knows when to start.
+fn start_dictation_tool() -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        START_DICTATION,
+        "Hand the microphone over to a dictation. Once your reply has been said, what the \
+         person says is typed where they were typing, a stretch at a time as they say it, \
+         until they say they are done (\"stop dictating\"): it is typed, not answered, so you \
+         do nothing more until then. Call it when they want to dictate more than a sentence \
+         or two -- a document, a long message or reply, notes (\"take this down\", \"I'll \
+         dictate\", \"type what I say\", \"let me dictate a reply\"). If they already began \
+         what is to be typed in the same breath, type that part first with type_text, then \
+         call this. Afterwards say only a couple of words, such as \"Go ahead.\", and nothing \
+         else.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+        move |_arguments: serde_json::Value| {
+            Box::pin(async move {
+                Ok(ToolOutput::json(serde_json::json!({
+                    "ok": true,
+                    "note": "What they say next is typed where they were typing, until they say \
+                             they are done. Say only a couple of words, such as \"Go ahead.\", \
+                             and nothing else.",
                 })))
             })
         },
@@ -5634,7 +5743,8 @@ pub struct Turn {
     pub woken: bool,
     /// For a scheduled run, how it reaches its person. Ignored unless
     /// [`Turn::unattended`] is set -- or [`Turn::job`] is a project, the one
-    /// kind of job that is given somebody to ask. See [`Reach`].
+    /// kind of job that is given somebody to ask -- but for [`Reach::typist`],
+    /// which a spoken turn is handed whatever else it is. See [`Reach`].
     pub reach: Reach,
     /// Set when this turn is a background job doing its own work: the job,
     /// and what it is for. Nobody is watching, exactly as for `unattended`,
@@ -6062,6 +6172,11 @@ pub struct Turned {
     /// reply, one after another. Only ever filled for a [`Turn::spoken`] turn
     /// that was not stopped.
     pub read_aloud: Vec<crate::listen::ReadAloud>,
+    /// Whether the model began a dictation this turn -- see
+    /// [`crate::voice::DICTATE_TOOL`]: what the person says next is typed
+    /// where they were typing. Only ever true for a spoken turn with a
+    /// typist that was not stopped.
+    pub dictate: bool,
     /// The pictures this turn's `generate_image` and `draw_illustration`
     /// made and kept in Files, in the order they were made: for a caller that
     /// sends its reply somewhere a picture has to be sent too.
@@ -6308,7 +6423,16 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // handed the person's chat to ask in; a turn somebody is watching has
     // them right there, and every other job has nobody, whatever its caller
     // passed: a watch's look and research decline what would stop to ask.
-    let reach = if unattended.is_some() || project { reach } else { Reach::default() };
+    //
+    // Except the typist, which is not a way of asking anybody but the
+    // conversation's own: the desktop a spoken turn was talked at. `build`
+    // offers it to such a turn alone ([`TurnMeta::typist_here`]); reset with
+    // the rest it was never there, and `type_text` was offered to nobody.
+    let reach = if unattended.is_some() || project {
+        reach
+    } else {
+        Reach { typist: reach.typist, ..Reach::default() }
+    };
     // Counted in for the whole of this function, including every early
     // return below -- see [`turn_in_flight`] and its doc. Except a job's own
     // turn, which is not somebody typing and can run for an hour: the
@@ -6535,35 +6659,6 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         _ => None,
     };
     let screen_quotes_mail = described.as_ref().is_some_and(|d| d.quotes_mail);
-    // Where the conversation is happening goes in the preamble, which is the
-    // same every turn of it; what is on screen changes from one turn to the
-    // next, so it goes with this turn's message -- see
-    // `karmayoga_core::agent::turn_note` for why the difference matters.
-    let context = unattended_context.or(from_chat);
-    let screen = described.as_ref().map(|d| d.text.as_str());
-    let note = if spoken {
-        karmayoga_core::agent::spoken_turn_note(&settings.now(), screen)
-    } else {
-        karmayoga_core::agent::turn_note(&settings.now(), screen)
-    };
-    // What it has going in the background, so "only tell me if it fails"
-    // lands on the right job. See `docs/plans/watches.md`. A spoken turn is
-    // given the same: the note is as short as it can be made, and a voice
-    // session is where somebody most often says "stop watching that" without
-    // being able to point at anything.
-    //
-    // It does not arm the fetch check (`mail_read_this_turn`), though what it
-    // quotes was written from pages and services: it is in every turn of
-    // every conversation while anything is going, and a check armed by it
-    // would put back the confirmations on the person's own questions that
-    // were taken out. What it quotes is quoted, and labelled as information;
-    // the check is armed if the model goes on to read the job with
-    // `job_status` (see `READS_BACK_WHAT_WAS_SAVED`).
-    let note = match background_note(&vault, &settings, conversation, about_job, job.is_some()) {
-        Some(more) => format!("{note}\n\n{more}"),
-        None => note,
-    };
-
     // A dream may write at most one note for real -- see `ConfirmGate`'s own
     // field and `Turn::drafting`'s doc. Started at one whatever `Drafting`
     // says about which tools are direct: today that is always exactly
@@ -6585,6 +6680,39 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         typist: reach.typist.clone(),
         read_only,
     };
+    // Where the conversation is happening goes in the preamble, which is the
+    // same every turn of it; what is on screen changes from one turn to the
+    // next, so it goes with this turn's message -- see
+    // `karmayoga_core::agent::turn_note` for why the difference matters.
+    let context = unattended_context.or(from_chat);
+    let screen = described.as_ref().map(|d| d.text.as_str());
+    let note = if spoken {
+        karmayoga_core::agent::spoken_turn_note(&settings.now(), screen)
+    } else {
+        karmayoga_core::agent::turn_note(&settings.now(), screen)
+    };
+    // What a turn that can type is told about it: nothing else in the turn
+    // says the person is talking from another application's text field. See
+    // [`TYPING_NOTE`].
+    let note = if meta.typist_here().is_some() { format!("{note}\n\n{TYPING_NOTE}") } else { note };
+    // What it has going in the background, so "only tell me if it fails"
+    // lands on the right job. See `docs/plans/watches.md`. A spoken turn is
+    // given the same: the note is as short as it can be made, and a voice
+    // session is where somebody most often says "stop watching that" without
+    // being able to point at anything.
+    //
+    // It does not arm the fetch check (`mail_read_this_turn`), though what it
+    // quotes was written from pages and services: it is in every turn of
+    // every conversation while anything is going, and a check armed by it
+    // would put back the confirmations on the person's own questions that
+    // were taken out. What it quotes is quoted, and labelled as information;
+    // the check is armed if the model goes on to read the job with
+    // `job_status` (see `READS_BACK_WHAT_WAS_SAVED`).
+    let note = match background_note(&vault, &settings, conversation, about_job, job.is_some()) {
+        Some(more) => format!("{note}\n\n{more}"),
+        None => note,
+    };
+
     let agent =
         build(&meta, vault.clone(), &settings, &access, context.as_deref(), history_trimmed)?;
     let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
@@ -6706,6 +6834,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
                 stopped: true,
                 ended_voice: false,
                 read_aloud: Vec::new(),
+                dictate: false,
                 pictures: Vec::new(),
             })
         }
@@ -6734,10 +6863,14 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
             let prose = finished.content.trim().to_string();
             // Not for a stopped turn: whatever it meant to say on the way
             // out was cut off, and the person is plainly still there.
-            let ended_voice = !stopped
-                && ran
-                    .iter()
-                    .any(|r| r.call.name == END_VOICE_MODE && matches!(r.outcome, Some(Ok(_))));
+            let ran_ok = |tool: &str| {
+                !stopped
+                    && ran.iter().any(|r| r.call.name == tool && matches!(r.outcome, Some(Ok(_))))
+            };
+            let ended_voice = ran_ok(END_VOICE_MODE);
+            // The same for a dictation: a turn somebody stopped never said
+            // "Go ahead.", and the person is plainly not about to dictate.
+            let dictate = ran_ok(START_DICTATION);
             let read_aloud = if stopped { Vec::new() } else { read_aloud_of(&ran) };
             let pictures = ran.iter().flat_map(|r| r.files.iter().copied()).collect();
             Ok(Turned {
@@ -6748,6 +6881,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
                 stopped,
                 ended_voice,
                 read_aloud,
+                dictate,
                 pictures,
             })
         }
@@ -7726,7 +7860,7 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
             return format!("{options} options");
         }
         // The card's own words say it; the note is for the model.
-        END_VOICE_MODE => return String::new(),
+        END_VOICE_MODE | START_DICTATION => return String::new(),
         TYPE_TEXT => return str_of("typed").trim().to_string(),
         SUMMARIZE_THREAD | READ_ALOUD | READ_BRIEF => {
             return str_of("title").trim().chars().take(120).collect();
@@ -10069,6 +10203,147 @@ mod tests {
             type_text_tool(keyboard).execute(serde_json::json!({ "text": "hello" })).await;
         let message = refused.expect_err("refused").to_string();
         assert!(message.contains("would not let Karma Yoga type here"), "{message}");
+    }
+
+    /// A turn's bundle as `run_turn` builds it, for what only depends on
+    /// who is talking and where.
+    fn turn_meta(spoken: bool, typist: Option<Arc<dyn Typist>>) -> TurnMeta {
+        TurnMeta {
+            service: Arc::new(Service::new()),
+            conversation: ConversationId::new(),
+            from_chat: false,
+            unattended: false,
+            job: false,
+            project: false,
+            follow_up: false,
+            max_steps: 8,
+            turn_id: "turn".into(),
+            drafting: None,
+            asker: None,
+            spoken,
+            typist,
+            read_only: false,
+        }
+    }
+
+    /// `type_text` and `start_dictation` go together, and to a spoken turn
+    /// at this computer's desktop alone: not typed, not a call or a chat, not
+    /// a dream, a scheduled run or a job, not one that may only read, and not
+    /// one with nothing to type with. The note that says what they are for
+    /// goes to the same turns, because it is decided by the same question.
+    #[test]
+    fn typing_is_offered_and_explained_only_to_a_spoken_turn_with_a_typist() {
+        let keyboard: Arc<dyn Typist> =
+            Arc::new(Keyboard { typed: Mutex::new(Vec::new()), refuses: false });
+        let here = turn_meta(true, Some(keyboard.clone()));
+        assert!(here.typist_here().is_some());
+
+        let typed = turn_meta(false, Some(keyboard.clone()));
+        assert!(typed.typist_here().is_none(), "typing at a keyboard has no voice to hand over");
+        assert!(turn_meta(true, None).typist_here().is_none(), "nothing to type with");
+        let call = TurnMeta { from_chat: true, ..here.clone() };
+        assert!(call.typist_here().is_none(), "a call through a chat has no desktop");
+        let scheduled = TurnMeta { unattended: true, ..here.clone() };
+        assert!(scheduled.typist_here().is_none(), "nobody is there to type for");
+        let dream = TurnMeta { drafting: Some(Drafting::default()), ..here.clone() };
+        assert!(dream.typist_here().is_none());
+        let reading = TurnMeta { read_only: true, ..here.clone() };
+        assert!(reading.typist_here().is_none(), "typing changes somebody's document");
+    }
+
+    /// The tools and the note name each other's tools by name, as literals; a
+    /// renamed tool would leave the note telling the model to call one that
+    /// does not exist.
+    #[test]
+    fn the_typing_note_names_the_tools_it_is_about_and_what_to_do_with_them() {
+        assert!(TYPING_NOTE.contains(TYPE_TEXT), "{TYPING_NOTE}");
+        assert!(TYPING_NOTE.contains(START_DICTATION), "{TYPING_NOTE}");
+        assert_eq!(START_DICTATION, "start_dictation", "the session's contract names it too");
+        for said in [
+            "wherever they are on their desktop",
+            "not from Karma Yoga's window",
+            "had the keyboard",
+            "type, write, put, insert, enter or fill in",
+            "reply saying",
+            "never save a note, task or draft",
+            "\"Here\" means that field",
+            "find it with your tools, then type what you wrote",
+            "need not be the window they are typing in",
+        ] {
+            assert!(TYPING_NOTE.contains(said), "{said:?} is missing: {TYPING_NOTE}");
+        }
+        // It goes with every such turn, so it is not allowed to grow.
+        let words = TYPING_NOTE.split_whitespace().count();
+        assert!(words < 180, "{words} words");
+        // The tool says the same as the note, and points at the other.
+        let keyboard: Arc<dyn Typist> =
+            Arc::new(Keyboard { typed: Mutex::new(Vec::new()), refuses: false });
+        let typing = type_text_tool(keyboard).definition().description;
+        for said in [
+            "type, write, put, insert, enter or fill in",
+            "reply saying",
+            "never save a note or a draft in its place",
+            "\"Here\" means that field",
+            "find it with your other tools, then type what you wrote",
+            "not reworded",
+            "use start_dictation",
+        ] {
+            assert!(typing.contains(said), "{said:?} is missing: {typing}");
+        }
+    }
+
+    /// Handing the microphone over changes nothing in the vault, and what is
+    /// typed afterwards is the person's own speech: the call is never put to
+    /// them, whoever has been heard, and its card says nothing of its own.
+    #[tokio::test]
+    async fn start_dictation_asks_nothing_says_go_ahead_and_leaves_no_card_line() {
+        let (vault, _dir) = test_vault();
+        let nothing = serde_json::json!({});
+        let unsaid = test_gate(vault.clone(), ConversationId::new());
+        assert_eq!(unsaid.confirmation(START_DICTATION, &nothing), None);
+        let said = ConfirmGate {
+            spoken_request: Some("let me dictate a reply".into()),
+            woken: true,
+            ..test_gate(vault, ConversationId::new())
+        };
+        said.mail_read_this_turn.store(true, Ordering::Release);
+        assert_eq!(said.confirmation(START_DICTATION, &nothing), None);
+
+        let tool = start_dictation_tool();
+        assert_eq!(tool.name(), START_DICTATION);
+        assert_eq!(tool.name(), crate::voice::DICTATE_TOOL);
+        let output = tool.execute(nothing).await.unwrap();
+        assert_eq!(summarise(START_DICTATION, &output), "");
+        let note = output.as_json().and_then(|j| j["note"].as_str()).unwrap_or_default();
+        assert!(note.contains("Go ahead."), "{note}");
+        assert!(note.contains("nothing else"), "{note}");
+        let description = tool.definition().description;
+        assert!(description.contains("Go ahead."), "{description}");
+        assert!(description.contains("type that part first with type_text"), "{description}");
+        assert!(description.contains("stop dictating"), "{description}");
+    }
+
+    /// Ending is told as plainly as the ways people say it: the description
+    /// lists them, and says what is not one.
+    #[test]
+    fn end_voice_mode_lists_the_ways_people_say_they_are_done() {
+        let end = end_voice_tool().definition().description;
+        for said in [
+            "that's all",
+            "nothing else",
+            "I don't have anything else",
+            "no, that's it",
+            "I'm done",
+            "we're done",
+            "bye",
+            "talk to you later",
+            "saying no when you asked whether there is anything else",
+            "Not when they only pause",
+            "tell you to stop talking",
+            "Do not end your answers by asking whether there is anything else",
+        ] {
+            assert!(end.contains(said), "{said:?} is missing: {end}");
+        }
     }
 
     /// Tasks, events, things on a shelf and notes, changed because the person

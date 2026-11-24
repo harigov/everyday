@@ -41,9 +41,11 @@ pub fn choose(last: Option<Last>, now: Instant, continue_minutes: u32) -> Option
 /// How long a conversation in `state` may be left alone before it ends:
 /// [`IDLE_AFTER`], or [`WOKEN_IDLE_AFTER`] for one the wake word began while
 /// it is only listening. A question waiting on the person -- a card to read
-/// before pressing Allow -- has the whole of [`IDLE_AFTER`] either way.
-pub fn idle_after(state: VoiceState, woke: bool) -> Duration {
-    if woke && state == VoiceState::Listening { WOKEN_IDLE_AFTER } else { IDLE_AFTER }
+/// before pressing Allow -- has the whole of [`IDLE_AFTER`] either way, and so
+/// has a dictation (`dictating`): somebody dictating stops to think of the
+/// next sentence, and a few seconds of that is not their having gone.
+pub fn idle_after(state: VoiceState, woke: bool, dictating: bool) -> Duration {
+    if woke && !dictating && state == VoiceState::Listening { WOKEN_IDLE_AFTER } else { IDLE_AFTER }
 }
 
 /// Whether a conversation that has been in `state` since `quiet_since` has
@@ -131,10 +133,27 @@ mod tests {
 
     #[test]
     fn a_woken_conversation_ends_soon_only_while_it_listens() {
-        assert_eq!(idle_after(VoiceState::Listening, true), WOKEN_IDLE_AFTER);
-        assert_eq!(idle_after(VoiceState::Listening, false), IDLE_AFTER);
+        assert_eq!(idle_after(VoiceState::Listening, true, false), WOKEN_IDLE_AFTER);
+        assert_eq!(idle_after(VoiceState::Listening, false, false), IDLE_AFTER);
         for question in [VoiceState::Asking, VoiceState::WaitingForClick] {
-            assert_eq!(idle_after(question, true), IDLE_AFTER, "{question:?}");
+            assert_eq!(idle_after(question, true, false), IDLE_AFTER, "{question:?}");
         }
+    }
+
+    #[test]
+    fn a_dictation_is_given_the_long_wait_however_the_conversation_began() {
+        for woke in [false, true] {
+            for state in [VoiceState::Listening, VoiceState::Hearing, VoiceState::Understanding] {
+                assert_eq!(idle_after(state, woke, true), IDLE_AFTER, "{woke} {state:?}");
+            }
+        }
+        // A few seconds' pause to think is not the end of it, where it would
+        // have been for a woken conversation that was not dictating.
+        let since = Instant::now();
+        let paused = since + WOKEN_IDLE_AFTER + Duration::from_secs(1);
+        let after = idle_after(VoiceState::Listening, true, true);
+        assert!(!idle_expired(VoiceState::Listening, since, paused, after));
+        let after = idle_after(VoiceState::Listening, true, false);
+        assert!(idle_expired(VoiceState::Listening, since, paused, after));
     }
 }

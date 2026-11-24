@@ -125,8 +125,14 @@ const QUEUE: usize = 4;
 /// ends a turn -- hosts do not wait for an answer -- because the requests are
 /// gathered from turns again, and a turn is never longer than a recogniser
 /// can take.
-const TUNING: Tuning =
-    Tuning { end_of_turn_seconds: 0.6, min_speech_seconds: 0.25, max_turn_seconds: 25.0 };
+const TUNING: Tuning = Tuning {
+    end_of_turn_seconds: 0.6,
+    min_speech_seconds: 0.25,
+    max_turn_seconds: 25.0,
+    // A podcast is all speech, music between: nothing to tell from a
+    // keyboard.
+    min_voiced_seconds: 0.0,
+};
 
 /// How many times a request that failed for a reason that may pass -- the
 /// network, a rate limit, a provider's bad minute -- is made.

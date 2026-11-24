@@ -35,6 +35,24 @@
 //! left of the application's own voice is usually shorter than a word, and
 //! being wrong about it means cutting the reply off for nothing.
 //!
+//! # Whether it is a voice at all
+//!
+//! Silero is sure of speech now and then over the sound of typing, a knock or
+//! a chair, and a start that pauses the assistant's reply and a segment that
+//! a recogniser then writes words for are too much to give to a keyboard. So
+//! `Turns` asks [`voicing`] as well, window by window: does this sound have a
+//! pitch, the way every vowel does? A start also needs some voiced sound in
+//! the speech it has heard -- 64 ms of it when open, 128 ms when guarded, since
+//! what is left of the assistant's own voice is the likelier thing to be
+//! wrong about, and each counted afresh for every utterance -- and a segment
+//! that ends with less than the tuning's
+//! [`Tuning::min_voiced_seconds`] of it is dropped. If its start had been
+//! reported it is closed with an empty [`Detected::Ended`], as below, so no
+//! listener is left waiting. Voiced sound is counted the way [`voicing`]
+//! counts it: a voiced window beside another voiced window, not one alone. A
+//! `min_voiced_seconds` of zero turns all of this off, and nothing is measured
+//! at all; so does `Turns::new`, which the tests of the rest use.
+//!
 //! # Where the detector is tuned for a turn rather than a word
 //!
 //! Silero itself keeps calling it speech through the quiet that ends a turn, so
@@ -48,7 +66,7 @@
 use crate::error::CommandResult;
 #[cfg(not(feature = "speech"))]
 use crate::error::{CommandError, codes};
-use crate::speech::pcm;
+use crate::speech::{SAMPLE_RATE, pcm, voicing};
 use tokio::sync::mpsc;
 
 /// What a [`SpeechDetector`] noticed.
@@ -90,6 +108,11 @@ pub struct Tuning {
     /// reading aloud does not pause, and a recogniser is better handed thirty
     /// seconds now than five minutes later.
     pub max_turn_seconds: f32,
+    /// The least voiced sound -- the pitch of a vowel, see
+    /// [`crate::speech::voicing`] -- an utterance must hold to be reported,
+    /// in seconds, and what decides that a start is somebody talking rather
+    /// than a keyboard or a knock. `0.0` reports anything Silero calls speech.
+    pub min_voiced_seconds: f32,
 }
 
 impl Tuning {
@@ -97,15 +120,26 @@ impl Tuning {
     /// leave about 0.7 s when they are done, but they leave that much to
     /// think mid-sentence too, and 0.7 s answered them before they had
     /// finished. Half a second more on every answer is the lesser cost.
-    pub const CONVERSATION: Tuning =
-        Tuning { end_of_turn_seconds: 1.2, min_speech_seconds: 0.15, max_turn_seconds: 30.0 };
+    ///
+    /// One run of two voiced windows (64 ms) is enough voice: a bare "yes"
+    /// may hold no more, and 0.12 s dropped most of a recorded one.
+    pub const CONVERSATION: Tuning = Tuning {
+        end_of_turn_seconds: 1.2,
+        min_speech_seconds: 0.15,
+        max_turn_seconds: 30.0,
+        min_voiced_seconds: 0.064,
+    };
 
     /// Dictating: people pause to think mid-sentence here too, though less
     /// rides on it -- an utterance only decides where the recogniser is
     /// handed audio, not where the text breaks. The same pause as
     /// [`Tuning::CONVERSATION`]; only the shortest sound that counts differs.
-    pub const DICTATION: Tuning =
-        Tuning { end_of_turn_seconds: 1.2, min_speech_seconds: 0.2, max_turn_seconds: 30.0 };
+    pub const DICTATION: Tuning = Tuning {
+        end_of_turn_seconds: 1.2,
+        min_speech_seconds: 0.2,
+        max_turn_seconds: 30.0,
+        min_voiced_seconds: 0.064,
+    };
 }
 
 /// Finds where speech begins and ends in a stream of audio.
@@ -217,7 +251,8 @@ pub fn build_detector(tuning: Tuning) -> CommandResult<Box<dyn SpeechDetector>> 
     let buffer_seconds = buffer_seconds(tuning);
     let vad = SileroVad::new(config, buffer_seconds)
         .ok_or_else(|| CommandError::new(codes::INTERNAL, "could not load the voice detector"))?;
-    Ok(Box::new(Turns::new(vad)))
+    let voiced = voiced_samples(tuning.min_voiced_seconds);
+    Ok(Box::new(Turns::with_voicing(vad, voiced, voicing::is_voiced)))
 }
 
 /// Without feature `speech` there is nothing to detect with.
@@ -247,6 +282,25 @@ const OPEN_START_SAMPLES: usize = 1_920;
 /// The same while the assistant is audible: 350 ms.
 #[cfg_attr(not(feature = "speech"), allow(dead_code))]
 const GUARDED_START_SAMPLES: usize = 5_600;
+
+/// How much voiced sound the speech so far must hold before a start is
+/// reported, with nothing playing: two windows, 64 ms. Enough that one
+/// transient that looked like a pitch cannot do it, since sound that
+/// counts as voiced comes in pairs of windows at the least.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+const OPEN_VOICED_SAMPLES: usize = 2 * WINDOW;
+
+/// The same while the assistant is audible: four windows, 128 ms. What is
+/// left of its own voice after echo cancellation is the likeliest thing to be
+/// taken for a person's, and wrongly is the costly mistake.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+const GUARDED_VOICED_SAMPLES: usize = 4 * WINDOW;
+
+/// [`Tuning::min_voiced_seconds`] as samples at the speech rate.
+#[cfg_attr(not(feature = "speech"), allow(dead_code))]
+fn voiced_samples(seconds: f32) -> usize {
+    (seconds * SAMPLE_RATE as f32).round().max(0.0) as usize
+}
 
 /// One stretch of speech a [`RawVad`] has finished.
 #[cfg_attr(not(feature = "speech"), allow(dead_code))]
@@ -384,11 +438,38 @@ struct Turns<V: RawVad> {
     fed: u64,
     /// Where on that clock the speech now going on began.
     began_at: u64,
+    /// Whether a window of audio is voiced: [`voicing::is_voiced`], or in a
+    /// test a script.
+    voiced: fn(&[f32]) -> bool,
+    /// The least voiced sound, in samples, a segment must hold to be
+    /// reported. `0` reports anything the detector calls speech.
+    min_voiced: usize,
+    /// How much of the speech now going on, up to its start, has been voiced.
+    /// Counted afresh whenever a run of speech begins and whenever a segment
+    /// is finished, never carried from one utterance to the next.
+    sustained: voicing::Sustained,
+}
+
+/// Every window is voiced: for a [`Turns`] with no gate.
+#[cfg(test)]
+fn every_window(_: &[f32]) -> bool {
+    true
 }
 
 #[cfg_attr(not(feature = "speech"), allow(dead_code))]
 impl<V: RawVad> Turns<V> {
+    /// Starts and ends as `vad` finds them, with nothing asked of how the
+    /// sound is voiced. For the tests of everything else; [`build_detector`]
+    /// always has a gate, if only one of nothing.
+    #[cfg(test)]
     fn new(vad: V) -> Self {
+        Self::with_voicing(vad, 0, every_window)
+    }
+
+    /// As [`Self::new`], but a segment must hold `min_voiced_samples` of
+    /// sound `voiced` says is voiced to be reported, and a start must hold
+    /// some of it (see the module doc).
+    fn with_voicing(vad: V, min_voiced_samples: usize, voiced: fn(&[f32]) -> bool) -> Self {
         Self {
             vad,
             mode: DetectorMode::Open,
@@ -397,6 +478,9 @@ impl<V: RawVad> Turns<V> {
             started: false,
             fed: 0,
             began_at: 0,
+            voiced,
+            min_voiced: min_voiced_samples,
+            sustained: voicing::Sustained::default(),
         }
     }
 
@@ -407,6 +491,18 @@ impl<V: RawVad> Turns<V> {
         }
     }
 
+    /// The voiced sound the speech so far must hold for a start: what the mode
+    /// asks, or nothing when the tuning asks nothing of a segment.
+    fn start_voiced(&self) -> usize {
+        if self.min_voiced == 0 {
+            return 0;
+        }
+        match self.mode {
+            DetectorMode::Open => OPEN_VOICED_SAMPLES,
+            DetectorMode::Guarded => GUARDED_VOICED_SAMPLES,
+        }
+    }
+
     /// Feed one whole window and say what happened.
     fn window(&mut self, window: &[f32], out: &mut Vec<Detected>) {
         self.vad.accept(window);
@@ -414,12 +510,23 @@ impl<V: RawVad> Turns<V> {
         if speaking {
             if self.run == 0 {
                 self.began_at = self.fed;
+                self.sustained = voicing::Sustained::default();
             }
             self.run += window.len();
+            // Once the start is out, how voiced the rest is no longer
+            // matters here: the segment is measured when it is popped. And
+            // with nothing asked of it there is nothing to measure.
+            if !self.started && self.min_voiced > 0 {
+                self.sustained.push((self.voiced)(window));
+            }
         } else {
             self.run = 0;
         }
-        if speaking && !self.started && self.run >= self.start_after() {
+        if speaking
+            && !self.started
+            && self.run >= self.start_after()
+            && self.sustained.windows() * WINDOW >= self.start_voiced()
+        {
             self.started = true;
             out.push(Detected::Started);
         }
@@ -427,12 +534,28 @@ impl<V: RawVad> Turns<V> {
         let mut finished = false;
         while let Some(segment) = self.vad.pop() {
             finished = true;
-            if !self.started {
-                if self.mode == DetectorMode::Guarded {
-                    // Never reached the threshold: a click or an echo, not a
-                    // person.
-                    continue;
+            // Whatever followed is a new utterance, and has to show a voice
+            // of its own: a keyboard going on after one that was heard does
+            // not inherit its start.
+            self.sustained = voicing::Sustained::default();
+            if !self.started && self.mode == DetectorMode::Guarded {
+                // Never reached the threshold: a click or an echo, not a
+                // person.
+                continue;
+            }
+            if !voicing::voiced_at_least(&segment.samples, self.min_voiced, self.voiced) {
+                // Sound with no voice in it: typing, a knock, a chair. If a
+                // start went out for it, take it back the one way there is.
+                if self.started {
+                    out.push(Detected::Ended {
+                        samples: Vec::new(),
+                        start_ms: pcm::duration_ms(segment.start as usize),
+                    });
+                    self.started = false;
                 }
+                continue;
+            }
+            if !self.started {
                 // A short "yes" is over before 120 ms of it has been heard
                 // as it happens, and is still an answer.
                 out.push(Detected::Started);
@@ -448,6 +571,7 @@ impl<V: RawVad> Turns<V> {
         // under the detector's own minimum. Close it, empty.
         if !finished && self.started && !speaking {
             self.started = false;
+            self.sustained = voicing::Sustained::default();
             out.push(Detected::Ended {
                 samples: Vec::new(),
                 start_ms: pcm::duration_ms(self.began_at as usize),
@@ -484,6 +608,7 @@ impl<V: RawVad> SpeechDetector for Turns<V> {
         self.started = false;
         self.fed = 0;
         self.began_at = 0;
+        self.sustained = voicing::Sustained::default();
     }
 }
 
@@ -879,6 +1004,259 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert!(input.is_closed());
+    }
+
+    // What the voicing gate does, with the real `voicing::is_voiced` over
+    // synthetic sound, and a scripted Silero that calls all of it speech.
+
+    use crate::speech::voicing::signals::{noise, typing, voice};
+
+    /// The conversation tuning's gate, in samples: what these tests are for
+    /// is what the assistant really does, so it is read from the tuning.
+    fn gate() -> usize {
+        voiced_samples(Tuning::CONVERSATION.min_voiced_seconds)
+    }
+
+    /// A gate asking more of a segment than any mode asks of a start, to reach
+    /// what happens to a start that is then not kept.
+    const STRICT: usize = 4 * WINDOW;
+
+    /// The first `n` windows of `signal`.
+    fn first(signal: Vec<f32>, n: usize) -> Vec<f32> {
+        assert!(signal.len() >= n * WINDOW);
+        signal[..n * WINDOW].to_vec()
+    }
+
+    /// `n` windows of a voice.
+    fn talking(n: usize) -> Vec<f32> {
+        first(voice(150.0, Some(600.0), 2.0, 0.1, 21), n)
+    }
+
+    /// `n` windows of a keyboard.
+    fn tapping(n: usize) -> Vec<f32> {
+        first(typing(3.0, (2_000.0, 4_000.0), 0.3, 22), n)
+    }
+
+    /// `n` windows of room noise.
+    fn hissing(n: usize) -> Vec<f32> {
+        first(noise(1.0, 0.05, 23), n)
+    }
+
+    /// Feed `audio` through a gated `Turns`, over a Silero that says `script`.
+    fn gated(
+        script: Vec<Step>,
+        audio: &[f32],
+        mode: DetectorMode,
+        min_voiced: usize,
+    ) -> Vec<Detected> {
+        let (vad, _) = Scripted::new(script);
+        let mut turns = Turns::with_voicing(vad, min_voiced, voicing::is_voiced);
+        turns.set_mode(mode);
+        turns.push(&pcm::to_i16(audio))
+    }
+
+    /// `n` windows of speech, then a segment of `audio`, as Silero finishes
+    /// one.
+    fn over(audio: &[f32]) -> Vec<Step> {
+        let n = audio.len() / WINDOW;
+        let mut script = repeat(speech(), n - 1);
+        script.push(ends_with(audio.to_vec()));
+        script
+    }
+
+    fn ended_with_samples(found: &[Detected]) -> bool {
+        found.iter().any(|d| matches!(d, Detected::Ended { samples, .. } if !samples.is_empty()))
+    }
+
+    #[test]
+    fn typing_silero_calls_speech_never_starts_or_ends() {
+        for mode in [DetectorMode::Open, DetectorMode::Guarded] {
+            let audio = tapping(60);
+            let found = gated(over(&audio), &audio, mode, gate());
+            assert!(found.is_empty(), "{mode:?}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn room_noise_silero_calls_speech_never_starts_or_ends() {
+        let audio = hissing(30);
+        assert!(gated(over(&audio), &audio, DetectorMode::Open, gate()).is_empty());
+    }
+
+    #[test]
+    fn a_voice_starts_and_ends_with_its_samples() {
+        for mode in [DetectorMode::Open, DetectorMode::Guarded] {
+            let audio = talking(31);
+            let found = gated(over(&audio), &audio, mode, gate());
+            assert_eq!(found.len(), 2, "{mode:?}: {found:?}");
+            assert_eq!(found[0], Detected::Started);
+            assert!(
+                matches!(&found[1], Detected::Ended { samples, .. } if samples.len() == audio.len())
+            );
+        }
+    }
+
+    #[test]
+    fn a_voice_with_typing_over_it_is_still_heard() {
+        let clicks = first(typing(3.0, (2_000.0, 4_000.0), 0.3, 24), 47);
+        let audio: Vec<f32> = talking(47).iter().zip(&clicks).map(|(a, b)| a + b).collect();
+        let found = gated(over(&audio), &audio, DetectorMode::Open, gate());
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(ended_with_samples(&found));
+    }
+
+    #[test]
+    fn a_start_with_too_little_voiced_sound_is_closed_empty() {
+        // Two windows of voice, then six of noise: enough to start on, not to
+        // keep (this gate is stricter than the real one). The segment began one
+        // second in.
+        let mut audio = talking(2);
+        audio.extend(hissing(6));
+        let mut script = repeat(speech(), 7);
+        script.push(ends_at(16_000, audio.clone()));
+        let found = gated(script, &audio, DetectorMode::Open, STRICT);
+        let closed = Detected::Ended { samples: Vec::new(), start_ms: 1_000 };
+        assert_eq!(found, vec![Detected::Started, closed]);
+    }
+
+    #[test]
+    fn a_closed_start_lets_the_next_utterance_start_again() {
+        let mut audio = talking(2);
+        audio.extend(hissing(6));
+        let mut script = repeat(speech(), 7);
+        script.push(ends_with(audio.clone()));
+        script.extend(repeat(quiet(), 2));
+        let spoken = talking(20);
+        script.extend(over(&spoken));
+        audio.extend(hissing(2));
+        audio.extend(spoken.clone());
+        let found = gated(script, &audio, DetectorMode::Open, STRICT);
+        let starts = found.iter().filter(|d| **d == Detected::Started).count();
+        assert_eq!(starts, 2, "{found:?}");
+        assert!(ended_with_samples(&found));
+    }
+
+    #[test]
+    fn a_short_answer_with_a_voice_in_it_starts_and_ends() {
+        // "yes": over before 120 ms has been heard as it happens, but three
+        // windows of it are voiced.
+        let audio = talking(3);
+        let script = vec![speech(), ends_with(audio.clone())];
+        let found = gated(script, &audio, DetectorMode::Open, gate());
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0], Detected::Started);
+        assert!(ended_with_samples(&found));
+    }
+
+    #[test]
+    fn a_short_sound_with_no_voice_in_it_is_nothing_at_all() {
+        let audio = tapping(4);
+        let script = vec![speech(), ends_with(audio.clone())];
+        assert!(gated(script, &audio, DetectorMode::Open, gate()).is_empty());
+    }
+
+    #[test]
+    fn guarded_asks_for_more_voiced_sound_than_open() {
+        // Twenty windows of speech: long enough for either mode. Two of them
+        // are voiced, which is all open asks and half what guarded does.
+        let mut two = talking(2);
+        two.extend(hissing(18));
+        let steps = || repeat(speech(), 20);
+        assert_eq!(gated(steps(), &two, DetectorMode::Open, gate()), vec![Detected::Started]);
+        assert!(gated(steps(), &two, DetectorMode::Guarded, gate()).is_empty());
+
+        let mut four = talking(4);
+        four.extend(hissing(16));
+        assert_eq!(gated(steps(), &four, DetectorMode::Guarded, gate()), vec![Detected::Started]);
+    }
+
+    #[test]
+    fn a_lone_voiced_window_does_not_start_anything() {
+        // A voiced window with noise either side is one transient, not a
+        // vowel.
+        let mut audio = hissing(2);
+        audio.extend(talking(1));
+        audio.extend(hissing(17));
+        assert!(gated(repeat(speech(), 20), &audio, DetectorMode::Open, gate()).is_empty());
+    }
+
+    #[test]
+    fn a_gate_of_nothing_asks_nothing_of_a_start_and_measures_nothing() {
+        fn not_looked_at(_: &[f32]) -> bool {
+            panic!("a gate of nothing should not look at the sound");
+        }
+        for (mode, windows) in [(DetectorMode::Open, 4), (DetectorMode::Guarded, 11)] {
+            let audio = hissing(20);
+            let (vad, _) = Scripted::new(over(&audio));
+            let mut turns = Turns::with_voicing(vad, 0, not_looked_at);
+            turns.set_mode(mode);
+            let found = turns.push(&pcm::to_i16(&audio));
+            assert_eq!(found.len(), 2, "{mode:?}: {found:?}");
+            assert_eq!(found[0], Detected::Started);
+            assert!(ended_with_samples(&found));
+            // The start came as soon as the run was long enough, as ever.
+            let (vad, _) = Scripted::new(repeat(speech(), windows));
+            let mut turns = Turns::with_voicing(vad, 0, not_looked_at);
+            turns.set_mode(mode);
+            assert_eq!(
+                turns.push(&pcm::to_i16(&audio[..windows * WINDOW])),
+                vec![Detected::Started]
+            );
+        }
+    }
+
+    #[test]
+    fn a_keyboard_after_an_utterance_that_was_heard_does_not_inherit_its_start() {
+        // Silero cuts a long turn and goes on hearing speech: the next
+        // utterance is typing, and has to earn its own start.
+        let spoken = talking(8);
+        let mut audio = spoken.clone();
+        audio.extend(tapping(8));
+        let mut script = repeat(speech(), 7);
+        script.push(Step { speaking: true, finishes: Some((0, spoken)) });
+        script.extend(repeat(speech(), 8));
+        let found = gated(script, &audio, DetectorMode::Open, gate());
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0], Detected::Started);
+        assert!(ended_with_samples(&found));
+    }
+
+    #[test]
+    fn a_gate_of_nothing_hears_typing_as_before() {
+        let audio = tapping(40);
+        let found = gated(over(&audio), &audio, DetectorMode::Open, 0);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0], Detected::Started);
+        assert!(ended_with_samples(&found));
+    }
+
+    #[test]
+    fn a_detector_made_without_a_gate_hears_typing_too() {
+        let audio = tapping(40);
+        let (vad, _) = Scripted::new(over(&audio));
+        let mut turns = Turns::new(vad);
+        let found = turns.push(&pcm::to_i16(&audio));
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn a_reset_forgets_the_voiced_sound_heard_so_far() {
+        let audio = talking(3);
+        let (vad, _) = Scripted::new(repeat(speech(), 3));
+        let mut turns = Turns::with_voicing(vad, gate(), voicing::is_voiced);
+        turns.push(&pcm::to_i16(&audio));
+        assert!(turns.sustained.windows() > 0);
+        turns.reset();
+        assert_eq!(turns.sustained.windows(), 0);
+    }
+
+    #[test]
+    fn the_tunings_gates_are_in_samples_at_the_speech_rate() {
+        // One run of two 512-sample windows: the least a "yes" may hold.
+        assert_eq!(voiced_samples(Tuning::CONVERSATION.min_voiced_seconds), 1_024);
+        assert_eq!(voiced_samples(Tuning::DICTATION.min_voiced_seconds), 1_024);
+        assert_eq!(voiced_samples(0.0), 0);
+        assert_eq!(voiced_samples(-1.0), 0);
     }
 
     #[cfg(feature = "speech")]

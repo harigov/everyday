@@ -95,6 +95,19 @@ pub enum VoiceEvent {
     Trouble {
         message: String,
     },
+    /// The person began dictating (`active`), or finished: while they
+    /// dictate, what they say is typed where they were typing as they say
+    /// it, a stretch at a time, rather than answered. Begun by the assistant
+    /// ([`DICTATE_TOOL`]), ended by saying so ("stop dictating") or by the
+    /// conversation ending. Only ever for a session that can type -- see
+    /// [`VoiceAssistant::type_text`].
+    Dictation {
+        active: bool,
+    },
+    /// A stretch of a dictation has been typed: `text`, exactly as it went in.
+    Typed {
+        text: String,
+    },
     /// The session is over. `error` says why, when it did not end on request.
     Ended {
         error: Option<String>,
@@ -137,6 +150,11 @@ pub enum VoiceInput {
     /// own audible when they began. Nothing happens if a turn is already
     /// running or anything is being said.
     Spoken(String),
+    /// Play the short sound that says the session is listening
+    /// ([`cue::listening_chime`]): the conversation the wake word began with
+    /// the name alone is open, and what is said now is heard. Nothing happens
+    /// once the session is ending.
+    Chime,
     /// End the session.
     Stop,
 }
@@ -157,6 +175,10 @@ pub enum VoiceOutput {
     /// and has nothing to say yet; off while the person talks, while anything
     /// is said, and while the assistant waits on them.
     Working(bool),
+    /// Play the listening sound ([`cue::listening_chime`]) once, now, over
+    /// nothing else: asked for with [`VoiceInput::Chime`]. A transport with
+    /// no speaker of its own to play it on may leave it out.
+    Chime,
     /// Tell the interface.
     Event(VoiceEvent),
 }
@@ -179,7 +201,16 @@ pub struct TurnOutcome {
     /// order: read by the session after the reply, one after another, a
     /// sentence at a time, as the Listen player reads it.
     pub read_aloud: Vec<ReadAloud>,
+    /// The assistant began a dictation ([`DICTATE_TOOL`]): once its reply
+    /// has been said, what the person says is typed rather than answered,
+    /// until they say they are done. See [`VoiceEvent::Dictation`].
+    pub dictate: bool,
 }
+
+/// The tool a spoken turn that can type is offered for handing the
+/// microphone over to a dictation: "take this down", "I'll dictate the
+/// rest". Declared by `agent`'s `build`, offered beside `type_text`.
+pub const DICTATE_TOOL: &str = "start_dictation";
 
 /// The tool a spoken turn is offered for ending the conversation out loud,
 /// when the person has said they are done: "that's it", "that's all I have".
@@ -218,6 +249,14 @@ pub trait VoiceAssistant: Send + Sync {
     /// made fit to hear, by the model where one may be used. The error is a
     /// sentence fit to say.
     fn open_reading(&self, what: ReadAloud) -> BoxFuture<'static, CommandResult<PieceStream>>;
+    /// Type `text` where the person was typing, for a dictation: the
+    /// conversation's typist, as `type_text` reaches it. The error is a
+    /// sentence fit to say. A session that cannot type -- a window's, a
+    /// call's -- never begins a dictation, and is told so if it asks.
+    fn type_text(&self, text: String) -> BoxFuture<'static, Result<(), String>> {
+        let _ = text;
+        Box::pin(async { Err("There is nothing here to type into.".to_string()) })
+    }
 }
 
 /// What a session is built from.

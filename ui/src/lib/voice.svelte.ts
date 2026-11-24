@@ -193,6 +193,17 @@ class VoiceSession {
     }
   }
 
+  /**
+   * Tell a conversation the talk key or the wake word began what this window
+   * shows, as voice mode here is told whenever somebody starts to speak: "get
+   * that article and write a snippet of it here" can then mean the one open
+   * in the Feed. The shell's session takes it as the window's own would
+   * (`voice_set_screen` reaches whichever session there is).
+   */
+  shareScreen(): void {
+    void api.voiceSetScreen(screenNow()).catch(quietly)
+  }
+
   /** One thing the session reported. */
   #hear(run: number, event: VoiceEvent) {
     if (run !== this.#run || !this.active) return
@@ -219,6 +230,11 @@ class VoiceSession {
       case 'trouble':
         // The session carries on, so the bar stays.
         this.error = event.message
+        break
+      // Only a conversation from the talk key or the wake word can type, so
+      // only one of those ever dictates.
+      case 'dictation':
+      case 'typed':
         break
       case 'ended':
         this.#reset(event.error)

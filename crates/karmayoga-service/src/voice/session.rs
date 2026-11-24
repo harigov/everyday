@@ -42,6 +42,26 @@
 //! not hold it: the session's own speech goes on while muted. If they talk
 //! over it, it is cut like any speech and not said again: it is in the thread
 //! and in the chat.
+//!
+//! # What is not a turn
+//!
+//! Not everything heard begins one. The words are looked at first
+//! ([`Session::on_words`]): nothing but fillers is nothing; a word or two of
+//! what was said a moment ago, or a murmur over a reply that is playing, is
+//! the room and the listener, and the reply goes on; a plain goodbye ("that's
+//! all", "I don't have anything else") ends the conversation without asking a
+//! model ([`Session::close_by_voice`]); and once a conversation is ending,
+//! thanks and goodbyes said back to it do not take the ending back. Only real
+//! words do.
+//!
+//! # Dictation
+//!
+//! A turn whose outcome says so ([`TurnOutcome::dictate`]) hands the
+//! microphone over: for as long as it lasts, no turn begins, and each thing
+//! said is typed where the person was typing, one stretch after another and
+//! in order ([`Dictation`]), until they say they are done. The session says
+//! what it is doing to the interface ([`VoiceEvent::Dictation`],
+//! [`VoiceEvent::Typed`]) and nothing to the person, until it ends.
 
 use super::confirm::{self, SpokenAnswer};
 use super::phrases::{self as text, Errand, Phrasebook};
@@ -99,6 +119,21 @@ const ECHO_TAIL: Duration = Duration::from_millis(1500);
 
 /// Said when a turn fails.
 const SORRY: &str = "Sorry, that didn't work.";
+
+/// Said when what was dictated could not be typed. What went wrong is
+/// reported, in the assistant's own words, as a [`VoiceEvent::Trouble`].
+const SORRY_TYPING: &str = "Sorry, I couldn't type that.";
+
+/// How far back what was said counts for a fragment of one or two words
+/// ([`text::is_echo_fragment`]). The echo check proper looks back
+/// [`ECHO_WINDOW`], and is satisfied only by three words; a word or two is
+/// likely to be somewhere in half a minute of speech, and is the assistant's
+/// only when it was said a moment ago. A sentence is put down here when its
+/// audio is ready, not when it has played, and a long one can play for six or
+/// seven seconds after that -- so eight, which the rule's other conditions
+/// (begun while something played, no stop word, no word that answers) keep
+/// from catching the person.
+const FRAGMENT_WINDOW: Duration = Duration::from_secs(8);
 
 /// How many sentences of something being read aloud are known beyond what
 /// has played before no more of its text is asked for. Its text is a model's
@@ -230,6 +265,8 @@ fn spawn_with(parts: VoiceParts, pacing: Pacing) -> VoiceLink {
         reading: None,
         to_read: VecDeque::new(),
         next_reading: 1,
+        dictation: None,
+        next_dictation: 1,
         voice,
         phrasebook,
         to_rehearse,
@@ -253,6 +290,8 @@ enum Internal {
     /// The next piece of that text, as asked for; `None` when there is no
     /// more.
     ReadingPiece { reading: u64, piece: Option<CommandResult<Piece>> },
+    /// A stretch of a dictation has been typed, or could not be.
+    Typed { dictation: u64, text: String, result: Result<(), String> },
 }
 
 /// What was true when somebody began talking, which is when it has to be
@@ -266,6 +305,10 @@ struct Utterance {
     answers: Option<u64>,
     /// Something was audible when they started, so it may be an echo.
     over_audio: bool,
+    /// Something of the session's own was actually being played when they
+    /// started -- not merely the end of it still in the air -- so a murmur
+    /// from them is a listener's, and not the start of something to say.
+    over_playing: bool,
 }
 
 /// What somebody said that begins a turn.
@@ -445,6 +488,40 @@ struct Confirm {
     unclear: u8,
 }
 
+/// A dictation under way: what is said is typed, a stretch at a time.
+///
+/// Each utterance is made into the text to type when it is heard
+/// ([`text::dictated`]), which is when it is known whether the one before it
+/// ended a line, and is then typed strictly after the one before it, one at a
+/// time -- a second typed before the first had landed would arrive in front of
+/// it. What is waiting is typed even once the person has said they are done:
+/// it was said before.
+struct Dictation {
+    id: u64,
+    /// What is still to be typed, in order.
+    queue: VecDeque<String>,
+    /// A stretch is being typed now.
+    typing: bool,
+    /// What was last said, and so what comes next, carries on from it on the
+    /// same line: it did not end in a line break. False before anything is
+    /// said, when the cursor is taken to be at the start of a line.
+    continues_line: bool,
+    /// The person has said it is over -- or the conversation is -- and what
+    /// happens once all that was said has been typed. While this is set
+    /// nothing more is dictated: what is heard is heard as it is anywhere.
+    then: Option<AfterDictation>,
+}
+
+/// What follows the last of a dictation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterDictation {
+    /// They said so: say that it is done.
+    Say,
+    /// They said goodbye in the middle of it: it ends without a word of its
+    /// own, and the conversation ends too.
+    Close,
+}
+
 /// Why the loop woke.
 enum Wake {
     Input(Option<VoiceInput>),
@@ -533,6 +610,9 @@ struct Session {
     /// What else the turn asked to have read, after it, in order.
     to_read: VecDeque<ReadAloud>,
     next_reading: u64,
+    /// What is said is being typed. See [`Dictation`].
+    dictation: Option<Dictation>,
+    next_dictation: u64,
     /// The voice the narrator speaks with, which keeps the phrases rehearsed
     /// for it -- see [`super::rehearse`].
     voice: Arc<Rehearsed>,
@@ -577,7 +657,7 @@ async fn run(
             | Wake::Internal(None) => {
                 break None;
             }
-            Wake::Input(Some(message)) => s.on_input(message),
+            Wake::Input(Some(message)) => s.on_input(message).await,
             Wake::Internal(Some(message)) => s.on_internal(message).await,
             Wake::Live(Some(event)) => s.on_live(event).await,
             Wake::Live(None) => {
@@ -643,7 +723,10 @@ impl Session {
         // (6): those come first, and the sound is for a wait that goes on
         // after them. Told before the state, so a transport never hears it
         // over the person.
+        // Nor while dictating (17): what they say is being typed, which takes
+        // no time worth filling, and there is no turn to wait for.
         let working = !self.stopping
+            && self.dictation.is_none()
             && matches!(
                 state,
                 VoiceState::Understanding | VoiceState::Thinking | VoiceState::Speaking
@@ -707,7 +790,7 @@ impl Session {
 
     // ---- what the transport tells us -------------------------------------
 
-    fn on_input(&mut self, input: VoiceInput) {
+    async fn on_input(&mut self, input: VoiceInput) {
         match input {
             VoiceInput::Audio(samples) => {
                 if !self.muted {
@@ -748,8 +831,35 @@ impl Session {
             VoiceInput::Spoken(text) => {
                 let text = text.trim().to_string();
                 let busy = self.turn.as_ref().is_some_and(|t| !t.done) || self.audio_outstanding();
-                if !self.stopping && !text.is_empty() && !busy {
+                if self.stopping || text.is_empty() {
+                    return;
+                }
+                // 17. Dictated, if that is what is going on: it is no turn.
+                if self.dictating() {
+                    self.on_dictation(text).await;
+                } else if !busy {
+                    // 16. What came after the name is looked at as anything
+                    // said is: a filler ("Jimmy, um") is nothing, and a plain
+                    // goodbye ("Jimmy, bye") is not put to the model.
+                    if text::is_filler(&text) {
+                        return;
+                    }
+                    if text::is_closing(&text) {
+                        self.close_by_voice().await;
+                        return;
+                    }
                     self.start_turn(Said { text, clear: true });
+                }
+            }
+            // 14. The listening sound: asked for once, and over nothing else.
+            // Nothing is made of the moment after it. It has no words, so
+            // there is nothing for an echo check to match, and what is said
+            // straight after it is what the person says once they hear that
+            // the session is listening: their own, and clear to approve what
+            // they ask for ("type I'm running late").
+            VoiceInput::Chime => {
+                if !self.stopping && !self.ending {
+                    self.send(VoiceOutput::Chime);
                 }
             }
             // Handled by the loop, which must not leave it to us.
@@ -771,6 +881,7 @@ impl Session {
                     Utterance {
                         answers: self.answerable_question(),
                         over_audio: self.audio_outstanding() || self.tail_in_the_air(),
+                        over_playing: self.audio_outstanding(),
                     },
                 );
                 // 4. They may be talking over it: hold it where it is until
@@ -820,6 +931,9 @@ impl Session {
             Internal::TurnDone { turn, result } => self.on_turn_done(turn, result).await,
             Internal::ReadingOpened { reading, result } => self.on_reading_opened(reading, result),
             Internal::ReadingPiece { reading, piece } => self.on_reading_piece(reading, piece),
+            Internal::Typed { dictation, text, result } => {
+                self.on_typed(dictation, text, result).await;
+            }
         }
     }
 
@@ -827,7 +941,10 @@ impl Session {
 
     /// What to do with what somebody said.
     async fn on_words(&mut self, text: String, utterance: Utterance) {
-        if text.is_empty() {
+        // 16. Nothing, or nothing but a filler ("um", "hmm"): not a turn,
+        // not an interruption, and not an answer either -- a question being
+        // waited on is not asked again for it.
+        if text.is_empty() || text::is_filler(&text) {
             self.resume_if_paused();
             return;
         }
@@ -845,9 +962,11 @@ impl Session {
                         self.resume_if_paused();
                         return;
                     }
-                    // A stop word is not an unclear answer; it falls through
-                    // to being the stop it is.
-                    if !text::is_stop_word(&text) {
+                    // A stop word is not an unclear answer, and nor is a
+                    // goodbye ("that's all"): each falls through to being
+                    // what it is -- the turn stopped, or the conversation
+                    // ended -- rather than the question asked again.
+                    if !text::is_stop_word(&text) && !text::is_closing(&text) {
                         self.resume_if_paused();
                         self.ask_again_or_click();
                         return;
@@ -868,8 +987,45 @@ impl Session {
         }
         // 4. Their own voice or ours coming back: carry on as if nothing
         // happened.
-        if (utterance.over_audio || self.audio_outstanding()) && self.is_echo(&text) {
+        let in_the_air = utterance.over_audio || self.audio_outstanding();
+        if in_the_air && self.is_echo(&text) {
             self.resume_if_paused();
+            return;
+        }
+        // 16. A word or two of what was being said, coming back, is the room
+        // and not the person -- but only when they began while it was playing:
+        // after it, a word or two is as likely to be their answer to it
+        // ("Friday", to "Thursday or Friday?"). Never a stop word, which a
+        // reply is as likely to contain as anything and which must always stop
+        // it; and never a word that answers (`is_echo_fragment`).
+        if utterance.over_playing
+            && !text::is_stop_word(&text)
+            && self.is_fragment_of_what_was_said(&text)
+        {
+            self.resume_if_paused();
+            return;
+        }
+        // 16. Somebody listening says "mm-hmm" over a reply: they are
+        // following, and it goes on. Said after it, or over something that is
+        // only the end of it, it is as much an answer as anything.
+        if utterance.over_playing && text::is_backchannel(&text) {
+            self.resume_if_paused();
+            return;
+        }
+        // 17. What is said while dictating is typed, or ends the dictation.
+        if self.dictating() {
+            self.on_dictation(text).await;
+            return;
+        }
+        // 15. Once it is ending, manners do not take the goodbye back: only
+        // something meant does.
+        if self.ending && text::is_courtesy(&text) {
+            self.resume_if_paused();
+            return;
+        }
+        // 15. A plain goodbye ends it, without a model's say-so.
+        if text::is_closing(&text) {
+            self.close_by_voice().await;
             return;
         }
         if text::is_stop_word(&text) {
@@ -880,17 +1036,48 @@ impl Session {
     }
 
     fn is_echo(&mut self, heard: &str) -> bool {
-        let spoken = self.recently_said();
+        let spoken = self.recently_said(ECHO_WINDOW);
         text::sounds_like_echo(heard, &spoken)
     }
 
-    /// Everything said in the last [`ECHO_WINDOW`], joined.
-    fn recently_said(&mut self) -> String {
+    /// (16) Whether `heard` is one or two words of what was said in the last
+    /// [`FRAGMENT_WINDOW`], and no answer.
+    fn is_fragment_of_what_was_said(&mut self, heard: &str) -> bool {
+        let spoken = self.recently_said(FRAGMENT_WINDOW);
+        text::is_echo_fragment(heard, &spoken)
+    }
+
+    /// Everything said in the last `window`, joined; anything older than
+    /// [`ECHO_WINDOW`] is forgotten.
+    fn recently_said(&mut self, window: Duration) -> String {
         let now = Instant::now();
         while self.said.front().is_some_and(|(at, _)| now.duration_since(*at) > ECHO_WINDOW) {
             self.said.pop_front();
         }
-        self.said.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>().join(" ")
+        self.said
+            .iter()
+            .filter(|(at, _)| now.duration_since(*at) <= window)
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// (15) They said they were done: stop whatever is running exactly as a
+    /// stop word does -- the turn cancelled, what is queued cleared, a
+    /// question dropped, the stored reply cut to what was heard -- and say
+    /// goodbye, in the session's own words, as the model would have, and end
+    /// once it has been heard (`said_goodbye`).
+    ///
+    /// No turn begins, so nothing is announced as theirs: the thread has no
+    /// message for it, and the model is not asked. A turn that was running is
+    /// cancelled, and so reports no goodbye of its own (10); `ending` is set
+    /// here, after it was cancelled, and stays set when that turn is done. Only
+    /// real words, which begin a turn, take it back.
+    async fn close_by_voice(&mut self) {
+        self.interrupt(None).await;
+        let goodbye = self.phrasebook.deal(Errand::Goodbye);
+        self.say(goodbye.to_string());
+        self.ending = true;
     }
 
     /// (4) Talking over it, or stopping it: throw away what is queued, stop the
@@ -975,6 +1162,15 @@ impl Session {
         if !cancelling && matches!(&result, Ok(outcome) if outcome.ended_voice) {
             self.ending = true;
         }
+        // 17. The microphone is handed over: from here, what is said is typed.
+        // Not by a turn that was talked over -- they have moved on -- nor by
+        // one that said goodbye.
+        if !cancelling
+            && matches!(&result, Ok(outcome) if outcome.dictate && !outcome.ended_voice)
+            && self.dictation.is_none()
+        {
+            self.begin_dictation();
+        }
         // 11. What it was asked to read aloud is read after its reply -- not
         // for a turn somebody talked over, who has moved on.
         if !cancelling && let Ok(outcome) = &result {
@@ -1052,8 +1248,12 @@ impl Session {
     /// has been heard: its turn is over, nothing is playing or waiting to, and
     /// nobody is talking over the goodbye or waiting to be understood -- their
     /// words decide, and any that are not an echo or a stop begin a turn.
+    /// Nor is anything still being typed, or waiting to be (17): what a
+    /// dictation was said before the goodbye is theirs, and the session
+    /// stopping would drop it.
     fn said_goodbye(&self) -> bool {
         self.ending
+            && self.dictation.is_none()
             && self.turn.as_ref().is_none_or(|t| t.done)
             && self.reading.is_none()
             && self.to_read.is_empty()
@@ -1061,6 +1261,146 @@ impl Session {
             && !self.speaking
             && self.understanding == 0
             && self.pending_prompt.is_none()
+    }
+
+    // ---- dictation -------------------------------------------------------------
+
+    /// (17) Whether what is said is being typed, and nobody has said it is
+    /// over.
+    fn dictating(&self) -> bool {
+        self.dictation.as_ref().is_some_and(|d| d.then.is_none())
+    }
+
+    /// (17) The turn asked for a dictation, and its reply is on its way: from
+    /// here nothing begins a turn. The reply ("Go ahead.") may still be
+    /// playing, and what comes back of it is checked like anything else.
+    fn begin_dictation(&mut self) {
+        let id = self.next_dictation;
+        self.next_dictation += 1;
+        self.dictation = Some(Dictation {
+            id,
+            queue: VecDeque::new(),
+            typing: false,
+            continues_line: false,
+            then: None,
+        });
+        self.emit(VoiceEvent::Dictation { active: true });
+    }
+
+    /// (17) What was said, while dictating: the end of it, or more of it.
+    ///
+    /// Ending it by saying so is what "that's all" and "I'm done" do before
+    /// they are goodbyes, and a goodbye that is not also that ("bye", "talk
+    /// to you later"), or that has one with it ("that's all, bye"), ends
+    /// both. A stop word ends it too: it is what they
+    /// say to anything they want over with.
+    async fn on_dictation(&mut self, text: String) {
+        if text::is_end_of_dictation(&text) && text::has_goodbye(&text) {
+            // "That's all, bye": both. Typed up to, and then the conversation
+            // ends, without a word about it being typed.
+            self.end_dictation(AfterDictation::Close).await;
+        } else if text::is_end_of_dictation(&text) || text::is_stop_word(&text) {
+            self.hush().await;
+            self.end_dictation(AfterDictation::Say).await;
+        } else if text::is_closing(&text) {
+            self.end_dictation(AfterDictation::Close).await;
+        } else {
+            let continues_line = self.dictation.as_ref().is_some_and(|d| d.continues_line);
+            let Some(typed) = text::dictated(&text, continues_line) else {
+                self.resume_if_paused();
+                return;
+            };
+            // Said over what is playing: it is theirs that is wanted now.
+            self.hush().await;
+            if let Some(d) = self.dictation.as_mut() {
+                // Known now, not when it has been typed: the next thing said
+                // may be heard before this has landed.
+                d.continues_line = !typed.ends_with(['\n', '\r']);
+                d.queue.push_back(typed);
+            }
+            self.settle_dictation().await;
+        }
+    }
+
+    /// (17) Whatever of ours is playing or held is let go: they are talking,
+    /// and it was not that they wanted to hear.
+    async fn hush(&mut self) {
+        if self.audio_outstanding() || self.paused {
+            self.clear_audio();
+            self.cut_reply().await;
+        }
+    }
+
+    /// (17) It is over, once what was said before is typed.
+    async fn end_dictation(&mut self, then: AfterDictation) {
+        if let Some(d) = self.dictation.as_mut()
+            && d.then.is_none()
+        {
+            d.then = Some(then);
+        }
+        self.settle_dictation().await;
+    }
+
+    /// (17) Type the next stretch, if none is being typed; if there is none to
+    /// type and it has been said to be over, end it.
+    async fn settle_dictation(&mut self) {
+        let Some(d) = self.dictation.as_mut() else { return };
+        if d.typing {
+            return;
+        }
+        if let Some(text) = d.queue.pop_front() {
+            d.typing = true;
+            let id = d.id;
+            let typing = self.assistant.type_text(text.clone());
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                // Typing that panics must still be typing that ended, or the
+                // dictation would wait on it for ever.
+                let result = match tokio::spawn(typing).await {
+                    Ok(result) => result,
+                    Err(_) => Err("Typing failed.".to_string()),
+                };
+                let _ = tx.send(Internal::Typed { dictation: id, text, result });
+            });
+            return;
+        }
+        let Some(then) = d.then else { return };
+        self.dictation = None;
+        self.emit(VoiceEvent::Dictation { active: false });
+        match then {
+            AfterDictation::Say => {
+                // Not over a turn that has begun since: it has its own words.
+                if !self.ending && self.turn.as_ref().is_none_or(|t| t.done) {
+                    let phrase = self.phrasebook.deal(Errand::Typed);
+                    self.say(phrase.to_string());
+                }
+            }
+            AfterDictation::Close => self.close_by_voice().await,
+        }
+    }
+
+    /// (17) A stretch has been typed -- or could not be, and then nothing
+    /// more is: what was waiting is dropped, the person is told, and it is over.
+    async fn on_typed(&mut self, dictation: u64, text: String, result: Result<(), String>) {
+        let Some(d) = self.dictation.as_mut().filter(|d| d.id == dictation) else { return };
+        d.typing = false;
+        match result {
+            Ok(()) => {
+                self.emit(VoiceEvent::Typed { text });
+                self.settle_dictation().await;
+            }
+            Err(message) => {
+                let then = d.then;
+                self.dictation = None;
+                self.trouble(message);
+                self.say(SORRY_TYPING.to_string());
+                self.emit(VoiceEvent::Dictation { active: false });
+                // They had said goodbye: that stands.
+                if then == Some(AfterDictation::Close) {
+                    self.close_by_voice().await;
+                }
+            }
+        }
     }
 
     // ---- updates from background work ------------------------------------------
@@ -1087,9 +1427,14 @@ impl Session {
     ///   just been told is over. It stays queued, and is said if they talk
     ///   again and the conversation goes on. The goodbye logic does not look
     ///   at updates, so one never holds it up.
+    /// - **Nothing is being dictated** (17). Every word they say is going
+    ///   onto a page, and an update said into the middle of it would be
+    ///   heard as a break in what they were saying, and be typed. It waits
+    ///   for the dictation to be over.
     fn at_a_gap(&self) -> bool {
         !self.stopping
             && !self.ending
+            && self.dictation.is_none()
             && !self.speaking
             && !self.paused
             && self.understanding == 0
@@ -1149,6 +1494,9 @@ impl Session {
     /// (9) Cancel any turn, clear what is queued, cut the reply, and say so.
     async fn stop(&mut self, error: Option<String>) {
         self.stopping = true;
+        // 17. What was being typed is the last of it; the interface is told
+        // it is over before the session is.
+        let dictating = self.dictation.take().is_some();
         self.pending_prompt = None;
         self.updates.clear();
         self.update_at = None;
@@ -1177,6 +1525,9 @@ impl Session {
             }
         }
         self.cut_reply().await;
+        if dictating {
+            self.emit(VoiceEvent::Dictation { active: false });
+        }
         self.emit(VoiceEvent::Ended { error });
     }
 
@@ -1289,8 +1640,11 @@ impl Session {
     /// (6) A tool is about to run. Ending the conversation takes no time, and
     /// "One moment" -- or "Hmm, let me think" while the goodbye is written --
     /// says the opposite of what is happening.
+    ///
+    /// Nor for handing over the microphone (17): "Okay, one sec." in front of
+    /// "Go ahead." has them waiting for nothing.
     fn tool_phrase(&mut self, tool: &str) {
-        if tool != super::END_TOOL {
+        if tool != super::END_TOOL && tool != super::DICTATE_TOOL {
             self.fill(Errand::of(tool));
         } else if let Some(t) = self.turn.as_mut() {
             t.waited = true;
@@ -1818,6 +2172,15 @@ mod tests {
         /// How long a turn takes between one event and the next, as a model
         /// working through its tools does. None at all unless set.
         between: Mutex<Option<Duration>>,
+        /// The next turn hands the microphone over to a dictation.
+        dictate: AtomicBool,
+        /// Everything the session asked to have typed, in order, including
+        /// what could not be.
+        typed: Mutex<Vec<String>>,
+        /// Typing fails with this, as with nothing to type into.
+        type_fails: Mutex<Option<String>>,
+        /// How long typing a stretch takes, as a paste does.
+        type_takes: Mutex<Option<Duration>>,
     }
 
     struct FakeAssistant(Arc<Record>);
@@ -1846,6 +2209,7 @@ mod tests {
                 matches!(e, AgentEvent::ToolStarted { name, .. } if name == crate::voice::END_TOOL)
             });
             let read_aloud = std::mem::take(&mut *record.read_aloud.lock().unwrap());
+            let dictate = record.dictate.swap(false, Ordering::SeqCst);
             let between = *record.between.lock().unwrap();
             Box::pin(async move {
                 for (at, event) in script.events.into_iter().enumerate() {
@@ -1868,6 +2232,7 @@ mod tests {
                         stopped,
                         ended_voice: ends && !stopped,
                         read_aloud: if stopped { Vec::new() } else { read_aloud },
+                        dictate: dictate && !stopped,
                     }),
                 }
             })
@@ -1896,6 +2261,22 @@ mod tests {
         ) -> BoxFuture<'static, CommandResult<()>> {
             self.0.cuts.lock().unwrap().push((message_id, heard));
             Box::pin(async { Ok(()) })
+        }
+
+        fn type_text(&self, text: String) -> BoxFuture<'static, Result<(), String>> {
+            let record = self.0.clone();
+            Box::pin(async move {
+                let takes = *record.type_takes.lock().unwrap();
+                if let Some(takes) = takes {
+                    tokio::time::sleep(takes).await;
+                }
+                record.typed.lock().unwrap().push(text);
+                let fails = record.type_fails.lock().unwrap().clone();
+                match fails {
+                    Some(message) => Err(message),
+                    None => Ok(()),
+                }
+            })
         }
 
         fn open_reading(&self, what: ReadAloud) -> BoxFuture<'static, CommandResult<PieceStream>> {
@@ -2735,7 +3116,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_update_is_not_said_after_a_goodbye_and_does_not_hold_it_up() {
-        let mut rig = Rig::start(vec![goodbye("m1", "Talk soon.")], &["that's all I have"]).await;
+        let mut rig = Rig::start(vec![goodbye("m1", "Talk soon.")], &["that's it"]).await;
         rig.talk();
         rig.until("understanding", |o| is_state(o, VoiceState::Understanding)).await;
         rig.send(VoiceInput::Update(BUILD.into()));
@@ -2942,8 +3323,7 @@ mod tests {
         let pacing =
             Pacing { filler_after: Some(Duration::from_millis(300)), again_after: Duration::ZERO };
         let mut rig =
-            Rig::start_paced(vec![goodbye("m1", "Talk soon.")], &["that's all I have"], pacing)
-                .await;
+            Rig::start_paced(vec![goodbye("m1", "Talk soon.")], &["that's it"], pacing).await;
         *rig.record.between.lock().unwrap() = Some(Duration::from_millis(200));
         rig.talk();
         let utterance = rig.next_play().await;
@@ -2977,7 +3357,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_assistant_ends_the_conversation_once_its_goodbye_is_heard() {
-        let mut rig = Rig::start(vec![goodbye("m1", "Talk soon.")], &["that's all I have"]).await;
+        let mut rig = Rig::start(vec![goodbye("m1", "Talk soon.")], &["that's it"]).await;
         rig.talk();
         let utterance = rig.next_play().await;
         assert_eq!(rig.said(), ["Talk soon."], "no tool phrase before a goodbye");
@@ -3001,7 +3381,7 @@ mod tests {
     async fn talking_just_after_the_goodbye_is_still_heard() {
         let mut rig = Rig::start(
             vec![goodbye("m1", "Talk soon."), short_reply("m2", "Sure.")],
-            &["that's all", "oh, one more thing"],
+            &["that's it", "oh, one more thing"],
         )
         .await;
         rig.talk();
@@ -3400,5 +3780,687 @@ mod tests {
         })
         .await;
         assert_eq!(rig.answers(), [("c1".to_string(), ConfirmAnswer::Confirm)]);
+    }
+
+    // ---- a plain goodbye, said --------------------------------------------------
+
+    /// Whether the session has said one of the words it keeps for `errand`.
+    fn said_for(rig: &Rig, errand: Errand) -> bool {
+        rig.said().iter().any(|said| errand.phrases().contains(&said.as_str()))
+    }
+
+    #[tokio::test]
+    async fn a_plain_goodbye_over_a_reply_stops_it_and_ends_the_conversation() {
+        let mut rig =
+            Rig::start(vec![long_reply()], &["what is the weather", "okay, that's all, thanks"])
+                .await;
+        rig.talk();
+        rig.next_play().await;
+        // Said over the reply: it is stopped exactly as a stop word stops it.
+        rig.talk();
+        rig.until("the clear", |o| matches!(o, VoiceOutput::Clear)).await;
+        let goodbye = rig.next_play().await;
+        assert_eq!(rig.record.cancels.load(Ordering::SeqCst), 1);
+        eventually("the stored reply is cut to nothing", || {
+            *rig.record.cuts.lock().unwrap() == [("m1".to_string(), String::new())]
+        })
+        .await;
+        // The session's own goodbye, not the model's: no turn was run for it.
+        assert!(said_for(&rig, Errand::Goodbye), "{:?}", rig.said());
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["what is the weather"]);
+        assert_eq!(rig.heard_texts(), ["what is the weather"], "it is nobody's message");
+        // Once it has been heard, it ends.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        rig.drain();
+        assert_eq!(rig.count(|o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))), 0);
+        rig.send(VoiceInput::Played { utterance: goodbye });
+        let at = rig
+            .until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. })))
+            .await;
+        assert!(matches!(&rig.seen[at], VoiceOutput::Event(VoiceEvent::Ended { error: None })));
+        assert_eq!(rig.record.prompts.lock().unwrap().len(), 1, "nothing began a turn");
+    }
+
+    #[tokio::test]
+    async fn a_plain_goodbye_while_idle_ends_the_conversation_without_asking_the_model() {
+        let mut rig = Rig::start(
+            vec![short_reply("m1", FIRST)],
+            &["what is the weather", "I don't have anything else"],
+        )
+        .await;
+        rig.talk();
+        rig.play_out().await;
+        rig.talk();
+        let goodbye = rig.next_play().await;
+        assert!(said_for(&rig, Errand::Goodbye), "{:?}", rig.said());
+        rig.send(VoiceInput::Played { utterance: goodbye });
+        rig.until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))).await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["what is the weather"]);
+        assert_eq!(rig.heard_texts(), ["what is the weather"]);
+        assert_eq!(rig.record.cancels.load(Ordering::SeqCst), 0, "nothing was running");
+    }
+
+    #[tokio::test]
+    async fn a_goodbye_said_to_a_spoken_question_ends_the_conversation_and_approves_nothing() {
+        let mut rig = Rig::start(
+            vec![confirmation("fetch", "https://news.example.org/a/long/path")],
+            &["open the news", "that's all"],
+        )
+        .await;
+        rig.talk();
+        let question = rig.next_play().await;
+        rig.send(VoiceInput::Played { utterance: question });
+        rig.until("asking", |o| is_state(o, VoiceState::Asking)).await;
+        rig.talk();
+        let goodbye = rig.next_play().await;
+        assert!(said_for(&rig, Errand::Goodbye), "{:?}", rig.said());
+        rig.send(VoiceInput::Played { utterance: goodbye });
+        rig.until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))).await;
+        assert!(
+            rig.answers().iter().all(|(_, answer)| *answer != ConfirmAnswer::Confirm),
+            "a goodbye is not a yes: {:?}",
+            rig.answers()
+        );
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["open the news"]);
+    }
+
+    #[tokio::test]
+    async fn bare_thanks_and_a_that_is_it_are_left_to_the_model() {
+        let mut rig = Rig::start(
+            vec![short_reply("m1", FIRST), short_reply("m2", "Sure."), short_reply("m3", "Yes.")],
+            &["what is the weather", "no thanks", "that's it"],
+        )
+        .await;
+        rig.talk();
+        rig.play_out().await;
+        rig.talk();
+        rig.play_out().await;
+        rig.talk();
+        rig.play_out().await;
+        // Each was a turn, answered by the model, which has the question.
+        assert_eq!(
+            *rig.record.prompts.lock().unwrap(),
+            ["what is the weather", "no thanks", "that's it"]
+        );
+        assert!(!said_for(&rig, Errand::Goodbye));
+    }
+
+    #[tokio::test]
+    async fn thanks_and_goodbyes_over_the_goodbye_do_not_carry_the_conversation_on() {
+        let mut rig = Rig::start(
+            vec![goodbye("m1", &format!("{FIRST} {SECOND}"))],
+            &["that's it", "thanks", "bye"],
+        )
+        .await;
+        rig.talk();
+        rig.next_play().await;
+        let last = rig.next_play().await;
+        // The turn is over, and the conversation is ending.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Said back to it: heard, and let go. The goodbye goes on.
+        rig.talk();
+        rig.until("the resume", |o| matches!(o, VoiceOutput::Resume)).await;
+        rig.talk();
+        rig.until("the second resume", |o| matches!(o, VoiceOutput::Resume)).await;
+        assert_eq!(rig.record.cancels.load(Ordering::SeqCst), 0);
+        assert_eq!(rig.count(|o| matches!(o, VoiceOutput::Clear)), 0);
+        assert_eq!(rig.heard_texts(), ["that's it"], "neither began a turn");
+        rig.send(VoiceInput::Played { utterance: last });
+        let at = rig
+            .until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. })))
+            .await;
+        assert!(matches!(&rig.seen[at], VoiceOutput::Event(VoiceEvent::Ended { error: None })));
+        assert_eq!(rig.record.prompts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_goodbye_said_by_the_session_is_not_taken_back_by_thanks_either() {
+        let mut rig = Rig::start(
+            vec![short_reply("m1", FIRST)],
+            &["what is the weather", "that's all", "thank you"],
+        )
+        .await;
+        rig.talk();
+        rig.play_out().await;
+        rig.talk();
+        let goodbye = rig.next_play().await;
+        // "Thank you", back to the goodbye.
+        rig.talk();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        rig.send(VoiceInput::Played { utterance: goodbye });
+        rig.until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))).await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["what is the weather"]);
+    }
+
+    // ---- what is not meant ------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_word_or_two_of_what_was_just_said_is_the_room_and_not_the_person() {
+        let mut rig =
+            Rig::start(vec![long_reply()], &["what is the weather", "quite warm", "town"]).await;
+        rig.talk();
+        rig.next_play().await;
+        for _ in 0..2 {
+            rig.begin();
+            rig.until("the pause", |o| matches!(o, VoiceOutput::Pause)).await;
+            rig.end();
+            rig.until("the resume", |o| matches!(o, VoiceOutput::Resume)).await;
+        }
+        assert_eq!(rig.record.cancels.load(Ordering::SeqCst), 0, "the turn went on");
+        assert_eq!(rig.count(|o| matches!(o, VoiceOutput::Clear)), 0);
+        assert_eq!(rig.heard_texts(), ["what is the weather"]);
+    }
+
+    #[tokio::test]
+    async fn a_stop_word_the_reply_happens_to_contain_still_stops_it() {
+        let reply = Script {
+            events: vec![
+                started("m1"),
+                delta("Please wait while I check that for you. And on the"),
+            ],
+            hang: true,
+            finish: Some("m1"),
+            error: None,
+        };
+        let mut rig = Rig::start(vec![reply], &["what is the weather", "wait"]).await;
+        rig.talk();
+        rig.next_play().await;
+        rig.talk();
+        rig.until("the cut", |o| matches!(o, VoiceOutput::Event(VoiceEvent::ReplyCut { .. })))
+            .await;
+        assert_eq!(rig.record.cancels.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_word_that_is_not_the_assistants_is_a_barge_in_however_short() {
+        let mut rig = Rig::start(
+            vec![long_reply(), short_reply("m2", "Sure.")],
+            &["what is the weather", "no"],
+        )
+        .await;
+        rig.talk();
+        rig.next_play().await;
+        rig.talk();
+        rig.until(
+            "the new turn",
+            |o| matches!(o, VoiceOutput::Event(VoiceEvent::Heard { text }) if text == "no"),
+        )
+        .await;
+        assert_eq!(rig.record.cancels.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_murmur_over_a_reply_lets_it_go_on() {
+        let mut rig =
+            Rig::start(vec![long_reply()], &["what is the weather", "Mm-hmm.", "Uh-huh."]).await;
+        rig.talk();
+        rig.next_play().await;
+        for _ in 0..2 {
+            rig.begin();
+            rig.until("the pause", |o| matches!(o, VoiceOutput::Pause)).await;
+            rig.end();
+            rig.until("the resume", |o| matches!(o, VoiceOutput::Resume)).await;
+        }
+        assert_eq!(rig.record.cancels.load(Ordering::SeqCst), 0, "the reply went on");
+        assert_eq!(rig.count(|o| matches!(o, VoiceOutput::Clear)), 0);
+        assert_eq!(rig.heard_texts(), ["what is the weather"]);
+    }
+
+    #[tokio::test]
+    async fn a_yes_after_the_reply_is_an_answer_and_not_a_murmur() {
+        let mut rig = Rig::start(
+            vec![short_reply("m1", FIRST), short_reply("m2", "Sure.")],
+            &["what is the weather", "yes"],
+        )
+        .await;
+        rig.talk();
+        rig.play_out().await;
+        // Not over it, nor the end of it.
+        tokio::time::sleep(ECHO_TAIL + Duration::from_millis(300)).await;
+        rig.talk();
+        rig.until(
+            "the new turn",
+            |o| matches!(o, VoiceOutput::Event(VoiceEvent::Heard { text }) if text == "yes"),
+        )
+        .await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["what is the weather", "yes"]);
+    }
+
+    #[tokio::test]
+    async fn nothing_but_a_filler_is_nothing() {
+        let mut rig = Rig::start(
+            vec![short_reply("m1", "It is noon.")],
+            &["Um.", "Hmm...", "what time is it"],
+        )
+        .await;
+        rig.talk();
+        rig.talk();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        rig.drain();
+        assert!(rig.record.prompts.lock().unwrap().is_empty());
+        assert!(rig.heard_texts().is_empty());
+        assert_eq!(rig.states().last(), Some(&VoiceState::Listening));
+        // And what follows is heard as usual.
+        rig.talk();
+        rig.play_out().await;
+        assert_eq!(rig.heard_texts(), ["what time is it"]);
+    }
+
+    #[tokio::test]
+    async fn a_filler_is_not_an_unclear_answer_to_a_question() {
+        let mut rig =
+            Rig::start(vec![confirmation("search", "best e-bike")], &["look up an e-bike", "um"])
+                .await;
+        rig.talk();
+        let question = rig.next_play().await;
+        rig.send(VoiceInput::Played { utterance: question });
+        rig.until("asking", |o| is_state(o, VoiceState::Asking)).await;
+        tokio::time::sleep(ANSWER_GRACE + Duration::from_millis(50)).await;
+        rig.talk();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        rig.drain();
+        // The question was not asked again.
+        assert_eq!(rig.said(), ["Should I search the web for best e-bike?"]);
+        assert!(rig.answers().is_empty());
+    }
+
+    // ---- the listening chime ------------------------------------------------------------
+
+    #[tokio::test]
+    async fn the_chime_is_played_and_the_words_just_after_it_are_their_own() {
+        let mut rig =
+            Rig::start(vec![short_reply("m1", "Fine.")], &["type I'm running late"]).await;
+        rig.send(VoiceInput::Chime);
+        rig.until("the chime", |o| matches!(o, VoiceOutput::Chime)).await;
+        // Straight after it: what they say once they hear it is clear to
+        // approve what they ask for, as "type ..." needs.
+        rig.talk();
+        rig.play_out().await;
+        assert_eq!(*rig.record.clear.lock().unwrap(), [true]);
+        assert_eq!(rig.count(|o| matches!(o, VoiceOutput::Chime)), 1, "once");
+    }
+
+    // ---- dictation ------------------------------------------------------------------------
+
+    /// A session in the middle of a dictation: its first turn handed the
+    /// microphone over, and said "Go ahead." Then `more` is heard in turn, and
+    /// the assistant's `scripts` are for the turns after it.
+    async fn dictating(more: &[&str], scripts: Vec<Script>) -> Rig {
+        let mut heard = vec!["take this down"];
+        heard.extend(more);
+        let mut all = vec![short_reply("m1", "Go ahead.")];
+        all.extend(scripts);
+        let mut rig = Rig::start(all, &heard).await;
+        rig.record.dictate.store(true, Ordering::SeqCst);
+        rig.talk();
+        rig.play_out().await;
+        rig
+    }
+
+    fn typed(rig: &Rig) -> Vec<String> {
+        rig.record.typed.lock().unwrap().clone()
+    }
+
+    /// Each dictation begun (true) and ended (false), in order.
+    fn dictations(rig: &Rig) -> Vec<bool> {
+        rig.events()
+            .into_iter()
+            .filter_map(|e| match e {
+                VoiceEvent::Dictation { active } => Some(*active),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn is_dictation_over(output: &VoiceOutput) -> bool {
+        matches!(output, VoiceOutput::Event(VoiceEvent::Dictation { active: false }))
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_hands_over_the_microphone_begins_a_dictation_that_types_what_is_said() {
+        let mut rig =
+            dictating(&["Dear Bob.", "I won't be in, um, tomorrow.", "stop dictating"], Vec::new())
+                .await;
+        assert_eq!(dictations(&rig), [true]);
+        for _ in 0..3 {
+            rig.talk();
+        }
+        rig.until("the end of the dictation", is_dictation_over).await;
+
+        // In order, each as the one before it left the line.
+        assert_eq!(typed(&rig), ["Dear Bob.", " I won't be in, tomorrow."]);
+        let told: Vec<&str> = rig
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                VoiceEvent::Typed { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(told, ["Dear Bob.", " I won't be in, tomorrow."]);
+        assert_eq!(dictations(&rig), [true, false]);
+        // No turn began for any of it, "stop dictating" included, and nothing
+        // was announced as theirs.
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["take this down"]);
+        assert_eq!(rig.heard_texts(), ["take this down"]);
+        eventually("it says it is typed", || said_for(&rig, Errand::Typed)).await;
+        assert_eq!(rig.count(|o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))), 0);
+    }
+
+    #[tokio::test]
+    async fn a_spoken_new_paragraph_is_typed_as_a_blank_line_and_the_next_words_begin_it() {
+        let mut rig = dictating(
+            &[
+                "First point. New paragraph. Second point.",
+                "New paragraph.",
+                "third point",
+                "that's all",
+            ],
+            Vec::new(),
+        )
+        .await;
+        for _ in 0..4 {
+            rig.talk();
+        }
+        rig.until("the end of the dictation", is_dictation_over).await;
+        assert_eq!(typed(&rig), ["First point.\n\nSecond point.", "\n\n", "Third point"]);
+        // "That's all" ended the dictation, not the conversation.
+        assert_eq!(rig.count(|o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))), 0);
+        eventually("it says it is typed", || said_for(&rig, Errand::Typed)).await;
+    }
+
+    #[tokio::test]
+    async fn once_it_is_over_what_is_said_is_a_turn_again() {
+        let mut rig = dictating(
+            &["Dear Bob.", "stop dictating", "what time is it"],
+            vec![short_reply("m2", "It is noon.")],
+        )
+        .await;
+        rig.talk();
+        rig.talk();
+        rig.until("the end of the dictation", is_dictation_over).await;
+        rig.talk();
+        rig.until("the new turn", |o| {
+            matches!(o, VoiceOutput::Event(VoiceEvent::Heard { text }) if text == "what time is it")
+        })
+        .await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["take this down", "what time is it"]);
+        assert_eq!(typed(&rig), ["Dear Bob."]);
+    }
+
+    #[tokio::test]
+    async fn what_was_said_before_stop_dictating_is_typed_before_it_is_over() {
+        let mut rig =
+            dictating(&["Dear Bob.", "I will be late.", "stop dictating"], Vec::new()).await;
+        // Slow enough that the last is said while the first is still going in.
+        *rig.record.type_takes.lock().unwrap() = Some(Duration::from_millis(150));
+        for _ in 0..3 {
+            rig.talk();
+        }
+        rig.until("the end of the dictation", is_dictation_over).await;
+        assert_eq!(typed(&rig), ["Dear Bob.", " I will be late."]);
+        // Both were told before it ended, and "typed" came after.
+        let order: Vec<&str> = rig
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                VoiceEvent::Typed { .. } => Some("typed"),
+                VoiceEvent::Dictation { active: false } => Some("over"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(order, ["typed", "typed", "over"]);
+    }
+
+    #[tokio::test]
+    async fn typing_that_fails_ends_the_dictation_and_says_so() {
+        let mut rig = dictating(
+            &["Dear Bob.", "more words", "what time is it"],
+            vec![short_reply("m2", "It is noon.")],
+        )
+        .await;
+        *rig.record.type_fails.lock().unwrap() = Some("There is nothing to type into.".into());
+        // Slow enough that the next is said before this one has failed.
+        *rig.record.type_takes.lock().unwrap() = Some(Duration::from_millis(150));
+        rig.talk();
+        rig.talk();
+        rig.until("the end of the dictation", is_dictation_over).await;
+        let troubles: Vec<_> = rig
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                VoiceEvent::Trouble { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(troubles, ["There is nothing to type into."]);
+        eventually("it says sorry", || rig.said().iter().any(|s| s == SORRY_TYPING)).await;
+        // What was waiting behind it was dropped, and nothing was told as typed.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(typed(&rig), ["Dear Bob."]);
+        assert_eq!(rig.count(|o| matches!(o, VoiceOutput::Event(VoiceEvent::Typed { .. }))), 0);
+        // And what is said after it is a turn.
+        rig.talk();
+        rig.until("the new turn", |o| {
+            matches!(o, VoiceOutput::Event(VoiceEvent::Heard { text }) if text == "what time is it")
+        })
+        .await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["take this down", "what time is it"]);
+    }
+
+    #[tokio::test]
+    async fn the_assistants_own_go_ahead_coming_back_is_not_typed() {
+        let mut rig = Rig::start(
+            vec![short_reply("m1", "Go ahead.")],
+            &["take this down", "go ahead", "Dear Bob.", "stop dictating"],
+        )
+        .await;
+        rig.record.dictate.store(true, Ordering::SeqCst);
+        rig.talk();
+        let go_ahead = rig.next_play().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Heard while it is still playing: it is the speaker, not the person.
+        rig.begin();
+        rig.until("the pause", |o| matches!(o, VoiceOutput::Pause)).await;
+        rig.end();
+        rig.until("the resume", |o| matches!(o, VoiceOutput::Resume)).await;
+        rig.send(VoiceInput::Played { utterance: go_ahead });
+        rig.talk();
+        rig.talk();
+        rig.until("the end of the dictation", is_dictation_over).await;
+        assert_eq!(typed(&rig), ["Dear Bob."]);
+    }
+
+    #[tokio::test]
+    async fn an_answer_a_moment_after_the_reply_is_a_turn_and_not_its_echo() {
+        let mut rig = Rig::start(
+            vec![
+                short_reply("m1", "Want it on Thursday or Friday?"),
+                short_reply("m2", "Yes, I can do that. Is there anything else?"),
+                short_reply("m3", "Sure."),
+            ],
+            &["book the dentist", "Friday", "yes"],
+        )
+        .await;
+        // Each said straight after the reply, inside the end of it, and made
+        // of words the reply had in it.
+        rig.talk();
+        rig.play_out().await;
+        rig.talk();
+        rig.play_out().await;
+        rig.talk();
+        rig.play_out().await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["book the dentist", "Friday", "yes"]);
+    }
+
+    #[tokio::test]
+    async fn the_dictation_tool_is_not_given_a_filler_phrase() {
+        let script = Script {
+            events: vec![
+                started("m1"),
+                preparing("c1", crate::voice::DICTATE_TOOL),
+                AgentEvent::ToolStarted {
+                    call_id: "c1".into(),
+                    name: crate::voice::DICTATE_TOOL.into(),
+                    arguments: serde_json::json!({}),
+                },
+                delta("Go ahead."),
+            ],
+            hang: false,
+            finish: Some("m1"),
+            error: None,
+        };
+        let mut rig = Rig::start(vec![script], &["take this down"]).await;
+        rig.record.dictate.store(true, Ordering::SeqCst);
+        rig.talk();
+        rig.play_out().await;
+        assert_eq!(rig.said(), ["Go ahead."], "no \"Okay, one sec.\" in front of it");
+        assert_eq!(dictations(&rig), [true]);
+    }
+
+    #[tokio::test]
+    async fn a_goodbye_after_stopping_a_dictation_waits_for_what_is_still_being_typed() {
+        let mut rig = dictating(&["Dear Bob.", "stop dictating", "bye"], Vec::new()).await;
+        // Longer than the goodbye is given to leave the speaker.
+        *rig.record.type_takes.lock().unwrap() = Some(GOODBYE_TAIL + Duration::from_secs(1));
+        for _ in 0..3 {
+            rig.talk();
+        }
+        let goodbye = rig.next_play().await;
+        rig.send(VoiceInput::Played { utterance: goodbye });
+        rig.until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))).await;
+        // Typed before it ended, not dropped by it.
+        assert_eq!(typed(&rig), ["Dear Bob."]);
+        let order: Vec<&str> = rig
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                VoiceEvent::Typed { .. } => Some("typed"),
+                VoiceEvent::Dictation { active: false } => Some("over"),
+                VoiceEvent::Ended { .. } => Some("ended"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(order, ["typed", "over", "ended"]);
+    }
+
+    #[tokio::test]
+    async fn that_is_all_and_goodbye_in_one_ends_the_dictation_and_the_conversation() {
+        let mut rig = dictating(&["Dear Bob.", "That's all, bye."], Vec::new()).await;
+        rig.talk();
+        rig.talk();
+        rig.until("the end of the dictation", is_dictation_over).await;
+        let goodbye = rig.next_play().await;
+        assert_eq!(typed(&rig), ["Dear Bob."]);
+        assert!(said_for(&rig, Errand::Goodbye), "{:?}", rig.said());
+        assert!(!said_for(&rig, Errand::Typed), "{:?}", rig.said());
+        rig.send(VoiceInput::Played { utterance: goodbye });
+        rig.until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))).await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["take this down"]);
+    }
+
+    #[tokio::test]
+    async fn a_plain_goodbye_after_the_name_is_not_put_to_the_model() {
+        let mut rig = Rig::start(vec![short_reply("m1", "Sure.")], &[]).await;
+        rig.send(VoiceInput::Spoken("that's all, bye".into()));
+        let goodbye = rig.next_play().await;
+        assert!(said_for(&rig, Errand::Goodbye), "{:?}", rig.said());
+        rig.send(VoiceInput::Played { utterance: goodbye });
+        rig.until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))).await;
+        assert!(rig.record.prompts.lock().unwrap().is_empty(), "no turn was run");
+        assert!(rig.heard_texts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_filler_after_the_name_is_nothing() {
+        let mut rig = Rig::start(vec![short_reply("m1", "Sure.")], &[]).await;
+        rig.send(VoiceInput::Spoken("um".into()));
+        rig.send(VoiceInput::Spoken("Hmm...".into()));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        rig.drain();
+        assert!(rig.record.prompts.lock().unwrap().is_empty());
+        assert!(rig.heard_texts().is_empty());
+        // And a real one still is the first turn.
+        rig.send(VoiceInput::Spoken("what time is it".into()));
+        rig.play_out().await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["what time is it"]);
+    }
+
+    #[tokio::test]
+    async fn saying_goodbye_in_the_middle_of_a_dictation_types_what_came_first_and_ends() {
+        let mut rig = dictating(&["Dear Bob.", "bye"], Vec::new()).await;
+        rig.talk();
+        rig.talk();
+        rig.until("the end of the dictation", is_dictation_over).await;
+        let goodbye = rig.next_play().await;
+        assert_eq!(typed(&rig), ["Dear Bob."]);
+        assert!(said_for(&rig, Errand::Goodbye), "{:?}", rig.said());
+        assert!(!said_for(&rig, Errand::Typed), "{:?}", rig.said());
+        rig.send(VoiceInput::Played { utterance: goodbye });
+        rig.until("the end", |o| matches!(o, VoiceOutput::Event(VoiceEvent::Ended { .. }))).await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["take this down"]);
+    }
+
+    #[tokio::test]
+    async fn words_from_before_the_session_are_dictated_too() {
+        let rig = dictating(&[], Vec::new()).await;
+        rig.send(VoiceInput::Spoken("Dear Bob.".into()));
+        eventually("it is typed", || typed(&rig) == ["Dear Bob."]).await;
+        assert_eq!(*rig.record.prompts.lock().unwrap(), ["take this down"], "no turn began");
+    }
+
+    #[tokio::test]
+    async fn nothing_is_said_over_a_dictation() {
+        let mut rig = dictating(&["stop dictating"], Vec::new()).await;
+        rig.send(VoiceInput::Update(BUILD.into()));
+        tokio::time::sleep(ECHO_TAIL + Duration::from_millis(300)).await;
+        rig.drain();
+        assert_eq!(rig.said(), ["Go ahead."], "the update waits");
+        // Once it is over, it is said, after what says it is.
+        rig.talk();
+        let typed_phrase = rig.next_play().await;
+        rig.send(VoiceInput::Played { utterance: typed_phrase });
+        tokio::time::sleep(ECHO_TAIL + Duration::from_millis(300)).await;
+        eventually("the update", || rig.said().iter().any(|s| s == BUILD)).await;
+    }
+
+    #[tokio::test]
+    async fn a_dictation_the_session_ends_in_the_middle_of_is_over_before_it_is() {
+        let mut rig = dictating(&[], Vec::new()).await;
+        rig.send(VoiceInput::Stop);
+        while let Some(output) = rig.next().await {
+            rig.seen.push(output);
+        }
+        let order: Vec<&str> = rig
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                VoiceEvent::Dictation { active: true } => Some("begun"),
+                VoiceEvent::Dictation { active: false } => Some("over"),
+                VoiceEvent::Ended { .. } => Some("ended"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(order, ["begun", "over", "ended"]);
+    }
+
+    #[tokio::test]
+    async fn a_turn_talked_over_does_not_begin_a_dictation() {
+        let reply = Script {
+            events: vec![started("m1"), delta("Go ahead, I'm listening. And on the")],
+            hang: true,
+            finish: Some("m1"),
+            error: None,
+        };
+        let mut rig =
+            Rig::start(vec![reply, short_reply("m2", "Sure.")], &["take this down", "stop"]).await;
+        rig.record.dictate.store(true, Ordering::SeqCst);
+        rig.talk();
+        rig.next_play().await;
+        rig.talk();
+        rig.until("the cut", |o| matches!(o, VoiceOutput::Event(VoiceEvent::ReplyCut { .. })))
+            .await;
+        rig.until("listening", |o| is_state(o, VoiceState::Listening)).await;
+        assert!(dictations(&rig).is_empty(), "{:?}", dictations(&rig));
     }
 }

@@ -767,6 +767,7 @@ mod tests {
             stopped,
             ended_voice: false,
             read_aloud: Vec::new(),
+            dictate: false,
             pictures: Vec::new(),
         }
     }
