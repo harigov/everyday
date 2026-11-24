@@ -36,7 +36,6 @@ pub(crate) mod desktop;
 #[cfg(target_os = "linux")]
 mod wayland;
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -86,33 +85,12 @@ impl Default for Config {
 
 const FILE: &str = "writing.json";
 
-fn config_path() -> PathBuf {
-    karmayoga_vault::config_dir().join(FILE)
-}
-
 pub fn load_config() -> Config {
-    std::fs::read(config_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::machine_config::load(FILE)
 }
 
 fn save_config(config: &Config) -> Result<(), String> {
-    let path = config_path();
-    if let Some(dir) = path.parent() {
-        karmayoga_core::fsutil::create_private_dir(dir).map_err(|e| e.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
-    // The restore token is a standing grant to type into other windows, so
-    // the file is the owner's alone -- from the moment it exists, not from a
-    // chmod after it has been readable under its final name.
-    karmayoga_core::fsutil::write_atomic_private(
-        &path,
-        &bytes,
-        &karmayoga_core::fsutil::unique_tag(),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::machine_config::save(FILE, config)
 }
 
 /// The shortcut to claim at startup, or `None` when writing help is off or

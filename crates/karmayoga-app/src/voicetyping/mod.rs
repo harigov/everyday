@@ -28,7 +28,6 @@
 pub mod paste;
 pub mod pill;
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,7 +36,7 @@ use karmayoga_service::ctx::Ctx;
 use karmayoga_service::error::{CommandError, CommandResult, codes};
 use karmayoga_service::speech::detect::Tuning;
 use karmayoga_service::speech::dictate::{
-    DictationEnd, DictationEvent, DictationInput, DictationLink,
+    DictationEnd, DictationEvent, DictationInput, DictationLink, DictationState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -127,32 +126,12 @@ fn pause_after_speech(seconds: f32) -> Option<Duration> {
 
 const FILE: &str = "voice-typing.json";
 
-fn config_path() -> PathBuf {
-    karmayoga_vault::config_dir().join(FILE)
-}
-
 fn save_config(config: &Config) -> Result<(), String> {
-    let path = config_path();
-    if let Some(dir) = path.parent() {
-        karmayoga_core::fsutil::create_private_dir(dir).map_err(|e| e.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
-    // Private from the moment it exists, as writing help's file is: the two
-    // are kept alike, and nothing here needs anybody else to read it.
-    karmayoga_core::fsutil::write_atomic_private(
-        &path,
-        &bytes,
-        &karmayoga_core::fsutil::unique_tag(),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::machine_config::save(FILE, config)
 }
 
 pub fn load_config() -> Config {
-    std::fs::read(config_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::machine_config::load(FILE)
 }
 
 /// Voice typing's shortcut while it is switched on, or `None` when it is off or
@@ -1204,6 +1183,18 @@ async fn hear(
                 tracing::warn!(error = %message, "a piece of a voice typing was not transcribed");
             }
             Msg::Session(DictationEvent::Heard { text }) => heard(app, seq, text),
+            // It stopped listening by itself -- a pause after the words, a
+            // long quiet, the time limit -- and hears nothing more: the card
+            // stops saying it is listening now, not once the last words are
+            // in, and the microphone closes as if the key had been pressed.
+            Msg::Session(DictationEvent::State { state: DictationState::Finishing }) => {
+                if close_at.is_none() {
+                    close_at = Some(tokio::time::Instant::now());
+                    if !emit(app, seq, Phase::Transcribing, None, None) {
+                        return Ok(None);
+                    }
+                }
+            }
             // Ended because it was told to, or by itself -- a pause after
             // the words, quiet for long enough, or long enough altogether --
             // in which case what it heard is typed as if the key had been

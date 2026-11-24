@@ -426,7 +426,8 @@
     const how =
       `Say “${name}” and then what you want — “${name}, type I won’t be available tomorrow” — ` +
       'and it answers as the talk key would. The microphone is listened to whenever nothing ' +
-      'else is using it; what is said without the name is never kept or sent anywhere.'
+      'else is using it, by a speech model on this computer; what is said without the name ' +
+      'is never kept or sent anywhere.'
     return w.enabled && w.listening ? `Listening now. ${how}` : how
   }
 

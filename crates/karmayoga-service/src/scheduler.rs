@@ -1330,6 +1330,7 @@ async fn resume(
         via: None,
         spoken: false,
         voice_approves: false,
+        woken: false,
         reach,
         job: None,
         follow_up: None,

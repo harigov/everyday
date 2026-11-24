@@ -20,7 +20,6 @@
 use super::Synthesiser;
 use crate::error::{CommandError, CommandResult, codes};
 use karmayoga_core::speech::PHONON_SPEAKERS;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 /// How far from its most likely next moment of sound Phonon may go. `ptts`
@@ -35,12 +34,14 @@ const TEMPERATURE: f32 = 0.7;
 
 /// The seed `text`'s noise is drawn from: its own words. Each sentence is
 /// said its own way, and the same sentence the same way every time, so one
-/// that comes out wrong can be made again to hear why.
+/// that comes out wrong can be made again to hear why. FNV-1a, whose every
+/// value is fixed by its definition: the standard library's hasher may change
+/// between Rust releases, and the promise with it.
 #[cfg_attr(not(feature = "speech"), allow(dead_code))]
 fn seed_for(text: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// The name Phonon knows speaker number `speaker` by. Settings refuse a
@@ -331,6 +332,8 @@ mod tests {
         assert_eq!(first, seed_for("Okay, I've moved it to Friday."));
         assert_ne!(first, seed_for("Okay, I've moved it to Thursday."));
         assert_ne!(first, seed_for("Let me see."));
+        // FNV-1a's own published value: no toolchain can move it.
+        assert_eq!(seed_for("a"), 0xaf63_dc4c_8601_ec8c);
     }
 
     #[test]

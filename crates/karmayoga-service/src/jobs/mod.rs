@@ -762,6 +762,7 @@ async fn execute(
         via: None,
         spoken: false,
         voice_approves: false,
+        woken: false,
         job: Some(JobTurn { id, question: job.title(), context: executor.context() }),
         follow_up: None,
         about_job: None,

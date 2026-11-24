@@ -191,6 +191,7 @@ pub async fn answer_now(
         via: conversation.via.clone(),
         spoken: false,
         voice_approves: false,
+        woken: false,
         job: None,
         follow_up: Some(job.id),
         about_job: None,

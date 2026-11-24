@@ -622,6 +622,8 @@ struct ConfirmGate {
     /// that may not -- see [`Turn::voice_approves`]. See
     /// [`ConfirmGate::approved_by_voice`].
     spoken_request: Option<String>,
+    /// The conversation was opened by the wake word: see [`Turn::woken`].
+    woken: bool,
     /// Whether there is anybody to ask.
     ///
     /// A scheduled run has nobody, so with `enabled` set the answer is a
@@ -2156,7 +2158,11 @@ impl ConfirmGate {
         // other calls that fetch an address -- a feed, a lookup, a cover --
         // are held to the same check; see `fetched_address`.
         if name == TYPE_TEXT {
-            return self.typing_question();
+            // One the tool will refuse -- nothing to type, or too much -- is
+            // not put to the person: they would be asked to allow what
+            // cannot happen.
+            let text = typed_text(arguments).filter(|t| t.chars().count() <= MAX_TYPED_CHARS);
+            return text.and_then(|text| self.typing_question(text));
         }
         let fetched = fetched_address(name, arguments);
         let own = || {
@@ -2238,8 +2244,13 @@ impl ConfirmGate {
     /// mail -- and a mail or a page read on the way can ask for anything to
     /// be typed there, as the model's own words; and words heard over the
     /// assistant's own voice may be that voice coming back.
-    fn typing_question(&self) -> Option<&'static str> {
-        (self.spoken_request.is_none() || self.strangers_heard()).then_some("desktop")
+    ///
+    /// In a conversation the wake word opened ([`Turn::woken`]), only a
+    /// single line goes without asking: what said the name may have been a
+    /// video, and a line break typed into a terminal or a chat is Enter.
+    fn typing_question(&self, text: &str) -> Option<&'static str> {
+        let lines = self.woken && text.contains(['\n', '\r']);
+        (self.spoken_request.is_none() || self.strangers_heard() || lines).then_some("desktop")
     }
 
     /// Has a stranger's writing reached this turn: mail, a story, a bank's
@@ -2268,7 +2279,8 @@ impl ConfirmGate {
     fn approved_by_voice(&self, name: &str, arguments: &Value, kind: &str) -> bool {
         use crate::voice::confirm::{CHANGED_BY_VOICE, request_asks_for};
         let Some(request) = &self.spoken_request else { return false };
-        if !CHANGED_BY_VOICE.contains(&name) {
+        // Nothing shows that whoever said the name is the person.
+        if self.woken || !CHANGED_BY_VOICE.contains(&name) {
             return false;
         }
         match kind {
@@ -5028,15 +5040,14 @@ async fn briefing(service: &Arc<Service>, thread: ThreadId) -> CommandResult<Str
     Ok(said.trim().to_string())
 }
 
-/// Read a newsletter, an email or an article out in full, in the voice the
-/// person is talking to: made fit to hear exactly as the Listen player makes
-/// it, and read by the voice session after this turn's reply, a sentence at
-/// a time, so they can talk over it or stop it as they would the reply.
-///
-/// The text a [`TYPE_TEXT`] call would type: its `text`, trimmed, or `None`
-/// when there is nothing in it.
+/// The text a [`TYPE_TEXT`] call would type: its `text` as written, less one
+/// line break at the very end -- no Enter is pressed -- or `None` when there
+/// is nothing in it but space. Space at the start of a line is kept: indented
+/// code, or a quoted reply, is typed as it was given.
 fn typed_text(arguments: &Value) -> Option<&str> {
-    arguments.get("text").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty())
+    let text = arguments.get("text").and_then(Value::as_str)?;
+    let text = text.strip_suffix('\n').map_or(text, |t| t.strip_suffix('\r').unwrap_or(t));
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Type text into the field the person is working in, in whatever
@@ -5095,6 +5106,11 @@ fn type_text_tool(typist: Arc<dyn Typist>) -> PortableDynamicTool {
     )
 }
 
+/// Read a newsletter, an email or an article out in full, in the voice the
+/// person is talking to: made fit to hear exactly as the Listen player makes
+/// it, and read by the voice session after this turn's reply, a sentence at
+/// a time, so they can talk over it or stop it as they would the reply.
+///
 /// Offered to a spoken turn alone. Declared here for `end_voice_mode`'s
 /// reason: the session reads [`Turned::read_aloud`] from the call that ran.
 /// The text never reaches the model -- only its title does -- so a long
@@ -5609,6 +5625,13 @@ pub struct Turn {
     /// through a chat, where a destructive call always asks: a phone is the
     /// likelier thing to be lost or borrowed (see [`confirms_destructive`]).
     pub voice_approves: bool,
+    /// Set for a voice conversation the wake word opened rather than a key or
+    /// a click. Nothing shows the person is at the computer -- a video or a
+    /// podcast can say the name as well as they can -- so their words approve
+    /// no change (`ConfirmGate::approved_by_voice`), and what they ask to
+    /// have typed is shown first unless it is one line
+    /// (`ConfirmGate::typing_question`).
+    pub woken: bool,
     /// For a scheduled run, how it reaches its person. Ignored unless
     /// [`Turn::unattended`] is set -- or [`Turn::job`] is a project, the one
     /// kind of job that is given somebody to ask. See [`Reach`].
@@ -6262,6 +6285,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         via,
         spoken,
         voice_approves,
+        woken,
         reach,
         job,
         follow_up,
@@ -6585,6 +6609,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         confirm_web: settings.confirm_web || nobody_watching || follow_up.is_some(),
         watched: !nobody_watching && follow_up.is_none(),
         spoken_request: (spoken && voice_approves && via.is_none()).then(|| prompt.clone()),
+        woken,
         unattended: nobody_watching,
         job: job.is_some(),
         research: job.as_ref().map(|job| ResearchReading {
@@ -9955,6 +9980,42 @@ mod tests {
         assert_eq!(said.confirmation(TYPE_TEXT, &text), Some("desktop"));
     }
 
+    /// Woken by name, it may have been a video saying it: one line is typed,
+    /// more is shown first, and no change is done on the words alone.
+    #[test]
+    fn a_woken_conversation_types_one_line_and_its_words_approve_no_change() {
+        let (vault, _dir) = test_vault();
+        let woken = ConfirmGate {
+            spoken_request: Some("delete the dentist task".into()),
+            woken: true,
+            ..test_gate(vault.clone(), ConversationId::new())
+        };
+        let text = |text: &str| serde_json::json!({ "text": text });
+        assert_eq!(woken.confirmation(TYPE_TEXT, &text("I won't be available tomorrow.")), None);
+        // Its own last line break is not typed, so it is still one line.
+        assert_eq!(woken.confirmation(TYPE_TEXT, &text("Running late.\n")), None);
+        assert_eq!(woken.confirmation(TYPE_TEXT, &text("ls\nrm -rf ~/projects")), Some("desktop"));
+        assert_eq!(woken.confirmation(TYPE_TEXT, &text("one\r\ntwo")), Some("desktop"));
+        let task = serde_json::json!({ "task_id": karmayoga_core::TaskId::new().to_string() });
+        assert_eq!(woken.confirmation("delete_task", &task), Some("destructive"));
+    }
+
+    /// What is typed is what was given, but for a last line break; and what
+    /// the tool would refuse is not asked about first.
+    #[test]
+    fn typed_text_keeps_its_indentation_and_a_refused_call_is_not_asked() {
+        let text = |text: &str| serde_json::json!({ "text": text });
+        assert_eq!(typed_text(&text("    return x\n")), Some("    return x"));
+        assert_eq!(typed_text(&text("> quoted\r\n")), Some("> quoted"));
+        assert_eq!(typed_text(&text("two\n\n")), Some("two\n"), "only the last one goes");
+        assert_eq!(typed_text(&text(" \n ")), None);
+        let (vault, _dir) = test_vault();
+        let unsaid = test_gate(vault, ConversationId::new());
+        let long = "a".repeat(MAX_TYPED_CHARS + 1);
+        assert_eq!(unsaid.confirmation(TYPE_TEXT, &text(&long)), None);
+        assert_eq!(unsaid.confirmation(TYPE_TEXT, &text("  ")), None);
+    }
+
     struct Keyboard {
         typed: Mutex<Vec<String>>,
         refuses: bool,
@@ -9987,9 +10048,10 @@ mod tests {
             )
             .await
             .unwrap();
+        // As given, space at the start too: indentation is part of the text.
         assert_eq!(
             *keyboard.typed.lock().unwrap(),
-            ["I won't be available tomorrow.\nFriday works."]
+            ["  I won't be available tomorrow.\nFriday works."]
         );
         assert_eq!(summarise(TYPE_TEXT, &output), "I won't be available tomorrow.\nFriday works.");
         // Nothing to type types nothing.
@@ -10791,6 +10853,7 @@ mod tests {
             confirm_web: true,
             watched: true,
             spoken_request: None,
+            woken: false,
             unattended: false,
             job: false,
             research: None,

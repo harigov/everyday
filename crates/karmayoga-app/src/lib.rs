@@ -29,6 +29,7 @@ mod hotkey;
 mod legacy;
 mod listen;
 mod listener;
+mod machine_config;
 mod mcp;
 // `pub`: `meeting::begin_headless` is the window-free core of
 // `meeting_start`/`start_automatic` -- see its own doc -- and an E2E test

@@ -21,7 +21,6 @@
 //! application's call, unless that is switched off. See
 //! `docs/plans/wake-word.md`.
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -62,29 +61,20 @@ const FILE: &str = "wake.json";
 const MAX_NAMES: usize = 5;
 const MAX_NAME_CHARS: usize = 40;
 
-fn config_path() -> PathBuf {
-    karmayoga_vault::config_dir().join(FILE)
-}
+/// The setting as last read or saved: read from its file once, then kept
+/// here, since [`look`] wants it twice a second and [`set_wake_settings`] is
+/// the one thing that changes it.
+static CONFIG: Mutex<Option<Config>> = Mutex::new(None);
 
 fn save_config(config: &Config) -> Result<(), String> {
-    let path = config_path();
-    if let Some(dir) = path.parent() {
-        karmayoga_core::fsutil::create_private_dir(dir).map_err(|e| e.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
-    karmayoga_core::fsutil::write_atomic_private(
-        &path,
-        &bytes,
-        &karmayoga_core::fsutil::unique_tag(),
-    )
-    .map_err(|e| e.to_string())
+    crate::machine_config::save(FILE, config)?;
+    *CONFIG.lock().unwrap_or_else(|e| e.into_inner()) = Some(config.clone());
+    Ok(())
 }
 
-pub fn load_config() -> Config {
-    std::fs::read(config_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+fn load_config() -> Config {
+    let mut kept = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
+    kept.get_or_insert_with(|| crate::machine_config::load(FILE)).clone()
 }
 
 /// The names in `names`, as listened for: split at commas, trimmed, empty
@@ -98,6 +88,11 @@ fn names_in(names: &str) -> Vec<String> {
 /// How often whether to listen is looked at: how long something that wants
 /// the microphone shares it with this before this lets go.
 const LOOK_EVERY: Duration = Duration::from_millis(500);
+
+/// How often, while it listens for the assistant's own name, that name is
+/// looked at again: renamed in Settings → Assistant, it answers to the new one
+/// within this.
+const NAME_CHECK: Duration = Duration::from_secs(15);
 
 /// How long after the listening could not be started -- no speech model, the
 /// microphone refused -- before it is tried again.
@@ -207,7 +202,8 @@ pub fn install(app: &AppHandle) {
 /// Start or stop the listening, as [`hold_back`] says now.
 fn look(app: &AppHandle) {
     let config = load_config();
-    let held_back = hold_back(app, &config);
+    // Off, as it is unless somebody turned it on: nothing else to look at.
+    let held_back = if config.enabled { hold_back(app, &config) } else { Some(Reason::Off) };
     let mut listener = listener();
     if listener.task.as_ref().is_some_and(|task| task.inner().is_finished()) {
         listener.task = None;
@@ -248,13 +244,10 @@ fn refused(why: String) {
 async fn listen(app: AppHandle, config: Config) {
     let service = app.state::<AppState>().service();
     let mut names = names_in(&config.names);
-    if names.is_empty() {
-        let name = service
-            .on_vault(|vault| vault.agent_settings())
-            .await
-            .map(|settings| settings.name)
-            .unwrap_or_default();
-        names = names_in(&name);
+    // No names chosen: the assistant's own, which may change while it listens.
+    let own_name = names.is_empty();
+    if own_name {
+        names = names_in(&assistant_name(&service).await);
     }
     if names.is_empty() {
         refused(
@@ -262,7 +255,7 @@ async fn listen(app: AppHandle, config: Config) {
         );
         return;
     }
-    let WakeLink { input, mut woken } = match service.wake_open(names).await {
+    let WakeLink { input, mut woken } = match service.wake_open(names.clone()).await {
         Ok(link) => link,
         Err(e) => return refused(e.message),
     };
@@ -285,16 +278,31 @@ async fn listen(app: AppHandle, config: Config) {
         listener.hearing = true;
         listener.problem = None;
     }
-    while let Some(Woken { rest }) = woken.recv().await {
-        // Something may have taken the microphone in the moment it took to
-        // hear the name: what was said was for that.
-        if hold_back(&app, &load_config()).is_some() {
-            continue;
+    let mut name_check = tokio::time::interval(NAME_CHECK);
+    name_check.tick().await;
+    loop {
+        tokio::select! {
+            heard = woken.recv() => {
+                let Some(Woken { rest }) = heard else { break };
+                // Something may have taken the microphone in the moment it
+                // took to hear the name: what was said was for that.
+                if hold_back(&app, &load_config()).is_some() {
+                    continue;
+                }
+                drop(engine);
+                listener().hearing = false;
+                crate::talk::wake(&app, rest);
+                return;
+            }
+            _ = name_check.tick(), if own_name => {
+                // Renamed: [`look`] starts it again, listening for the new one.
+                if names_in(&assistant_name(&service).await) != names {
+                    drop(engine);
+                    listener().hearing = false;
+                    return;
+                }
+            }
         }
-        drop(engine);
-        listener().hearing = false;
-        crate::talk::wake(&app, rest);
-        return;
     }
     // The recogniser went away; tried again in a while.
     drop(engine);
@@ -339,15 +347,15 @@ impl Reason {
     }
 }
 
+/// What the assistant is called in Settings → Assistant, or nothing while the
+/// vault is locked.
+async fn assistant_name(service: &karmayoga_service::service::Service) -> String {
+    service.on_vault(|vault| vault.agent_settings()).await.map(|s| s.name).unwrap_or_default()
+}
+
 async fn settings(app: &AppHandle) -> WakeSettings {
     let config = load_config();
-    let assistant_name = app
-        .state::<AppState>()
-        .service()
-        .on_vault(|vault| vault.agent_settings())
-        .await
-        .map(|settings| settings.name)
-        .unwrap_or_default();
+    let assistant_name = assistant_name(&app.state::<AppState>().service()).await;
     let waiting = hold_back(app, &config).and_then(Reason::waiting);
     let listener = listener();
     WakeSettings {

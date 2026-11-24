@@ -112,6 +112,10 @@ pub(crate) struct Shell {
     /// -- see `karmayoga_service::agent::Typist`. The talk key's; a window's
     /// session has none, the field with the keyboard being the window's own.
     pub typist: Option<Arc<dyn Typist>>,
+    /// The wake word began it, not the key: what is said in it approves no
+    /// change and has more than a line shown before it is typed -- see
+    /// `karmayoga_service::agent::Turn::woken`.
+    pub woken: bool,
 }
 
 impl Outlet {
@@ -327,12 +331,12 @@ async fn try_start(
     on_screen: Option<serde_json::Value>,
     outlet: Outlet,
 ) -> CommandResult<()> {
-    let typist = match &outlet {
-        Outlet::Shell(shell) => shell.typist.clone(),
-        Outlet::Window(_) => None,
+    let (typist, woken) = match &outlet {
+        Outlet::Shell(shell) => (shell.typist.clone(), shell.woken),
+        Outlet::Window(_) => (None, false),
     };
     let link = match typist {
-        Some(typist) => state.service().voice_open_typing(conversation_id, typist).await?,
+        Some(typist) => state.service().voice_open_typing(conversation_id, typist, woken).await?,
         None => state.service().voice_open(conversation_id).await?,
     };
     let karmayoga_service::voice::VoiceLink { input, output } = link;

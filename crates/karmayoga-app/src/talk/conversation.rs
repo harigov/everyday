@@ -38,8 +38,16 @@ pub fn choose(last: Option<Last>, now: Instant, continue_minutes: u32) -> Option
         .map(|last| last.conversation)
 }
 
+/// How long a conversation in `state` may be left alone before it ends:
+/// [`IDLE_AFTER`], or [`WOKEN_IDLE_AFTER`] for one the wake word began while
+/// it is only listening. A question waiting on the person -- a card to read
+/// before pressing Allow -- has the whole of [`IDLE_AFTER`] either way.
+pub fn idle_after(state: VoiceState, woke: bool) -> Duration {
+    if woke && state == VoiceState::Listening { WOKEN_IDLE_AFTER } else { IDLE_AFTER }
+}
+
 /// Whether a conversation that has been in `state` since `quiet_since` has
-/// been left alone for `after` -- [`IDLE_AFTER`], or [`WOKEN_IDLE_AFTER`].
+/// been left alone for `after` -- see [`idle_after`].
 ///
 /// Only while it is waiting on the person -- listening, or holding a question
 /// -- does the time count. The assistant working on something for ten minutes,
@@ -118,6 +126,15 @@ mod tests {
             VoiceState::Speaking,
         ] {
             assert!(!idle_expired(state, since, long_after, IDLE_AFTER), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_woken_conversation_ends_soon_only_while_it_listens() {
+        assert_eq!(idle_after(VoiceState::Listening, true), WOKEN_IDLE_AFTER);
+        assert_eq!(idle_after(VoiceState::Listening, false), IDLE_AFTER);
+        for question in [VoiceState::Asking, VoiceState::WaitingForClick] {
+            assert_eq!(idle_after(question, true), IDLE_AFTER, "{question:?}");
         }
     }
 }

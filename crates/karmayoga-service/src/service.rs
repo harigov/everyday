@@ -1511,6 +1511,7 @@ impl Service {
             via: None,
             spoken: false,
             voice_approves: false,
+            woken: false,
             // Not a scheduled run.
             reach: crate::agent::Reach::default(),
             job: None,

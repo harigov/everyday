@@ -38,6 +38,9 @@ pub struct ServiceAssistant {
     /// on this computer's desktop with the talk key: each turn is offered
     /// `type_text` with it. See [`Typist`].
     pub typist: Option<Arc<dyn Typist>>,
+    /// Opened by the wake word, not a key or a click: see
+    /// [`Turn::woken`](crate::agent::Turn::woken).
+    pub woken: bool,
 }
 
 impl VoiceAssistant for ServiceAssistant {
@@ -52,6 +55,7 @@ impl VoiceAssistant for ServiceAssistant {
         let conversation = self.conversation;
         let via = self.via.clone();
         let typist = self.typist.clone();
+        let woken = self.woken;
         let origin = if via.is_some() { CALL_ORIGIN } else { ORIGIN };
         // What they asked for is theirs to have done -- unless it may be an
         // echo, or they are on a call through a chat, where a destructive
@@ -80,6 +84,7 @@ impl VoiceAssistant for ServiceAssistant {
                 // What the model writes is read aloud, and it is told so.
                 spoken: true,
                 voice_approves,
+                woken,
                 reach: Reach { typist, ..Reach::default() },
                 job: None,
                 follow_up: None,
@@ -194,19 +199,21 @@ impl Service {
         conversation: ConversationId,
         via: Option<Via>,
     ) -> CommandResult<VoiceLink> {
-        self.open_voice(conversation, via, None).await
+        self.open_voice(conversation, via, None, false).await
     }
 
     /// [`Service::voice_open`], for a conversation started on this
     /// computer's desktop rather than in a window -- the talk key -- where
     /// "type that ..." types into whatever the person was typing in, through
-    /// `typist`.
+    /// `typist`. `woken` when the wake word opened it rather than the key:
+    /// see [`Turn::woken`](crate::agent::Turn::woken).
     pub async fn voice_open_typing(
         self: &Arc<Self>,
         conversation: ConversationId,
         typist: Arc<dyn Typist>,
+        woken: bool,
     ) -> CommandResult<VoiceLink> {
-        self.open_voice(conversation, None, Some(typist)).await
+        self.open_voice(conversation, None, Some(typist), woken).await
     }
 
     async fn open_voice(
@@ -214,6 +221,7 @@ impl Service {
         conversation: ConversationId,
         via: Option<Via>,
         typist: Option<Arc<dyn Typist>>,
+        woken: bool,
     ) -> CommandResult<VoiceLink> {
         self.require_unlocked()?;
         // The voice first: listening starts a recogniser loading, which a
@@ -235,6 +243,7 @@ impl Service {
                 via: via.clone(),
                 // A call has no desktop to type on.
                 typist: typist.filter(|_| via.is_none()),
+                woken,
             }),
         });
         // So background updates can be said in it. See `crate::reach`.

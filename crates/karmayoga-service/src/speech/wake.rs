@@ -14,8 +14,9 @@
 //! without the name never leaves this module: it is matched and dropped, not
 //! sent anywhere, shown or kept.
 
-use crate::error::CommandResult;
-use crate::service::Service;
+use crate::error::{CommandError, CommandResult, codes};
+use crate::service::{Service, blocking};
+use crate::speech::SAMPLE_RATE;
 use crate::speech::detect::Tuning;
 use crate::speech::live::{LiveEvent, LiveTranscription};
 use std::sync::Arc;
@@ -29,6 +30,11 @@ pub struct Woken {
     /// to be listened to.
     pub rest: String,
 }
+
+/// How much audio one detector hears before it is made afresh: an hour of
+/// it. Sherpa counts the samples it has been fed in an `i32`, which runs out
+/// after about 37 hours, and this listens all day and night if let.
+const FRESH_EVERY: u64 = SAMPLE_RATE as u64 * 60 * 60;
 
 /// Both ends of a running listener, from the transport's side: microphone
 /// audio at [`SAMPLE_RATE`](crate::speech::SAMPLE_RATE) in, every time the
@@ -161,10 +167,21 @@ async fn run(
     woken: UnboundedSender<Woken>,
 ) {
     let LiveTranscription { control, events: mut heard_events } = live;
+    // Fed since the detector was last made afresh, and whether somebody is
+    // talking, whom a fresh one would cut off.
+    let mut fed: u64 = 0;
+    let mut talking = false;
     loop {
         tokio::select! {
             samples = audio.recv() => match samples {
-                Some(samples) => control.feed(samples),
+                Some(samples) => {
+                    fed += samples.len() as u64;
+                    control.feed(samples);
+                    if fed >= FRESH_EVERY && !talking {
+                        control.reset();
+                        fed = 0;
+                    }
+                }
                 // The transport let go: listening is over.
                 None => return,
             },
@@ -181,7 +198,8 @@ async fn run(
                 Some(LiveEvent::Transcribed { result: Err(e), .. }) => {
                     tracing::debug!(error = %e.message, "wake word: an utterance was not transcribed");
                 }
-                Some(LiveEvent::Started { .. } | LiveEvent::Ended { .. }) => {}
+                Some(LiveEvent::Started { .. }) => talking = true,
+                Some(LiveEvent::Ended { .. }) => talking = false,
                 // The recogniser has gone; `woken` closing says so.
                 None => return,
             },
@@ -192,8 +210,20 @@ async fn run(
 impl Service {
     /// Listen for `names` at the start of what is said: the chosen speech
     /// model behind voice mode's detector. Refuses, in a sentence, when
-    /// listening is not set up. Holds the recogniser for as long as it runs.
+    /// listening is not set up, or when the chosen model is not on this
+    /// computer: almost everything the microphone hears was not meant for the
+    /// assistant, and none of it goes to a server to find the few words that
+    /// were. Holds the recogniser for as long as it runs.
     pub async fn wake_open(self: &Arc<Self>, names: Vec<String>) -> CommandResult<WakeLink> {
+        let vault = self.require_unlocked()?;
+        let speech = blocking(move || Ok(vault.speech_access()?)).await?;
+        if speech.config.transcriber.local_model().is_none() {
+            return Err(CommandError::new(
+                codes::INVALID,
+                "The wake word listens only with a speech model on this computer, so nothing \
+                 said near it is sent anywhere. Choose one in Settings → Models.",
+            ));
+        }
         let live = self.live_transcription(Tuning::CONVERSATION).await?;
         Ok(spawn(live, names))
     }

@@ -53,7 +53,6 @@ mod conversation;
 mod key;
 mod level;
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -139,30 +138,12 @@ impl Default for Config {
 
 const FILE: &str = "talk.json";
 
-fn config_path() -> PathBuf {
-    karmayoga_vault::config_dir().join(FILE)
-}
-
 fn save_config(config: &Config) -> Result<(), String> {
-    let path = config_path();
-    if let Some(dir) = path.parent() {
-        karmayoga_core::fsutil::create_private_dir(dir).map_err(|e| e.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
-    karmayoga_core::fsutil::write_atomic_private(
-        &path,
-        &bytes,
-        &karmayoga_core::fsutil::unique_tag(),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::machine_config::save(FILE, config)
 }
 
 pub fn load_config() -> Config {
-    std::fs::read(config_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::machine_config::load(FILE)
 }
 
 /// The shortcut to claim at startup: the talk key's while it is switched on,
@@ -676,6 +657,11 @@ fn begin(app: &AppHandle, how: Begin) {
     card.key = config.shortcut.trim().to_string();
     let mut live = Live::new(seq, conversation, posture, card, now);
     live.woke = said.is_some();
+    if live.woke {
+        // Only a press brings a token, and a press before this one is not
+        // what this conversation types for.
+        inner.token = None;
+    }
     queue_draw(app, &mut live);
     set_live(app, &mut inner, Some(live));
     drop(inner);
@@ -707,6 +693,7 @@ impl Typist for Keyboard {
 /// [`on_event`]. If it cannot be had -- the microphone is a meeting's, speech
 /// is not set up -- the card says so for a few seconds.
 async fn open(app: AppHandle, seq: u64, conversation: ConversationId, said: Option<String>) {
+    let woken = said.is_some();
     let name = app
         .state::<AppState>()
         .service()
@@ -751,7 +738,7 @@ async fn open(app: AppHandle, seq: u64, conversation: ConversationId, said: Opti
     // now, hidden, as voice typing makes it while the microphone opens.
     crate::voicetyping::pill::ensure(&app);
     let typist: Arc<dyn Typist> = Arc::new(Keyboard(app.clone()));
-    let shell = Shell { events, microphone: Some(microphone), typist: Some(typist) };
+    let shell = Shell { events, microphone: Some(microphone), typist: Some(typist), woken };
     match voice::start_for_shell(&app, conversation, shell).await {
         Ok(()) => {
             let mut inner = lock();
@@ -843,8 +830,7 @@ async fn watch_idle(app: AppHandle, seq: u64) {
         tokio::time::sleep(IDLE_TICK).await;
         let mut inner = lock();
         let Some(live) = live_for(&mut inner, seq).filter(|live| live.active()) else { return };
-        let after =
-            if live.woke { conversation::WOKEN_IDLE_AFTER } else { conversation::IDLE_AFTER };
+        let after = conversation::idle_after(live.card.phase, live.woke);
         if conversation::idle_expired(live.card.phase, live.quiet_since, Instant::now(), after) {
             // Woken by name, it was always going to end soon: no note.
             let note = (!live.woke).then_some(IDLE_NOTE);
