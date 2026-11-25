@@ -389,8 +389,11 @@
       translate var(--normal, 0.2s) var(--ease),
       visibility 0s linear var(--normal, 0.2s);
   }
+  /* `none`, not `0 0`, once out: any translate makes the drawer the box a
+     `position: fixed` dialog inside it -- Add a calendar, Unfollow -- is
+     placed in, and the dialog then sits in the drawer, not on the screen. */
   :global([data-phone]) .sidebar.folded.peeking {
-    translate: 0 0;
+    translate: none;
     transition:
       translate var(--normal, 0.2s) var(--ease),
       visibility 0s;

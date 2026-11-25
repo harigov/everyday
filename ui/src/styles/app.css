@@ -899,12 +899,28 @@ textarea.field {
   user-select: none;
 }
 
-/* A sheet as wide as the screen allows and never taller than what is clear
-   of the bars. */
+/* A sheet on a phone: over the bar of apps and the sidebar's drawer, which
+   its scrim dims too, as wide as the screen allows, hanging from the top
+   under the status bar, and never reaching past the top of the bar -- a sheet
+   centred in the whole window sent its buttons under it. (With the keyboard
+   up the bar steps aside, and the page, and with it the room, is shorter.) */
+[data-phone] .scrim {
+  z-index: 65;
+}
 [data-phone] .sheet {
+  z-index: 66;
   width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
-  max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - var(--sp-8));
-  top: max(12%, calc(var(--safe-top) + var(--sp-4)));
+  top: calc(var(--safe-top) + max(8dvh, var(--sp-4)));
+  max-height: calc(
+    100dvh - var(--safe-top) - max(8dvh, var(--sp-4)) - var(--bottombar-h) - var(--safe-bottom) -
+      var(--sp-3)
+  );
+}
+
+/* The sidebar's add buttons, at a finger's size. */
+[data-phone] .side-add {
+  width: 36px;
+  height: 36px;
 }
 
 /* What only a phone draws, and what a phone leaves out. */
