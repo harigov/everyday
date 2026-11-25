@@ -3,7 +3,7 @@
   // and a Delete button. The text itself is `RichText`, which the notes app
   // draws too -- so a photograph dropped into an entry and a photograph
   // dropped into a note go through one media path and one set of caret bugs.
-  import { details } from '../lib/phone.svelte'
+  import { details, phone } from '../lib/phone.svelte'
   import PhoneBack from './PhoneBack.svelte'
   import { onDestroy } from 'svelte'
   import { app, handle } from '../lib/state.svelte'
@@ -204,6 +204,30 @@
     if (id) await app.deleteEntry(id)
   }
 
+  /**
+   * A title that wraps, on a phone: a line of a title is too short for most
+   * of them, and an input cannot show the rest. Sized to its text.
+   */
+  function fit(node: HTMLTextAreaElement, _text: string) {
+    const size = () => {
+      node.style.height = 'auto'
+      node.style.height = `${node.scrollHeight}px`
+    }
+    size()
+    node.addEventListener('input', size)
+    return {
+      update: size,
+      destroy: () => node.removeEventListener('input', size),
+    }
+  }
+
+  /** Enter in the title goes on to the writing, as it would in a field. */
+  function titleKeys(e: KeyboardEvent) {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    editor?.commands.focus('start')
+  }
+
   function onDragOver(e: DragEvent) {
     if (e.dataTransfer?.types.includes('Files')) {
       e.preventDefault()
@@ -235,6 +259,14 @@
     <!-- A phone shows the entry over its list: the way back to it. -->
     <div class="phonehead phone-only">
       <PhoneBack onclick={() => details.close('journal')} label="Entries" />
+      <span class="grow"></span>
+      <button
+        class="headbtn"
+        aria-label="Delete this entry"
+        onclick={() => (confirmingDelete = true)}
+      >
+        <Icon name="trash" size={19} weight={1.5} />
+      </button>
     </div>
     <Toolbar
       {editor}
@@ -247,16 +279,33 @@
       <div class="page">
         <header class="head">
           <div class="date">{longDate(entry.localDate)}</div>
-          <input
-            class="title"
-            placeholder="Title"
-            bind:value={entry.title}
-            oninput={() => {
-              app.scheduleSave()
-              app.touch()
-            }}
-            spellcheck="false"
-          />
+          {#if phone.on}
+            <textarea
+              class="title"
+              rows="1"
+              placeholder="Title"
+              aria-label="Title"
+              bind:value={entry.title}
+              use:fit={entry.title}
+              oninput={() => {
+                app.scheduleSave()
+                app.touch()
+              }}
+              onkeydown={titleKeys}
+              spellcheck="false"
+            ></textarea>
+          {:else}
+            <input
+              class="title"
+              placeholder="Title"
+              bind:value={entry.title}
+              oninput={() => {
+                app.scheduleSave()
+                app.touch()
+              }}
+              spellcheck="false"
+            />
+          {/if}
           <!-- Offered only into an empty title. A title you wrote is not a
                gap, and this is never allowed to argue with one. -->
           {#if title && !entry.title.trim()}
@@ -354,7 +403,11 @@
         {:else}Edited {relativeTime(entry.updatedAt)}{/if}
       </span>
       <span class="spacer"></span>
-      <button class="delete" onclick={() => (confirmingDelete = true)} title="Delete this entry">
+      <button
+        class="delete desktop-only"
+        onclick={() => (confirmingDelete = true)}
+        title="Delete this entry"
+      >
         <Icon name="trash" size={14} weight={1.5} />
         Delete
       </button>
@@ -568,4 +621,54 @@
      The face is a humanist sans rather than a serif. It still contrasts with
      the interface around it -- different drawing, different colour on the
      page -- without the serif's mismatch against a screen-first UI. */
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  .phonehead .grow {
+    flex: 1;
+  }
+  .headbtn {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    color: var(--fg-subtle);
+  }
+  .headbtn:active {
+    background: color-mix(in oklab, var(--danger) 12%, transparent);
+    color: var(--danger);
+  }
+
+  /* The page is the width of the screen, and the title is a title: the
+     shared rule that keeps iOS from zooming into a field would otherwise
+     set it at the size of the text under it. */
+  :global([data-phone]) .page {
+    padding: var(--sp-3) var(--sp-4) var(--fab-size);
+  }
+  :global([data-phone]) .day {
+    margin-top: var(--sp-6);
+  }
+  :global([data-phone]) .title {
+    display: block;
+    resize: none;
+    overflow: hidden;
+    font-size: max(16px, var(--text-page-title));
+  }
+  :global([data-phone]) .status {
+    height: 32px;
+    padding: 0 var(--sp-4);
+  }
+  /* The room above the keyboard is for the writing. */
+  :global(:root[data-keyboard]) .status {
+    display: none;
+  }
+  :global([data-phone]) .quick-row {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .quick-btn {
+    min-height: 34px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
 </style>

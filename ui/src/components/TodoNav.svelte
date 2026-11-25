@@ -462,4 +462,15 @@
     font-size: var(--text-sm);
     color: var(--fg-faint);
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The drawer reaches the foot of the screen, over the bar of apps: what is
+     last in it has to clear the gesture bar and be reachable. */
+  :global([data-phone]) .side-nav {
+    padding-bottom: calc(var(--bottombar-h) + var(--safe-bottom));
+  }
+  :global([data-phone]) .side-new {
+    height: 44px;
+  }
 </style>

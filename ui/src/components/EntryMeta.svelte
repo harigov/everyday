@@ -126,4 +126,38 @@
   .tag-input:focus {
     outline: none;
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* Tags a finger can hit and take off -- the cross always there, since
+     there is no hover to show it -- and the field for a new one the width of
+     the page, where it has room for what is typed and the keyboard's own
+     suggestions. */
+  :global([data-phone]) .meta {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .place {
+    min-height: 34px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .chip {
+    display: inline-flex;
+    align-items: center;
+    height: 34px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .x {
+    opacity: 1;
+  }
+  :global([data-phone]) .add {
+    height: 34px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .tag-input {
+    flex: 1 0 100%;
+    height: 40px;
+    padding: 0 var(--sp-3);
+  }
 </style>

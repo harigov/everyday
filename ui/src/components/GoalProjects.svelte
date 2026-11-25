@@ -515,4 +515,47 @@
     overflow: hidden;
     clip-path: inset(50%);
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The goal's name, and under it the two choices and the way to its
+     details, each a size a finger can hit. */
+  :global([data-phone]) .top {
+    height: auto;
+    min-height: var(--header-h);
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-3);
+    padding: var(--sp-2) var(--sp-4);
+  }
+  :global([data-phone]) .tools {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .select {
+    height: 40px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .list {
+    padding: var(--sp-2) var(--sp-3) var(--fab-clear);
+  }
+  :global([data-phone]) .prow {
+    min-height: 48px;
+    padding: 0 var(--sp-2);
+  }
+  :global([data-phone]) .newproject {
+    height: 44px;
+  }
+  :global([data-phone]) .add {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .add .select {
+    max-width: none;
+    flex: 1 1 100%;
+    border: 1px solid var(--border);
+  }
+
+  :global([data-phone]) .add .select {
+    min-width: 0;
+    width: 100%;
+  }
 </style>

@@ -17,6 +17,7 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { goalAreaItems, goalStatusItems } from '../lib/menus'
+  import { details, phone } from '../lib/phone.svelte'
   import { GOAL_STATUS_LABELS as STATUS_LABELS } from '../lib/labels'
   import { panels } from '../lib/panels.svelte'
   import { purpose } from '../lib/purpose.svelte'
@@ -51,6 +52,7 @@
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import Meter from './Meter.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import TargetEditor from './TargetEditor.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
 
@@ -454,7 +456,10 @@
                     class:closed={row.goal.status === 'done' || row.goal.status === 'dropped'}
                     oncontextmenu={(e) => menu.show(e, goalMenu(row.goal))}
                     onclick={() =>
-                      (purpose.selected = purpose.selected === row.goal.id ? null : row.goal.id)}
+                      // A row toggles its rail on a desktop; on a phone the
+                      // goal's page is shown over the list, and this opens it.
+                      (purpose.selected =
+                        !phone.on && purpose.selected === row.goal.id ? null : row.goal.id)}
                   >
                     <Icon name="target" size={14} />
                     <span class="gname">{row.goal.title}</span>
@@ -502,8 +507,14 @@
   <!-- The detail rail, on the right, as this app's task detail is. -->
   <aside class="detail scroll">
     <header>
+      <!-- A phone shows the goal over the list of goals: the way back. -->
+      <PhoneBack onclick={() => details.close('todo')} label="Goals" />
       <h2>{goal.title}</h2>
-      <button class="quiet" aria-label="Close" onclick={() => (purpose.selected = null)}>
+      <button
+        class="quiet desktop-only"
+        aria-label="Close"
+        onclick={() => (purpose.selected = null)}
+      >
         <Icon name="close" size={15} />
       </button>
     </header>
@@ -1138,5 +1149,93 @@
   }
   .link-danger:hover {
     color: var(--danger);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The goal's rail is a page over the list of goals, the whole of the stage,
+     scrolling its own length; its header, with the way back, stays put. */
+  :global([data-phone]) .detail {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    width: auto;
+    padding: 0 var(--sp-4) var(--fab-clear);
+    border-left: none;
+  }
+  :global([data-phone]) .detail header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    align-items: center;
+    gap: var(--sp-1);
+    margin: 0 calc(var(--sp-4) * -1) var(--sp-2);
+    padding: var(--sp-1) var(--sp-4) var(--sp-1) var(--sp-1);
+    background: var(--bg-panel);
+  }
+  :global([data-phone]) .detail h2 {
+    font-size: var(--text-lg);
+  }
+  :global([data-phone]) .quiet {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .detail select,
+  :global([data-phone]) .detail input,
+  :global([data-phone]) .detail textarea {
+    min-height: 44px;
+    font-size: max(16px, var(--text-base));
+  }
+  :global([data-phone]) .detail textarea {
+    min-height: 96px;
+  }
+  :global([data-phone]) .mini-quick {
+    min-height: 40px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .danger {
+    height: 48px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .link,
+  :global([data-phone]) .link-danger {
+    display: inline-block;
+    padding: var(--sp-2) 0;
+  }
+  :global([data-phone]) .tally {
+    gap: 0;
+    font-size: var(--text-base);
+  }
+
+  /* The list of goals: a row is a finger tall and may take two lines -- its
+     name, and under it what has been done against it. */
+  :global([data-phone]) .top {
+    height: auto;
+    min-height: var(--header-h);
+    padding: var(--sp-2) var(--sp-4);
+  }
+  :global([data-phone]) .goals {
+    padding: var(--sp-2) var(--sp-3) var(--fab-clear);
+  }
+  :global([data-phone]) .areahead {
+    min-height: 44px;
+  }
+  :global([data-phone]) .goalrow {
+    flex-wrap: wrap;
+    min-height: 48px;
+    row-gap: 0;
+    padding: var(--sp-2) var(--sp-2);
+  }
+  :global([data-phone]) .goalrow .gname {
+    flex: 1 1 8rem;
+    white-space: normal;
+  }
+  :global([data-phone]) .goalrow .num,
+  :global([data-phone]) .goalrow .when {
+    font-size: var(--text-xs);
+  }
+  :global([data-phone]) .newgoal {
+    height: 44px;
   }
 </style>

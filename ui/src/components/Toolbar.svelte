@@ -5,6 +5,7 @@
   import { focusOnMount, trapFocus } from '../lib/focus'
   import type { IconName } from '../lib/icons'
   import { menu } from '../lib/menu.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { notify } from '../lib/notify.svelte'
   import { templates } from '../lib/templates.svelte'
   import type { Template, TemplateUse } from '../lib/types'
@@ -187,6 +188,16 @@
     ]
   }
 
+  /**
+   * A press on a button takes the focus from the editor, and on a phone that
+   * puts the keyboard away for as long as it takes the command to hand the
+   * focus back. Keeping the press from moving it leaves the keyboard where
+   * it is -- and the caret, and the selection the command is about.
+   */
+  function keepFocus(e: MouseEvent) {
+    if (phone.on) e.preventDefault()
+  }
+
   // ── Copy as Markdown ───────────────────────────────────────────────────
 
   /** Whether the button is showing its tick, for a moment after a copy. */
@@ -267,7 +278,9 @@
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label="Formatting">
+<!-- The press is only kept from taking the focus; the buttons are what act. -->
+<!-- svelte-ignore a11y_interactive_supports_focus -->
+<div class="bar" role="toolbar" aria-label="Formatting" onmousedown={keepFocus}>
   {#each groups() as group, g (g)}
     {#if g > 0}<span class="sep" aria-hidden="true"></span>{/if}
     <div class="group">
@@ -427,5 +440,31 @@
     margin: 0 var(--sp-2);
     background: var(--border);
     flex: none;
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A strip that scrolls sideways, from its left end: centred, as above, the
+     part of a row wider than the screen is cut off on both sides and the
+     left half of it can never be scrolled to. */
+  :global([data-phone]) .bar {
+    /* The boundary of what is absolutely placed in it -- the live region at
+       its end -- so that a strip wider than the screen does not carry that
+       span off past the edge and widen the whole page. */
+    position: relative;
+    justify-content: flex-start;
+    height: 48px;
+    padding: 0 var(--sp-2);
+    overscroll-behavior-x: contain;
+  }
+  :global([data-phone]) .group {
+    flex: none;
+  }
+  :global([data-phone]) .tool {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .sep {
+    margin: 0 var(--sp-1);
   }
 </style>

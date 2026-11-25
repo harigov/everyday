@@ -6,6 +6,8 @@
   // moment where the two disagree about what the task says.
 
   import { todo } from '../lib/todo.svelte'
+  import { details } from '../lib/phone.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import PurposeField from './PurposeField.svelte'
   import { formatInstantTime, formatMinutes, friendlyDate, toLocalInputValue } from '../lib/format'
   import Icon from './Icon.svelte'
@@ -138,8 +140,15 @@
 {#if task}
   <aside class="detail">
     <header class="top">
-      <span class="eyebrow">{project ? project.name : 'Inbox'}</span>
-      <button class="close" title="Close" aria-label="Close" onclick={() => todo.open(null)}>
+      <!-- A phone shows the task over its list: the way back to it. -->
+      <PhoneBack onclick={() => details.close('todo')} />
+      <span class="eyebrow where">{project ? project.name : 'Inbox'}</span>
+      <button
+        class="close desktop-only"
+        title="Close"
+        aria-label="Close"
+        onclick={() => todo.open(null)}
+      >
         <Icon name="close" size={15} />
       </button>
     </header>
@@ -796,5 +805,84 @@
     margin-top: var(--sp-4);
     font-size: var(--text-xs);
     color: var(--fg-faint);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A page over the list, the whole of the stage, with the way back first in
+     its header. */
+  :global([data-phone]) .detail {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    width: auto;
+    border-left: none;
+  }
+  :global([data-phone]) .top {
+    height: 52px;
+    padding: 0 var(--sp-4) 0 var(--sp-1);
+  }
+  :global([data-phone]) .where {
+    flex: 1;
+    min-width: 0;
+    margin-left: var(--sp-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  :global([data-phone]) .body {
+    padding: 0 var(--sp-4) var(--fab-clear);
+  }
+  :global([data-phone]) .title {
+    font-size: max(16px, var(--text-lg));
+  }
+
+  /* The fields, one to a row of a size a finger can hit; the labels wider,
+     since they are no longer squeezed beside a rail. */
+  :global([data-phone]) .grid {
+    grid-template-columns: 74px 1fr;
+    gap: var(--sp-3) var(--sp-2);
+  }
+  :global([data-phone]) .lab {
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .pick {
+    height: 40px;
+    font-size: max(16px, var(--text-base));
+  }
+  :global([data-phone]) .pair .time {
+    flex: 0 0 110px;
+  }
+  :global([data-phone]) .mini {
+    min-height: 36px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .tag {
+    height: 34px;
+    padding: 0 var(--sp-1) 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .x {
+    padding: 8px;
+  }
+  :global([data-phone]) .tagin {
+    height: 34px;
+    width: 120px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .tagin.who {
+    width: 140px;
+  }
+  :global([data-phone]) .tags {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .bookrow .btn {
+    height: 40px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .block {
+    min-height: 44px;
+    font-size: var(--text-base);
   }
 </style>

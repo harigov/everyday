@@ -12,11 +12,14 @@
   import { notes } from '../lib/notes.svelte'
   import { insertFilled, templates } from '../lib/templates.svelte'
   import { focusOnMount } from '../lib/focus'
+  import { details, phone } from '../lib/phone.svelte'
   import { plural, relativeTime } from '../lib/format'
   import { renderMarkdown } from '../lib/markdown'
   import { documentToMarkdown, type PMNode } from '../lib/markdown-copy'
   import RichText from './RichText.svelte'
   import Toolbar from './Toolbar.svelte'
+  import NotesNav from './NotesNav.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import type { Editor as TipTapEditor } from '@tiptap/core'
   import PurposeField from './PurposeField.svelte'
   import EmptyState from './EmptyState.svelte'
@@ -42,6 +45,47 @@
   let tagDraft = $state('')
 
   const note = $derived(notes.open)
+
+  // ── On a phone ───────────────────────────────────────────────────────
+  //
+  // The list of notes is the app's page there -- `NotesNav`, drawn in the
+  // stage -- and a note is opened over it, with a way back (`details`, and
+  // `PhoneBack` in the page's own header). The list opens what the person
+  // taps itself; these keep the flag true to what is on screen when
+  // something else did.
+
+  // A note opened from elsewhere -- a job's card, a file's "used in" -- is
+  // opened over the list too.
+  let lastSelected = notes.selected
+  $effect(() => {
+    const now = notes.selected
+    if (now === lastSelected) return
+    lastSelected = now
+    if (now) details.open('notes')
+  })
+
+  // Back to the list: what was typed has to be on disk before the editor
+  // goes, and nothing here makes sure of that but this.
+  let wasOpen = false
+  $effect(() => {
+    const open = details.isOpen('notes')
+    if (wasOpen && !open) {
+      notes.syncBody()
+      void notes.flush()
+    }
+    wasOpen = open
+  })
+
+  // The note went -- deleted here, or somewhere else -- or the proposal was
+  // answered: there is nothing left to show over the list.
+  let had = false
+  $effect(() => {
+    if (notes.open || notes.selectedProposal) had = true
+    else if (had) {
+      had = false
+      details.close('notes')
+    }
+  })
 
   function attach(a: Attachment) {
     const target = notes.open
@@ -271,6 +315,30 @@
     editor.commands.setContent(renderMarkdown(markdown), { emitUpdate: true })
   }
 
+  /**
+   * A title that wraps, on a phone: a line of a title is too short for most
+   * of them, and an input cannot show the rest. Sized to its text.
+   */
+  function fit(node: HTMLTextAreaElement, _text: string) {
+    const size = () => {
+      node.style.height = 'auto'
+      node.style.height = `${node.scrollHeight}px`
+    }
+    size()
+    node.addEventListener('input', size)
+    return {
+      update: size,
+      destroy: () => node.removeEventListener('input', size),
+    }
+  }
+
+  /** Enter in the title goes on to the writing, as it would in a field. */
+  function titleKeys(e: KeyboardEvent) {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    editor?.commands.focus('start')
+  }
+
   function onDragOver(e: DragEvent) {
     if (e.dataTransfer?.types.includes('Files')) {
       e.preventDefault()
@@ -279,20 +347,41 @@
   }
 </script>
 
-{#if notes.selectedProposal}
-  <NoteProposalPreview proposal={notes.selectedProposal} />
+{#if phone.on && !details.isOpen('notes')}
+  <!-- A phone's page for the app: the notes themselves. -->
+  <div class="phonehome"><NotesNav home /></div>
+{:else if notes.selectedProposal}
+  {#if phone.on}
+    <div class="phonepage">
+      <div class="phonehead">
+        <PhoneBack onclick={() => details.close('notes')} label="Notes" />
+      </div>
+      <NoteProposalPreview proposal={notes.selectedProposal} />
+    </div>
+  {:else}
+    <NoteProposalPreview proposal={notes.selectedProposal} />
+  {/if}
 {:else if !note}
-  <div class="empty">
-    <EmptyState lead="Nothing open">
-      {#snippet icon()}<Icon name="quote" size={34} weight={1.4} />{/snippet}
-      {#snippet note()}
-        A note is a recipe, a reading list, the notes from a call — anything that is not a day.
-      {/snippet}
-      {#snippet action()}
-        <button class="btn btn-primary" onclick={() => void notes.create()}>New note</button>
-      {/snippet}
-    </EmptyState>
-  </div>
+  {#if phone.on}
+    <!-- Only for the moment between a note being asked for and arriving. -->
+    <div class="phonepage">
+      <div class="phonehead">
+        <PhoneBack onclick={() => details.close('notes')} label="Notes" />
+      </div>
+    </div>
+  {:else}
+    <div class="empty">
+      <EmptyState lead="Nothing open">
+        {#snippet icon()}<Icon name="quote" size={34} weight={1.4} />{/snippet}
+        {#snippet note()}
+          A note is a recipe, a reading list, the notes from a call — anything that is not a day.
+        {/snippet}
+        {#snippet action()}
+          <button class="btn btn-primary" onclick={() => void notes.create()}>New note</button>
+        {/snippet}
+      </EmptyState>
+    </div>
+  {/if}
 {:else}
   <div
     class="editor"
@@ -313,6 +402,20 @@
       </div>
     {/if}
 
+    <!-- A phone shows the note over its list: the way back to it, and the
+         one thing the foot of the page keeps for a desktop. -->
+    <div class="phonehead phone-only">
+      <PhoneBack onclick={() => details.close('notes')} label="Notes" />
+      <span class="grow"></span>
+      <button
+        class="headbtn"
+        aria-label="Delete this note"
+        onclick={() => (confirmingDelete = true)}
+      >
+        <Icon name="trash" size={19} weight={1.5} />
+      </button>
+    </div>
+
     <Toolbar
       {editor}
       templateFor="notes"
@@ -323,13 +426,27 @@
     <div class="scroll canvas">
       <div class="page">
         <header class="head">
-          <input
-            class="title"
-            placeholder="Title"
-            value={note.title}
-            oninput={(e) => notes.setTitle(e.currentTarget.value)}
-            spellcheck="false"
-          />
+          {#if phone.on}
+            <textarea
+              class="title"
+              rows="1"
+              placeholder="Title"
+              aria-label="Title"
+              value={note.title}
+              use:fit={note.title}
+              oninput={(e) => notes.setTitle(e.currentTarget.value)}
+              onkeydown={titleKeys}
+              spellcheck="false"
+            ></textarea>
+          {:else}
+            <input
+              class="title"
+              placeholder="Title"
+              value={note.title}
+              oninput={(e) => notes.setTitle(e.currentTarget.value)}
+              spellcheck="false"
+            />
+          {/if}
 
           <!-- Into an empty title only. A title you wrote is not a gap. -->
           {#if titleIdea && !note.title.trim()}
@@ -487,7 +604,11 @@
         {:else}Edited {relativeTime(note.updatedAt)}{/if}
       </span>
       <span class="spacer"></span>
-      <button class="delete" onclick={() => (confirmingDelete = true)} title="Delete this note">
+      <button
+        class="delete desktop-only"
+        onclick={() => (confirmingDelete = true)}
+        title="Delete this note"
+      >
         <Icon name="trash" size={14} weight={1.5} />
         Delete
       </button>
@@ -813,5 +934,114 @@
     background: var(--bg);
     color: var(--fg);
     font-size: var(--text-xs);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The list, and a note over it: each the whole of the page. */
+  .phonehome,
+  .phonepage {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    height: 100%;
+  }
+  /* A proposed note under the way back: the preview is as tall as its pane
+     by its own rule, which here is the pane less the way back. */
+  .phonepage :global(.editor) {
+    height: auto;
+    min-height: 0;
+  }
+  .phonehead {
+    display: flex;
+    flex: none;
+    align-items: center;
+    padding: var(--sp-1) var(--sp-2) 0 var(--sp-1);
+  }
+  .phonehead .grow {
+    flex: 1;
+  }
+  .headbtn {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    color: var(--fg-subtle);
+  }
+  .headbtn:active {
+    background: color-mix(in oklab, var(--danger) 12%, transparent);
+    color: var(--danger);
+  }
+
+  /* The page is the width of the screen, and the title is a title: the
+     shared rule that keeps iOS from zooming into a field would otherwise
+     set it at the size of the text under it. */
+  :global([data-phone]) .page {
+    padding: var(--sp-3) var(--sp-4) 40vh;
+  }
+  :global([data-phone]) .head {
+    margin-bottom: var(--sp-4);
+  }
+  :global([data-phone]) .title {
+    display: block;
+    resize: none;
+    overflow: hidden;
+    font-size: max(16px, var(--text-page-title));
+  }
+  :global([data-phone]) .status {
+    height: 32px;
+    padding: 0 var(--sp-4);
+  }
+  /* The room above the keyboard is for the writing. */
+  :global(:root[data-keyboard]) .status {
+    display: none;
+  }
+
+  /* Tags, pin and the offers under the title, for a finger -- and a tag's
+     cross always there, since there is no hover to show it and a touch on a
+     chip takes the tag off. */
+  :global([data-phone]) .meta {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .chip,
+  :global([data-phone]) .add,
+  :global([data-phone]) .pin {
+    height: 34px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+    gap: 5px;
+  }
+  :global([data-phone]) .tag .x {
+    display: inline-flex;
+  }
+  :global([data-phone]) .origin {
+    height: 34px;
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .tag-field {
+    flex: 1 0 100%;
+  }
+  :global([data-phone]) .tag-input {
+    width: 100%;
+    height: 40px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .tag-options {
+    right: 0;
+    min-width: 0;
+  }
+  :global([data-phone]) .tag-options li {
+    height: 44px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .quick-btn {
+    min-height: 34px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .conflict {
+    padding: var(--sp-3) var(--sp-4);
   }
 </style>

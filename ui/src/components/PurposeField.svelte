@@ -114,4 +114,33 @@
     background: var(--float);
     box-shadow: var(--shadow-lg);
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A row a finger can hit, and the picker a sheet hung from the top under
+     the status bar, as every sheet is: opening downward from a field in the
+     middle of a page ran it off the right edge and under the bar of apps. */
+  /* The wrapper wears the shared `.field`'s box, a fixed 38px: it takes the
+     button's height instead. */
+  :global([data-phone]) .field {
+    height: auto;
+    padding: 0;
+  }
+  :global([data-phone]) .value {
+    min-height: 44px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .pop {
+    position: fixed;
+    z-index: 66;
+    left: var(--sp-3);
+    right: var(--sp-3);
+    top: calc(var(--safe-top) + max(8dvh, var(--sp-4)));
+    display: flex;
+    flex-direction: column;
+    max-height: calc(
+      100dvh - var(--safe-top) - max(8dvh, var(--sp-4)) - var(--bottombar-h) - var(--safe-bottom) -
+        var(--sp-3)
+    );
+  }
 </style>
