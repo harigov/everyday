@@ -63,6 +63,12 @@ impl Synthesiser for Rehearsed {
             None => self.voice.synthesise(text),
         }
     }
+
+    /// The voice's: a phrase handed back from rehearsal took no time, which
+    /// says nothing about how fast the voice is.
+    fn rate(&self) -> Option<f64> {
+        self.voice.rate()
+    }
 }
 
 #[cfg(test)]
@@ -92,6 +98,15 @@ mod tests {
                 Ok(Speech { samples: vec![1; len], sample_rate: 16_000 })
             })
         }
+
+        fn rate(&self) -> Option<f64> {
+            Some(42.0)
+        }
+    }
+
+    #[test]
+    fn how_fast_the_voice_is_is_the_voice_s() {
+        assert_eq!(Rehearsed::new(Arc::new(Slow::default())).rate(), Some(42.0));
     }
 
     #[tokio::test]

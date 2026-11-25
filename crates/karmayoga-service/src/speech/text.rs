@@ -157,7 +157,13 @@ pub const MAX_CLIP: usize = MAX_SENTENCE;
 /// voice leaves between sentences, and only the end of what a voice is handed
 /// gets the pause its ending asks for ([`script::pause_after`]).
 pub fn joins(last: &str, len: usize, next: &str, room: usize) -> bool {
-    !last.trim_end().ends_with(LINE_END) && len + 1 + next.chars().count() <= room
+    !ends_line(last) && len + 1 + next.chars().count() <= room
+}
+
+/// Whether `sentence` ended a line, so that nothing is said in one go after
+/// it ([`joins`]).
+pub fn ends_line(sentence: &str) -> bool {
+    sentence.trim_end().ends_with(LINE_END)
 }
 
 /// The byte offset of the `n`th character of `text`, or its end.

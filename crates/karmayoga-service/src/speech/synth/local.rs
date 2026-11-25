@@ -281,8 +281,16 @@ mod engine {
                 return Err(nothing_to_say());
             }
             let engine = VOICES.get(self.voice, || load(self.voice))?;
-            let options =
-                ptts::synth::SpeechOptions::default().voice(self.speaker).seed(seed_for(&text));
+            // Left to itself, ptts cuts what it is handed into pieces of
+            // about one long sentence (50 tokens) and makes each afresh from
+            // the speaker's voice, knowing nothing of the piece before: the
+            // fresh start the narrator joins sentences to avoid. Told the most
+            // it says well in one go, it leaves a clip whole: one is at most
+            // MAX_CLIP characters, about 70 tokens.
+            let options = ptts::synth::SpeechOptions::default()
+                .voice(self.speaker)
+                .seed(seed_for(&text))
+                .max_tokens_per_chunk(ptts::plan::MAX_FIT_TOKENS);
             let (pcm, sample_rate) = {
                 let tts = engine.tts.lock().unwrap_or_else(|e| e.into_inner());
                 let pcm = tts

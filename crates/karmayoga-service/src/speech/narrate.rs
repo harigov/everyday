@@ -36,12 +36,33 @@
 //!
 //! A voice handed one sentence at a time starts every one afresh, which
 //! sounds like a list being read out ([`text::joins`]). An owner that asks for
-//! it ([`Narrator::joining`]) has the sentences waiting behind a clip that is
-//! already playing made together, as one clip, while anything said into
-//! silence -- the first sentence of a reply -- is still made alone, so that it
-//! starts as soon as it can. A clip may be at most [`GROWTH`] times as long as
-//! the one ahead of it, since it is made while that one is said, and never
-//! more than [`text::MAX_CLIP`].
+//! it ([`Narrator::joining`]) has the sentences waiting made together, as one
+//! clip, as many as there is time to make: every voice says what it is handed
+//! in one go ([`Synthesiser`]), so the longer the clips, the fewer the
+//! fresh starts.
+//!
+//! How long a clip may be is the same rule for every voice, from how fast
+//! the voice has been making speech on this computer, which every voice
+//! keeps for itself ([`Synthesiser::rate`]).
+//!
+//! - **Behind a clip that is playing**, the next is made while it is said, so
+//!   it may be as long as can be made in [`SAFETY`] of the time the audio
+//!   ahead has left to play, and in no more than [`MAX_MAKING`]. A fast voice
+//!   reaches [`text::MAX_CLIP`] by the second clip; a slow one, or a busy
+//!   computer, keeps them short enough that the speech never stops for one.
+//!   Playback the owner holds ([`Narrator::pause`]) is not running down.
+//! - **Into silence** -- the start of a reply -- the person is waiting. An
+//!   owner may let the first clip wait ([`Narrator::waiting`]) for a second
+//!   sentence to say with the first, for as long as the audio would start no
+//!   more than that much later than the first sentence alone would have:
+//!   the wait for the second sentence's words and the time to make them both
+//!   count. It waits only while a sentence of the usual length
+//!   ([`LIKELY_NEXT`]) could still be made in that time, so a voice that
+//!   could not make one -- every voice on a computer's processor, at half a
+//!   second -- does not wait for nothing. It stops waiting as soon as a
+//!   second sentence comes, whether it fits or not, or the owner says there
+//!   is nothing more for now ([`Narrator::flush`]). The owner looks again
+//!   when told ([`Narrator::wake_at`]).
 //!
 //! A clip comes back as one [`Sentence`]: the last one's id, their words
 //! joined, and the first one's tag; and is played as that. When that id is
@@ -56,14 +77,31 @@ use super::text::{self, MAX_CLIP};
 use crate::error::{CommandError, CommandResult, codes};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
-/// How many times as long as the clip ahead of it the next may be. The next
-/// is made while that one is said, so it must be made in the time that one
-/// takes to say: every voice here makes speech at least twice as fast as it is
-/// said (Kokoro, the slowest on this computer, four times), so one twice as
-/// long is ready in time.
-const GROWTH: usize = 2;
+/// How much of the time the audio ahead has left a clip behind it is sized to
+/// take to make. Half: a voice slows down when the computer is busy, and a
+/// clip that is late is a gap in the middle of what is being said.
+const SAFETY: f64 = 0.5;
+
+/// How fast a voice is taken to make speech, in characters a second, until it
+/// has been timed: four times as fast as it is said, which is Kokoro, the
+/// slowest voice here, on this computer. Behind a clip, with [`SAFETY`], that
+/// is a clip twice as long as the one ahead of it.
+const ASSUMED_RATE: f64 = 60.0;
+
+/// The longest a clip made behind another may take to make. Speech talked
+/// over is let go of, but a voice already making a clip of it goes on until
+/// it is done, holding the voice: the next reply should not wait long behind
+/// words nobody will hear.
+const MAX_MAKING: Duration = Duration::from_secs(2);
+
+/// About how long the next sentence of a spoken reply is, in characters:
+/// what the first sentence waits for room for. A reply's sentences run from
+/// about 30 characters to about 90.
+const LIKELY_NEXT: usize = 60;
 
 /// One sentence's synthesis finishing: handed back to [`Narrator::finished`].
 #[derive(Debug)]
@@ -71,6 +109,22 @@ pub struct Synthesised {
     pub generation: u64,
     pub id: u64,
     pub result: CommandResult<Speech>,
+}
+
+/// Making speech at `0` characters a second.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pace(f64);
+
+impl Pace {
+    /// How many characters can be made in `time`, to the nearest.
+    fn chars_in(self, time: Duration) -> usize {
+        (time.as_secs_f64() * self.0).round() as usize
+    }
+
+    /// How long `chars` characters take to make.
+    fn time_for(self, chars: usize) -> Duration {
+        Duration::from_secs_f64(chars as f64 / self.0)
+    }
 }
 
 /// A sentence, and whatever its owner wants to remember about it.
@@ -118,11 +172,26 @@ pub struct Narrator<T> {
     done: Arc<dyn Fn(Synthesised) + Send + Sync>,
     /// `None` says every sentence alone.
     joins: Option<Joins<T>>,
+    /// How much later than its first sentence alone would have a clip said
+    /// into silence may start, to take a second with it. Nothing waits.
+    first_wait: Duration,
+    /// When what has been handed over to be played will have been, as near as
+    /// can be told from here: played from as soon as it is ready, and moved
+    /// on by however long playback was paused. Playback held up any other
+    /// way only makes it later than this, which makes clips shorter.
+    audio_until: Option<Instant>,
+    /// Playback has been paused since then.
+    paused_since: Option<Instant>,
+    /// Sentences up to this id are all there is for now: see
+    /// [`Narrator::flush`].
+    flushed_through: Option<u64>,
+    /// A clip is waiting for more to be said with it, until this.
+    held_until: Option<Instant>,
     next_id: u64,
     /// Which queue results belong to.
     generation: u64,
-    /// Waiting to be made.
-    queued: VecDeque<Sentence<T>>,
+    /// Waiting to be made, each with when it was queued.
+    queued: VecDeque<(Instant, Sentence<T>)>,
     /// Being made: one clip at a time, in order -- one sentence, or several
     /// said together. The task is aborted if the queue is cleared.
     making: Option<(Vec<Sentence<T>>, JoinHandle<()>)>,
@@ -146,6 +215,11 @@ impl<T: Clone + Send + 'static> Narrator<T> {
             max_ahead: max_ahead.max(1),
             done,
             joins: None,
+            first_wait: Duration::ZERO,
+            audio_until: None,
+            paused_since: None,
+            flushed_through: None,
+            held_until: None,
             next_id: 0,
             generation: 0,
             queued: VecDeque::new(),
@@ -155,7 +229,7 @@ impl<T: Clone + Send + 'static> Narrator<T> {
         }
     }
 
-    /// Have sentences waiting behind a clip that is playing made together,
+    /// Have sentences waiting made together, as many as there is time for,
     /// two in a row only when `joins` says their tags may be: see the module
     /// docs.
     pub fn joining(mut self, joins: impl Fn(&T, &T) -> bool + Send + Sync + 'static) -> Self {
@@ -163,16 +237,61 @@ impl<T: Clone + Send + 'static> Narrator<T> {
         self
     }
 
+    /// Let a clip said into silence start up to `wait` later than its first
+    /// sentence alone would have, to say a second with it. Only with
+    /// [`Narrator::joining`], and only for tags that join their own kind.
+    pub fn waiting(mut self, wait: Duration) -> Self {
+        self.first_wait = wait;
+        self
+    }
+
     /// Queue a sentence, and answer its id. Starts making it at once if
-    /// nothing else is being made and not too much is waiting to be played.
+    /// nothing else is being made, not too much is waiting to be played and
+    /// it is not waiting for a sentence to say with it.
     ///
     /// Must be called on a Tokio runtime, which is where the work is started.
     pub fn say(&mut self, text: String, tag: T) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.queued.push_back(Sentence { id, text, tag });
+        self.queued.push_back((Instant::now(), Sentence { id, text, tag }));
         self.pump();
         id
+    }
+
+    /// Everything queued is all there is for now: none of it waits for more
+    /// to be said with it. For an owner whose text has ended, or stopped for
+    /// a while, as a reply does for a tool. What is said after is waited for
+    /// again.
+    pub fn flush(&mut self) {
+        self.flushed_through = self.next_id.checked_sub(1);
+        self.pump();
+    }
+
+    /// Playback has stopped where it was, until [`Narrator::resume`]: what is
+    /// left to play is not running down.
+    pub fn pause(&mut self) {
+        self.paused_since.get_or_insert_with(Instant::now);
+    }
+
+    /// Playback goes on from where it stopped.
+    pub fn resume(&mut self) {
+        if let Some(since) = self.paused_since.take()
+            && let Some(until) = self.audio_until.as_mut()
+        {
+            *until += since.elapsed();
+        }
+    }
+
+    /// When a clip waiting for more to be said with it stops waiting, if one
+    /// is: the owner calls [`Narrator::wake`] then.
+    pub fn wake_at(&self) -> Option<Instant> {
+        self.held_until
+    }
+
+    /// Start a clip that was waiting for more to be said with it, if it has
+    /// waited long enough.
+    pub fn wake(&mut self) {
+        self.pump();
     }
 
     /// A synthesis has finished: what became of it. Starts the next one,
@@ -189,6 +308,13 @@ impl<T: Clone + Send + 'static> Narrator<T> {
         };
         let narrated = match done.result {
             Ok(speech) if !speech.samples.is_empty() => {
+                // Played after what is ahead of it, or now if nothing is.
+                let now = self.playback_now();
+                let from = match self.ready.is_empty() {
+                    true => now,
+                    false => self.audio_until.filter(|&until| until > now).unwrap_or(now),
+                };
+                self.audio_until = Some(from + length_of(&speech));
                 let sentence = together(&clip);
                 self.ready.push_back(clip);
                 Narrated::Ready { sentence, speech }
@@ -199,8 +325,9 @@ impl<T: Clone + Send + 'static> Narrator<T> {
                     tracing::debug!(error = %e, "sentences said together failed; saying them one at a time");
                 }
                 self.alone_through = clip.last().map(|s| s.id);
+                let now = Instant::now();
                 for sentence in clip.into_iter().rev() {
-                    self.queued.push_front(sentence);
+                    self.queued.push_front((now, sentence));
                 }
                 Narrated::Stale
             }
@@ -219,6 +346,9 @@ impl<T: Clone + Send + 'static> Narrator<T> {
             return Vec::new();
         };
         let played: Vec<Sentence<T>> = self.ready.drain(..=at).flatten().collect();
+        if self.ready.is_empty() {
+            self.audio_until = None;
+        }
         self.pump();
         played
     }
@@ -232,6 +362,10 @@ impl<T: Clone + Send + 'static> Narrator<T> {
         }
         self.ready.clear();
         self.alone_through = None;
+        self.audio_until = None;
+        self.paused_since = None;
+        self.flushed_through = None;
+        self.held_until = None;
     }
 
     /// Whether anything made has been handed over to be played and has not
@@ -245,30 +379,79 @@ impl<T: Clone + Send + 'static> Narrator<T> {
         !self.queued.is_empty() || self.making.is_some() || !self.ready.is_empty()
     }
 
-    /// Start the next clip's synthesis, if one is not under way and not too
-    /// many are waiting to be played: the next sentence, and those after it
-    /// that may be said with it.
+    /// Now, by a clock that stops while playback is paused: what
+    /// [`Self::audio_until`] is counted in.
+    fn playback_now(&self) -> Instant {
+        self.paused_since.unwrap_or_else(Instant::now)
+    }
+
+    /// How fast the voice makes speech: as it says, once it has been timed.
+    fn pace(&self) -> Pace {
+        Pace(
+            self.synthesiser
+                .rate()
+                .filter(|rate| rate.is_finite() && *rate > 0.0)
+                .unwrap_or(ASSUMED_RATE),
+        )
+    }
+
+    /// Start the next clip's synthesis, if one is not under way, not too many
+    /// are waiting to be played and it is not waiting for more: the next
+    /// sentence, and those after it that may be said with it.
     fn pump(&mut self) {
+        self.held_until = None;
         if self.making.is_some() || self.ready.len() >= self.max_ahead {
             return;
         }
-        let Some(first) = self.queued.pop_front() else { return };
+        let Some(&(queued_at, ref first)) = self.queued.front() else { return };
         let alone = self.alone_through.is_some_and(|through| first.id <= through);
-        let mut clip = vec![first];
+        let mut take = 1;
         if let Some(joins) = self.joins.as_ref().filter(|_| !alone) {
-            // Into silence, as soon as it can be; behind a clip, as much as
-            // can be made while that one is said.
-            let room = self.ready.back().map_or(0, |ahead| length(ahead) * GROWTH).min(MAX_CLIP);
-            let mut len = length(&clip);
-            while let Some(next) = self.queued.front() {
-                let last = &clip[clip.len() - 1];
+            let now = Instant::now();
+            let pace = self.pace();
+            let first_len = first.text.chars().count();
+            let silence = self.ready.is_empty();
+            // How much there is time to make: see the module docs.
+            let room = match silence {
+                true => {
+                    let left = (queued_at + self.first_wait).saturating_duration_since(now);
+                    first_len + pace.chars_in(left)
+                }
+                false => {
+                    let playing = self.playback_now();
+                    let left = self.audio_until.map_or(Duration::ZERO, |until| {
+                        until.saturating_duration_since(playing).mul_f64(SAFETY)
+                    });
+                    pace.chars_in(left.min(MAX_MAKING))
+                }
+            }
+            .min(MAX_CLIP);
+            let mut len = first_len;
+            while let Some((_, next)) = self.queued.get(take) {
+                let last = &self.queued[take - 1].1;
                 if !joins(&last.tag, &next.tag) || !text::joins(&last.text, len, &next.text, room) {
                     break;
                 }
                 len += 1 + next.text.chars().count();
-                clip.extend(self.queued.pop_front());
+                take += 1;
+            }
+            // Into silence with nothing to say with it yet: wait for a
+            // second sentence while one of the usual length could still fit.
+            let likely = 1 + LIKELY_NEXT;
+            if silence
+                && self.queued.len() == 1
+                && joins(&first.tag, &first.tag)
+                && !text::ends_line(&first.text)
+                && first_len + likely <= MAX_CLIP
+                && self.flushed_through.is_none_or(|through| first.id > through)
+                && let Some(wait) = self.first_wait.checked_sub(pace.time_for(likely))
+                && now < queued_at + wait
+            {
+                self.held_until = Some(queued_at + wait);
+                return;
             }
         }
+        let clip: Vec<Sentence<T>> = self.queued.drain(..take).map(|(_, s)| s).collect();
         let generation = self.generation;
         let Sentence { id, text, .. } = together(&clip);
         let synthesiser = self.synthesiser.clone();
@@ -299,9 +482,12 @@ fn together<T: Clone>(clip: &[Sentence<T>]) -> Sentence<T> {
     Sentence { id: clip[clip.len() - 1].id, text, tag: clip[0].tag.clone() }
 }
 
-/// How many characters a clip's words come to, joined.
-fn length<T>(clip: &[Sentence<T>]) -> usize {
-    clip.iter().map(|s| s.text.chars().count()).sum::<usize>() + clip.len().saturating_sub(1)
+/// How long `speech` takes to play.
+fn length_of(speech: &Speech) -> Duration {
+    match speech.sample_rate {
+        0 => Duration::ZERO,
+        rate => Duration::from_secs_f64(speech.samples.len() as f64 / f64::from(rate)),
+    }
 }
 
 #[cfg(test)]
@@ -325,12 +511,22 @@ mod tests {
 
     /// A voice that says what its words ask of it: `fail`, `empty`, `panic`
     /// and `hang` go wrong in the ways their names say, the word `refuse`
-    /// fails whatever is said with it, and anything else is one sample the
-    /// length of the sentence.
+    /// fails whatever is said with it, and anything else is as long as a
+    /// person would take to say it, made at once. It says it makes speech at
+    /// `rate`.
     #[derive(Default)]
     struct Fake {
         started: Mutex<Vec<String>>,
         abandoned: Arc<AtomicBool>,
+        rate: Option<f64>,
+    }
+
+    /// How fast [`Fake`] speaks: characters a second, at a thousand samples a
+    /// second.
+    const SPOKEN: usize = 15;
+
+    fn spoken(text: &str) -> Speech {
+        Speech { samples: vec![1; text.chars().count() * 1000 / SPOKEN], sample_rate: 1000 }
     }
 
     impl Synthesiser for Fake {
@@ -350,9 +546,13 @@ mod tests {
                     other if other.split(' ').any(|word| word == "refuse") => {
                         Err(CommandError::new(codes::NETWORK, "not that"))
                     }
-                    other => Ok(Speech { samples: vec![other.len() as i16], sample_rate: 16_000 }),
+                    other => Ok(spoken(other)),
                 }
             })
+        }
+
+        fn rate(&self) -> Option<f64> {
+            self.rate
         }
     }
 
@@ -363,7 +563,11 @@ mod tests {
     }
 
     fn rig(max_ahead: usize) -> Rig {
-        let voice = Arc::new(Fake::default());
+        rig_with(max_ahead, Fake::default())
+    }
+
+    fn rig_with(max_ahead: usize, voice: Fake) -> Rig {
+        let voice = Arc::new(voice);
         let (tx, results) = unbounded_channel();
         let narrator = Narrator::new(
             voice.clone(),
@@ -377,9 +581,26 @@ mod tests {
 
     /// A rig whose narrator says sentences with the same tag together.
     fn joining_rig(max_ahead: usize) -> Rig {
-        let Rig { narrator, results, voice } = rig(max_ahead);
+        joining_rig_with(max_ahead, Fake::default())
+    }
+
+    fn joining_rig_with(max_ahead: usize, voice: Fake) -> Rig {
+        let Rig { narrator, results, voice } = rig_with(max_ahead, voice);
         Rig { narrator: narrator.joining(|a, b| a == b), results, voice }
     }
+
+    /// A joining rig whose first sentence into silence may wait half a second
+    /// for a second, with a voice fast enough to make one in the time.
+    fn waiting_rig() -> Rig {
+        waiting_rig_with(Fake { rate: Some(1000.0), ..Fake::default() })
+    }
+
+    fn waiting_rig_with(voice: Fake) -> Rig {
+        let Rig { narrator, results, voice } = joining_rig_with(2, voice);
+        Rig { narrator: narrator.waiting(Duration::from_millis(500)), results, voice }
+    }
+
+    const OPENING: &str = "Okay, here is what I found for you.";
 
     impl Rig {
         async fn next(&mut self) -> Synthesised {
@@ -428,7 +649,7 @@ mod tests {
         match &first {
             Narrated::Ready { sentence, speech } => {
                 assert_eq!(sentence, &Sentence { id: 0, text: "a".into(), tag: "first" });
-                assert_eq!(speech.samples, vec![1]);
+                assert_eq!(speech, &spoken("a"));
             }
             other => panic!("{other:?}"),
         }
@@ -631,28 +852,37 @@ mod tests {
         assert_eq!(ready_id(&rig.finish().await), 3);
     }
 
-    #[tokio::test]
-    async fn a_clip_is_at_most_twice_the_one_ahead_of_it_and_never_past_the_cap() {
-        let mut rig = joining_rig(2);
-        rig.narrator.say("Okay.".into(), "reply");
-        rig.narrator.say("Sure thing.".into(), "reply");
-        rig.narrator.say("Next one.".into(), "reply");
+    #[tokio::test(start_paused = true)]
+    async fn a_clip_behind_another_is_as_long_as_can_be_made_while_that_one_plays() {
+        // A hundred characters a second, and the first is thirty characters
+        // said in two seconds.
+        let mut rig = joining_rig_with(2, Fake { rate: Some(100.0), ..Fake::default() });
+        let forty = "b".repeat(40);
+        rig.narrator.say("a".repeat(30), "reply");
+        for _ in 0..3 {
+            rig.narrator.say(forty.clone(), "reply");
+        }
         rig.finish().await;
-        // Ten characters of room behind "Okay.": the first waiting is made
-        // whatever its length, but nothing joins it.
-        assert_eq!(ready_id(&rig.finish().await), 1);
-        rig.narrator.played(1);
-        assert_eq!(ready_id(&rig.finish().await), 2);
-        rig.narrator.played(2);
+        // Two seconds left to play, and half of them to make the next in: a
+        // hundred characters, which two forties fit and three do not.
+        match rig.finish().await {
+            Narrated::Ready { sentence, .. } => {
+                assert_eq!(sentence.text, format!("{forty} {forty}"))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
-        let long = "a".repeat(200);
+    #[tokio::test(start_paused = true)]
+    async fn however_fast_the_voice_a_clip_is_never_past_the_cap() {
+        let mut rig = joining_rig_with(2, Fake { rate: Some(1e9), ..Fake::default() });
         let hundred = "b".repeat(100);
-        rig.narrator.say(long.clone(), "reply");
+        rig.narrator.say("a".repeat(200), "reply");
         for _ in 0..3 {
             rig.narrator.say(hundred.clone(), "reply");
         }
         rig.finish().await;
-        // Twice 200 is more than the cap: two hundreds fit in it, not three.
+        // Thirteen seconds to play: two hundreds fit in the cap, not three.
         match rig.finish().await {
             Narrated::Ready { sentence, .. } => {
                 assert_eq!(sentence.text, format!("{hundred} {hundred}"));
@@ -660,6 +890,181 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_clip_made_behind_another_takes_at_most_two_seconds_to_make() {
+        // Sixty characters a second, behind thirteen seconds of audio: half
+        // of it would be four hundred characters, two seconds a hundred and
+        // twenty.
+        let mut rig = joining_rig_with(2, Fake { rate: Some(60.0), ..Fake::default() });
+        let fifty = "b".repeat(50);
+        rig.narrator.say("a".repeat(200), "reply");
+        for _ in 0..3 {
+            rig.narrator.say(fifty.clone(), "reply");
+        }
+        rig.finish().await;
+        match rig.finish().await {
+            Narrated::Ready { sentence, .. } => {
+                assert_eq!(sentence.text, format!("{fifty} {fifty}"))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn what_is_left_to_play_does_not_run_down_while_playback_is_paused() {
+        // A hundred characters a second. Two seconds and two thirds of audio
+        // ahead when the third clip is started, a second and a half of it
+        // paused: half of all of it is room for two forties, half of what
+        // would be left without the pause is not.
+        let forty = "b".repeat(40);
+        for resumed in [false, true] {
+            let mut rig = joining_rig_with(3, Fake { rate: Some(100.0), ..Fake::default() });
+            rig.narrator.say("a".repeat(30), "reply");
+            rig.finish().await;
+            rig.narrator.say("x".repeat(10), "reply");
+            rig.narrator.say(forty.clone(), "reply");
+            rig.narrator.say(forty.clone(), "reply");
+            rig.narrator.pause();
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            if resumed {
+                rig.narrator.resume();
+            }
+            rig.finish().await;
+            match rig.finish().await {
+                Narrated::Ready { sentence, .. } => {
+                    assert_eq!(sentence.text, format!("{forty} {forty}"), "resumed: {resumed}")
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_voice_that_has_not_been_timed_is_taken_to_be_as_slow_as_kokoro() {
+        // Four times as fast as it is said: behind a clip, twice its length.
+        let mut rig = joining_rig(2);
+        let forty = "b".repeat(40);
+        rig.narrator.say("a".repeat(30), "reply");
+        rig.narrator.say(forty.clone(), "reply");
+        rig.narrator.say("c".repeat(20), "reply");
+        rig.finish().await;
+        match rig.finish().await {
+            Narrated::Ready { sentence, .. } => assert_eq!(sentence.text, forty),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_first_sentence_into_silence_waits_for_a_second_to_be_made_with_it() {
+        let mut rig = waiting_rig();
+        rig.narrator.say(OPENING.into(), "reply");
+        rig.settle().await;
+        assert!(rig.started().is_empty(), "waiting");
+        assert!(rig.narrator.wake_at().is_some());
+        assert!(rig.narrator.outstanding());
+        assert!(!rig.narrator.playing());
+
+        rig.narrator.say("Lunch is at one.".into(), "reply");
+        assert_eq!(rig.narrator.wake_at(), None);
+        rig.settle().await;
+        assert_eq!(rig.started(), vec![format!("{OPENING} Lunch is at one.")]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_wait_ends_when_a_usual_sentence_would_start_it_too_late() {
+        let mut rig = waiting_rig();
+        let start = Instant::now();
+        rig.narrator.say(OPENING.into(), "reply");
+        let until = rig.narrator.wake_at().expect("waiting");
+        // Half a second, less what a sentence of the usual length takes to
+        // make.
+        let likely = Duration::from_secs_f64((1 + LIKELY_NEXT) as f64 / 1000.0);
+        assert_eq!(until - start, Duration::from_millis(500) - likely);
+
+        rig.narrator.wake();
+        rig.settle().await;
+        assert!(rig.started().is_empty(), "woken early, it waits on");
+        tokio::time::sleep_until(until).await;
+        rig.narrator.wake();
+        rig.settle().await;
+        assert_eq!(rig.started(), vec![OPENING]);
+        assert_eq!(rig.narrator.wake_at(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_second_sentence_that_cannot_be_said_with_the_first_ends_the_wait() {
+        // Too long for a clip.
+        let mut rig = waiting_rig();
+        rig.narrator.say(OPENING.into(), "reply");
+        rig.narrator.say("b".repeat(220), "reply");
+        rig.settle().await;
+        assert_eq!(rig.started(), vec![OPENING]);
+        assert_eq!(rig.narrator.wake_at(), None);
+
+        // Not of a kind to be said with it.
+        let mut rig = waiting_rig();
+        rig.narrator.say(OPENING.into(), "reply");
+        rig.narrator.say("Let me see.".into(), "own");
+        rig.settle().await;
+        assert_eq!(rig.started(), vec![OPENING]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_flush_ends_the_wait_and_what_is_said_after_it_waits_again() {
+        let mut rig = waiting_rig();
+        let id = rig.narrator.say(OPENING.into(), "reply");
+        rig.narrator.flush();
+        rig.settle().await;
+        assert_eq!(rig.started(), vec![OPENING]);
+        rig.finish().await;
+        rig.narrator.played(id);
+
+        rig.narrator.say("Anything else?".into(), "reply");
+        assert!(rig.narrator.wake_at().is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_voice_too_slow_to_make_a_usual_sentence_in_the_time_does_not_wait() {
+        // Sixty characters take six tenths of a second, and an untimed voice
+        // is slower still.
+        let mut rig = waiting_rig_with(Fake { rate: Some(100.0), ..Fake::default() });
+        rig.narrator.say(OPENING.into(), "reply");
+        assert_eq!(rig.narrator.wake_at(), None);
+        let mut rig = waiting_rig_with(Fake::default());
+        rig.narrator.say(OPENING.into(), "reply");
+        assert_eq!(rig.narrator.wake_at(), None);
+        rig.settle().await;
+        assert_eq!(rig.started(), vec![OPENING]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn neither_a_kind_that_does_not_join_nor_a_line_s_end_waits() {
+        let Rig { narrator, results, voice } =
+            rig_with(2, Fake { rate: Some(1000.0), ..Fake::default() });
+        let narrator =
+            narrator.joining(|a, b| a == b && *a == "reply").waiting(Duration::from_millis(500));
+        let mut rig = Rig { narrator, results, voice };
+        let own = rig.narrator.say("Let me see.".into(), "own");
+        rig.settle().await;
+        assert_eq!(rig.started(), vec!["Let me see."]);
+        rig.finish().await;
+        rig.narrator.played(own);
+
+        rig.narrator.say("First, the dentist.¶".into(), "reply");
+        rig.settle().await;
+        assert_eq!(rig.started()[1], "First, the dentist.¶");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_clear_forgets_a_wait() {
+        let mut rig = waiting_rig();
+        rig.narrator.say(OPENING.into(), "reply");
+        assert!(rig.narrator.wake_at().is_some());
+        rig.narrator.clear();
+        assert_eq!(rig.narrator.wake_at(), None);
+        assert!(!rig.narrator.outstanding());
     }
 
     #[tokio::test]

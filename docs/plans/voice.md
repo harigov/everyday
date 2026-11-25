@@ -139,12 +139,65 @@ goes into the same thread as what is typed.
   while that one plays: Phonon makes speech about nine times as fast as it
   is said on this computer, Kokoro four) and at most 240 characters, and
   never goes past a line's end, whose longer pause only a clip's end gets.
-  Tool phrases and questions are never joined: a phrase is rehearsed alone,
+  (Both the first sentence alone and twice the clip ahead changed on Nov 24:
+  see the next entry.) Tool phrases and questions are never joined: a phrase is rehearsed alone,
   and a question is waited on by its id. What was heard of a cut reply is
   counted in clips: one talked over half way counts as not heard. A clip the
   voice cannot make is made again a sentence at a time. A rendered article or
   podcast joins as much as fits in a line. Listen does not join: the reader
   shows and skips by sentence.
+- **Clips as long as the voice can keep up with, the same rule for every
+  voice** (Nov 24 2026). Hari still heard a reply as a list read out. Three
+  things kept clips short, and each is now one rule for all voices rather
+  than a setting per voice:
+  - *Twice the clip ahead* was a guess at the slowest voice. Every voice now
+    times itself in `Delivery`, the wrapper all of them are built in
+    (`Synthesiser::rate`: characters made a second, the middle of the last
+    five clips of 30 characters or more, so one slow clip -- the model loaded
+    again after a rest, a wait behind other speech -- moves nothing, while a
+    busy computer shows within three). The rate is kept per engine for the
+    life of the process, so a new voice session, Listen at its own speed or
+    a podcast's second host starts knowing it; a phrase handed back from
+    rehearsal never reaches `Delivery`, so it cannot make the voice look
+    fast. The narrator sizes the next clip to what can be made in half the
+    time the audio ahead has left to play (playback paused for somebody
+    talking is not counted down), and in no more than two seconds, since a
+    clip talked over is still finished by the voice and holds it from the
+    next reply. A fast voice reaches the 240-character cap by the second
+    clip; a slow voice, or a busy computer, keeps them short enough that the
+    speech never stops for one. A voice not yet timed is taken to be
+    Kokoro's speed, which is the old rule.
+  - *The first sentence was always alone.* It may now wait for a second, as
+    long as the audio starts no more than half a second later than the first
+    alone would have (`FIRST_WAIT`): the wait for the second sentence's words
+    and the time to make both count. It waits only while a sentence of the
+    usual length (60 characters) could still be made in that time. The first
+    version waited while even the shortest could, and a real run showed it
+    only ever delayed: the second sentence (77 characters) never fitted. On
+    this computer's processor neither Phonon (about 140 characters a second)
+    nor Kokoro (60 to 85) can make 60 characters in half a second, so the
+    wait is for faster voices; the gain for these is behind the first clip.
+    The end of the reply or of the turn, a tool call, the end of something
+    read aloud, a second sentence that does not fit or one of another kind
+    ends the wait at once (`Narrator::flush`). The session's loop wakes the
+    narrator when the wait is up (`Narrator::wake_at`).
+  - *Phonon cut joined clips apart again.* `ptts` groups what it is handed
+    into pieces of about one long sentence (50 tokens) and makes each afresh
+    from the speaker's voice, knowing nothing of the piece before. Every
+    voice is now told to say what it is handed in one go, up to a clip's 240
+    characters (the `Synthesiser` contract): `ptts` with its largest piece
+    (`MAX_FIT_TOKENS`, 200), Kokoro already (400 phonemes). Where speech is
+    cut is the narrator's to decide. Measured on a three-sentence clip in two
+    speakers: the cut left a 0.72-0.74 s silence where `ptts` restarted, and
+    one piece leaves 0.44-0.48 s, like the sentence before it; Parakeet heard
+    every word both ways, and one piece is made a fifth faster.
+  - *Measured end to end* with both voices, a reply streamed at a fast
+    model's pace and at a slow one's, playback simulated in real time: no
+    gaps on a quiet computer; clips of 39, 77, then 119 to 184 characters
+    behind a fast model. Behind a slow model (40 characters a second) most
+    clips stay one or two sentences, since each is started as soon as its
+    sentence is whole; holding a clip behind audio for more words is not
+    done yet.
 - **Phonon's own temperature, and a seed per sentence** (Nov 23 2026).
   `ptts` used temperature 0.3 and one fixed seed for every sentence; Phonon's
   config asks for 0.8. It is now 0.7, and each sentence is seeded from its
