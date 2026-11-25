@@ -4,7 +4,7 @@
   // the reading pane beside it -- the journal's `EntryList` + `Editor` shape,
   // folded into one component the way the library and the todo app do.
 
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import { accounts } from '../lib/accounts.svelte'
   import { accountColor } from '../lib/avatar'
   import {
@@ -38,6 +38,7 @@
   import { mail } from '../lib/mail.svelte'
   import { notify } from '../lib/notify.svelte'
   import { panels } from '../lib/panels.svelte'
+  import { closesOnBack, details, phone } from '../lib/phone.svelte'
   import { sorting } from '../lib/sorting.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -49,7 +50,9 @@
     Mailbox,
     MailAddress,
     MailCategory,
+    MailMessageDetail,
     Thread,
+    ThreadDetail,
     ThreadId,
   } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -65,6 +68,7 @@
   import MailThread from './MailThread.svelte'
   import MailThreadDrafts from './MailThreadDrafts.svelte'
   import PaneResizer from './PaneResizer.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import VirtualList from './VirtualList.svelte'
 
   void mail.start()
@@ -385,6 +389,9 @@
     const vip = vipSenderFor(t)
     return tidyMenu([
       { label: 'Open', icon: 'inbox', run: () => void mail.openThreadById(t.id) },
+      // No Ctrl-click on a phone: a long press picks the first, and a tap
+      // picks each one after it -- see `clickRow`.
+      phone.on && { label: 'Select', icon: 'check', run: () => mail.toggleChecked(t.id) },
       // First after Open on a follow-up: being done with what it is waiting
       // on is the one thing its place at the top asks of somebody.
       t.followUp && {
@@ -527,6 +534,15 @@
   /** A row clicked: Shift and Ctrl/Cmd pick, a plain click opens -- see
    *  `mail.clickThread`. */
   function clickRow(e: MouseEvent, id: ThreadId) {
+    if (phone.on) {
+      // With some picked, a tap picks or puts back; with none, it opens --
+      // and the open thread is on screen at once, before it has loaded.
+      if (mail.checked.size > 0) {
+        mail.toggleChecked(id)
+        return
+      }
+      opening = id
+    }
     mail.clickThread(id, { shift: e.shiftKey, toggle: e.ctrlKey || e.metaKey })
   }
 
@@ -544,6 +560,8 @@
    *  the element and this runs again, rather than firing only once per
    *  thread. */
   function scrollIntoViewOnMount(el: HTMLElement) {
+    // A phone's reply is a screen of its own, not something under the thread.
+    if (phone.on) return
     el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }
 
@@ -567,6 +585,119 @@
     (mail.composing !== null && !mail.composeInline) ||
       (mail.checked.size === 0 && mail.openThread !== null),
   )
+
+  // ── On a phone ───────────────────────────────────────────────────────
+  //
+  // There is room for the list or for what was opened from it, never both:
+  // see `details` in `lib/phone.svelte.ts`. The reading pane -- a thread, or
+  // a new message -- is then drawn over the whole list (which stays where it
+  // is, scrolled as it was, only hidden), and back puts it away.
+
+  /** The row tapped and not yet loaded: the thread's screen opens at once,
+   *  with its way back, rather than the tap doing nothing for as long as
+   *  the thread takes to arrive. */
+  let opening = $state<ThreadId | null>(null)
+  $effect(() => {
+    if (opening !== null && (mail.openThread !== null || mail.selectedThread !== opening)) {
+      opening = null
+    }
+  })
+
+  /** Is the reading pane over the list? Always `false` beside it. */
+  const phoneDetail = $derived(
+    phone.on &&
+      (paneOpen ||
+        (opening !== null &&
+          mail.checked.size === 0 &&
+          mail.selectedThread === opening &&
+          mail.openThread === null)),
+  )
+
+  // `details` is what `App.svelte`'s back reads, so it says so when the
+  // pane opens and when it goes. Back (Android's, or the browser's) closes
+  // it from there: a flag that went false with the pane still up is a back.
+  $effect(() => {
+    if (!phone.on) return
+    if (phoneDetail) details.open('mail')
+    else details.close('mail')
+  })
+  let detailWasOpen = false
+  $effect(() => {
+    const open = details.isOpen('mail')
+    if (detailWasOpen && !open && untrack(() => phoneDetail)) closeDetail()
+    detailWasOpen = open
+  })
+
+  /** The writing screen, to close it as its own close button does -- the
+   *  draft kept, a blank one thrown away. */
+  let composeSheet: { close(): void } | undefined = $state()
+
+  /** Put the pane away: the message being written, kept as a draft, or the
+   *  thread. */
+  function closeDetail() {
+    if (mail.composing && !mail.composeInline) {
+      if (composeSheet) composeSheet.close()
+      else mail.closeCompose()
+    } else mail.closeThread()
+  }
+
+  // A reply or a forward is a screen of its own over the thread; back puts
+  // it away -- kept in the thread as a draft -- and shows the thread again.
+  closesOnBack(
+    () => phone.on && mail.composing !== null && mail.composeInline,
+    () => (composeSheet ? composeSheet.close() : mail.closeCompose()),
+  )
+
+  /** What a thread's toolbar has no room for on a phone. */
+  function threadMenu(open: ThreadDetail, newest: MailMessageDetail | undefined): MenuItem[] {
+    const priority = open.thread.category === 'priority'
+    return tidyMenu([
+      newest && {
+        label: 'Reply all',
+        icon: 'reply-all',
+        run: () => void mail.reply(newest.id, true),
+      },
+      newest && { label: 'Forward', icon: 'forward', run: () => void mail.forward(newest.id) },
+      SEP,
+      {
+        label: priority ? 'Remove from priority' : 'Mark as priority',
+        icon: 'flag',
+        run: () => void mail.setPriority(open.thread.id, !priority),
+      },
+      {
+        label: 'Mark unread',
+        icon: 'mail',
+        run: () => void mail.markUnread(open.thread.id),
+      },
+      { label: 'Label…', icon: 'tag', run: () => (mail.wantsLabel = [open.thread.id]) },
+      canListen && {
+        label: listeningToOpen ? 'Stop reading aloud' : 'Listen',
+        icon: listeningToOpen ? 'stop' : 'play',
+        run: toggleListen,
+      },
+      canSummarize && {
+        label: 'Summarise',
+        icon: 'sparkle',
+        disabled: mail.summarizing,
+        run: () => void mail.summarizeOpenThread(),
+      },
+    ])
+  }
+
+  /** The category chips, which on a phone are a strip that scrolls sideways
+   *  when the open one's name is longer than the room it is left. */
+  let tabStrip: HTMLElement | undefined = $state()
+  $effect(() => {
+    void mail.category
+    const strip = tabStrip
+    const on = strip?.querySelector<HTMLElement>('[aria-selected="true"]')
+    if (!strip || !on || !phone.on) return
+    // After the chip has taken its name, so its width is the one to fit.
+    const room = strip.getBoundingClientRect()
+    const chip = on.getBoundingClientRect()
+    if (chip.left < room.left) strip.scrollLeft += chip.left - room.left - 8
+    else if (chip.right > room.right) strip.scrollLeft += chip.right - room.right + 8
+  })
 
   /** The mailbox's own list, to bring the open thread's row back into view
    *  once the list has narrowed under it -- see `showSelected`. */
@@ -612,6 +743,9 @@
    * measured again by the virtual list.
    */
   function slide(node: HTMLElement) {
+    // A phone's pane is over the list rather than beside it: nothing for
+    // the list to give way to, so it is simply there.
+    if (phone.on) return { duration: 0 }
     const list = node.parentElement?.querySelector<HTMLElement>(':scope > .list')
     const box = node.parentElement
     /** Which way the list's contents were last laid out for. */
@@ -644,14 +778,31 @@
   }
 </script>
 
-<svelte:window onfocus={() => mail.seeOpenThread()} />
+<svelte:window
+  onfocus={() => mail.seeOpenThread()}
+  onerror={(e) => {
+    // WebKit raises "ResizeObserver loop completed with undelivered
+    // notifications" as an uncaught error when the list's row measuring
+    // (`virtua`, in `VirtualList`) settles over two frames rather than one.
+    // Nothing is wrong and nothing is lost; it is the one message of the
+    // kind that is let go by, so a real error still shows.
+    if (e instanceof ErrorEvent && e.message.startsWith('ResizeObserver loop')) e.preventDefault()
+  }}
+/>
 <svelte:document onvisibilitychange={() => mail.seeOpenThread()} />
 
 <!-- The list and the reading pane, as one positioned box: the pane stands
      in it at a fixed place, out of the flow, so the list can widen under it
      while it goes -- see `slide`. -->
 <div class="mail">
-  <section class="list" class:wide={!paneOpen} data-thread-list data-mail-pane>
+  <section
+    class="list"
+    class:wide={!paneOpen}
+    class:behind={phoneDetail}
+    inert={phoneDetail}
+    data-thread-list
+    data-mail-pane
+  >
     <div class="top">
       <div class="pane-titles">
         <span class="pane-title">{heading}</span>
@@ -699,56 +850,60 @@
           <span class="bulk-count">
             {plural(mail.checked.size, 'conversation')} selected
           </span>
-          <button
-            class="btn btn-sm btn-outline"
-            onclick={() => void mail.archiveMany(mail.targets)}
-          >
-            <Icon name="layers" size={14} /> Archive <kbd>E</kbd>
-          </button>
-          {#if mail.emptiableRole !== 'trash'}
+          <!-- No box of its own beside a pointer; a phone's strip of buttons
+               that scrolls sideways under the count. -->
+          <div class="bulk-actions">
             <button
               class="btn btn-sm btn-outline"
-              onclick={() => void mail.trashMany(mail.targets)}
+              onclick={() => void mail.archiveMany(mail.targets)}
             >
-              <Icon name="trash" size={14} /> Trash <kbd>#</kbd>
+              <Icon name="layers" size={14} /> Archive <kbd>E</kbd>
             </button>
-          {/if}
-          {#if mail.emptiableRole && mail.mailbox}
-            {@const box = mail.mailbox}
-            <button
-              class="btn btn-sm btn-outline"
-              onclick={() => (mail.wantsForever = { ids: mail.targets, mailbox: box })}
-            >
-              <Icon name="trash" size={14} /> Delete forever…
-              {#if mail.emptiableRole === 'trash'}<kbd>#</kbd>{/if}
+            {#if mail.emptiableRole !== 'trash'}
+              <button
+                class="btn btn-sm btn-outline"
+                onclick={() => void mail.trashMany(mail.targets)}
+              >
+                <Icon name="trash" size={14} /> Trash <kbd>#</kbd>
+              </button>
+            {/if}
+            {#if mail.emptiableRole && mail.mailbox}
+              {@const box = mail.mailbox}
+              <button
+                class="btn btn-sm btn-outline"
+                onclick={() => (mail.wantsForever = { ids: mail.targets, mailbox: box })}
+              >
+                <Icon name="trash" size={14} /> Delete forever…
+                {#if mail.emptiableRole === 'trash'}<kbd>#</kbd>{/if}
+              </button>
+            {/if}
+            {#if pickedThreads.some((t) => t.unreadCount > 0)}
+              <button
+                class="btn btn-sm btn-outline"
+                onclick={() => void mail.markReadMany(mail.targets)}
+              >
+                <Icon name="check" size={14} /> Mark read <kbd>I</kbd>
+              </button>
+            {:else}
+              <button
+                class="btn btn-sm btn-outline"
+                onclick={() => void mail.markUnreadMany(mail.targets)}
+              >
+                <Icon name="check" size={14} /> Mark unread <kbd>U</kbd>
+              </button>
+            {/if}
+            {#if !inSnoozedView}
+              <button
+                class="btn btn-sm btn-outline"
+                onclick={() => (mail.wantsSnooze = mail.targets)}
+              >
+                <Icon name="clock" size={14} /> Snooze… <kbd>H</kbd>
+              </button>
+            {/if}
+            <button class="btn btn-sm btn-outline" onclick={(e) => menu.show(e, bulkMenu())}>
+              More…
             </button>
-          {/if}
-          {#if pickedThreads.some((t) => t.unreadCount > 0)}
-            <button
-              class="btn btn-sm btn-outline"
-              onclick={() => void mail.markReadMany(mail.targets)}
-            >
-              <Icon name="check" size={14} /> Mark read <kbd>I</kbd>
-            </button>
-          {:else}
-            <button
-              class="btn btn-sm btn-outline"
-              onclick={() => void mail.markUnreadMany(mail.targets)}
-            >
-              <Icon name="check" size={14} /> Mark unread <kbd>U</kbd>
-            </button>
-          {/if}
-          {#if !inSnoozedView}
-            <button
-              class="btn btn-sm btn-outline"
-              onclick={() => (mail.wantsSnooze = mail.targets)}
-            >
-              <Icon name="clock" size={14} /> Snooze… <kbd>H</kbd>
-            </button>
-          {/if}
-          <button class="btn btn-sm btn-outline" onclick={(e) => menu.show(e, bulkMenu())}>
-            More…
-          </button>
+          </div>
           <button
             class="bulk-clear"
             title="Clear selection (Esc)"
@@ -772,7 +927,7 @@
            and to assistive technology, and its count turns the accent when
            anything under it is unread. -->
         <div class="tabs">
-          <div class="filters" role="tablist" aria-label="Mail categories">
+          <div class="filters" role="tablist" aria-label="Mail categories" bind:this={tabStrip}>
             {#each [{ key: null, label: 'All' }, ...CATEGORY_TABS] as tab (tab.key ?? 'all')}
               {@const count = categoryTabCount(mail.categoryCounts, tab.key)}
               {@const number = tabNumber(count)}
@@ -927,7 +1082,7 @@
         </div>
       {/if}
     {/if}
-    {#if paneOpen}
+    {#if paneOpen && !phone.on}
       <PaneResizer
         cssVar="--mail-list-w"
         storageKey="pane-w:mail-list"
@@ -1024,15 +1179,72 @@
     </div>
   {/snippet}
 
-  {#if paneOpen}
-    <main class="main" data-mail-pane transition:slide>
+  <!-- The open thread's subject and what is said about it: who, how many,
+     whether it is snoozed or waiting on somebody. -->
+  {#snippet subjectBlock(open: ThreadDetail)}
+    <div class="subject-block">
+      <h1>{open.thread.subject || '(no subject)'}</h1>
+      <p class="meta">
+        <span>{plural(open.messages.length, 'message')}</span>
+        {#if openAccount && mailAccounts.length > 1}
+          <span class="sep">·</span>
+          <span class="meta-acct">
+            <span
+              class="acct"
+              style:background={accountColor(openAccount.id, accountIds)}
+              aria-hidden="true"
+            ></span>
+            {openAccount.displayName || openAccount.address}
+          </span>
+        {/if}
+        {#if open.thread.category === 'priority'}
+          <span class="sep">·</span>
+          <span class="priority-mark"><Icon name="flag" size={12} /> Priority</span>
+        {/if}
+        {#if sorting.categoryOf(open.thread)}
+          <span class="sep">·</span>
+          <span class="sorted-mark" title="Sorted by the decision model">
+            <Icon name="tag" size={12} />
+            {sorting.categoryOf(open.thread)?.name}
+          </span>
+        {/if}
+      </p>
+      {#if open.thread.snoozedUntil && new Date(open.thread.snoozedUntil) > new Date()}
+        <p class="snoozed-banner">
+          <Icon name="clock" size={13} />
+          <span>Snoozed until {weekdayAndTime(open.thread.snoozedUntil)}</span>
+          <button class="link" onclick={() => void mail.unsnooze(open.thread.id)}>Unsnooze</button>
+        </p>
+      {/if}
+      <MailFollowUpBanner detail={open} />
+      {#if recentActionLines.length > 0}
+        <p class="recent-actions">
+          {#each recentActionLines as line, i (i)}
+            {#if i > 0}<span class="sep">·</span>{/if}<span>{line}</span>
+          {/each}
+        </p>
+      {/if}
+    </div>
+  {/snippet}
+
+  {#if paneOpen || phoneDetail}
+    <main
+      class="main"
+      class:replying={phone.on && mail.composing !== null && mail.composeInline}
+      data-mail-pane
+      transition:slide
+    >
       {#if mail.composing && !mail.composeInline}
         <!-- A new message, or a draft reopened, where a thread is read rather
          than in a dialog over everything: the list stays in reach beside
          it. Keyed, so a second draft opened over the first is a fresh sheet
          rather than the first one's working copy under another name. -->
         {#key mail.composeKey}
-          <MailCompose draft={mail.composing} onclose={() => mail.closeCompose()} />
+          <MailCompose
+            bind:this={composeSheet}
+            draft={mail.composing}
+            onclose={() => mail.closeCompose()}
+          />
         {/key}
       {:else if mail.openThread}
         <!-- Captured once, rather than re-read as `mail.openThread.thread.id`
@@ -1044,191 +1256,211 @@
         {@const open = mail.openThread}
         {@const newest = open.messages.at(-1)}
         <div class="thread-head">
-          <!-- The toolbar: what to do with this thread, grouped the way the
-           hands reach for it -- answer it, put it away, mark it -- each group
-           one pill, so a row of twelve icons reads as three decisions. -->
-          <div class="thread-toolbar" role="toolbar" aria-label="Thread actions">
-            <button
-              class="tool back"
-              onclick={() => mail.closeThread()}
-              title="Back to the list (Escape)"
-              aria-label="Back to the list"
-            >
-              <Icon name="chevron" size={15} />
-            </button>
-            {#if newest}
-              <div class="group">
+          {#if phone.on}
+            <!-- A phone's toolbar: the way back, then the four things done
+                 most -- answer it, put it away, put it off, throw it out --
+                 and the rest in a menu. Each a finger wide. -->
+            <div class="phone-bar" role="toolbar" aria-label="Thread actions">
+              <PhoneBack onclick={() => mail.closeThread()} />
+              <span class="spacer"></span>
+              {#if newest}
                 <button
                   class="tool"
-                  title="Reply (R)"
                   aria-label="Reply"
                   onclick={() => mail.reply(newest.id, false)}
                 >
-                  <Icon name="reply" size={17} />
+                  <Icon name="reply" size={20} />
                 </button>
-                <button
-                  class="tool"
-                  title="Reply all (W)"
-                  aria-label="Reply all"
-                  onclick={() => mail.reply(newest.id, true)}
-                >
-                  <Icon name="reply-all" size={17} />
-                </button>
-                <button
-                  class="tool"
-                  title="Forward (F)"
-                  aria-label="Forward"
-                  onclick={() => mail.forward(newest.id)}
-                >
-                  <Icon name="forward" size={17} />
-                </button>
-              </div>
-            {/if}
-            <div class="group">
+              {/if}
               <button
                 class="tool"
-                title="Archive (E)"
                 aria-label="Archive"
                 onclick={() => void mail.archive(open.thread.id)}
               >
-                <Icon name="archive" size={17} />
+                <Icon name="archive" size={20} />
               </button>
               <button
                 class="tool"
-                title="Snooze… (H)"
                 aria-label="Snooze"
                 onclick={() => (mail.wantsSnooze = [open.thread.id])}
               >
-                <Icon name="clock" size={17} />
+                <Icon name="clock" size={20} />
               </button>
               {#if mail.emptiableRole === 'trash' && mail.mailbox}
                 {@const box = mail.mailbox}
                 <button
                   class="tool"
-                  title="Delete forever… (#)"
                   aria-label="Delete forever"
                   onclick={() => (mail.wantsForever = { ids: [open.thread.id], mailbox: box })}
                 >
-                  <Icon name="trash" size={17} />
+                  <Icon name="trash" size={20} />
                 </button>
               {:else}
                 <button
                   class="tool"
-                  title="Trash (#)"
                   aria-label="Trash"
                   onclick={() => void mail.trash(open.thread.id)}
                 >
-                  <Icon name="trash" size={17} />
+                  <Icon name="trash" size={20} />
+                </button>
+              {/if}
+              <button
+                class="tool"
+                aria-label="More actions"
+                aria-haspopup="menu"
+                onclick={(e) => menu.show(e, threadMenu(open, newest))}
+              >
+                <Icon name="more" size={20} />
+              </button>
+            </div>
+          {:else}
+            <!-- The toolbar: what to do with this thread, grouped the way the
+           hands reach for it -- answer it, put it away, mark it -- each group
+           one pill, so a row of twelve icons reads as three decisions. -->
+            <div class="thread-toolbar" role="toolbar" aria-label="Thread actions">
+              <button
+                class="tool back"
+                onclick={() => mail.closeThread()}
+                title="Back to the list (Escape)"
+                aria-label="Back to the list"
+              >
+                <Icon name="chevron" size={15} />
+              </button>
+              {#if newest}
+                <div class="group">
+                  <button
+                    class="tool"
+                    title="Reply (R)"
+                    aria-label="Reply"
+                    onclick={() => mail.reply(newest.id, false)}
+                  >
+                    <Icon name="reply" size={17} />
+                  </button>
+                  <button
+                    class="tool"
+                    title="Reply all (W)"
+                    aria-label="Reply all"
+                    onclick={() => mail.reply(newest.id, true)}
+                  >
+                    <Icon name="reply-all" size={17} />
+                  </button>
+                  <button
+                    class="tool"
+                    title="Forward (F)"
+                    aria-label="Forward"
+                    onclick={() => mail.forward(newest.id)}
+                  >
+                    <Icon name="forward" size={17} />
+                  </button>
+                </div>
+              {/if}
+              <div class="group">
+                <button
+                  class="tool"
+                  title="Archive (E)"
+                  aria-label="Archive"
+                  onclick={() => void mail.archive(open.thread.id)}
+                >
+                  <Icon name="archive" size={17} />
+                </button>
+                <button
+                  class="tool"
+                  title="Snooze… (H)"
+                  aria-label="Snooze"
+                  onclick={() => (mail.wantsSnooze = [open.thread.id])}
+                >
+                  <Icon name="clock" size={17} />
+                </button>
+                {#if mail.emptiableRole === 'trash' && mail.mailbox}
+                  {@const box = mail.mailbox}
+                  <button
+                    class="tool"
+                    title="Delete forever… (#)"
+                    aria-label="Delete forever"
+                    onclick={() => (mail.wantsForever = { ids: [open.thread.id], mailbox: box })}
+                  >
+                    <Icon name="trash" size={17} />
+                  </button>
+                {:else}
+                  <button
+                    class="tool"
+                    title="Trash (#)"
+                    aria-label="Trash"
+                    onclick={() => void mail.trash(open.thread.id)}
+                  >
+                    <Icon name="trash" size={17} />
+                  </button>
+                {/if}
+              </div>
+              <div class="group">
+                <button
+                  class="tool"
+                  class:on={open.thread.category === 'priority'}
+                  title={open.thread.category === 'priority'
+                    ? 'Remove from priority (!)'
+                    : 'Mark as priority (!)'}
+                  aria-label="Toggle priority"
+                  aria-pressed={open.thread.category === 'priority'}
+                  onclick={() =>
+                    void mail.setPriority(open.thread.id, open.thread.category !== 'priority')}
+                >
+                  <Icon name="flag" size={17} />
+                </button>
+                <button
+                  class="tool"
+                  title="Mark unread (U)"
+                  aria-label="Mark unread"
+                  onclick={() => void mail.markUnread(open.thread.id)}
+                >
+                  <Icon name="mail" size={17} />
+                </button>
+                <button
+                  class="tool"
+                  title="Label… (L)"
+                  aria-label="Label"
+                  onclick={() => (mail.wantsLabel = [open.thread.id])}
+                >
+                  <Icon name="tag" size={17} />
+                </button>
+              </div>
+              <span class="spacer"></span>
+              {#if canListen}
+                <button
+                  class="summarize"
+                  title={listeningToOpen
+                    ? 'Stop reading it aloud'
+                    : 'Listen to a briefing of this thread'}
+                  onclick={toggleListen}
+                >
+                  <Icon name={listeningToOpen ? 'stop' : 'play'} size={14} />
+                  {#if !listeningToOpen}
+                    Listen
+                  {:else if listening.state === 'preparing'}
+                    Preparing…
+                  {:else}
+                    Stop
+                  {/if}
+                </button>
+              {/if}
+              {#if canSummarize}
+                <button
+                  class="summarize"
+                  title="Summarise (Z)"
+                  disabled={mail.summarizing}
+                  onclick={() => void mail.summarizeOpenThread()}
+                >
+                  <Icon name="sparkle" size={14} />
+                  {mail.summarizing ? 'Summarising…' : 'Summarise'}
                 </button>
               {/if}
             </div>
-            <div class="group">
-              <button
-                class="tool"
-                class:on={open.thread.category === 'priority'}
-                title={open.thread.category === 'priority'
-                  ? 'Remove from priority (!)'
-                  : 'Mark as priority (!)'}
-                aria-label="Toggle priority"
-                aria-pressed={open.thread.category === 'priority'}
-                onclick={() =>
-                  void mail.setPriority(open.thread.id, open.thread.category !== 'priority')}
-              >
-                <Icon name="flag" size={17} />
-              </button>
-              <button
-                class="tool"
-                title="Mark unread (U)"
-                aria-label="Mark unread"
-                onclick={() => void mail.markUnread(open.thread.id)}
-              >
-                <Icon name="mail" size={17} />
-              </button>
-              <button
-                class="tool"
-                title="Label… (L)"
-                aria-label="Label"
-                onclick={() => (mail.wantsLabel = [open.thread.id])}
-              >
-                <Icon name="tag" size={17} />
-              </button>
-            </div>
-            <span class="spacer"></span>
-            {#if canListen}
-              <button
-                class="summarize"
-                title={listeningToOpen
-                  ? 'Stop reading it aloud'
-                  : 'Listen to a briefing of this thread'}
-                onclick={toggleListen}
-              >
-                <Icon name={listeningToOpen ? 'stop' : 'play'} size={14} />
-                {#if !listeningToOpen}
-                  Listen
-                {:else if listening.state === 'preparing'}
-                  Preparing…
-                {:else}
-                  Stop
-                {/if}
-              </button>
-            {/if}
-            {#if canSummarize}
-              <button
-                class="summarize"
-                title="Summarise (Z)"
-                disabled={mail.summarizing}
-                onclick={() => void mail.summarizeOpenThread()}
-              >
-                <Icon name="sparkle" size={14} />
-                {mail.summarizing ? 'Summarising…' : 'Summarise'}
-              </button>
-            {/if}
-          </div>
-          <div class="subject-block">
-            <h1>{open.thread.subject || '(no subject)'}</h1>
-            <p class="meta">
-              <span>{plural(open.messages.length, 'message')}</span>
-              {#if openAccount && mailAccounts.length > 1}
-                <span class="sep">·</span>
-                <span class="meta-acct">
-                  <span
-                    class="acct"
-                    style:background={accountColor(openAccount.id, accountIds)}
-                    aria-hidden="true"
-                  ></span>
-                  {openAccount.displayName || openAccount.address}
-                </span>
-              {/if}
-              {#if open.thread.category === 'priority'}
-                <span class="sep">·</span>
-                <span class="priority-mark"><Icon name="flag" size={12} /> Priority</span>
-              {/if}
-              {#if sorting.categoryOf(open.thread)}
-                <span class="sep">·</span>
-                <span class="sorted-mark" title="Sorted by the decision model">
-                  <Icon name="tag" size={12} />
-                  {sorting.categoryOf(open.thread)?.name}
-                </span>
-              {/if}
-            </p>
-            {#if open.thread.snoozedUntil && new Date(open.thread.snoozedUntil) > new Date()}
-              <p class="snoozed-banner">
-                <Icon name="clock" size={13} />
-                <span>Snoozed until {weekdayAndTime(open.thread.snoozedUntil)}</span>
-                <button class="link" onclick={() => void mail.unsnooze(open.thread.id)}
-                  >Unsnooze</button
-                >
-              </p>
-            {/if}
-            <MailFollowUpBanner detail={open} />
-            {#if recentActionLines.length > 0}
-              <p class="recent-actions">
-                {#each recentActionLines as line, i (i)}
-                  {#if i > 0}<span class="sep">·</span>{/if}<span>{line}</span>
-                {/each}
-              </p>
-            {/if}
-          </div>
+          {/if}
+          <!-- Beside a pointer the subject is pinned with the toolbar; on a phone
+               it scrolls away with the thread -- see the same block in
+               `.scroll` below -- so the messages have the screen. -->
+          {#if !phone.on}
+            {@render subjectBlock(open)}
+          {/if}
         </div>
         {#if mail.summary && mail.summary.threadId === open.thread.id}
           <div class="summary-panel">
@@ -1253,6 +1485,9 @@
           </div>
         {/if}
         <div class="scroll">
+          {#if phone.on}
+            {@render subjectBlock(open)}
+          {/if}
           <MailThread messages={open.messages} expanded={mail.expanded} sending={open.sending} />
           {#if draftCards.length > 0}
             <MailThreadDrafts drafts={draftCards} />
@@ -1261,6 +1496,7 @@
             {#key mail.composeKey}
               <div class="inline-reply" use:scrollIntoViewOnMount>
                 <MailCompose
+                  bind:this={composeSheet}
                   draft={mail.composing}
                   placement="thread"
                   onclose={() => mail.closeCompose()}
@@ -1268,6 +1504,15 @@
               </div>
             {/key}
           {/if}
+        </div>
+      {:else}
+        <!-- A phone's tap on a row, before the thread has come: the screen
+             it will be on, with the way back. -->
+        <div class="thread-head">
+          <div class="phone-bar">
+            <PhoneBack onclick={() => mail.closeThread()} />
+          </div>
+          <p class="hint">Opening…</p>
         </div>
       {/if}
     </main>
@@ -2042,6 +2287,9 @@
     font-size: var(--text-sm);
     font-weight: 620;
   }
+  .bulk-actions {
+    display: contents;
+  }
   .bulk-clear {
     display: grid;
     place-items: center;
@@ -2089,5 +2337,205 @@
   .undo-toast .link {
     color: var(--journal-accent, var(--accent));
     font-weight: 650;
+  }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     One column. The list has the whole width; a thread, or a message being
+     written, is a screen over it (`phoneDetail`). The list stays under it,
+     scrolled where it was, only hidden -- so back finds it as it was left.
+     Everything here is under `data-phone`: the desktop is as it was. */
+  :global([data-phone]) .list {
+    width: 100%;
+    border-right: 0;
+  }
+  :global([data-phone]) .list.behind {
+    visibility: hidden;
+  }
+  :global([data-phone]) .main {
+    inset: 0;
+    width: 100%;
+  }
+
+  /* Six categories and the open one's name do not always fit across: the
+     strip scrolls sideways, as a row of chips may. */
+  :global([data-phone]) .tabs .filters {
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  :global([data-phone]) .tabs .filters::-webkit-scrollbar {
+    display: none;
+  }
+  :global([data-phone]) .tabs .filter {
+    flex: 1 0 auto;
+  }
+
+  /* The heading's buttons, a finger wide. */
+  :global([data-phone]) .top {
+    gap: 0;
+    padding: var(--sp-2) var(--sp-2) var(--sp-1) var(--sp-4);
+  }
+  :global([data-phone]) .plus {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .plus.compose {
+    margin-left: var(--sp-1);
+  }
+
+  /* Chips for what to show, tall enough to hit. */
+  :global([data-phone]) .only {
+    gap: var(--sp-2);
+    padding-bottom: var(--sp-3);
+  }
+  :global([data-phone]) .only-toggle {
+    height: 34px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .empty-bar {
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  }
+  :global([data-phone]) .empty-btn {
+    height: 36px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .follow-note {
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  }
+  :global([data-phone]) .follow-note-link {
+    min-height: 36px;
+    padding: 0 var(--sp-1);
+  }
+  :global([data-phone]) .follow-note-dismiss {
+    width: 36px;
+    height: 36px;
+  }
+  :global([data-phone]) .load-more {
+    min-height: 48px;
+  }
+
+  /* The last row clears the assistant's button, which floats over the end
+     of the list. */
+  :global([data-phone]) .thread-rows {
+    padding-bottom: var(--fab-clear);
+  }
+  /* "Not needed" on a follow-up, in a gutter wide enough to hit. */
+  :global([data-phone]) .row.follow {
+    padding-right: calc(var(--sp-2) + 44px);
+  }
+  :global([data-phone]) .follow-done {
+    width: 44px;
+    height: 44px;
+    right: 0;
+  }
+
+  /* Picked rows' bar: the keyboard's hints have no place, and each action
+     is a button of its own to press. */
+  :global([data-phone]) .bulk {
+    gap: var(--sp-1) var(--sp-2);
+    margin: 0 var(--sp-2) var(--sp-2);
+  }
+  :global([data-phone]) .bulk-hint {
+    display: none;
+  }
+  :global([data-phone]) .bulk-count {
+    order: 0;
+    padding-left: var(--sp-1);
+  }
+  :global([data-phone]) .bulk-clear {
+    order: 1;
+    width: 44px;
+    height: 44px;
+    margin: -8px -4px -8px 0;
+  }
+  /* Under the count, one strip of buttons, scrolled sideways if there are
+     more than fit -- a strip meant to. */
+  :global([data-phone]) .bulk-actions {
+    order: 2;
+    display: flex;
+    flex: 1 1 100%;
+    gap: var(--sp-2);
+    margin: 0 calc(var(--sp-2) * -1);
+    padding: 0 var(--sp-2) var(--sp-1);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  :global([data-phone]) .bulk-actions .btn {
+    flex: none;
+  }
+
+  /* The open thread: its own bar, then the subject, then the messages. */
+  :global([data-phone]) .phone-bar {
+    display: flex;
+    align-items: center;
+    min-height: 52px;
+    padding: var(--sp-1) var(--sp-2);
+    border-bottom: 1px solid var(--border);
+  }
+  :global([data-phone]) .phone-bar .tool {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+  }
+  :global([data-phone]) .phone-bar .tool:active {
+    background: var(--bg-hover);
+  }
+  :global([data-phone]) .subject-block {
+    padding: var(--sp-4) var(--sp-4) var(--sp-2);
+  }
+  :global([data-phone]) .subject-block h1 {
+    font-size: var(--text-lg);
+  }
+  :global([data-phone]) .snoozed-banner .link {
+    min-height: 32px;
+    padding: 0 var(--sp-1);
+  }
+  :global([data-phone]) .summary-panel {
+    max-height: 28vh;
+    overflow-y: auto;
+    padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  }
+  :global([data-phone]) .summary-panel .close {
+    width: 40px;
+    height: 40px;
+    margin: -8px 0;
+  }
+  :global([data-phone]) .main .scroll {
+    padding-bottom: var(--fab-clear);
+    overscroll-behavior: contain;
+  }
+
+  /* Writing a reply or a forward: a screen over the thread, as a new message
+     is over the list. The thread under it is hidden, not taken out, so it is
+     as it was when the reply goes. */
+  :global([data-phone]) .main.replying .thread-head,
+  :global([data-phone]) .main.replying .summary-panel,
+  :global([data-phone]) .main.replying .scroll > :global(:not(.inline-reply)) {
+    visibility: hidden;
+  }
+  :global([data-phone]) .inline-reply {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+  }
+
+  /* Above the bar of apps, not behind it. */
+  :global([data-phone]) .undo-toast {
+    left: 0;
+    right: 0;
+    translate: none;
+    margin-inline: auto;
+    width: max-content;
+    max-width: calc(100vw - var(--sp-4) * 2);
+    bottom: calc(var(--bottombar-h) + var(--safe-bottom) + var(--sp-4));
+  }
+  :global([data-phone]) .undo-toast .link {
+    min-height: 44px;
+    padding: 0 var(--sp-2);
   }
 </style>

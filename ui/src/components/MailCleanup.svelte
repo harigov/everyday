@@ -35,6 +35,7 @@
   import * as mailApi from '../lib/mail-api'
   import { mail } from '../lib/mail.svelte'
   import { notify } from '../lib/notify.svelte'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { sorting } from '../lib/sorting.svelte'
   import { handle } from '../lib/state.svelte'
   import type {
@@ -98,6 +99,17 @@
   /** A bulk action waiting on a yes, because it reaches rows on other pages. */
   let asking = $state<{ move: 'archive' | 'trash'; list: InboxSender[]; unseen: number } | null>(
     null,
+  )
+
+  // A phone's back button closes the question over the dialog first, then
+  // the dialog, as Escape does.
+  closesOnBack(
+    () => true,
+    () => onclose(),
+  )
+  closesOnBack(
+    () => asking !== null,
+    () => (asking = null),
   )
 
   let dialog = $state<HTMLElement>()
@@ -958,5 +970,149 @@
   }
   .prev :global(svg) {
     transform: rotate(180deg);
+  }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     The whole screen between the bars, not a box in the middle of it: the
+     controls stacked, each sender a name over a line of its numbers and two
+     buttons, every one a finger tall. (The bar of apps stays: it is above a
+     sheet, and the question this asks over itself has to be above this.)
+     Under `data-phone`; the desktop's sheet is as it was. */
+  :global([data-phone]) .cleanup {
+    inset: calc(var(--topbar-h) + var(--safe-top)) var(--safe-right)
+      calc(var(--bottombar-h) + var(--safe-bottom)) var(--safe-left);
+    translate: none;
+    width: auto;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+  :global([data-phone]) .cleanup header {
+    align-items: center;
+    padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  }
+  :global([data-phone]) .cleanup .close {
+    align-self: flex-start;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+  }
+  :global([data-phone]) .controls {
+    padding: 0 var(--sp-4) var(--sp-2);
+  }
+  :global([data-phone]) .segmented {
+    max-width: 100%;
+  }
+  :global([data-phone]) .seg {
+    flex: 1;
+    min-width: 0;
+    height: 36px;
+    padding: 0 var(--sp-2);
+  }
+  /* The periods share the line; the one-line choice of Last or Older than
+     keeps to its own words. */
+  :global([data-phone]) .controls > .segmented:nth-child(2) {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .scope {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+  :global([data-phone]) .scope select {
+    flex: 1;
+    max-width: none;
+  }
+  :global([data-phone]) .controls select {
+    height: 44px;
+    font-size: 16px;
+  }
+  :global([data-phone]) .narrow {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .find {
+    flex: 1 1 100%;
+    height: 44px;
+  }
+  :global([data-phone]) .find input {
+    font-size: 16px;
+  }
+  :global([data-phone]) .narrow .kind {
+    flex: 1 1 100%;
+    max-width: none;
+    height: 44px;
+  }
+  :global([data-phone]) .bulk {
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-2);
+    padding: var(--sp-1) var(--sp-4) var(--sp-2);
+  }
+  :global([data-phone]) .bulk .all {
+    min-height: 44px;
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .bulk .spacer {
+    display: none;
+  }
+  :global([data-phone]) .bulk .btn {
+    flex: 1 1 calc(50% - var(--sp-1));
+    height: auto;
+    min-height: 44px;
+    padding: var(--sp-1) var(--sp-2);
+    line-height: 1.25;
+  }
+  :global([data-phone]) .every {
+    min-height: 44px;
+  }
+  :global([data-phone]) input[type='checkbox'] {
+    width: 22px;
+    height: 22px;
+  }
+  :global([data-phone]) .body {
+    overscroll-behavior: contain;
+  }
+  :global([data-phone]) .sender {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'pick pick pick'
+      'tally archive trash';
+    align-items: center;
+    gap: 0 var(--sp-2);
+    padding: var(--sp-1) var(--sp-4) var(--sp-2);
+    border-bottom: 1px solid var(--border);
+  }
+  :global([data-phone]) .pick {
+    grid-area: pick;
+    min-height: 48px;
+  }
+  :global([data-phone]) .name,
+  :global([data-phone]) .email {
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .email {
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .tally {
+    grid-area: tally;
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .sender .act {
+    grid-area: archive;
+    height: 40px;
+    padding: 0 var(--sp-3);
+    border: 1px solid var(--border);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .sender .act.danger {
+    grid-area: trash;
+  }
+  :global([data-phone]) .pager {
+    padding: var(--sp-1) var(--sp-3);
+  }
+  :global([data-phone]) .pager .act {
+    width: 44px;
+    height: 44px;
+    justify-content: center;
+    padding: 0;
   }
 </style>

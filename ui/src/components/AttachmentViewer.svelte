@@ -17,6 +17,7 @@
   import { humanBytes } from '../lib/format'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
+  import { closesOnBack } from '../lib/phone.svelte'
   import {
     applyBodyTheme,
     applyPlatformOrigin,
@@ -45,6 +46,12 @@
     onclose: () => void
   }
   let { message, attachments, index, dark, onsave, onfiles, onclose }: Props = $props()
+
+  // A phone's back button closes the viewer, as its close button does.
+  closesOnBack(
+    () => true,
+    () => onclose(),
+  )
 
   /** The open file, by its place in the message's parts rather than in
    *  `attachments`: the thread is read again now and then -- a sync, a flag,
@@ -266,21 +273,23 @@
         <Icon name="chevron" size={17} />
       </button>
     {/if}
-    {#if onfiles}
-      <button
-        class="tool labelled"
-        disabled={isFiling}
-        title="Keep a copy in Files"
-        onclick={() => void keep()}
-      >
-        <Icon name={APPS.files.icon} size={16} />
-        {isFiled ? 'In Files' : 'Save to Files'}
+    <div class="actions">
+      {#if onfiles}
+        <button
+          class="tool labelled"
+          disabled={isFiling}
+          title="Keep a copy in Files"
+          onclick={() => void keep()}
+        >
+          <Icon name={APPS.files.icon} size={16} />
+          {isFiled ? 'In Files' : 'Save to Files'}
+        </button>
+      {/if}
+      <button class="tool labelled" disabled={isSaving} onclick={() => void save()}>
+        <Icon name="download" size={16} />
+        {isSaved ? 'Saved' : 'Save'}
       </button>
-    {/if}
-    <button class="tool labelled" disabled={isSaving} onclick={() => void save()}>
-      <Icon name="download" size={16} />
-      {isSaved ? 'Saved' : 'Save'}
-    </button>
+    </div>
     <button class="tool" aria-label="Close" title="Close" onclick={onclose}>
       <Icon name="close" size={17} />
     </button>
@@ -403,6 +412,11 @@
   .tool.labelled {
     padding: 0 14px 0 10px;
   }
+  /* Save and Save to Files: part of the bar's own row, unless a phone sets
+     them on one of their own. */
+  .actions {
+    display: contents;
+  }
   .back :global(.icon) {
     transform: scaleX(-1);
   }
@@ -462,5 +476,55 @@
     width: 100%;
     height: 100%;
     border: 0;
+  }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     The whole screen, clear of its edges. The bar is two lines: the way
+     out first, the file's name, the steps between attachments; then Save
+     and Save to Files, which share the width. The grid's one column was as
+     wide as everything in the bar side by side, which pushed the whole
+     viewer wider than the screen. */
+  /* Opaque: the page behind it showing through is a ghost across the bar. */
+  :global([data-phone]) .backdrop {
+    background: rgb(14 13 16);
+  }
+  :global([data-phone]) .viewer {
+    grid-template-columns: minmax(0, 1fr);
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+  }
+  :global([data-phone]) .bar {
+    flex-wrap: wrap;
+    gap: 0 var(--sp-1);
+    padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  }
+  :global([data-phone]) .bar .tool {
+    min-width: 44px;
+    height: 44px;
+  }
+  /* The way out first. */
+  :global([data-phone]) .bar .tool[aria-label='Close'] {
+    order: -1;
+  }
+  :global([data-phone]) .what {
+    flex-direction: column;
+    gap: 0;
+    padding-left: var(--sp-1);
+  }
+  :global([data-phone]) .actions {
+    display: flex;
+    flex: 1 1 100%;
+    order: 5;
+    gap: var(--sp-2);
+    margin-top: var(--sp-1);
+  }
+  :global([data-phone]) .tool.labelled {
+    flex: 1;
+    border: 1px solid rgb(255 255 255 / 0.28);
+  }
+  :global([data-phone]) .stage {
+    padding: 0 var(--sp-3) var(--sp-3);
+  }
+  :global([data-phone]) .recording audio {
+    width: min(480px, 100%);
   }
 </style>

@@ -62,6 +62,7 @@
   import { Signature, signatureRange } from '../lib/signature'
   import { mail } from '../lib/mail.svelte'
   import { notify } from '../lib/notify.svelte'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { menu } from '../lib/menu.svelte'
   import type { MenuItem } from '../lib/menu'
   import { declineItems, proposals } from '../lib/proposals.svelte'
@@ -730,7 +731,9 @@
           // effect, it would otherwise rebuild the editor when Settings
           // loaded -- and throw away what had been typed.
           placeholder: () =>
-            untrack(() => writingEnabled)
+            // No keyboard shortcut to name on a phone; the sparkle in the
+            // bar below is the way to the assistant there.
+            untrack(() => writingEnabled) && !phone.on
               ? `Write something, or press ${keyName('mod+g')} for AI`
               : 'Write something…',
         }),
@@ -1347,6 +1350,19 @@
     onclose()
   }
 
+  /** Close the sheet as its close button does -- the draft kept, a blank one
+   *  thrown away. What a phone's back button calls (`MailView`). */
+  export function close() {
+    void discard()
+  }
+
+  // A phone's back button puts away the "Send later" choices before it
+  // closes anything else.
+  closesOnBack(
+    () => phone.on && sendingLater,
+    () => (sendingLater = false),
+  )
+
   /** Guards the bin against a second click while the first is on its way. */
   let throwingAway = $state(false)
 
@@ -1472,6 +1488,7 @@
   inert={moving}
   class={underThread ? 'thread-compose' : 'pane-compose'}
   class:dropping
+  data-mail-compose
   role="region"
   aria-label="Compose"
   ondragover={(e) => {
@@ -1518,6 +1535,18 @@
     <button class="close" aria-label="Close" title="Close and keep the draft" onclick={discard}
       ><Icon name="close" size={15} /></button
     >
+    {#if phone.on && !proposal}
+      <!-- Where a thumb reaches it with the keyboard up: the bar along the
+           bottom has no room for Send beside the rest. -->
+      <button
+        class="btn btn-primary head-send"
+        disabled={checking !== null}
+        aria-busy={checking !== null}
+        onclick={() => void send()}
+      >
+        {checking ? 'Checking…' : 'Send'}
+      </button>
+    {/if}
   </div>
 
   {#snippet addressRow(field: 'to' | 'cc' | 'bcc')}
@@ -1792,15 +1821,17 @@
         Decline
       </button>
     {:else}
-      <button
-        class="btn btn-primary btn-sm"
-        title={`Send (${keyName('mod+Enter')})`}
-        disabled={checking !== null}
-        aria-busy={checking !== null}
-        onclick={() => void send()}
-      >
-        {checking ? 'Checking…' : 'Send'}
-      </button>
+      {#if !phone.on}
+        <button
+          class="btn btn-primary btn-sm"
+          title={`Send (${keyName('mod+Enter')})`}
+          disabled={checking !== null}
+          aria-busy={checking !== null}
+          onclick={() => void send()}
+        >
+          {checking ? 'Checking…' : 'Send'}
+        </button>
+      {/if}
       <div class="later-wrap">
         <button
           class="btn btn-outline btn-sm"
@@ -2512,5 +2543,175 @@
   }
   .later-pop input[type='datetime-local'] {
     margin-bottom: var(--sp-1);
+  }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     Writing is a screen of its own, whether a new message or a reply: a bar
+     across the top with the way out and Send, the fields, the words taking
+     what room is left, and a row of tools along the bottom. Under
+     `data-phone`, so the desktop's sheet is as it was. */
+  :global([data-phone]) .pane-compose,
+  :global([data-phone]) .thread-compose {
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+    gap: 0;
+    padding: 0;
+    border-top: 0;
+  }
+  :global([data-phone]) .own-avatar {
+    display: none;
+  }
+  /* Everything under the top bar is held in from the edges; the top bar and
+     the tools are full width and pad themselves. */
+  :global([data-phone]) .pane-compose > :global(:not(.head, .foot)),
+  :global([data-phone]) .thread-compose > :global(:not(.head, .foot)) {
+    margin-inline: var(--sp-4);
+  }
+  :global([data-phone]) .pane-compose > .head,
+  :global([data-phone]) .thread-compose > .head {
+    flex-wrap: wrap;
+    gap: 0 var(--sp-1);
+    height: auto;
+    min-height: 52px;
+    margin: 0;
+    padding: var(--sp-1) var(--sp-2);
+    border-bottom: 1px solid var(--border);
+  }
+  :global([data-phone]) .head h2,
+  :global([data-phone]) .draft-to {
+    min-height: 44px;
+    align-items: center;
+    padding: 0 var(--sp-1);
+  }
+  :global([data-phone]) .head h2 {
+    display: flex;
+    font-size: var(--text-md);
+  }
+  /* The way out first, as the thread's way back is. */
+  :global([data-phone]) .head .close {
+    order: -1;
+    width: 44px;
+    height: 44px;
+    margin: 0;
+    border-radius: 50%;
+  }
+  :global([data-phone]) .head .close:active {
+    background: var(--bg-hover);
+  }
+  :global([data-phone]) .head-send {
+    flex: none;
+    min-width: 72px;
+    margin-left: auto;
+  }
+  /* Said under the bar, on a line of its own. */
+  :global([data-phone]) .assistant-mark {
+    order: 5;
+    flex-basis: auto;
+    margin: 0 0 var(--sp-1) var(--sp-1);
+  }
+
+  /* The fields: a row a finger can aim at, in letters iOS leaves alone. */
+  :global([data-phone]) .line {
+    min-height: 48px;
+  }
+  :global([data-phone]) .chips input,
+  :global([data-phone]) .subject,
+  :global([data-phone]) .from,
+  :global([data-phone]) .ai-prompt input {
+    min-height: 40px;
+    font-size: max(16px, var(--text-base));
+  }
+  :global([data-phone]) .chips input {
+    min-width: 64px;
+  }
+  :global([data-phone]) .chip {
+    min-height: 32px;
+    padding: 0 0 0 var(--sp-3);
+  }
+  :global([data-phone]) .chip button {
+    width: 32px;
+    height: 32px;
+  }
+  :global([data-phone]) .textlink {
+    min-height: 44px;
+    padding: 0 var(--sp-2);
+  }
+  :global([data-phone]) .suggestions {
+    left: 0;
+    width: 100%;
+    max-height: 40vh;
+  }
+  :global([data-phone]) .suggestion {
+    min-height: 48px;
+  }
+
+  /* The words. The editor takes the room between the fields and the tools,
+     and scrolls inside it, whichever of the two places it was opened in. */
+  :global([data-phone]) .pane-compose .body,
+  :global([data-phone]) .thread-compose .body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  :global([data-phone]) .pane-compose .body.fill,
+  :global([data-phone]) .thread-compose .body.fill {
+    display: block;
+  }
+  :global([data-phone]) .pane-compose .body.fill > .prose,
+  :global([data-phone]) .thread-compose .body.fill > .prose {
+    min-height: max(72px, 100%);
+  }
+  :global([data-phone]) .prose :global(.ed-content) {
+    font-size: max(16px, var(--text-base));
+  }
+  :global([data-phone]) .quote-toggle {
+    height: 32px;
+    padding: 0 var(--sp-3);
+    line-height: 28px;
+  }
+  :global([data-phone]) .ai-prompt {
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  }
+  :global([data-phone]) .ai-icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  /* The tools, along the bottom, edge to edge. The assistant's floating
+     button has stepped aside (below), so nothing is under them. */
+  :global([data-phone]) .pane-compose > .foot,
+  :global([data-phone]) .thread-compose > .foot {
+    gap: 0;
+    padding: var(--sp-1) var(--sp-2);
+    border-top: 1px solid var(--border);
+  }
+  :global([data-phone]) .foot .tool {
+    width: 40px;
+    height: 44px;
+    margin-left: 0;
+    border-radius: var(--radius);
+  }
+  :global([data-phone]) .foot .later-wrap {
+    flex: none;
+  }
+  :global([data-phone]) .later-pop {
+    max-width: calc(100vw - var(--sp-6));
+  }
+  :global([data-phone]) .later-pop button[role='menuitem'] {
+    min-height: 44px;
+  }
+  :global([data-phone]) .later-pop input[type='datetime-local'] {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  /* The assistant's floating button would sit on the editor and the tools of
+     a screen that has all of the window: while one is up, the top bar's own
+     button is the way to the assistant. Not this file's element, so the rule
+     reaches it from outside, and only while a sheet is open. */
+  :global([data-phone] body:has([data-mail-compose]) .float) {
+    display: none;
   }
 </style>

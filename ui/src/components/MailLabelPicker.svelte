@@ -9,8 +9,15 @@
   // accounts have real label lists to offer.
 
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
 
   let { onchoose, oncancel }: { onchoose: (label: string) => void; oncancel: () => void } = $props()
+
+  // A phone's back button puts the picker away, as Cancel does.
+  closesOnBack(
+    () => true,
+    () => oncancel(),
+  )
 
   let text = $state('')
 
@@ -73,5 +80,14 @@
     padding: 6px var(--sp-2);
     background: var(--bg-raised);
     color: var(--fg);
+  }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     The field takes what the button leaves, rather than a width of its own
+     that pushed the button off the sheet. */
+  :global([data-phone]) .row input {
+    min-width: 0;
+    min-height: 44px;
+    font-size: 16px;
   }
 </style>

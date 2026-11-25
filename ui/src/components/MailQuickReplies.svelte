@@ -307,4 +307,13 @@
       background-position: -200% 0;
     }
   }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     As tall as the Reply buttons beside them are on a phone. */
+  :global([data-phone]) .qr-btn {
+    height: 36px;
+  }
+  :global([data-phone]) .qr-divider {
+    display: none;
+  }
 </style>

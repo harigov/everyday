@@ -665,4 +665,31 @@
     color: var(--accent);
     text-decoration: underline;
   }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     In the drawer: an account's row and its sync button a finger tall, the
+     sync button always there (nothing hovers), and room under the last row
+     to scroll it clear of the gesture bar. */
+  :global([data-phone]) .side-nav {
+    padding-bottom: calc(var(--bottombar-h) + var(--safe-bottom) + var(--sp-4));
+  }
+  :global([data-phone]) .account-toggle {
+    height: 44px;
+  }
+  :global([data-phone]) .sync-now {
+    opacity: 1;
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .side-row.nested {
+    padding-left: 34px;
+  }
+  :global([data-phone]) .status-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+  }
+  :global([data-phone]) .hint .link {
+    min-height: 44px;
+  }
 </style>

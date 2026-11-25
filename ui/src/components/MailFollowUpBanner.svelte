@@ -151,4 +151,19 @@
     color: var(--fg-subtle);
     font-weight: 550;
   }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     Wrapped onto two lines, a pill is a blob: a card with soft corners
+     instead, its words as buttons a finger can find. */
+  :global([data-phone]) .follow-banner {
+    display: flex;
+    border-radius: var(--radius-lg);
+    padding: var(--sp-1) var(--sp-3);
+  }
+  :global([data-phone]) .line {
+    flex: 1 1 12em;
+  }
+  :global([data-phone]) .link {
+    min-height: 36px;
+  }
 </style>

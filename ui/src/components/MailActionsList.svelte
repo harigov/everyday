@@ -158,4 +158,11 @@
     color: var(--fg-faint);
     font-size: var(--text-xs);
   }
+
+  /* On a phone: a row a finger can press, with its words centred on it. */
+  :global([data-phone]) .row {
+    align-items: center;
+    min-height: 44px;
+    padding: var(--sp-2) var(--sp-3);
+  }
 </style>

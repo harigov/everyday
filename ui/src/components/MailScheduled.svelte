@@ -181,4 +181,50 @@
     color: var(--fg);
     font-size: var(--text-xs);
   }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     Lined up with the heading above, in a size to read, with the row's
+     actions as buttons a finger can hit rather than small words. */
+  :global([data-phone]) .row {
+    padding: var(--sp-3) var(--sp-4) var(--sp-1);
+  }
+  :global([data-phone]) .from,
+  :global([data-phone]) .subject {
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .when {
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .actions {
+    flex-wrap: wrap;
+    gap: 0 var(--sp-1);
+    margin: var(--sp-1) calc(-1 * var(--sp-2)) 0;
+  }
+  :global([data-phone]) .link {
+    min-height: 44px;
+    padding: 0 var(--sp-2);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .scheduled-rows {
+    padding-bottom: var(--fab-clear);
+  }
+  :global([data-phone]) .reschedule {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .choice {
+    min-height: 40px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .custom {
+    flex: 1 1 100%;
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .custom input {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 var(--sp-2);
+    font-size: 16px;
+  }
 </style>
