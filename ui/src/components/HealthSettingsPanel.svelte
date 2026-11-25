@@ -676,33 +676,4 @@
     display: flex;
     justify-content: flex-end;
   }
-
-  /* ── A phone ──────────────────────────────────────────────────────────
-     The sources are drawn by `HealthSources`, which knows nothing of a
-     phone; what a source's card and the order of devices need on one is
-     said here, over its own rules. A card's name gets the width beside its
-     mark with the buttons on a line of their own under it; the little
-     round buttons are a finger wide; the order is moved by its arrows, not
-     by a drag a finger cannot start. */
-  :global([data-phone]) .panes :global(.sources .card-head) {
-    flex-wrap: wrap;
-  }
-  :global([data-phone]) .panes :global(.sources .titles) {
-    flex: 1 1 calc(100% - 32px - var(--sp-3));
-  }
-  :global([data-phone]) .panes :global(.sources .actions) {
-    flex: 1 1 100%;
-    justify-content: flex-end;
-    gap: var(--sp-2);
-  }
-  :global([data-phone]) .panes :global(.sources .icon) {
-    width: 40px;
-    height: 40px;
-  }
-  :global([data-phone]) .panes :global(.sources .grip) {
-    display: none;
-  }
-  :global([data-phone]) .panes :global(.sources .rank) {
-    padding-block: 0;
-  }
 </style>

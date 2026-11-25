@@ -141,7 +141,11 @@ export async function settle(page, ms = 400) {
 
 /** Runs in the page: what a script can see wrong with the screen. */
 export function inspect() {
-  const vw = window.innerWidth
+  // The screen's width, not the window's: something wider than a phone's
+  // screen makes its browser lay the page out wider and zoom out to fit,
+  // and `innerWidth` grows with it -- measured against that, nothing would
+  // ever be past the edge.
+  const vw = Math.min(window.innerWidth, screen.width)
   const vh = window.innerHeight
   const name = (el) => {
     const parts = []
@@ -189,6 +193,51 @@ export function inspect() {
   }
 
   const overflow = []
+  if (window.innerWidth > screen.width + 1) {
+    // What widened it: the outermost things past the screen's edge that no
+    // box clips, shown or not -- an invisible menu parked off to the side
+    // widens a page as well as a visible row does. Not anything fixed, which
+    // is sized by the page rather than sizing it.
+    const culprits = []
+    for (const el of document.body.querySelectorAll('*')) {
+      const r = el.getBoundingClientRect()
+      if (r.right <= screen.width + 1 || r.width === 0) continue
+      // Something placed `absolute` is clipped only by the box it is placed
+      // in and those around that, not by a plain box between: a scrolling
+      // toolbar's hidden label still reaches out of it.
+      // Nor by the body's own overflow, which is the window's unless <html>
+      // has one: a phone's browser lays the page out wider all the same.
+      const top =
+        getComputedStyle(document.documentElement).overflowX === 'visible'
+          ? document.body
+          : document.documentElement
+      let clipped = false
+      let placed = getComputedStyle(el).position === 'absolute'
+      for (let a = el; a && a !== top; a = a.parentElement) {
+        const s = getComputedStyle(a)
+        if (s.position === 'fixed') {
+          clipped = true
+          break
+        }
+        if (a === el) continue
+        const holds = s.position !== 'static' || s.transform !== 'none'
+        if (s.overflowX !== 'visible' && (!placed || holds)) {
+          clipped = true
+          break
+        }
+        if (placed && holds) placed = s.position === 'absolute'
+      }
+      if (clipped || culprits.some((c) => c.contains(el))) continue
+      culprits.push(el)
+    }
+    overflow.push({
+      el: 'html',
+      reason: `laid out wider than the screen by ${culprits.map(name).join(', ') || 'something'}`,
+      left: 0,
+      right: window.innerWidth,
+      width: window.innerWidth,
+    })
+  }
   const reported = new Set()
   for (const el of document.body.querySelectorAll('*')) {
     if (!shown(el)) continue
