@@ -203,6 +203,17 @@ export function closesOnBack(open: () => boolean, close: () => void) {
   })
 }
 
+/**
+ * Tell the Android shell whether the theme on screen is dark, so the status
+ * bar's clock and icons over the page are light over it and dark over a
+ * light one (`MainActivity.kt`). Nothing elsewhere: iOS and a browser follow
+ * the page's own `color-scheme`.
+ */
+export function tellShellTheme(dark: boolean) {
+  if (typeof window === 'undefined') return
+  ;(window as { KarmaYogaWindow?: { setDark(dark: boolean): void } }).KarmaYogaWindow?.setDark(dark)
+}
+
 // ── An app's list, and what was opened from it ───────────────────────────
 //
 // A desktop app shows its list and the thing opened from it side by side. A

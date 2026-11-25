@@ -9,6 +9,7 @@ import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 
 /**
@@ -33,6 +34,10 @@ import androidx.core.view.WindowInsetsCompat
  * `request()` asks, and the answer comes back as a `karmayoga:mic` event.
  * Talking to the assistant asks the first time (`ui/src/lib/voice.svelte.ts`);
  * the audio itself is the Rust side's, through AAudio.
+ *
+ * And the status bar's clock and icons, drawn over the page: dark over a
+ * light theme and light over a dark one, which only the page knows --
+ * `window.KarmaYogaWindow.setDark()`, from `ui/src/lib/phone.svelte.ts`.
  */
 class MainActivity : TauriActivity() {
   @Volatile private var edges = """{"top":0,"right":0,"bottom":0,"left":0,"keyboard":0}"""
@@ -47,6 +52,7 @@ class MainActivity : TauriActivity() {
     this.webView = webView
     webView.addJavascriptInterface(Edges(), "KarmaYogaInsets")
     webView.addJavascriptInterface(Microphone(), "KarmaYogaMic")
+    webView.addJavascriptInterface(Appearance(), "KarmaYogaWindow")
     val content = findViewById<View>(android.R.id.content)
     ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
       val bars = insets.getInsets(
@@ -74,6 +80,18 @@ class MainActivity : TauriActivity() {
   inner class Edges {
     @JavascriptInterface
     fun get(): String = edges
+  }
+
+  inner class Appearance {
+    @JavascriptInterface
+    fun setDark(dark: Boolean) {
+      runOnUiThread {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+          isAppearanceLightStatusBars = !dark
+          isAppearanceLightNavigationBars = !dark
+        }
+      }
+    }
   }
 
   inner class Microphone {

@@ -6,6 +6,7 @@
 
 import { tick } from 'svelte'
 import { api, isMock, isWeb, mobileShell, newRequestId } from './api'
+import { tellShellTheme } from './phone.svelte'
 import { signOut } from './web'
 import { APP_ORDER, APPS, type Section } from './apps'
 import { pinned } from './appwindow'
@@ -755,6 +756,7 @@ class AppState {
     this.shown = resolveTheme(this.theme)
     showTheme(this.shown)
     themePref.set(this.theme)
+    tellShellTheme(this.dark)
   }
 
   setTheme(t: typeof this.theme) {
