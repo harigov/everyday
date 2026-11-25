@@ -764,6 +764,9 @@ if (MOBILE_SHELL) {
     if (SERVICE_COMMANDS.has(cmd) || PHONE_SHELL_COMMANDS.has(cmd)) {
       return shell<T>(cmd, args, requestId)
     }
+    // The mock's own stand-ins for what a real shell does another way (a
+    // story's text over the protocol, say) are not shell commands at all.
+    if (MOCK && cmd.startsWith('mock_')) return shell<T>(cmd, args, requestId)
     const answer = PHONE_ANSWERS[cmd]
     if (answer) return answer() as T
     if (MOCK) console.warn(`the phone shell has no ${cmd}`)

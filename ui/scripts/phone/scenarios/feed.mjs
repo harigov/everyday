@@ -58,45 +58,9 @@ const scrollStoryToEnd = async ({ page, settle }) => {
   await settle()
 }
 
-/**
- * The same app, still on a phone's screen, without the phone shell's command
- * set. The mock's own way of fetching a story's text (`mock_story_body`) is a
- * command the mock's phone shell refuses, so a story would open on "could not
- * be loaded" under `?mobile`; a phone's browser on web access has the layout
- * and no shell at all, which is what this stands in for.
- *
- * And the one console message `check.mjs` itself causes in a story's frame:
- * the story is shown in a sandboxed frame that may run nothing, and the
- * check's own script that seeds `Math.random` is injected into every frame, so
- * the browser says it was blocked there. That message is let by and every
- * other is still a failure (`quick` throws for them when the scenario is done).
- */
-const withStories = async (ctx) => {
-  const { page, settle } = ctx
-  page.removeAllListeners('console')
-  ctx.trouble = []
-  page.on('console', (m) => {
-    if (m.type() !== 'error') return
-    if (/Blocked script execution in 'about:srcdoc'/.test(m.text())) return
-    ctx.trouble.push(`console: ${m.text().slice(0, 300)}`)
-  })
-  // A desktop run has the story's text already.
-  if (globalThis.PHONE_CHECK_DESKTOP) return
-  const url = new URL(page.url())
-  url.searchParams.delete('mobile')
-  await page.goto(url.toString())
-  const password = page.locator('input[type=password]')
-  await password.waitFor({ timeout: 15000 })
-  await password.fill('karmayoga')
-  await password.press('Enter')
-  await page.locator('.shell').waitFor({ timeout: 15000 })
-  await settle()
-}
-
-const quick = (run, reads) => async (ctx) => {
+const quick = (run) => async (ctx) => {
   // A scenario that cannot find its control fails in seconds, not half a minute.
   ctx.page.setDefaultTimeout(8000)
-  if (reads) await withStories(ctx)
   // Which tab of the list was last used is kept in the browser, and an earlier
   // scenario left it where it liked.
   const unread = ctx.page.getByRole('tab', { name: 'Unread', exact: true }).first()
@@ -105,7 +69,6 @@ const quick = (run, reads) => async (ctx) => {
     await ctx.settle()
   }
   await run?.(ctx)
-  if (ctx.trouble?.length) throw new Error(ctx.trouble[0])
 }
 
 const scenarios = [
@@ -130,10 +93,9 @@ const scenarios = [
   },
 
   // A story opened over the list, and back.
-  { name: 'story', reads: true, run: openStory('last lighthouse keepers') },
+  { name: 'story', run: openStory('last lighthouse keepers') },
   {
     name: 'story-back',
-    reads: true,
     run: async (ctx) => {
       await openStory('last lighthouse keepers')(ctx)
       if (desktop()) return
@@ -143,7 +105,6 @@ const scenarios = [
   },
   {
     name: 'story-end',
-    reads: true,
     run: async (ctx) => {
       await openStory('last lighthouse keepers')(ctx)
       await scrollStoryToEnd(ctx)
@@ -151,7 +112,6 @@ const scenarios = [
   },
   {
     name: 'story-more',
-    reads: true,
     run: async (ctx) => {
       await openStory('last lighthouse keepers')(ctx)
       if (desktop()) return
@@ -161,7 +121,6 @@ const scenarios = [
   },
   {
     name: 'story-summary',
-    reads: true,
     run: async (ctx) => {
       await openStory('last lighthouse keepers')(ctx)
       await tab('Summary')(ctx)
@@ -169,10 +128,9 @@ const scenarios = [
   },
 
   // An episode: its head, then getting it and playing it.
-  { name: 'episode', reads: true, run: openStory('Episode 41') },
+  { name: 'episode', run: openStory('Episode 41') },
   {
     name: 'episode-tabs',
-    reads: true,
     run: async (ctx) => {
       await openStory('Episode 41')(ctx)
       await tab('Transcript')(ctx)
@@ -180,7 +138,6 @@ const scenarios = [
   },
   {
     name: 'episode-playing',
-    reads: true,
     run: async (ctx) => {
       await openStory('Episode 41')(ctx)
       await press(
@@ -191,7 +148,6 @@ const scenarios = [
   },
   {
     name: 'player',
-    reads: true,
     run: async (ctx) => {
       await openStory('Episode 41')(ctx)
       await press(
@@ -204,7 +160,6 @@ const scenarios = [
   },
   {
     name: 'player-back',
-    reads: true,
     run: async (ctx) => {
       await openStory('Episode 41')(ctx)
       await press(
@@ -231,7 +186,6 @@ const scenarios = [
   { name: 'source-hn', run: chooseRow('Hacker News') },
   {
     name: 'source-hn-story',
-    reads: true,
     run: async (ctx) => {
       await chooseRow('Hacker News')(ctx)
       await openStory('pocket-sized weather station')(ctx)
@@ -245,7 +199,6 @@ const scenarios = [
   { name: 'recommended', run: chooseRow('Recommended') },
   {
     name: 'recommended-story',
-    reads: true,
     run: async (ctx) => {
       await chooseRow('Recommended')(ctx)
       await press(ctx.page.locator('button.row').first())
@@ -334,4 +287,4 @@ const scenarios = [
   },
 ]
 
-export default { feed: scenarios.map((s) => ({ name: s.name, run: quick(s.run, s.reads) })) }
+export default { feed: scenarios.map((s) => ({ name: s.name, run: quick(s.run) })) }

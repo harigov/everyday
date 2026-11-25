@@ -488,12 +488,6 @@
     font-size: var(--text-sm);
   }
 
-  /* On a phone the drawer reaches the bottom edge, over the bar of apps, so
-     what scrolls clears both the bar's place and the gesture bar. */
-  :global([data-phone]) .side-nav {
-    padding-bottom: calc(var(--bottombar-h) + var(--safe-bottom));
-  }
-
   /* The folder's fold button: a finger's width. */
   :global([data-phone]) .fold {
     width: 36px;

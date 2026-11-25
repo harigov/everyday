@@ -377,10 +377,4 @@
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
   }
-
-  /* On a phone the drawer reaches the bottom edge, over the bar of apps, so
-     what scrolls clears both the bar's place and the gesture bar. */
-  :global([data-phone]) .side-nav {
-    padding-bottom: calc(var(--bottombar-h) + var(--safe-bottom));
-  }
 </style>

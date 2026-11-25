@@ -308,12 +308,17 @@ export function inspect() {
       if (!last || r.bottom > last.bottom) last = { r, el: child, bottom: r.bottom }
     }
     const box = sc.getBoundingClientRect()
-    if (last && last.bottom > limit + 1 && box.bottom > limit + 1) {
+    // The bar's top where the bar is drawn over the list, the screen's foot
+    // where it is not: a drawer or a sheet over the bar has nothing under it
+    // but still has to fit on the screen.
+    const over = bar && document.elementFromPoint(box.left + box.width / 2, limit + 4)
+    const end = over && bar.contains(over) ? limit : vh
+    if (last && last.bottom > end + 1 && box.bottom > end + 1) {
       underBar.push({
         scroller: name(sc),
         last: name(last.el),
         bottom: Math.round(last.bottom),
-        limit: Math.round(limit),
+        limit: Math.round(end),
       })
     }
     sc.scrollTop = before
