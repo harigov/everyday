@@ -1,36 +1,35 @@
 // What `check.mjs` opens on each app to reach every screen worth checking on
-// a phone. One list per app (the key is its section id), each scenario a
+// a phone. One file per app (or group of apps) in `scenarios/`, each
+// exporting a default object of lists keyed by section id, each scenario a
 // fresh page on that app, unlocked, before `run` does anything:
 //
-//   { name: 'thread', run: async ({ page, settle }) => { ... } }
+//   export default {
+//     mail: [
+//       { name: 'home' },
+//       { name: 'thread', run: async ({ page, settle }) => { await tap(page, '...'); await settle() } },
+//     ],
+//   }
 //
-// `section` overrides the app the page opens on. `run` gets the Playwright
-// page and `settle(ms)`, which waits for loads and transitions to finish.
-// Use tap() rather than click() for anything a finger presses: it is what a
-// phone sends, and some handlers listen for pointer type.
+// `section` on a scenario opens a different app first (the frame's
+// scenarios use it). `run` gets the Playwright page and `settle(ms)`, which
+// waits for loads and transitions to finish. Use the helpers in
+// `helpers.mjs` -- `tap`, not click, for anything a finger presses.
 //
-// Prefer selectors a person would recognise -- roles and labels -- over
+// Prefer selectors a person would recognise -- roles, labels, text -- over
 // class names, which a restyle changes.
 
-/** The first element matching `selector`, tapped. */
-export async function tap(page, selector) {
-  await page.locator(selector).first().tap()
-}
+import { readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const home = { name: 'home' }
+const dir = join(dirname(fileURLToPath(import.meta.url)), 'scenarios')
 
-export const SCENARIOS = {
-  overview: [home],
-  journal: [home],
-  notes: [home],
-  todo: [home],
-  calendar: [home],
-  mail: [home],
-  library: [home],
-  feed: [home],
-  files: [home],
-  health: [home],
-  money: [home],
-  screentime: [home],
-  assistant: [home],
+export const SCENARIOS = {}
+for (const file of readdirSync(dir)
+  .filter((f) => f.endsWith('.mjs'))
+  .sort()) {
+  const mod = await import(pathToFileURL(join(dir, file)).href)
+  for (const [app, list] of Object.entries(mod.default)) {
+    ;(SCENARIOS[app] ??= []).push(...list)
+  }
 }

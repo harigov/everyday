@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
+  import { details } from '../lib/phone.svelte'
   import { dayNumber, plural, weekdayShort } from '../lib/format'
   import { fileUrl, mediaUrl } from '../lib/api'
   import { menu } from '../lib/menu.svelte'
@@ -27,6 +28,18 @@
    * the list wants the height back.
    */
   let showCalendar = $state(showCalendarPref.get())
+  /** Open an entry -- over the list, on a phone (`details`). */
+  function open(id: EntryId) {
+    void app.openEntry(id)
+    details.open('journal')
+  }
+
+  /** Today's entry, opened the same way. */
+  function startToday() {
+    void app.newEntry()
+    details.open('journal')
+  }
+
   function toggleCalendar() {
     showCalendar = !showCalendar
     showCalendarPref.set(showCalendar)
@@ -103,7 +116,7 @@
 
   function entryMenu(row: EntrySummary): MenuItem[] {
     return tidyMenu([
-      { label: 'Open', icon: 'quote', run: () => app.openEntry(row.id) },
+      { label: 'Open', icon: 'quote', run: () => open(row.id) },
       SEP,
       {
         label: row.starred ? 'Remove star' : 'Star',
@@ -136,7 +149,7 @@
    */
   function hitMenu(hit: { id: EntryId; title: string; journalId: JournalId }): MenuItem[] {
     return tidyMenu([
-      { label: 'Open', icon: 'quote', run: () => app.openEntry(hit.id) },
+      { label: 'Open', icon: 'quote', run: () => open(hit.id) },
       SEP,
       moveItem(hit.id, hit.journalId),
       SEP,
@@ -152,7 +165,7 @@
   /** The list itself, where there is no row under the pointer. */
   function listMenu(): MenuItem[] {
     return tidyMenu([
-      { label: "Today's entry", icon: 'plus', hint: 'Ctrl+N', run: () => app.newEntry() },
+      { label: "Today's entry", icon: 'plus', hint: 'Ctrl+N', run: () => startToday() },
       !!app.query.trim() && { label: 'Clear search', icon: 'close', run: () => app.clearSearch() },
       SEP,
       {
@@ -195,7 +208,7 @@
     </button>
     <button
       class="new"
-      onclick={() => app.newEntry()}
+      onclick={() => startToday()}
       title="Today's entry (Ctrl+N)"
       aria-label="Today's entry"
     >
@@ -238,7 +251,7 @@
             class="row list-row"
             class:sel={app.selectedEntry === hit.id}
             data-row={hit.id}
-            onclick={() => app.openEntry(hit.id)}
+            onclick={() => open(hit.id)}
             oncontextmenu={(e) => menu.show(e, hitMenu(hit))}
           >
             <div class="body">
@@ -263,7 +276,7 @@
         {/snippet}
         {#snippet action()}
           {#if !app.showStarredOnly}
-            <button class="btn btn-primary" onclick={() => app.newEntry()}>
+            <button class="btn btn-primary" onclick={() => startToday()}>
               Write today's entry
             </button>
           {/if}
@@ -285,7 +298,7 @@
               class="row list-row"
               class:sel={app.selectedEntry === row.id}
               data-row={row.id}
-              onclick={() => app.openEntry(row.id)}
+              onclick={() => open(row.id)}
               oncontextmenu={(e) => menu.show(e, entryMenu(row))}
             >
               <div class="cal" aria-hidden="true">

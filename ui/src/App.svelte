@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, mobileShell, onSaveAndClose } from './lib/api'
-  import { closesOnBack, phone } from './lib/phone.svelte'
+  import { closesOnBack, details, phone } from './lib/phone.svelte'
   // The stores, then the components, rather than the two interleaved.
   //
   // Importing a store is also what *constructs* it, and construction is what
@@ -142,6 +142,11 @@
   closesOnBack(
     () => phone.on && agent.open && app.section !== 'assistant',
     () => void agent.toggle(),
+  )
+  // Something opened from an app's list, over it: back shows the list.
+  closesOnBack(
+    () => panels.settings === null && details.isOpen(app.section),
+    () => details.close(app.section),
   )
 
   // Areas and goals, loaded once the vault is open and reloaded after every
@@ -470,6 +475,14 @@
               <HealthView />
             {:else if app.section === 'overview'}
               <OverviewView />
+            {:else if phone.on}
+              <!-- A phone has room for the list or the entry: see
+                   `details` in `phone.svelte.ts`. -->
+              {#if details.isOpen('journal')}
+                <main class="main"><Editor /></main>
+              {:else}
+                <EntryList />
+              {/if}
             {:else}
               <EntryList />
               <main class="main"><Editor /></main>

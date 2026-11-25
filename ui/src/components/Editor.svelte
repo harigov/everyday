@@ -3,6 +3,8 @@
   // and a Delete button. The text itself is `RichText`, which the notes app
   // draws too -- so a photograph dropped into an entry and a photograph
   // dropped into a note go through one media path and one set of caret bugs.
+  import { details } from '../lib/phone.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import { onDestroy } from 'svelte'
   import { app, handle } from '../lib/state.svelte'
   import { insertFilled, templates } from '../lib/templates.svelte'
@@ -230,6 +232,10 @@
     role="region"
     aria-label="Entry editor"
   >
+    <!-- A phone shows the entry over its list: the way back to it. -->
+    <div class="phonehead phone-only">
+      <PhoneBack onclick={() => details.close('journal')} label="Entries" />
+    </div>
     <Toolbar
       {editor}
       templateFor="journal"
@@ -373,6 +379,11 @@
 {/if}
 
 <style>
+  .phonehead {
+    display: flex;
+    align-items: center;
+    padding: var(--sp-1) var(--sp-2) 0;
+  }
   /* Under the tracker strip, because that is where the numbers live on this
      page. Quiet by default: these are offers, and a page you write on should
      not be a page of buttons. */

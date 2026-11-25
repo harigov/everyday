@@ -15,6 +15,7 @@
 // tall, which no laptop window that anybody works in is.
 
 import { mobileShell } from './api'
+import type { Section } from './apps'
 
 const QUERY = '(max-width: 640px), (max-height: 500px) and (max-width: 960px)'
 
@@ -165,3 +166,34 @@ export function closesOnBack(open: () => boolean, close: () => void) {
     return back.open(close)
   })
 }
+
+// ── An app's list, and what was opened from it ───────────────────────────
+//
+// A desktop app shows its list and the thing opened from it side by side. A
+// phone has room for one, so it shows the list until something in it is
+// opened, then that thing over the whole screen with a way back
+// (`PhoneBack`), and back -- the button, Android's -- shows the list again.
+// Whether an app is showing the opened thing is kept here, one flag per app,
+// so leaving an app and coming back finds it as it was; `App.svelte` makes
+// back close whichever is open. An app's view decides what "opened" means
+// (an entry, a thread, an event) and calls `open` when the person opens one
+// and `close` when it goes. On a desktop the flag is kept and ignored.
+
+class Details {
+  #open = $state<Partial<Record<Section, boolean>>>({})
+
+  /** The app is showing something opened from its list, over it. */
+  isOpen(section: Section): boolean {
+    return phone.on && this.#open[section] === true
+  }
+
+  open(section: Section) {
+    this.#open[section] = true
+  }
+
+  close(section: Section) {
+    this.#open[section] = false
+  }
+}
+
+export const details = new Details()

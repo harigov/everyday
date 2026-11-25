@@ -9,6 +9,9 @@
 //   node scripts/phone/check.mjs --only mail/thread   one scenario
 //   node scripts/phone/check.mjs --url http://localhost:5417   a dev server already running
 //   node scripts/phone/check.mjs --theme dark --out /tmp/phone
+//   node scripts/phone/check.mjs --desktop --out /tmp/before   the same scenarios at a
+//       desktop size, as the desktop app shows them, for compare.py: phone rules
+//       must leave the desktop exactly as it was
 //
 // What it finds, per screen (see `inspect` below):
 //   overflow   something visible past the left or right edge of the screen
@@ -55,9 +58,14 @@ const list = (v) =>
     : null
 
 const ENGINES = { chromium, webkit }
-const engines = list(arg('engines')) ?? ['chromium', 'webkit']
-// A small Android phone, an iPhone 15/16, a large Android phone.
-const sizes = (list(arg('sizes')) ?? ['360x780', '393x852', '412x915']).map((s) => {
+const desktop = process.argv.includes('--desktop')
+// Read by `helpers.mjs`, which clicks rather than taps without a touchscreen.
+globalThis.PHONE_CHECK_DESKTOP = desktop
+const engines = list(arg('engines')) ?? (desktop ? ['chromium'] : ['chromium', 'webkit'])
+// A small Android phone, an iPhone 15/16, a large Android phone -- or, with
+// --desktop, a laptop's window.
+const defaultSizes = desktop ? ['1280x800'] : ['360x780', '393x852', '412x915']
+const sizes = (list(arg('sizes')) ?? defaultSizes).map((s) => {
   const [width, height] = s.split('x').map(Number)
   return { width, height, label: s }
 })
@@ -107,7 +115,8 @@ async function startVite() {
 /** Open the interface on `section` as the phone shell would show it, and
  *  unlock the mock vault. */
 export async function openApp(page, url, section) {
-  const params = new URLSearchParams({ mobile: '', theme, section })
+  const params = new URLSearchParams({ theme, section })
+  if (!desktop) params.set('mobile', '')
   await page.goto(`${url}/?${params}`)
   const password = page.locator('input[type=password]')
   await password.waitFor({ timeout: 15000 })
@@ -277,8 +286,22 @@ async function main() {
             deviceScaleFactor: 2,
             // Chromium honours a phone's meta viewport and touch with
             // these; WebKit takes touch.
-            ...(engineName === 'chromium' ? { isMobile: true } : {}),
-            hasTouch: true,
+            ...(engineName === 'chromium' && !desktop ? { isMobile: true } : {}),
+            hasTouch: !desktop,
+          })
+          // The same screens every run, so two runs can be compared
+          // (`compare.py`): the mock's clock stopped at one moment -- its
+          // "today", "2 hours ago" and the calendar's now-line with it --
+          // and its shuffles seeded. Timers still run.
+          await context.clock.setFixedTime(new Date('2026-11-25T10:30:00'))
+          await context.addInitScript(() => {
+            let seed = 42
+            Math.random = () => {
+              seed = (seed + 0x6d2b79f5) | 0
+              let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+              t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+              return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+            }
           })
           for (const [app, scenarios] of Object.entries(SCENARIOS)) {
             if (apps && !apps.includes(app)) continue

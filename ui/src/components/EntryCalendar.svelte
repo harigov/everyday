@@ -21,6 +21,7 @@
   // rather than a filled circle, and the highlight the calendar app gives
   // its visible range marks the open entry's day instead.
 
+  import { details } from '../lib/phone.svelte'
   import { addMonths, localeWeekStart, monthGrid, startOfDay, todayIso } from '../lib/time'
   import { dateFormat } from '../lib/format'
   import { app } from '../lib/state.svelte'
@@ -87,7 +88,9 @@
       (marks.has(iso) ? ' — has an entry' : ' — nothing written')}
     onpick={(iso: string) => {
       const id = marks.get(iso)
-      if (id) void app.openEntry(id)
+      if (!id) return
+      void app.openEntry(id)
+      details.open('journal')
     }}
     gridRole="grid"
     gridLabel="Entries by day"
