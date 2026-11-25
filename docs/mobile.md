@@ -66,6 +66,26 @@ A debug build is signed with the debug key and installs straight over USB or
 change to `ui/` needs a rebuild to show on the phone; for quick work on the
 interface use the browser check below.
 
+**A real phone.** A debug build works, but its library carries its debug
+information (over 500 MB). For a phone, build a release and sign it -- with
+the debug key while testing, so it installs over USB with no keystore of its
+own (a real signing key is a decision for publishing, and an app signed with
+one key cannot be updated in place by one signed with another):
+
+```sh
+cargo tauri android build --target aarch64 --apk        # ~13 min, 94 MB unsigned
+BT=~/Android/Sdk/build-tools/36.1.0
+APK=gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+$BT/zipalign -f -p 4 $APK /tmp/aligned.apk
+$BT/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android \
+  --key-pass pass:android --out karmayoga.apk /tmp/aligned.apk
+adb install -r karmayoga.apk     # USB debugging on, or `adb pair` for wireless
+```
+
+The phone needs Android 8.0 or later, and to reach the computer: the same
+Wi-Fi, or Tailscale on both, with Settings → Vault → Share on the network on
+the computer listening on an address the phone can reach.
+
 **The emulator**, headless, with nothing on the desktop's screen or
 speakers:
 
