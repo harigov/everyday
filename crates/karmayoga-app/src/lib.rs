@@ -17,6 +17,7 @@ mod badge;
 pub mod capture;
 mod clipboard;
 mod commands;
+mod desk;
 mod dictation;
 mod events;
 mod fanout;
@@ -220,6 +221,11 @@ pub fn run() {
             // that has never been opened must not be what decides whether the
             // seven o'clock brief happens.
             let service = app.state::<AppState>().service();
+            // What this computer's desktop can do for the assistant -- open
+            // a link, pause the music, ring a timer -- handed to the local
+            // service and to no other: a window on a vault on another
+            // computer, and a server, have none of it. See `desk`.
+            desk::install(&handle, &service);
             let (_stop, listen) = tokio::sync::watch::channel(false);
             // Held for the life of the process. The scheduler stops when the
             // process does, and nothing else should be able to stop it.

@@ -78,6 +78,7 @@
 //! it. A vault can hold as many as somebody writes without any of them
 //! crowding out the others.
 
+pub mod desk;
 pub mod onscreen;
 pub mod sites;
 pub mod tools;
@@ -364,6 +365,22 @@ pub struct AgentSettings {
     /// still open. See `docs/plans/watches.md`.
     #[serde(default)]
     pub quiet_hours: QuietHours,
+    /// Whether the assistant may act on the computer somebody is talking to
+    /// it at: open a link, an application or a file there, search a website
+    /// in their browser, pause the music, turn the volume down, switch Do
+    /// Not Disturb, lock the screen, copy something, set a timer. Only ever
+    /// from this computer -- the window, voice mode in it, the talk key and
+    /// the wake word -- never from a chat, a routine or a job. On unless
+    /// somebody turns it off: nothing here reaches anybody, and each thing
+    /// it does is a thing they can see and undo at once. See
+    /// `docs/plans/desk.md`.
+    #[serde(default = "desktop_default")]
+    pub desktop: bool,
+    /// Websites somebody has added to search by name -- "search the wiki
+    /// for" -- besides [`desk`]'s built-in ones, which one of the same name
+    /// replaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_sites: Vec<desk::SearchSite>,
 }
 
 /// The hours in which updates are not spoken. Local times, in the person's
@@ -430,7 +447,7 @@ impl QuietHours {
 /// `"22:00"` as a time of day, or `None`. A time input may hand back
 /// `"22:00:00"`; the seconds are read and ignored, since quiet hours are kept
 /// to the minute.
-fn parse_clock(text: &str) -> Option<jiff::civil::Time> {
+pub(crate) fn parse_clock(text: &str) -> Option<jiff::civil::Time> {
     let mut parts = text.trim().split(':');
     let hour: i8 = parts.next()?.parse().ok()?;
     let minute: i8 = parts.next()?.parse().ok()?;
@@ -472,8 +489,16 @@ impl Default for AgentSettings {
             park_unattended: false,
             reminders: crate::task::ReminderSettings::default(),
             quiet_hours: QuietHours::default(),
+            desktop: true,
+            search_sites: Vec::new(),
         }
     }
+}
+
+/// A settings record from before the switch acts on the desktop: the
+/// switch is on unless somebody turned it off, so a missing key is on.
+fn desktop_default() -> bool {
+    true
 }
 
 /// A settings record with no `confirmWeb` key still asks. `bool`'s own
@@ -523,6 +548,7 @@ impl AgentSettings {
             companion.validate()?;
         }
         sites::validate(&self.safe_sites)?;
+        desk::validate_sites(&self.search_sites)?;
         crate::speech::validate_pronunciations(&self.pronunciations)?;
         // "Soul" rather than the field name, because this sentence is shown
         // verbatim under the box it is about, and the box is labelled Soul.

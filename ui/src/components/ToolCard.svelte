@@ -63,7 +63,8 @@
       card.confirmKind === 'routine' ||
       card.confirmKind === 'connection' ||
       card.confirmKind === 'keep' ||
-      card.confirmKind === 'desktop',
+      card.confirmKind === 'desktop' ||
+      card.confirmKind === 'copy',
   )
 
   /** The question, and the button that says yes to it, per kind. */
@@ -114,6 +115,11 @@
       ask: 'This types into the window you were working in — check it is what you want there.',
       yes: 'Type',
       icon: 'pencil',
+    },
+    copy: {
+      ask: 'Somebody else’s words were read in this conversation. This goes on the clipboard, to be pasted wherever you paste next — check it is what you want there.',
+      yes: 'Copy',
+      icon: 'copy',
     },
   } as const satisfies Record<string, { ask: string; yes: string; icon: IconName }>
   const asking = $derived(ASKS[card.confirmKind ?? 'destructive'])

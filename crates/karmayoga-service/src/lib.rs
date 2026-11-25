@@ -54,6 +54,7 @@ pub mod covers;
 pub mod ctx;
 pub mod decision;
 pub(crate) mod delivery;
+pub mod desk;
 pub mod deskwrite;
 pub mod documents;
 pub mod domains;

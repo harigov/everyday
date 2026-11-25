@@ -36,6 +36,7 @@ import type {
   ConversationSummary,
   FileId,
   MailLink,
+  SearchSite,
 } from './types'
 
 /**
@@ -465,6 +466,52 @@ function arg(args: unknown, key: string): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+/** A boolean argument, or nothing -- absent and not-a-boolean are the same to a card. */
+function flag(args: unknown, key: string): boolean | null {
+  if (!args || typeof args !== 'object') return null
+  const value = (args as Record<string, unknown>)[key]
+  return typeof value === 'boolean' ? value : null
+}
+
+/** A number argument, or nothing: a length of time, a percentage, a timer's number. */
+function count(args: unknown, key: string): number | null {
+  if (!args || typeof args !== 'object') return null
+  const value = (args as Record<string, unknown>)[key]
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+/** `1 hour`, `30 minutes`: the unit agrees with the number. */
+function amount(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? '' : 's'}`
+}
+
+/** The app's own name for a section the assistant opens; all but one are the id, capitalised. */
+function sectionName(section: string): string {
+  return section.toLowerCase() === 'screentime' ? 'Screen time' : capitalise(section)
+}
+
+/**
+ * How a switch of the desktop's own is said: `desktop_setting`'s `setting`.
+ * A `Map`, because the model's arguments are untrusted and `"constructor"` is
+ * a key every plain object has.
+ */
+const DESK_SETTINGS = new Map([
+  ['do_not_disturb', 'Do Not Disturb'],
+  ['dark_mode', 'dark mode'],
+  ['night_light', 'Night Light'],
+])
+
+/** What a card says while, once, and before `control_media` does each thing. */
+type Tenses = [doing: string, did: string, todo: string]
+const MEDIA_ACTIONS = new Map<string, Tenses>([
+  ['play', ['Playing', 'Played', 'Play']],
+  ['pause', ['Pausing', 'Paused', 'Pause']],
+  ['toggle', ['Playing or pausing', 'Played or paused', 'Play or pause']],
+  ['next', ['Skipping to the next track', 'Skipped to the next track', 'Skip to the next track']],
+  ['previous', ['Going back a track', 'Went back a track', 'Go back a track']],
+  ['status', ["Checking what's playing", "Checked what's playing", "Check what's playing"]],
+])
+
 /** Where a page lives, for a card too narrow for a whole address. */
 export function hostOf(url: string): string {
   try {
@@ -647,6 +694,139 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
         text: running ? 'Closing the browser' : done ? 'Closed the browser' : 'Close the browser',
         detail: null,
       }
+    // What it does on the computer somebody is sitting at -- see
+    // `docs/plans/desk.md`. The words say what was done; the card's summary
+    // is what came of it ("Paused Spotify", "The volume is 30%").
+    case 'open': {
+      // Exactly one of an address, an application, a section of the
+      // application, or a file; whichever it was is the detail. An address is
+      // named by its host, as a page read is -- the whole of it is on the
+      // question when it has to ask.
+      const url = arg(args, 'url')
+      const app = arg(args, 'app')
+      const section = arg(args, 'section')
+      let detail: string | null = null
+      if (url) detail = hostOf(url) || url
+      else if (app) detail = app
+      else if (section) detail = sectionName(section)
+      else if (arg(args, 'file_id')) detail = 'a file'
+      return { text: running ? 'Opening' : done ? 'Opened' : 'Open', detail }
+    }
+    // A website's own results, in the person's browser. A search of what
+    // they had selected has no words of the model's to show, so it says so.
+    case 'search_site': {
+      const site = arg(args, 'site') ?? 'a website'
+      return {
+        text: running ? `Searching ${site}` : done ? `Searched ${site}` : `Search ${site}`,
+        detail: arg(args, 'query') ?? (flag(args, 'selection') ? 'what you selected' : null),
+      }
+    }
+    case 'control_media': {
+      const [doing, did, todo]: Tenses = MEDIA_ACTIONS.get(arg(args, 'action') ?? '') ?? [
+        'Controlling the music',
+        'Controlled the music',
+        'Control the music',
+      ]
+      return { text: running ? doing : done ? did : todo, detail: null }
+    }
+    case 'set_volume': {
+      const percent = count(args, 'percent')
+      // Up and down move by this much when it is given; set goes to it.
+      const by = percent === null ? '' : ` by ${Math.round(percent)}%`
+      const to = percent === null ? '' : ` to ${Math.round(percent)}%`
+      let words: Tenses
+      switch (arg(args, 'action')) {
+        case 'up':
+          words = [
+            `Turning the volume up${by}`,
+            `Turned the volume up${by}`,
+            `Turn the volume up${by}`,
+          ]
+          break
+        case 'down':
+          words = [
+            `Turning the volume down${by}`,
+            `Turned the volume down${by}`,
+            `Turn the volume down${by}`,
+          ]
+          break
+        case 'set':
+          words = [`Setting the volume${to}`, `Set the volume${to}`, `Set the volume${to}`]
+          break
+        case 'mute':
+          words = ['Muting', 'Muted', 'Mute']
+          break
+        case 'unmute':
+          words = ['Unmuting', 'Unmuted', 'Unmute']
+          break
+        case 'status':
+          words = ['Checking the volume', 'Checked the volume', 'Check the volume']
+          break
+        default:
+          words = ['Changing the volume', 'Changed the volume', 'Change the volume']
+      }
+      const [doing, did, todo]: Tenses = words
+      return { text: running ? doing : done ? did : todo, detail: null }
+    }
+    // Do Not Disturb, dark mode, Night Light: switched on or off, or -- with
+    // no `on` -- only looked at.
+    case 'desktop_setting': {
+      const setting = arg(args, 'setting')
+      const what = (setting && DESK_SETTINGS.get(setting)) || 'a setting'
+      const on = flag(args, 'on')
+      const [doing, did, todo]: Tenses =
+        on === null
+          ? [`Checking ${what}`, `Checked ${what}`, `Check ${what}`]
+          : [
+              `Turning ${what} ${on ? 'on' : 'off'}`,
+              `Turned ${what} ${on ? 'on' : 'off'}`,
+              `Turn ${what} ${on ? 'on' : 'off'}`,
+            ]
+      return { text: running ? doing : done ? did : todo, detail: null }
+    }
+    case 'lock_screen':
+      return {
+        text: running ? 'Locking the screen' : done ? 'Locked the screen' : 'Lock the screen',
+        detail: null,
+      }
+    case 'copy_to_clipboard':
+      return {
+        text: running ? 'Copying' : done ? 'Copied' : 'Copy',
+        detail: arg(args, 'text'),
+      }
+    // A length -- "10 minutes" -- or a time of day, and what it is for.
+    case 'set_timer': {
+      const length: string[] = []
+      for (const [key, unit] of [
+        ['hours', 'hour'],
+        ['minutes', 'minute'],
+        ['seconds', 'second'],
+      ] as const) {
+        const n = count(args, key)
+        // A zero -- "0 hours" beside the minutes it was really for -- says nothing.
+        if (n) length.push(amount(n, unit))
+      }
+      const at = arg(args, 'at')
+      const when = length.length > 0 ? length.join(' ') : at ? `at ${at}` : null
+      const detail = [when, arg(args, 'label')].filter((part) => part !== null).join(' · ')
+      return {
+        text: running ? 'Setting a timer' : 'Set a timer',
+        detail: detail || null,
+      }
+    }
+    case 'list_timers':
+      return {
+        text: running ? 'Checking timers' : done ? 'Checked timers' : 'Check timers',
+        detail: null,
+      }
+    case 'cancel_timer': {
+      const id = count(args, 'id')
+      const which = flag(args, 'all') ? 'all timers' : id !== null ? `timer ${id}` : 'a timer'
+      return {
+        text: running ? `Cancelling ${which}` : done ? `Cancelled ${which}` : `Cancel ${which}`,
+        detail: null,
+      }
+    }
     case 'generate_image':
       return {
         text: running ? 'Making a picture' : done ? 'Made a picture' : 'Make a picture',
@@ -875,4 +1055,90 @@ export function isLoopback(baseUrl: string | null): boolean {
   } catch {
     return false
   }
+}
+
+// ── The search sites somebody adds ──────────────────────────────────────
+//
+// `validate_sites` in `karmayoga_core::agent::desk` is what refuses a save;
+// this is the same rules, said beside the row they are about so that the
+// refusal is never a surprise. The backend decides for real -- a site that
+// passes here and not there is a bug here, not a way round it.
+
+/** Where the words of a search go in a site's address. */
+export const SEARCH_QUERY = '{query}'
+/**
+ * The sites the assistant can search without being told how: the names in
+ * `BUILT_IN` in `karmayoga_core::agent::desk`, in its order. Kept to it by a
+ * test that reads the Rust (`scripts/agent.test.mjs`), so Settings never says
+ * it knows a site it doesn't.
+ */
+export const BUILT_IN_SEARCH_SITES = [
+  'Google',
+  'Google Images',
+  'Google Maps',
+  'YouTube',
+  'Amazon',
+  'Wikipedia',
+  'DuckDuckGo',
+  'GitHub',
+  'IMDb',
+  'Goodreads',
+  'eBay',
+] as const
+
+/** "a, b and c". */
+export function listedNames(names: readonly string[]): string {
+  if (names.length <= 1) return names.join('')
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+/** The most sites of one's own, and the longest a name and an address may be. */
+export const MAX_SEARCH_SITES = 50
+const MAX_SITE_NAME = 40
+const MAX_SITE_URL = 2000
+
+/**
+ * A name as the service compares two: lower-case, single-spaced, without a
+ * leading "the" or "my" or a `www.` -- so "Amazon", "amazon" and "the Amazon"
+ * are one site, and the second cannot be added beside the first.
+ */
+function spokenName(text: string): string {
+  const words = text.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const article = (words[0] === 'the' || words[0] === 'my') && words.length > 1
+  const joined = (article ? words.slice(1) : words).join(' ')
+  return joined.startsWith('www.') ? joined.slice(4) : joined
+}
+
+/**
+ * What is wrong with `sites[at]`, in a sentence for the row it is on, or
+ * `null` if nothing is. A row with nothing in it is not wrong: it is a row
+ * added and not used, and is dropped when the settings are saved. A name is
+ * compared with the sites before it, as the service does, so the second of
+ * two of the same name is the one that is flagged.
+ */
+export function searchSiteProblem(sites: readonly SearchSite[], at: number): string | null {
+  const site = sites[at]
+  if (!site) return null
+  const name = site.name.trim()
+  const url = site.url.trim()
+  if (!name && !url) return null
+  if (!name) return 'Give it a name to say, like “Amazon”.'
+  if ([...name].length > MAX_SITE_NAME || /[\r\n]/.test(name)) {
+    return `A name is one line of at most ${MAX_SITE_NAME} characters.`
+  }
+  if (sites.slice(0, at).some((other) => spokenName(other.name) === spokenName(name))) {
+    return `There is already a site called ${name}.`
+  }
+  if (!url) return 'Give it the address of its search results.'
+  if ([...url].length > MAX_SITE_URL) return 'That address is too long.'
+  if (!url.includes(SEARCH_QUERY)) {
+    return `The address needs ${SEARCH_QUERY} where the words of a search go.`
+  }
+  try {
+    const parsed = new URL(url.replaceAll(SEARCH_QUERY, 'test'))
+    const web = parsed.protocol === 'http:' || parsed.protocol === 'https:'
+    if (web && parsed.hostname) return null
+  } catch {
+    // Not an address at all; the same sentence as one that is not a web one.
+  }
+  return 'The address must start with https:// (or http://).'
 }

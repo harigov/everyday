@@ -261,7 +261,19 @@ pub async fn open_file_externally(
     state: State<'_, AppState>,
     id: FileId,
 ) -> CommandResult<()> {
-    let vault = here(&state)?.require_unlocked()?;
+    open_in_program(app, here(&state)?, id).await
+}
+
+/// [`open_file_externally`]'s work, for whoever has the service in hand
+/// rather than a window's state: the assistant opening a file for somebody
+/// at this computer (`crate::desk`) is held to exactly the refusal and the
+/// sealed-file copy Files' own "Open" has, because it is the same code.
+pub(crate) async fn open_in_program(
+    app: tauri::AppHandle,
+    service: std::sync::Arc<karmayoga_service::Service>,
+    id: FileId,
+) -> CommandResult<()> {
+    let vault = service.require_unlocked()?;
     let path = karmayoga_service::blocking(move || {
         let entry = vault.file(id)?;
         if runs_a_program(&entry.name) {
