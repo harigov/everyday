@@ -16,6 +16,8 @@
 //!   transcribe  chunks of a recording -> words
 //!   local       the models on this computer    tempo     audio faster or slower, same pitch
 //!   qwen        Qwen3-ASR, which local runs through llama.cpp
+//!   expect      the words to expect, from the vault
+//!   hotwords    how Parakeet is told them
 //!
 //!   pcm, wav    sample and file conversions everything shares
 //!   resample    one rate to another, for devices and calls
@@ -29,6 +31,8 @@ pub mod access;
 pub mod decode;
 pub mod detect;
 pub mod dictate;
+pub mod expect;
+pub mod hotwords;
 pub mod listen;
 pub mod live;
 #[cfg(feature = "speech")]

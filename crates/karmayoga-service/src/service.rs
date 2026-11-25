@@ -111,6 +111,10 @@ pub struct Service {
     /// minutes, and when: what the reminder tick saw on its last read, for the
     /// calendar refresher. See [`Service::calendars_alerting_soon`].
     upcoming_alerts: std::sync::Mutex<Vec<(CalendarId, i64)>>,
+    /// The names the wake word last listened for, so that every recogniser
+    /// is told to expect them, not only the wake word's. See
+    /// [`crate::speech::expect`].
+    pub(crate) wake_names: std::sync::Mutex<Vec<String>>,
     /// This session's routine bookkeeping -- which runs it is claiming, the
     /// name of whichever is running right now, and which failures it has
     /// already reported. See [`crate::runtime::routine::RoutineRuntime`].
@@ -224,6 +228,7 @@ impl Service {
             listening: crate::news::Listening::default(),
             sync_trouble: crate::trouble::SyncTrouble::default(),
             upcoming_alerts: std::sync::Mutex::default(),
+            wake_names: std::sync::Mutex::default(),
             routines: RoutineRuntime::default(),
             sign_ins: Arc::new(SignIns::new()),
             token_cache: Arc::new(TokenCache::new()),

@@ -104,8 +104,13 @@ async fn listening_loads_the_recogniser_before_anything_is_heard() {
     .unwrap();
     let question =
         to_16k(&synthesiser.synthesise("What is on my calendar tomorrow morning?").await.unwrap());
-    let LiveTranscription { control, mut events } =
-        svc.live_transcription(Tuning::CONVERSATION).await.expect("listening opens");
+    let LiveTranscription { control, mut events } = svc
+        .live_transcription(
+            Tuning::CONVERSATION,
+            karmayoga_service::speech::expect::Occasion::Conversation,
+        )
+        .await
+        .expect("listening opens");
     let opened = Instant::now();
     while !speech::recogniser_loaded(LocalModel::ParakeetV3) {
         assert!(opened.elapsed() < Duration::from_secs(60), "the recogniser never loaded");

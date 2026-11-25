@@ -42,6 +42,8 @@
 //! Both are moved at unlock, by `Vault::carry_over_speech`, and
 //! [`crate::meeting::MeetingSettings::speech_moved`] records that they were.
 
+pub mod words;
+
 use crate::error::{Error, Result};
 use crate::llm::{LLMProviderConfig, Provider, is_loopback};
 use serde::{Deserialize, Serialize};

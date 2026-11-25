@@ -36,8 +36,11 @@
 use crate::error::{CommandError, CommandResult, codes};
 use crate::local::files::{self as models, RecogniserPaths};
 use crate::local::resident::Resident;
+use crate::speech::hotwords;
 use crate::speech::pcm::{duration_ms, to_f32};
 use karmayoga_core::meeting::{LocalModel, SAMPLE_RATE};
+use karmayoga_core::speech::words::Expected;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// How long a merged gap of silence may be before it still counts as one
@@ -301,6 +304,28 @@ fn path_string(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// The vocabulary sherpa-onnx cuts Parakeet's expected words with, written
+/// beside `tokens` from it -- see `speech::hotwords` -- and its path. Written
+/// whole under another name and then renamed, every load: sherpa-onnx exits
+/// the process on a line it cannot read, so it must never see half a file,
+/// and a vocabulary left from another copy of the model must not outlive it.
+fn hotword_vocabulary(tokens: &Path) -> std::io::Result<PathBuf> {
+    let text = hotwords::vocabulary(&std::fs::read_to_string(tokens)?);
+    if text.is_empty() {
+        return Err(std::io::Error::other("tokens.txt has no pieces"));
+    }
+    let dir = tokens.parent().unwrap_or(Path::new("."));
+    let path = dir.join(hotwords::VOCABULARY_FILE);
+    // Unique to this process and this call, so two loads never write one file.
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nth = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let partial =
+        dir.join(format!("{}.{}-{nth}.part", hotwords::VOCABULARY_FILE, std::process::id()));
+    std::fs::write(&partial, text)?;
+    std::fs::rename(&partial, &path)?;
+    Ok(path)
+}
+
 /// Merge speech segments across gaps under `merge_gap_ms`, drop anything
 /// shorter than `min_ms`, then pad each survivor by `pad_ms` on both ends
 /// (clamped to `[0, total_ms]`) and merge again -- padding two segments that
@@ -380,7 +405,12 @@ pub struct Recogniser {
 }
 
 enum Engine {
-    Sherpa(Mutex<sherpa_onnx::OfflineRecognizer>),
+    Sherpa {
+        recognizer: Mutex<sherpa_onnx::OfflineRecognizer>,
+        /// Whether it takes words to expect: Parakeet, when its vocabulary
+        /// could be written. See `speech::hotwords`.
+        boosts: bool,
+    },
     #[cfg(feature = "decisions")]
     Qwen(crate::speech::qwen::Qwen),
 }
@@ -407,6 +437,7 @@ impl Recogniser {
         let mut config = sherpa_onnx::OfflineRecognizerConfig::default();
         config.model_config.num_threads = threads;
         config.model_config.provider = Some("cpu".to_string());
+        let mut boosts = false;
         match paths {
             RecogniserPaths::Transducer { encoder, decoder, joiner, tokens } => {
                 config.model_config.transducer = sherpa_onnx::OfflineTransducerModelConfig {
@@ -415,6 +446,25 @@ impl Recogniser {
                     joiner: Some(path_string(&joiner)),
                 };
                 config.model_config.tokens = Some(path_string(&tokens));
+                // Expected words need the beam search and a vocabulary to cut
+                // them with -- see `speech::hotwords`. Without the vocabulary
+                // it hears as it always did, greedily, told nothing.
+                match hotword_vocabulary(&tokens) {
+                    Ok(vocabulary) => {
+                        config.decoding_method = Some("modified_beam_search".to_string());
+                        config.hotwords_score = hotwords::BACKGROUND;
+                        config.model_config.modeling_unit =
+                            Some(hotwords::MODELING_UNIT.to_string());
+                        config.model_config.bpe_vocab = Some(path_string(&vocabulary));
+                        boosts = true;
+                    }
+                    Err(e) => tracing::warn!(
+                        model = model.as_str(),
+                        error = %e,
+                        "could not write the vocabulary expected words are cut with; hearing \
+                         without them"
+                    ),
+                }
             }
             #[cfg(feature = "decisions")]
             RecogniserPaths::Llama { model: weights, mmproj } => {
@@ -460,7 +510,7 @@ impl Recogniser {
         let recognizer = sherpa_onnx::OfflineRecognizer::create(&config).ok_or_else(|| {
             CommandError::new(codes::INTERNAL, format!("could not load {}", model.as_str()))
         })?;
-        Ok(Self { model, engine: Engine::Sherpa(Mutex::new(recognizer)) })
+        Ok(Self { model, engine: Engine::Sherpa { recognizer: Mutex::new(recognizer), boosts } })
     }
 
     pub fn model(&self) -> LocalModel {
@@ -471,7 +521,7 @@ impl Recogniser {
     /// where Parakeet and Whisper always are.
     pub fn gpu(&self) -> Option<String> {
         match &self.engine {
-            Engine::Sherpa(_) => None,
+            Engine::Sherpa { .. } => None,
             #[cfg(feature = "decisions")]
             Engine::Qwen(qwen) => qwen.gpu(),
         }
@@ -483,10 +533,20 @@ impl Recogniser {
     /// nothing. Blocking.
     pub fn transcribe_timed(&self, samples: &[i16]) -> CommandResult<()> {
         match &self.engine {
-            Engine::Sherpa(_) => self.transcribe(samples, None).map(drop),
+            Engine::Sherpa { .. } => self.transcribe(samples, None).map(drop),
             #[cfg(feature = "decisions")]
             Engine::Qwen(qwen) => qwen.transcribe_timed(&to_f32(samples)).map(drop),
         }
+    }
+
+    /// Transcribe one speech turn, told nothing to expect. See
+    /// [`Self::transcribe_expecting`].
+    pub fn transcribe(
+        &self,
+        samples: &[i16],
+        language: Option<&str>,
+    ) -> CommandResult<Transcription> {
+        self.transcribe_expecting(samples, language, &Expected::default())
     }
 
     /// Transcribe one speech turn. `language` is a BCP-47-ish hint; Whisper
@@ -494,26 +554,34 @@ impl Recogniser {
     /// and this passes it on when the loaded model exposes that option,
     /// Parakeet's multilingual model does not take one and the hint is
     /// silently unused, and Qwen is told it when it is one of its languages.
-    /// `None` means "detect". Fails only for Qwen, whose llama.cpp can run
-    /// out of room. Blocking.
+    /// `None` means "detect". `expected` are the words it is told to expect:
+    /// Qwen reads its prompt, Parakeet boosts its words, and Whisper, which
+    /// sherpa-onnx gives no prompt, takes neither. Fails only for Qwen, whose
+    /// llama.cpp can run out of room. Blocking.
     // A build without `decisions` has only the one engine to match.
     #[allow(clippy::infallible_destructuring_match)]
-    pub fn transcribe(
+    pub fn transcribe_expecting(
         &self,
         samples: &[i16],
         language: Option<&str>,
+        expected: &Expected,
     ) -> CommandResult<Transcription> {
         let f32_samples = to_f32(samples);
-        let recognizer = match &self.engine {
-            Engine::Sherpa(recognizer) => recognizer,
+        let (recognizer, boosts) = match &self.engine {
+            Engine::Sherpa { recognizer, boosts } => (recognizer, *boosts),
             #[cfg(feature = "decisions")]
             Engine::Qwen(qwen) => {
-                let text = qwen.transcribe(&f32_samples, language)?;
+                let text = qwen.transcribe(&f32_samples, language, &expected.prompt)?;
                 return Ok(Transcription { text, token_timestamps_ms: None });
             }
         };
+        let words = if boosts { hotwords::text(&expected.boosted) } else { String::new() };
         let recognizer = recognizer.lock().unwrap();
-        let stream = recognizer.create_stream();
+        let stream = if words.is_empty() {
+            recognizer.create_stream()
+        } else {
+            recognizer.create_stream_with_hotwords(&words)
+        };
         if let Some(lang) = language
             && stream.has_option("language")
         {

@@ -415,7 +415,33 @@ pub(crate) fn words_for(
     let owner = owner_of(vault);
     let invitees = invitees_of(event, &owner);
     let title = event.map(|e| e.title.as_str()).unwrap_or_default();
-    vocab::meeting_words(title, &invitees, &owner_on_invite(&owner, event), &settings.vocabulary)
+    let mut words = vocab::meeting_words(
+        title,
+        &invitees,
+        &owner_on_invite(&owner, event),
+        &settings.vocabulary,
+    );
+    // Where it is held and what its agenda names: on the calendar's event,
+    // which the recording's reference to it does not copy.
+    if let Some(found) = event.and_then(|e| calendar_event(vault, e)) {
+        words.places =
+            karmayoga_core::speech::words::place_of(&found.location).into_iter().collect();
+        words.topics = karmayoga_core::speech::words::meeting_topics(&found.description);
+    }
+    words
+}
+
+/// The calendar's event `event` refers to, while the calendar still has it.
+fn calendar_event(vault: &Vault, event: &EventRef) -> Option<karmayoga_core::calendar::Event> {
+    let day = event.start.to_zoned(jiff::tz::TimeZone::UTC).date();
+    let query = karmayoga_core::store::calendars::EventQuery {
+        calendar_id: Some(event.calendar_id),
+        ..karmayoga_core::store::calendars::EventQuery::between(
+            day.yesterday().ok()?,
+            day.tomorrow().ok()?,
+        )
+    };
+    vault.events(&query).ok()?.into_iter().find(|e| e.uid == event.uid)
 }
 
 /// The owner as this meeting knows them: their name, and only those of

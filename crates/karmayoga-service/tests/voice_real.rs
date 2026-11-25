@@ -254,8 +254,13 @@ async fn a_spoken_conversation_with_the_real_models() {
     // ---- live transcription, with no session around it -------------------------
     // What dictation and live meeting transcripts will use: audio in, timed
     // words out, nothing about a conversation.
-    let LiveTranscription { control, mut events } =
-        svc.live_transcription(Tuning::CONVERSATION).await.expect("listening opens");
+    let LiveTranscription { control, mut events } = svc
+        .live_transcription(
+            Tuning::CONVERSATION,
+            karmayoga_service::speech::expect::Occasion::Conversation,
+        )
+        .await
+        .expect("listening opens");
     let audio: Vec<i16> =
         [silence(0.5), question.clone(), end_of_turn()].into_iter().flatten().collect();
     for chunk in audio.chunks(480) {

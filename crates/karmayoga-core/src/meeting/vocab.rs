@@ -58,6 +58,9 @@ const MAX_PROMPT_NAMES: usize = 12;
 /// The most companies the recogniser is told about.
 const MAX_PROMPT_COMPANIES: usize = 4;
 
+/// The most places the recogniser is told about: where the meeting is.
+const MAX_PROMPT_PLACES: usize = 2;
+
 /// The fewest letters a word [`respell`] changes, or changes a word into,
 /// may have. A shorter name is too often one letter off an everyday word --
 /// Hill and "hall", Dana and "data" -- for one letter to be evidence of
@@ -110,6 +113,13 @@ pub struct MeetingWords {
     pub companies: Vec<String>,
     /// The person's own list, from Settings, spelled as they typed it.
     pub terms: Vec<String>,
+    /// Where it is held, when that is a place rather than a link: the
+    /// calendar's location, up to its first comma ("Konark Café" from
+    /// "Konark Café, 12 MG Road").
+    pub places: Vec<String>,
+    /// Unusual words from the invite's description -- an agenda's product
+    /// names and acronyms -- per [`crate::speech::words::meeting_topics`].
+    pub topics: Vec<String>,
 }
 
 /// The person's list made safe: trimmed, runs of spaces made one, none
@@ -200,19 +210,26 @@ pub fn meeting_words(
         })
         .chain(own);
     let companies = unique(addresses.filter_map(company_of));
-    MeetingWords { title: title.trim().to_string(), names, companies, terms: clean_terms(terms) }
+    MeetingWords {
+        title: title.trim().to_string(),
+        names,
+        companies,
+        terms: clean_terms(terms),
+        ..MeetingWords::default()
+    }
 }
 
 /// What a recogniser is told, in sentences: "Weekly sync. With Ana Ruiz
-/// and Bo Chen of Acme. We talk about Kubernetes and OKRs." At most
-/// [`MAX_PROMPT_BYTES`]; empty when there is nothing to say.
+/// and Bo Chen of Acme. In Konark Café. We talk about Kubernetes and OKRs."
+/// At most [`MAX_PROMPT_BYTES`]; empty when there is nothing to say.
 ///
-/// A term already said as one of the names or companies is not said again.
-/// When there is too much, whole names go first, from the end of the list,
-/// then companies, then the title, and the person's terms last: theirs are
-/// the words most surely worth getting right, and every name is still in
-/// the summary's [`spelling_line`]. Nothing is ever cut partway, so the
-/// prompt can end neither inside a character nor inside a name.
+/// A term already said as one of the names or companies is not said again,
+/// and the invite's topics come after the person's terms. When there is too
+/// much, whole names go first, from the end of the list, then companies,
+/// then places, then topics, then the title, and the person's terms last:
+/// theirs are the words most surely worth getting right, and every name is
+/// still in the summary's [`spelling_line`]. Nothing is ever cut partway, so
+/// the prompt can end neither inside a character nor inside a name.
 pub fn transcriber_prompt(words: &MeetingWords) -> String {
     let mut title = cut_chars(words.title.trim(), MAX_TITLE_CHARS)
         .trim_end_matches(|c: char| c == '.' || c.is_whitespace());
@@ -220,35 +237,66 @@ pub fn transcriber_prompt(words: &MeetingWords) -> String {
         words.names.iter().take(MAX_PROMPT_NAMES).map(String::as_str).collect();
     let mut companies: Vec<&str> =
         words.companies.iter().take(MAX_PROMPT_COMPANIES).map(String::as_str).collect();
-    let said: HashSet<String> = names.iter().chain(&companies).map(|w| w.to_lowercase()).collect();
-    let mut terms: Vec<&str> = words
-        .terms
-        .iter()
-        .map(String::as_str)
-        .filter(|t| !said.contains(&t.to_lowercase()))
-        .collect();
+    let mut places: Vec<&str> =
+        words.places.iter().take(MAX_PROMPT_PLACES).map(String::as_str).collect();
+    let mut said: HashSet<String> =
+        names.iter().chain(&companies).chain(&places).map(|w| w.to_lowercase()).collect();
+    let mut terms: Vec<&str> = Vec::new();
+    for term in words.terms.iter().map(String::as_str) {
+        if said.insert(term.to_lowercase()) {
+            terms.push(term);
+        }
+    }
+    let mut topics: Vec<&str> = Vec::new();
+    for topic in words.topics.iter().map(String::as_str) {
+        if said.insert(topic.to_lowercase()) {
+            topics.push(topic);
+        }
+    }
 
-    let mut prompt = sentences(title, &names, &companies, &terms);
+    let render = |title: &str,
+                  names: &[&str],
+                  companies: &[&str],
+                  places: &[&str],
+                  terms: &[&str],
+                  topics: &[&str]| {
+        let about: Vec<&str> = terms.iter().chain(topics).copied().collect();
+        sentences(title, names, companies, places, &about)
+    };
+    let mut prompt = render(title, &names, &companies, &places, &terms, &topics);
     while prompt.len() > MAX_PROMPT_BYTES && names.pop().is_some() {
-        prompt = sentences(title, &names, &companies, &terms);
+        prompt = render(title, &names, &companies, &places, &terms, &topics);
     }
     while prompt.len() > MAX_PROMPT_BYTES && companies.pop().is_some() {
-        prompt = sentences(title, &names, &companies, &terms);
+        prompt = render(title, &names, &companies, &places, &terms, &topics);
+    }
+    while prompt.len() > MAX_PROMPT_BYTES && places.pop().is_some() {
+        prompt = render(title, &names, &companies, &places, &terms, &topics);
+    }
+    while prompt.len() > MAX_PROMPT_BYTES && topics.pop().is_some() {
+        prompt = render(title, &names, &companies, &places, &terms, &topics);
     }
     if prompt.len() > MAX_PROMPT_BYTES {
         title = "";
-        prompt = sentences(title, &names, &companies, &terms);
+        prompt = render(title, &names, &companies, &places, &terms, &topics);
     }
     while prompt.len() > MAX_PROMPT_BYTES && terms.pop().is_some() {
-        prompt = sentences(title, &names, &companies, &terms);
+        prompt = render(title, &names, &companies, &places, &terms, &topics);
     }
     prompt
 }
 
 /// The prompt's sentences from what is left of each part: "{title}.",
 /// "With {names} of {companies}." (or "At {companies}." with nobody named),
-/// "We talk about {terms}.", whichever have anything in them.
-fn sentences(title: &str, names: &[&str], companies: &[&str], terms: &[&str]) -> String {
+/// "In {places}.", "We talk about {terms}.", whichever have anything in
+/// them.
+fn sentences(
+    title: &str,
+    names: &[&str],
+    companies: &[&str],
+    places: &[&str],
+    terms: &[&str],
+) -> String {
     let title = if title.is_empty() { String::new() } else { format!("{title}.") };
     let who = match (names.is_empty(), companies.is_empty()) {
         (false, false) => format!("With {} of {}.", and_list(names), and_list(companies)),
@@ -256,12 +304,13 @@ fn sentences(title: &str, names: &[&str], companies: &[&str], terms: &[&str]) ->
         (true, false) => format!("At {}.", and_list(companies)),
         (true, true) => String::new(),
     };
+    let place = if places.is_empty() { String::new() } else { format!("In {}.", and_list(places)) };
     let about = if terms.is_empty() {
         String::new()
     } else {
         format!("We talk about {}.", and_list(terms))
     };
-    [title, who, about].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
+    [title, who, place, about].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 /// "A", "A and B", "A, B and C".
@@ -477,7 +526,7 @@ fn capitalised(word: &str) -> String {
 }
 
 /// At most `max` characters of `text`, never cut inside one.
-fn cut_chars(text: &str, max: usize) -> &str {
+pub(crate) fn cut_chars(text: &str, max: usize) -> &str {
     match text.char_indices().nth(max) {
         Some((at, _)) => &text[..at],
         None => text,
@@ -486,7 +535,7 @@ fn cut_chars(text: &str, max: usize) -> &str {
 
 /// `items` trimmed, blanks dropped, each once whatever its case: the first
 /// spelling met is the one kept.
-fn unique<I>(items: I) -> Vec<String>
+pub(crate) fn unique<I>(items: I) -> Vec<String>
 where
     I: IntoIterator,
     I::Item: AsRef<str>,
@@ -529,6 +578,7 @@ mod tests {
             names: strings(names),
             companies: strings(companies),
             terms: strings(terms),
+            ..MeetingWords::default()
         }
     }
 
@@ -587,6 +637,7 @@ mod tests {
                 names: strings(&["Robin Smith", "Tarun Mehra", "Alex Morgan"]),
                 companies: strings(&["Northwind", "Zentrik"]),
                 terms: vec![],
+                ..MeetingWords::default()
             }
         );
     }
@@ -699,6 +750,7 @@ mod tests {
             names,
             companies: strings(&["Zentrik"]),
             terms: strings(&["PostHog", "Kubernetes", "SOC 2"]),
+            ..MeetingWords::default()
         };
         let p = transcriber_prompt(&w);
         assert!(p.len() <= MAX_PROMPT_BYTES, "{}", p.len());
@@ -725,6 +777,7 @@ mod tests {
                 names: names.clone(),
                 companies: strings(&["Acme"]),
                 terms: vec![],
+                ..MeetingWords::default()
             };
             let p = transcriber_prompt(&w);
             assert!(p.len() <= MAX_PROMPT_BYTES, "{}: {p}", p.len());

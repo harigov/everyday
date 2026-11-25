@@ -248,12 +248,54 @@ meant to be built on them without new plumbing.
 | `live` | A stream of audio into ordered, timed words as they are said |
 | `transcribe` | Chunks of a recording into timed segments, the meeting pipeline's backends |
 | `local` | The sherpa-onnx models on this computer |
+| `expect` | The words a recogniser is told to expect, gathered from the vault for what the listening is for |
+| `hotwords` | How Parakeet is told them: sherpa-onnx's hotwords and the vocabulary it cuts them with |
 | `synth` | Words into audio, through any configured voice, Phonon and Kokoro included |
 | `tempo` | Speech sped up or slowed down without changing its pitch, for the local voice |
 | `text` | Writing made fit to hear, cut into sentences |
 | `script` | The marks in a sentence that say how it is said -- a word and its respelling, and a line's end -- the pause after it, and what of it is shown |
 | `narrate` | Sentences into audio in order, a limited way ahead of playback |
 | `pcm`, `wav` | Sample and file conversions everything shares |
+
+### Words to expect
+
+A recogniser hears a name it does not know as the nearest everyday word:
+"Carma" for an assistant called Karma, "Priya Sha" for Priya Shah. So every
+recogniser that can be told is told the words it is likely to hear.
+`karmayoga_core::speech::words` decides which words, how many and in what form,
+and `speech::expect` gathers them from the vault.
+
+- **What the listening is for decides the words** (`Occasion`). Talking to the
+  assistant (voice mode, the talk key, the wake word): its names, its own and
+  the wake word's; the person's name; the people on the next day and a half of
+  events, then their circles, closest first; those events' places and titles;
+  active projects, goals and areas; routines; the apps they use most this week
+  and the connected services; and the app's own words (Karma Yoga, Siddhis).
+  Writing by voice (voice typing, dictation): the people, places and work they
+  write about, and the assistant's names last. A meeting: its invite's names,
+  companies, place and agenda words (`words::for_meeting`). A podcast: its show
+  and title. The person's own list from Settings → Meetings goes everywhere.
+- **Two forms.** Qwen3-ASR reads a short prompt in its system turn, and so do
+  OpenAI's and Google's servers: a few labelled sentences, at most 500 bytes
+  ("Hari talks to Karma. People: Priya Shah. Words: OKR."). Parakeet boosts
+  words as it decodes (sherpa-onnx hotwords, which need its beam search): names
+  and unusual words only, at most 40, since an everyday word is one it already
+  hears well and every boosted word is a chance to hear it where it was not
+  said. Whisper on this computer takes neither.
+- **Not overwhelming it.** Each kind has a quota, most relevant first; too long
+  a prompt loses the least relevant words first and the assistant's names and
+  the person's own list last. Titles are context for a prompt, but only their
+  unusual words (capitals mid-sentence, acronyms, codes) are boosted.
+- **Read back.** A recogniser may write its prompt back over silence. Utterances
+  are cleaned against the prompt they were told, as meeting lines always were.
+- **Fresh.** A listener's words are gathered when it starts and again every ten
+  minutes while it runs, so the all-day wake word moves on with the day.
+
+Parakeet's download has no vocabulary for sherpa-onnx to cut the words into its
+pieces with, so `hotwords::vocabulary` writes `bpe.vocab` beside `tokens.txt`
+at every load, scored from each piece's place in the BPE order. sherpa-onnx's
+cutter is not BPE; it agrees with Parakeet's own cut for about three names in
+four, and a word cut differently is boosted only as far as the cuts agree.
 
 `karmayoga-app`'s `audio` module is the same idea for the devices: `input` and
 `resample` serve meeting capture and the engine alike, and `AudioEngine` runs a

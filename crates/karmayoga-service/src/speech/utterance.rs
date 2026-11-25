@@ -9,15 +9,17 @@
 //!   called directly rather than through `LocalTranscriber`, which runs voice
 //!   detection over its chunk again and, over an utterance as short as "yes",
 //!   can decide there was nothing in it.
-//! - **There is no prompt.** A recording can tell the recogniser the names to
-//!   spell; one utterance on its own has none, so nothing here is read back at
-//!   the person -- but what a recogniser writes over near-silence ("Thank you.",
-//!   "[Music]") still goes through [`hallucination::clean_line`], since a breath
-//!   or a chair creaking is what ends up here as often as speech.
+//! - **The words to expect come from the listener.** A recording's are its
+//!   invite's; an utterance's are whatever it is listened to for -- the
+//!   assistant's names, the day's people ([`super::expect`]). What a
+//!   recogniser writes over near-silence ("Thank you.", "[Music]"), and those
+//!   words read back, still go through [`hallucination::clean_line`], since a
+//!   breath or a chair creaking is what ends up here as often as speech.
 //!
 //! Utterances heard in a stream are handed here by [`super::live`], one at a
 //! time and in order; this module does not care where they came from.
 
+use super::expect::ExpectedWords;
 use super::pcm;
 use super::transcribe::BoxFuture;
 use crate::error::CommandResult;
@@ -25,6 +27,7 @@ use crate::error::CommandResult;
 use crate::error::{CommandError, codes};
 use crate::speech::transcribe::{Hints, RawSegment, SpeechChunk, Transcriber, is_faint};
 use karmayoga_core::meeting::hallucination;
+use karmayoga_core::speech::words::Expected;
 use karmayoga_core::speech::{SpeechAccess, TranscriberConfig};
 use std::sync::Arc;
 
@@ -36,23 +39,27 @@ pub trait UtteranceTranscriber: Send + Sync {
     fn hear<'a>(&'a self, samples: &'a [i16]) -> BoxFuture<'a, CommandResult<String>>;
 
     /// Start getting ready to hear, in the background, for a caller that is
-    /// about to listen. A recogniser on this computer starts loading, which
-    /// takes seconds; a server has nothing to get ready. Must be called on a
+    /// about to listen: the words to expect are gathered, and a recogniser on
+    /// this computer starts loading, which takes seconds. Must be called on a
     /// Tokio runtime.
     fn warm(&self) {}
 }
 
-/// The configured speech model, as a [`UtteranceTranscriber`].
+/// The configured speech model, as a [`UtteranceTranscriber`] told to expect
+/// `words`.
 ///
 /// Fails when the choice cannot be built into one: a remote model without its
 /// key, or a recogniser on this computer in a build without local speech.
-pub fn build(access: SpeechAccess) -> CommandResult<Arc<dyn UtteranceTranscriber>> {
+pub fn build(
+    access: SpeechAccess,
+    words: Arc<ExpectedWords>,
+) -> CommandResult<Arc<dyn UtteranceTranscriber>> {
     let language = access.config.language.clone();
     match &access.config.transcriber {
-        TranscriberConfig::Local { model } => local_utterances(*model, language),
+        TranscriberConfig::Local { model } => local_utterances(*model, language, words),
         config => {
             let transcriber = crate::speech::transcribe::build_transcriber(config, access.key)?;
-            Ok(Arc::new(RemoteUtterances { transcriber: Arc::from(transcriber), language }))
+            Ok(Arc::new(RemoteUtterances { transcriber: Arc::from(transcriber), language, words }))
         }
     }
 }
@@ -61,14 +68,16 @@ pub fn build(access: SpeechAccess) -> CommandResult<Arc<dyn UtteranceTranscriber
 fn local_utterances(
     model: karmayoga_core::speech::LocalModel,
     language: Option<String>,
+    words: Arc<ExpectedWords>,
 ) -> CommandResult<Arc<dyn UtteranceTranscriber>> {
-    Ok(Arc::new(LocalUtterances { model, language, warming: std::sync::Mutex::new(None) }))
+    Ok(Arc::new(LocalUtterances { model, language, words, warming: std::sync::Mutex::new(None) }))
 }
 
 #[cfg(not(feature = "speech"))]
 fn local_utterances(
     _model: karmayoga_core::speech::LocalModel,
     _language: Option<String>,
+    _words: Arc<ExpectedWords>,
 ) -> CommandResult<Arc<dyn UtteranceTranscriber>> {
     Err(CommandError::new(codes::UNSUPPORTED, "this build does not include local speech"))
 }
@@ -85,13 +94,26 @@ fn faint(samples: &[i16]) -> bool {
     is_faint(samples, hallucination::noise_floor(samples))
 }
 
-/// What was said, from what a recogniser returned for it: every line that
-/// survives [`RawSegment::cleaned`], in order, as one line of words. Empty when
-/// nothing did.
-fn words(segments: &[RawSegment], quiet: bool) -> String {
+/// What was said, from what a recogniser told to expect `prompt` returned for
+/// it: every line that survives [`RawSegment::cleaned`], in order, as one line
+/// of words. Empty when nothing did.
+fn words(segments: &[RawSegment], prompt: &str, quiet: bool) -> String {
     let lines: Vec<String> =
-        segments.iter().filter_map(|segment| segment.cleaned("", quiet)).collect();
+        segments.iter().filter_map(|segment| segment.cleaned(prompt, quiet)).collect();
     lines.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The words `words` says to expect now, read off the runtime.
+async fn expecting(words: &Arc<ExpectedWords>) -> CommandResult<Arc<Expected>> {
+    let words = words.clone();
+    crate::service::blocking(move || Ok(words.current())).await
+}
+
+/// Start gathering the words to expect in the background, so the first
+/// utterance does not wait on the vault for them.
+fn gather_early(words: &Arc<ExpectedWords>) {
+    let words = words.clone();
+    tokio::task::spawn_blocking(move || drop(words.current()));
 }
 
 /// A recogniser that is a service somewhere: OpenAI's, Google's or a
@@ -99,6 +121,7 @@ fn words(segments: &[RawSegment], quiet: bool) -> String {
 struct RemoteUtterances {
     transcriber: Arc<dyn Transcriber>,
     language: Option<String>,
+    words: Arc<ExpectedWords>,
 }
 
 impl RemoteUtterances {
@@ -106,11 +129,12 @@ impl RemoteUtterances {
         if too_short(samples) {
             return Ok(String::new());
         }
+        let expected = expecting(&self.words).await?;
         let chunk = SpeechChunk { samples: samples.to_vec(), offset_ms: 0, scope: 0 };
-        let hints = Hints { language: self.language.clone(), prompt: String::new() };
+        let hints = Hints::new(self.language.clone(), (*expected).clone());
         let mut segments = self.transcriber.transcribe(&chunk, &hints).await?;
         segments.sort_by_key(|segment| segment.start_ms);
-        Ok(words(&segments, faint(samples)))
+        Ok(words(&segments, &hints.prompt, faint(samples)))
     }
 }
 
@@ -118,13 +142,19 @@ impl UtteranceTranscriber for RemoteUtterances {
     fn hear<'a>(&'a self, samples: &'a [i16]) -> BoxFuture<'a, CommandResult<String>> {
         Box::pin(async move { self.hear_remote(samples).await })
     }
+
+    fn warm(&self) {
+        gather_early(&self.words);
+    }
 }
 
-/// A recogniser on this computer: Parakeet or Whisper through sherpa-onnx.
+/// A recogniser on this computer: Parakeet or Whisper through sherpa-onnx, or
+/// Qwen through llama.cpp.
 #[cfg(feature = "speech")]
 struct LocalUtterances {
     model: karmayoga_core::speech::LocalModel,
     language: Option<String>,
+    words: Arc<ExpectedWords>,
     /// The load [`UtteranceTranscriber::warm`] started, until the first
     /// utterance takes it. That utterance waits for this load rather than
     /// asking for its own: a load that failed is not remembered, so asking
@@ -154,8 +184,12 @@ impl LocalUtterances {
         };
         let language = self.language.clone();
         let heard = samples.to_vec();
-        let text = crate::service::blocking(move || {
-            Ok(recogniser.transcribe(&heard, language.as_deref())?.text)
+        let expecting = self.words.clone();
+        let (text, prompt) = crate::service::blocking(move || {
+            let expected = expecting.current();
+            let text =
+                recogniser.transcribe_expecting(&heard, language.as_deref(), &expected)?.text;
+            Ok((text, expected.prompt.clone()))
         })
         .await?;
         let segment = RawSegment {
@@ -166,7 +200,7 @@ impl LocalUtterances {
             no_speech_prob: None,
             avg_logprob: None,
         };
-        Ok(words(&[segment], faint(samples)))
+        Ok(words(&[segment], &prompt, faint(samples)))
     }
 }
 
@@ -177,6 +211,7 @@ impl UtteranceTranscriber for LocalUtterances {
     }
 
     fn warm(&self) {
+        gather_early(&self.words);
         let mut warming = self.warming.lock().unwrap_or_else(|e| e.into_inner());
         if warming.is_none() {
             *warming = Some(tokio::spawn(crate::speech::local::recogniser_async(self.model)));
@@ -246,7 +281,19 @@ mod tests {
     }
 
     fn hearing(script: &Arc<Scripted>, language: Option<&str>) -> RemoteUtterances {
-        RemoteUtterances { transcriber: script.clone(), language: language.map(str::to_string) }
+        hearing_expecting(script, language, Expected::default())
+    }
+
+    fn hearing_expecting(
+        script: &Arc<Scripted>,
+        language: Option<&str>,
+        expected: Expected,
+    ) -> RemoteUtterances {
+        RemoteUtterances {
+            transcriber: script.clone(),
+            language: language.map(str::to_string),
+            words: ExpectedWords::fixed(expected),
+        }
     }
 
     #[tokio::test]
@@ -272,7 +319,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_language_is_passed_on_and_there_is_no_prompt() {
+    async fn the_language_is_passed_on_and_there_is_no_prompt_with_nothing_to_expect() {
         let script = Scripted::new(vec![segment("hola", 0)]);
         hearing(&script, Some("es")).hear(&loud(500)).await.unwrap();
         let asked = script.asked.lock().unwrap();
@@ -280,6 +327,30 @@ mod tests {
         assert_eq!(asked[0].0, 500 * 16);
         assert_eq!(asked[0].1.language.as_deref(), Some("es"));
         assert_eq!(asked[0].1.prompt, "");
+    }
+
+    fn karma() -> Expected {
+        Expected {
+            prompt: "Hari talks to Karma. People: Priya Shah.".into(),
+            boosted: vec!["Karma".into(), "Priya Shah".into()],
+        }
+    }
+
+    #[tokio::test]
+    async fn the_words_to_expect_go_with_the_audio() {
+        let script = Scripted::new(vec![segment("Karma, call Priya", 0)]);
+        let heard = hearing_expecting(&script, None, karma()).hear(&loud(1_000)).await.unwrap();
+        assert_eq!(heard, "Karma, call Priya");
+        let asked = script.asked.lock().unwrap();
+        assert_eq!(asked[0].1.prompt, karma().prompt);
+        assert_eq!(asked[0].1.boosted, karma().boosted);
+    }
+
+    #[tokio::test]
+    async fn the_words_to_expect_read_back_over_silence_are_not_words() {
+        let script = Scripted::new(vec![segment("People: Priya Shah.", 0)]);
+        let heard = hearing_expecting(&script, None, karma()).hear(&silent(1_000)).await.unwrap();
+        assert_eq!(heard, "");
     }
 
     #[tokio::test]
@@ -324,8 +395,8 @@ mod tests {
 
     #[test]
     fn words_over_nothing_are_empty() {
-        assert_eq!(words(&[], false), "");
-        assert_eq!(words(&[segment("   ", 0)], false), "");
+        assert_eq!(words(&[], "", false), "");
+        assert_eq!(words(&[segment("   ", 0)], "", false), "");
     }
 
     #[cfg(not(feature = "speech"))]
@@ -336,7 +407,7 @@ mod tests {
             config: SpeechConfig::new(TranscriberConfig::Local { model: LocalModel::ParakeetV3 }),
             key: None,
         };
-        let err = build(access).err().expect("an error");
+        let err = build(access, ExpectedWords::none()).err().expect("an error");
         assert_eq!(err.code, codes::UNSUPPORTED);
     }
 }

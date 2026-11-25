@@ -77,7 +77,7 @@ use karmayoga_core::files::{
 };
 use karmayoga_core::id::{FileId, StoryId};
 use karmayoga_core::meeting::hallucination::noise_floor;
-use karmayoga_core::meeting::vocab::{MeetingWords, transcriber_prompt};
+use karmayoga_core::meeting::vocab::MeetingWords;
 use karmayoga_core::news::podcast::PODCASTS_DIR;
 use karmayoga_core::news::transcript::{
     PARAGRAPH_MS, TRANSCRIPT_OF_PROPERTY, TRANSCRIPT_PROPERTY, TimedText, TranscriptMeta,
@@ -960,7 +960,8 @@ async fn hear(
         },
         ..MeetingWords::default()
     };
-    let hints = Hints { language: hearing.language.clone(), prompt: transcriber_prompt(&words) };
+    let hints =
+        Hints::new(hearing.language.clone(), karmayoga_core::speech::words::for_meeting(&words));
 
     let (recording, known) = blocking({
         let (vault, entry) = (vault.clone(), media.clone());

@@ -58,6 +58,7 @@ impl LocalTranscriber {
 
         let recogniser = speech::recogniser_async(self.model).await?;
         let language = hints.language.clone();
+        let expected = std::sync::Arc::new(hints.expected());
         let mut segments = Vec::with_capacity(turns.len());
         // A turn that cannot be heard is left out rather than ending the
         // chunk, so the turns around it are kept; only a chunk where every
@@ -73,8 +74,11 @@ impl LocalTranscriber {
             let turn_samples = chunk.samples[start..end].to_vec();
             let recogniser = recogniser.clone();
             let language = language.clone();
+            let expected = expected.clone();
             let heard = blocking(move || {
-                Ok(recogniser.transcribe(&turn_samples, language.as_deref())?.text)
+                Ok(recogniser
+                    .transcribe_expecting(&turn_samples, language.as_deref(), &expected)?
+                    .text)
             })
             .await;
             let text = match heard {

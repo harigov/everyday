@@ -16,6 +16,7 @@
 //! it is done waits for it.
 
 use super::detect::{Tuning, build_detector};
+use super::expect::Occasion;
 use super::live::LiveTranscription;
 use super::synth::{Synthesiser, build_synthesiser_with};
 use super::utterance::{self, UtteranceTranscriber};
@@ -62,9 +63,11 @@ fn missing_voice(voice: &VoiceConfig, voice_installed: bool) -> Option<String> {
 }
 
 impl Service {
-    /// The chosen speech model, ready to turn utterances into words.
+    /// The chosen speech model, ready to turn utterances into words, told to
+    /// expect the words that matter on `occasion` ([`crate::speech::expect`]).
     pub async fn utterance_transcriber(
         self: &Arc<Self>,
+        occasion: Occasion,
     ) -> CommandResult<Arc<dyn UtteranceTranscriber>> {
         let vault = self.require_unlocked()?;
         let speech = blocking(move || Ok(vault.speech_access()?)).await?;
@@ -75,7 +78,8 @@ impl Service {
         ) {
             return Err(CommandError::new(codes::INVALID, refusal));
         }
-        blocking(move || utterance::build(speech)).await
+        let words = self.expected_words(occasion)?;
+        blocking(move || utterance::build(speech, words)).await
     }
 
     /// The chosen voice, ready to speak.
@@ -104,8 +108,9 @@ impl Service {
         build_synthesiser_with(voice, book).await
     }
 
-    /// Words from a stream of audio, as they are said: the chosen speech model
-    /// behind a detector that is tuned for `tuning`.
+    /// Words from a stream of audio, as they are said: the chosen speech model,
+    /// told what to expect on `occasion`, behind a detector that is tuned for
+    /// `tuning`.
     ///
     /// Needs the speech kit as well as the recogniser. Starts on the current
     /// Tokio runtime. A recogniser on this computer may still be loading when
@@ -113,12 +118,13 @@ impl Service {
     pub async fn live_transcription(
         self: &Arc<Self>,
         tuning: Tuning,
+        occasion: Occasion,
     ) -> CommandResult<LiveTranscription> {
         self.require_unlocked()?;
         if let Some(refusal) = missing_kit(crate::local::files::speech_kit_installed()) {
             return Err(CommandError::new(codes::INVALID, refusal));
         }
-        let transcriber = self.utterance_transcriber().await?;
+        let transcriber = self.utterance_transcriber(occasion).await?;
         let detector = blocking(move || build_detector(tuning)).await?;
         // Loading a recogniser on this computer takes seconds -- 2.4 on a
         // quiet 12-core desktop, 6.7 on a busy one -- and used to begin with

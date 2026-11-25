@@ -18,6 +18,7 @@ pub mod openai;
 pub use build::{OPENAI_BASE_URL, build_transcriber};
 
 use crate::error::CommandResult;
+use karmayoga_core::speech::words::Expected;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -58,7 +59,24 @@ pub struct Hints {
     pub language: Option<String>,
     /// Names, companies, the title and the person's own words, so they are
     /// spelled right. See `karmayoga_core::meeting::vocab::transcriber_prompt`.
+    /// What a server and Qwen read.
     pub prompt: String,
+    /// The same words for a recogniser that boosts them as it decodes --
+    /// Parakeet -- names and unusual words only. See
+    /// `karmayoga_core::speech::words::Expected::boosted`.
+    pub boosted: Vec<String>,
+}
+
+impl Hints {
+    /// Told `language` and to expect `expected`.
+    pub fn new(language: Option<String>, expected: Expected) -> Self {
+        Self { language, prompt: expected.prompt, boosted: expected.boosted }
+    }
+
+    /// The words to expect, as a recogniser on this computer takes them.
+    pub fn expected(&self) -> Expected {
+        Expected { prompt: self.prompt.clone(), boosted: self.boosted.clone() }
+    }
 }
 
 /// One stretch of speech as a backend heard it. Times relative to the chunk.

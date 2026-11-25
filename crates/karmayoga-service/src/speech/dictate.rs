@@ -336,7 +336,12 @@ impl Service {
     /// Start dictating: the chosen speech model behind a detector tuned for
     /// dictation. Refuses, in a sentence, when listening is not set up.
     pub async fn dictation_open(self: &Arc<Self>) -> CommandResult<DictationLink> {
-        let live = self.live_transcription(crate::speech::detect::Tuning::DICTATION).await?;
+        let live = self
+            .live_transcription(
+                crate::speech::detect::Tuning::DICTATION,
+                crate::speech::expect::Occasion::Dictation,
+            )
+            .await?;
         Ok(spawn(live))
     }
 }

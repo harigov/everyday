@@ -18,6 +18,7 @@ use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::speech::SAMPLE_RATE;
 use crate::speech::detect::Tuning;
+use crate::speech::expect::Occasion;
 use crate::speech::live::{LiveEvent, LiveTranscription};
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -224,7 +225,10 @@ impl Service {
                  said near it is sent anywhere. Choose one in Settings → Models.",
             ));
         }
-        let live = self.live_transcription(Tuning::CONVERSATION).await?;
+        // Every recogniser is told to expect these names from now on, this
+        // one first among them.
+        self.remember_wake_names(&names);
+        let live = self.live_transcription(Tuning::CONVERSATION, Occasion::Conversation).await?;
         Ok(spawn(live, names))
     }
 }
