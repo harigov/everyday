@@ -23,6 +23,7 @@
   import { library } from '../lib/library.svelte'
   import { menu } from '../lib/menu.svelte'
   import { panels } from '../lib/panels.svelte'
+  import { details } from '../lib/phone.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { relativeTime } from '../lib/format'
   import { renderMarkdown } from '../lib/markdown'
@@ -376,7 +377,10 @@
     // Loaded first, because loading opens the latest conversation when none
     // is open; the run's own thread is then put on screen over the top.
     await agent.load()
-    if (await app.goTo('assistant')) await agent.openThread(thread)
+    if (await app.goTo('assistant')) {
+      details.open('assistant')
+      await agent.openThread(thread)
+    }
   }
 
   function runMenu(run: RoutineRun): MenuItem[] {
@@ -1522,5 +1526,37 @@
   :global([data-phone]) .panes :global(.proposal .open) {
     min-height: 44px;
     padding: var(--sp-1) 0;
+  }
+  /* What the Overview and Assistant pass added beside it: the card's own
+     padding, the head's spacer dropped when it wraps, the "more" links at a
+     finger's height, and fields sized to the column. */
+  :global([data-phone]) .card {
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .cardhead .spacer {
+    display: none;
+  }
+  :global([data-phone]) .panes .more {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 var(--sp-2);
+  }
+  :global([data-phone]) .time,
+  :global([data-phone]) .mins {
+    width: 100%;
+    max-width: 10rem;
+  }
+  :global([data-phone]) .model {
+    width: 100%;
+    max-width: none;
+  }
+  :global([data-phone]) select.sub {
+    min-width: 0;
+    width: calc(100% - 13px - var(--sp-3));
+  }
+  :global([data-phone]) .toggle {
+    min-height: 44px;
+    align-items: center;
   }
 </style>

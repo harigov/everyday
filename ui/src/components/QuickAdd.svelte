@@ -351,4 +351,17 @@
   .bit.p-urgent {
     color: var(--danger);
   }
+
+  /* A phone: a line to type in that a thumb can aim at. */
+  :global([data-phone]) .field {
+    height: 44px;
+    padding-left: 38px;
+  }
+  :global([data-phone]) .compact .field {
+    height: 40px;
+    padding-left: 34px;
+  }
+  :global([data-phone]) .mark {
+    left: var(--sp-3);
+  }
 </style>

@@ -2274,4 +2274,38 @@
     display: block;
     height: 100%;
   }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The rows a card lists are things to press, and a pointer's row is not a
+     fingertip's: each is at least 40 px tall, the tick's circle has a hit
+     area well past its 16 px, and the names under "What's going on" are
+     chips a thumb can land on. */
+  :global([data-phone]) .notelink,
+  :global([data-phone]) .shelf-row {
+    min-height: 40px;
+  }
+  :global([data-phone]) .notelink:not(.mail-row),
+  :global([data-phone]) .shelf-row {
+    align-items: center;
+  }
+  :global([data-phone]) .tick {
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin: 0 -6px 0 -10px;
+  }
+  :global([data-phone]) .thing {
+    min-height: 36px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .going {
+    gap: var(--sp-1) var(--sp-3);
+  }
+  :global([data-phone]) .footnote-btn {
+    min-height: 40px;
+  }
+  :global([data-phone]) .habit-chip {
+    min-height: 44px;
+  }
 </style>

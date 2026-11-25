@@ -309,4 +309,43 @@
     opacity: 0.5;
     cursor: default;
   }
+
+  /* A phone: the answers always on a line of their own under the title, and
+     the title free to take two lines before it is cut -- a 320 px row has
+     room for either the whole title or the two buttons beside it, never
+     both, and a title cut to four letters is no use to answer. Buttons a
+     finger can hit. */
+  :global([data-phone]) .ghost:not(.compact) {
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .ghost:not(.compact) .caption,
+  :global([data-phone]) .ghost:not(.compact) .open {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+  }
+  /* The title is the way into the record: a row to press, not a line of text. */
+  :global([data-phone]) .ghost:not(.compact) .open {
+    min-height: 32px;
+    padding: 6px 0;
+  }
+  :global([data-phone]) .ghost:not(.compact) .answers {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .ghost:not(.compact) .answers > button {
+    min-height: 38px;
+    padding: 0 var(--sp-4) 0 var(--sp-3);
+    gap: var(--sp-1);
+    font-size: var(--text-sm);
+  }
+  /* The corner buttons of a block on a time grid, shown while it has focus. */
+  :global([data-phone]) .compact .answers > button {
+    min-width: 30px;
+    min-height: 30px;
+    justify-content: center;
+  }
 </style>

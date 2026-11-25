@@ -46,6 +46,7 @@
   import { notify } from '../lib/notify.svelte'
   import { headline, toWire } from '../lib/onscreen'
   import { panels } from '../lib/panels.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { reader, type ReaderPlaceRequest } from '../lib/reader.svelte'
   import { onScreenNow } from '../lib/screen.svelte'
   import { app, handle } from '../lib/state.svelte'
@@ -424,8 +425,16 @@
   // `agent.ready`, which reads the settings -- so every save in the
   // Assistant settings re-ran it and pulled focus out of the dialog into the
   // composer behind it, and the next thing typed went to the wrong box.
+  //
+  // Not as a conversation appears on a phone: the caret raises the keyboard,
+  // which covers the thread that was opened to be read. It still goes there
+  // when something asks -- a New conversation.
+  let firstFocus = true
   $effect(() => {
     void agent.focusTick
+    const first = firstFocus
+    firstFocus = false
+    if (first && untrack(() => phone.on)) return
     box?.focus()
   })
 
@@ -746,7 +755,13 @@
     // is running Enter does nothing -- the box stays open so the next
     // question can be written while this one is answered, and Escape stops
     // the one running, the way it stops everything else.
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    //
+    // On a phone Enter breaks the line, as it does in every messaging app --
+    // the on-screen keyboard has no Shift to do it with -- and the Send
+    // button sends. A keyboard attached to the phone still sends with Ctrl
+    // or Command and Enter.
+    const sends = phone.on ? e.ctrlKey || e.metaKey : !e.shiftKey
+    if (e.key === 'Enter' && sends && !e.isComposing) {
       e.preventDefault()
       void send()
     } else if (e.key === 'Escape' && agent.busy) {
@@ -1236,10 +1251,12 @@
           bind:value={draft}
           onkeydown={onKeydown}
           onpaste={onPaste}
-          placeholder={variant === 'page'
-            ? 'Ask anything, or tell it what to do…'
-            : 'Ask, or tell it what to do…'}
-          rows={variant === 'page' ? 1 : 2}
+          placeholder={phone.on
+            ? 'Ask anything…'
+            : variant === 'page'
+              ? 'Ask anything, or tell it what to do…'
+              : 'Ask, or tell it what to do…'}
+          rows={variant === 'page' || phone.on ? 1 : 2}
           aria-label="Message the assistant"
         ></textarea>
         {#if voice.available}
@@ -2195,5 +2212,109 @@
   .send.stop {
     background: var(--fg);
     color: var(--bg);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     A column the width of the screen less a margin, a composer whose
+     buttons are a thumb's size and whose box is read at 16 px (smaller and
+     iOS zooms the page into it), and what a pointer reveals on hover -- the
+     copy button -- always there. */
+  :global([data-phone]) .page .column {
+    gap: var(--sp-5);
+    padding: calc(var(--thread-top, 0px) + var(--sp-4)) var(--sp-4) var(--sp-6);
+  }
+  :global([data-phone]) .page .said {
+    max-width: 88%;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .hello {
+    margin-top: var(--sp-6);
+  }
+  :global([data-phone]) .starts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :global([data-phone]) .start {
+    min-height: 48px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .choice {
+    min-height: 48px;
+    padding: var(--sp-3) var(--sp-4);
+  }
+  :global([data-phone]) .acts {
+    opacity: 1;
+  }
+  :global([data-phone]) .copy {
+    height: 40px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .worked {
+    min-height: 40px;
+    padding: 0 var(--sp-2) 0 4px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .digest summary,
+  :global([data-phone]) .reasoning summary,
+  :global([data-phone]) .sysline summary,
+  :global([data-phone]) .earlier summary {
+    display: flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  /* A table wider than the screen scrolls in its own box rather than
+     taking the thread's whole column sideways with it. */
+  :global([data-phone]) .md :global(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  :global([data-phone]) .composer {
+    padding: var(--sp-2) var(--sp-2) var(--sp-2);
+  }
+  :global([data-phone]) .page .composer {
+    padding: 0 var(--sp-3) var(--sp-3);
+  }
+  /* The box, the paperclip, the microphone and Send in one rounded frame, in
+     the panel as on the page. */
+  :global([data-phone]) .compose {
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl);
+    background: var(--bg-raised);
+    box-shadow: var(--shadow);
+  }
+  :global([data-phone]) .compose:focus-within {
+    border-color: var(--accent);
+  }
+  :global([data-phone]) textarea {
+    padding: 11px 0;
+    border: 0;
+    background: none;
+  }
+  :global([data-phone]) .attach,
+  :global([data-phone]) .mic,
+  :global([data-phone]) .send {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .send {
+    border-radius: 50%;
+  }
+  :global([data-phone]) textarea {
+    min-height: 44px;
+    font-size: max(16px, var(--text-base));
+  }
+  :global([data-phone]) .seen {
+    min-height: 32px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .unpick {
+    top: -10px;
+    right: -10px;
+    width: 28px;
+    height: 28px;
   }
 </style>

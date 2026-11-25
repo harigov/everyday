@@ -27,6 +27,7 @@
   import { viaTitle } from '../lib/chat'
   import { lookOf } from '../lib/companion'
   import { panels } from '../lib/panels.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { pref } from '../lib/prefs'
   import { app } from '../lib/state.svelte'
   import AssistantDog from './AssistantDog.svelte'
@@ -166,7 +167,7 @@
   class="panel shell-card"
   class:dragging
   class:floating={dog}
-  style="--panel-w: {applied}px; --thread-top: {dog ? STAGE_H : 0}px"
+  style="--panel-w: {applied}px; --thread-top: {dog ? (phone.on ? 98 : STAGE_H) : 0}px"
   aria-label={agent.displayName}
 >
   <!-- The rail's own left edge, as a control. `separator` with an
@@ -195,13 +196,14 @@
       class="ghost"
       onclick={() => (showHistory = !showHistory)}
       aria-expanded={showHistory}
+      aria-label="Past conversations"
       title="Past conversations"
     >
       <Icon name="layers" size={16} />
     </button>
     {#if dog}
       <div class="stage">
-        <AssistantDog width={DOG_W} height={DOG_H} />
+        <AssistantDog width={phone.on ? 88 : DOG_W} height={phone.on ? 74 : DOG_H} />
         <span class="pill">{agent.displayName}</span>
       </div>
       <span class="spacer"></span>
@@ -212,6 +214,7 @@
       class="ghost"
       onclick={() => void agent.startThread()}
       disabled={agent.busy}
+      aria-label="New conversation"
       title="New conversation"
     >
       <Icon name="plus" size={16} />
@@ -220,14 +223,14 @@
          outgrown a column. The thread comes with it: they are one store. -->
     {#if app.canShow('assistant')}
       <button
-        class="ghost"
+        class="ghost desktop-only"
         onclick={() => void app.goTo('assistant')}
         title="Open in the Assistant app"
       >
         <Icon name="monitor" size={16} />
       </button>
     {/if}
-    <button class="ghost" onclick={() => void agent.toggle()} title="Close">
+    <button class="ghost" onclick={() => void agent.toggle()} aria-label="Close" title="Close">
       <Icon name="close" size={16} />
     </button>
   </header>
@@ -257,6 +260,7 @@
             <button
               class="ghost"
               onclick={() => void agent.deleteThread(thread.id)}
+              aria-label="Delete {thread.title || 'Untitled'}"
               title="Delete conversation"
             >
               <Icon name="trash" size={14} />
@@ -311,7 +315,9 @@
   :global([data-phone]) .panel {
     position: fixed;
     inset: 0;
-    z-index: 55;
+    /* Over the bar of apps, which is at 62: the panel is the whole screen,
+       with its composer at the foot of it, and not behind that bar. */
+    z-index: 63;
     width: auto;
     height: auto;
     padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
@@ -512,5 +518,40 @@
     padding: var(--sp-3);
     font-size: var(--text-sm);
     color: var(--fg-faint);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The header's buttons and the past conversations are things a finger
+     presses: forty-four pixels each, in a list that is the height of what
+     is clear of the keyboard rather than a fixed slit. */
+  :global([data-phone]) .head {
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-1);
+  }
+  :global([data-phone]) .ghost {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+  }
+  :global([data-phone]) .panel.floating .history {
+    top: calc(var(--sp-1) + 48px);
+    left: var(--sp-2);
+    right: var(--sp-2);
+    max-height: min(60dvh, 420px);
+  }
+  :global([data-phone]) .history {
+    max-height: min(60dvh, 420px);
+  }
+  :global([data-phone]) .threadname {
+    min-height: 44px;
+    align-items: center;
+    padding: var(--sp-2) var(--sp-3);
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .thread .ghost {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .count {
+    font-size: var(--text-sm);
   }
 </style>

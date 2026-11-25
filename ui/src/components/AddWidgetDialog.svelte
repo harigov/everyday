@@ -75,7 +75,7 @@
               </span>
               <span class="note">{spec.note}</span>
               <span class="meta">
-                <span>{SIZE_LABELS[spec.size]}</span>
+                <span class="size">{SIZE_LABELS[spec.size]}</span>
                 {#if on > 0}
                   <!-- A count rather than a tick that disables the tile: two
                        heatmaps of two habits is the ordinary case. -->
@@ -206,5 +206,31 @@
     background: var(--bg-active);
     color: var(--fg-muted);
     font-weight: 600;
+  }
+
+  /* A phone: nearly the whole screen between the top and the bar of apps,
+     one tile to a row, and a close button a finger can find. */
+  :global([data-phone]) .picker {
+    top: calc(var(--safe-top) + var(--sp-3));
+    width: calc(100vw - var(--sp-4) - var(--safe-left) - var(--safe-right));
+    max-height: calc(
+      100dvh - var(--safe-top) - var(--bottombar-h) - var(--safe-bottom) - var(--sp-5)
+    );
+  }
+  :global([data-phone]) .tiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Every card is the width of the page there, so the width it arrives at
+     says nothing. */
+  :global([data-phone]) .meta .size {
+    display: none;
+  }
+  :global([data-phone]) .close {
+    width: 40px;
+    height: 40px;
+    margin: calc(var(--sp-1) * -1) calc(var(--sp-1) * -1) 0 0;
+  }
+  :global([data-phone]) header {
+    padding: var(--sp-3) var(--sp-4) var(--sp-3);
   }
 </style>

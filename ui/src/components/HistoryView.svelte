@@ -409,4 +409,25 @@
     color: var(--accent);
     text-decoration: underline;
   }
+
+  /* A phone: the row's small controls are always at full strength -- there is
+     no pointer to bring them up -- and each is a finger's size. */
+  :global([data-phone]) .page {
+    min-width: 0;
+  }
+  :global([data-phone]) .top {
+    padding-right: var(--sp-3);
+    padding-left: var(--sp-4);
+  }
+  :global([data-phone]) .title {
+    padding: 7px 0;
+  }
+  :global([data-phone]) .small {
+    width: 44px;
+    height: 44px;
+    opacity: 1;
+  }
+  :global([data-phone]) .load-more {
+    min-height: 48px;
+  }
 </style>

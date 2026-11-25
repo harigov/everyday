@@ -106,8 +106,9 @@
       <h2>Needs attention</h2>
       <span class="count">{count}</span>
       <span class="spacer"></span>
-      <button class="link" onclick={() => panels.openSettings('proposals')}>
-        Recently answered
+      <button class="link answered" onclick={() => panels.openSettings('proposals')}>
+        <span class="desktop-only">Recently answered</span>
+        <span class="phone-only">Answered</span>
       </button>
       <button
         class="fold"
@@ -301,5 +302,39 @@
     color: var(--fg-on-accent);
     background: var(--accent);
     border-color: var(--accent);
+  }
+
+  /* A phone: the heading on one line, the controls finger-sized, and what it
+     has noticed over its two answers rather than squeezed beside them. */
+  :global([data-phone]) .attention {
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) h2,
+  :global([data-phone]) .answered {
+    white-space: nowrap;
+  }
+  :global([data-phone]) .attention .answered,
+  :global([data-phone]) .attention .more {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 var(--sp-2);
+  }
+  :global([data-phone]) .attention .fold {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .noticed {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .noticed .text {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .answer {
+    min-height: 38px;
+    padding: 0 var(--sp-4) 0 var(--sp-3);
+    font-size: var(--text-sm);
   }
 </style>

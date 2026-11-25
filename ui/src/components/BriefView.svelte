@@ -42,6 +42,7 @@
   import { listening } from '../lib/listen.svelte'
   import { renderMarkdown } from '../lib/markdown'
   import { panels } from '../lib/panels.svelte'
+  import { details } from '../lib/phone.svelte'
   import { player } from '../lib/player.svelte'
   import { app } from '../lib/state.svelte'
   import { isoDate } from '../lib/time'
@@ -204,7 +205,10 @@
     if (!thread) return
     assistant.openRun = r.id
     await agent.load()
-    if (await app.goTo('assistant')) await agent.openThread(thread)
+    if (await app.goTo('assistant')) {
+      details.open('assistant')
+      await agent.openThread(thread)
+    }
   }
 
   /** Markdown for one line: **bold** and the rest, without the paragraph. */
@@ -1042,6 +1046,72 @@
   }
   .link:hover {
     text-decoration: underline;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────
+     The bar is three rows, each a line of its own -- which brief, which day,
+     and what to do with it -- rather than a wrapped tangle of the same
+     controls; the page has the screen's width less a narrow margin instead
+     of the margins of a reading column; and what a finger presses is 40 px
+     tall at least. */
+  :global([data-phone]) .bar {
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4);
+  }
+  :global([data-phone]) .kinds {
+    max-width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  :global([data-phone]) .kinds :global(.filter) {
+    min-height: 38px;
+  }
+  :global([data-phone]) .history {
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .history button {
+    height: 40px;
+  }
+  :global([data-phone]) .step {
+    width: 40px;
+  }
+  :global([data-phone]) .actions {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+  :global([data-phone]) .actions .btn:not(.icon-only) {
+    flex: 1 1 0;
+    min-width: 0;
+    justify-content: center;
+    white-space: nowrap;
+  }
+  :global([data-phone]) .icon-only {
+    flex: none;
+    width: 40px;
+  }
+  :global([data-phone]) .body {
+    padding: var(--sp-5) var(--sp-4) var(--fab-clear);
+  }
+  :global([data-phone]) .stats {
+    margin-bottom: var(--sp-6);
+  }
+  :global([data-phone]) .part + .part {
+    margin-top: var(--sp-8);
+  }
+  :global([data-phone]) .foot {
+    margin-top: var(--sp-8);
+  }
+  :global([data-phone]) .foot .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  :global([data-phone]) .listen .btn {
+    flex: 1 1 auto;
+    justify-content: center;
   }
 
   @media (prefers-reduced-motion: reduce) {

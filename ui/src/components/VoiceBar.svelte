@@ -277,4 +277,17 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* A phone: the two buttons a thumb's size, in a bar no shorter than the
+     composer's own. */
+  :global([data-phone]) .voice {
+    min-height: 44px;
+  }
+  :global([data-phone]) .tool {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .end {
+    height: 40px;
+  }
 </style>

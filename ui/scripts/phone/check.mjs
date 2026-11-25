@@ -312,7 +312,12 @@ async function main() {
               const errors = []
               page.on('pageerror', (e) => errors.push(`exception: ${e.message}`))
               page.on('console', (m) => {
-                if (m.type() === 'error') errors.push(`console: ${m.text().slice(0, 300)}`)
+                // WebKit logs its own warning, at error level, for the viewport
+                // meta's `interactive-widget` key (index.html): it is Chromium's
+                // way to resize for the keyboard and WebKit ignores it, which
+                // is the point. Not the page's error, and on every screen.
+                if (m.type() === 'error' && !m.text().includes('interactive-widget'))
+                  errors.push(`console: ${m.text().slice(0, 300)}`)
               })
               let found
               let failure = null

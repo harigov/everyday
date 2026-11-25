@@ -485,4 +485,27 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* A phone: the answers to a question are buttons a thumb can tell apart,
+     on a line of their own if the three do not fit side by side. */
+  :global([data-phone]) .card {
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .answer {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .answer button {
+    min-height: 44px;
+    padding: 0 var(--sp-4);
+    font-size: var(--text-base);
+    justify-content: center;
+  }
+  :global([data-phone]) .long {
+    max-height: 40dvh;
+  }
+  :global([data-phone]) button.said.link {
+    min-height: 36px;
+    font-size: var(--text-sm);
+  }
 </style>
