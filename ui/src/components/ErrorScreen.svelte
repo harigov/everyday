@@ -122,4 +122,24 @@
     font-size: var(--text-xs);
     user-select: text;
   }
+
+  /* A phone: clear of the status bar and the gesture bar, and scrolling to
+     the buttons if the explanation is taller than what is left. */
+  :global([data-phone]) .wrap {
+    display: flex;
+    overflow-y: auto;
+    padding: calc(var(--safe-top) + var(--sp-4)) calc(var(--safe-right) + var(--sp-4))
+      calc(var(--safe-bottom) + var(--sp-4)) calc(var(--safe-left) + var(--sp-4));
+  }
+  :global([data-phone]) .card {
+    margin: auto;
+    padding: var(--sp-6) var(--sp-5) var(--sp-5);
+  }
+  :global([data-phone]) .wide {
+    height: 48px;
+  }
+  :global([data-phone]) .detail,
+  :global([data-phone]) .hint code {
+    overflow-wrap: anywhere;
+  }
 </style>

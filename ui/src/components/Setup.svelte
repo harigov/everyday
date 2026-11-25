@@ -403,4 +403,31 @@
     font-family: var(--font-mono);
     font-size: var(--text-xs);
   }
+
+  /* A phone: clear of the status bar and the gesture bar, a card as wide as
+     the screen allows, and a finger's height for each thing to press. The
+     page scrolls (`.scroll`), so a long form stays reachable with the
+     keyboard up. */
+  :global([data-phone]) .setup {
+    padding: calc(var(--safe-top) + var(--sp-6)) calc(var(--safe-right) + var(--sp-4))
+      calc(var(--safe-bottom) + var(--sp-6)) calc(var(--safe-left) + var(--sp-4));
+  }
+  :global([data-phone]) .card {
+    padding: var(--sp-6) var(--sp-4) var(--sp-5);
+  }
+  :global([data-phone]) .sub {
+    margin-bottom: var(--sp-5);
+  }
+  :global([data-phone]) .modes button {
+    min-height: 44px;
+  }
+  :global([data-phone]) .wide {
+    height: 48px;
+  }
+  :global([data-phone]) .option {
+    min-height: 44px;
+  }
+  :global([data-phone]) .where code {
+    overflow-wrap: anywhere;
+  }
 </style>

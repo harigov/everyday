@@ -27,6 +27,7 @@
   import { relativeTime } from '../lib/format'
   import { renderMarkdown } from '../lib/markdown'
   import { focusOnMount } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import {
     DREAM_SCOPE_LABELS,
     groupMemories,
@@ -106,6 +107,11 @@
   const otherJobs = $derived(jobs.jobs.filter((j) => !(isWatch(j) && isLive(j))))
 
   const editing = $derived(assistant.editing)
+  // A routine being written takes the place of the list; on a phone, back is Cancel.
+  closesOnBack(
+    () => pane === 'routines' && editing !== null,
+    () => assistant.cancelEdit(),
+  )
   const schedule = $derived(editing?.trigger.type === 'schedule' ? editing.trigger : null)
   const editingIsDream = $derived(editing?.kind?.type === 'dream')
 
@@ -1430,5 +1436,91 @@
   .answered .memtext {
     flex: 1;
     color: var(--fg);
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     One column, and an action under a card is a finger's height: the
+     links in a card's foot, a memory's own buttons, a proposal's two
+     answers. */
+  :global([data-phone]) .cardhead,
+  :global([data-phone]) .runrow,
+  :global([data-phone]) .answered,
+  :global([data-phone]) .editorfoot {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .cardfoot {
+    flex-wrap: wrap;
+    gap: 0 var(--sp-1);
+    margin-inline: calc(var(--sp-2) * -1);
+  }
+  :global([data-phone]) .cardfoot .link,
+  :global([data-phone]) .runrow .link,
+  :global([data-phone]) .memory .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 var(--sp-2);
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .cardfoot .dim {
+    padding: 0 var(--sp-2);
+  }
+  :global([data-phone]) .memory {
+    flex-wrap: wrap;
+    gap: 0 var(--sp-1);
+  }
+  :global([data-phone]) .memtext {
+    flex: 1 1 100%;
+    min-height: 44px;
+    padding: var(--sp-2) 0;
+  }
+  :global([data-phone]) .memory .dim {
+    flex: 1;
+  }
+  :global([data-phone]) .pinbtn {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .days {
+    width: 100%;
+  }
+  :global([data-phone]) .day {
+    flex: 1;
+    min-width: 0;
+    height: 44px;
+  }
+  :global([data-phone]) .template {
+    min-height: 56px;
+  }
+  :global([data-phone]) .editor,
+  :global([data-phone]) .templates {
+    padding: var(--sp-3);
+    /* One column as wide as the card and no wider: left to its content, the
+       column took the widest row's -- the clock field, which WebKit gives
+       seconds -- and the card ran off the screen's edge. */
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* A proposal's answers on a line of their own, as wide as they need: the
+     card is the width of the screen, and beside a caption two buttons left it
+     a few letters. Over the component's own rule, which only does this in a
+     column under 280px. */
+  :global([data-phone]) .panes :global(.proposal:not(.compact) .answers) {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .panes :global(.proposal .answers > button) {
+    min-height: 44px;
+    padding: 0 var(--sp-4);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .panes :global(.proposal .open),
+  :global([data-phone]) .panes :global(.proposal .caption),
+  :global([data-phone]) .panes :global(.proposal .why) {
+    white-space: normal;
+  }
+  :global([data-phone]) .panes :global(.proposal .open) {
+    min-height: 44px;
+    padding: var(--sp-1) 0;
   }
 </style>

@@ -420,4 +420,10 @@
     gap: var(--sp-2);
     color: var(--danger);
   }
+
+  /* A phone: the way back to the list is a finger tall. */
+  :global([data-phone]) .back {
+    min-height: 44px;
+    padding-right: var(--sp-3);
+  }
 </style>

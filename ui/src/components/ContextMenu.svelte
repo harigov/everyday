@@ -8,6 +8,7 @@
   // scrolling under it, and the vault locking.
 
   import { menu } from '../lib/menu.svelte'
+  import { closesOnBack } from '../lib/phone.svelte'
   import MenuPanel from './MenuPanel.svelte'
 
   /**
@@ -23,6 +24,12 @@
    * the short version is that a scrim eats the click it is dismissed by, so
    * with a menu open the first click on the app bar did nothing at all.
    */
+  // A phone's back button puts the menu away, and nothing else with it.
+  closesOnBack(
+    () => !!menu.at,
+    () => menu.close(false),
+  )
+
   $effect(() => {
     if (!menu.at) return
     const away = (e: Event) => {

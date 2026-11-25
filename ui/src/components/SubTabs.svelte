@@ -13,6 +13,8 @@
   // kind of tab. Left and right arrows move between them, the way a tab list
   // is expected to.
 
+  import { phone } from '../lib/phone.svelte'
+
   let {
     tabs,
     value = $bindable(),
@@ -24,6 +26,21 @@
   } = $props()
 
   let list = $state<HTMLDivElement | null>(null)
+
+  // A phone's strip is one row that scrolls, so the open tab is brought into
+  // view -- opened at the fifth of five, the strip would otherwise sit at the
+  // first and show none of them as chosen.
+  $effect(() => {
+    void value
+    if (!phone.on || !list) return
+    const on = list.querySelector<HTMLElement>('[aria-selected="true"]')
+    if (!on) return
+    const box = list.getBoundingClientRect()
+    const at = on.getBoundingClientRect()
+    if (at.left < box.left || at.right > box.right) {
+      list.scrollLeft += at.left - box.left - (box.width - at.width) / 2
+    }
+  })
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
@@ -72,5 +89,26 @@
     max-width: 100%;
     justify-content: flex-start;
     margin-bottom: var(--sp-6);
+  }
+
+  /* A phone: one row the width of the page, scrolling sideways when the tabs
+     are wider than it -- which is what a strip of them is, and the one place
+     here that scrolls that way on purpose -- rather than wrapping into a
+     block of two or three rows with an orphan on the last. The scrollbar is
+     not drawn; the tab cut off at the edge says there is more. */
+  :global([data-phone]) .subtabs {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    margin-bottom: var(--sp-4);
+  }
+  :global([data-phone]) .subtabs::-webkit-scrollbar {
+    display: none;
+  }
+  :global([data-phone]) .subtabs .filter {
+    flex: none;
+    min-height: 40px;
   }
 </style>

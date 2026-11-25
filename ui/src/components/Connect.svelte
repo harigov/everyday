@@ -213,4 +213,43 @@
     opacity: 0.5;
     cursor: default;
   }
+
+  /* A phone: fields at the size that keeps iOS from zooming into them (a
+     rule here beats the shared one), and every press a finger wide. The
+     button spans the card, the way a form's one action does on a phone. */
+  :global([data-phone]) .connect {
+    max-width: none;
+  }
+  /* The label is a `.field` here -- a column of its caption and its input --
+     and app.css's own `.field` (a text box: a height, a border, a fill) lands
+     on it too, drawing a box round the caption with the input spilling out
+     of it and over the button below. The desktop's has the same; a phone's
+     is drawn properly. */
+  :global([data-phone]) label.field {
+    height: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+  }
+  :global([data-phone]) .field input {
+    min-height: 48px;
+    font-size: max(16px, 1em);
+  }
+  :global([data-phone]) .primary {
+    align-self: stretch;
+    min-height: 48px;
+  }
+  :global([data-phone]) .row {
+    min-height: 56px;
+  }
+  :global([data-phone]) .forget {
+    min-width: 64px;
+    min-height: 48px;
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .host {
+    overflow-wrap: anywhere;
+  }
 </style>

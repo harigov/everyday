@@ -742,4 +742,24 @@
     font-size: var(--text-sm);
     color: var(--fg-muted);
   }
+
+  /* A phone: a category's name on a line of its own, then where it files and
+     its buttons, each button a finger wide -- three fields in a row left the
+     name eighteen pixels. */
+  :global([data-phone]) .category > .row {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .category > .row > .grow {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .category > .row > .setting:not(.grow) {
+    flex: 1 1 10rem;
+  }
+  :global([data-phone]) .actions {
+    padding-bottom: 0;
+  }
+  :global([data-phone]) .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
 </style>

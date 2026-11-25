@@ -318,4 +318,14 @@
   .archived {
     margin-top: var(--sp-4);
   }
+
+  /* A phone: a row and its menu button a finger tall. */
+  :global([data-phone]) .area {
+    height: 48px;
+    padding-right: 0;
+  }
+  :global([data-phone]) .more {
+    width: 44px;
+    height: 44px;
+  }
 </style>

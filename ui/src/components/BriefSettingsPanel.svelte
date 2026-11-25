@@ -1087,4 +1087,19 @@
   .notice.err {
     color: var(--danger);
   }
+
+  /* A phone: the days of the week share the line and are a finger tall, and
+     the buttons that move a section are too. */
+  :global([data-phone]) .days {
+    width: 100%;
+  }
+  :global([data-phone]) .day {
+    flex: 1;
+    min-width: 0;
+    height: 44px;
+  }
+  :global([data-phone]) .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
 </style>

@@ -51,6 +51,7 @@
   import { sorting } from '../lib/sorting.svelte'
   import { errorMessage } from '../lib/errors'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { openExternal } from '../lib/open-external'
   import { panels } from '../lib/panels.svelte'
   import type {
@@ -545,6 +546,12 @@
     const ok = await accounts.remove(original.id)
     if (ok) onclose()
   }
+
+  // A phone's back button is its Escape: not while a sign-in is being waited on.
+  closesOnBack(
+    () => true,
+    () => signInPhase !== 'waiting' && onclose(),
+  )
 </script>
 
 <svelte:window
@@ -554,8 +561,14 @@
 />
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim" onclick={() => signInPhase !== 'waiting' && onclose()}></div>
-<div class="sheet wide" role="dialog" aria-modal="true" aria-label="Account" use:trapFocus>
+<div class="scrim phone-fit" onclick={() => signInPhase !== 'waiting' && onclose()}></div>
+<div
+  class="sheet wide phone-fit"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Account"
+  use:trapFocus
+>
   {#if !original || !draft}
     <p class="hint">Loading…</p>
   {:else}

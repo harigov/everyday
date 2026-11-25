@@ -16,6 +16,7 @@
   import { meetings } from '../lib/meetings.svelte'
   import { app } from '../lib/state.svelte'
   import { ALL_USES, USE_LABELS, templates } from '../lib/templates.svelte'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { todayIso } from '../lib/time'
   import type { RenderedTemplate, Template, TemplateUse } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -25,6 +26,12 @@
   let editing = $state<Template | null>(null)
   let pendingDelete = $state<Template | null>(null)
   let saving = $state(false)
+
+  // A template being written takes the place of the list; on a phone, back is Cancel.
+  closesOnBack(
+    () => editing !== null,
+    () => (editing = null),
+  )
 
   void templates.load()
   // For the card that says which template meetings are written up from.

@@ -2025,4 +2025,14 @@
     font-size: var(--text-sm);
     color: var(--fg-muted);
   }
+
+  /* A phone: the On/Off switch on a card and the provider chips are a
+     finger's size. */
+  :global([data-phone]) .toggle.compact {
+    min-height: 44px;
+    padding-inline: var(--sp-1);
+  }
+  :global([data-phone]) .chip {
+    height: 40px;
+  }
 </style>

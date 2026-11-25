@@ -102,6 +102,9 @@ if (typeof window !== 'undefined') {
 interface Layer {
   id: number
   close: () => void
+  /** Its entry is on the history. A layer opened while a traversal is still
+   *  landing is not yet. */
+  pushed: boolean
 }
 
 class Back {
@@ -109,12 +112,17 @@ class Back {
   #next = 0
   /** Going back that this module asked for itself, so `popstate` ignores it. */
   #quiet = 0
+  /** Layers opened while that was still landing: their entries are pushed
+   *  when it has, in the order they were opened. */
+  #waiting: Layer[] = []
+  #timer: ReturnType<typeof setTimeout> | undefined
 
   constructor() {
     if (typeof window === 'undefined') return
     window.addEventListener('popstate', () => {
       if (this.#quiet > 0) {
         this.#quiet--
+        if (this.#quiet === 0) this.#landed()
         return
       }
       this.#layers.pop()?.close()
@@ -127,15 +135,34 @@ class Back {
    */
   open(close: () => void): () => void {
     if (!phone.on) return () => {}
-    const id = ++this.#next
-    this.#layers.push({ id, close })
-    history.pushState({ layer: id }, '')
-    return () => this.#closed(id)
+    const layer: Layer = { id: ++this.#next, close, pushed: false }
+    this.#layers.push(layer)
+    // One layer closing as another opens -- a menu's item raising a dialog --
+    // is the usual way in here, and `go(-1)` for the first only takes effect
+    // after the push for the second: the history then lands one entry too
+    // far back, and the next back leaves the app. So the second waits for the
+    // first to land.
+    if (this.#quiet > 0) this.#waiting.push(layer)
+    else this.#push(layer)
+    return () => this.#closed(layer.id)
   }
 
   /** How many layers are open, for a test. */
   get depth(): number {
     return this.#layers.length
+  }
+
+  #push(layer: Layer) {
+    history.pushState({ layer: layer.id }, '')
+    layer.pushed = true
+  }
+
+  #landed() {
+    clearTimeout(this.#timer)
+    // Not those closed while they waited.
+    for (const layer of this.#waiting.splice(0)) {
+      if (this.#layers.includes(layer)) this.#push(layer)
+    }
   }
 
   #closed(id: number) {
@@ -144,8 +171,17 @@ class Back {
     // Whatever was opened over it goes with it: a sheet over an item closed
     // by its list closing is not left behind on the history.
     const gone = this.#layers.splice(at)
+    const entries = gone.filter((l) => l.pushed).length
+    if (entries === 0) return
     this.#quiet++
-    history.go(-gone.length)
+    history.go(-entries)
+    // A traversal that cannot happen -- already at the first entry -- never
+    // says so; the layers waiting on it are not left waiting for ever.
+    clearTimeout(this.#timer)
+    this.#timer = setTimeout(() => {
+      this.#quiet = 0
+      this.#landed()
+    }, 500)
   }
 }
 

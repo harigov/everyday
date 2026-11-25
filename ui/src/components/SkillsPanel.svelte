@@ -21,6 +21,7 @@
   import { onDestroy } from 'svelte'
   import { api } from '../lib/api'
   import { notify } from '../lib/notify.svelte'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { proposals } from '../lib/proposals.svelte'
   import type { Skill, SkillId } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -31,6 +32,12 @@
   let loading = $state(true)
   let editing = $state<Skill | null>(null)
   let pendingDelete = $state<{ id: SkillId; name: string } | null>(null)
+
+  // A skill being written takes the place of the list; on a phone, back is Cancel.
+  closesOnBack(
+    () => editing !== null,
+    () => cancelEdit(),
+  )
 
   async function load() {
     loading = true
