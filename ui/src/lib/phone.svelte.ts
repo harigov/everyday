@@ -26,9 +26,13 @@ class Phone {
   constructor() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
     const query = window.matchMedia(QUERY)
+    // Only on a change: a page starts without `data-phone`, so a desktop
+    // never touches <html> for it.
     const apply = () => {
-      this.on = query.matches || (mobileShell && window.innerWidth <= 960)
-      document.documentElement.toggleAttribute('data-phone', this.on)
+      const on = query.matches || (mobileShell && window.innerWidth <= 960)
+      if (on === this.on) return
+      this.on = on
+      document.documentElement.toggleAttribute('data-phone', on)
     }
     apply()
     query.addEventListener('change', apply)
@@ -116,9 +120,12 @@ class Back {
    *  when it has, in the order they were opened. */
   #waiting: Layer[] = []
   #timer: ReturnType<typeof setTimeout> | undefined
+  #listening = false
 
-  constructor() {
-    if (typeof window === 'undefined') return
+  /** From the first layer on: a desktop never listens. */
+  #listen() {
+    if (this.#listening) return
+    this.#listening = true
     window.addEventListener('popstate', () => {
       if (this.#quiet > 0) {
         this.#quiet--
@@ -135,6 +142,7 @@ class Back {
    */
   open(close: () => void): () => void {
     if (!phone.on) return () => {}
+    this.#listen()
     const layer: Layer = { id: ++this.#next, close, pushed: false }
     this.#layers.push(layer)
     // One layer closing as another opens -- a menu's item raising a dialog --
