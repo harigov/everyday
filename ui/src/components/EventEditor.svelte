@@ -241,6 +241,10 @@
 
 <div class="panel scroll" class:fresh={isNew} style="--c: {colour}">
   <header class="phead">
+    <!-- A phone's editor is a page with Cancel and Save at its two top
+         corners, kept there while it scrolls: Save at the foot would be under
+         the assistant's button, and a long form's foot is a long way off. -->
+    <button class="pcancel phone-only" disabled={saving} onclick={() => oncancel()}>Cancel</button>
     <span class="kind">
       <span class="cdot" aria-hidden="true"></span>
       {#if isNew}
@@ -252,6 +256,24 @@
     <button class="x" title="Close without saving" aria-label="Close" onclick={() => oncancel()}>
       <Icon name="close" size={15} />
     </button>
+    <button
+      class="btn btn-primary psave phone-only"
+      disabled={saving || askingScope}
+      aria-label={saveLabel}
+      onclick={() => save()}>{saving ? 'Saving…' : 'Save'}</button
+    >
+    {#if error}<p class="error perror phone-only">{error}</p>{/if}
+    {#if askingScope}
+      <!-- The second half of pressing Save, up here with the button that was
+           pressed rather than at the foot of the form. -->
+      <div class="pask phone-only">
+        <p class="ask">This is one of a series. Save the change to…</p>
+        <button class="btn btn-primary" onclick={() => commit('occurrence')}>Only this event</button
+        >
+        <button class="btn" onclick={() => commit('series')}>All events in the series</button>
+        <button class="btn" onclick={() => (askingScope = false)}>Back</button>
+      </div>
+    {/if}
   </header>
 
   <input
@@ -382,6 +404,12 @@
         bind:typed={guestText}
         onchange={(attendees: Attendee[]) => onpatch({ attendees })}
       />
+      {#if hasGuests}
+        <!-- What Save says on a desktop, where the button can say it. -->
+        <p class="note phone-only">
+          {isNew ? 'Saving sends the invitations.' : 'Saving tells the guests about the change.'}
+        </p>
+      {/if}
     {/if}
   </div>
 
@@ -397,7 +425,7 @@
     ></textarea>
   </div>
 
-  {#if error}<p class="error">{error}</p>{/if}
+  {#if error}<p class="error pfoot">{error}</p>{/if}
 
   <div class="actions">
     {#if askingScope}
@@ -618,5 +646,106 @@
     flex-basis: 100%;
     font-size: var(--text-sm);
     color: var(--fg-muted);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A page of its own: Cancel and Save at the corners of a header that stays
+     put, its error and its "which part?" question under it, and the form
+     scrolling below. Fields tall enough to hit, in type iOS will not zoom
+     into. */
+  :global([data-phone]) .panel {
+    padding: 0 var(--sp-4) var(--fab-clear);
+  }
+  :global([data-phone]) .phead {
+    flex: none;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    flex-wrap: wrap;
+    min-height: 56px;
+    margin: 0 calc(-1 * var(--sp-4));
+    padding: var(--sp-1) var(--sp-3);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+  :global([data-phone]) .x {
+    display: none;
+  }
+  :global([data-phone]) .kind {
+    flex: 1;
+    min-width: 0;
+    justify-content: center;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .pcancel {
+    min-width: 64px;
+    height: 44px;
+    flex: none;
+    margin-left: calc(-1 * var(--sp-2));
+    padding: 0 var(--sp-2);
+    border-radius: var(--radius);
+    font-weight: 500;
+    color: var(--accent);
+  }
+  .pcancel:active {
+    background: var(--bg-hover);
+  }
+  .psave {
+    flex: none;
+    min-width: 72px;
+    height: 44px;
+  }
+  .perror,
+  .pask {
+    flex-basis: 100%;
+    margin: 0 0 var(--sp-2);
+  }
+  .pask {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+  .pask .btn {
+    min-height: 44px;
+  }
+  .pask .btn:not(.btn-primary) {
+    border: 1px solid var(--border-strong);
+  }
+  :global([data-phone]) .pfoot,
+  :global([data-phone]) .actions {
+    display: none;
+  }
+
+  :global([data-phone]) .titlefield {
+    min-height: 56px;
+  }
+  :global([data-phone]) .timefield input,
+  :global([data-phone]) .pick {
+    height: 44px;
+    font-size: 16px;
+  }
+  :global([data-phone]) .notes {
+    font-size: 16px;
+  }
+  :global([data-phone]) .check {
+    min-height: 44px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .check input {
+    width: 22px;
+    height: 22px;
+  }
+  :global([data-phone]) .lbl {
+    font-size: var(--text-sm);
+  }
+
+  /* On its side, a phone has no height to spare for a tall title. */
+  @media (max-height: 500px) {
+    :global([data-phone]) .titlefield {
+      min-height: 44px;
+    }
   }
 </style>

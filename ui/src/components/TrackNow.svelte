@@ -286,4 +286,27 @@
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The strip while one runs, and the page of what is not scheduled's
+     first lines: buttons a finger can hit, a field it can type in. */
+  :global([data-phone]) .track {
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .stop,
+  :global([data-phone]) .go {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .stop {
+    color: var(--danger);
+  }
+  :global([data-phone]) .notefield {
+    height: 44px;
+    font-size: 16px;
+  }
+  :global([data-phone]) .start {
+    min-height: 52px;
+  }
 </style>

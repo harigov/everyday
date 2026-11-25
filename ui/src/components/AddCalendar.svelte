@@ -21,10 +21,17 @@
   import { accounts } from '../lib/accounts.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import Icon from './Icon.svelte'
   import type { AccountId, CalendarProvider, ProviderInfo, RemoteCalendarInfo } from '../lib/types'
 
   let { onclose }: { onclose: () => void } = $props()
+
+  // A phone's back button puts the sheet away rather than leaving the app.
+  closesOnBack(
+    () => true,
+    () => onclose(),
+  )
 
   /** By address, or from an account already signed in with calendar on. */
   let mode = $state<'address' | 'account'>('address')
@@ -424,5 +431,59 @@
     height: 1px;
     overflow: hidden;
     clip-path: inset(50%);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* As wide as the screen allows and as tall as what is clear of its edges
+     and of the bar of apps, which it stops short of,
+     scrolling inside when the instructions for finding the address are long.
+     Its choices are fingertip-sized, its two fields stack, and the buttons
+     wrap rather than run off the side. */
+  :global([data-phone]) .wide {
+    width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
+    top: calc(var(--safe-top) + var(--sp-4));
+    max-height: calc(
+      100dvh - var(--safe-top) - var(--safe-bottom) - var(--bottombar-h) - var(--sp-8)
+    );
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  /* Four providers do not fit a row at a readable size: two and two. */
+  :global([data-phone]) .providers {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .provider {
+    flex: 1 1 calc(50% - 2px);
+    height: 40px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .row {
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .grow {
+    width: 100%;
+  }
+  :global([data-phone]) .swatches {
+    height: auto;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-1) var(--sp-2);
+  }
+  :global([data-phone]) .swatch {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+  }
+  :global([data-phone]) .sheet-row {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .ghost {
+    flex-basis: 100%;
+    border: 1px solid var(--border);
+  }
+  :global([data-phone]) .remoterow {
+    min-height: 52px;
   }
 </style>

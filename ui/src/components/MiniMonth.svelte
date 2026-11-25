@@ -52,6 +52,9 @@
      *  heading is noise there; the calendar app's mini month has no such
      *  per-day label, so its initials stay announced. */
     hideHeadings = false,
+    /** Cells and arrows sized for a thumb on a phone. Opt-in: the journal's
+     *  list has not the room for them, and keeps the small ones. */
+    roomy = false,
   }: {
     anchor: string
     weekStart: number
@@ -72,6 +75,7 @@
     gridRole?: string
     gridLabel?: string
     hideHeadings?: boolean
+    roomy?: boolean
   } = $props()
 
   const days = $derived(monthGrid(anchor, weekStart))
@@ -81,7 +85,7 @@
   const today = $derived(todayIso())
 </script>
 
-<div class="minimonth" style="--mini-accent: {accent}">
+<div class="minimonth" class:roomy style="--mini-accent: {accent}">
   <div class="minihead">
     <button class="ministep" aria-label={prevLabel} onclick={() => onstep(-1)}
       ><span class="back"><Icon name="chevron" size={13} /></span></button
@@ -214,5 +218,29 @@
     border-radius: 50%;
     background: currentColor;
     opacity: 0.55;
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* Days and the month's arrows big enough for a thumb: six rows of 36 is
+     about what the drawer can spare, and the day numbers can be read. */
+  :global([data-phone]) .roomy .minititle {
+    height: 40px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .roomy .ministep {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .roomy .initial {
+    height: 22px;
+    font-size: var(--text-xs);
+  }
+  :global([data-phone]) .roomy .minday {
+    height: 36px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .roomy .bump {
+    bottom: 4px;
   }
 </style>

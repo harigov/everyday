@@ -25,6 +25,8 @@
     purposeItems,
   } from '../lib/menus'
   import { panels } from '../lib/panels.svelte'
+  import { phone } from '../lib/phone.svelte'
+  import { sidebar } from '../lib/sidebar.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import AddCalendar from './AddCalendar.svelte'
@@ -38,8 +40,32 @@
   // been.
   void accounts.load()
 
+  /** Move `node` to the page while `on`, and take it away with the component. */
+  function portal(node: HTMLElement, on: boolean) {
+    if (!on) return
+    document.body.appendChild(node)
+    return { destroy: () => node.remove() }
+  }
+
   let adding = $state(false)
   let pendingDelete = $state<CalendarInfo | null>(null)
+
+  /** A phone's drawer goes while a dialog is over the screen: it would be over the dialog. */
+  function putDrawerAway() {
+    if (phone.on) sidebar.hide()
+  }
+  function startAdding() {
+    adding = true
+    putDrawerAway()
+  }
+  /**
+   * The drawer goes once a row is chosen in it -- see `Sidebar.svelte` -- but
+   * a row here is a switch, and showing and hiding three calendars in turn is
+   * a thing to do without opening the drawer three times.
+   */
+  function keepDrawer(e: MouseEvent) {
+    if (phone.on) e.stopPropagation()
+  }
   /** The month the small calendar is showing; follows the main view. */
   let miniAnchor = $state(todayIso())
 
@@ -218,14 +244,22 @@
         ),
       },
       SEP,
-      { label: 'Unsubscribe…', icon: 'trash', danger: true, run: () => (pendingDelete = cal) },
+      {
+        label: 'Unsubscribe…',
+        icon: 'trash',
+        danger: true,
+        run: () => {
+          pendingDelete = cal
+          putDrawerAway()
+        },
+      },
     ])
   }
 
   /** The panel itself, where there is no calendar under the pointer. */
   function navMenu(): MenuItem[] {
     return tidyMenu([
-      { label: 'Add a calendar…', icon: 'plus', run: () => (adding = true) },
+      { label: 'Add a calendar…', icon: 'plus', run: startAdding },
       anySubscribed && {
         label: 'Refresh every calendar',
         icon: 'refresh',
@@ -249,15 +283,22 @@
        highlights nothing here and leaves `.today`/`.out` to carry the grid
        alone. -->
   <MiniMonth
+    roomy
     anchor={miniAnchor}
     weekStart={calendar.weekStart}
     prevLabel="Previous month"
     nextLabel="Next month"
     onstep={(months: number) => (miniAnchor = addMonths(miniAnchor, months))}
-    ontitle={() => calendar.goto(miniAnchor)}
+    ontitle={() => {
+      calendar.goto(miniAnchor)
+      putDrawerAway()
+    }}
     isOn={(iso: string) => calendar.view !== 'month' && shown.has(iso)}
     isMarked={busy}
-    onpick={(iso: string) => calendar.goto(iso)}
+    onpick={(iso: string) => {
+      calendar.goto(iso)
+      putDrawerAway()
+    }}
     oncontext={(e: MouseEvent, iso: string) => menu.show(e, dayMenu(iso))}
   />
 
@@ -280,7 +321,7 @@
         class="side-add"
         title="Add a calendar"
         aria-label="Add a calendar"
-        onclick={() => (adding = true)}
+        onclick={startAdding}
       >
         <Icon name="plus" size={15} />
       </button>
@@ -288,11 +329,12 @@
   </div>
 
   {#snippet calendarRow(cal: CalendarInfo)}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
     <div
       class="side-row"
       class:hidden={!cal.visible}
       class:failed={!!cal.lastError}
+      onclick={keepDrawer}
       oncontextmenu={(e) => menu.show(e, calendarMenu(cal))}
     >
       <button
@@ -404,19 +446,24 @@
   {/if}
 </nav>
 
-{#if adding}
-  <AddCalendar onclose={() => (adding = false)} />
-{/if}
+<!-- A phone's sidebar is a drawer, and anything fixed inside a drawer is placed
+     by the drawer, not the screen, and goes away with it. The dialogs are
+     moved out to the page there. -->
+<div class="dialogs" use:portal={phone.on}>
+  {#if adding}
+    <AddCalendar onclose={() => (adding = false)} />
+  {/if}
 
-{#if pendingDelete}
-  <ConfirmDialog
-    title={'Unsubscribe from “' + pendingDelete.name + '”?'}
-    detail="Its {pendingDelete.events} events are removed from this vault. Nothing on the calendar it came from is touched, and you can subscribe again with the same address."
-    confirmLabel="Unsubscribe"
-    onconfirm={remove}
-    oncancel={() => (pendingDelete = null)}
-  />
-{/if}
+  {#if pendingDelete}
+    <ConfirmDialog
+      title={'Unsubscribe from “' + pendingDelete.name + '”?'}
+      detail="Its {pendingDelete.events} events are removed from this vault. Nothing on the calendar it came from is touched, and you can subscribe again with the same address."
+      confirmLabel="Unsubscribe"
+      onconfirm={remove}
+      oncancel={() => (pendingDelete = null)}
+    />
+  {/if}
+</div>
 
 <style>
   /* The rows, the heading and its buttons are the shared sidebar's -- see
@@ -615,5 +662,36 @@
   .blank.quiet {
     padding-top: 0;
     opacity: 0.85;
+  }
+
+  /* ── In a phone's drawer ─────────────────────────────────────────────── */
+
+  /* A row's buttons are what a finger lands on: the swatch that shows or
+     hides a calendar, the refresh that was only there under a pointer, the
+     heading's add. */
+  :global([data-phone]) .side-nav {
+    padding-bottom: var(--bottombar-h);
+  }
+  :global([data-phone]) .side-add {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .tick,
+  :global([data-phone]) .mini-action {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .mini-action {
+    opacity: 1;
+  }
+  :global([data-phone]) .side-row {
+    padding-inline: var(--sp-1) var(--sp-1);
+  }
+  :global([data-phone]) .newpick {
+    height: 40px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .textlink {
+    min-height: 32px;
   }
 </style>

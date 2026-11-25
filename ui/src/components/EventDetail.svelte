@@ -42,6 +42,7 @@
     eventMenu,
   } from '../lib/menus'
   import { panels } from '../lib/panels.svelte'
+  import { details, phone } from '../lib/phone.svelte'
   import { describeRecurrence } from '../lib/recurrence'
   import BlockProposalDetail from './BlockProposalDetail.svelte'
   import ChoiceDialog from './ChoiceDialog.svelte'
@@ -49,6 +50,8 @@
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import MeetingBriefView from './MeetingBriefView.svelte'
+  import PhoneBack from './PhoneBack.svelte'
+  import TrackNow from './TrackNow.svelte'
   import { settledBrief } from '../lib/meetingbrief'
   import RepeatField from './RepeatField.svelte'
   import type {
@@ -325,6 +328,12 @@
     pendingDelete = null
     if (doomed) await calendar.removeBlock(doomed.id)
   }
+
+  /** A phone's way back from what is open: the grid, as it was. */
+  function putAway() {
+    calendar.selection = null
+    calendar.closeProposal()
+  }
 </script>
 
 <aside class="rail">
@@ -352,6 +361,7 @@
       oncontextmenu={(e) => menu.show(e, blockMenu(block))}
     >
       <header class="phead">
+        <PhoneBack onclick={putAway} label="Calendar" />
         <span class="kind">
           <span class="cdot" aria-hidden="true"></span>
           This computer
@@ -501,6 +511,7 @@
         oncontextmenu={(e) => menu.show(e, eventMenu(event))}
       >
         <header class="phead">
+          <PhoneBack onclick={putAway} label="Calendar" />
           <span class="kind event">
             <span class="cdot" aria-hidden="true"></span>
             {cal?.name ?? 'Subscribed calendar'}
@@ -700,9 +711,16 @@
   {:else}
     <div class="panel scroll">
       <div class="phead">
+        <PhoneBack onclick={() => details.close('calendar')} label="Calendar" />
         <span class="eyebrow">Not scheduled</span>
       </div>
-      <p class="blurb">Drag any of these onto the grid to set time aside for it.</p>
+      {#if phone.on}
+        <!-- The timer: what is running, or the way to start one. -->
+        <div class="timer"><TrackNow /></div>
+        <p class="blurb">Tap one to give it the next free slot.</p>
+      {:else}
+        <p class="blurb">Drag any of these onto the grid to set time aside for it.</p>
+      {/if}
 
       {#each calendar.unscheduled as task (task.id)}
         {@const project = calendar.projectOf(task.projectId)}
@@ -715,12 +733,12 @@
           class:overdue={!!task.dueDate && task.dueDate < calendar.anchor}
           style="--c: {project?.color ?? 'var(--fg-subtle)'}"
           title="Drag onto the grid, or press Enter to find it a slot"
-          draggable="true"
+          draggable={!phone.on}
           ondragstart={(e) => onTaskDragStart(e, task)}
           onclick={() => calendar.scheduleNext(task.id)}
           oncontextmenu={(e) => menu.show(e, calendarTaskMenu(task))}
         >
-          <span class="grip"><Icon name="grip" size={14} /></span>
+          {#if !phone.on}<span class="grip"><Icon name="grip" size={14} /></span>{/if}
           <span class="tinfo">
             <span class="tname">{task.title}</span>
             <span class="tmeta">
@@ -1180,5 +1198,77 @@
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
     color: var(--fg-faint);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The rail is a page over the grid, the whole width, and its header is a
+     back button with the page's name beside it -- kept at the top while the
+     page scrolls, so the way back is always there. The close button the
+     desktop has is the back button now. */
+  :global([data-phone]) .rail {
+    width: 100%;
+    border-left: none;
+  }
+  :global([data-phone]) .panel {
+    gap: var(--sp-3);
+    padding: 0 var(--sp-4) var(--fab-clear);
+  }
+  :global([data-phone]) .phead {
+    flex: none;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    justify-content: flex-start;
+    min-height: 52px;
+    margin: 0 calc(-1 * var(--sp-4));
+    padding: 0 var(--sp-3) 0 var(--sp-1);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+  :global([data-phone]) .x {
+    display: none;
+  }
+
+  /* Fields a finger can hit, in type iOS will not zoom into. */
+  :global([data-phone]) .titlefield {
+    min-height: 44px;
+  }
+  :global([data-phone]) .timefield input,
+  :global([data-phone]) .pick {
+    height: 44px;
+    font-size: 16px;
+  }
+  :global([data-phone]) .notes {
+    font-size: 16px;
+  }
+  :global([data-phone]) .small {
+    height: 40px;
+  }
+  :global([data-phone]) .actions {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .actions .btn {
+    min-height: 44px;
+  }
+  :global([data-phone]) .actions .btn:not(.btn-outline) {
+    border: 1px solid var(--border);
+  }
+  :global([data-phone]) .textlink {
+    min-height: 32px;
+  }
+
+  .timer {
+    margin: 0 calc(-1 * var(--sp-4));
+  }
+
+  /* A task to be given a time is a row, tall enough to tap. */
+  :global([data-phone]) .todo {
+    min-height: 56px;
+    padding: var(--sp-2) var(--sp-3);
+    cursor: default;
+  }
+  :global([data-phone]) .tname {
+    font-size: var(--text-base);
   }
 </style>

@@ -40,6 +40,7 @@
     todayIso,
   } from '../lib/time'
   import { dayDropTarget, startDayMove } from '../lib/day-move'
+  import { phone } from '../lib/phone.svelte'
   import type { CalendarEvent, Proposal, TimeBlock } from '../lib/types'
   import Icon from './Icon.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
@@ -47,9 +48,13 @@
 
   let { days }: { days: string[] } = $props()
 
-  /** Height of one hour. The single number the whole geometry is derived from. */
-  const HOUR = 46
-  const DAY_HEIGHT = HOUR * 24
+  /**
+   * Height of one hour. The single number the whole geometry is derived from.
+   * Taller on a phone, where a half hour has to be a box a finger can hit:
+   * thirty pixels, not twenty-three.
+   */
+  const HOUR = $derived(phone.on ? 60 : 46)
+  const DAY_HEIGHT = $derived(HOUR * 24)
   /** How close to the bottom edge counts as "resize" rather than "move". */
   const RESIZE_GRIP = 7
   /**
@@ -208,7 +213,10 @@
     // `select` is total and knows which of the four kinds of slot have a
     // panel behind them: a reading and the live timer have none, and asking
     // for one deselects rather than selecting something else.
-    calendar.select(slot)
+    //
+    // Not on a phone, where a long press is how this menu is reached and
+    // selecting would put the block's whole page over the grid, under it.
+    if (!phone.on) calendar.select(slot)
     menu.show(e, slotMenu(slot))
   }
 
@@ -305,15 +313,38 @@
   // column reports the moves that happen over it, and a window-level
   // pointerup ends the gesture even if it finishes off the grid entirely.
 
+  // A finger does none of the dragging below. On a phone a touch on the grid
+  // is the start of a scroll far more often than the start of a drag, and
+  // making an event from an empty tap or moving one by a slip of the thumb
+  // is worse than needing the editor: the browser would take the gesture
+  // for a scroll anyway (`touch-action` on the column) and these handlers
+  // would be left holding half of one. So a finger only taps -- a block is
+  // selected on release, when it was a tap -- and the editor, a long
+  // press's menu and the "+" in the header do what the drags do.
+  /** The press the last click follows was a finger's. */
+  let fingered = false
+
   function onColumnPointerDown(e: PointerEvent, iso: string) {
     // Only the background starts a create; a pointerdown on a block is
     // handled below and stops propagating.
-    if (e.button !== 0) return
+    if (e.button !== 0 || e.pointerType === 'touch') return
     const at = snap(minutesAt(e.currentTarget as HTMLElement, e.clientY))
     drag = { mode: 'create', day: iso, from: at, to: at + SNAP_MINUTES }
   }
 
+  /** A finger's tap on a block. A mouse's was handled when it pressed. */
+  function onSlotClick(e: MouseEvent, slot: Slot) {
+    if (!fingered) return
+    fingered = false
+    // A reading and the running timer have no panel of their own, so a tap
+    // shows what can be done with them rather than selecting nothing.
+    if (slot.reading || slot.live) menu.show(e, slotMenu(slot))
+    else calendar.select(slot)
+  }
+
   function onSlotPointerDown(e: PointerEvent, placed: Placed, iso: string) {
+    fingered = e.pointerType === 'touch'
+    if (fingered) return
     const slot = placed.slot
     // A block of your own, or an account calendar's event: `movable` has
     // already said whether this one may go anywhere.
@@ -384,7 +415,7 @@
    */
   function onPendingPointerDown(e: PointerEvent, iso: string, at: Pending) {
     e.stopPropagation()
-    if (e.button !== 0) return
+    if (e.button !== 0 || e.pointerType === 'touch') return
     const el = (e.currentTarget as HTMLElement).parentElement!
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
     drag =
@@ -615,7 +646,7 @@
             class:saving={calendar.moves.has(event.id)}
             style="--c: {cal?.color ?? 'var(--fg-subtle)'}"
             title={event.title + (cal ? ` — ${cal.name}` : '')}
-            draggable={movable}
+            draggable={movable && !phone.on}
             ondragstart={(e) => startDayMove(e, { kind: 'event', id: event.id, from: iso })}
             ondragend={() => (bandDrop = null)}
             onclick={() => (calendar.selection = { kind: 'event', id: event.id })}
@@ -648,7 +679,7 @@
             class:done={task.status === 'done'}
             style="--c: {calendar.projectOf(task.projectId)?.color ?? 'var(--accent)'}"
             title="Due: {task.title}"
-            draggable="true"
+            draggable={!phone.on}
             ondragstart={(e) => e.dataTransfer?.setData('text/x-karmayoga-task', task.id)}
             onclick={() => (calendar.selection = null)}
             oncontextmenu={(e) => menu.show(e, calendarTaskMenu(task))}
@@ -711,7 +742,7 @@
                 </ProposalGhost>
               </div>
             {:else}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
               <div
                 class="slot {p.slot.kind}"
                 class:cancelled={p.slot.cancelled}
@@ -731,6 +762,7 @@
                   ? `Moving it on ${calendar.calendarOf(p.slot.event!.calendarId)?.name ?? 'its calendar'}…`
                   : undefined}
                 onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
+                onclick={(e) => onSlotClick(e, p.slot)}
                 oncontextmenu={(e) => onSlotContextMenu(e, p.slot)}
               >
                 {#if p.slot.tracker}
@@ -1331,5 +1363,71 @@
     height: 7.5px;
     border-radius: 50%;
     background: var(--danger);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* One day, the whole width. The page's heading already says which day, and
+     the day's tally is in the line under it, so the day's own heading is a
+     row of the screen spent saying it again. */
+  :global([data-phone]) .grid {
+    --gutter: 50px;
+  }
+  :global([data-phone]) .hourlabel {
+    right: var(--sp-1);
+    white-space: nowrap;
+  }
+  :global([data-phone]) .head {
+    display: none;
+  }
+
+  /* A finger scrolls the grid. Without this the column keeps the desktop's
+     `none`, and a swipe that starts on it -- all of the grid is column --
+     cannot scroll at all. */
+  :global([data-phone]) .col {
+    touch-action: pan-y;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  :global([data-phone]) .handle {
+    display: none;
+  }
+  /* The last hours clear of the assistant's button, which sits over this
+     corner. */
+  :global([data-phone]) .body {
+    padding-bottom: var(--fab-clear);
+  }
+
+  :global([data-phone]) .slot {
+    font-size: var(--text-sm);
+    padding-inline: 8px;
+  }
+  :global([data-phone]) .slottime {
+    font-size: var(--text-xs);
+  }
+  :global([data-phone]) .slot.tight .slottitle,
+  :global([data-phone]) .pending.tight .slottitle {
+    font-size: var(--text-xs);
+  }
+
+  /* Things due and all-day events, a row each and tall enough to tap. The
+     band holds a few before it scrolls. */
+  :global([data-phone]) .band {
+    max-height: 148px;
+  }
+  :global([data-phone]) .bandcell {
+    gap: 4px;
+    padding: 6px var(--sp-2);
+  }
+  :global([data-phone]) .bandgutter {
+    padding: 10px var(--sp-1) 6px 0;
+    white-space: nowrap;
+  }
+  :global([data-phone]) .chip {
+    min-height: 32px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+    border-radius: var(--radius-sm);
   }
 </style>
