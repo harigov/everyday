@@ -194,10 +194,55 @@ this with a script).
 
 ## Voice
 
-Talking to the assistant on the phone goes to the computer: the phone sends
-what its microphone hears and plays what comes back, and the computer does
-the listening and the speaking with its own models. See `voice` in
-`mobile.rs` once it lands.
+Talking to the assistant on the phone is the desktop's own voice transport
+(`crates/karmayoga-app/src/voice`, `audio`) on the phone's microphone and
+speaker -- cpal over AAudio, echo cancelling and noise suppression in sonora
+-- with the session running on the computer. `RemoteClient::voice_open`
+opens it over one WebSocket, `/v1/voice` (`crates/karmayoga-server/src/voice.rs`):
+microphone audio up as 16 kHz PCM, the voice's audio and the session's events
+down. The computer's models hear and speak; the phone needs none. A desktop
+window looking at another computer's vault talks the same way now.
+
+What differs from a session at the computer (`Service::voice_open_remote`):
+the device needs the agent scope; nothing of the computer's desktop is offered
+(the person is not at it); what is heard is never checked against the owner's
+recorded voice; and a change asked for aloud is asked about rather than taken
+as approved, as on a call.
+
+On Android the app asks for the microphone the first time it is wanted
+(`window.KarmaYogaMic`, `MainActivity.kt`), and hands cpal the Java VM and the
+application's Context at startup (`mobile::android_context`) -- without that
+cpal panics opening the microphone. AAudio needs Android 8.0, which is the
+app's minimum.
+
+### Testing voice
+
+```sh
+. scripts/android-env.sh
+KARMAYOGA_BIN=... scripts/phone-test-vault.sh &       # a vault to pair with
+# choose its models: a recogniser and a voice on this computer, and a model to
+# answer (a stand-in that streams a fixed reply is enough), over the server's
+# local socket with save_model_settings / set_model_key / save_agent_settings
+node ui/scripts/phone/android-voice.mjs
+```
+
+`android-voice.mjs` starts a new conversation, taps the microphone (allowing
+it if Android asks), and passes when the clip's words appear as what was said,
+a reply comes back, and the voice bar goes through Speaking and back to
+Listening. An emulator's microphone hears this machine only fitfully -- its
+host-audio switch (`adb emu avd hostmicon`) lets a second or two through and
+stops -- so a debug build takes the clip as its microphone's recording
+(`voice/test_microphone.rs`); everything after the microphone is real. Nor
+does the emulator's speaker reach this machine reliably, so whether the reply
+is heard is a check for a real phone.
+
+To give an emulator audio at all without touching this machine's speakers or
+microphone: two PipeWire null sinks (`pactl load-module module-null-sink
+sink_name=ky_emu_out`, and `ky_emu_in`), and the emulator started with
+`PULSE_SINK=ky_emu_out PULSE_SOURCE=ky_emu_in.monitor ... -audio pulseaudio
+-allow-host-audio`. The headless emulator (`-no-window`) is built without
+PulseAudio, so for audio run the windowed one under `xvfb-run` with `-gpu
+swiftshader_indirect`.
 
 ## iOS
 

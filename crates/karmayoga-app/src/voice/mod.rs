@@ -37,9 +37,14 @@ use tauri::{AppHandle, Manager, State};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::audio::engine::{AudioEngine, EngineEvent, EngineOptions, EngineSink};
+#[cfg(desktop)]
 use crate::capture::CaptureSlot;
+#[cfg(desktop)]
 use crate::dictation::DictationHandle;
-use crate::state::AppState;
+use crate::state::{AppState, SessionHandle};
+
+#[cfg(all(debug_assertions, target_os = "android"))]
+mod test_microphone;
 
 /// What `AppState` holds while a conversation is being talked, or being
 /// started.
@@ -187,6 +192,7 @@ impl Held {
 }
 
 /// Claim the one voice slot, or say why it cannot be had.
+#[cfg(desktop)]
 fn reserve(
     voice: &Mutex<Option<VoiceHandle>>,
     capture: &Mutex<Option<CaptureSlot>>,
@@ -207,6 +213,13 @@ fn reserve(
             "You are dictating, and it has the microphone. Finish dictating to talk to the assistant.",
         ));
     }
+    claim(voice)
+}
+
+/// The voice slot, for a conversation about to start: refused while one is
+/// already talking. All a phone checks -- it has no recording or dictation to
+/// hold the microphone -- and the last thing the desktop's `reserve` does.
+fn claim(voice: &Mutex<Option<VoiceHandle>>) -> CommandResult<()> {
     let mut slot = voice.lock().unwrap();
     if slot.is_some() {
         return Err(CommandError::new(
@@ -305,18 +318,27 @@ async fn begin(
     on_screen: Option<serde_json::Value>,
     outlet: Outlet,
 ) -> CommandResult<()> {
-    if state.is_remote() {
+    // A window looking at a vault on another computer -- a phone always is
+    // -- talks to that computer's assistant through it: this machine's
+    // microphone and speakers, that one's models. Not the talk key's or the
+    // wake word's conversation, which types into this desktop and is opened
+    // from it.
+    if state.is_remote() && matches!(outlet, Outlet::Shell(_)) {
         return Err(CommandError::new(
             codes::UNSUPPORTED,
-            "Talking to the assistant uses this computer's microphone and speakers, so it is not available while this window is looking at a vault on another computer.",
+            "The talk key talks to the assistant on this computer, and this window is looking at a vault on another one. Use the microphone button in the assistant instead.",
         ));
     }
+    #[cfg(desktop)]
     reserve(state.voice(), state.capture(), state.dictation())?;
+    #[cfg(mobile)]
+    claim(state.voice())?;
     if let Some(VoiceHandle::Starting(held)) = state.voice().lock().unwrap().as_mut() {
         held.window = window;
     }
     // The speakers are this conversation's now, and its microphone would
     // otherwise hear whatever was being read.
+    #[cfg(desktop)]
     crate::listen::stop_listening(state);
 
     match try_start(app, state, conversation_id, on_screen, outlet).await {
@@ -341,9 +363,16 @@ async fn try_start(
         Outlet::Shell(shell) => (shell.typist.clone(), shell.woken),
         Outlet::Window(_) => (None, false),
     };
-    let link = match typist {
-        Some(typist) => state.service().voice_open_typing(conversation_id, typist, woken).await?,
-        None => state.service().voice_open(conversation_id).await?,
+    let link = match (state.session(), typist) {
+        // The other computer's session, carried over the connection: see
+        // `karmayoga_server::voice`.
+        (SessionHandle::Remote(remote), _) => {
+            remote.client.voice_open(conversation_id, on_screen.clone()).await?
+        }
+        (SessionHandle::Local(service), Some(typist)) => {
+            service.voice_open_typing(conversation_id, typist, woken).await?
+        }
+        (SessionHandle::Local(service), None) => service.voice_open(conversation_id).await?,
     };
     let karmayoga_service::voice::VoiceLink { input, output } = link;
 
@@ -357,6 +386,11 @@ async fn try_start(
         let input = input.clone();
         Arc::new(move |event| match event {
             EngineEvent::Microphone(audio) => {
+                // A debug build on Android can be handed a recording in place of
+                // the microphone, for testing on an emulator: see
+                // `test_microphone`.
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                let audio = test_microphone::replace(audio);
                 outlet.heard(&audio);
                 let _ = input.send(VoiceInput::Audio(audio));
             }
@@ -370,7 +404,12 @@ async fn try_start(
         })
     };
     let options = EngineOptions { microphone: true, speaker: true, echo_cancellation: true };
+    // A phone runs the ordinary filter alone: the models for the stronger
+    // ones are the desktop's. See `microphone`.
+    #[cfg(desktop)]
     let cleanup = crate::microphone::cleanup(&state.service()).await;
+    #[cfg(mobile)]
+    let cleanup = None;
     let engine = match AudioEngine::start(options, cleanup, sink).await {
         Ok(engine) => Arc::new(engine),
         Err(e) => {
@@ -607,7 +646,10 @@ pub async fn voice_set_screen(
 ) -> CommandResult<()> {
     let screen = on_screen.as_ref().and_then(OnScreen::lenient).map(Box::new);
     send_or_hold(state.voice(), VoiceInput::Screen(screen));
+    #[cfg(desktop)]
     crate::talk::screen_shared(&app);
+    #[cfg(mobile)]
+    let _ = app;
     Ok(())
 }
 

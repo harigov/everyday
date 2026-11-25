@@ -220,6 +220,7 @@ fn assistant(svc: &Arc<Service>, typist: Option<Arc<Keyboard>>) -> ServiceAssist
         via: None,
         typist: typist.map(|k| k as Arc<dyn Typist>),
         woken: false,
+        away: false,
     }
 }
 
@@ -347,6 +348,7 @@ async fn a_call_through_a_chat_is_not_offered_dictation() {
         via: Some(via),
         typist: Some(keyboard as Arc<dyn Typist>),
         woken: false,
+        away: false,
     };
 
     let outcome =

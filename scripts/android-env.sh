@@ -31,8 +31,9 @@ for node in "$HOME"/.nvm/versions/node/v2[2-9]*/bin; do
 done
 export PATH
 
-# The lowest Android the app runs on: Tauri's own minimum, Android 7.0.
-android_api=24
+# The lowest Android the app runs on: 8.0, the first with AAudio, which the
+# microphone and speaker are opened through. See gen/android/app/build.gradle.kts.
+android_api=26
 android_bin="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
 for triple in aarch64-linux-android x86_64-linux-android; do
   var=$(echo "$triple" | tr 'a-z-' 'A-Z_')

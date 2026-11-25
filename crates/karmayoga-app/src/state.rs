@@ -12,7 +12,6 @@ use karmayoga_service::Service;
 #[cfg(desktop)]
 use karmayoga_service::error::{CommandError, CommandResult};
 use karmayoga_service::events::EventSink;
-#[cfg(desktop)]
 use std::sync::Mutex;
 #[cfg(desktop)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,7 +62,6 @@ pub struct AppState {
     #[cfg(desktop)]
     capture: Mutex<Option<crate::capture::CaptureSlot>>,
     /// A conversation being talked, for as long as it lasts. See `voice`.
-    #[cfg(desktop)]
     voice: Mutex<Option<crate::voice::VoiceHandle>>,
     /// Something being read aloud, for as long as it lasts. See `listen`.
     #[cfg(desktop)]
@@ -113,7 +111,6 @@ impl AppState {
             web: Arc::default(),
             #[cfg(desktop)]
             capture: Mutex::new(None),
-            #[cfg(desktop)]
             voice: Mutex::new(None),
             #[cfg(desktop)]
             listen: Mutex::new(None),
@@ -132,7 +129,6 @@ impl AppState {
         &self.capture
     }
 
-    #[cfg(desktop)]
     pub fn voice(&self) -> &Mutex<Option<crate::voice::VoiceHandle>> {
         &self.voice
     }

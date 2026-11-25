@@ -868,3 +868,63 @@ async fn stop_and_wait_returns_promptly_for_a_tls_listener() {
         began.elapsed()
     );
 }
+
+/// The voice route end to end over TLS: a client paired the ordinary way
+/// opens a session, the token and scope are checked, the socket is upgraded,
+/// and the service's own answer comes back through it. A vault in a test
+/// has no voice chosen, so that answer is a refusal to open -- which is the
+/// point: it is the service's sentence, not a network error.
+#[tokio::test]
+async fn a_paired_device_reaches_the_voice_session_here() {
+    let h = Harness::start().await;
+    let code = h.running.server.registry.new_pairing_code();
+    let link = format!(
+        "karmayoga://pair?host=127.0.0.1:{}&fp={}&code={code}&name=Test",
+        h.running.address.port(),
+        h.running.fingerprint()
+    );
+    let invite = pairing::parse(&link).unwrap();
+    let (client, _token) =
+        karmayoga_server::client::RemoteClient::pair(&invite, "Phone").await.unwrap();
+
+    let conversation = karmayoga_core::ConversationId::new();
+    let refused = match client.voice_open(conversation, None).await {
+        Ok(_) => panic!("a vault with no voice chosen opened a voice session"),
+        Err(e) => e,
+    };
+    assert!(refused.message.contains("voice model"), "the session was not reached: {refused:?}");
+}
+
+#[tokio::test]
+async fn a_device_without_the_agent_scope_cannot_open_a_voice_session() {
+    let h = Harness::start().await;
+    let code = h.running.server.registry.new_pairing_code();
+    let body: Value = h
+        .http
+        .post(h.url("/v1/pair"))
+        .header("x-karmayoga-protocol", PROTOCOL.to_string())
+        .json(&json!({ "code": code, "deviceName": "Extension", "scopes": ["library"] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = body["token"].as_str().unwrap();
+    // HTTP/1.1, as a WebSocket upgrade must be. The pin is not what this
+    // test is about.
+    let http =
+        reqwest::Client::builder().http1_only().danger_accept_invalid_certs(true).build().unwrap();
+    let response = http
+        .get(h.url(karmayoga_server::voice::ROUTE))
+        .header("x-karmayoga-protocol", PROTOCOL.to_string())
+        .header("authorization", format!("Bearer {token}"))
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403, "refused before any socket is opened");
+}

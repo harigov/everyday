@@ -197,6 +197,7 @@ async fn a_spoken_turn_that_says_goodbye_ends_the_conversation_out_loud() {
         via: None,
         typist: None,
         woken: false,
+        away: false,
     };
 
     let outcome = assistant.turn("That's all I have.".into(), true, None, quiet()).await.unwrap();
@@ -221,6 +222,7 @@ async fn a_spoken_turn_that_carries_on_does_not() {
         via: None,
         typist: None,
         woken: false,
+        away: false,
     };
 
     let outcome = assistant.turn("What is the weather?".into(), true, None, quiet()).await.unwrap();

@@ -17,7 +17,10 @@
 // files in step. See the module's own doc.
 #[cfg(test)]
 mod acl;
-#[cfg(desktop)]
+// The desktop's voice transport, which a phone uses too. What serves only
+// the desktop -- the talk key's and the wake word's own conversations, a
+// recording's last seconds -- is compiled and unused there.
+#[cfg_attr(mobile, allow(dead_code))]
 mod audio;
 #[cfg(desktop)]
 mod badge;
@@ -88,7 +91,10 @@ mod talk;
 mod transfer;
 #[cfg(desktop)]
 mod tray;
-#[cfg(desktop)]
+// The desktop's voice transport, which a phone uses too. What serves only
+// the desktop -- the talk key's and the wake word's own conversations, a
+// recording's last seconds -- is compiled and unused there.
+#[cfg_attr(mobile, allow(dead_code))]
 mod voice;
 #[cfg(desktop)]
 mod voicetyping;

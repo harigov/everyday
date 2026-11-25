@@ -43,6 +43,9 @@ pub struct ServiceAssistant {
     /// Opened by the wake word, not a key or a click: see
     /// [`Turn::woken`](crate::agent::Turn::woken).
     pub woken: bool,
+    /// Somebody talking from another device paired with this one -- a phone
+    /// -- rather than at this computer: see [`Service::voice_open_remote`].
+    pub away: bool,
 }
 
 impl VoiceAssistant for ServiceAssistant {
@@ -59,14 +62,15 @@ impl VoiceAssistant for ServiceAssistant {
         let typist = self.typist.clone();
         let woken = self.woken;
         let origin = if via.is_some() { CALL_ORIGIN } else { ORIGIN };
+        let here = via.is_none() && !self.away;
         // What they asked for is theirs to have done -- unless it may be an
-        // echo, or they are on a call through a chat, where a destructive
-        // call always asks.
-        let voice_approves = heard_clear && via.is_none();
+        // echo, or they are on a call through a chat or talking from another
+        // device, where a destructive call always asks.
+        let voice_approves = heard_clear && here;
         // A session opened here -- the window's voice mode, the talk key, the
-        // wake word -- is somebody at this computer; a call through a chat is
-        // somebody somewhere else.
-        let desk = via.is_none().then(|| service.desk()).flatten();
+        // wake word -- is somebody at this computer; a call through a chat,
+        // or a phone paired with it, is somebody somewhere else.
+        let desk = here.then(|| service.desk()).flatten();
         Box::pin(async move {
             let vault = service.require()?;
             let turned = crate::agent::run_turn_routed(Turn {
@@ -246,7 +250,27 @@ impl Service {
         conversation: ConversationId,
         via: Option<Via>,
     ) -> CommandResult<VoiceLink> {
-        self.open_voice(conversation, via, None, false).await
+        self.open_voice(conversation, via, None, false, false).await
+    }
+
+    /// [`Service::voice_open`], for somebody talking from another device
+    /// paired with this computer -- a phone, through `karmayoga-server`'s
+    /// `/v1/voice` -- which sends what its microphone hears and plays what
+    /// comes back. The models and the turn are this computer's.
+    ///
+    /// As a typed turn from a paired device is, it is somebody who is not at
+    /// this computer: nothing of its desktop is offered, and the device needs
+    /// the agent scope. As on a call, what is heard is never checked against
+    /// the owner's recorded voice -- a phone's microphone sounds nothing like
+    /// the one it was recorded on -- and what a voice asks to change is asked
+    /// about aloud or on that device's screen rather than taken as approved.
+    pub async fn voice_open_remote(
+        self: &Arc<Self>,
+        conversation: ConversationId,
+        ctx: &crate::ctx::Ctx,
+    ) -> CommandResult<VoiceLink> {
+        ctx.require(crate::ctx::Scope::Agent)?;
+        self.open_voice(conversation, None, None, false, true).await
     }
 
     /// [`Service::voice_open`], for a conversation started on this
@@ -260,7 +284,7 @@ impl Service {
         typist: Arc<dyn Typist>,
         woken: bool,
     ) -> CommandResult<VoiceLink> {
-        self.open_voice(conversation, None, Some(typist), woken).await
+        self.open_voice(conversation, None, Some(typist), woken, false).await
     }
 
     async fn open_voice(
@@ -269,13 +293,14 @@ impl Service {
         via: Option<Via>,
         typist: Option<Arc<dyn Typist>>,
         woken: bool,
+        away: bool,
     ) -> CommandResult<VoiceLink> {
         self.require_unlocked()?;
         // The voice first: listening starts a recogniser loading, which a
         // voice that is missing would leave running for a session that never
         // opened.
         let synthesiser = self.speech_synthesiser().await?;
-        let from = if via.is_some() { HeardFrom::Call } else { HeardFrom::ThisComputer };
+        let from = if via.is_some() || away { HeardFrom::Call } else { HeardFrom::ThisComputer };
         let live =
             self.live_transcription(Tuning::CONVERSATION, Occasion::Conversation, from).await?;
         let link = session::spawn(VoiceParts {
@@ -290,9 +315,10 @@ impl Service {
                 service: self.clone(),
                 conversation,
                 via: via.clone(),
-                // A call has no desktop to type on.
-                typist: typist.filter(|_| via.is_none()),
+                // A call, or another device, has no desktop to type on.
+                typist: typist.filter(|_| via.is_none() && !away),
                 woken,
+                away,
             }),
         });
         // So background updates can be said in it. See `crate::reach`.

@@ -360,6 +360,7 @@ fn assistant(svc: &Arc<Service>, desk: &Arc<Desk>, woken: bool) -> ServiceAssist
         via: None,
         typist: Some(desk.clone() as Arc<dyn Typist>),
         woken,
+        away: false,
     }
 }
 
@@ -399,6 +400,7 @@ async fn neither_is_offered_without_a_typist_or_to_a_typed_turn_or_a_call() {
         via: None,
         typist: None,
         woken: false,
+        away: false,
     };
     alone.turn("Improve this.".into(), true, None, quiet()).await.unwrap();
 
@@ -443,6 +445,7 @@ async fn neither_is_offered_without_a_typist_or_to_a_typed_turn_or_a_call() {
         via: Some(via),
         typist: Some(selecting("") as Arc<dyn Typist>),
         woken: false,
+        away: false,
     }
     .turn("Improve this.".into(), true, None, quiet())
     .await

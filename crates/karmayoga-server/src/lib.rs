@@ -48,6 +48,7 @@ pub mod routes;
 pub mod screentime;
 pub mod sse;
 pub mod tls;
+pub mod voice;
 pub mod web;
 
 use axum_server::tls_rustls::RustlsConfig;

@@ -19,7 +19,9 @@ android {
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "app.karmayogi.KarmaYoga"
-        minSdk = 24
+        // Android 8.0: AAudio, which the microphone and speaker are opened
+        // through (cpal), is not there before it.
+        minSdk = 26
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")

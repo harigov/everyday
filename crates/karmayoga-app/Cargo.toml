@@ -58,6 +58,25 @@ jiff.workspace = true
 # happens where there is none, and for Android, which it does not cover.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
+# Two microphone-and-loopback streams, resampled and framed into 30 s chunks
+# and handed to the service. See `src/capture.rs` and
+# `docs/plans/meeting-notes.md`'s "Decisions already made". `build_input_stream`
+# on the *output* device is what gives loopback on every desktop: WASAPI
+# transparently enables its loopback mode, CoreAudio opens a process tap
+# (macOS 14.6+), and on Linux -- below -- the PipeWire host does the same
+# through the sink's monitor.
+cpal = "0.18"
+# Resampling lives in `karmayoga_service::speech::resample`, shared with
+# calls; `audio::resample` re-exports it.
+# WAV in and out for `capture::FileSink` -- the sink the capture spike
+# (`examples/capture.rs`) and `capture`'s own tests write chunks through
+# instead of the service. Not on the path anything shipped takes: the real
+# sink sends PCM straight to `append_recording_chunk`, never a file.
+# Echo cancellation and noise suppression for talking to the assistant: a pure
+# Rust port of WebRTC's audio processing, so the assistant does not hear itself
+# through the speakers. See `src/voice`.
+sonora = "0.3"
+
 # What only the desktop builds. The phone shell (`src/mobile.rs`) is always a
 # remote client in one full-screen window: no tray, no OS-wide keys, no second
 # instance to turn away, no local models, and no microphone of its own to
@@ -90,25 +109,7 @@ tauri-plugin-global-shortcut = "2"
 # The player's loopback server (`src/player.rs`): the same axum
 # `karmayoga-server` already builds, and a body streamed a piece at a time.
 axum = "0.8"
-# Two microphone-and-loopback streams, resampled and framed into 30 s chunks
-# and handed to the service. See `src/capture.rs` and
-# `docs/plans/meeting-notes.md`'s "Decisions already made". `build_input_stream`
-# on the *output* device is what gives loopback on every desktop: WASAPI
-# transparently enables its loopback mode, CoreAudio opens a process tap
-# (macOS 14.6+), and on Linux -- below -- the PipeWire host does the same
-# through the sink's monitor.
-cpal = "0.18"
-# Resampling lives in `karmayoga_service::speech::resample`, shared with
-# calls; `audio::resample` re-exports it.
-# WAV in and out for `capture::FileSink` -- the sink the capture spike
-# (`examples/capture.rs`) and `capture`'s own tests write chunks through
-# instead of the service. Not on the path anything shipped takes: the real
-# sink sends PCM straight to `append_recording_chunk`, never a file.
 hound = "3.5"
-# Echo cancellation and noise suppression for talking to the assistant: a pure
-# Rust port of WebRTC's audio processing, so the assistant does not hear itself
-# through the speakers. See `src/voice`.
-sonora = "0.3"
 
 # PipeWire is what makes the loopback trick work on Linux: cpal exposes a sink
 # node as a duplex device, and opening an *input* stream on it sets
@@ -119,6 +120,12 @@ sonora = "0.3"
 # deliberately not enabled: its host needs a newer rustc than this workspace's
 # 1.85 MSRV. Building this feature wants PipeWire's development headers --
 # see `make setup` and `.github/workflows/check.yml`.
+# Where cpal's AAudio backend finds the Java VM and an Android Context to
+# list the microphone and speaker -- nothing in Tauri tells it, so the phone
+# shell does (`mobile::android_context`). The version cpal builds.
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-context = "0.1"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["pipewire"] }
 # The application icon's badge on Linux is one D-Bus signal --

@@ -186,6 +186,8 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         .route("/v1/health/hae/{source}", post(crate::health::push))
         .route("/v1/call/{name}", post(call))
         .route("/v1/stream/{name}", post(stream))
+        // Talking to the assistant from another device: see `crate::voice`.
+        .route(crate::voice::ROUTE, get(voice))
         .route("/v1/blob", post(put_blob))
         .route("/v1/blob/{id}", get(get_blob))
         .route("/v1/mail/body/{id}", get(get_mail_body))
@@ -528,6 +530,28 @@ pub(crate) async fn read_body(
         out.extend_from_slice(&chunk);
     }
     Ok(out)
+}
+
+/// A voice session for a paired device: its microphone in, this computer's
+/// models and assistant, its speaker out, over one WebSocket. See
+/// `crate::voice`.
+///
+/// The token and the agent scope are checked before the upgrade, so a device
+/// that may not talk to the assistant is refused with the same `{ code,
+/// message }` as any command, not a socket that opens and then closes.
+async fn voice(
+    State((server, transport)): Ctxt,
+    headers: HeaderMap,
+    upgrade: axum::extract::ws::WebSocketUpgrade,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::Agent)?;
+    let service = server.service.clone();
+    Ok(upgrade.on_upgrade(move |socket| async move {
+        let (frames, out) = crate::voice::axum_socket(socket);
+        crate::voice::serve(service, ctx, frames, out).await;
+    }))
 }
 
 /// The one command that answers with a stream.

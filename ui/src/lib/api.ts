@@ -732,6 +732,10 @@ const PHONE_SHELL_COMMANDS = new Set([
   'put_blob',
   'send_message',
   'post_notification',
+  'voice_start',
+  'voice_stop',
+  'voice_set_muted',
+  'voice_set_screen',
 ])
 
 /**

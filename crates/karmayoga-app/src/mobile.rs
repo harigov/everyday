@@ -14,13 +14,18 @@
 //! turn away, app windows, serving a vault, screen time, recording a meeting.
 //! The interface is told (`Bootstrap::mobile`) and leaves them alone.
 //!
+//! What it does have of the desktop's: talking to the assistant. The voice
+//! transport (`voice`, `audio`) is the desktop's own, on this phone's
+//! microphone and speaker, with the session at the other end of the
+//! connection.
+//!
 //! See `docs/mobile.md` for building and testing it.
 
 use std::sync::Arc;
 use tauri::Manager;
 
 use crate::state::AppState;
-use crate::{commands, events, navigation, notice, protocol};
+use crate::{commands, events, navigation, notice, protocol, voice};
 
 /// The one window's label: the desktop's main window's, so the interface and
 /// `capabilities/` need not tell them apart.
@@ -47,11 +52,13 @@ pub fn run() {
                 .find(|w| w.label == MAIN)
                 .cloned()
                 .ok_or("tauri.conf.json has no main window")?;
-            tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+            let _window = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
                 // Never anywhere but the interface itself -- see `navigation`.
                 .on_navigation(navigation::guard(navigation::dev_url(app.handle())))
                 .on_new_window(navigation::new_window(app.handle().clone()))
                 .build()?;
+            #[cfg(target_os = "android")]
+            android_context(&_window);
 
             // The connection's events task re-raises the server's remarks
             // through this, as the desktop's does. See `remote`.
@@ -73,9 +80,63 @@ pub fn run() {
             commands::put_blob,
             commands::send_message,
             notice::post_notification,
+            // Talking to the assistant: this phone's microphone and speaker,
+            // the computer's models and turn. See `voice` and
+            // `karmayoga_server::voice`.
+            voice::voice_start,
+            voice::voice_stop,
+            voice::voice_set_muted,
+            voice::voice_set_screen,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Karma Yoga");
+}
+
+/// Hand `ndk-context` the Java VM and the application's Context, once.
+///
+/// cpal's AAudio backend asks it for them to find the microphone and the
+/// speaker, and panics when nobody has said -- "android context was not
+/// initialized" -- which took talking to the assistant down with it. Tauri
+/// drives Android through its own JNI glue and never says, so this does, as
+/// soon as the window's webview exists. The application's Context rather
+/// than the activity's: it outlives any one activity, and the reference is
+/// held for the life of the process.
+#[cfg(target_os = "android")]
+fn android_context(window: &tauri::WebviewWindow) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let set = window.with_webview(|webview| {
+        webview.jni_handle().exec(|env, activity, _webview| {
+            ONCE.call_once(|| {
+                let context = env
+                    .call_method(
+                        activity,
+                        "getApplicationContext",
+                        "()Landroid/content/Context;",
+                        &[],
+                    )
+                    .and_then(|value| value.l());
+                let (Ok(vm), Ok(context)) = (env.get_java_vm(), context) else {
+                    tracing::warn!("audio: the Android context could not be found");
+                    return;
+                };
+                let Ok(context) = env.new_global_ref(context) else { return };
+                // SAFETY: the VM pointer is this process's own, and a global
+                // reference is valid on every thread; it is never released
+                // (forgotten below), so what ndk-context hands out outlives
+                // every use of it.
+                unsafe {
+                    ndk_context::initialize_android_context(
+                        vm.get_java_vm_pointer().cast(),
+                        context.as_obj().as_raw().cast(),
+                    );
+                }
+                std::mem::forget(context);
+            });
+        });
+    });
+    if let Err(e) = set {
+        tracing::warn!(error = %e, "audio: the webview was not there to find the Android context through");
+    }
 }
 
 /// Where this process's log goes on Android: logcat, under the tag
