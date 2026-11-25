@@ -167,7 +167,8 @@ an app's own has to.
   check reports anything under 24.
 - Nothing only on hover. A row's actions that appear on hover are always
   shown on a phone, or are in its long-press menu (`contextmenu` -- Android
-  fires it on a long press; see "iOS" for the gap there).
+  fires it on a long press, and `lib/longpress.ts` raises it on iOS, whose
+  webview does not).
 - No keyboard hints (`<kbd>` is hidden on a phone, and a `title` with a
   shortcut is never the only label).
 - Inputs at 16 px or more, or iOS zooms the page into them (app.css does
@@ -204,13 +205,33 @@ controls under 24 px and controls covered by something else (reported). Add a
 scenario for every screen an app has: the list, an item opened, its editor,
 its dialogs and menus, an empty state.
 
+Overflow is measured against the screen's width, not the window's: a phone's
+browser lays a page wider than its screen out wider and zooms out to fit, and
+`innerWidth` grows with it. Such a page fails as "laid out wider than the
+screen by ..." naming what widened it, shown or not -- the usual culprit is
+something placed `absolute` inside a scrolling strip whose own box is not its
+containing block (a hidden live region at the end of a toolbar was one).
+
+On a busy machine the dev server cannot keep up with a page load per screen;
+serve a development build instead -- `npx vite build --mode development
+--outDir /tmp/ky-dist && npx vite preview --outDir /tmp/ky-dist --port 5491`
+-- and pass `--url http://localhost:5491`.
+
+Smoothness is for the emulator (below), but a list's scrolling can be
+compared in Chromium first: the mock takes `?longjournal[=N]` for a journal
+long enough to fling, and a CPU throttle of 20x
+(`Emulation.setCPUThrottlingRate` over CDP) shows what a phone shows -- 6x
+hid the journal's jank that the emulator found.
+
 The mock's clock is stopped at one moment and its shuffles are seeded, so two
 runs show the same screens; the assistant's dog is animated and is the one
 thing that always differs.
 
 Then on the emulator, the real Android webview: build, install, pair with the
-test vault, and go through the apps (the sweep in phase 6 of the plan does
-this with a script).
+test vault, and `node scripts/phone/android-sweep.mjs` goes through every app
+with real touches -- each app's home, its first item opened and back, a fling
+of its list timed frame by frame, the drawer, the keyboard, turning the phone
+and leaving the app for 15 seconds -- and reports startup time and memory.
 
 ## Voice
 
@@ -271,6 +292,7 @@ remote client, `set_app_dirs`, the whole phone layout, and the checks above
 (WebKit is iOS's engine). The keychain holds the token there (keyring's
 `apple-native`). What is left for a Mac: `cargo tauri ios init` and a build
 in Xcode, an Apple developer account to install on a phone, the microphone
-permission string, safe areas checked against a notch (`env()` works there),
-and `contextmenu`, which WKWebView does not fire on a long press -- a row's
-long-press menu needs a touch-hold handler of its own there.
+permission string, and safe areas checked against a notch (`env()` works
+there). WKWebView fires no `contextmenu` on a long press, so `lib/longpress.ts`
+raises one on iOS from a half-second hold; it is tested in WebKit under an
+iPhone's user agent, not yet on an iPhone.
