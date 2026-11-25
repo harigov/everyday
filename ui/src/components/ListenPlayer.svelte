@@ -123,7 +123,7 @@
       </button>
     {/if}
     <button
-      class="ctl"
+      class="ctl stop"
       title="Stop reading"
       aria-label="Stop reading"
       onclick={() => listening.stop()}
@@ -268,5 +268,34 @@
       display: block;
       max-width: 140px;
     }
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The top bar is the search field's: reading aloud is play and pause and a
+     way to stop, there. (A phone is a remote client and cannot read aloud on
+     its own; this is only so that what a computer's voice reads is not a
+     pill that crowds the field out.) */
+  :global([data-phone]) .player {
+    height: 40px;
+    margin-right: 0;
+    padding: 0;
+    background: none;
+  }
+  :global([data-phone]) .player:not(.trouble) > :not(.ctl.main):not(.stop) {
+    display: none;
+  }
+  :global([data-phone]) .ctl {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .player.trouble {
+    max-width: 52vw;
+    padding-left: var(--sp-3);
+    background: color-mix(in oklab, var(--danger) 12%, transparent);
+  }
+  :global([data-phone]) .player.trouble .title {
+    display: block;
+    max-width: none;
   }
 </style>

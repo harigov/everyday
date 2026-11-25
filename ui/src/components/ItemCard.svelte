@@ -289,4 +289,26 @@
     background: var(--bg-hover);
     color: var(--star);
   }
+
+  /* A phone has no hover, so the star is always there -- as faint as it is
+     on a card not yet picked up -- and is a finger's size, at the foot of
+     the card where the thumb already is. The lift on hover would stick to
+     whichever card was pressed last. */
+  :global([data-phone]) .star {
+    width: 36px;
+    height: 36px;
+    margin: -7px -7px -7px 0;
+    opacity: 1;
+  }
+  :global([data-phone]) .foot {
+    min-height: 22px;
+  }
+  :global([data-phone]) .card:hover .art {
+    transform: none;
+  }
+
+  /* And no ring left on the card last opened. */
+  :global([data-phone]) .selected .art {
+    box-shadow: none;
+  }
 </style>

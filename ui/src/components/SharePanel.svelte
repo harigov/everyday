@@ -330,4 +330,34 @@
     color: var(--fg-subtle);
     overflow-wrap: anywhere;
   }
+
+  /* On a phone: the code over what it says, the buttons a finger's size,
+     and a switch's row tall enough to press. */
+  :global([data-phone]) .invite {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  :global([data-phone]) .qr {
+    align-self: center;
+    width: min(220px, 100%);
+    height: auto;
+    aspect-ratio: 1;
+  }
+  :global([data-phone]) .row {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .toggle {
+    min-height: 44px;
+  }
+  :global([data-phone]) .toggle input {
+    width: 20px;
+    height: 20px;
+    margin-top: 1px;
+  }
+  :global([data-phone]) .field-row select {
+    min-height: 44px;
+  }
+  :global([data-phone]) .device {
+    flex-wrap: wrap;
+  }
 </style>

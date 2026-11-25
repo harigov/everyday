@@ -25,15 +25,19 @@
   import { untrack } from 'svelte'
   import { feed, type LoadedBody } from '../lib/feed.svelte'
   import { listening } from '../lib/listen.svelte'
-  import { alsoOn, distinctAuthor, hostOf, looksCutOff, sourceLabel } from '../lib/feed'
+  import { alsoOn, distinctAuthor, hostOf, looksCutOff, scopeTitle, sourceLabel } from '../lib/feed'
   import { mediaUrl } from '../lib/api'
   import { dateFormat } from '../lib/format'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { openExternal } from '../lib/open-external'
+  import { phone } from '../lib/phone.svelte'
   import { episodeProgress, formatDuration } from '../lib/podcast'
   import { upnext } from '../lib/upnext.svelte'
   import type { Story } from '../lib/types'
   import EpisodeActions from './EpisodeActions.svelte'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import SourceIcon from './SourceIcon.svelte'
   import SourceSettings from './SourceSettings.svelte'
   import StoryTabs from './StoryTabs.svelte'
@@ -198,102 +202,194 @@
   }
 
   let settings = $state(false)
+
+  // ── On a phone ────────────────────────────────────────────────────────
+  //
+  // A row of buttons with words is a desktop's toolbar. A phone's header is
+  // the way back, and the two things done most -- keep it, and have done with
+  // it -- as buttons; the rest are one press away in the menu, where they have
+  // room for their words.
+
+  /** Where the way back goes: what the list was called. */
+  const listName = $derived(scopeTitle(feed.scope, feed.sources, feed.kind))
+
+  function moreMenu(e: MouseEvent) {
+    if (menu.at) {
+      menu.close()
+      return
+    }
+    const items: (MenuItem | false)[] = [
+      !!story.url && {
+        label: 'Open original',
+        icon: 'link',
+        run: () => void feed.openOriginal(story.id),
+      },
+      !!story.discussionUrl && {
+        label: 'Open discussion',
+        icon: 'people',
+        run: () => void feed.openDiscussion(story.id),
+      },
+      {
+        label: shelved.has(story.id) ? 'In the Library' : 'Add to Library',
+        icon: 'book',
+        disabled: shelved.has(story.id),
+        run: () => void addToLibrary(),
+      },
+      listening.available && !story.expired && !story.media && SEP,
+      listening.available &&
+        !story.expired &&
+        !story.media && {
+          label: reading ? (preparing ? 'Preparing…' : 'Stop listening') : 'Listen',
+          icon: reading ? 'stop' : 'play',
+          run: () => listen(false),
+        },
+      listening.available &&
+        !story.expired &&
+        !story.media &&
+        !reading && {
+          label: 'Read as written',
+          icon: 'play',
+          run: () => listen(true),
+        },
+      !!source && SEP,
+      !!source && {
+        label: 'Source settings',
+        icon: 'settings',
+        run: () => (settings = true),
+      },
+    ]
+    menu.show(e, tidyMenu(items))
+  }
 </script>
 
 <article class="story">
-  <div class="toolbar-row" role="toolbar" aria-label="Story actions">
-    <button
-      class="back"
-      title="Back to the list (Escape)"
-      aria-label="Back to the list"
-      onclick={() => feed.close()}
-    >
-      <Icon name="chevron" size={15} />
-    </button>
-    {#if story.url}
-      <button
-        class="btn btn-outline"
-        title="Open the original (V)"
-        onclick={() => void feed.openOriginal(story.id)}
-      >
-        <Icon name="link" size={15} /> Open original
-      </button>
-    {/if}
-    {#if story.discussionUrl}
-      <button
-        class="btn btn-outline"
-        title="Open the discussion"
-        onclick={() => void feed.openDiscussion(story.id)}
-      >
-        <Icon name="people" size={15} /> Discussion
-      </button>
-    {/if}
-    <button
-      class="btn btn-outline"
-      class:on={story.saved}
-      aria-pressed={story.saved}
-      title={story.saved ? 'Remove from saved (S)' : 'Save, and keep it past its age (S)'}
-      onclick={() => void feed.toggleSaved(story.id)}
-    >
-      <Icon name="star" size={15} filled={story.saved} />
-      {story.saved ? 'Saved' : 'Save'}
-    </button>
-    <button
-      class="btn btn-outline"
-      title={story.read ? 'Mark unread (U)' : 'Mark read (I)'}
-      onclick={() => void feed.toggleRead(story.id)}
-    >
-      <Icon name="tick" size={15} />
-      {story.read ? 'Mark unread' : 'Mark read'}
-    </button>
-    <button
-      class="btn btn-outline"
-      class:on={shelved.has(story.id)}
-      disabled={shelved.has(story.id)}
-      title="Put it on the Library's Articles shelf (L)"
-      onclick={() => void addToLibrary()}
-    >
-      <Icon name="book" size={15} />
-      {shelved.has(story.id) ? 'In the Library' : 'Add to Library'}
-    </button>
-    {#if !story.media}
-      <EpisodeActions {story} />
-    {/if}
-    {#if listening.available && !story.expired && !story.media}
-      <button
-        class="btn btn-outline"
-        class:on={reading}
-        title={reading
-          ? 'Stop reading it aloud'
-          : 'Listen to the article, made fit to hear: tables, lists and links are put into words'}
-        onclick={() => listen(false)}
-      >
-        <Icon name={reading ? 'stop' : 'play'} size={15} />
-        {reading ? (preparing ? 'Preparing…' : 'Stop') : 'Listen'}
-      </button>
-      {#if !reading}
-        <button
-          class="btn btn-outline"
-          title="Listen to it read as written, without the model changing anything"
-          onclick={() => listen(true)}
-        >
-          Read as written
-        </button>
-      {/if}
-    {/if}
-    {#if canFetch}
+  {#if phone.on}
+    <div class="toolbar-row phone-bar" role="toolbar" aria-label="Story actions">
+      <PhoneBack onclick={() => feed.close()} label={listName} />
       <span class="spacer"></span>
       <button
-        class="btn btn-outline"
-        disabled={feed.extracting}
-        title="Fetch the article this links to and read it here"
-        onclick={() => void feed.fetchFullArticle(story.id)}
+        class="pbtn"
+        class:on={story.saved}
+        aria-pressed={story.saved}
+        aria-label={story.saved ? 'Saved' : 'Save'}
+        onclick={() => void feed.toggleSaved(story.id)}
       >
-        <Icon name="globe" size={15} />
-        {feed.extracting ? 'Fetching…' : 'Fetch the full article'}
+        <Icon name="star" size={20} filled={story.saved} />
       </button>
-    {/if}
-  </div>
+      <button
+        class="pbtn"
+        aria-label={story.read ? 'Mark unread' : 'Mark read'}
+        title={story.read ? 'Mark unread' : 'Mark read'}
+        onclick={() => void feed.toggleRead(story.id)}
+      >
+        <Icon name="tick" size={20} />
+      </button>
+      <button
+        class="pbtn"
+        data-menu-trigger
+        aria-label="More"
+        aria-haspopup="menu"
+        aria-expanded={menu.at !== null}
+        onclick={moreMenu}
+      >
+        <Icon name="more" size={20} />
+      </button>
+    </div>
+  {:else}
+    <div class="toolbar-row" role="toolbar" aria-label="Story actions">
+      <button
+        class="back"
+        title="Back to the list (Escape)"
+        aria-label="Back to the list"
+        onclick={() => feed.close()}
+      >
+        <Icon name="chevron" size={15} />
+      </button>
+      {#if story.url}
+        <button
+          class="btn btn-outline"
+          title="Open the original (V)"
+          onclick={() => void feed.openOriginal(story.id)}
+        >
+          <Icon name="link" size={15} /> Open original
+        </button>
+      {/if}
+      {#if story.discussionUrl}
+        <button
+          class="btn btn-outline"
+          title="Open the discussion"
+          onclick={() => void feed.openDiscussion(story.id)}
+        >
+          <Icon name="people" size={15} /> Discussion
+        </button>
+      {/if}
+      <button
+        class="btn btn-outline"
+        class:on={story.saved}
+        aria-pressed={story.saved}
+        title={story.saved ? 'Remove from saved (S)' : 'Save, and keep it past its age (S)'}
+        onclick={() => void feed.toggleSaved(story.id)}
+      >
+        <Icon name="star" size={15} filled={story.saved} />
+        {story.saved ? 'Saved' : 'Save'}
+      </button>
+      <button
+        class="btn btn-outline"
+        title={story.read ? 'Mark unread (U)' : 'Mark read (I)'}
+        onclick={() => void feed.toggleRead(story.id)}
+      >
+        <Icon name="tick" size={15} />
+        {story.read ? 'Mark unread' : 'Mark read'}
+      </button>
+      <button
+        class="btn btn-outline"
+        class:on={shelved.has(story.id)}
+        disabled={shelved.has(story.id)}
+        title="Put it on the Library's Articles shelf (L)"
+        onclick={() => void addToLibrary()}
+      >
+        <Icon name="book" size={15} />
+        {shelved.has(story.id) ? 'In the Library' : 'Add to Library'}
+      </button>
+      {#if !story.media}
+        <EpisodeActions {story} />
+      {/if}
+      {#if listening.available && !story.expired && !story.media}
+        <button
+          class="btn btn-outline"
+          class:on={reading}
+          title={reading
+            ? 'Stop reading it aloud'
+            : 'Listen to the article, made fit to hear: tables, lists and links are put into words'}
+          onclick={() => listen(false)}
+        >
+          <Icon name={reading ? 'stop' : 'play'} size={15} />
+          {reading ? (preparing ? 'Preparing…' : 'Stop') : 'Listen'}
+        </button>
+        {#if !reading}
+          <button
+            class="btn btn-outline"
+            title="Listen to it read as written, without the model changing anything"
+            onclick={() => listen(true)}
+          >
+            Read as written
+          </button>
+        {/if}
+      {/if}
+      {#if canFetch}
+        <span class="spacer"></span>
+        <button
+          class="btn btn-outline"
+          disabled={feed.extracting}
+          title="Fetch the article this links to and read it here"
+          onclick={() => void feed.fetchFullArticle(story.id)}
+        >
+          <Icon name="globe" size={15} />
+          {feed.extracting ? 'Fetching…' : 'Fetch the full article'}
+        </button>
+      {/if}
+    </div>
+  {/if}
 
   {#key story.id}
     <div class="scroll">
@@ -357,6 +453,26 @@
               {/if}
             </div>
           </div>
+
+          {#if phone.on && !media}
+            <!-- What an article can be turned into, and fetching it whole,
+                 under its title: the desktop's toolbar holds them. -->
+            <div class="episode">
+              <div class="actions">
+                <EpisodeActions {story} />
+                {#if canFetch}
+                  <button
+                    class="btn btn-outline"
+                    disabled={feed.extracting}
+                    onclick={() => void feed.fetchFullArticle(story.id)}
+                  >
+                    <Icon name="globe" size={15} />
+                    {feed.extracting ? 'Fetching…' : 'Fetch the full article'}
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {/if}
 
           {#if media}
             <div class="episode">
@@ -571,5 +687,58 @@
   .link {
     color: var(--accent);
     text-decoration: underline;
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The header: the way back, then keeping and finishing with it as buttons a
+     finger can hit, and the menu. */
+  :global([data-phone]) .toolbar-row.phone-bar {
+    flex-wrap: nowrap;
+    gap: 0;
+    min-height: 52px;
+    padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-1);
+  }
+  .pbtn {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    color: var(--fg-muted);
+  }
+  .pbtn:active {
+    background: var(--bg-hover);
+  }
+  .pbtn.on {
+    color: var(--star);
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px var(--sp-2);
+  }
+
+  :global([data-phone]) .subject-block {
+    padding: var(--sp-4) var(--sp-4) var(--sp-2);
+  }
+  :global([data-phone]) h1 {
+    font-size: var(--text-lg);
+  }
+  :global([data-phone]) .art {
+    width: 72px;
+    height: 72px;
+  }
+  :global([data-phone]) .head {
+    gap: var(--sp-3);
+  }
+  :global([data-phone]) .reading {
+    padding: var(--sp-2) var(--sp-3) var(--sp-8);
+  }
+
+  :global([data-phone]) .link {
+    padding: 7px 2px;
   }
 </style>

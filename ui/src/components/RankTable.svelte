@@ -269,4 +269,17 @@
     color: var(--fg-faint);
     font-size: var(--text-xs);
   }
+
+  /* On a phone the card is a third narrower and the names are what is read:
+     the figures take only what they need, and a row that opens something is a
+     row a finger can hit. */
+  :global([data-phone]) .num {
+    width: calc(var(--figure-width) * 0.8);
+    padding-left: var(--sp-1);
+    font-size: var(--text-xs);
+  }
+  :global([data-phone]) .name-cell.pick {
+    min-height: 40px;
+    justify-content: center;
+  }
 </style>

@@ -282,4 +282,10 @@
   .round.ring :global(svg) {
     position: relative;
   }
+
+  /* A finger's size at the end of a row. */
+  :global([data-phone]) .round {
+    width: 40px;
+    height: 40px;
+  }
 </style>

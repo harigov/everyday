@@ -335,4 +335,17 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+
+  /* On a phone: a field and two buttons a finger can hit. */
+  :global([data-phone]) .bar input,
+  :global([data-phone]) .mini {
+    height: 40px;
+  }
+  :global([data-phone]) .mini {
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .mini.icon {
+    width: 40px;
+    padding: 0;
+  }
 </style>

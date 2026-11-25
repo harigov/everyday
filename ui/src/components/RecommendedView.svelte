@@ -27,6 +27,7 @@
   import { relativeTime, plural } from '../lib/format'
   import { episodeProgress, formatDuration } from '../lib/podcast'
   import { panels } from '../lib/panels.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { upnext } from '../lib/upnext.svelte'
   import type { Recommendation } from '../lib/types'
   import Avatar from './Avatar.svelte'
@@ -35,6 +36,9 @@
   import Icon from './Icon.svelte'
   import PaneResizer from './PaneResizer.svelte'
   import SourceIcon from './SourceIcon.svelte'
+
+  /** A phone shows a story over the list, which stays as it was beneath it. */
+  let { under = false }: { under?: boolean } = $props()
 
   onMount(() => {
     void upnext.loadRecommended()
@@ -106,7 +110,7 @@
   }
 </script>
 
-<section class="list" style:--tint={feed.accent}>
+<section class="list" class:under style:--tint={feed.accent}>
   <div class="top">
     <div class="pane-titles">
       <span class="pane-title">Recommended</span>
@@ -161,13 +165,15 @@
     <p class="note" role="status">{feed.note}</p>
   {/if}
 
-  <PaneResizer
-    cssVar="--feed-list-w"
-    storageKey="pane-w:feed-list"
-    defaultWidth={380}
-    min={300}
-    max={640}
-  />
+  {#if !phone.on}
+    <PaneResizer
+      cssVar="--feed-list-w"
+      storageKey="pane-w:feed-list"
+      defaultWidth={380}
+      min={300}
+      max={640}
+    />
+  {/if}
 </section>
 
 <!-- One recommendation. Laid out as a story's row is -- the unread dot, the
@@ -528,5 +534,69 @@
     height: 1px;
     overflow: hidden;
     clip-path: inset(50%);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The list is the whole screen, not a column beside a story, and stays
+     where it is while a story is over it. */
+  :global([data-phone]) .list {
+    width: auto;
+    flex: 1;
+    min-width: 0;
+    border-right: 0;
+  }
+  :global([data-phone]) .list.under {
+    visibility: hidden;
+  }
+  :global([data-phone]) .top {
+    padding: var(--sp-2) var(--sp-2) var(--sp-1) var(--sp-4);
+  }
+  :global([data-phone]) .plus {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .ranking {
+    padding: 0 var(--sp-4) var(--sp-3);
+  }
+  :global([data-phone]) .hint {
+    padding: var(--sp-4);
+  }
+  :global([data-phone]) .row {
+    padding-right: calc(40px + var(--sp-3) * 2);
+  }
+  :global([data-phone]) .end {
+    right: var(--sp-3);
+  }
+  :global([data-phone]) .round {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .note {
+    padding: var(--sp-2) var(--sp-4);
+  }
+
+  @media (max-height: 500px) {
+    :global([data-phone]) .top {
+      min-height: 0;
+      padding-block: var(--sp-1);
+    }
+    :global([data-phone]) .pane-sub {
+      display: none;
+    }
+  }
+
+  /* A finger leaves nothing under it: no highlight stuck to the row last
+     pressed or last opened, only the press itself. */
+  :global([data-phone]) .row:hover,
+  :global([data-phone]) .row.sel {
+    background: transparent;
+  }
+  :global([data-phone]) .row:active {
+    background: var(--bg-hover);
+  }
+  :global([data-phone]) .row.sel::after,
+  :global([data-phone]) .row:hover::after {
+    opacity: 1;
   }
 </style>

@@ -26,6 +26,9 @@
   import { files } from '../lib/files.svelte'
   import { focusOnMount } from '../lib/focus'
   import type { IconName } from '../lib/icons'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { PLAYER_SPEEDS, player } from '../lib/player.svelte'
   import { dropBefore, formatDuration, formatRemaining } from '../lib/podcast'
   import type { QueueEntryId, QueueItem } from '../lib/types'
@@ -50,6 +53,15 @@
     player.expanded = false
     if (opener instanceof HTMLElement && opener.isConnected) opener.focus()
   }
+
+  // Over the app for as long as it is open, so a phone's back button puts it
+  // away rather than leaving the app.
+  closesOnBack(
+    () => phone.on,
+    () => {
+      player.expanded = false
+    },
+  )
 
   const current = $derived(player.current)
   /** Asking is on offer where it can be done at all. */
@@ -196,6 +208,30 @@
     if (!item || index >= upnext.items.length - 1) return
     void upnext.move(item.entry.id, upnext.items[index + 2]?.entry.id ?? null)
   }
+
+  /**
+   * What a row's arrows and cross do, as a menu: on a phone they are one
+   * button -- or a long press on the row -- and not three small ones that
+   * would leave the title a sliver.
+   */
+  function rowMenu(item: QueueItem, at: number): MenuItem[] {
+    return tidyMenu([
+      { label: 'Move up', disabled: at === 0, run: () => moveUp(at) },
+      { label: 'Move down', disabled: at === upnext.items.length - 1, run: () => moveDown(at) },
+      SEP,
+      {
+        label: 'Take it out of Up Next',
+        icon: 'close',
+        run: () => void upnext.remove(item.entry.id),
+      },
+    ])
+  }
+
+  /** Stop what is playing and put the panel away: the top bar's own stop is not drawn on a phone. */
+  function stop() {
+    player.stop()
+    close()
+  }
 </script>
 
 <!-- A landmark with the keyboard's Escape on it, not a dialog: see the header.
@@ -336,6 +372,9 @@
       >
         <Icon name="tick" size={14} /> Mark played
       </button>
+      <button class="btn btn-sm btn-outline phone-only" onclick={stop}>
+        <Icon name="close" size={14} /> Stop
+      </button>
       {#if askable}
         <button
           class="btn btn-sm btn-outline"
@@ -386,7 +425,8 @@
             class:dragging={dragging === entry.id}
             class:before={over?.id === entry.id && !over.after}
             class:after={over?.id === entry.id && over.after}
-            draggable="true"
+            draggable={!phone.on}
+            oncontextmenu={phone.on ? (e) => menu.show(e, rowMenu(item, i)) : undefined}
             ondragstart={(e) => dragStart(e, entry.id)}
             ondragover={(e) => dragOver(e, entry.id)}
             ondrop={drop}
@@ -436,6 +476,16 @@
                 <Icon name="refresh" size={14} />
               </button>
             {/if}
+            <button
+              class="icon-btn more phone-only"
+              data-menu-trigger
+              aria-label="More for {entry.title}"
+              aria-haspopup="menu"
+              aria-expanded={menu.at !== null}
+              onclick={(e) => (menu.at ? menu.close() : menu.show(e, rowMenu(item, i)))}
+            >
+              <Icon name="more" size={18} />
+            </button>
             <div class="actions">
               <button
                 class="icon-btn up"
@@ -906,6 +956,81 @@
       bottom: 0;
       width: 100vw;
       border-radius: 0;
+    }
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A page between the top bar, which keeps what is playing, and the bar of
+     apps, whose place the sheets of every app on a phone leave clear. */
+  :global([data-phone]) .panel {
+    top: calc(var(--topbar-h) + var(--safe-top));
+    right: 0;
+    bottom: calc(var(--bottombar-h) + var(--safe-bottom));
+    left: 0;
+    width: auto;
+    border-width: 1px 0;
+    border-radius: 0;
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+  }
+  :global([data-phone]) .head {
+    padding: var(--sp-2) var(--sp-2) var(--sp-1) var(--sp-4);
+  }
+  :global([data-phone]) .tool {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .chip {
+    height: 36px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .speeds {
+    gap: 2px;
+  }
+  /* Up Next: the title, the one button for the rest, and no handle -- a
+     drag needs a pointer. */
+  :global([data-phone]) .grip,
+  :global([data-phone]) .actions {
+    display: none;
+  }
+  :global([data-phone]) .row {
+    min-height: 56px;
+    padding: var(--sp-1) 0 var(--sp-1) var(--sp-4);
+  }
+  :global([data-phone]) .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .row .icon-btn.more {
+    opacity: 1;
+    color: var(--fg-subtle);
+  }
+  /* Room for the first screen's controls and the first of Up Next on the
+     shortest phones: the film's box keeps a third of the height. */
+  :global([data-phone]) .picture {
+    max-height: 30vh;
+  }
+
+  /* A slider is a bar a finger can grab. */
+  :global([data-phone]) .seek,
+  :global([data-phone]) .level {
+    height: 32px;
+  }
+
+  /* On its side there is a hundred pixels or so between the two bars: the
+     panel scrolls whole, and Up Next is a list in it and not a list of its
+     own to scroll inside a few rows' room. */
+  @media (max-height: 560px) {
+    :global([data-phone]) .panel {
+      overflow-y: auto;
+    }
+    :global([data-phone]) .queue {
+      flex: none;
+    }
+    :global([data-phone]) .rows {
+      flex: none;
+      overflow: visible;
     }
   }
 </style>

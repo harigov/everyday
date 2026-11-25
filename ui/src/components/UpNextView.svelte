@@ -22,6 +22,9 @@
   import type { IconName } from '../lib/icons'
   import { library } from '../lib/library.svelte'
   import { listening } from '../lib/listen.svelte'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { phone } from '../lib/phone.svelte'
   import { player } from '../lib/player.svelte'
   import {
     addedByLabel,
@@ -221,6 +224,32 @@
     if (keyboard) await refocus(item.entry.id)
   }
 
+  /**
+   * What a row's arrows and cross do, as a menu: on a phone they are this
+   * one button -- or a long press on the row -- and not three small ones that
+   * would take the title's room.
+   */
+  function entryMenu(item: QueueItem, at: number): MenuItem[] {
+    return tidyMenu([
+      {
+        label: 'Move up',
+        disabled: at === 0,
+        run: () => void shift(item, -1),
+      },
+      {
+        label: 'Move down',
+        disabled: at === items.length - 1,
+        run: () => void shift(item, 1),
+      },
+      SEP,
+      {
+        label: 'Take it out of Up Next',
+        icon: 'close',
+        run: () => void upnext.remove(item.entry.id),
+      },
+    ])
+  }
+
   let dragging = $state<QueueEntryId | null>(null)
   let over = $state<{ id: QueueEntryId; after: boolean } | null>(null)
 
@@ -340,7 +369,8 @@
             class:before={over?.id === item.entry.id && !over.after}
             class:after={over?.id === item.entry.id && over.after}
             data-entry={item.entry.id}
-            draggable="true"
+            draggable={!phone.on}
+            oncontextmenu={phone.on ? (e) => menu.show(e, entryMenu(item, i)) : undefined}
             ondragstart={(e) => dragStart(e, item)}
             ondragover={(e) => dragOver(e, item)}
             ondrop={drop}
@@ -405,6 +435,16 @@
                 onclick={() => primary(item)}
               >
                 <Icon name={icon} size={15} filled={icon === 'play' || icon === 'pause'} />
+              </button>
+              <button
+                class="small more phone-only"
+                data-menu-trigger
+                aria-label="More for “{titleOf(item)}”"
+                aria-haspopup="menu"
+                aria-expanded={menu.at !== null}
+                onclick={(e) => (menu.at ? menu.close() : menu.show(e, entryMenu(item, i)))}
+              >
+                <Icon name="more" size={18} />
               </button>
               <button
                 class="small move"
@@ -667,5 +707,42 @@
   .down {
     display: grid;
     transform: rotate(90deg);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  :global([data-phone]) .page {
+    min-width: 0;
+  }
+  :global([data-phone]) .top {
+    padding: var(--sp-2) var(--sp-4) var(--sp-1);
+  }
+  :global([data-phone]) .body {
+    padding-bottom: var(--fab-clear);
+  }
+  /* A row: what it is, its title over its facts, the round control, and one
+     button for everything else -- no handle to drag by, and three small
+     buttons would leave the title a sliver. */
+  :global([data-phone]) .entry {
+    min-height: 68px;
+    padding: var(--sp-2) var(--sp-1) var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .grip,
+  :global([data-phone]) .small:not(.more) {
+    display: none;
+  }
+  :global([data-phone]) .round {
+    width: 44px;
+    height: 44px;
+    margin-right: 0;
+  }
+  :global([data-phone]) .small.more {
+    width: 44px;
+    height: 44px;
+    opacity: 1;
+  }
+
+  :global([data-phone]) .title {
+    padding: 6px 0;
   }
 </style>

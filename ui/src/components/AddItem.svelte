@@ -505,4 +505,32 @@
   .status.err {
     color: var(--danger);
   }
+
+  /* On a phone the line is as tall as a button, across the screen, with a
+     button of each kind at its end a finger can hit. */
+  :global([data-phone]) .line {
+    height: 48px;
+  }
+  :global([data-phone]) .pick {
+    height: 40px;
+    padding: 0 6px;
+  }
+  :global([data-phone]) .toggle,
+  :global([data-phone]) .from-file,
+  :global([data-phone]) .go {
+    width: 40px;
+    height: 40px;
+  }
+  /* The line is the ring: the shared field's own, around the text alone,
+     was a box in a box. */
+  :global([data-phone]) .field:focus {
+    border-color: transparent;
+    box-shadow: none;
+  }
+  :global([data-phone]) .hit {
+    padding: var(--sp-2);
+  }
+  :global([data-phone]) .results {
+    max-height: min(340px, 50dvh);
+  }
 </style>

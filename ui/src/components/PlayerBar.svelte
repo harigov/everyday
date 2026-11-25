@@ -69,7 +69,7 @@
 </script>
 
 {#if current}
-  <div class="player" role="group" aria-label="Player">
+  <div class="player" class:problem={!!player.error} role="group" aria-label="Player">
     <button
       class="what"
       aria-expanded={player.expanded}
@@ -363,5 +363,61 @@
     .what {
       padding: 0 2px;
     }
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The top bar is the search field's, and a pill of nine buttons would
+     leave it a sliver. What is playing is two round controls there -- its
+     picture, which opens the player, and play and pause -- and everything
+     else (skip, speed, asking about it, stopping it, Up Next) is in the
+     player's panel, one press away and with room for a finger. */
+  :global([data-phone]) .player {
+    height: 40px;
+    gap: 2px;
+    margin-right: 0;
+    padding: 0;
+    background: none;
+  }
+  :global([data-phone]) .player:not(.trouble) > :not(.what):not(.ctl.main) {
+    display: none;
+  }
+  :global([data-phone]) .what {
+    height: 40px;
+    padding: 0;
+    border-radius: 50%;
+  }
+  :global([data-phone]) .what .title {
+    display: none;
+  }
+  :global([data-phone]) .glyph {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+  :global([data-phone]) .player.problem .glyph {
+    box-shadow: 0 0 0 2px var(--danger);
+  }
+  :global([data-phone]) .ctl.main {
+    width: 40px;
+    height: 40px;
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
+  }
+
+  /* Said alone, with nothing loaded: a short line and a way to put it away. */
+  :global([data-phone]) .player.trouble {
+    display: flex;
+    max-width: 52vw;
+    padding: 0 0 0 var(--sp-3);
+    background: color-mix(in oklab, var(--danger) 12%, transparent);
+  }
+  :global([data-phone]) .player.trouble .title {
+    display: block;
+    max-width: none;
+  }
+  :global([data-phone]) .player.trouble .ctl {
+    width: 40px;
+    height: 40px;
   }
 </style>
