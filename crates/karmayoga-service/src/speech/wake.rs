@@ -103,12 +103,14 @@ fn sounds_alike(said: &str, name: &str) -> bool {
 }
 
 /// A word, lower case, as it sounds -- near enough that the ways a recogniser
-/// spells one name meet: "Jimmy", "Jimmie", "Jimi" and "Gimmy" are all
-/// `jimy`, and "Carma" is `karma`. A hard "c" (before a, o or u) is the "k" it
-/// sounds like, a "g" starting a word before e, i or y the "j", a doubled
-/// letter one, and a last "ie", "ey" or "i" the "y" it sounds like. Applied to
-/// the name as much as to what was heard, so it only ever makes two spellings
-/// of one sound equal; "Timmy" and "Jamie" still are not `jimy`.
+/// spells one name meet: "Jimmy", "Jimmie" and "Jimi" are all `jimy`, "Carma"
+/// is `karma` and "Selia" is `selia` like "Celia". A "c" is the "k" it sounds
+/// like before a, o or u and the "s" before e, i or y, a doubled letter is
+/// one, and a last "ie", "ey" or "i" is the "y" it sounds like. Applied to the
+/// name as much as to what was heard, so it only ever makes two spellings of
+/// one sound equal; "Timmy" and "Jamie" still are not `jimy`. A soft "g" is
+/// left as it is: no recogniser was seen writing "Gimmy" for "Jimmy", and
+/// "Gimmie" is how some write "gimme".
 fn sound_of(word: &str) -> String {
     let letters: Vec<char> = word.chars().collect();
     let mut sound = String::with_capacity(word.len());
@@ -116,7 +118,7 @@ fn sound_of(word: &str) -> String {
         let next = letters.get(at + 1).copied();
         let letter = match letter {
             'c' if matches!(next, Some('a' | 'o' | 'u')) => 'k',
-            'g' if at == 0 && matches!(next, Some('e' | 'i' | 'y')) => 'j',
+            'c' if matches!(next, Some('e' | 'i' | 'y')) => 's',
             other => other,
         };
         if !sound.ends_with(letter) {
@@ -268,10 +270,10 @@ impl Service {
                  said near it is sent anywhere. Choose one in Settings → Models.",
             ));
         }
-        // Every recogniser is told to expect these names from now on, this
-        // one first among them.
+        // Every recogniser is told to expect these names from now on. This
+        // one is told only them and the person's: see `Occasion::Wake`.
         self.remember_wake_names(&names);
-        let live = self.live_transcription(Tuning::CONVERSATION, Occasion::Conversation).await?;
+        let live = self.live_transcription(Tuning::CONVERSATION, Occasion::Wake).await?;
         Ok(spawn(live, names))
     }
 }
@@ -332,13 +334,16 @@ mod tests {
     #[test]
     fn a_name_is_heard_however_the_recogniser_spells_it() {
         let jimmy = names(&["Jimmy"]);
-        for said in ["Jimmy", "Jimmie", "Jimi", "Gimmy", "Jimmey", "JIMMY"] {
+        for said in ["Jimmy", "Jimmie", "Jimi", "Jimmey", "JIMMY"] {
             let said = format!("{said}, what time is it?");
             assert_eq!(heard(&said, &jimmy).as_deref(), Some("what time is it?"), "{said}");
         }
         assert_eq!(heard("Hey Jimi.", &jimmy).as_deref(), Some(""));
         // Spelled any of those ways in Settings, it is the same name.
         assert_eq!(heard("Jimmy, go", &names(&["Jimi"])).as_deref(), Some("go"));
+        // A soft "c" heard as the "s" it sounds like, a hard one as "k".
+        assert_eq!(heard("Selia, go", &names(&["Celia"])).as_deref(), Some("go"));
+        assert_eq!(heard("Carma, go", &names(&["Karma"])).as_deref(), Some("go"));
     }
 
     #[test]
@@ -352,6 +357,8 @@ mod tests {
             "Kimmy loves the new puppy.",
             "Jamie is coming over tonight.",
             "Gimme a minute, I'll be right there.",
+            "Gimmie a second.",
+            "Gimmy a hand here.",
             "Jim, can you pass the salt?",
             "Jiminy, that was close!",
             "Chimney needs cleaning.",
@@ -367,13 +374,15 @@ mod tests {
             ("jimmy", "jimy"),
             ("jimmie", "jimy"),
             ("jimi", "jimy"),
-            ("gimmy", "jimy"),
             ("carma", "karma"),
             ("karma", "karma"),
             ("siri", "siry"),
             ("timmy", "timy"),
             ("jamie", "jamy"),
-            ("gimme", "jime"),
+            ("gimme", "gime"),
+            ("gimmie", "gimy"),
+            ("celia", "selia"),
+            ("cindy", "sindy"),
             ("i", "i"),
         ] {
             assert_eq!(sound_of(word), sound, "{word}");

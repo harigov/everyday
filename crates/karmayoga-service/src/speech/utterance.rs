@@ -97,7 +97,17 @@ fn faint(samples: &[i16]) -> bool {
 /// What was said, from what a recogniser told to expect `prompt` returned for
 /// it: every line that survives [`RawSegment::cleaned`], in order, as one line
 /// of words. Empty when nothing did.
-fn words(segments: &[RawSegment], prompt: &str, quiet: bool) -> String {
+///
+/// The prompt is cleaned against only when the recogniser read it
+/// (`read_prompt`) and the audio was faint: a read-back is what a recogniser
+/// writes over near-silence. An utterance the detector heard clearly is
+/// somebody talking, and its words stay even when they are the prompt's --
+/// "Cancel the design review with Acme" while that review is coming up, or
+/// "Karma: start a timer" with the assistant's name in front like a label. A
+/// recogniser that was only told words to boost (Parakeet) cannot read
+/// anything back at all.
+fn words(segments: &[RawSegment], prompt: &str, read_prompt: bool, quiet: bool) -> String {
+    let prompt = if read_prompt && quiet { prompt } else { "" };
     let lines: Vec<String> =
         segments.iter().filter_map(|segment| segment.cleaned(prompt, quiet)).collect();
     lines.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
@@ -134,7 +144,8 @@ impl RemoteUtterances {
         let hints = Hints::new(self.language.clone(), (*expected).clone());
         let mut segments = self.transcriber.transcribe(&chunk, &hints).await?;
         segments.sort_by_key(|segment| segment.start_ms);
-        Ok(words(&segments, &hints.prompt, faint(samples)))
+        // A server reads the prompt it is sent.
+        Ok(words(&segments, &hints.prompt, true, faint(samples)))
     }
 }
 
@@ -200,7 +211,7 @@ impl LocalUtterances {
             no_speech_prob: None,
             avg_logprob: None,
         };
-        Ok(words(&[segment], &prompt, faint(samples)))
+        Ok(words(&[segment], &prompt, self.model.reads_prompt(), faint(samples)))
     }
 }
 
@@ -395,8 +406,35 @@ mod tests {
 
     #[test]
     fn words_over_nothing_are_empty() {
-        assert_eq!(words(&[], "", false), "");
-        assert_eq!(words(&[segment("   ", 0)], "", false), "");
+        assert_eq!(words(&[], "", true, false), "");
+        assert_eq!(words(&[segment("   ", 0)], "", true, false), "");
+    }
+
+    #[tokio::test]
+    async fn the_prompts_words_said_clearly_are_kept() {
+        // Said out loud, the prompt's own words are somebody talking: a
+        // command about the review that is coming up, the name used like a
+        // label in front of a request.
+        let prompt = "Hari talks to Karma. Coming up: Design review with Acme.";
+        let expected = Expected { prompt: prompt.into(), boosted: Vec::new() };
+        for said in ["Cancel design review with Acme", "Karma: start a timer"] {
+            let script = Scripted::new(vec![segment(said, 0)]);
+            let heard = hearing_expecting(&script, None, expected.clone())
+                .hear(&loud(1_000))
+                .await
+                .unwrap();
+            assert_eq!(heard, said);
+        }
+    }
+
+    #[test]
+    fn only_a_recogniser_that_read_the_prompt_can_read_it_back() {
+        let line = [segment("People: Priya Shah.", 0)];
+        let prompt = karma().prompt;
+        assert_eq!(words(&line, &prompt, true, true), "", "read back over silence");
+        // Parakeet was told words to boost, not this prompt: what it wrote
+        // over the same quiet is its own.
+        assert_eq!(words(&line, &prompt, false, true), "People: Priya Shah.");
     }
 
     #[cfg(not(feature = "speech"))]

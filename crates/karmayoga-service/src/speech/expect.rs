@@ -13,12 +13,12 @@
 //! names always have.
 
 use crate::error::CommandResult;
-use crate::service::{Service, blocking};
+use crate::service::Service;
 use jiff::{Timestamp, ToSpan};
 use karmayoga_core::Vault;
 use karmayoga_core::meeting::{EventRef, people};
 use karmayoga_core::speech::words::{self, WordSources};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 pub use karmayoga_core::speech::words::{Expected, Occasion};
@@ -47,12 +47,14 @@ const MAX_GATHERED: usize = 30;
 /// and again once [`REFRESH`] old.
 pub struct ExpectedWords {
     source: Source,
-    gathered: Mutex<Option<(Instant, Arc<Expected>)>>,
+    gathered: Mutex<Gathered>,
 }
 
 enum Source {
     Vault {
-        vault: Arc<Vault>,
+        /// Weak: a listener can run all day, and must not keep a vault that
+        /// has been closed -- and its write lock -- alive after it.
+        vault: Weak<Vault>,
         occasion: Occasion,
         wake: Vec<String>,
         now: Arc<dyn Fn() -> Timestamp + Send + Sync>,
@@ -60,10 +62,17 @@ enum Source {
     Fixed(Arc<Expected>),
 }
 
+/// What [`ExpectedWords`] last gathered, and whether it is gathering again.
+#[derive(Default)]
+struct Gathered {
+    words: Option<(Instant, Arc<Expected>)>,
+    refreshing: bool,
+}
+
 impl ExpectedWords {
     /// Always `expected`, never gathered: for tests, and a caller that knows.
     pub fn fixed(expected: Expected) -> Arc<Self> {
-        Arc::new(Self { source: Source::Fixed(Arc::new(expected)), gathered: Mutex::new(None) })
+        Arc::new(Self { source: Source::Fixed(Arc::new(expected)), gathered: Mutex::default() })
     }
 
     /// Nothing to expect.
@@ -71,57 +80,69 @@ impl ExpectedWords {
         Self::fixed(Expected::default())
     }
 
-    /// The words, gathered again when they are older than [`REFRESH`]. A
-    /// vault that cannot be read gives the words it last gave, or none.
-    /// Blocking: reads the vault.
-    pub fn current(&self) -> Arc<Expected> {
-        let (vault, occasion, wake, now) = match &self.source {
-            Source::Fixed(expected) => return expected.clone(),
-            Source::Vault { vault, occasion, wake, now } => (vault, *occasion, wake, now),
-        };
-        let mut gathered = self.gathered.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, expected)) = gathered.as_ref()
-            && at.elapsed() < REFRESH
-        {
+    /// The words to tell now. The first call gathers them, blocking on the
+    /// vault; after that the words last gathered come back at once, and once
+    /// they are older than [`REFRESH`] they are gathered again on a thread of
+    /// their own, so no utterance waits on the vault for them. A vault that
+    /// has since been closed or locked leaves the words it last gave, or none.
+    pub fn current(self: &Arc<Self>) -> Arc<Expected> {
+        if let Source::Fixed(expected) = &self.source {
             return expected.clone();
         }
-        let expected = if vault.is_unlocked() {
-            Arc::new(words::expected(occasion, &gather(vault, wake, now())))
-        } else {
-            gathered.as_ref().map(|(_, e)| e.clone()).unwrap_or_default()
+        let mut gathered = self.gathered.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((at, words)) = gathered.words.clone() else {
+            // The first time: gathered while the lock is held, so that warming
+            // up and the first utterance gather once between them.
+            let words = self.gather(None);
+            gathered.words = Some((Instant::now(), words.clone()));
+            return words;
         };
-        *gathered = Some((Instant::now(), expected.clone()));
-        expected
+        if at.elapsed() >= REFRESH && !gathered.refreshing {
+            gathered.refreshing = true;
+            let this = self.clone();
+            let stale = words.clone();
+            let spawned =
+                std::thread::Builder::new().name("expected-words".into()).spawn(move || {
+                    let fresh = this.gather(Some(stale));
+                    let mut gathered = this.gathered.lock().unwrap_or_else(|e| e.into_inner());
+                    gathered.words = Some((Instant::now(), fresh));
+                    gathered.refreshing = false;
+                });
+            if spawned.is_err() {
+                gathered.refreshing = false;
+            }
+        }
+        words
+    }
+
+    /// The words from the vault as it is now, or `stale` -- else none -- when
+    /// it is closed or locked. Blocking.
+    fn gather(&self, stale: Option<Arc<Expected>>) -> Arc<Expected> {
+        let Source::Vault { vault, occasion, wake, now } = &self.source else {
+            return stale.unwrap_or_default();
+        };
+        match vault.upgrade().filter(|v| v.is_unlocked()) {
+            Some(vault) => Arc::new(words::expected(*occasion, &gather(&vault, wake, now()))),
+            None => stale.unwrap_or_default(),
+        }
     }
 }
 
 impl Service {
     /// The words to expect while listening for `occasion`, gathered from the
-    /// vault on first use. Holds the vault, so it lives no longer than the
-    /// listener it is for.
+    /// vault on first use.
     pub fn expected_words(
         self: &Arc<Self>,
         occasion: Occasion,
     ) -> CommandResult<Arc<ExpectedWords>> {
-        let vault = self.require_unlocked()?;
+        let vault = Arc::downgrade(&self.require_unlocked()?);
         let wake = self.wake_names.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let clock = self.clock();
         let now: Arc<dyn Fn() -> Timestamp + Send + Sync> = Arc::new(move || clock.now());
         Ok(Arc::new(ExpectedWords {
             source: Source::Vault { vault, occasion, wake, now },
-            gathered: Mutex::new(None),
+            gathered: Mutex::default(),
         }))
-    }
-
-    /// The words for `occasion` as they are now, gathered once: what a
-    /// recogniser listening for it would be told. Blocking work is done off
-    /// the runtime.
-    pub async fn expected_words_now(
-        self: &Arc<Self>,
-        occasion: Occasion,
-    ) -> CommandResult<Expected> {
-        let words = self.expected_words(occasion)?;
-        blocking(move || Ok((*words.current()).clone())).await
     }
 
     /// Remember the names the wake word listens for, so that voice mode and
@@ -129,6 +150,12 @@ impl Service {
     /// assistant "Jarvis" says it there as well.
     pub(crate) fn remember_wake_names(&self, names: &[String]) {
         *self.wake_names.lock().unwrap_or_else(|e| e.into_inner()) = names.to_vec();
+    }
+
+    /// Forget them: the wake word was switched off, or the vault closed, and
+    /// its names are nothing to expect any more.
+    pub fn forget_wake_names(&self) {
+        self.wake_names.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 
@@ -323,6 +350,45 @@ mod tests {
         for word in ["Karma", "Jarvis", "OKR", "Tailscale", "Priya Shah", "Konark Café", "Acme"] {
             assert!(told.boosted.iter().any(|w| w == word), "{word} not in {:?}", told.boosted);
         }
+    }
+
+    #[test]
+    fn a_listener_does_not_keep_a_closed_vault_and_refreshes_without_waiting() {
+        let (vault, _dir) = test_vault();
+        let mut agent = vault.agent_settings().unwrap();
+        agent.name = "Karma".into();
+        vault.save_agent_settings(&agent).unwrap();
+        let words = Arc::new(ExpectedWords {
+            source: Source::Vault {
+                vault: Arc::downgrade(&vault),
+                occasion: Occasion::Wake,
+                wake: Vec::new(),
+                now: Arc::new(Timestamp::now),
+            },
+            gathered: Mutex::default(),
+        });
+        let first = words.current();
+        assert!(first.boosted.contains(&"Karma".to_string()), "{first:?}");
+
+        // Closed: the listener's hold on it is not what keeps it.
+        let weak = Arc::downgrade(&vault);
+        drop(vault);
+        assert!(weak.upgrade().is_none(), "the listener kept the vault alive");
+
+        // Stale now: the old words come back at once, and the refresh, with
+        // no vault to read, leaves them.
+        {
+            let mut gathered = words.gathered.lock().unwrap();
+            let (at, _) = gathered.words.as_mut().unwrap();
+            *at = Instant::now().checked_sub(REFRESH + Duration::from_secs(1)).unwrap();
+        }
+        assert_eq!(words.current(), first);
+        let began = Instant::now();
+        while words.gathered.lock().unwrap().refreshing {
+            assert!(began.elapsed() < Duration::from_secs(10), "the refresh never finished");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(words.current(), first);
     }
 
     #[test]

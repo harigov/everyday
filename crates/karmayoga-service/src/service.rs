@@ -1028,6 +1028,7 @@ impl Service {
         self.documents.close();
         self.mail.on_lock();
         self.listen_briefings.lock().unwrap().clear();
+        self.forget_wake_names();
         let settling = std::mem::take(&mut *self.karma_settling.lock().unwrap());
         for settle in settling {
             let _ = settle.await;

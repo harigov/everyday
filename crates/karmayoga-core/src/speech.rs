@@ -98,6 +98,13 @@ impl LocalModel {
     pub fn on_llama(&self) -> bool {
         matches!(self, LocalModel::Qwen3Asr17b | LocalModel::Qwen3Asr06b)
     }
+
+    /// Whether it reads the words to expect as a prompt, and so may write
+    /// that prompt back over silence: Qwen. Parakeet is told them as words to
+    /// boost, which it cannot read back, and Whisper here is told nothing.
+    pub fn reads_prompt(&self) -> bool {
+        self.on_llama()
+    }
 }
 
 /// Who turns speech into text. There is deliberately no default: nothing

@@ -266,15 +266,23 @@ recogniser that can be told is told the words it is likely to hear.
 and `speech::expect` gathers them from the vault.
 
 - **What the listening is for decides the words** (`Occasion`). Talking to the
-  assistant (voice mode, the talk key, the wake word): its names, its own and
-  the wake word's; the person's name; the people on the next day and a half of
-  events, then their circles, closest first; those events' places and titles;
-  active projects, goals and areas; routines; the apps they use most this week
-  and the connected services; and the app's own words (Karma Yoga, Siddhis).
-  Writing by voice (voice typing, dictation): the people, places and work they
-  write about, and the assistant's names last. A meeting: its invite's names,
-  companies, place and agenda words (`words::for_meeting`). A podcast: its show
-  and title. The person's own list from Settings → Meetings goes everywhere.
+  assistant (voice mode, the talk key, a conversation the wake word began): its
+  names, its own and the wake word's; the person's name; the people on the next
+  day and a half of events, then their circles, closest first; those events'
+  places and titles; active projects, goals and areas; routines; the apps they
+  use most this week and the connected services; and the app's own words
+  (Karma Yoga, Siddhis). Listening for the wake word: only the names it answers
+  to and the person's, since any other boosted name ("Jamie", a contact) could
+  be written in place of the assistant's at the start of an utterance, the one
+  place the wake word looks. Writing by voice (voice typing, dictation): the
+  people, places and work they write about, and the assistant's names last. A
+  meeting: the person's own words first, then its invite's names, companies,
+  place and agenda words (`words::for_meeting`). A podcast: its show and title.
+  The person's own list from Settings → Meetings goes everywhere.
+- **Not everything is a word to boost.** A first name that is an everyday word
+  too ("Will", "Grace") is boosted only as part of the whole name; times and
+  ordinals ("10am", "2nd") and the words of a title written in capitals are not
+  unusual; a video call ("Microsoft Teams Meeting", "Zoom") is not a place.
 - **Two forms.** Qwen3-ASR reads a short prompt in its system turn, and so do
   OpenAI's and Google's servers: a few labelled sentences, at most 500 bytes
   ("Hari talks to Karma. People: Priya Shah. Words: OKR."). Parakeet boosts
@@ -286,10 +294,16 @@ and `speech::expect` gathers them from the vault.
   a prompt loses the least relevant words first and the assistant's names and
   the person's own list last. Titles are context for a prompt, but only their
   unusual words (capitals mid-sentence, acronyms, codes) are boosted.
-- **Read back.** A recogniser may write its prompt back over silence. Utterances
-  are cleaned against the prompt they were told, as meeting lines always were.
 - **Fresh.** A listener's words are gathered when it starts and again every ten
-  minutes while it runs, so the all-day wake word moves on with the day.
+  minutes while it runs, so the all-day wake word moves on with the day. The
+  refresh runs on a thread of its own, and the utterance that finds the words
+  stale is told the old ones rather than waiting. A listener holds the vault
+  weakly: one still running cannot keep a closed vault, and its lock, alive.
+- **Read back only where read.** An utterance is cleaned against its prompt only
+  when the recogniser read it (Qwen or a server) and the audio was faint. Said
+  clearly, the prompt's own words are somebody talking ("Cancel the design
+  review with Acme"), and Parakeet, told words to boost, has no prompt to read
+  back.
 
 Parakeet's download has no vocabulary for sherpa-onnx to cut the words into its
 pieces with, so `hotwords::vocabulary` writes `bpe.vocab` beside `tokens.txt`

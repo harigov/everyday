@@ -314,7 +314,7 @@ fn sentences(
 }
 
 /// "A", "A and B", "A, B and C".
-fn and_list(items: &[&str]) -> String {
+pub(crate) fn and_list(items: &[&str]) -> String {
     match items {
         [] => String::new(),
         [one] => (*one).to_string(),
@@ -535,7 +535,7 @@ pub(crate) fn cut_chars(text: &str, max: usize) -> &str {
 
 /// `items` trimmed, blanks dropped, each once whatever its case: the first
 /// spelling met is the one kept.
-pub(crate) fn unique<I>(items: I) -> Vec<String>
+fn unique<I>(items: I) -> Vec<String>
 where
     I: IntoIterator,
     I::Item: AsRef<str>,

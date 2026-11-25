@@ -507,7 +507,22 @@ impl Recogniser {
             }
         }
 
-        let recognizer = sherpa_onnx::OfflineRecognizer::create(&config).ok_or_else(|| {
+        let mut recognizer = sherpa_onnx::OfflineRecognizer::create(&config);
+        if recognizer.is_none() && boosts {
+            // Refused with the beam search and the vocabulary: hear as it
+            // always did, greedily, told nothing, rather than not at all.
+            tracing::warn!(
+                model = model.as_str(),
+                "could not load it to take expected words; hearing without them"
+            );
+            config.decoding_method = None;
+            config.hotwords_score = 0.0;
+            config.model_config.modeling_unit = None;
+            config.model_config.bpe_vocab = None;
+            boosts = false;
+            recognizer = sherpa_onnx::OfflineRecognizer::create(&config);
+        }
+        let recognizer = recognizer.ok_or_else(|| {
             CommandError::new(codes::INTERNAL, format!("could not load {}", model.as_str()))
         })?;
         Ok(Self { model, engine: Engine::Sherpa { recognizer: Mutex::new(recognizer), boosts } })

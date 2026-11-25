@@ -59,6 +59,10 @@ const MAX_BOOSTED_WORDS: usize = 4;
 /// The most unusual words taken from one meeting's description.
 const MAX_TOPICS: usize = 6;
 
+/// How far into the boosted list a meeting's attendees may fill it, leaving
+/// the rest for its companies, places and agenda.
+const MAX_MEETING_NAMES: usize = 30;
+
 /// The app's own words that somebody says to its assistant and an everyday
 /// recogniser has never heard.
 pub const APP_WORDS: &[&str] = &["Karma Yoga", "Siddhis"];
@@ -67,8 +71,15 @@ pub const APP_WORDS: &[&str] = &["Karma Yoga", "Siddhis"];
 /// recogniser is told to expect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Occasion {
-    /// Talking to the assistant: voice mode, the talk key, the wake word.
+    /// Talking to the assistant: voice mode and the talk key, and a
+    /// conversation the wake word began.
     Conversation,
+    /// Listening for the wake word: only the names it answers to and the
+    /// person's. Everything else a conversation is told is a name the
+    /// recogniser could write in their place, at the start of the utterance,
+    /// the one place the wake word looks ("Jamie" for a contact, boosted,
+    /// where "Jimmy" was said).
+    Wake,
     /// Writing by voice: voice typing and dictation.
     Dictation,
 }
@@ -147,6 +158,7 @@ fn plan(occasion: Occasion) -> &'static [(Kind, usize, usize)] {
             (Kind::Routines, 2, 4),
             (Kind::AppWords, 2, 2),
         ],
+        Occasion::Wake => &[(Kind::Assistant, 5, 5), (Kind::Owner, 0, 1)],
         Occasion::Dictation => &[
             (Kind::Own, 12, 15),
             (Kind::Owner, 1, 1),
@@ -200,10 +212,18 @@ pub fn expected(occasion: Occasion, sources: &WordSources) -> Expected {
 /// of its title and description.
 pub fn for_meeting(words: &MeetingWords) -> Expected {
     let mut boosted = Boosted::default();
+    // The person's own words first, as everywhere: in a large meeting the
+    // attendees alone would fill the list.
+    for term in &words.terms {
+        boosted.push(term);
+    }
     for name in &words.names {
+        if boosted.words.len() >= MAX_MEETING_NAMES {
+            break;
+        }
         boosted.push_name(name);
     }
-    for term in words.terms.iter().chain(&words.companies).chain(&words.places) {
+    for term in words.companies.iter().chain(&words.places) {
         boosted.push(term);
     }
     for word in unusual_words(&words.title).iter().chain(&words.topics) {
@@ -257,8 +277,30 @@ pub fn meeting_topics(description: &str) -> Vec<String> {
 /// the part before its first comma, cleaned ("Konark Café" from "Konark
 /// Café, 12 MG Road, Bengaluru").
 pub fn place_of(location: &str) -> Option<String> {
+    /// Locations that are a video call or a phone line, not somewhere to go.
+    const CALLS: &[&str] = &[
+        "zoom",
+        "teams",
+        "google meet",
+        "meet.google",
+        "webex",
+        "skype",
+        "hangout",
+        "facetime",
+        "jitsi",
+        "whereby",
+        "dial-in",
+        "conference call",
+        "phone call",
+        "online",
+        "virtual",
+    ];
     let lower = location.to_lowercase();
-    if lower.contains("://") || lower.contains("www.") || lower.contains('@') {
+    if lower.contains("://")
+        || lower.contains("www.")
+        || lower.contains('@')
+        || CALLS.iter().any(|c| lower.contains(c))
+    {
         return None;
     }
     let first = location.split([',', ';', '\n']).next()?;
@@ -303,19 +345,63 @@ pub fn unusual_words(text: &str) -> Vec<String> {
         let long: Vec<&&str> =
             words.iter().filter(|w| w.chars().filter(|c| c.is_alphabetic()).count() >= 4).collect();
         let title_case = long.len() >= 2 && long.iter().all(|w| capitalised(w));
+        // A line mostly in capitals is shouted ("URGENT CALL WITH ME at
+        // 10am"): its capitals say nothing about any one word. Two words in
+        // capitals are as likely two acronyms ("OKR and KPI review").
+        let lettered = words.iter().filter(|w| w.chars().any(char::is_alphabetic)).count();
+        let in_capitals = words
+            .iter()
+            .filter(|w| {
+                w.chars().filter(|c| c.is_alphabetic()).count() >= 2
+                    && !w.chars().any(char::is_lowercase)
+            })
+            .count();
+        let shouted = in_capitals >= 3 && in_capitals * 2 > lettered;
         for (at, word) in words.iter().enumerate() {
             let capitals = word.chars().filter(|c| c.is_uppercase()).count();
             let letters = word.chars().filter(|c| c.is_alphabetic()).count();
             let digits = word.chars().any(|c| c.is_ascii_digit());
-            let unusual = (capitals >= 2 && letters >= 2)
-                || (digits && letters >= 1)
-                || (at > 0 && !title_case && capitalised(word) && letters >= MIN_BOOSTED_LETTERS);
+            let unusual = (capitals >= 2 && letters >= 2 && !shouted)
+                || (digits && letters >= 1 && !is_quantity(word))
+                || (at > 0
+                    && !title_case
+                    && !shouted
+                    && capitalised(word)
+                    && letters >= MIN_BOOSTED_LETTERS);
             if unusual && !EVERYDAY_CAPITALS.contains(word) && !out.iter().any(|w| w == word) {
                 out.push((*word).to_string());
             }
         }
     }
     out
+}
+
+/// Whether `word` is a number with a unit or an ending -- a time ("10am",
+/// "30pm"), an ordinal ("2nd") or a length ("45min") -- which every recogniser
+/// writes on its own, unlike a code such as "Q3".
+fn is_quantity(word: &str) -> bool {
+    const ENDINGS: &[&str] =
+        &["", "am", "pm", "a", "p", "st", "nd", "rd", "th", "h", "hr", "hrs", "m", "min", "mins"];
+    let rest = word.trim_start_matches(|c: char| c.is_ascii_digit());
+    rest.len() < word.len() && ENDINGS.contains(&rest.to_lowercase().as_str())
+}
+
+/// First names that are everyday words too. Boosted on its own, one of these
+/// is heard where the word was meant ("I Will call you"); a person called by
+/// it is still boosted by their whole name.
+const EVERYDAY_NAMES: &[&str] = &[
+    "will", "mark", "bill", "grace", "hope", "faith", "joy", "may", "june", "rose", "art", "pat",
+    "ray", "frank", "gene", "dawn", "summer", "autumn", "sky", "rich", "chase", "hunter", "major",
+    "page", "drew", "jack", "sue", "rob", "bob", "don", "ben", "max", "guy", "sandy", "jay",
+    "sunny", "dash", "hazel", "ivy", "holly", "lily", "daisy", "angel", "harmony", "rocky",
+    "rusty",
+];
+
+/// A person's first name, from their whole `name`, when it is worth boosting
+/// on its own: one of several words, and not an everyday word.
+fn first_name(name: &str) -> Option<&str> {
+    let (first, _) = name.trim().split_once(char::is_whitespace)?;
+    (!EVERYDAY_NAMES.contains(&first.to_lowercase().as_str())).then_some(first)
 }
 
 /// Words written with a capital mid-sentence that every recogniser knows.
@@ -386,9 +472,7 @@ impl Boosted {
             return;
         }
         self.push(name);
-        let clean = clean(name);
-        let mut parts = clean.split_whitespace();
-        if let (Some(first), Some(_)) = (parts.next(), parts.next()) {
+        if let Some(first) = first_name(&clean(name)) {
             self.push(first);
         }
     }
@@ -417,7 +501,7 @@ fn boost_candidates(kind: Kind, sources: &WordSources) -> Vec<String> {
             let mut out = Vec::new();
             for name in sources.people.iter().filter(|n| !n.contains('@')) {
                 out.push(name.clone());
-                if let Some((first, _)) = name.trim().split_once(char::is_whitespace) {
+                if let Some(first) = first_name(name) {
                     out.push(first.to_string());
                 }
             }
@@ -497,7 +581,7 @@ fn render(occasion: Occasion, parts: &[(Kind, Vec<String>)]) -> String {
     let owner = words(Kind::Owner);
     let mut sentences: Vec<String> = Vec::new();
     match occasion {
-        Occasion::Conversation => match (owner.first(), assistant.is_empty()) {
+        Occasion::Conversation | Occasion::Wake => match (owner.first(), assistant.is_empty()) {
             (Some(owner), false) => {
                 sentences.push(format!("{owner} talks to {}.", or_list(&assistant)))
             }
@@ -513,7 +597,7 @@ fn render(occasion: Occasion, parts: &[(Kind, Vec<String>)]) -> String {
     }
     let mut labelled = |label: &str, list: Vec<&str>| {
         if !list.is_empty() {
-            sentences.push(format!("{label}: {}.", and_list(&list)));
+            sentences.push(format!("{label}: {}.", vocab::and_list(&list)));
         }
     };
     labelled("People", words(Kind::People));
@@ -529,15 +613,6 @@ fn render(occasion: Occasion, parts: &[(Kind, Vec<String>)]) -> String {
     labelled("Also", also);
     labelled("Words", words(Kind::Own));
     sentences.join(" ")
-}
-
-/// "A", "A and B", "A, B and C".
-fn and_list(items: &[&str]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => (*one).to_string(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
 }
 
 /// "A", "A or B", "A, B or C".
@@ -725,12 +800,12 @@ mod tests {
         assert_eq!(
             expected.boosted,
             strings(&[
+                "Kubernetes",
                 "Ana Ruiz",
                 "Ana",
                 "Bo Chen",
                 "Hari Govardhanam",
                 "Hari",
-                "Kubernetes",
                 "Acme",
                 "Konark Café",
                 "OKRs",
@@ -739,5 +814,63 @@ mod tests {
         assert_eq!(expected.prompt, vocab::transcriber_prompt(&words));
         assert!(expected.prompt.contains("In Konark Café."), "{}", expected.prompt);
         assert!(expected.prompt.contains("We talk about Kubernetes and OKRs."));
+    }
+
+    #[test]
+    fn a_large_meeting_still_boosts_the_persons_words_and_its_company() {
+        let names: Vec<String> = (0..25).map(|n| format!("Person{n} Surname{n}")).collect();
+        let words = MeetingWords {
+            title: "All hands".into(),
+            names,
+            companies: strings(&["Acme"]),
+            terms: strings(&["Kubernetes", "Tailscale"]),
+            places: Vec::new(),
+            topics: Vec::new(),
+        };
+        let boosted = for_meeting(&words).boosted;
+        assert_eq!(&boosted[..2], &strings(&["Kubernetes", "Tailscale"])[..]);
+        assert!(boosted.contains(&"Acme".to_string()), "{boosted:?}");
+        assert!(boosted.len() <= MAX_BOOSTED);
+    }
+
+    #[test]
+    fn listening_for_the_wake_word_is_told_only_the_names() {
+        let expected = expected(Occasion::Wake, &sources());
+        assert_eq!(expected.boosted, strings(&["Karma", "Jarvis"]));
+        assert_eq!(expected.prompt, "Hari Govardhanam talks to Karma or Jarvis.");
+    }
+
+    #[test]
+    fn a_first_name_that_is_an_everyday_word_is_boosted_only_whole() {
+        let mut known = sources();
+        known.people = strings(&["Will Smith", "Grace Hopper", "Priya Shah"]);
+        let boosted = expected(Occasion::Dictation, &known).boosted;
+        for whole in ["Will Smith", "Grace Hopper", "Priya Shah", "Priya"] {
+            assert!(boosted.contains(&whole.to_string()), "{whole} not in {boosted:?}");
+        }
+        for alone in ["Will", "Grace"] {
+            assert!(!boosted.contains(&alone.to_string()), "{alone} in {boosted:?}");
+        }
+        let meeting = MeetingWords { names: strings(&["Mark Lee"]), ..MeetingWords::default() };
+        assert_eq!(for_meeting(&meeting).boosted, strings(&["Mark Lee"]));
+    }
+
+    #[test]
+    fn times_ordinals_and_shouted_titles_are_not_unusual() {
+        assert!(unusual_words("URGENT CALL WITH ME at 10am").is_empty());
+        assert!(unusual_words("Dentist 3pm").is_empty());
+        assert!(unusual_words("Rent due on the 2nd, a 45min call at 9:30am").is_empty());
+        // A code is still one, and an acronym in a line that is not shouted.
+        assert_eq!(unusual_words("Plan the Q3 OKR review"), strings(&["Q3", "OKR"]));
+        assert_eq!(unusual_words("QBR"), strings(&["QBR"]));
+        assert_eq!(unusual_words("OKR and KPI review"), strings(&["OKR", "KPI"]));
+    }
+
+    #[test]
+    fn a_video_call_is_not_a_place() {
+        for location in ["Microsoft Teams Meeting", "Zoom", "Google Meet", "Online", "Webex"] {
+            assert_eq!(place_of(location), None, "{location}");
+        }
+        assert_eq!(place_of("Konark Café, 12 MG Road").as_deref(), Some("Konark Café"));
     }
 }

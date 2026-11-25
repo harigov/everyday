@@ -43,9 +43,10 @@ sooner, and the card says to.
   "OK"). "I asked Siri yesterday" is talking about the assistant.
 - **Matched as it sounds, not as it is spelled.** A recogniser that does not
   know a name writes it the way it sounds, so both sides are compared as
-  sounds (`wake::sound_of`): doubled letters once, a hard "c" as "k", a "g"
-  starting a word before e, i or y as "j", a last "ie", "ey" or "i" as "y".
-  "Jimmie", "Jimi" and "Gimmy" are "Jimmy"; "Carma" is "Karma". A word of
+  sounds (`wake::sound_of`): doubled letters once, a "c" as "k" before a, o
+  or u and as "s" before e, i or y, a last "ie", "ey" or "i" as "y".
+  "Jimmie" and "Jimi" are "Jimmy"; "Carma" is "Karma". A soft "g" stays: no
+  recogniser wrote "Gimmy" for "Jimmy", and "Gimmie" is "gimme". A word of
   five letters or more may also be one letter off ("Karmas"), though never
   the first letter. Measured on 616 sentences of sound-alikes, this woke on 1
   where "any one letter off" woke on 108: every "Timmy…" and "Kimmy…" for an

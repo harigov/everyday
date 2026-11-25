@@ -441,7 +441,14 @@ fn calendar_event(vault: &Vault, event: &EventRef) -> Option<karmayoga_core::cal
             day.tomorrow().ok()?,
         )
     };
-    vault.events(&query).ok()?.into_iter().find(|e| e.uid == event.uid)
+    // The occurrences of a repeating meeting share its uid: the one nearest
+    // the recorded start is this one, even moved a little since.
+    vault
+        .events(&query)
+        .ok()?
+        .into_iter()
+        .filter(|e| e.uid == event.uid)
+        .min_by_key(|e| (e.start.as_second() - event.start.as_second()).abs())
 }
 
 /// The owner as this meeting knows them: their name, and only those of
