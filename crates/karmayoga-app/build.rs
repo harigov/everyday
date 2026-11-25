@@ -95,6 +95,9 @@ const APP_COMMANDS: &[&str] = &[
     // Calling the assistant by name instead of pressing the talk key.
     "wake_settings",
     "set_wake_settings",
+    // What is taken out of the microphone before anything listens.
+    "microphone_settings",
+    "set_microphone_settings",
     // The panel in the corner of the screen.
     "panel_state",
     "panel_action",

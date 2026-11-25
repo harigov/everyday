@@ -1819,6 +1819,7 @@ fn the_database_file_contains_no_readable_meeting_text() {
         model: "3d-speaker".into(),
         centroids: vec![vec![0.1, 0.2]],
         samples: 1,
+        voice_sample: None,
         created_at: now,
         updated_at: now,
     };

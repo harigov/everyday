@@ -152,6 +152,7 @@ fn voiceprint(name: &str) -> Voiceprint {
         model: "3d-speaker".into(),
         centroids: vec![vec![0.1, 0.2, 0.3]],
         samples: 1,
+        voice_sample: None,
         created_at: now,
         updated_at: now,
     }

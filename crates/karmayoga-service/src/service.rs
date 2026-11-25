@@ -115,6 +115,10 @@ pub struct Service {
     /// is told to expect them, not only the wake word's. See
     /// [`crate::speech::expect`].
     pub(crate) wake_names: std::sync::Mutex<Vec<String>>,
+    /// How sure what is heard on this computer's microphone must be of being
+    /// the owner's voice before it is transcribed, or `None` for not
+    /// checking: the app's setting, told here. See [`crate::speech::owner`].
+    pub(crate) voice_check: crate::speech::owner::VoiceCheck,
     /// This session's routine bookkeeping -- which runs it is claiming, the
     /// name of whichever is running right now, and which failures it has
     /// already reported. See [`crate::runtime::routine::RoutineRuntime`].
@@ -229,6 +233,7 @@ impl Service {
             sync_trouble: crate::trouble::SyncTrouble::default(),
             upcoming_alerts: std::sync::Mutex::default(),
             wake_names: std::sync::Mutex::default(),
+            voice_check: crate::speech::owner::VoiceCheck::default(),
             routines: RoutineRuntime::default(),
             sign_ins: Arc::new(SignIns::new()),
             token_cache: Arc::new(TokenCache::new()),

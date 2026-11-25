@@ -340,6 +340,7 @@ impl Service {
             .live_transcription(
                 crate::speech::detect::Tuning::DICTATION,
                 crate::speech::expect::Occasion::Dictation,
+                crate::speech::access::HeardFrom::ThisComputer,
             )
             .await?;
         Ok(spawn(live))

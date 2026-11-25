@@ -258,6 +258,7 @@ async fn a_spoken_conversation_with_the_real_models() {
         .live_transcription(
             Tuning::CONVERSATION,
             karmayoga_service::speech::expect::Occasion::Conversation,
+            karmayoga_service::speech::access::HeardFrom::ThisComputer,
         )
         .await
         .expect("listening opens");

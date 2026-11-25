@@ -11,6 +11,7 @@ use crate::agent::{ConfirmAnswer, Reach, Sink, Turn, Typist};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::listen::ReadAloud;
 use crate::service::{Service, blocking};
+use crate::speech::access::HeardFrom;
 use crate::speech::detect::Tuning;
 use crate::speech::expect::Occasion;
 use crate::speech::listen::PieceStream;
@@ -274,7 +275,9 @@ impl Service {
         // voice that is missing would leave running for a session that never
         // opened.
         let synthesiser = self.speech_synthesiser().await?;
-        let live = self.live_transcription(Tuning::CONVERSATION, Occasion::Conversation).await?;
+        let from = if via.is_some() { HeardFrom::Call } else { HeardFrom::ThisComputer };
+        let live =
+            self.live_transcription(Tuning::CONVERSATION, Occasion::Conversation, from).await?;
         let link = session::spawn(VoiceParts {
             live,
             synthesiser,

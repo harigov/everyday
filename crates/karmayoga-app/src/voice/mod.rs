@@ -370,7 +370,8 @@ async fn try_start(
         })
     };
     let options = EngineOptions { microphone: true, speaker: true, echo_cancellation: true };
-    let engine = match AudioEngine::start(options, sink).await {
+    let cleanup = crate::microphone::cleanup(&state.service()).await;
+    let engine = match AudioEngine::start(options, cleanup, sink).await {
         Ok(engine) => Arc::new(engine),
         Err(e) => {
             // The session is already running; let it go.

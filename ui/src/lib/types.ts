@@ -3370,6 +3370,30 @@ export interface WakeSettings {
   waiting: string | null
 }
 
+/** The microphone's per-machine settings: what is taken out of it before
+ *  anything listens to the person. See `crates/karmayoga-app/src/microphone.rs`. */
+/** How alike to the person's voice what is heard must be. */
+export type VoiceCheck = 'lenient' | 'balanced' | 'strict'
+
+export interface MicrophoneSettings {
+  /** Hear only utterances in the person's own voice. */
+  onlyMyVoice: boolean
+  /** How strictly. */
+  strictness: VoiceCheck
+  /** Take other voices out of the microphone (VoxLock). */
+  isolateVoice: boolean
+  /** DPDFNet in place of the ordinary noise suppression. */
+  strongNoiseFilter: boolean
+  /** A voiceprint of the person has been recorded, to compare with. */
+  voiceRecorded: boolean
+  /** And a sample of their voice kept with it, which taking out other voices
+   *  needs: a voiceprint recorded before that was kept has none. */
+  voiceSample: boolean
+  /** Why the filters were last turned off part-way: this computer could not
+   *  keep up with them. */
+  problem: string | null
+}
+
 // ── The tray ───────────────────────────────────────────────────────────
 //
 // The wire form of a tray menu, as `set_tray_menu` takes it. What the
@@ -5303,6 +5327,9 @@ export interface VoiceprintInfo {
   isOwner: boolean
   model: string
   samples: number
+  /** A sample of the voice is kept with it, which taking other voices out of
+   *  the microphone needs. */
+  hasSample: boolean
   createdAt: string
   updatedAt: string
 }

@@ -311,6 +311,8 @@ import {
   mockDismissMeetingOffer,
   mockDownloadSpeechModel,
   mockEnrolVoice,
+  mockMicrophoneSettings,
+  mockSetMicrophoneSettings,
   mockGetRecording,
   mockGetTranscript,
   mockListRecordings,
@@ -9346,6 +9348,10 @@ export const mockInvoke = async <T>(
     case 'voice_enrol':
       requireUnlocked()
       return (await mockEnrolVoice()) as T
+    case 'microphone_settings':
+      return mockMicrophoneSettings() as T
+    case 'set_microphone_settings':
+      return mockSetMicrophoneSettings(args) as T
 
     // ── Talking to the assistant, called by name -- see `api.ts`'s
     //    `voiceStart`, which `mock-voice.ts` stands in for ───────────────

@@ -80,6 +80,11 @@ use tokio::io::AsyncWriteExt;
 /// `ui/src/lib/types.ts`'s `LocalModelInfo.id`.
 pub const SPEECH_KIT_ID: &str = "speechKit";
 
+/// The microphone's two filters' ids in the catalogue and on the wire: see
+/// `speech::cleanup` and the app's `microphone.rs`.
+pub const VOICE_ISOLATION_ID: &str = "voiceIsolation";
+pub const NOISE_FILTER_ID: &str = "noiseFilter";
+
 /// The id [`LocalModel`] serialises as, and the id the catalogue and the
 /// wire use for it. Spelled out rather than read off `serde` -- this module
 /// has no reason to depend on `karmayoga_core::meeting::LocalModel`'s own
@@ -785,8 +790,49 @@ const QWEN3_ASR_06B_SOURCES: &[Source] = &[
     },
 ];
 
+/// VoxLock, int8, as sherpa-onnx republishes it from its author's release
+/// (github.com/arbazsiddiqui/voxlock, Apache-2.0): the enrolment model, run
+/// once on the person's voice, and the model run over every chunk of the
+/// microphone. The archive's test WAVs and README are left in it.
+const VOICE_ISOLATION_SOURCES: &[Source] = &[Source::Archive {
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/sherpa-onnx-voxlock-int8.tar.bz2",
+    sha256: "bcb947f9e8676d3e963f6048b0088505c84f0843bfdc88cb26dde3264d81570b",
+    bytes: 72_508_647,
+    members: &[
+        (
+            "sherpa-onnx-voxlock-int8/enroll.onnx",
+            ModelFile {
+                dest: "enroll.onnx",
+                sha256: "5d06048c156bb8cd422d29848e6d38fb26a7b39f6f7fd92eccf2a6ed1ce003c6",
+                bytes: 12_476_014,
+            },
+        ),
+        (
+            "sherpa-onnx-voxlock-int8/chunk_int8.onnx",
+            ModelFile {
+                dest: "chunk_int8.onnx",
+                sha256: "df61a9d0062b0adbcf1182302b1eb8b815f15ac47ea4923e8e164c1aff64121d",
+                bytes: 66_608_910,
+            },
+        ),
+    ],
+}];
+
+/// DPDFNet's 16 kHz model with two dual-path blocks (Ceva, Apache-2.0), as
+/// sherpa-onnx republishes it. `dpdfnet4` was no better on the one noisy
+/// test clip, at twice the cost of a model that runs whenever a microphone
+/// is open.
+const NOISE_FILTER_SOURCES: &[Source] = &[Source::File {
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/dpdfnet2.onnx",
+    file: ModelFile {
+        dest: "dpdfnet2.onnx",
+        sha256: "ce35d6025fc71df0ef10d1540e1b7916837bbfe5f6896deb744508d2cad487a9",
+        bytes: 10_249_356,
+    },
+}];
+
 /// Every downloadable model, in the order the settings panes list them.
-pub static CATALOGUE: [ModelSpec; 13] = [
+pub static CATALOGUE: [ModelSpec; 15] = [
     ModelSpec {
         id: SPEECH_KIT_ID,
         kind: ModelKind::Speech,
@@ -826,6 +872,22 @@ pub static CATALOGUE: [ModelSpec; 13] = [
         description: "A smaller Qwen3-ASR: about a third of the size and quicker, and less accurate.",
         languages: "English, Chinese, Hindi and 27 other languages",
         sources: QWEN3_ASR_06B_SOURCES,
+    },
+    ModelSpec {
+        id: VOICE_ISOLATION_ID,
+        kind: ModelKind::Speech,
+        name: "Voice isolation (VoxLock)",
+        description: "Keeps your voice in the microphone and takes out other people talking over you.",
+        languages: "Any",
+        sources: VOICE_ISOLATION_SOURCES,
+    },
+    ModelSpec {
+        id: NOISE_FILTER_ID,
+        kind: ModelKind::Speech,
+        name: "Noise filter (DPDFNet)",
+        description: "Takes noise that comes and goes out of the microphone: a fan, dishes, a keyboard.",
+        languages: "Any",
+        sources: NOISE_FILTER_SOURCES,
     },
     ModelSpec {
         id: "d3Lite",
@@ -920,6 +982,36 @@ pub fn decision_model_path(model: LocalDecisionModel) -> Option<PathBuf> {
 /// The VAD, segmentation and embedding models, all present and checked.
 pub fn speech_kit_installed() -> bool {
     spec(SPEECH_KIT_ID).is_some_and(is_installed)
+}
+
+/// VoxLock's two files, present and checked.
+pub fn voice_isolation_installed() -> bool {
+    spec(VOICE_ISOLATION_ID).is_some_and(is_installed)
+}
+
+/// DPDFNet's file, present and checked.
+pub fn noise_filter_installed() -> bool {
+    spec(NOISE_FILTER_ID).is_some_and(is_installed)
+}
+
+/// Where VoxLock's files are, once [`voice_isolation_installed`].
+pub struct VoiceIsolationPaths {
+    pub enroll: PathBuf,
+    pub chunk: PathBuf,
+}
+
+pub fn voice_isolation_paths() -> Option<VoiceIsolationPaths> {
+    let spec = spec(VOICE_ISOLATION_ID)?;
+    is_installed(spec).then(|| {
+        let dir = spec.dir();
+        VoiceIsolationPaths { enroll: dir.join("enroll.onnx"), chunk: dir.join("chunk_int8.onnx") }
+    })
+}
+
+/// Where DPDFNet is, once [`noise_filter_installed`].
+pub fn noise_filter_path() -> Option<PathBuf> {
+    let spec = spec(NOISE_FILTER_ID)?;
+    is_installed(spec).then(|| spec.dir().join("dpdfnet2.onnx"))
 }
 
 /// This recogniser's files, all present and checked.

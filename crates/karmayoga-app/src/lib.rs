@@ -32,6 +32,7 @@ mod listen;
 mod listener;
 mod machine_config;
 mod mcp;
+mod microphone;
 // `pub`: `meeting::begin_headless` is the window-free core of
 // `meeting_start`/`start_automatic` -- see its own doc -- and an E2E test
 // (`tests/meeting_e2e.rs`) drives a recording through it with no Tauri
@@ -203,6 +204,10 @@ pub fn run() {
             // Another application taking the microphone is the second way a
             // call is noticed, beside the calendar. See `micwatch`.
             micwatch::spawn(&handle);
+            // Whether what the microphone hears is checked for the owner's
+            // voice: this computer's setting, told to the service. See
+            // `microphone`.
+            microphone::install(&handle);
             // Listening for the assistant's name, when that is switched on,
             // whenever nothing else needs the microphone. See `wake`.
             wake::install(&handle);
@@ -348,6 +353,8 @@ pub fn run() {
             talk::talk_toggle,
             wake::wake_settings,
             wake::set_wake_settings,
+            microphone::microphone_settings,
+            microphone::set_microphone_settings,
             // The panel in the corner of the screen, and its page. See
             // `panel`.
             panel::panel_state,

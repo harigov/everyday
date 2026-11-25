@@ -108,6 +108,7 @@ async fn listening_loads_the_recogniser_before_anything_is_heard() {
         .live_transcription(
             Tuning::CONVERSATION,
             karmayoga_service::speech::expect::Occasion::Conversation,
+            karmayoga_service::speech::access::HeardFrom::ThisComputer,
         )
         .await
         .expect("listening opens");

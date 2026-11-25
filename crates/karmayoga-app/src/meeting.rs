@@ -443,6 +443,7 @@ pub async fn meeting_status(state: State<'_, AppState>) -> CommandResult<Option<
 /// person, so there is nothing this needs to do to soften it.
 #[tauri::command]
 pub async fn voice_enrol(
+    app: AppHandle,
     state: State<'_, AppState>,
     seconds: u32,
 ) -> CommandResult<karmayoga_service::domains::meetings::VoiceprintInfo> {
@@ -459,6 +460,9 @@ pub async fn voice_enrol(
     let pcm_b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
 
     let value = session.call(Ctx::local(), "enrol_voice", json!({ "pcm": pcm_b64 })).await?;
+    // The wake word's microphone checks against the voice, and isolates it,
+    // as it was when it opened: open it again with the new recording.
+    crate::wake::relisten(&app);
     serde_json::from_value(value)
         .map_err(|e| CommandError::new("invalid", format!("enrol_voice answered oddly: {e}")))
 }

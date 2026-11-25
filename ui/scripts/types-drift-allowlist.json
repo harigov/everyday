@@ -1177,6 +1177,18 @@
   },
   {
     "type": "VoiceprintInfo",
+    "field": "voiceSample",
+    "kind": "field-only-in-rust",
+    "reason": "The owner's recorded voice itself, for taking other voices out of the microphone in the shell; VoiceprintInfo says only whether there is one (hasSample)."
+  },
+  {
+    "type": "VoiceprintInfo",
+    "field": "hasSample",
+    "kind": "field-only-in-ts",
+    "reason": "Derived by the service from voiceSample, which never leaves it, so Settings can say whether a voice must be recorded again."
+  },
+  {
+    "type": "VoiceprintInfo",
     "field": "isOwner",
     "kind": "optionality",
     "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/karmayoga-core/src/schema.rs."

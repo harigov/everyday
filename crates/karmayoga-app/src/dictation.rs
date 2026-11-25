@@ -228,7 +228,8 @@ async fn try_start(
         })
     };
     let options = EngineOptions { microphone: true, speaker: false, echo_cancellation: false };
-    let engine = match AudioEngine::start(options, sink).await {
+    let cleanup = crate::microphone::cleanup(&state.service()).await;
+    let engine = match AudioEngine::start(options, cleanup, sink).await {
         Ok(engine) => Arc::new(engine),
         Err(e) => {
             // The session is already running; let it go.
@@ -321,6 +322,15 @@ fn finish_now(dictation: &Mutex<Option<DictationHandle>>, message: DictationInpu
 /// is being dictated.
 #[tauri::command]
 pub async fn dictation_stop(state: State<'_, AppState>) -> CommandResult<()> {
+    // What the microphone's models still hold reaches the session first, so
+    // the last words are in what it finishes with.
+    let engine = match state.dictation().lock().unwrap().as_ref() {
+        Some(DictationHandle::Running(running)) => Some(running.engine.clone()),
+        _ => None,
+    };
+    if let Some(engine) = engine {
+        engine.finish(crate::audio::engine::FINISH_WITHIN).await;
+    }
     finish_now(state.dictation(), DictationInput::Stop);
     Ok(())
 }

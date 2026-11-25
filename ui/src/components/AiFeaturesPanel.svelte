@@ -37,14 +37,19 @@
   import { app } from '../lib/state.svelte'
   import type {
     AccountView,
+    LocalModelInfo,
     MailAi,
+    MicrophoneSettings,
     QuickAskRow,
     TalkSettings,
     VoiceTypingKeyMode,
     VoiceTypingSettings,
+    VoiceCheck,
     WakeSettings,
     WritingSettings,
   } from '../lib/types'
+  import { humanBytes } from '../lib/format'
+  import Meter from './Meter.svelte'
   import SubTabs from './SubTabs.svelte'
   import { shownTab } from '../lib/subtabs'
 
@@ -431,6 +436,98 @@
     return w.enabled && w.listening ? `Listening now. ${how}` : how
   }
 
+  /**
+   * The microphone: hearing only the person's voice, taking other voices out
+   * of it, and the stronger noise filter -- this computer's, kept by the
+   * shell. The two filters' models download here rather than under Models:
+   * they are this section's and nothing else's.
+   */
+  let mic = $state<MicrophoneSettings | null>(null)
+  let micNotice = $state<string | null>(null)
+  let micBusy = $state(false)
+  let recordingVoice = $state(false)
+
+  void api
+    .microphoneSettings()
+    .then((s) => {
+      mic = s
+      void models.refreshSpeech().catch(() => {})
+    })
+    .catch(() => (mic = null))
+
+  const VOICE_CHECKS: { value: VoiceCheck; label: string }[] = [
+    { value: 'lenient', label: 'Lenient' },
+    { value: 'balanced', label: 'Balanced' },
+    { value: 'strict', label: 'Strict' },
+  ]
+
+  const isolationModel = $derived(models.speech.find((m) => m.id === 'voiceIsolation'))
+  const noiseModel = $derived(models.speech.find((m) => m.id === 'noiseFilter'))
+
+  async function saveMic(change: {
+    onlyMyVoice?: boolean
+    strictness?: VoiceCheck
+    isolateVoice?: boolean
+    strongNoiseFilter?: boolean
+  }) {
+    micNotice = null
+    micBusy = true
+    try {
+      mic = await api.setMicrophoneSettings(
+        change.onlyMyVoice ?? null,
+        change.strictness ?? null,
+        change.isolateVoice ?? null,
+        change.strongNoiseFilter ?? null,
+      )
+    } catch (e) {
+      micNotice = errorMessage(e)
+    } finally {
+      micBusy = false
+    }
+  }
+
+  /** Record twenty seconds of the person: their voiceprint, and the sample
+   *  of their voice that taking other voices out needs. */
+  async function recordVoice() {
+    micNotice = null
+    recordingVoice = true
+    try {
+      await api.voiceEnrol(20)
+      mic = await api.microphoneSettings()
+      micNotice = 'Recorded.'
+    } catch (e) {
+      micNotice = errorMessage(e)
+    } finally {
+      recordingVoice = false
+    }
+  }
+
+  function showMicError(e: unknown) {
+    micNotice = errorMessage(e)
+  }
+
+  /** What the voice row says about the recording there is. */
+  function voiceStatus(m: MicrophoneSettings): string {
+    if (!m.voiceRecorded) {
+      return 'Not recorded yet. Talk normally for twenty seconds, alone, at the microphone you use.'
+    }
+    if (!m.voiceSample) {
+      return 'Recorded before samples were kept: record it again to remove other voices.'
+    }
+    return 'Recorded. Record it again if you change microphones or rooms.'
+  }
+
+  /** Why a filter that is ticked is not running, if anything is missing. */
+  function isolationMissing(
+    m: MicrophoneSettings,
+    model: LocalModelInfo | undefined,
+  ): string | null {
+    if (!m.isolateVoice) return null
+    if (!m.voiceSample) return 'Waiting for a recording of your voice.'
+    if (!model?.installed) return 'Waiting for its model to be downloaded.'
+    return null
+  }
+
   /** "Try it": the same thing the key does, from here -- start, or end the one under way. */
   async function tryTalk() {
     talkNotice = null
@@ -470,7 +567,7 @@
       {
         id: 'computer' as Sub,
         label: 'On this computer',
-        show: !!(writing || voiceTyping || talk || wake),
+        show: !!(writing || voiceTyping || talk || wake || mic),
       },
     ].filter((t) => t.show),
   )
@@ -918,10 +1015,157 @@
         {/if}
       </section>
     {/if}
+
+    {#if mic}
+      <section>
+        <span class="eyebrow">Microphone</span>
+        <p class="hint">
+          What is taken out of the microphone before the voice assistant, the wake word, voice
+          typing and dictation hear it. Meeting recordings are left as they are, everybody in the
+          room included.
+        </p>
+
+        <div class="model-row">
+          <div class="model-text">
+            <b>Your voice</b>
+            <small>{voiceStatus(mic)}</small>
+          </div>
+          <button
+            class="btn"
+            disabled={recordingVoice || micBusy}
+            onclick={() => void recordVoice()}
+          >
+            {recordingVoice
+              ? 'Recording… keep talking'
+              : mic.voiceRecorded
+                ? 'Record again (20s)'
+                : 'Record my voice (20s)'}
+          </button>
+        </div>
+
+        <label class="toggle" class:disabled={!mic.voiceRecorded}>
+          <input
+            type="checkbox"
+            checked={mic.onlyMyVoice}
+            disabled={micBusy || (!mic.voiceRecorded && !mic.onlyMyVoice)}
+            onchange={(e) => saveMic({ onlyMyVoice: e.currentTarget.checked })}
+          />
+          <span>
+            <b>Only listen to my voice</b>
+            <small>
+              Each thing heard is compared with your voice before it is turned into words, and
+              anybody else’s — the television, a podcast, someone across the room — is left out. A
+              word too short to tell, like “yes”, is always heard.
+            </small>
+            {#if mic.onlyMyVoice && !mic.voiceRecorded}
+              <small class="note">Waiting for a recording of your voice.</small>
+            {/if}
+          </span>
+        </label>
+        {#if mic.onlyMyVoice}
+          <div class="segmented" role="group" aria-label="How strict">
+            {#each VOICE_CHECKS as c (c.value)}
+              <button
+                class="seg"
+                class:on={mic.strictness === c.value}
+                aria-pressed={mic.strictness === c.value}
+                disabled={micBusy}
+                onclick={() => saveMic({ strictness: c.value })}
+              >
+                {c.label}
+              </button>
+            {/each}
+          </div>
+          <small class="try">
+            Lenient if it misses things you say, especially on another microphone; strict if other
+            people still get through.
+          </small>
+        {/if}
+
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={mic.isolateVoice}
+            disabled={micBusy}
+            onchange={(e) => saveMic({ isolateVoice: e.currentTarget.checked })}
+          />
+          <span>
+            <b>Remove other voices</b>
+            <small>
+              Takes out other people talking over you or straight after you, keeping your voice. For
+              a television or a room talking while you are quiet, turn on “Only listen to my voice”
+              too. On its own it changes the odd word, and the microphone takes a second or two
+              longer to start. Runs on this computer.
+            </small>
+            {#if isolationMissing(mic, isolationModel)}
+              <small class="note">{isolationMissing(mic, isolationModel)}</small>
+            {/if}
+          </span>
+        </label>
+        {#if isolationModel}
+          {@render modelRow(isolationModel)}
+        {/if}
+
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={mic.strongNoiseFilter}
+            disabled={micBusy}
+            onchange={(e) => saveMic({ strongNoiseFilter: e.currentTarget.checked })}
+          />
+          <span>
+            <b>Stronger noise filter</b>
+            <small>
+              Takes out noise that comes and goes — a fan, dishes, a keyboard — which the ordinary
+              filter leaves in. For noisy rooms; in a quiet one it can change the odd word.
+            </small>
+            {#if mic.strongNoiseFilter && !noiseModel?.installed}
+              <small class="note">Waiting for its model to be downloaded.</small>
+            {/if}
+          </span>
+        </label>
+        {#if noiseModel}
+          {@render modelRow(noiseModel)}
+        {/if}
+
+        {#if mic.problem}<small class="try">{mic.problem}</small>{/if}
+        {#if micNotice}<small class="try" role="status">{micNotice}</small>{/if}
+      </section>
+    {/if}
   {/if}
 
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
 {/if}
+
+{#snippet modelRow(m: LocalModelInfo)}
+  <div class="model-row">
+    <div class="model-text">
+      <b>{m.name}</b>
+      <small>{humanBytes(m.bytes)} · {m.installed ? 'Downloaded' : 'Not downloaded'}</small>
+      {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
+    </div>
+    {#if m.progress}
+      <div class="model-progress">
+        <Meter
+          label="Downloading"
+          value={m.progress.done / m.progress.total}
+          note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
+        />
+        <button class="btn" onclick={() => void models.cancelSpeech(m.id).catch(showMicError)}
+          >Cancel</button
+        >
+      </div>
+    {:else if m.installed}
+      <button class="btn" onclick={() => void models.deleteSpeech(m.id).catch(showMicError)}
+        >Delete</button
+      >
+    {:else}
+      <button class="btn" onclick={() => void models.downloadSpeech(m.id).catch(showMicError)}
+        >Download</button
+      >
+    {/if}
+  </div>
+{/snippet}
 
 <style>
   /* The same rhythm as the General tab's sections in `SettingsView`, whose
