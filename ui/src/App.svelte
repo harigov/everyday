@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { api, mobileShell, onSaveAndClose } from './lib/api'
   import { closesOnBack, details, phone } from './lib/phone.svelte'
   // The stores, then the components, rather than the two interleaved.
@@ -143,6 +144,17 @@
     () => phone.on && agent.open && app.section !== 'assistant',
     () => void agent.toggle(),
   )
+  // On a phone the assistant's panel covers the app it was opened over, so
+  // choosing another app puts it away: it is about the app that was there.
+  // (On a desktop it is a rail beside every app and stays.)
+  let shownSection = app.section
+  $effect(() => {
+    const section = app.section
+    if (section === shownSection) return
+    shownSection = section
+    if (phone.on && untrack(() => agent.open)) void agent.toggle()
+  })
+
   // Something opened from an app's list, over it: back shows the list.
   closesOnBack(
     () => panels.settings === null && details.isOpen(app.section),
