@@ -22,6 +22,7 @@
 // exactly as the application compiles it.
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { load } from './harness.mjs'
 
 const {
@@ -41,6 +42,9 @@ const {
   pastTense,
   planOf,
   replay,
+  searchSiteProblem,
+  BUILT_IN_SEARCH_SITES,
+  listedNames,
   settle,
   sitesCover,
   threadGroups,
@@ -814,6 +818,91 @@ assert.deepEqual(toolLabel('read_skill', { name: 'Plan a trip' }, 'done'), {
   text: 'Followed',
   detail: 'Plan a trip',
 })
+// What it does on the computer somebody is at: one of four things opened,
+// named by what it was; a site searched for what was asked or selected.
+assert.deepEqual(toolLabel('open', { url: 'https://www.youtube.com/watch?v=x' }, 'done'), {
+  text: 'Opened',
+  detail: 'youtube.com',
+})
+assert.deepEqual(toolLabel('open', { app: 'Files' }, 'running'), {
+  text: 'Opening',
+  detail: 'Files',
+})
+assert.deepEqual(toolLabel('open', { section: 'mail' }, 'done'), { text: 'Opened', detail: 'Mail' })
+assert.equal(toolLabel('open', { section: 'screentime' }, 'done').detail, 'Screen time')
+assert.equal(toolLabel('open', { file_id: 'f-1' }, 'running').detail, 'a file')
+assert.deepEqual(toolLabel('search_site', { site: 'Amazon', query: 'headphones' }, 'running'), {
+  text: 'Searching Amazon',
+  detail: 'headphones',
+})
+assert.deepEqual(toolLabel('search_site', { site: 'Google', selection: true }, 'done'), {
+  text: 'Searched Google',
+  detail: 'what you selected',
+})
+assert.equal(toolLabel('search_site', { site: 'eBay', query: 'x' }, 'waiting').text, 'Search eBay')
+// Music and volume.
+check('lock_screen', 'running', 'Locking the screen')
+check('lock_screen', 'done', 'Locked the screen')
+check('list_timers', 'done', 'Checked timers')
+for (const [action, running, done] of [
+  ['pause', 'Pausing', 'Paused'],
+  ['play', 'Playing', 'Played'],
+  ['next', 'Skipping to the next track', 'Skipped to the next track'],
+  ['previous', 'Going back a track', 'Went back a track'],
+  ['status', "Checking what's playing", "Checked what's playing"],
+]) {
+  assert.equal(toolLabel('control_media', { action }, 'running').text, running)
+  assert.equal(toolLabel('control_media', { action }, 'done').text, done)
+}
+assert.equal(toolLabel('control_media', { action: 'toggle' }, 'waiting').text, 'Play or pause')
+assert.equal(toolLabel('set_volume', { action: 'up' }, 'running').text, 'Turning the volume up')
+assert.equal(toolLabel('set_volume', { action: 'down' }, 'done').text, 'Turned the volume down')
+assert.equal(
+  toolLabel('set_volume', { action: 'set', percent: 30 }, 'running').text,
+  'Setting the volume to 30%',
+)
+assert.equal(
+  toolLabel('set_volume', { action: 'set', percent: 0 }, 'done').text,
+  'Set the volume to 0%',
+)
+assert.equal(toolLabel('set_volume', { action: 'mute' }, 'done').text, 'Muted')
+assert.equal(toolLabel('set_volume', { action: 'unmute' }, 'running').text, 'Unmuting')
+assert.equal(toolLabel('set_volume', { action: 'status' }, 'done').text, 'Checked the volume')
+// A switch of the desktop's own: on, off, or only looked at.
+assert.equal(
+  toolLabel('desktop_setting', { setting: 'do_not_disturb', on: true }, 'done').text,
+  'Turned Do Not Disturb on',
+)
+assert.equal(
+  toolLabel('desktop_setting', { setting: 'dark_mode', on: false }, 'running').text,
+  'Turning dark mode off',
+)
+assert.equal(
+  toolLabel('desktop_setting', { setting: 'night_light' }, 'running').text,
+  'Checking Night Light',
+  'no `on` is a question, not a change',
+)
+// Copying shows what was copied; a timer, how long and what for.
+assert.deepEqual(toolLabel('copy_to_clipboard', { text: '12 Elm Road' }, 'done'), {
+  text: 'Copied',
+  detail: '12 Elm Road',
+})
+assert.deepEqual(toolLabel('set_timer', { minutes: 10, label: 'pasta' }, 'done'), {
+  text: 'Set a timer',
+  detail: '10 minutes · pasta',
+})
+assert.deepEqual(toolLabel('set_timer', { hours: 1, minutes: 30 }, 'running'), {
+  text: 'Setting a timer',
+  detail: '1 hour 30 minutes',
+})
+assert.equal(toolLabel('set_timer', { hours: 0, minutes: 5 }, 'done').detail, '5 minutes')
+assert.deepEqual(toolLabel('set_timer', { at: '07:00', label: 'wake up' }, 'done'), {
+  text: 'Set a timer',
+  detail: 'at 07:00 · wake up',
+})
+assert.equal(toolLabel('set_timer', {}, 'waiting').detail, null)
+assert.equal(toolLabel('cancel_timer', { id: 2 }, 'running').text, 'Cancelling timer 2')
+assert.equal(toolLabel('cancel_timer', { all: true }, 'done').text, 'Cancelled all timers')
 // Arguments are whatever the model wrote. Nothing in them may throw.
 for (const junk of [null, 'a string', 7, { query: 3 }, { url: 'not a url' }]) {
   toolLabel('web_search', junk, 'running')
@@ -821,6 +910,69 @@ for (const junk of [null, 'a string', 7, { query: 3 }, { url: 'not a url' }]) {
   toolLabel('get_weather', junk, 'waiting')
   toolLabel('look_up_item', junk, 'waiting')
   toolLabel('read_skill', junk, 'waiting')
+}
+for (const junk of [
+  null,
+  'a string',
+  7,
+  {},
+  { action: 'constructor', setting: 'toString', section: 7, minutes: 'ten', all: 'yes' },
+  { percent: Infinity, id: -1, on: 'yes', hours: NaN },
+]) {
+  for (const name of [
+    'open',
+    'search_site',
+    'control_media',
+    'set_volume',
+    'desktop_setting',
+    'lock_screen',
+    'copy_to_clipboard',
+    'set_timer',
+    'list_timers',
+    'cancel_timer',
+  ]) {
+    for (const state of ['running', 'done', 'waiting']) {
+      assert.equal(typeof toolLabel(name, junk, state).text, 'string', `${name} with ${junk}`)
+    }
+  }
+}
+
+// ── the search sites somebody adds ───────────────────────────────────
+
+// The same rules `validate_sites` refuses a save by, said beside the row.
+{
+  const site = (name, url) => ({ name, url })
+  const problem = (sites, at = sites.length - 1) => searchSiteProblem(sites, at)
+
+  assert.equal(problem([site('Amazon India', 'https://www.amazon.in/s?k={query}')]), null)
+  assert.equal(problem([site('Wiki', 'http://wiki.example/find/{query}')]), null, 'http is allowed')
+  assert.equal(problem([site('', '')]), null, 'a row added and not used is not wrong')
+  assert.equal(problem([]), null, 'no such row')
+
+  assert.match(problem([site('', 'https://a.example/?q={query}')]), /name/)
+  assert.match(problem([site('Wiki', '')]), /address/)
+  assert.match(problem([site('Wiki', 'https://a.example/')]), /\{query\}/)
+  assert.match(problem([site('Wiki', 'javascript:alert({query})')]), /https/)
+  assert.match(problem([site('Wiki', 'file:///etc/{query}')]), /https/)
+  assert.match(problem([site('Wiki', 'wiki.example/?q={query}')]), /https/, 'no scheme')
+  assert.match(problem([site('x'.repeat(41), 'https://a.example/?q={query}')]), /40/)
+  assert.equal(problem([site('x'.repeat(40), 'https://a.example/?q={query}')]), null)
+
+  // Names are the same name the way the service says so: any case, "the"
+  // or "my" in front -- and only the later of the two is the one flagged.
+  const twice = [
+    site('Wiki', 'https://a.example/?q={query}'),
+    site('the wiki', 'https://b.example/?q={query}'),
+  ]
+  assert.equal(problem(twice, 0), null)
+  assert.match(problem(twice, 1), /already a site called the wiki/)
+  assert.equal(
+    problem([
+      site('Wiki', 'https://a.example/?q={query}'),
+      site('Wikis', 'https://b.example/?q={query}'),
+    ]),
+    null,
+  )
 }
 
 // ── the plan ─────────────────────────────────────────────────────────
@@ -922,6 +1074,26 @@ assert.equal(elapsed(72_000), '1m 12s')
     ['Older'],
   )
   assert.deepEqual(threadGroups([], now), [], 'nothing yet is no headings at all')
+}
+
+// The sites Settings says the assistant already knows are the core's own,
+// read out of the Rust: a site added, dropped or renamed there and not here
+// fails this rather than leaving Settings telling somebody something untrue.
+{
+  const rust = readFileSync(
+    new URL('../../crates/karmayoga-core/src/agent/desk.rs', import.meta.url),
+    'utf8',
+  )
+  const table = rust.slice(
+    rust.indexOf('const BUILT_IN:'),
+    rust.indexOf('];', rust.indexOf('const BUILT_IN:')),
+  )
+  const names = [...table.matchAll(/\(\s*"([^"]+)",\s*"https?:/g)].map((m) => m[1])
+  assert.ok(names.length > 5, `found ${names.length} built-in sites in desk.rs`)
+  assert.deepEqual([...BUILT_IN_SEARCH_SITES], names)
+  assert.equal(listedNames(['A', 'B', 'C']), 'A, B and C')
+  assert.equal(listedNames(['A']), 'A')
+  assert.equal(listedNames([]), '')
 }
 
 await close()

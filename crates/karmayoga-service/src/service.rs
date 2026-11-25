@@ -189,6 +189,13 @@ pub struct Service {
     /// Money's session state: bank sign-ins in flight and one sync lock per
     /// link. See [`crate::money::MoneyRuntime`].
     pub(crate) money: crate::money::MoneyRuntime,
+    /// The computer the app is running on, as the assistant reaches it:
+    /// handed over by the app when it starts, and `None` in a server, the
+    /// command line, or a test that did not set one. See [`crate::desk`].
+    desk: RwLock<Option<Arc<dyn crate::desk::Desk>>>,
+    /// The timers the assistant has set, ringing through `desk`. See
+    /// [`crate::desk::timers`].
+    pub(crate) timers: crate::desk::timers::Timers,
 }
 
 impl Default for Service {
@@ -235,6 +242,8 @@ impl Service {
             jobs: crate::jobs::JobRuntime::default(),
             reach: crate::reach::ReachState::default(),
             money: crate::money::MoneyRuntime::default(),
+            desk: RwLock::new(None),
+            timers: crate::desk::timers::Timers::default(),
             weather_cache: WeatherCache::new(),
             listen_briefings: std::sync::Mutex::default(),
             karma_settling: std::sync::Mutex::default(),
@@ -636,6 +645,17 @@ impl Service {
         // opening capacity and then hand out nothing for the rest of the run,
         // with no error to explain why the work stopped.
         self.mail.reseed_budgets(now);
+    }
+
+    /// Hand over this computer's desktop, so that a turn somebody takes at
+    /// it may act on it. The app's, once, as it starts. See [`crate::desk`].
+    pub fn set_desk(&self, desk: Arc<dyn crate::desk::Desk>) {
+        *self.desk.write().unwrap_or_else(|e| e.into_inner()) = Some(desk);
+    }
+
+    /// This computer's desktop, when the app has handed it over.
+    pub fn desk(&self) -> Option<Arc<dyn crate::desk::Desk>> {
+        self.desk.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn clock(&self) -> Arc<dyn Clock> {
@@ -1512,8 +1532,18 @@ impl Service {
             spoken: false,
             voice_approves: false,
             woken: false,
-            // Not a scheduled run.
-            reach: crate::agent::Reach::default(),
+            // Not a scheduled run. The desktop only for somebody typing in a
+            // window of this process -- not a paired device or the web over
+            // the tailnet, which is somebody at another computer.
+            reach: crate::agent::Reach {
+                desk: matches!(
+                    ctx.caller,
+                    crate::ctx::Caller::Local | crate::ctx::Caller::Window(_)
+                )
+                .then(|| self.desk())
+                .flatten(),
+                ..crate::agent::Reach::default()
+            },
             job: None,
             follow_up: None,
             about_job: None,

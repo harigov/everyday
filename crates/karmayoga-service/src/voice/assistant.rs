@@ -61,6 +61,10 @@ impl VoiceAssistant for ServiceAssistant {
         // echo, or they are on a call through a chat, where a destructive
         // call always asks.
         let voice_approves = heard_clear && via.is_none();
+        // A session opened here -- the window's voice mode, the talk key, the
+        // wake word -- is somebody at this computer; a call through a chat is
+        // somebody somewhere else.
+        let desk = via.is_none().then(|| service.desk()).flatten();
         Box::pin(async move {
             let vault = service.require()?;
             let turned = crate::agent::run_turn(Turn {
@@ -85,7 +89,7 @@ impl VoiceAssistant for ServiceAssistant {
                 spoken: true,
                 voice_approves,
                 woken,
-                reach: Reach { typist, ..Reach::default() },
+                reach: Reach { typist, desk, ..Reach::default() },
                 job: None,
                 follow_up: None,
                 about_job: None,

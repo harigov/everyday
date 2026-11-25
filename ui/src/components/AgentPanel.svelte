@@ -16,16 +16,24 @@
   //
   // The switch stays over everything, because it is the one decision every
   // other field depends on. Below it the page is split into tabs -- who it is,
-  // how it behaves, what it may do on the web, how it fits your day, and what
-  // it has kept and done -- because stacked one under another they made a
-  // column several windows tall, with the Save somewhere past the bottom of
-  // the last. The draft is this component's, so moving between tabs keeps what
-  // was typed, and the one Save at the foot saves every tab. The safe websites
-  // are the exception, as they always were: they save on their own.
+  // how it behaves, what it may do on the web and on this computer, how it fits
+  // your day, and what it has kept and done -- because stacked one under
+  // another they made a column several windows tall, with the Save somewhere
+  // past the bottom of the last. The draft is this component's, so moving
+  // between tabs keeps what was typed, and the one Save at the foot saves every
+  // tab. The safe websites are the exception, as they always were: they save on
+  // their own.
 
   import { onDestroy } from 'svelte'
   import { providerLabel } from '../lib/accounts'
-  import { isLoopback } from '../lib/agent'
+  import {
+    BUILT_IN_SEARCH_SITES,
+    MAX_SEARCH_SITES,
+    SEARCH_QUERY,
+    isLoopback,
+    listedNames,
+    searchSiteProblem,
+  } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
   import { app } from '../lib/state.svelte'
   import { assistant } from '../lib/assistant.svelte'
@@ -51,6 +59,7 @@
     QuietHours,
     ReminderSettings,
     ReminderTo,
+    SearchSite,
   } from '../lib/types'
   import Companion from './Companion.svelte'
   import Icon from './Icon.svelte'
@@ -65,7 +74,7 @@
   const SUBS: { id: Sub; label: string }[] = [
     { id: 'who', label: 'Who it is' },
     { id: 'behaviour', label: 'Behaviour' },
-    { id: 'web', label: 'The web' },
+    { id: 'web', label: 'Web and computer' },
     { id: 'day', label: 'Your day' },
     { id: 'record', label: 'Memory and mail' },
   ]
@@ -330,15 +339,62 @@
     }
   }
 
+  // ── This computer ────────────────────────────────────────────────────
+  //
+  // Whether the assistant may act on the computer somebody is at -- open,
+  // search a website, music, volume, timers -- and the websites it can be told
+  // to search by name. Unlike the safe websites these are the draft's, edited
+  // on the copy and saved with the rest. See `docs/plans/desk.md`.
+
+  /** Absent is on, as the service has it. */
+  const desktopOn = $derived(draft?.desktop ?? true)
+  /** The service's own list (`BUILT_IN` in `karmayoga_core::agent::desk`), as a sentence. */
+  const BUILT_IN_SITES = listedNames(BUILT_IN_SEARCH_SITES)
+  const EXAMPLE_ADDRESS = `https://www.amazon.in/s?k=${SEARCH_QUERY}`
+  const ownSites = $derived(draft?.searchSites ?? [])
+  /** What is wrong with each row, as the service would refuse it -- `null` where nothing is. */
+  const siteProblems = $derived(ownSites.map((_, at) => searchSiteProblem(ownSites, at)))
+
+  function addSearchSite() {
+    if (!draft) return
+    draft.searchSites = [...(draft.searchSites ?? []), { name: '', url: '' }]
+  }
+
+  function editSearchSite(at: number, field: keyof SearchSite, value: string) {
+    const site = draft?.searchSites?.[at]
+    if (site) site[field] = value
+  }
+
+  function removeSearchSite(at: number) {
+    if (!draft?.searchSites) return
+    draft.searchSites = draft.searchSites.filter((_, i) => i !== at)
+  }
+
   async function save() {
     if (!draft) return
     if (noticeTimer) clearTimeout(noticeTimer)
     noticeTimer = null
     notice = null
+    // A search site the service would refuse is said here, on the tab it is
+    // on, rather than as a sentence about "Wiki" at the foot of another one.
+    const problem = siteProblems.find((p) => p !== null)
+    if (problem) {
+      sub = 'web'
+      notice = problem
+      return
+    }
     saving = true
     const wasDreaming = agent.settings?.dreaming === true
     try {
-      await agent.saveSettings($state.snapshot(draft))
+      // A row added and never filled in is not a site; the service would
+      // refuse it for having no name.
+      const settings = $state.snapshot(draft)
+      if (settings.searchSites) {
+        settings.searchSites = settings.searchSites
+          .map((s) => ({ name: s.name.trim(), url: s.url.trim() }))
+          .filter((s) => s.name || s.url)
+      }
+      await agent.saveSettings(settings)
       draft = structuredClone($state.snapshot(agent.settings!))
       // The three dream routines are made the moment dreaming is switched on
       // -- see `Vault::set_dreaming` -- so the routines pane has to be told
@@ -724,6 +780,94 @@
           </div>
         {/if}
       </section>
+
+      <!-- Not under the web switch: opening a link in your own browser, and the
+           volume, are not the assistant reaching out to anywhere. It is on
+           until switched off, and it is only ever for somebody at this
+           computer -- which is the sentence that has to be beside it. -->
+      <section>
+        <span class="eyebrow">This computer</span>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={desktopOn}
+            onchange={(e) => draft && (draft.desktop = e.currentTarget.checked)}
+          />
+          <span>
+            <b>Let it act on this computer</b>
+            <small>
+              Opens links, apps and files, searches websites in your browser, controls music and
+              volume, Do Not Disturb, dark mode and Night Light, locks the screen, copies, and sets
+              timers. Only when you are at this computer, talking or typing to it here — never from
+              a chat, a routine or a job.
+            </small>
+          </span>
+        </label>
+
+        <!-- Shown while a row is wrong too, switched off or not: a save
+             refused over something that cannot be seen is worse than the
+             editor staying open. -->
+        {#if desktopOn || siteProblems.some((p) => p !== null)}
+          <div class="group">
+            <span class="group-name">Search sites</span>
+            <p class="hint">
+              “Search Amazon for headphones” opens Amazon's results in your browser. It already
+              knows {BUILT_IN_SITES}. Add your own below, or one with the same name as one of those
+              to replace it — an Amazon for amazon.in, say. Put <code>{SEARCH_QUERY}</code> in the address
+              where the words of a search go.
+            </p>
+            {#if ownSites.length > 0}
+              <ul class="own-sites">
+                {#each ownSites as site, at (at)}
+                  <li>
+                    <div class="own-site">
+                      <input
+                        class="own-name"
+                        value={site.name}
+                        placeholder="Amazon"
+                        aria-label="Name of search site {at + 1}"
+                        autocomplete="off"
+                        spellcheck="false"
+                        oninput={(e) => editSearchSite(at, 'name', e.currentTarget.value)}
+                      />
+                      <input
+                        class="own-address"
+                        value={site.url}
+                        placeholder={EXAMPLE_ADDRESS}
+                        aria-label="Address of search site {at + 1}"
+                        inputmode="url"
+                        autocapitalize="off"
+                        autocomplete="off"
+                        spellcheck="false"
+                        oninput={(e) => editSearchSite(at, 'url', e.currentTarget.value)}
+                      />
+                      <button
+                        class="btn btn-sm btn-ghost-danger"
+                        aria-label="Remove search site {at + 1}"
+                        onclick={() => removeSearchSite(at)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    {#if siteProblems[at]}<p class="error">{siteProblems[at]}</p>{/if}
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="hint">None of your own yet.</p>
+            {/if}
+            <div class="add">
+              <button
+                class="btn btn-sm btn-outline"
+                disabled={ownSites.length >= MAX_SEARCH_SITES}
+                onclick={addSearchSite}
+              >
+                Add a site
+              </button>
+            </div>
+          </div>
+        {/if}
+      </section>
     {/if}
 
     {#if sub === 'day'}
@@ -970,6 +1114,42 @@
     flex: 1;
   }
   .add .btn {
+    flex: none;
+  }
+
+  /* The search sites of one's own: a row each -- its name, the address of its
+     results, a way to take it off -- with what is wrong with it under. The
+     address takes what room there is, and in a dialog too narrow for all
+     three on a line the row wraps rather than squeezing a box to a few
+     letters. */
+  .own-sites {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .own-sites li {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    min-width: 0;
+  }
+  .own-site {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .own-name {
+    flex: 0 1 11rem;
+  }
+  .own-address {
+    flex: 1 1 16rem;
+  }
+  .own-site .btn {
     flex: none;
   }
 

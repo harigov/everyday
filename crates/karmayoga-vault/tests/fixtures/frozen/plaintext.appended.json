@@ -144,6 +144,7 @@
         "companion": {},
         "confirmDestructive": true,
         "confirmWeb": true,
+        "desktop": true,
         "dreaming": false,
         "enabled": true,
         "instructions": "Be a fixture.",

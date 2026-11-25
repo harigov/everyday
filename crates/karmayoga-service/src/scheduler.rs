@@ -1592,7 +1592,7 @@ async fn reach_for(
         }) as Arc<dyn Asker>),
         _ => None,
     };
-    Reach { asker, sent_to, typist: None }
+    Reach { asker, sent_to, typist: None, desk: None }
 }
 
 /// Run `turn` to its end, or stop it once it has *worked* for

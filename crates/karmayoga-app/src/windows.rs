@@ -205,8 +205,25 @@ pub async fn show_in_main(
     settings: Option<String>,
 ) -> CommandResult<()> {
     let section = section.map(|asked| app_named(&asked).map(|(s, _)| s)).transpose()?;
-    crate::tray::raise_window(&app);
-    app.emit_to(MAIN, SHOW_IN_MAIN_EVENT, ShowInMain { section, settings })
+    raise_main(&app, ShowInMain { section, settings })
+}
+
+/// Bring the main window forward showing the app called `section`: what
+/// [`show_in_main`] does for a window of one app, for the assistant opening
+/// "Mail" or "Files" for somebody at this computer (`crate::desk`).
+///
+/// A refusal for a name that is not one of [`APPS`], so what the model
+/// supplies is checked here and not trusted.
+pub fn show_section(app: &AppHandle, section: &str) -> CommandResult<()> {
+    let (section, _) = app_named(section)?;
+    raise_main(app, ShowInMain { section: Some(section), settings: None })
+}
+
+/// The two halves of showing something in the main window: lift it, and
+/// tell its interface what to switch to.
+fn raise_main(app: &AppHandle, show: ShowInMain) -> CommandResult<()> {
+    crate::tray::raise_window(app);
+    app.emit_to(MAIN, SHOW_IN_MAIN_EVENT, show)
         .map_err(|e| CommandError::new("internal", e.to_string()))
 }
 
@@ -289,6 +306,17 @@ mod tests {
         assert_eq!(ctx_for(MAIN).caller.origin(), Some("local"));
         // Writing help's popup calls as the process, as it always has.
         assert_eq!(ctx_for(crate::writing::LABEL).caller.origin(), Some("local"));
+    }
+
+    /// The assistant is told these are the apps it can show
+    /// (`karmayoga_service::desk::SECTIONS`); every one has to be one this
+    /// file can raise, or "open Health" would be a promise the shell breaks.
+    #[test]
+    fn every_section_the_assistant_may_show_is_an_app() {
+        for section in karmayoga_service::desk::SECTIONS {
+            assert!(app_named(section).is_ok(), "{section}");
+        }
+        assert!(app_named("settings").is_err());
     }
 
     #[test]

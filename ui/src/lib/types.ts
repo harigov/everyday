@@ -4305,6 +4305,28 @@ export interface AgentSettings {
    * still go to the chat and the thread. Absent is off.
    */
   quietHours?: QuietHours
+  /**
+   * Whether the assistant may act on this computer when somebody is at it:
+   * open links, apps and files, search a website in the browser, control
+   * what is playing and the volume, switch Do Not Disturb, dark mode and
+   * Night Light, lock the screen, copy, and set timers. Never from a chat, a
+   * routine or a job. Absent is on.
+   */
+  desktop?: boolean
+  /**
+   * Websites somebody added to search by name, besides the built-in ones
+   * (Google, Amazon, YouTube...). One with a built-in site's name replaces
+   * it. Absent is none.
+   */
+  searchSites?: SearchSite[]
+}
+
+/** A website searched by putting the words into its address, where `{query}` is. */
+export interface SearchSite {
+  /** What somebody calls it: "Amazon", "the wiki". */
+  name: string
+  /** The results page's address, with `{query}` where the words go. */
+  url: string
 }
 
 /** The hours in which updates are not spoken: local times as `HH:MM`, wrapping midnight. */
@@ -4946,7 +4968,10 @@ export interface ProposalPolicy {
  * the talk key's assistant about to type into the window the person was
  * working in, in another application -- asked unless their own words asked
  * for it with nothing of a stranger's in the turn; the subject is the whole
- * text. See
+ * text. `'copy'` is the assistant about to put text on the clipboard of the
+ * computer the person is at, after a stranger's words were read this turn --
+ * what is copied is pasted next, into a terminal as easily as a mail; the
+ * subject is the whole text. See
  * `agent::tools::mail`'s module docs in the
  * Rust core, `ConfirmGate` in the service, and the service's `browser`
  * module, for the whole of the reasoning behind each.
@@ -4963,6 +4988,7 @@ export const CONFIRM_KINDS = [
   'connection',
   'keep',
   'desktop',
+  'copy',
 ] as const
 export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 

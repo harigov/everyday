@@ -87,6 +87,7 @@ async fn deliver(app: &AppHandle, key: &str, summary: &str, body: &str) -> bool 
                 summary: summary.to_string(),
                 body: body.to_string(),
                 actions: Vec::new(),
+                alert: false,
                 done: Some(done),
             },
         );
@@ -117,6 +118,7 @@ pub fn show(app: &AppHandle, key: &str, summary: &str, body: &str, actions: &[(&
             summary: summary.to_string(),
             body: body.to_string(),
             actions: actions.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(),
+            alert: false,
             done: None,
         },
     );
@@ -129,6 +131,62 @@ pub fn show(app: &AppHandle, key: &str, summary: &str, body: &str, actions: &[(&
         if let Err(e) = app.notification().builder().title(summary).body(body).show() {
             tracing::debug!(error = %e, "a notification could not be shown");
         }
+    }
+}
+
+/// [`show`] for something that has to be noticed -- a timer that has run out
+/// -- rather than something that may be: on Linux the notification is
+/// critical, so it stays up until it is dismissed and is shown through Do Not
+/// Disturb, and it asks the shell to play the alarm sound (see [`Alert`]).
+///
+/// No buttons: the press that matters is dismissing it. Elsewhere this is
+/// the plain notification [`show`] raises, which the platform decides the
+/// manners of.
+pub fn alarm(app: &AppHandle, key: &str, summary: &str, body: &str) {
+    #[cfg(target_os = "linux")]
+    linux::send(
+        app,
+        linux::Cmd::Show {
+            key: key.to_string(),
+            summary: summary.to_string(),
+            body: body.to_string(),
+            actions: Vec::new(),
+            alert: true,
+            done: None,
+        },
+    );
+    #[cfg(not(target_os = "linux"))]
+    show(app, key, summary, body, &[]);
+}
+
+/// How loudly a notification asks to be noticed, as the freedesktop
+/// `urgency` and `sound-name` hints say it.
+///
+/// The three levels of urgency are 0 low, 1 normal and 2 critical. A server
+/// treats critical as "keep this until somebody dismisses it", and GNOME
+/// Shell shows it through Do Not Disturb -- which is the whole point of a
+/// timer, and why nothing else here uses it. `sound-name` is a name in the
+/// sound theme; GNOME Shell plays the sound of a notification that carries
+/// one, and a server that does not simply ignores the hint.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Alert {
+    urgency: u8,
+    sound: Option<&'static str>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl Alert {
+    /// What every notification but an alarm asks for. Normal, not critical,
+    /// which some shells refuse to time out, and not low, which some never
+    /// show.
+    const NORMAL: Alert = Alert { urgency: 1, sound: None };
+
+    /// A timer's: critical, with the sound theme's alarm.
+    const ALARM: Alert = Alert { urgency: 2, sound: Some("alarm-clock-elapsed") };
+
+    fn new(alarm: bool) -> Alert {
+        if alarm { Alert::ALARM } else { Alert::NORMAL }
     }
 }
 
@@ -222,6 +280,8 @@ mod linux {
             summary: String,
             body: String,
             actions: Vec<(String, String)>,
+            /// Critical, with a sound: see [`super::Alert`].
+            alert: bool,
             /// Told whether the desktop took it, by whoever wants to know.
             done: Option<oneshot::Sender<bool>>,
         },
@@ -342,15 +402,17 @@ mod linux {
 
         while let Some(wake) = wakes.next().await {
             match wake {
-                Wake::Cmd(Cmd::Show { key, summary, body, actions, done }) => {
+                Wake::Cmd(Cmd::Show { key, summary, body, actions, alert, done }) => {
                     let replaces = ids.by_key.get(&key).copied().unwrap_or(0);
                     let flat = super::flatten_actions(&actions);
-                    let hints: HashMap<&str, Value<'_>> = HashMap::from([
+                    let alert = super::Alert::new(alert);
+                    let mut hints: HashMap<&str, Value<'_>> = HashMap::from([
                         ("desktop-entry", Value::from(entry.as_str())),
-                        // Normal. Not critical, which some shells refuse to
-                        // time out, and not low, which some never show.
-                        ("urgency", Value::U8(1)),
+                        ("urgency", Value::U8(alert.urgency)),
                     ]);
+                    if let Some(sound) = alert.sound {
+                        hints.insert("sound-name", Value::from(sound));
+                    }
                     // The body only: the specification gives markup to the
                     // body alone, and a summary escaped would read `Q&amp;A`.
                     let body = shown(&body);
@@ -449,6 +511,14 @@ mod tests {
         let mut offenders = Vec::new();
         walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut offenders);
         assert_eq!(offenders, Vec::<String>::new(), "use `notice::show`");
+    }
+
+    /// A notification that is not an alarm asks for nothing it did not
+    /// before; an alarm is critical and has the alarm sound.
+    #[test]
+    fn only_an_alarm_is_critical_and_has_a_sound() {
+        assert_eq!(Alert::new(false), Alert { urgency: 1, sound: None });
+        assert_eq!(Alert::new(true), Alert { urgency: 2, sound: Some("alarm-clock-elapsed") });
     }
 
     #[test]

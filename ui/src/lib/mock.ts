@@ -4128,6 +4128,7 @@ let agentSettings: AgentSettings = {
   parkUnattended: false,
   reminders: { yours: 'desktop', assistants: 'chat' },
   quietHours: { enabled: false, start: '22:00', end: '07:00' },
+  desktop: true,
   companion: {},
 }
 
