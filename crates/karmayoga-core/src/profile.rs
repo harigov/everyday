@@ -148,15 +148,18 @@ impl Profile {
         let name = self.name();
         out.push_str(if name.is_empty() { "someone who has not given a name" } else { &name });
 
+        // "41 years old" rather than a bare "41" between commas, which is easy
+        // to read past; "who lives in" so that the city is taken as home (what
+        // the weather reads) without assuming the person is there right now.
         let mut facts: Vec<String> = Vec::new();
         if let Some(age) = self.age(today) {
-            facts.push(format!("{age}"));
+            facts.push(format!("{age} years old"));
         }
         if !self.gender.trim().is_empty() {
             facts.push(self.gender.trim().to_string());
         }
         if !self.location.trim().is_empty() {
-            facts.push(format!("in {}", self.location.trim()));
+            facts.push(format!("who lives in {}", self.location.trim()));
         }
         if !facts.is_empty() {
             out.push_str(", ");
@@ -172,6 +175,24 @@ impl Profile {
             }
         }
         Some(out)
+    }
+
+    /// What a clinical reader needs, and no more: "male, 41", "41", "female",
+    /// or `None` when the profile gives neither a gender nor a birthday.
+    ///
+    /// The health features use it where an age or a sex changes the meaning
+    /// of a number -- a reference range printed by sex, a visit brief a
+    /// clinician reads -- without sending a name or a city. The gender is the
+    /// person's own word for it, as typed.
+    pub fn basics(&self, today: Date) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if !self.gender.trim().is_empty() {
+            parts.push(self.gender.trim().to_string());
+        }
+        if let Some(age) = self.age(today) {
+            parts.push(age.to_string());
+        }
+        (!parts.is_empty()).then(|| parts.join(", "))
     }
 }
 
@@ -210,8 +231,11 @@ mod tests {
     fn the_sentence_names_the_person_and_their_age() {
         let said = hari().describe(TODAY).expect("something to say");
         assert!(said.starts_with("Its owner is Hari Govardhanam"), "{said}");
-        assert!(said.contains("41"), "the age is computed, not left to the model: {said}");
-        assert!(said.contains("in Seattle"), "{said}");
+        assert!(
+            said.contains("41 years old"),
+            "the age is computed, not left to the model: {said}"
+        );
+        assert!(said.contains("who lives in Seattle"), "{said}");
         assert!(said.ends_with("sailing at weekends."), "a full stop is added: {said}");
     }
 
@@ -245,9 +269,22 @@ mod tests {
         let p = Profile { location: "Chennai".into(), ..Profile::default() };
         let said = p.describe(TODAY).unwrap();
         assert!(
-            said.starts_with("Its owner is someone who has not given a name, in Chennai"),
+            said.starts_with("Its owner is someone who has not given a name, who lives in Chennai"),
             "{said}"
         );
+    }
+
+    #[test]
+    fn the_basics_are_a_sex_and_an_age_and_nothing_that_names_the_person() {
+        assert_eq!(hari().basics(TODAY).as_deref(), Some("male, 41"));
+        let only_age = Profile { born: Some(date(1985, 3, 14)), ..Profile::default() };
+        assert_eq!(only_age.basics(TODAY).as_deref(), Some("41"));
+        let only_gender = Profile { gender: " female ".into(), ..Profile::default() };
+        assert_eq!(only_gender.basics(TODAY).as_deref(), Some("female"));
+        let name_and_city =
+            Profile { first_name: "Alex".into(), location: "Chennai".into(), ..Profile::default() };
+        assert_eq!(name_and_city.basics(TODAY), None, "a name and a city are not clinical");
+        assert_eq!(Profile::default().basics(TODAY), None);
     }
 
     #[test]

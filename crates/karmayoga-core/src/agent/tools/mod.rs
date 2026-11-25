@@ -46,6 +46,16 @@
 //! concatenates in catalogue order. Orientation (`overview`, `search`)
 //! travels with `journals`, since both use [`Domain::Journals`] and neither
 //! is big enough to want a file of its own.
+//!
+//! # Which of them a turn is offered
+//!
+//! Not all of them: every step of a turn reads the schema of every tool it is
+//! offered, and tool choice degrades long before the whole catalogue. The
+//! `kits` module says which tools are the **core**, offered every turn, and
+//! which belong to a **kit** that joins a conversation when it needs it --
+//! [`Tool::kit`], [`KitSet`], and the words and screens that point at a kit.
+//! A tool's domain still decides whether it exists in this vault at all
+//! ([`available`]); its kit decides whether *this turn* is told of it.
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -114,6 +124,8 @@ pub(crate) mod documents;
 mod health;
 mod jobs;
 mod journals;
+// Which tools a turn is offered: the core, and the kits that join it.
+mod kits;
 mod library;
 // Up Next's memory and the player's moment: `recall`, `what_was_said`.
 mod listening;
@@ -137,6 +149,10 @@ mod time;
 mod trackers;
 
 pub use journals::{READ_OWN_JOURNAL, WRITE_OWN_JOURNAL};
+pub use kits::{
+    CORE_BUDGET_CHARS, Kit, KitSet, LOAD_TOOLS, from_screen as kits_from_screen,
+    from_words as kits_from_words, index as kit_index, kit_of,
+};
 pub use mail::readable_thread;
 
 /// What running a tool does to the vault.

@@ -639,6 +639,29 @@ pub enum Judgement {
 /// something nobody has looked at than let a write through because it was
 /// not yet known to be one. A call to a name that turns out not to exist is
 /// asked about and then reports so, which costs a click and nothing else.
+/// Whether `use_connection_tool`'s `arguments` name a tool its server
+/// declares only reads -- `readOnlyHint` true, and not marked destructive.
+/// What a turn held to reading (a watch's look) may still call: anything the
+/// server does not vouch for, or a tool not seen yet, may write, so it is not.
+pub fn declared_read_only(vault: &Vault, arguments: &Value) -> bool {
+    let (Some(named), Some(tool_name)) = (text(arguments, "connection"), text(arguments, "tool"))
+    else {
+        return false;
+    };
+    let Some(connection) = vault.connection_settings().ok().and_then(|s| s.find(named).cloned())
+    else {
+        return false;
+    };
+    vault
+        .connection_states()
+        .ok()
+        .and_then(|states| states.states.get(&connection.id).cloned())
+        .and_then(|state| state.tools.into_iter().find(|t| t.name == tool_name))
+        .is_some_and(|tool| {
+            tool.hints.read_only == Some(true) && tool.hints.destructive != Some(true)
+        })
+}
+
 pub fn judge(
     vault: &Vault,
     arguments: &Value,

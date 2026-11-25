@@ -918,7 +918,11 @@ async fn a_turn_starts_with_what_the_turn_before_it_sent_so_a_cache_can_serve_it
     let (svc, _dir) = assistant_service(&model.endpoint);
     let conversation = ConversationId::new().to_string();
 
-    for (prompt, app) in [("one", "todo"), ("two", "calendar"), ("three", "mail")] {
+    // Apps that load no kit of tools (see `agent::tools::kits`): what is on
+    // screen changes every turn, and only the turn's own note may carry it.
+    // An app that does load a kit -- Mail, Calendar -- changes the tools
+    // once, by design; `tests/kits.rs` covers that.
+    for (prompt, app) in [("one", "todo"), ("two", "notes"), ("three", "journal")] {
         svc.send_message(
             Ctx::local(),
             json!({

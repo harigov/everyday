@@ -4695,11 +4695,11 @@
         "additionalProperties": false,
         "properties": {
           "brief": {
-            "description": "What the job should know that it will not otherwise: who is asking and why, what they already know or have ruled out, and what shape of answer would help -- a recommendation, a comparison, a reading list. Nothing else about this conversation reaches the job, so say it here. If there is truly nothing to add, say so in a few words.",
+            "description": "What the job should know that it will not otherwise: who is asking and why, what they already know or have ruled out, and what shape of answer would help -- a recommendation, a comparison, a reading list. Say what decision it feeds and by when, and any sources they trust or distrust. Nothing else about this conversation reaches the job, so say it here. If there is truly nothing to add, say so in a few words.",
             "type": "string"
           },
           "question": {
-            "description": "What to find out, in their words where you have them. One question or one topic: the brief is where the context goes.",
+            "description": "What to find out, as one question whose answer you would recognise when you saw it (\"Which mid-drive e-bikes under $3,000 handle 12% hills?\"), in their words where you have them. The brief is where the context goes.",
             "type": "string"
           }
         },
@@ -4750,7 +4750,7 @@
             "type": "string"
           },
           "notify_when": {
-            "description": "When they want to hear about it, in their words: \"when it finishes or fails\", \"if the price drops below $200\", \"whenever Sam replies\". Always send this. Send an empty string for any change worth knowing.",
+            "description": "When they want to hear about it, in their words: \"when it finishes or fails\", \"if the price drops below $200\", \"whenever Sam replies\". Phrase it as the moment to tell them -- \"when it finishes or fails\" -- rather than a topic. Always send this. Send an empty string for any change worth knowing.",
             "type": "string"
           },
           "tool": {

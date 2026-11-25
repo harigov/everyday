@@ -729,6 +729,7 @@ fn full_meal(from_now: i64) -> Meal {
                 grams: Some(292.5),
                 nutrients: full_nutrients(),
                 estimated: false,
+                doubt: String::new(),
             },
             MealItem {
                 food_id: None,
@@ -738,6 +739,7 @@ fn full_meal(from_now: i64) -> Meal {
                 grams: None,
                 nutrients: bare_nutrients(),
                 estimated: true,
+                doubt: "150-250 g; the bowl's depth is hidden".into(),
             },
         ],
         photo: Some(FileId::new()),
@@ -1935,6 +1937,7 @@ fn deleting_anything_else_touches_nothing_else(health: &dyn HealthStore) {
         grams: Some(195.0),
         nutrients: bare_nutrients(),
         estimated: false,
+        doubt: String::new(),
     }];
     health.put_meal(&dinner).unwrap();
 

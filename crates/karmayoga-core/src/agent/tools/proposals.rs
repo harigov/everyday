@@ -120,12 +120,10 @@ pub(super) static TOOLS: &[Tool] = &[
          use this when they tell you in chat to go ahead with something a dream prepared. Only \
          a proposal that would create or change a record can be accepted here: a task, a \
          block of time, a memory, a routine or a note. One that would delete something or \
-         send mail is refused \u{2014} those are answered from their own card, never from a \
-         sentence in chat, because a misheard \"yes\" must not be the only thing standing \
-         between somebody and a deletion or a message that is already gone. There is no way \
-         to accept with changes: if it is close but not right, decline it and make what they \
-         actually want with the ordinary tools instead. Refused during a scheduled run, since \
-         answering for the person is exactly what a routine with nobody watching must not do.",
+         send mail is refused here \u{2014} those are answered from their own card, never \
+         from a sentence in chat. There is no way to accept with changes: if it is close but \
+         not right, decline it and make what they actually want with the ordinary tools \
+         instead. Refused during a scheduled run.",
         run_accept_proposal
     ),
     tool!(
@@ -146,9 +144,7 @@ pub(super) static TOOLS: &[Tool] = &[
             ],
             &["proposal_id"]
         ),
-        "Say no to a pending proposal. Leaves everything exactly as it was \u{2014} nothing is \
-         created, changed, sent or deleted \u{2014} so declining has nothing of its own to \
-         undo later.",
+        "Say no to a pending proposal. Nothing is created, changed, sent or deleted.",
         run_decline_proposal
     ),
 ];

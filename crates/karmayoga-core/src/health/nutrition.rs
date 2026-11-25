@@ -51,6 +51,7 @@ pub fn item(food: &Food, amount: f64, unit: &str) -> Option<MealItem> {
         grams: Some(grams),
         nutrients: scale(&food.per_100g, grams),
         estimated: false,
+        doubt: String::new(),
     })
 }
 
@@ -224,6 +225,7 @@ mod tests {
             grams: None,
             nutrients: nutrients(kcal, 0.0, carbs_g, 0.0),
             estimated: false,
+            doubt: String::new(),
         }];
         meal
     }

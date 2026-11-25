@@ -723,6 +723,14 @@ impl Typist for Keyboard {
         let app = self.0.clone();
         Box::pin(async move { crate::voicetyping::paste::selected_text(&app).await })
     }
+
+    /// From screen time's watcher: the name of the app at its latest sample,
+    /// never the window's title. Nothing where this computer's focus cannot be
+    /// watched from here (GNOME reports through its Shell extension) or tracking
+    /// is off, and the assistant is then simply not told.
+    fn focused_app(&self) -> Option<String> {
+        self.0.try_state::<crate::screentime::ScreenTime>()?.focused_app()
+    }
 }
 
 /// Open the session for conversation `seq`: learn what to call the assistant,

@@ -295,8 +295,8 @@ async fn the_first_account_that_agreed_lends_its_voice_and_the_others_lend_nothi
     assert_eq!(message, WRITTEN);
 
     let (system, user) = model.first();
-    assert!(system.contains("Write as this person writes"), "their rules: {system}");
-    assert!(system.contains("Sound warm and friendly"), "{system}");
+    assert!(system.contains("## Writing as them"), "their rules: {system}");
+    assert!(system.contains("never curt, unless they have told you otherwise"), "{system}");
     assert!(user.contains("Sounds good, Tuesday it is."), "their own example: {user}");
     assert!(user.contains("They sign as Hari Govardhanam."), "{user}");
     assert!(user.ends_with(&format!("What they said:\n{SAID}")), "{user}");

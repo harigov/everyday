@@ -134,7 +134,17 @@ export async function mockDraftWithAi(opts: {
     ? opts.instruction.replace(/\b(um+|uh+|er+|you know)\b,?\s*/gi, '')
     : opts.instruction
   const lines = ['Hi,', ...sentencesFromInstruction(instruction), 'Best,']
-  return { bodyText: lines.join('\n'), bodyHtml: paragraphs(lines) }
+  // Only a new message is given a subject, as the real model is asked.
+  const subject = opts.inReplyTo ? undefined : subjectFromInstruction(instruction)
+  return { bodyText: lines.join('\n'), bodyHtml: paragraphs(lines), ...(subject && { subject }) }
+}
+
+/** A few words naming what the message is about: the first clause of the
+ *  instruction, cut at six words and capitalised -- what a model would give. */
+function subjectFromInstruction(instruction: string): string {
+  const clause = instruction.split(/[,.;]| and /i)[0]?.trim() ?? ''
+  const words = clause.split(/\s+/).filter(Boolean).slice(0, 6).join(' ')
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : ''
 }
 
 /** A small, visible rewrite per mode -- not a real model, but each mode
@@ -209,11 +219,11 @@ export function mockSaveVoiceLearning(notes: string): VoiceLearningView {
 /** What a pass "learns": the sort of rules a model writes about how somebody
  *  replies, a line each, the newest pass rewriting the whole set. */
 const LEARNED_NOTES = [
-  'Replies are short: two or three sentences, rarely more.',
-  'Opens with the first name and no greeting word ("Priya —"), never "Hope you are well".',
-  'Says yes or no in the first sentence, then the one reason.',
-  'Signs off "Thanks" with colleagues and with nothing at all with family.',
-  'Turns down meetings before 10 and offers a time instead of asking for one.',
+  'Accepting: says yes in the first sentence, then the one reason.',
+  'Declining: says no plainly, once, with one reason and no apology.',
+  'Scheduling: turns down times before 10 and offers a time instead of asking for one.',
+  'Thanking: signs off "Thanks" with colleagues and with nothing at all with family.',
+  'Everything else: replies are short, two or three sentences, opening with the first name ("Priya,"), never "Hope you are well".',
 ]
 
 /** `learn_from_replies`: refused, saying why, as the real pass is when

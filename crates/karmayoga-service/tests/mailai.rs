@@ -36,11 +36,22 @@ struct FakeModel {
     /// and 5: a real, paid model call is exactly the thing the per-minute
     /// budget exists to bound).
     calls: Arc<std::sync::atomic::AtomicU32>,
+    /// What every request said, as text -- the system prompt and the message --
+    /// for the tests that check what a model was *told*.
+    requests: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl FakeModel {
     fn call_count(&self) -> u32 {
         self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Every question asked so far, one request body each. The harness's second
+    /// turn -- the same prompt with the tool's result added, for the model's own
+    /// closing words -- is the same question again, and is left out.
+    fn requests(&self) -> Vec<String> {
+        let all = self.requests.lock().unwrap().clone();
+        all.into_iter().filter(|r| !r.contains("\"role\":\"tool\"")).collect()
     }
 }
 
@@ -54,6 +65,8 @@ async fn fake_model(arguments_json: String) -> FakeModel {
     let arguments_json = Arc::new(arguments_json);
     let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let calls_for_task = calls.clone();
+    let requests: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let requests_for_task = requests.clone();
 
     tokio::spawn(async move {
         loop {
@@ -63,11 +76,32 @@ async fn fake_model(arguments_json: String) -> FakeModel {
             };
             let Ok((mut socket, _)) = accepted else { break };
             let arguments_json = arguments_json.clone();
+            let requests = requests_for_task.clone();
             calls_for_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::spawn(async move {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                // Headers, then exactly Content-Length bytes of body, so that a
+                // prompt that does not fit in one read is seen whole.
+                let mut raw = Vec::new();
                 let mut buf = vec![0u8; 64 * 1024];
-                let _ = socket.read(&mut buf).await;
+                while let Ok(n) = socket.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&raw[..end]).to_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:")?.trim().parse().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                requests.lock().unwrap().push(String::from_utf8_lossy(&raw).to_string());
                 let body = reply_tool_call("submit", &arguments_json);
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -79,7 +113,7 @@ async fn fake_model(arguments_json: String) -> FakeModel {
         }
     });
 
-    FakeModel { endpoint: format!("http://127.0.0.1:{port}/v1"), _shutdown: tx, calls }
+    FakeModel { endpoint: format!("http://127.0.0.1:{port}/v1"), _shutdown: tx, calls, requests }
 }
 
 /// A single, whole Chat Completions JSON response -- not the streamed
@@ -169,13 +203,43 @@ fn seed_message(
     snippet: &str,
     category: Option<Category>,
 ) -> Message {
+    seed_message_at(
+        svc,
+        account,
+        mailbox,
+        uid,
+        thread_id,
+        from,
+        to,
+        subject,
+        snippet,
+        category,
+        Timestamp::now(),
+    )
+}
+
+/// [`seed_message`], dated `date`.
+#[allow(clippy::too_many_arguments)]
+fn seed_message_at(
+    svc: &Arc<Service>,
+    account: AccountId,
+    mailbox: MailboxId,
+    uid: u32,
+    thread_id: ThreadId,
+    from: &str,
+    to: &[&str],
+    subject: &str,
+    snippet: &str,
+    category: Option<Category>,
+    date: Timestamp,
+) -> Message {
     let vault = svc.get().unwrap();
     let message = Message {
         id: MailMessageId::new(),
         account_id: account,
         thread_id,
         message_id_header: format!("<{}@example.com>", uuid::Uuid::new_v4()),
-        date: Timestamp::now(),
+        date,
         from: Address::bare(from),
         to: to.iter().map(|a| Address::bare(*a)).collect(),
         cc: Vec::new(),
@@ -424,29 +488,33 @@ async fn categorize_tick_reasks_a_thread_once_a_new_message_arrives() {
     );
 }
 
+/// The requests that asked a model to label threads: the categoriser's own,
+/// not the follow-up questions the same tick goes on to put to the same model.
+fn labelling(fake: &FakeModel) -> Vec<String> {
+    fake.requests().into_iter().filter(|r| r.contains("You sort email into the tabs")).collect()
+}
+
 /// Finding 2's own "walk further back" requirement: once a page's worth of
-/// threads are all already asked, the tick must still move its cursor past
-/// them rather than reading that same, exhausted page forever.
+/// threads are all already asked, the tick must still move on past them rather
+/// than reading that same, exhausted page forever.
 ///
-/// A *second* real tick cannot prove this on its own within one test: the
-/// per-minute budget (`Service::MAIL_CATEGORIZE_PER_MINUTE`) a fresh page
-/// costs is exactly what the first tick just spent, and refilling it for
-/// real would mean this test sleeping for however long that takes. So the
-/// proof is in two parts instead, each independently meaningful: the first
-/// tick's cursor moves at all (proving an exhausted page is not a dead
-/// end), and the cursor it left behind, handed to the very same
-/// `threads_in_category` query `categorize_account` itself calls, does
-/// reach the older thread -- exactly what the *next* tick, whenever its own
-/// budget allows, would see.
+/// The newest page is read first every tick, and the walk -- from its own
+/// cursor, behind that page -- gets whatever room is left: so with a newest page
+/// of threads all asked and one older thread behind it, the older thread is
+/// asked in the very same tick, not a minute later. With two pages of asked
+/// threads in front of it, the first tick reads the newest page and the second
+/// page of the walk, leaves the cursor behind them, and the cursor it leaves
+/// reaches the older thread -- exactly what the *next* tick, whenever its own
+/// budget allows, would see. (A second real tick cannot prove that within one
+/// test: the per-minute budget a fresh page costs is exactly what the first tick
+/// just spent, and refilling it for real would mean this test sleeping for
+/// however long that takes.)
 ///
-/// Seeded to [`mailai::CATEGORIZE_PAGE`] rather than
-/// `Service::MAIL_CATEGORIZE_PER_MINUTE`: since the fix for finding 5 (one
-/// account's tick could spend the whole per-minute budget on a guess at its
-/// page size, starving every account after it), `categorize_account` reads
-/// a fixed-size page independent of the budget and only spends the budget
-/// on however many of that page turn out to need asking -- see that
-/// function's own comment. The page this test must overflow to prove
-/// anything is therefore the read's own cap, not the model-call budget.
+/// Seeded to [`mailai::CATEGORIZE_PAGE`]: since the fix for finding 5 (one
+/// account's tick could spend the whole per-minute budget on a guess at its page
+/// size, starving every account after it), `categorize_account` reads a
+/// fixed-size page independent of the budget and only spends the budget on
+/// however many of that page turn out to need asking.
 #[tokio::test]
 async fn categorize_tick_walks_past_an_already_asked_page_to_reach_older_threads() {
     let fake = fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
@@ -455,15 +523,13 @@ async fn categorize_tick_walks_past_an_already_asked_page_to_reach_older_threads
     let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
     let vault = svc.get().unwrap();
 
-    // One page's worth of threads -- exactly `mailai::CATEGORIZE_PAGE`, the
-    // fixed size `categorize_account` itself reads per tick -- all already
-    // marked asked at their current message count, plus one older thread
-    // left unasked.
+    // Two pages' worth of threads, all already marked asked at their current
+    // message count, plus one older thread left unasked.
     let page = karmayoga_service::mailai::CATEGORIZE_PAGE;
-    let mut oldest_id = None;
-    for i in 0..=page {
+    let mut oldest = None;
+    for i in 0..=(2 * page) {
         let thread_id = ThreadId::new();
-        seed_message(
+        let message = seed_message(
             &svc,
             account.id,
             mailbox,
@@ -477,25 +543,239 @@ async fn categorize_tick_walks_past_an_already_asked_page_to_reach_older_threads
         );
         if i == 0 {
             // Ingested first, so the oldest -- everything ingested after it
-            // fills the newest page and is marked asked below.
-            oldest_id = Some(thread_id);
+            // fills the newer pages and is marked asked below.
+            oldest = Some((thread_id, message.id));
         } else {
             vault.set_thread_ai_categorize_asked(thread_id, 1).unwrap();
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    let oldest_id = oldest_id.unwrap();
+    let (oldest_id, _) = oldest.unwrap();
 
     karmayoga_service::mailai::categorize_tick(&svc).await;
     let cursor = svc.mail_categorize_cursor(account.id);
     assert!(cursor.is_some(), "an exhausted page still advances the cursor, not just a hit page");
+    assert!(
+        labelling(&fake).is_empty(),
+        "nothing was unasked on the pages read: no labelling request was made"
+    );
 
-    let next_page =
-        vault.threads_in_category(account.id, Category::Other, cursor.as_deref(), page).unwrap();
+    let filter = ThreadFilter { category: Some(Category::Other), ..Default::default() };
+    let next_page = vault.list_threads(mailbox, &filter, cursor.as_deref(), page).unwrap();
     assert!(
         next_page.threads.iter().any(|t| t.id == oldest_id),
         "the stored cursor reaches the older, unasked thread"
     );
+}
+
+/// The same with one page of asked threads and an older one behind it: the walk
+/// has room on the same tick, so the older thread is asked at once.
+#[tokio::test]
+async fn categorize_tick_reaches_a_thread_behind_the_newest_page_on_the_same_tick() {
+    let fake = fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let vault = svc.get().unwrap();
+
+    let page = karmayoga_service::mailai::CATEGORIZE_PAGE;
+    let mut oldest = None;
+    for i in 0..=page {
+        let thread_id = ThreadId::new();
+        let message = seed_message(
+            &svc,
+            account.id,
+            mailbox,
+            i + 1,
+            thread_id,
+            "stranger@example.com",
+            &["me@example.com"],
+            "Hello",
+            "Just checking in.",
+            Some(Category::Other),
+        );
+        if i == 0 {
+            oldest = Some(message.id);
+        } else {
+            vault.set_thread_ai_categorize_asked(thread_id, 1).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+
+    assert_eq!(
+        vault.mail_message(oldest.unwrap()).unwrap().category,
+        Some(Category::Important),
+        "asked on the tick that read the newest page, which left room"
+    );
+}
+
+/// New mail is read before the archive is: with more unasked threads than one
+/// request takes, it is the newest that go, whatever the walk's cursor says.
+#[tokio::test]
+async fn categorize_tick_asks_about_the_newest_mail_first() {
+    let fake = fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let vault = svc.get().unwrap();
+
+    // Thirty unasked threads, oldest first; the model labels only the first it
+    // is shown, which must be the newest. (The fake is on loopback, so it is asked
+    // five at a time, as a model on this computer is.)
+    let mut ids = Vec::new();
+    for i in 0..30u32 {
+        ids.push(
+            seed_message(
+                &svc,
+                account.id,
+                mailbox,
+                i + 1,
+                ThreadId::new(),
+                "stranger@example.com",
+                &["me@example.com"],
+                &format!("Hello {i}"),
+                "Just checking in.",
+                Some(Category::Other),
+            )
+            .id,
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+
+    assert_eq!(
+        vault.mail_message(*ids.last().unwrap()).unwrap().category,
+        Some(Category::Important),
+        "the newest message was number 1 in the list the model saw"
+    );
+    assert_eq!(vault.mail_message(ids[0]).unwrap().category, Some(Category::Other));
+    let requests = labelling(&fake);
+    assert_eq!(requests.len(), 1, "one request for the one tick");
+    let prompt = &requests[0];
+    assert!(prompt.contains("Hello 29") && prompt.contains("Hello 25"), "{prompt}");
+    assert!(
+        !prompt.contains("Hello 24"),
+        "no more than a small model on this computer takes: {prompt}"
+    );
+    assert!(prompt.find("Hello 29") < prompt.find("Hello 28"), "newest first: {prompt}");
+}
+
+/// The model labelled one thread of two and left the other out. Both were asked
+/// about, so both are marked: a thread a model keeps leaving out must not go back
+/// into every request, every tick, and take a Small-model slot for ever. It
+/// stays where it was until a new message arrives.
+#[tokio::test]
+async fn categorize_tick_marks_every_thread_it_asked_about_even_one_the_model_left_out() {
+    let fake = fake_model(r#"{"labels":[{"index":2,"category":"important"}]}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let (first, second) = (ThreadId::new(), ThreadId::new());
+    let mut messages = Vec::new();
+    for (i, thread_id) in [first, second].into_iter().enumerate() {
+        messages.push(seed_message(
+            &svc,
+            account.id,
+            mailbox,
+            i as u32 + 1,
+            thread_id,
+            "stranger@example.com",
+            &["me@example.com"],
+            "Hello",
+            "Just checking in.",
+            Some(Category::Other),
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+
+    // Newest first: `second` was number 1 and was left out, `first` number 2.
+    let vault = svc.get().unwrap();
+    assert_eq!(vault.mail_message(messages[0].id).unwrap().category, Some(Category::Important));
+    assert_eq!(
+        vault.mail_message(messages[1].id).unwrap().category,
+        Some(Category::Other),
+        "no label, so it stays where it was"
+    );
+    assert_eq!(vault.thread(first).unwrap().0.ai_categorize_asked_at_count, Some(1));
+    assert_eq!(
+        vault.thread(second).unwrap().0.ai_categorize_asked_at_count,
+        Some(1),
+        "asked about, and so marked: not put to the model again until something new arrives"
+    );
+}
+
+/// What the model is shown of each thread is the app's own record of it, then
+/// the sender's words; and a thread in the archive, or from before the window,
+/// is never put to it.
+#[tokio::test]
+async fn categorize_tick_tells_the_model_how_it_was_addressed_and_leaves_old_mail_alone() {
+    let fake = fake_model(r#"{"labels":[{"index":1,"category":"other"}]}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(true, false, false));
+    let inbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let archive = seed_mailbox(&svc, account.id, MailboxRole::Archive);
+    let old = Timestamp::now() - jiff::SignedDuration::from_hours(24 * 60);
+    let old_one = seed_message_at(
+        &svc,
+        account.id,
+        inbox,
+        1,
+        ThreadId::new(),
+        "stranger@example.com",
+        &["me@example.com"],
+        "From long ago",
+        "A deadline that passed.",
+        Some(Category::Other),
+        old,
+    );
+    let filed_away = seed_message(
+        &svc,
+        account.id,
+        archive,
+        1,
+        ThreadId::new(),
+        "stranger@example.com",
+        &["me@example.com"],
+        "In the archive",
+        "Filed away.",
+        Some(Category::Other),
+    );
+    // To a tagged address of the person's: still to them.
+    seed_message(
+        &svc,
+        account.id,
+        inbox,
+        2,
+        ThreadId::new(),
+        "stranger@example.com",
+        &["me+shop@example.com"],
+        "Hello",
+        "Just checking in.",
+        Some(Category::Other),
+    );
+
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+
+    let requests = labelling(&fake);
+    assert_eq!(requests.len(), 1, "one request, about one thread: {requests:?}");
+    let prompt = &requests[0];
+    assert!(prompt.contains("addressed to you: directly"), "{prompt}");
+    assert!(prompt.contains("you have written to the sender: no"), "{prompt}");
+    assert!(
+        fake.requests()
+            .iter()
+            .all(|r| !r.contains("From long ago") && !r.contains("In the archive")),
+        "neither was put to any model: {:?}",
+        fake.requests()
+    );
+    let vault = svc.get().unwrap();
+    assert_eq!(vault.thread(old_one.thread_id).unwrap().0.ai_categorize_asked_at_count, None);
+    assert_eq!(vault.thread(filed_away.thread_id).unwrap().0.ai_categorize_asked_at_count, None);
 }
 
 // ---- model-assisted prioritisation (rides along in `categorize_tick`) -----
@@ -602,6 +882,69 @@ async fn categorize_tick_does_not_reask_a_thread_it_already_answered_for_priorit
     );
 }
 
+/// What the priority model is told: today's date first, then for each thread
+/// the app's own records (when it arrived, how it was addressed, whether the
+/// person has written to the sender) and only then the sender's words -- and a
+/// thread from before the window is not put to it.
+#[tokio::test]
+async fn the_priority_model_is_told_the_date_and_what_the_app_knows_of_each_thread() {
+    let fake = fake_model(r#"{"priorities":[{"index":1,"priority":false}]}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(true, false, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    seed_message_at(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        ThreadId::new(),
+        "boss@example.com",
+        &["me@example.com"],
+        "A deadline from last spring",
+        "Can you approve this by Friday?",
+        Some(Category::Important),
+        Timestamp::now() - jiff::SignedDuration::from_hours(24 * 90),
+    );
+    seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        2,
+        ThreadId::new(),
+        "boss@example.com",
+        &["me@example.com"],
+        "Need your sign-off",
+        "Can you approve this by Friday?",
+        Some(Category::Important),
+    );
+
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+
+    let asked: Vec<String> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.contains("You choose which threads go on the person"))
+        .collect();
+    assert_eq!(asked.len(), 1, "one request, about the thread inside the window");
+    let request = &asked[0];
+    let today = jiff::Zoned::now().strftime("Today is %A %-d %B %Y.").to_string();
+    assert!(request.contains(&today), "{request}");
+    for record in [
+        "(today)",
+        "addressed to you: directly",
+        "you have written to the sender: no",
+        "you wrote earlier in this thread: no",
+        "messages in thread: 1",
+    ] {
+        assert!(request.contains(record), "{record}: {request}");
+    }
+    assert!(request.contains("Need your sign-off"), "{request}");
+    assert!(
+        !request.contains("last spring"),
+        "a 2024-style deadline is never put to it: {request}"
+    );
+}
+
 // ---- summaries --------------------------------------------------------
 
 #[tokio::test]
@@ -627,10 +970,74 @@ async fn summarize_thread_asks_the_configured_model_and_caches_the_answer() {
     let summary = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
     assert_eq!(summary, "They are asking about dinner on Friday.");
 
+    // What the model was told: today's date, the subject (which often carries the
+    // ask and the deadline), and the day the message was written.
+    let request = &fake.requests()[0];
+    let today = jiff::Zoned::now().strftime("Today is %A %-d %B %Y.").to_string();
+    assert!(request.contains(&today), "{today} is opened with: {request}");
+    assert!(request.contains("Subject: Dinner?"), "{request}");
+    assert!(request.contains("wrote, to you, on "), "{request}");
+
     // The model is gone; a cached answer must not need it.
     drop(fake);
     let cached = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
     assert_eq!(cached, summary);
+}
+
+/// A model that writes nothing has not summarised the thread: the panel is told
+/// so, and the empty answer is not kept for the session -- the next ask goes to
+/// the model again.
+#[tokio::test]
+async fn an_empty_summary_is_an_error_and_is_not_cached() {
+    let fake = fake_model(r#"{"summary":"  "}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(false, true, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        ThreadId::new(),
+        "friend@example.com",
+        &["me@example.com"],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+
+    let error = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap_err();
+    assert!(error.message.contains("wrote no summary"), "{}", error.message);
+    let asked = fake.call_count();
+    assert!(asked > 0);
+    assert!(karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.is_err());
+    assert!(fake.call_count() > asked, "asked again, since nothing was kept");
+}
+
+/// A thread with nothing written in it is a sentence, not an empty paragraph --
+/// and no request.
+#[tokio::test]
+async fn a_thread_with_nothing_in_it_is_summarised_as_a_sentence() {
+    let fake = fake_model(r#"{"summary":"Should never be asked."}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(false, true, false));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        ThreadId::new(),
+        "friend@example.com",
+        &["me@example.com"],
+        "Photo",
+        "",
+        Some(Category::Important),
+    );
+
+    let summary = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
+    assert_eq!(summary, "There is nothing written in this thread to summarise.");
+    assert_eq!(fake.call_count(), 0);
 }
 
 /// Reproduces finding 1 directly: repeated summaries of the *same* thread,
@@ -1104,4 +1511,172 @@ async fn auto_draft_never_lets_the_models_own_markup_through_as_html() {
         "the model's own markup must never reach the draft unescaped: {}",
         drafts[0].body_html
     );
+}
+
+// ---- auto-draft: what it is told, and when it is not asked ---------------------
+
+/// What the draft model is told is the app's own record of the thread -- the
+/// day, how long ago the newest message arrived, whether the person has ever
+/// written to the sender -- and the sender's words come last, the subject among
+/// them.
+#[tokio::test]
+async fn auto_draft_tells_the_model_the_date_and_what_the_app_knows_of_the_sender() {
+    let fake = fake_model(r#"{"reply":true,"body_text":"Sure, Friday works."}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(false, false, true));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        ThreadId::new(),
+        "friend@example.com",
+        &["me+dinner@example.com"],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+
+    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+
+    let request = &fake.requests()[0];
+    let today = jiff::Zoned::now().strftime("Today is %A %-d %B %Y.").to_string();
+    assert!(request.contains(&today), "{request}");
+    assert!(request.contains("The newest message arrived on "), "{request}");
+    assert!(request.contains("(today)"), "{request}");
+    assert!(request.contains("written to its sender before: no"), "{request}");
+    assert!(request.contains("written earlier in this thread: no"), "{request}");
+    let label = request.find("untrusted_text:").expect("labelled");
+    assert!(request[label..].contains("Subject: Dinner?"), "the subject is inside it: {request}");
+    assert!(request.find("The newest message arrived").unwrap() < label, "{request}");
+    assert!(request.contains("unsolicited pitch"), "the decision text: {request}");
+}
+
+/// Where the follow-up pass has said nothing waits on the newest message, no
+/// draft is written for it and the model is not asked: one judgement drives the
+/// list at the top of the Inbox and the drafts under it.
+#[tokio::test]
+async fn auto_draft_follows_the_follow_up_passes_no_reply_needed() {
+    let fake = fake_model(r#"{"reply":true,"body_text":"Sure, Friday works."}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(false, false, true));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let thread_id = ThreadId::new();
+    let msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        thread_id,
+        "friend@example.com",
+        &["me@example.com"],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+    let vault = svc.get().unwrap();
+    let mark = karmayoga_core::mail::FollowUpMark {
+        message: msg.id,
+        message_count: 1,
+        at: Timestamp::now(),
+    };
+    // Asked, and nothing is waiting.
+    vault.set_thread_follow_up(thread_id, mark, None).unwrap();
+
+    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+
+    assert!(vault.drafts(account.id).unwrap().is_empty(), "no draft");
+    assert_eq!(fake.call_count(), 0, "and the model was not asked");
+    assert_eq!(
+        vault.thread(thread_id).unwrap().0.ai_auto_draft_asked_at_count,
+        Some(1),
+        "marked asked, so it is not looked at again until something new arrives"
+    );
+}
+
+/// And where it said a reply is waited for, the draft is written -- the other
+/// half of "one judgement".
+#[tokio::test]
+async fn auto_draft_writes_the_draft_the_follow_up_pass_asked_for() {
+    // The draft model flags `reply: false` but wrote something; the follow-up
+    // answer, which is the better calibrated, stands.
+    let fake = fake_model(r#"{"reply":false,"body_text":"Sure, Friday works."}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(false, false, true));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let thread_id = ThreadId::new();
+    let msg = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        thread_id,
+        "friend@example.com",
+        &["me@example.com"],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+    let vault = svc.get().unwrap();
+    let mark = karmayoga_core::mail::FollowUpMark {
+        message: msg.id,
+        message_count: 1,
+        at: Timestamp::now(),
+    };
+    let waiting = karmayoga_core::mail::FollowUp {
+        kind: karmayoga_core::mail::FollowUpKind::Reply,
+        message: msg.id,
+        since: msg.date,
+    };
+    vault.set_thread_follow_up(thread_id, mark, Some(waiting)).unwrap();
+
+    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+
+    assert_eq!(vault.drafts(account.id).unwrap().len(), 1);
+}
+
+/// A reply to a question that is weeks old is a draft nobody wanted: only
+/// threads inside the follow-up window (two weeks) are looked at -- and the
+/// newer thread behind an old one is not kept waiting.
+#[tokio::test]
+async fn auto_draft_leaves_old_threads_alone() {
+    let fake = fake_model(r#"{"reply":true,"body_text":"Sure, Friday works."}"#.to_string()).await;
+    let (svc, _dir) = env(&fake.endpoint);
+    let account = seed_account(&svc, mail_ai(false, false, true));
+    let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
+    let old = Timestamp::now() - jiff::SignedDuration::from_hours(24 * 20);
+    let stale = seed_message_at(
+        &svc,
+        account.id,
+        mailbox,
+        1,
+        ThreadId::new(),
+        "friend@example.com",
+        &["me@example.com"],
+        "Dinner last month?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+        old,
+    );
+    let fresh = seed_message(
+        &svc,
+        account.id,
+        mailbox,
+        2,
+        ThreadId::new(),
+        "friend@example.com",
+        &["me@example.com"],
+        "Dinner?",
+        "Are you free Friday for dinner?",
+        Some(Category::Important),
+    );
+
+    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+
+    let vault = svc.get().unwrap();
+    let drafts = vault.drafts(account.id).unwrap();
+    assert_eq!(drafts.len(), 1, "one draft: the fresh thread's");
+    assert_eq!(drafts[0].in_reply_to, Some(fresh.id));
+    assert_eq!(vault.thread(stale.thread_id).unwrap().0.ai_auto_draft_asked_at_count, None);
 }

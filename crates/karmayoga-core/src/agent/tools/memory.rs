@@ -72,11 +72,7 @@ pub(super) static TOOLS: &[Tool] = &[
          if the person had said it outright \u{2014} use this when they agree in chat \
          that something you noticed on your own is actually right. Only works on a \
          memory whose origin is inferred; one that was already told, confirmed or \
-         rejected is refused, since there is nothing left to agree to. This is not \
-         how an overnight dream itself says a memory still holds: that happens \
-         through its own \"Confirmed memories:\" note and never touches origin, \
-         because noticing the same thing again is not the same act as the person \
-         agreeing it is true.",
+         rejected is refused.",
         run_confirm_memory
     ),
     tool!(

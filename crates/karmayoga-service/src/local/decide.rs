@@ -341,6 +341,21 @@ pub fn unload(model: LocalDecisionModel) -> bool {
     }
 }
 
+/// Whether `model` is in memory now, so a question put to it is answered in
+/// the time the question takes rather than after a load of gigabytes. What a
+/// caller that cannot wait for a load -- choosing a turn's tools -- asks first.
+pub fn resident(model: LocalDecisionModel) -> bool {
+    #[cfg(feature = "decisions")]
+    {
+        run::resident(model)
+    }
+    #[cfg(not(feature = "decisions"))]
+    {
+        let _ = model;
+        false
+    }
+}
+
 /// What [`benchmark`] measured.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -456,6 +471,10 @@ mod run {
 
     pub fn warm(which: LocalDecisionModel) -> CommandResult<()> {
         decider(which).map(|_| ())
+    }
+
+    pub fn resident(which: LocalDecisionModel) -> bool {
+        DECIDERS.is_loaded(&which)
     }
 
     pub fn unload(which: LocalDecisionModel) -> bool {
@@ -736,24 +755,21 @@ pub mod samples {
     }
 
     /// A message as mail sorting shows one to the model -- the text half of
-    /// `mailsort`'s content, with the snippet the start of the body. `to_you`
-    /// is how it was addressed -- `to`, `cc`, or anything else for neither --
-    /// and is spelt the way mail sorting spells it.
+    /// `mailsort`'s own content, built by the same function, so that what is
+    /// timed and checked here is what is sent: the app's records first, the
+    /// sender's words last, the excerpt (the body) on one line, and no snippet.
+    /// `to_you` is how it was addressed -- `to`, `cc`, or anything else for
+    /// neither -- and is spelt the way mail sorting spells it.
     pub fn message(from: &str, to_you: &str, subject: &str, body: &str, known: bool) -> String {
         let to_you = match to_you {
             "to" => "directly",
             "cc" => "cc",
-            _ => "not by name (a list, or bcc)",
+            _ => crate::mailfollowup::NOT_BY_NAME,
         };
-        format!(
-            "from: {from}\naddressed to you: {to_you}\nsubject: {subject}\nsnippet: {body}\n\
-             excerpt: {body}\nmessages in thread: 1\nyou have written to the sender: {}\n\
-             has attachments: no",
-            if known { "yes" } else { "no" }
-        )
+        crate::mailsort::content(from, to_you, subject, "", body, 1, known, false).text
     }
 
-    /// Five messages, one for each of the starting categories but Other,
+    /// Six messages, one for each of the starting categories but Other,
     /// with the category each belongs in.
     pub fn labelled() -> Vec<(&'static str, String)> {
         vec![
@@ -809,6 +825,18 @@ pub mod samples {
                     "[karmayoga] CI run failed on main",
                     "The workflow Check failed for commit 4f2a9c1. View the run for details. \
                      You are receiving this because you are subscribed to this repository.",
+                    false,
+                ),
+            ),
+            (
+                "Pitches",
+                message(
+                    "Jordan Reeves <jordan@growthloop.io>",
+                    "to",
+                    "Quick question about your roadmap?",
+                    "Hi there, I came across your company and thought we could help you cut \
+                     your cloud costs by 30%. Do you have 15 minutes next week for a quick \
+                     call? Just following up on my note from Tuesday.",
                     false,
                 ),
             ),

@@ -25,8 +25,9 @@
 //! last meeting with the same people, and -- only when the setting allows -- a
 //! web search for an organisation nothing else mentions. A model is then given
 //! those facts, fenced as other people's writing, and asked for a short
-//! summary, an agenda, a line on each person and a few lines of context, which
-//! are checked against the facts before they are kept
+//! summary, what is open between the person and the people coming, the
+//! invitation's agenda, a line on each person and a few lines of context,
+//! which are checked against the facts before they are kept
 //! ([`karmayoga_core::meeting::brief::parse_answer`]). With no model, or when
 //! it fails, the facts are the brief, and a line in
 //! [`MeetingBrief::gaps`](karmayoga_core::meeting::brief::MeetingBrief::gaps)
@@ -91,9 +92,9 @@ use karmayoga_core::keepintouch::match_guest;
 use karmayoga_core::llm::{ModelAccess, ModelTier};
 use karmayoga_core::mailsearch::{MailQuery, MailSearch};
 use karmayoga_core::meeting::brief::{
-    self as mb, Facts, Guest, LAST_MEETING_DAYS, MAIL_DAYS, MAX_MAIL, MAX_NOTES, MAX_WEB_LOOKUPS,
-    MailFact, MeetingBrief, MeetingBriefSettings, NoteFact, PersonFacts, WebFact, Written,
-    answer_schema, key_for, parse_answer,
+    self as mb, Facts, Guest, LAST_MEETING_DAYS, LastMeeting, MAIL_DAYS, MAX_MAIL, MAX_NOTES,
+    MAX_WEB_LOOKUPS, MailFact, MeetingBrief, MeetingBriefSettings, NoteFact, PersonFacts, Waiting,
+    WebFact, Written, answer_schema, key_for, parse_answer,
 };
 use karmayoga_core::meeting::{MeetingSettings, Stage};
 use karmayoga_core::search::{Found, SearchScope};
@@ -105,7 +106,6 @@ use karmayoga_core::websearch::{SearchRequest, SearchResult, Source};
 use karmayoga_core::{Result as CoreResult, Vault};
 use serde_json::Value;
 
-use crate::agent::fenced_as_untrusted;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 
@@ -870,17 +870,20 @@ fn gather(
     }
     let guests: Vec<Guest> = everyone.iter().map(|p| p.guest.clone()).collect();
 
-    // What the person meant to raise with any of them.
+    // What the person meant to raise with any of them -- and every open task
+    // by its title, by which a step of the last meeting is found to be still
+    // open.
+    let open_tasks =
+        if vault.supports_tasks() { vault.tasks(&TaskQuery::open())? } else { Vec::new() };
     if vault.supports_tasks() {
-        let tasks = vault.tasks(&TaskQuery::open())?;
-        facts.talking_points = mb::talking_points_for(&tasks, &guests);
+        facts.talking_points = mb::talking_points_for(&open_tasks, &guests);
     }
 
     // The last time with these people, and notes that mention them.
     let zone = TimeZone::get(inputs.tz).unwrap_or(TimeZone::UTC);
-    let last_note = last_meeting(vault, event, &guests, &zone);
-    facts.notes = notes_about(vault, event, &everyone, last_note.as_ref().map(|n| n.id.as_str()));
-    facts.last_meeting = last_note;
+    let last = last_meeting(vault, event, &guests, &zone, &open_tasks);
+    facts.notes = notes_about(vault, event, &everyone, last.as_ref().map(|l| l.note.id.as_str()));
+    facts.last_meeting = last;
 
     // Mail with them, from accounts the assistant may read on this model.
     if everyone.iter().any(|p| p.guest.email.is_some()) {
@@ -891,7 +894,7 @@ fn gather(
                 "Mail is not shared with the assistant on this model, so none was read.".into(),
             );
         } else if let Some(index) = index {
-            facts.mail = mail_with(vault, index, inputs.readable, &everyone, &zone);
+            facts.mail = mail_with(vault, index, inputs.readable, &everyone, inputs.owners, &zone);
         } else {
             facts.gaps.push("Mail search is not available right now, so none was read.".into());
         }
@@ -916,13 +919,18 @@ fn gather(
     Ok(Gathered { facts, guests, organisations })
 }
 
-/// The most recent meeting note with the same people, as a fact.
+/// The most recent meeting note with the same people, read for where it
+/// landed and what each side took on: its topics, what it decided and left
+/// open, and its next steps -- the person's own marked when an open task
+/// carries their title, which is what accepting the task proposal the note
+/// made gives them. See [`LastMeeting::read`].
 fn last_meeting(
     vault: &Vault,
     event: &Event,
     guests: &[Guest],
     zone: &TimeZone,
-) -> Option<NoteFact> {
+    open_tasks: &[karmayoga_core::task::Task],
+) -> Option<LastMeeting> {
     if guests.is_empty() || !vault.supports_meetings() {
         return None;
     }
@@ -940,12 +948,17 @@ fn last_meeting(
     let recording =
         mb::last_meeting_with(&recordings, guests, &event.uid, event.start, LAST_MEETING_DAYS)?;
     let note = vault.note(recording.note_id?).ok()?;
-    Some(NoteFact {
+    let day = recording.started_at.to_zoned(zone.clone()).date();
+    let fact = NoteFact {
         id: note.id.to_string(),
         title: one_line(&note.display_title(), 120),
-        excerpt: one_line(&note.body.plain_text(), 500),
-        date: Some(recording.started_at.to_zoned(zone.clone()).date()),
-    })
+        excerpt: String::new(),
+        date: Some(day),
+    };
+    let owner = crate::meeting::pipeline::owner_of(vault);
+    let others: Vec<String> = guests.iter().map(Guest::display).collect();
+    let titles: Vec<String> = open_tasks.iter().map(|t| t.title.clone()).collect();
+    Some(LastMeeting::read(fact, &note.body.to_markdown(), day, &owner, &others, &titles))
 }
 
 /// A few notes that mention the meeting by name or somebody coming by their
@@ -1006,11 +1019,17 @@ fn notes_about(
 /// Recent mail with a few of the people coming, newest first, one thread
 /// each: from the accounts in `accounts` and nowhere else, never from Trash
 /// or Spam.
+///
+/// Each thread is read as it stands now, not as the search hit that found it:
+/// the newest message that is not a draft, who sent it (`owners` are the
+/// person's own addresses, who are "you") and what the follow-up pass says of
+/// it -- somebody waiting on the person's reply, or the person on somebody's.
 fn mail_with(
     vault: &Vault,
     index: &dyn MailSearch,
     accounts: &[AccountId],
     people: &[PersonFacts],
+    owners: &HashSet<String>,
     zone: &TimeZone,
 ) -> Vec<MailFact> {
     // Where a thread is filed says whether it is on its way out.
@@ -1043,17 +1062,42 @@ fn mail_with(
                 continue;
             };
             let Ok(message) = vault.mail_message(message_id) else { continue };
-            found.push((
-                hit.date,
-                MailFact {
-                    thread_id: hit.thread_key.clone(),
-                    subject: one_line(&message.subject, 120),
-                    snippet: one_line(&message.snippet, 160),
-                    with: person.guest.display(),
-                    date: hit.date.to_zoned(zone.clone()).date(),
-                },
-                thread,
-            ));
+            let mut fact = MailFact {
+                thread_id: hit.thread_key.clone(),
+                subject: one_line(&message.subject, 120),
+                snippet: one_line(&message.snippet, 160),
+                with: person.guest.display(),
+                date: hit.date.to_zoned(zone.clone()).date(),
+                from: String::new(),
+                waiting: None,
+            };
+            let mut at = hit.date;
+            if let Ok((thread_record, messages)) = vault.thread(thread) {
+                if !thread_record.subject.trim().is_empty() {
+                    fact.subject = one_line(&thread_record.subject, 120);
+                }
+                let newest = messages
+                    .iter()
+                    .filter(|m| !m.flags.draft && !m.flags.deleted)
+                    .max_by_key(|m| m.date);
+                if let Some(newest) = newest {
+                    at = newest.date;
+                    fact.date = newest.date.to_zoned(zone.clone()).date();
+                    fact.snippet = one_line(&newest.snippet, 160);
+                    fact.from = if owners.contains(&newest.from.email.trim().to_ascii_lowercase()) {
+                        "you".to_string()
+                    } else if newest.from.name.trim().is_empty() {
+                        one_line(&newest.from.email, 80)
+                    } else {
+                        one_line(&newest.from.name, 80)
+                    };
+                }
+                fact.waiting = thread_record.follow_up.as_ref().map(|f| Waiting {
+                    kind: f.kind,
+                    since: f.since.to_zoned(zone.clone()).date(),
+                });
+            }
+            found.push((at, fact, thread));
         }
     }
     if !empties.is_empty() && !found.is_empty() {
@@ -1139,7 +1183,7 @@ async fn write(
     access: &ModelAccess,
     facts: &Facts,
 ) -> Result<Written, String> {
-    let user = fenced_as_untrusted(
+    let user = karmayoga_core::prompt::fence(
         "the meeting: its invitation, who is coming and what is known of them, mail, notes and \
          web pages",
         &facts.prompt(),
@@ -1427,6 +1471,7 @@ mod tests {
         let fake = Fake::default();
         *fake.answer.lock().unwrap() = Some(Ok(json!({
             "summary": "A weekly design sync.",
+            "open": ["You owe Josh the roadmap draft."],
             "agenda": [],
             "people": [
                 { "email": "josh@acme.com", "line": "Runs design at Acme." },
@@ -1443,6 +1488,7 @@ mod tests {
         assert!(prompt.contains("josh@acme.com") && prompt.contains("Design sync"), "{prompt}");
         assert!(brief.written);
         assert_eq!(brief.summary.as_deref(), Some("A weekly design sync."));
+        assert_eq!(brief.open, ["You owe Josh the roadmap draft."]);
         assert_eq!(brief.agenda, ["Roadmap", "Hiring"], "the invitation's, the model gave none");
         assert_eq!(brief.people.len(), 1);
         assert_eq!(brief.people[0].line, "Runs design at Acme.");
@@ -1483,6 +1529,108 @@ mod tests {
 
         let brief = make_with(&svc, &vault, event, a_model(false), &fake).await.unwrap().brief;
         assert!(!brief.written, "a model with nothing to say has not written it");
+    }
+
+    /// A finished recording of an earlier meeting with Josh, whose note is `body`.
+    fn earlier_meeting(vault: &Vault, calendar_id: CalendarId, body: &str) {
+        let started = Timestamp::from_second(Timestamp::now().as_second() - 6 * 86_400).unwrap();
+        let note = karmayoga_core::Note::written_by(
+            karmayoga_core::NoteOrigin::Meeting,
+            "Design sync: pricing slips",
+            body,
+        );
+        vault.save_note(&note, None).unwrap();
+        let reference = karmayoga_core::meeting::EventRef {
+            calendar_id,
+            uid: "earlier".into(),
+            title: "Design sync".into(),
+            start: started,
+            end: Timestamp::from_second(started.as_second() + 1_800).unwrap(),
+            tz: "UTC".into(),
+            organizer: String::new(),
+            attendees: vec!["Josh Smith <josh@acme.com>".into()],
+            guests: Vec::new(),
+            join_url: String::new(),
+            calendar_name: "Work".into(),
+            series: None,
+        };
+        let mut recording = karmayoga_core::meeting::Recording::new(
+            "Design sync",
+            Some(reference),
+            karmayoga_core::id::TemplateId::new(),
+        );
+        recording.started_at = started;
+        recording.stage = Stage::Done;
+        recording.note_id = Some(note.id);
+        vault.save_recording(&recording).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_last_meetings_outcomes_and_the_steps_still_open_are_what_the_model_reads() {
+        let (svc, vault, _dir) = env();
+        vault
+            .save_profile(&karmayoga_core::Profile {
+                first_name: "Hari".into(),
+                last_name: "Govardhanam".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let calendar = account_calendar(&vault);
+        earlier_meeting(
+            &vault,
+            calendar.id,
+            "- **When:** Tuesday 18 November 2026, 15:00\u{2013}15:45 (UTC)\n\
+             - **Join link:** https://meet.example/abc\n\n\
+             ## Pricing for the Acme renewal\n\
+             - Decided: no paid placements for now\n\
+             - Open: who owns the migration\n\n\
+             ## Next steps\n\
+             - **Hari Govardhanam:** Send Acme the revised pricing deck, by Fri 21 Nov\n\
+             - **Hari Govardhanam:** Book the room\n\
+             - **Josh Smith:** Get legal sign-off\n",
+        );
+        // Accepting the note's task proposal made this one; the room was booked.
+        vault.save_task(&Task::new("Send Acme the revised pricing deck")).unwrap();
+        let event = meeting(calendar.id, 600, &["Josh Smith <josh@acme.com>"]);
+        seed(&vault, &event);
+        let fake = Fake::default();
+        *fake.answer.lock().unwrap() = Some(Ok(json!({ "summary": "Renewal." })));
+
+        let brief =
+            make_with(&svc, &vault, event.clone(), a_model(false), &fake).await.unwrap().brief;
+
+        let prompt = fake.prompts.lock().unwrap()[0].clone();
+        for want in [
+            "Topics: Pricing for the Acme renewal",
+            "Decided: no paid placements for now",
+            "Open: who owns the migration",
+            "- **You:** Send Acme the revised pricing deck, by 21 Nov (still open in your tasks)",
+            "- **You:** Book the room\n",
+            "- **Josh Smith:** Get legal sign-off\n",
+        ] {
+            assert!(prompt.contains(want), "missing {want:?} in:\n{prompt}");
+        }
+        assert!(!prompt.contains("Join link"), "the details block is not the note: {prompt}");
+        // The model said nothing of what is open, so the facts do.
+        assert_eq!(
+            brief.open,
+            [
+                "You still owe: Send Acme the revised pricing deck (said by 21 Nov; from the \
+                 18 Nov meeting)",
+                "Josh Smith took on: Get legal sign-off (from the 18 Nov meeting)",
+                "Still open from last time: who owns the migration",
+            ]
+            .iter()
+            .map(|l| l.replace("18 Nov", &expected_day()))
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(brief.tz, "UTC");
+    }
+
+    /// The day `earlier_meeting` was held, as a brief writes it: six days ago.
+    fn expected_day() -> String {
+        let at = Timestamp::from_second(Timestamp::now().as_second() - 6 * 86_400).unwrap();
+        at.to_zoned(TimeZone::UTC).strftime("%-d %b").to_string()
     }
 
     #[tokio::test]
@@ -1620,6 +1768,7 @@ mod tests {
             end,
             location: None,
             summary: None,
+            open: Vec::new(),
             agenda: Vec::new(),
             people: Vec::new(),
             context: Vec::new(),
@@ -1628,6 +1777,7 @@ mod tests {
             written: false,
             gaps: Vec::new(),
             prepared_at: start,
+            tz: String::new(),
         }
     }
 

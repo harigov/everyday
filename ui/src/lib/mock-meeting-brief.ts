@@ -49,9 +49,16 @@ const BACKGROUND: Record<string, { line: string; contact?: string }> = {
 }
 
 /** What a model would have made of a meeting it was told something about. */
-const WRITTEN: Record<string, { summary: string; context: string[]; mail?: string }> = {
+const WRITTEN: Record<
+  string,
+  { summary: string; open: string[]; context: string[]; mail?: string }
+> = {
   'Design review': {
     summary: 'Choose between the two design options, using the numbers Priya asked you to bring.',
+    open: [
+      'You owe Priya what each option costs to build (she asked on Tuesday)',
+      'Still open from last time: the type scale',
+    ],
     context: [
       'Priya’s last mail, on Tuesday, asked what each option costs to build.',
       'Your note “Type scale options” sets the two side by side; neither has a cost yet.',
@@ -60,7 +67,8 @@ const WRITTEN: Record<string, { summary: string; context: string[]; mail?: strin
     mail: 'Re: Design options — numbers',
   },
   'Design sync': {
-    summary: 'The weekly design sync. The type scale is the open question.',
+    summary: 'Settle the type scale before the build moves.',
+    open: ['Josh is waiting on the finished pages before their renewal (since last week)'],
     context: [
       'Last week it was agreed to settle the type scale before the build moves.',
       'Josh from Northwind asked for the finished pages before their renewal.',
@@ -167,6 +175,7 @@ function make(ev: CalendarEvent, tasks: readonly Task[]): MeetingBrief {
     ...(ev.location ? { location: ev.location } : {}),
     summary:
       written?.summary ?? (names.length ? `${ev.title} with ${names.join(', ')}.` : ev.title),
+    open: written?.open ?? [],
     agenda: agendaOf(ev),
     people,
     context: written?.context ?? [],
@@ -175,6 +184,7 @@ function make(ev: CalendarEvent, tasks: readonly Task[]): MeetingBrief {
     written: true,
     gaps: written ? ['Mail on your Work account was not read: the assistant may not read it.'] : [],
     preparedAt: new Date().toISOString(),
+    tz: 'UTC',
   }
 }
 

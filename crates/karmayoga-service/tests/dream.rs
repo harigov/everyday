@@ -433,6 +433,169 @@ async fn the_runs_first_message_carries_the_digest_contract() {
 }
 
 #[tokio::test]
+async fn the_digest_is_fenced_as_other_peoples_words_and_the_instructions_ask_for_the_final_shape()
+{
+    let _serial = SERIAL.lock().await;
+    let model =
+        fake_model(says("Noticed:\n- Booked the dentist (2026-09-15)\nProposed:\n- Nothing")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    dreaming_on(&svc);
+    seed_yesterday(&svc);
+    set_nightly_slot(&svc, 1.0);
+
+    karmayoga_service::scheduler::tick(&svc).await;
+
+    let vault = svc.get().unwrap();
+    let run = &vault.runs(&RunQuery::default()).unwrap()[0];
+    assert_eq!(run.outcome, Outcome::Done, "{run:?}");
+    let messages = vault.messages(run.conversation_id.expect("a transcript")).unwrap();
+    let first_user = messages
+        .iter()
+        .find(|m| m.role == karmayoga_core::MessageRole::User)
+        .expect("a user message");
+    let content = &first_user.content;
+
+    // What it is asked to end with is what the weekly dream reads.
+    let marker = content.find("--- digest ---").expect("the marker");
+    let (before, digest_part) = content.split_at(marker);
+    assert!(before.contains("Noticed:") && before.contains("Proposed:"), "{before}");
+    assert!(!before.contains("three separate days"));
+    // The digest after the marker is inside the fence, with the record in it.
+    let open = digest_part.find("BEGIN TEXT WRITTEN BY SOMEBODY ELSE").expect("fenced");
+    let close = digest_part.find("END TEXT WRITTEN BY SOMEBODY ELSE").expect("closed");
+    assert!(open < digest_part.find("Book the dentist").unwrap(), "{digest_part}");
+    assert!(digest_part.find("Book the dentist").unwrap() < close, "{digest_part}");
+    assert_eq!(content.matches("--- digest ---").count(), 1);
+
+    // And the account it wrote is kept after the counts, on lines of its own.
+    assert!(
+        run.summary.starts_with("0 proposals, 0 memories, 0 notes.\n\nNoticed:"),
+        "{:?}",
+        run.summary
+    );
+    assert!(run.summary.contains("- Booked the dentist (2026-09-15)"));
+}
+
+/// An account with one unread Priority thread in its Inbox, `subject` the
+/// stranger's.
+fn account_with_unread_priority(
+    vault: &karmayoga_core::Vault,
+    address: &str,
+    subject: &str,
+    acknowledged_for: Option<&str>,
+) -> karmayoga_core::account::Account {
+    use karmayoga_core::account::{Account, Provider};
+    use karmayoga_core::id::{MailMessageId, PackId, ThreadId};
+    use karmayoga_core::mail::{
+        Address, Category, CategorySource, Mailbox, MailboxRole, Message, MessageFlags,
+    };
+    use karmayoga_core::packstore::PackRef;
+    use karmayoga_core::store::mail::IngestMessage;
+
+    let mut account = Account::new(Provider::Custom, address);
+    account.services.mail = true;
+    account.assistant_provider_acknowledged = acknowledged_for.map(str::to_string);
+    vault.save_account(&account).unwrap();
+    let mailbox = Mailbox::new(account.id, MailboxRole::Inbox.as_str(), MailboxRole::Inbox);
+    vault.save_mailbox(&mailbox).unwrap();
+    let id = MailMessageId::new();
+    let message = Message {
+        id,
+        account_id: account.id,
+        thread_id: ThreadId::new(),
+        message_id_header: format!("<{id}@example.com>"),
+        date: jiff::Timestamp::now(),
+        from: Address::new("Pat Stranger", "pat@elsewhere.example"),
+        to: vec![Address::bare(address)],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: subject.into(),
+        snippet: "Please look at this".into(),
+        flags: MessageFlags::default(),
+        labels: Vec::new(),
+        has_attachments: false,
+        size: 128,
+        category: Some(Category::Priority),
+        category_source: CategorySource::Rules,
+        pack: PackRef { account: account.id.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    };
+    vault
+        .ingest_mail(account.id, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    account
+}
+
+#[tokio::test]
+async fn a_dream_is_handed_the_subjects_of_only_the_mail_the_assistant_may_read() {
+    let _serial = SERIAL.lock().await;
+    let model = fake_model(says("Nothing needed doing.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    // The provider this run's model is on, as the person acknowledges it.
+    let (_, access) = vault.agent_credentials(karmayoga_core::llm::ModelTier::Medium).unwrap();
+    // Shared: mail on, this provider acknowledged, reading allowed. The others
+    // each lack one of the three.
+    account_with_unread_priority(
+        &vault,
+        "shared@example.com",
+        "Quarterly numbers",
+        Some(&access.acknowledgement),
+    );
+    account_with_unread_priority(
+        &vault,
+        "unacknowledged@example.com",
+        "Unacknowledged subject",
+        None,
+    );
+    account_with_unread_priority(
+        &vault,
+        "elsewhere@example.com",
+        "Other provider subject",
+        Some("another provider"),
+    );
+    let mut no_read = account_with_unread_priority(
+        &vault,
+        "noread@example.com",
+        "No read subject",
+        Some(&access.acknowledgement),
+    );
+    no_read.assistant_access = karmayoga_core::account::AgentMailAccess::none();
+    vault.save_account(&no_read).unwrap();
+
+    dreaming_on(&svc);
+    seed_yesterday(&svc);
+    set_nightly_slot(&svc, 1.0);
+    karmayoga_service::scheduler::tick(&svc).await;
+
+    let run = &vault.runs(&RunQuery::default()).unwrap()[0];
+    assert_eq!(run.outcome, Outcome::Done, "{run:?}");
+    let messages = vault.messages(run.conversation_id.expect("a transcript")).unwrap();
+    let first_user = messages
+        .iter()
+        .find(|m| m.role == karmayoga_core::MessageRole::User)
+        .expect("a user message");
+    let content = &first_user.content;
+    assert!(content.contains("Awaiting reply: \"Quarterly numbers\""), "{content}");
+    assert!(content.contains("shared@example.com: 1 unread"), "{content}");
+    for held_back in [
+        "Unacknowledged subject",
+        "unacknowledged@example.com",
+        "Other provider subject",
+        "elsewhere@example.com",
+        "No read subject",
+        "noread@example.com",
+    ] {
+        assert!(
+            !content.contains(held_back),
+            "{held_back} is from an account the assistant may not read: {content}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn the_offered_tools_carry_why_and_exclude_web_search() {
     let _serial = SERIAL.lock().await;
     let model = fake_model(says("Nothing needed doing.")).await;

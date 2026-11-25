@@ -284,7 +284,9 @@ async fn recent_mail_is_sorted_into_the_persons_own_categories_over_typesafe() {
     let q = &seen[0].body["questions"]["category"];
     assert_eq!(q["type"], "choice");
     // Every category, by name, with the person's description as criteria.
-    for name in ["Needs you", "People", "Newsletters", "Receipts", "Notifications", "Other"] {
+    for name in
+        ["Needs you", "People", "Newsletters", "Receipts", "Notifications", "Pitches", "Other"]
+    {
         assert!(q["criteria"][name].is_string(), "{name} offered: {q}");
     }
     assert!(seen[0].body["state"]["excerpt"].as_str().unwrap().starts_with("Body of"));
@@ -513,7 +515,7 @@ async fn the_openai_shape_sorts_the_same_way() {
     assert_eq!(seen[0].body["model"], "gpt-6-luna");
     let q = &seen[0].body["questions"][0];
     assert_eq!(q["name"], "category");
-    assert_eq!(q["choices"].as_array().unwrap().len(), 6);
+    assert_eq!(q["choices"].as_array().unwrap().len(), 7, "the starting list has Pitches");
 }
 
 #[tokio::test]

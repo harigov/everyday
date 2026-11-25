@@ -2435,6 +2435,7 @@ fn meal_items(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Items> {
                     ..Default::default()
                 },
                 estimated,
+                doubt: String::new(),
             }
         } else {
             let saved = ctx.vault.list_foods(name)?;

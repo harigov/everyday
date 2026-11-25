@@ -2,9 +2,10 @@
   // One meeting's brief, drawn the same wherever it is shown: the calendar's
   // rail today, and anywhere else that wants the whole of it.
   //
-  // What to know walking in, in the order it is wanted: what the meeting is
-  // for, the agenda, who is coming and who they are, the things you meant to
-  // raise with them, and the background. Every part is left out when the
+  // What to know walking in, in the order it is wanted: where things stand,
+  // what is open between you and the people coming (what you owe and are
+  // owed), the invitation's agenda, who is coming and who they are, the things
+  // you meant to raise with them, and the background. Every part is left out when the
   // brief has nothing for it, so a sparse brief is short rather than a
   // column of empty headings. What it was written from, and what could not be
   // looked at, are last and quiet -- the point is to be able to trust the
@@ -89,6 +90,15 @@
 
 <div class="brief">
   {#if brief.summary}<p class="summary">{brief.summary}</p>{/if}
+
+  {#if brief.open.length > 0}
+    <section>
+      <span class="eyebrow">Open</span>
+      <ul class="lines">
+        {#each brief.open as item, i (i)}<li>{item}</li>{/each}
+      </ul>
+    </section>
+  {/if}
 
   {#if brief.agenda.length > 0}
     <section>

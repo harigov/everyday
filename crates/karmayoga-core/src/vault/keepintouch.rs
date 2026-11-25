@@ -9,10 +9,11 @@ use super::Vault;
 use crate::error::{Error, Result};
 use crate::id::{EntryId, ItemId};
 use crate::keepintouch::{
-    KeepInTouch, KeepInTouchSettings, LOOK_BACK_DAYS, MAX_ASKS_PER_PASS, MAX_ENTRIES_PER_PASS,
-    MAX_PEOPLE_AT_ONCE, Mention, NameMatch, PersonDue, TrackedTask, celebrates, cooling_off,
-    every_days, fold, has_address, is_catch_up, match_guest, match_name, meeting_via,
-    names_in_a_line, occasion_task, overdue_task, person_due, personal_dates, rank,
+    FOLLOW_UP_DAYS, Intention, KeepInTouch, KeepInTouchSettings, LOOK_BACK_DAYS, MAX_ASKS_PER_PASS,
+    MAX_ENTRIES_PER_PASS, MAX_PEOPLE_AT_ONCE, Mention, NameMatch, PersonDue, TrackedTask,
+    celebrates, cooling_off, every_days, fold, follow_up_task, has_address, is_catch_up,
+    last_catch_up, match_guest, match_name, meeting_via, names_in_a_line, occasion_task,
+    overdue_task, person_due, personal_dates, rank,
 };
 use crate::library::{CONTACT_SLUG, Item, ItemStatus, LogEntry, LogEvent, LogSource, Via};
 use crate::model::EntrySummary;
@@ -414,6 +415,90 @@ impl Vault {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Propose getting in touch with somebody the journal gave a reason to,
+    /// at most `left` of them: "I should call Ravi", "Mum is unwell". Returns
+    /// how many.
+    ///
+    /// Nothing here may be a guess about *who*, since a task is made for them:
+    /// a name is acted on only when it is exactly one card on the shelf (the
+    /// name is never offered as a new contact, nor asked about as "which
+    /// Ravi?" -- an intention that cannot be placed is left). Somebody is
+    /// skipped when:
+    ///
+    /// * the entry is older than [`FOLLOW_UP_DAYS`]: this is for soon;
+    /// * their card is set aside as given up on;
+    /// * a catch-up was logged on or after the entry's day -- they were in
+    ///   touch, which is what was meant;
+    /// * a task for getting in touch with them is already being followed; or
+    /// * they were suggested in the last seven days, by this or by the
+    ///   frequency pass.
+    ///
+    /// What is proposed is noted in [`KeepInTouch::suggested`], so that the
+    /// frequency pass does not suggest the same person again at once. It does
+    /// not draw on [`KeepInTouchSettings::per_week`]: `left` is the cap, per
+    /// pass, of things the person said in their own words.
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_follow_ups(
+        &self,
+        entry: EntryId,
+        date: Date,
+        intentions: &[Intention],
+        left: u32,
+        today: Date,
+        now: Timestamp,
+        tz: &str,
+    ) -> Result<u32> {
+        if left == 0 || intentions.is_empty() {
+            return Ok(0);
+        }
+        if !self.agent_settings().unwrap_or_default().proposals.allows(ProposalKind::Task) {
+            return Ok(0);
+        }
+        let age = today.since(date).map_or(0, |span| i64::from(span.get_days()));
+        if age > FOLLOW_UP_DAYS {
+            return Ok(0);
+        }
+        let people = self.contacts()?;
+        let record = self.keep_in_touch()?;
+        let followed: BTreeSet<ItemId> =
+            record.tracked.iter().flat_map(|t| t.people.iter().copied()).collect();
+        let week_ago = today.checked_sub(Span::new().days(7)).unwrap_or(today);
+        let mut made = 0;
+        let mut proposed: BTreeSet<ItemId> = BTreeSet::new();
+        for intention in intentions {
+            if made >= left {
+                break;
+            }
+            // Exactly one card, or nobody.
+            let NameMatch::One(person) = match_name(&intention.name, &people) else { continue };
+            if followed.contains(&person)
+                || proposed.contains(&person)
+                || record.suggested.get(&person).is_some_and(|day| *day > week_ago)
+            {
+                continue;
+            }
+            let Some(item) = people.iter().find(|p| p.id == person) else { continue };
+            if matches!(item.status, ItemStatus::Abandoned) {
+                continue;
+            }
+            let logs = self.logs(&LogQuery::for_item(person))?;
+            if last_catch_up(&logs).is_some_and(|last| last.date >= date) {
+                continue;
+            }
+            let (task, why) = follow_up_task(item, &intention.reason, date);
+            let about = About { kind: AboutKind::Entry, id: entry.to_string() };
+            if !self.propose_task(task, why, about, &[person], today, now, tz)? {
+                break;
+            }
+            self.update_keep_in_touch(|k| {
+                k.suggested.insert(person, today);
+            })?;
+            proposed.insert(person);
+            made += 1;
+        }
+        Ok(made)
     }
 
     // ---- what needs no model -----------------------------------------------

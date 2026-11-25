@@ -206,19 +206,31 @@ fn body_names_invalid_key(body: &[u8]) -> bool {
     text.contains("API_KEY_INVALID")
 }
 
+/// What Gemini is asked, which is the same every time but for the language and
+/// the hints. Gemini writes; it does not only hear. So the names it is given
+/// are said to be a spelling aid, not part of the clip, and never to be
+/// written unless they were said -- a recogniser that is handed "Priya" and
+/// "Ana Ruiz" will otherwise put them over a noise, or into a meeting nobody
+/// of that name was in. A clip with nobody speaking is no segments at all, and
+/// the sounds that are not words (music, laughter) are not written down.
 fn instructions(hints: &Hints) -> String {
     let mut text = String::from(
-        "Transcribe this audio clip verbatim. Label each distinct speaker \"Speaker 1\", \
-         \"Speaker 2\" and so on, used consistently for the whole clip. Give every segment's \
-         start and end as seconds from the start of this audio clip, not a wall-clock time. \
-         Write down only what was actually said -- do not summarise, translate or add anything.",
+        "Transcribe the speech in this audio clip word for word, in the language it is \
+         spoken. Do not translate, summarise, correct or add anything, and write no labels for \
+         sounds that are not words: no [music], (laughs) or [inaudible].\n\n\
+         Split it into segments at pauses and wherever the speaker changes. For each segment \
+         give its start and end in seconds from the start of this clip -- not a clock time -- \
+         the speaker as \"Speaker 1\", \"Speaker 2\" and so on, numbered in the order they are \
+         first heard and kept the same for the whole clip, and the words.\n\n\
+         If no one speaks in the clip, return no segments.",
     );
     if let Some(language) = &hints.language {
-        text.push_str(&format!(" The spoken language is {language}."));
+        text.push_str(&format!(" The speech is in {language}."));
     }
     if !hints.prompt.is_empty() {
         text.push_str(&format!(
-            " For context, and to help spell names correctly: {}",
+            "\n\nThese names and words may come up; if you hear one, spell it this way. They are \
+             a spelling aid, not part of the clip: never write one that was not said. {}",
             hints.prompt
         ));
     }
@@ -406,6 +418,30 @@ mod tests {
         assert!(text.contains("fr"));
         assert!(text.contains("Priya"));
         assert!(text.to_lowercase().contains("speaker"));
+    }
+
+    #[test]
+    fn the_hints_are_a_spelling_aid_that_is_never_to_be_written_unless_it_was_said() {
+        let hints = Hints {
+            language: Some("en".into()),
+            prompt: "Weekly sync. With Ana Ruiz and Bo Chen of Acme.".into(),
+            ..Hints::default()
+        };
+        let text = instructions(&hints);
+        let (rules, aid) = text.split_once("These names and words may come up").expect("the aid");
+        assert!(aid.contains("never write one that was not said"), "{aid}");
+        assert!(aid.contains("a spelling aid, not part of the clip"), "{aid}");
+        assert!(aid.contains("With Ana Ruiz and Bo Chen of Acme."), "the hints come last: {aid}");
+        assert!(!rules.contains("Ana Ruiz"), "nothing of theirs is among the rules");
+        assert!(rules.contains("The speech is in en."), "{rules}");
+        // A clip with no speech is no segments, and sounds are not words.
+        assert!(rules.contains("If no one speaks in the clip, return no segments."));
+        assert!(rules.contains("[music], (laughs) or [inaudible]"));
+        assert!(rules.contains("not a clock time"));
+        assert!(rules.contains("numbered in the order they are first heard"));
+        // No hints, no aid: nothing is offered to be inserted.
+        let bare = instructions(&Hints::default());
+        assert!(!bare.contains("spelling aid") && !bare.contains("The speech is in"), "{bare}");
     }
 
     #[test]

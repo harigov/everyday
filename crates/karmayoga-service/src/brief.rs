@@ -12,11 +12,12 @@ use crate::agent::fenced_as_untrusted;
 use crate::service::{Service, blocking};
 use jiff::civil::Date;
 use karmayoga_core::Vault;
-use karmayoga_core::account::Permission;
+use karmayoga_core::account::{Account, Permission};
 use karmayoga_core::brief::{
     self, Brief, BriefDigest, BriefKind, BriefSection, BriefSpec, BriefThread, DIGEST_MARKER,
     Extras, MailWaiting,
 };
+use karmayoga_core::id::AccountId;
 use karmayoga_core::llm::ModelTier;
 use karmayoga_core::mail::FollowUpKind;
 use std::sync::Arc;
@@ -25,6 +26,36 @@ use std::time::Duration;
 /// How long the forecast may take before the brief goes without it. A brief
 /// at seven is worth more than a brief with the weather at ten past.
 const WEATHER_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Whether the assistant may read `account`'s mail on a model whose provider
+/// the person has acknowledged as `provider` -- `None` when there is no model
+/// to acknowledge anything for.
+///
+/// Three things, all of which have to hold, and the same three that decide
+/// whether the assistant is handed mail tools at all: mail is switched on for
+/// the account, the person has acknowledged *this* provider receiving it, and
+/// the account lets the assistant read.
+fn assistant_may_read(account: &Account, provider: Option<&str>) -> bool {
+    account.services.mail
+        && provider.is_some_and(|p| account.assistant_acknowledged_for(p))
+        && account.assistant_access.permits(Permission::Read)
+}
+
+/// The mail accounts the assistant may read on the `tier` model.
+///
+/// What a brief reads mail from, and -- since a dream's digest carries mail
+/// subjects and senders too -- what a dream reads it from: one rule, in one
+/// place, so the two cannot drift apart. Blocking: it reads the vault.
+pub(crate) fn readable_mail_accounts(vault: &Vault, tier: ModelTier) -> Vec<AccountId> {
+    let provider = vault.agent_credentials(tier).map(|(_, access)| access.acknowledgement).ok();
+    vault
+        .accounts()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| assistant_may_read(a, provider.as_deref()))
+        .map(|a| a.id)
+        .collect()
+}
 
 /// What the service adds to the digest of a brief about `ahead`, made at
 /// `now` on the `tier` model: the forecast when the brief covers the weather,
@@ -58,22 +89,7 @@ pub(crate) async fn extras(
     }
     let readable = blocking({
         let vault = vault.clone();
-        move || {
-            let provider =
-                vault.agent_credentials(tier).map(|(_, access)| access.acknowledgement).ok();
-            let accounts = vault.accounts().unwrap_or_default();
-            let own = brief::own_addresses(&vault);
-            let readable = accounts
-                .into_iter()
-                .filter(|a| a.services.mail)
-                .filter(|a| {
-                    provider.as_deref().is_some_and(|p| a.assistant_acknowledged_for(p))
-                        && a.assistant_access.permits(Permission::Read)
-                })
-                .map(|a| a.id)
-                .collect::<Vec<_>>();
-            Ok((readable, own))
-        }
+        move || Ok((readable_mail_accounts(&vault, tier), brief::own_addresses(&vault)))
     })
     .await;
     let Ok((readable, own)) = readable else { return extras };
@@ -292,6 +308,56 @@ mod tests {
         let mut morning = podcast_digest();
         morning.kind = BriefKind::Morning;
         assert!(keep(morning, answer, now).unwrap().script.is_none());
+    }
+
+    fn account(mail: bool, read: bool, acknowledged: Option<&str>) -> Account {
+        use karmayoga_core::account::{AgentMailAccess, Provider};
+        let mut account = Account::new(Provider::Custom, "me@example.com");
+        account.services.mail = mail;
+        account.assistant_access =
+            if read { AgentMailAccess::default() } else { AgentMailAccess::none() };
+        account.assistant_provider_acknowledged = acknowledged.map(str::to_string);
+        account
+    }
+
+    #[test]
+    fn the_assistant_reads_an_accounts_mail_only_when_all_three_things_hold() {
+        // Mail on, this provider acknowledged, reading allowed: yes.
+        assert!(assistant_may_read(&account(true, true, Some("acme")), Some("acme")));
+        // Any one missing: no. The brief and the dream share this rule.
+        assert!(!assistant_may_read(&account(false, true, Some("acme")), Some("acme")), "mail off");
+        assert!(!assistant_may_read(&account(true, false, Some("acme")), Some("acme")), "no read");
+        assert!(
+            !assistant_may_read(&account(true, true, None), Some("acme")),
+            "never acknowledged"
+        );
+        assert!(
+            !assistant_may_read(&account(true, true, Some("other")), Some("acme")),
+            "acknowledged for another provider's model"
+        );
+        assert!(!assistant_may_read(&account(true, true, Some("acme")), None), "no model at all");
+        assert!(!assistant_may_read(&account(true, true, Some("")), Some("")), "empty is no name");
+    }
+
+    #[test]
+    fn a_brief_tells_the_model_what_to_do_about_the_last_one_outside_the_fence() {
+        let spec = BriefSpec::new(BriefKind::Morning);
+        let digest = BriefDigest {
+            kind: BriefKind::Morning,
+            first_name: "Hari".into(),
+            sections: spec.sections.clone(),
+            previous: Some("\"A busy Monday\" (2026-11-23)".into()),
+            ..Default::default()
+        };
+        let prompt = prompt(&spec, "", &digest);
+        let own = crate::agent::own_words(&prompt);
+        assert!(
+            own.contains("Do not reuse the tidbit; repeat a point only if it still matters"),
+            "the rule is the app's, outside the fence"
+        );
+        let fenced = &prompt[own.len()..];
+        assert!(fenced.contains("The last brief: \"A busy Monday\" (2026-11-23)"), "{fenced}");
+        assert!(!fenced.contains("do not repeat"), "no instruction inside the fence: {fenced}");
     }
 
     #[test]

@@ -12,6 +12,11 @@
   // A result outside its own reference range is marked in words as well as
   // colour. That is a note on the page's own numbers -- the range printed
   // beside the result -- not a judgement.
+  //
+  // A result the model was unsure of, or whose number did not match what it
+  // said was printed, carries its doubt in words under the row. The model's
+  // reading puts it in the result's `note` (the person has no note of their
+  // own on a result they have not yet accepted), and saving clears it.
 
   import { untrack } from 'svelte'
   import { health } from '../lib/health.svelte'
@@ -39,6 +44,8 @@
     refText: string
     flag: LabFlag
     collected: string
+    /** Why this one should be looked at twice, in a few words; or empty. */
+    doubt: string
   }
 
   const FLAGS: { value: LabFlag; label: string }[] = [
@@ -69,6 +76,7 @@
       refText: lab.refText,
       flag: lab.flag,
       collected: lab.collected || fallback,
+      doubt: lab.origin === 'extracted' ? lab.note : '',
     }
   }
 
@@ -104,6 +112,8 @@
       refText: r.refText.trim(),
       flag: r.flag,
       collected: r.collected,
+      // The doubt was for this review; what is saved has none.
+      note: r.base.origin === 'extracted' ? '' : r.base.note,
     }
   }
 
@@ -217,7 +227,7 @@
       {@const lab = toLab(row)}
       {@const out = labOutOfRange(lab)}
       {@const why = problemWith(row)}
-      <li class="row" class:out>
+      <li class="row" class:out class:doubtful={row.doubt !== ''}>
         <div class="row-head">
           <input
             class="name"
@@ -286,6 +296,13 @@
             <input bind:value={row.code} autocomplete="off" placeholder="If the page prints one" />
           </label>
         </div>
+
+        {#if row.doubt}
+          <p class="doubt">
+            <Icon name="alert" size={13} />
+            <span><strong>Look at this one closely:</strong> {row.doubt}</span>
+          </p>
+        {/if}
 
         {#if why}<p class="why" role="status">{why}</p>{/if}
       </li>
@@ -370,6 +387,12 @@
   .row.out {
     border-color: color-mix(in oklab, var(--warning) 60%, var(--border));
     box-shadow: inset 3px 0 0 var(--warning);
+  }
+  /* Unsure: a dashed edge, so the card reads as "check me" without
+     claiming a result is wrong. */
+  .row.doubtful {
+    border-style: dashed;
+    border-color: color-mix(in oklab, var(--warning) 50%, var(--border));
   }
   .row-head {
     display: flex;
@@ -459,6 +482,19 @@
     margin: 0;
     font-size: var(--text-xs);
     color: var(--danger);
+  }
+  .doubt {
+    margin: 0;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-1);
+    font-size: var(--text-xs);
+    line-height: var(--leading-normal);
+    color: color-mix(in oklab, var(--warning) 55%, var(--fg));
+  }
+  .doubt :global(svg) {
+    flex: none;
+    margin-top: 2px;
   }
 
   .foot {

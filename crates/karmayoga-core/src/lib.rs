@@ -117,6 +117,7 @@ pub mod news;
 pub mod note;
 pub mod packstore;
 pub mod profile;
+pub mod prompt;
 pub mod proposal;
 pub mod purpose;
 pub mod quick;

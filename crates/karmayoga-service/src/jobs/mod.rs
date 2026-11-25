@@ -781,7 +781,7 @@ async fn execute(
         },
     };
 
-    let turn = tokio::time::timeout(executor.timeout(), crate::agent::run_turn(turn));
+    let turn = tokio::time::timeout(executor.timeout(), crate::agent::run_turn_routed(turn));
     tokio::pin!(turn);
     let shutdown = closing_down(stop);
     tokio::pin!(shutdown);

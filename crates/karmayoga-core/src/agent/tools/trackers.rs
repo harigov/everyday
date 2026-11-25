@@ -108,8 +108,7 @@ pub(super) static TOOLS: &[Tool] = &[
          day, or a note that needs fixing \u{2014} rather than leaving a bad row \
          beside a good one. Give only what changed. The value is clamped to the \
          tracker's scale the same way log_reading already clamps it, and moving a \
-         reading to a different day drops whatever time of day it carried, since \
-         that time belonged to the old day and not the new one. Refused for a \
+         reading to a different day drops whatever time of day it carried. Refused for a \
          reading on a derived tracker ('time', 'finished' in list_trackers): there \
          is no row there to correct, only the time blocks or the library log it was \
          worked out from.",

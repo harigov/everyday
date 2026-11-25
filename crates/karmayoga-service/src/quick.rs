@@ -99,14 +99,38 @@ const SUBMIT: &str = "submit";
 /// itself is [`run_prompt`]; this is only what gets a client and a model out
 /// of the vault first.
 pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value> {
+    let (client, model) = open(&vault, &prompt)?;
+    run_prompt(client, &model, &prompt.system, &prompt.user, prompt.schema.clone()).await
+}
+
+/// [`run`] with a clock of the caller's, for an ask that writes more than a
+/// chip's worth and has nobody waiting on it: a page read for a research job
+/// is up to four sentences, eight quotes and a handful of links from twenty
+/// thousand characters, which the chip's twelve seconds is too short for on a
+/// slow afternoon. Still never shorter than the model is owed
+/// ([`timeout_for`]); see [`run_prompt_within`].
+pub async fn run_within(
+    vault: Arc<Vault>,
+    prompt: QuickPrompt,
+    within: Duration,
+) -> CommandResult<Value> {
+    let (client, model) = open(&vault, &prompt)?;
+    run_prompt_within(client, &model, &prompt.system, &prompt.user, prompt.schema.clone(), within)
+        .await
+}
+
+/// The client and the model one ask is posted to, once the policy has let it
+/// through: the gate [`run`] and [`run_within`] share.
+fn open(
+    vault: &Vault,
+    prompt: &QuickPrompt,
+) -> CommandResult<(crate::llm::Client, LLMModelConfig)> {
     let access = vault
         .quick_credentials(&prompt.ask)
         .map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
     let client = crate::llm::client_for(&access)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
-
-    run_prompt(client, &access.config.model, &prompt.system, &prompt.user, prompt.schema.clone())
-        .await
+    Ok((client, access.config.model))
 }
 
 /// What [`run_prompt`] fails with when the model replied without calling
@@ -150,6 +174,7 @@ pub async fn run_prompt_within(
     // preamble to strip and no chance of "Sure! Here's the JSON:".
     let answer: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let sink = answer.clone();
+    let schema_for_text = schema.clone();
     let submit = PortableDynamicTool::new(
         SUBMIT,
         "Submit the answer. Call this exactly once.",
@@ -170,11 +195,11 @@ pub async fn run_prompt_within(
     );
 
     let builder = AgentBuilder::new(client.completion_model(&model.model))
-        .preamble(&format!(
-            "{system}\n\nCall the `submit` function with your answer. Call it even when \
-             the answer is empty — an empty answer is a real answer here, and \
-             saying so is how the suggestion is correctly not shown."
-        ))
+        // Neutral on purpose: what an empty answer means is the asking
+        // prompt's to say (a suggestion with nothing worth suggesting is
+        // empty; a summary or a yes/no never is), and a sentence here saying
+        // "empty is fine" told every prompt it was.
+        .preamble(&format!("{system}\n\nCall the `submit` function exactly once with your answer."))
         .default_max_turns(MAX_TURNS)
         .tool_choice(ToolChoice::Required)
         .output_mode(OutputMode::Tool);
@@ -189,7 +214,17 @@ pub async fn run_prompt_within(
     let timeout = within.max(timeout_for(model));
     let turn = tokio::time::timeout(timeout, agent.prompt(user).max_turns(MAX_TURNS));
     match turn.await {
-        Ok(Ok(_)) => {}
+        // A model or a server that ignored the forced tool choice and wrote
+        // its answer out as JSON text instead -- some OpenAI-compatible
+        // servers accept only `auto`, and many local models are weak at
+        // tools -- has still answered: the outermost object in the text is
+        // taken when it carries what the schema requires.
+        Ok(Ok(text)) => {
+            let mut slot = answer.lock().expect("the quick answer slot is never poisoned");
+            if slot.is_none() {
+                *slot = json_in_text(&text, &schema_for_text);
+            }
+        }
         // A model that ran out of turns may still have called `submit` on the
         // way, so the answer is checked before the error is believed.
         Ok(Err(e)) => {
@@ -222,9 +257,40 @@ pub async fn run_prompt_within(
         .ok_or_else(|| CommandError::new(codes::QUICK, NO_ANSWER))
 }
 
+/// The answer in a reply written as text: the outermost `{…}`, once any
+/// reasoning before it is taken out, when it parses as an object holding
+/// every key `schema` requires (or, for a schema that requires none, any
+/// object at all).
+fn json_in_text(text: &str, schema: &Value) -> Option<Value> {
+    let text = karmayoga_core::prompt::strip_reasoning(text);
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    let value: Value = serde_json::from_str(&text[start..=end]).ok()?;
+    let object = value.as_object()?;
+    let required = schema.get("required").and_then(Value::as_array);
+    let has_all = required
+        .is_none_or(|keys| keys.iter().filter_map(Value::as_str).all(|k| object.contains_key(k)));
+    has_all.then_some(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_written_as_text_is_taken_when_it_has_what_is_required() {
+        let schema = json!({ "type": "object", "required": ["title"] });
+        let said = "<think>let me see</think>Sure! {\"title\": \"Dentist\"} hope that helps";
+        assert_eq!(json_in_text(said, &schema), Some(json!({ "title": "Dentist" })));
+        assert_eq!(json_in_text("{\"other\": 1}", &schema), None, "a required key is missing");
+        assert_eq!(json_in_text("no json here", &schema), None);
+        assert_eq!(json_in_text("} backwards {", &schema), None);
+        let open = json!({ "type": "object" });
+        assert_eq!(json_in_text("{\"a\": 1}", &open), Some(json!({ "a": 1 })));
+    }
 
     #[test]
     fn a_model_told_to_think_longer_is_given_longer() {

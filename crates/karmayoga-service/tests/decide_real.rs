@@ -93,7 +93,7 @@ async fn each_model_sorts_the_sample_mail() {
             assert!(options.iter().any(|o| o.name == choice.name), "{} is no option", choice.name);
             right += usize::from(choice.name == want);
         }
-        assert!(right >= 4, "{} sorted only {right} of 5 sample messages right", model.name());
+        assert!(right >= 5, "{} sorted only {right} of 6 sample messages right", model.name());
     }
 }
 

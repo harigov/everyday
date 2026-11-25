@@ -412,10 +412,40 @@ async fn the_model_reads_their_words_who_it_is_to_and_what_is_attached_and_no_mo
     assert!(user.contains("Dana Scully <dana@example.com>"), "{user}");
     assert!(user.contains("Re: Catch up next week?"), "{user}");
     assert!(user.contains("agenda.pdf"), "{user}");
-    for left_out in ["ViyaMD", "Hari G", "hour next week", "wrote:"] {
+    for left_out in ["hour next week", "wrote:"] {
         assert!(!user.contains(left_out), "{left_out:?} reached the model: {user}");
         assert!(!system.contains(left_out), "{left_out:?} reached the model: {system}");
     }
+    // The signature compose added is given as what it is -- under the person's
+    // own words, never among them -- so "signs off with my name" can be met by it
+    // and the quote of what they answer cannot be judged as theirs.
+    assert!(
+        user.contains("signature, added under the body automatically: Hari G ViyaMD"),
+        "{user}"
+    );
+    let words = user.split_once("body:\n").expect("the body").1;
+    assert!(!words.contains("ViyaMD") && !words.contains("Hari G"), "{words}");
+    assert!(!system.contains("ViyaMD"), "{system}");
+    // And what day it is, for checks about dates.
+    let today = jiff::Zoned::now().strftime("Today is %A %-d %B %Y.").to_string();
+    assert!(user.starts_with(&today), "{user}");
+}
+
+#[tokio::test]
+async fn nothing_attached_is_said_so_that_a_forgotten_attachment_can_be_caught() {
+    let fake = fake_model(one_pass_one_fail()).await;
+    let e = env(&fake.endpoint);
+    check_for(&e, &["The tone is friendly", "If I mention an attachment, it is attached"]);
+    let mut draft = Draft::new(e.account.id, &e.account.address, Origin::Person);
+    draft.to = vec![Address::new("Dana Scully", "dana@example.com")];
+    draft.subject = "The agenda".into();
+    draft.body_html = "<p>Hi Dana, the agenda is attached.</p>".into();
+    e.svc.get().unwrap().save_draft(&draft).unwrap();
+
+    check(&e, draft.id).await;
+
+    let (_, user) = fake.prompt(0);
+    assert!(user.contains("attached: nothing\n"), "{user}");
 }
 
 #[tokio::test]
@@ -567,6 +597,10 @@ async fn a_decision_model_is_shown_the_draft_as_an_object_and_not_the_quote_or_s
     for left_out in ["ViyaMD", "hour next week", "wrote:"] {
         assert!(!body.contains(left_out), "{left_out:?} reached the model: {body}");
     }
+    // The signature is a field of its own, not part of what they wrote; and the
+    // day is there for checks about dates.
+    assert_eq!(state["signature"], "Hari G ViyaMD");
+    assert!(state["today"].as_str().unwrap().starts_with("Today is "), "{state}");
 }
 
 #[tokio::test]

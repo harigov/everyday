@@ -563,6 +563,7 @@ mod tests {
                     grams: None,
                     nutrients: Nutrients { carbs_g, ..Nutrients::default() },
                     estimated: false,
+                    doubt: String::new(),
                 })
                 .collect(),
             photo: None,

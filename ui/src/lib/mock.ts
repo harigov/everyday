@@ -4082,7 +4082,7 @@ const MOCK_QUICK_ASKS: QuickAskRow[] = (
       'Write the week in a sentence or two',
       'Overview',
       false,
-      'this week\u2019s totals: hours by area, tasks done, entries written',
+      'this week\u2019s and last week\u2019s hours by area',
     ],
     [
       'data.import_map',

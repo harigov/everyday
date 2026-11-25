@@ -340,9 +340,11 @@ const NOTICE_TOPIC_CHARS: usize = 56;
 /// The one line of a brief a notification has room for: who is coming and the
 /// first thing worth knowing -- "With Josh, Priya · Agenda: Q3 budget".
 ///
-/// What the person promised to raise comes before the agenda, because it is
-/// theirs; the agenda before the summary, because it is what the meeting is
-/// to cover. `None` for a brief that names nobody and says nothing.
+/// What the person promised to raise comes before anything else, because it is
+/// theirs; what is open between them and these people before the agenda,
+/// because it is what they owe and are owed; the agenda before the summary,
+/// because it is what the meeting is to cover. `None` for a brief that names
+/// nobody and says nothing.
 fn brief_line(brief: &MeetingBrief) -> Option<String> {
     let mut parts = Vec::new();
     let names: Vec<&str> =
@@ -359,6 +361,10 @@ fn brief_line(brief: &MeetingBrief) -> Option<String> {
         .iter()
         .find(|p| !p.done)
         .map(|p| format!("To raise: {}", p.text.trim()))
+        .or_else(|| {
+            let first = brief.open.iter().map(|l| l.trim()).find(|l| !l.is_empty());
+            first.map(|o| format!("Open: {o}"))
+        })
         .or_else(|| {
             let first = brief.agenda.iter().map(|l| l.trim()).find(|l| !l.is_empty());
             first.map(|a| format!("Agenda: {a}"))
@@ -1016,9 +1022,10 @@ const CARD_AGENDA: usize = 5;
 const CARD_PEOPLE_OPEN: usize = 3;
 
 /// What the brief adds to the card, in the order that matters walking in:
-/// what to raise (the boxes), the agenda, who is there, and the context,
-/// which is the longest and so the one folded away. A part with nothing in it
-/// is left out.
+/// what to raise (the boxes), what is open between the person and the people
+/// there (not folded: it is what they most need to read), the invitation's
+/// agenda, who is there, and the context, which is the longest and so the one
+/// folded away. A part with nothing in it is left out.
 fn brief_sections(brief: &MeetingBrief) -> Vec<crate::panel::Section> {
     use crate::panel::{Check, Item, Section};
     let plain = |text: &String| Item { text: text.trim().to_string(), detail: None, check: None };
@@ -1034,6 +1041,7 @@ fn brief_sections(brief: &MeetingBrief) -> Vec<crate::panel::Section> {
             check: Some(Check { action: format!("done:{}", point.task_id), done: point.done }),
         })
         .collect();
+    let open = lines(&brief.open);
     let mut agenda = lines(&brief.agenda);
     agenda.truncate(CARD_AGENDA);
     let people: Vec<Item> = brief
@@ -1048,6 +1056,7 @@ fn brief_sections(brief: &MeetingBrief) -> Vec<crate::panel::Section> {
     let folded_people = people.len() > CARD_PEOPLE_OPEN;
     [
         ("To raise", to_raise, false),
+        ("Open", open, false),
         ("Agenda", agenda, false),
         ("With", people, folded_people),
         ("Context", lines(&brief.context), true),
@@ -2222,6 +2231,7 @@ mod tests {
             end: p.end.unwrap(),
             location: None,
             summary: None,
+            open: Vec::new(),
             agenda: Vec::new(),
             people: Vec::new(),
             context: Vec::new(),
@@ -2230,6 +2240,7 @@ mod tests {
             written: false,
             gaps: Vec::new(),
             prepared_at: at(NOW),
+            tz: String::new(),
         }
     }
 
@@ -2387,6 +2398,52 @@ mod tests {
         assert_eq!(with[0].detail.as_deref(), Some("Head of design at Acme"));
         assert_eq!(with[1].detail, None, "no line, no detail");
         assert!(with.iter().all(|i| i.check.is_none()));
+    }
+
+    #[test]
+    fn what_is_open_is_on_the_card_unfolded_after_what_to_raise() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.talking_points = vec![point("Talk about the Q3 budget", "Josh", false)];
+        brief.open = vec![
+            "You owe Josh the revised deck (you said by 21 Nov)".into(),
+            "  ".into(),
+            "Still open from last time: who owns the migration".into(),
+        ];
+        brief.agenda = vec!["Budget".into()];
+        brief.context = vec!["Last met on 3 November.".into()];
+        let card = draw(CardPhase::Join, &p, Some(&brief));
+        let headings: Vec<_> =
+            card.sections.iter().map(|s| (s.heading.as_str(), s.folded)).collect();
+        assert_eq!(
+            headings,
+            [("To raise", false), ("Open", false), ("Agenda", false), ("Context", true)]
+        );
+        let open: Vec<_> = card.sections[1].items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(
+            open,
+            [
+                "You owe Josh the revised deck (you said by 21 Nov)",
+                "Still open from last time: who owns the migration"
+            ],
+            "a blank line is not an item"
+        );
+        assert!(card.sections[1].items.iter().all(|i| i.check.is_none()));
+    }
+
+    #[test]
+    fn a_notification_leads_with_what_is_open_when_there_is_nothing_to_raise() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.agenda = vec!["Q3 budget".into()];
+        brief.summary = Some("Settle the budget.".into());
+        brief.open = vec!["".into(), "You owe Josh the deck".into()];
+        assert_eq!(brief_line(&brief).as_deref(), Some("Open: You owe Josh the deck"));
+        brief.talking_points = vec![point("Hiring", "Josh", false)];
+        assert_eq!(brief_line(&brief).as_deref(), Some("To raise: Hiring"), "theirs, first");
+        brief.talking_points.clear();
+        brief.open.clear();
+        assert_eq!(brief_line(&brief).as_deref(), Some("Agenda: Q3 budget"));
     }
 
     #[test]

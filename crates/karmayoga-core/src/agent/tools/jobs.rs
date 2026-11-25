@@ -92,8 +92,10 @@ pub(super) static TOOLS: &[Tool] = &[
                 (
                     "question",
                     text(
-                        "What to find out, in their words where you have them. One question \
-                         or one topic: the brief is where the context goes."
+                        "What to find out, as one question whose answer you would recognise \
+                         when you saw it (\"Which mid-drive e-bikes under $3,000 handle 12% \
+                         hills?\"), in their words where you have them. The brief is where \
+                         the context goes."
                     )
                 ),
                 (
@@ -102,8 +104,10 @@ pub(super) static TOOLS: &[Tool] = &[
                         "What the job should know that it will not otherwise: who is asking \
                          and why, what they already know or have ruled out, and what shape \
                          of answer would help -- a recommendation, a comparison, a reading \
-                         list. Nothing else about this conversation reaches the job, so say \
-                         it here. If there is truly nothing to add, say so in a few words."
+                         list. Say what decision it feeds and by when, and any sources they \
+                         trust or distrust. Nothing else about this conversation reaches the \
+                         job, so say it here. If there is truly nothing to add, say so in a \
+                         few words."
                     )
                 ),
             ],
@@ -145,8 +149,9 @@ pub(super) static TOOLS: &[Tool] = &[
                     text(
                         "When they want to hear about it, in their words: \"when it finishes \
                          or fails\", \"if the price drops below $200\", \"whenever Sam \
-                         replies\". Always send this. Send an empty string for any change \
-                         worth knowing."
+                         replies\". Phrase it as the moment to tell them -- \"when it finishes \
+                         or fails\" -- rather than a topic. Always send this. Send an empty \
+                         string for any change worth knowing."
                     )
                 ),
                 (
@@ -222,7 +227,9 @@ pub(super) static TOOLS: &[Tool] = &[
          reply, a price dropping, an email they are waiting for. Use this for \"tell me \
          when\", \"let me know if\" and \"keep an eye on\". Do not use it for a question you \
          can answer now (answer it), a question that wants real research (start_research) or \
-         a piece of work to hand over (start_project). Prefer a connection's tool: call \
+         a piece of work to hand over (start_project). When they say they are waiting on \
+         something -- a reply, a delivery, a build -- keeping watch is usually what they \
+         would want: start one without being asked. Prefer a connection's tool: call \
          find_connection_tools first, then pass the connection, the tool and its arguments. \
          It is called the same way at every look with no model involved, so it is cheap and \
          can look as often as every minute. It must be a tool that only reads, set to Allow \

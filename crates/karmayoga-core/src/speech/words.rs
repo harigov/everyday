@@ -511,9 +511,67 @@ fn boost_candidates(kind: Kind, sources: &WordSources) -> Vec<String> {
         Kind::Events => sources.events.iter().flat_map(|t| unusual_words(t)).collect(),
         Kind::Work => sources.work.iter().flat_map(|t| unusual_words(t)).collect(),
         Kind::Routines => sources.routines.iter().flat_map(|t| unusual_words(t)).collect(),
-        Kind::Apps => sources.apps.clone(),
+        // An app is boosted only when it is a name a recogniser would not
+        // write on its own: "Files" and "Notes" are words it hears well, and
+        // boosting them nudges "nodes" to "Notes". Every app is still named in
+        // the prompt ([`prompt_candidates`]).
+        Kind::Apps => sources.apps.iter().filter(|a| unusual_app(a)).cloned().collect(),
         Kind::AppWords => APP_WORDS.iter().map(|w| w.to_string()).collect(),
     }
+}
+
+/// App names that are everyday words, which a recogniser already hears well
+/// and which are most of what the screen-time list holds: what a desktop calls
+/// its own files, terminal and settings, and the apps whose name is one plain
+/// word.
+const EVERYDAY_APPS: &[&str] = &[
+    "files",
+    "terminal",
+    "settings",
+    "music",
+    "notes",
+    "mail",
+    "signal",
+    "teams",
+    "calendar",
+    "messages",
+    "photos",
+    "maps",
+    "camera",
+    "clock",
+    "contacts",
+    "calculator",
+    "weather",
+    "reminders",
+    "podcasts",
+    "books",
+    "news",
+    "browser",
+    "editor",
+    "console",
+    "phone",
+    "video",
+    "store",
+    "chat",
+    "code",
+    "slack",
+    "zoom",
+    "chrome",
+    "discord",
+    "firefox",
+    "safari",
+];
+
+/// Whether an app's name is one a recogniser needs to be told: it has a capital
+/// inside it or a digit ("GitHub", "VLC", "Notion 2"), is more than one word
+/// ("Visual Studio"), or is not an everyday word ("Obsidian", "Spotify").
+fn unusual_app(name: &str) -> bool {
+    let name = clean(name);
+    if name.split_whitespace().count() >= 2 || name.chars().any(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    let internal_capital = name.chars().skip(1).any(char::is_uppercase);
+    internal_capital || !EVERYDAY_APPS.contains(&name.to_lowercase().as_str())
 }
 
 /// What the prompt may name of one kind, most relevant first, cleaned. Titles
@@ -670,6 +728,36 @@ mod tests {
                 "Siddhis",
             ])
         );
+    }
+
+    #[test]
+    fn an_app_is_boosted_only_when_its_name_is_not_an_everyday_word() {
+        let mut busy = sources();
+        // The most used apps first, as the screen-time list has them.
+        busy.apps =
+            strings(&["Files", "Terminal", "Obsidian", "Notes", "GitHub Desktop", "Spotify"]);
+        let expected = expected(Occasion::Conversation, &busy);
+        for boosted in ["Obsidian", "GitHub Desktop", "Spotify"] {
+            assert!(expected.boosted.contains(&boosted.to_string()), "{boosted}");
+        }
+        for left_out in ["Files", "Terminal", "Notes"] {
+            assert!(!expected.boosted.contains(&left_out.to_string()), "{left_out}");
+        }
+        // They are still named in the prompt, for a recogniser that reads it.
+        assert!(
+            expected.prompt.contains("Also: Files, Terminal, Obsidian, Notes, GitHub Desktop"),
+            "{}",
+            expected.prompt
+        );
+        // The rule, one name at a time.
+        for odd in ["Obsidian", "GitHub", "VLC", "iTerm", "Notion 2", "Visual Studio", "Zotero"] {
+            assert!(unusual_app(odd), "{odd}");
+        }
+        for plain in
+            ["Files", "files", "Terminal", "Settings", "Music", "Notes", "Mail", "Signal", "Teams"]
+        {
+            assert!(!unusual_app(plain), "{plain}");
+        }
     }
 
     #[test]

@@ -398,6 +398,9 @@ pub(crate) struct Identified {
     pub(crate) room: bool,
     /// The meeting's names and words, for the summary's spelling rule.
     pub(crate) words: vocab::MeetingWords,
+    /// The agenda the calendar's invitation states, for the notes' meeting
+    /// block -- see [`words_and_agenda_for`].
+    pub(crate) agenda: Vec<String>,
 }
 
 /// The meeting's names and words -- see [`vocab::meeting_words`]. The
@@ -412,6 +415,16 @@ pub(crate) fn words_for(
     event: Option<&EventRef>,
     settings: &MeetingSettings,
 ) -> vocab::MeetingWords {
+    words_and_agenda_for(vault, event, settings).0
+}
+
+/// [`words_for`], and the invitation's agenda from the same look at the
+/// calendar.
+pub(crate) fn words_and_agenda_for(
+    vault: &Vault,
+    event: Option<&EventRef>,
+    settings: &MeetingSettings,
+) -> (vocab::MeetingWords, Vec<String>) {
     let owner = owner_of(vault);
     let invitees = invitees_of(event, &owner);
     let title = event.map(|e| e.title.as_str()).unwrap_or_default();
@@ -423,12 +436,14 @@ pub(crate) fn words_for(
     );
     // Where it is held and what its agenda names: on the calendar's event,
     // which the recording's reference to it does not copy.
+    let mut agenda = Vec::new();
     if let Some(found) = event.and_then(|e| calendar_event(vault, e)) {
         words.places =
             karmayoga_core::speech::words::place_of(&found.location).into_iter().collect();
         words.topics = karmayoga_core::speech::words::meeting_topics(&found.description);
+        agenda = karmayoga_core::meeting::brief::agenda_from_description(&found.description);
     }
-    words
+    (words, agenda)
 }
 
 /// The calendar's event `event` refers to, while the calendar still has it.
@@ -517,11 +532,11 @@ pub(crate) async fn identify_stage(
     let (mut kept, _echo_found) =
         karmayoga_core::meeting::merge::remove_echo(recording.partial.clone(), &check);
 
-    let words = {
+    let (words, agenda) = {
         let vault = vault.clone();
         let event = recording.event.clone();
         let settings = settings.clone();
-        blocking(move || Ok(words_for(&vault, event.as_ref(), &settings))).await?
+        blocking(move || Ok(words_and_agenda_for(&vault, event.as_ref(), &settings))).await?
     };
     let ordinary = vocab::ordinary_words(kept.iter().map(|s| s.text.as_str()));
     let respeller = vocab::Respeller::new(&words);
@@ -754,7 +769,7 @@ pub(crate) async fn identify_stage(
     people::tidy(&mut speakers, &mut segments, None);
 
     let room = in_room && mic_clusters.is_empty();
-    Ok(Identified { speakers, segments, invitees, owner_label: label, room, words })
+    Ok(Identified { speakers, segments, invitees, owner_label: label, room, words, agenda })
 }
 
 /// How alike a voice on a room's microphone must be to the owner's
@@ -828,6 +843,12 @@ async fn turns_for(
     Ok(turns)
 }
 
+/// The most of a transcript naming the voices reads, in tokens, whatever the
+/// summary's budget is. The evidence is a few lines -- somebody thanked by
+/// name, an introduction -- and the excerpt keeps those; sending an hour's
+/// call whole, to be sent whole again for the notes, only delays them.
+const NAMING_BUDGET: u32 = 8_000;
+
 /// Ask the model to put names to the voices the audio could not, from what
 /// was said -- see [`people`]. Only ever an improvement: a failed request
 /// or an answer that does not parse leaves the voices as they were, and is
@@ -842,7 +863,7 @@ pub(crate) async fn resolve_speakers(
         &identified.owner_label,
         &identified.speakers,
         &identified.segments,
-        budget,
+        budget.min(NAMING_BUDGET),
     ) else {
         return;
     };
@@ -907,6 +928,7 @@ async fn embed_segment(
 pub(crate) fn facts_for(recording: &Recording, identified: &Identified, tz: &str) -> Facts {
     let mut facts = facts_from(recording, &identified.speakers, &identified.segments, tz);
     facts.invitees = identified.invitees.clone();
+    facts.agenda = identified.agenda.clone();
     facts
 }
 
@@ -941,6 +963,7 @@ fn facts_from(
         present,
         present_emails,
         invitees: Vec::new(),
+        agenda: Vec::new(),
         tz: recording
             .event
             .as_ref()
@@ -957,7 +980,10 @@ fn facts_from(
 /// [`template::enforce_headings`]. Returns the answer alone -- the details
 /// block is the writing stage's to prepend.
 ///
-/// `spelling` is [`vocab::spelling_line`]'s, or empty.
+/// `spelling` is [`vocab::spelling_line`]'s, or empty. The meeting itself --
+/// its title, its day, the days after it, the invitation's agenda -- is
+/// [`template::meeting_block`] of `facts`, first in every request: without the
+/// day, "by Friday" cannot be written as a date.
 ///
 /// `pub(crate)`: `domains::transcripts` reuses this directly for
 /// `preview_meeting_template` and `rewrite_meeting_note`, so a preview and
@@ -975,9 +1001,16 @@ pub(crate) async fn summarise_stage(
     use karmayoga_core::meeting::{prompt, template};
 
     let filled = template::fill(template_body, facts);
+    let meeting = template::meeting_block(facts);
     let people = prompt::people_block(transcript, &facts.invitees);
     let room = prompt::room_note(transcript);
-    let cx = prompt::Context { template: &filled, people: &people, spelling, room: &room };
+    let cx = prompt::Context {
+        meeting: &meeting,
+        template: &filled,
+        people: &people,
+        spelling,
+        room: &room,
+    };
     let pieces = prompt::pieces(transcript, budget);
 
     let mut parts = Vec::new();

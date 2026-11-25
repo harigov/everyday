@@ -48,6 +48,7 @@
     signatureFor,
     splitQuoted,
     splitSignature,
+    subjectToFill,
     withOwnWords,
     withSignatureSwapped,
     withoutEmptySignature,
@@ -897,6 +898,13 @@
       })
       const ed = editor
       if (ed) aiNote = { previousHtml: replaceOwnPart(ed, result.bodyHtml) }
+      // A new message is also given a subject, which goes in only where there
+      // is none yet: one the person wrote is theirs.
+      const subject = subjectToFill(working.subject, result.subject)
+      if (subject !== null) {
+        working.subject = subject
+        touch()
+      }
       closeAiPrompt()
     } catch (e) {
       await handle(e)

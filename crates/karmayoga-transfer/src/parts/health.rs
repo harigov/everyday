@@ -1210,6 +1210,7 @@ fn read_meal(row: &Row<'_>, now: Timestamp) -> std::result::Result<Meal, String>
                     grams: None,
                     nutrients: totals,
                     estimated: false,
+                    doubt: String::new(),
                 }]
             } else {
                 Vec::new()
@@ -1331,6 +1332,7 @@ mod tests {
             grams: None,
             nutrients: Nutrients { kcal, ..Nutrients::default() },
             estimated: false,
+            doubt: String::new(),
         };
         let meal = Meal {
             id: MealId::new(),

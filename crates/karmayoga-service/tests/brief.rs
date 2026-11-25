@@ -259,6 +259,75 @@ async fn a_brief_is_written_from_its_digest_and_kept_on_its_run() {
     }
 }
 
+/// The first user message of the first request, whichever shape the content
+/// came in.
+fn first_user_message(model: &FakeModel) -> String {
+    let requests = model.requests.lock().unwrap();
+    requests[0]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "user")
+        .and_then(|m| {
+            m["content"].as_str().map(str::to_string).or_else(|| {
+                m["content"]
+                    .as_array()
+                    .and_then(|parts| parts[0]["text"].as_str().map(str::to_string))
+            })
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_brief_is_asked_to_lead_with_a_bottom_line_and_not_to_repeat_itself_outside_the_fence()
+{
+    let _serial = SERIAL.lock().await;
+    let model = fake_model(says(ANSWER)).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let queued = queue_morning(&svc);
+
+    karmayoga_service::scheduler::tick(&svc).await;
+
+    let run = svc.get().unwrap().run(queued.id).unwrap();
+    assert_eq!(run.outcome, Outcome::Done, "{}", run.reason);
+    let user = first_user_message(&model);
+    let marker = user.find(DIGEST_MARKER).expect("the marker");
+    let (own, digest) = user.split_at(marker);
+    assert!(own.contains("<the bottom line: one to three short lines"), "{own}");
+    assert!(own.contains("Judgement, not inventory."), "{own}");
+    assert!(
+        own.contains("Do not reuse the tidbit; repeat a point only if it still matters"),
+        "{own}"
+    );
+    assert!(digest.contains("BEGIN TEXT WRITTEN BY SOMEBODY ELSE"), "{digest}");
+    assert!(
+        !digest.to_lowercase().contains("do not repeat"),
+        "no instruction in the fence: {digest}"
+    );
+}
+
+#[tokio::test]
+async fn the_weekly_brief_asks_for_the_large_model_and_runs_on_the_medium_one_when_there_is_none() {
+    let _serial = SERIAL.lock().await;
+    let model = fake_model(says(ANSWER)).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let routine = vault.set_brief(BriefKind::Weekly, true).unwrap();
+    assert_eq!(routine.model, Some(karmayoga_core::llm::ModelTier::Large));
+    assert!(vault.model_settings().unwrap().large.is_none(), "no large model is set up");
+    let run = RoutineRun::new(&routine, None);
+    vault.save_run(&run).unwrap();
+
+    karmayoga_service::scheduler::tick(&svc).await;
+
+    let run = vault.run(run.id).unwrap();
+    assert_eq!(run.outcome, Outcome::Done, "it fell back to the medium model: {}", run.reason);
+    let user = first_user_message(&model);
+    assert!(user.contains("weekly brief"), "{user}");
+    assert!(user.contains("the shape of the week and the one thing that matters most in it"));
+}
+
 #[tokio::test]
 async fn a_brief_that_writes_nothing_fails_rather_than_keeping_an_empty_one() {
     let _serial = SERIAL.lock().await;

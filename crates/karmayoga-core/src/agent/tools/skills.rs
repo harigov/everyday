@@ -116,8 +116,7 @@ pub(super) static TOOLS: &[Tool] = &[
         ),
         "Change an existing skill. Every field is optional and omitted fields are left alone. \
          This never switches a skill on or off \u{2014} that is the person's own call, from \
-         Settings \u{2014} and it refuses outright on a skill that is currently switched off, \
-         since editing one they turned off is not yours to do quietly.",
+         Settings \u{2014} and it refuses outright on a skill that is currently switched off.",
         run_update_skill,
         None,
         Some(build_update_skill)

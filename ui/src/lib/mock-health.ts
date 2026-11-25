@@ -2633,6 +2633,11 @@ function extract(id: string, text: string | null): HealthDocument {
     found('Potassium', '2823-3', 4.4, 'mmol/L', 3.5, 5.1),
     found('Creatinine', '2160-0', 0.9, 'mg/dL', 0.6, 1.3),
   ]
+  // One the model was unsure of: its doubt rides in the result's note until
+  // the person saves the result, as the real reading does it.
+  doc.pendingLabs = doc.pendingLabs.map((l) =>
+    l.name === 'Potassium' ? { ...l, note: 'a digit is hard to read' } : l,
+  )
   doc.updatedAt = new Date().toISOString()
   return doc
 }
@@ -3354,7 +3359,12 @@ export function mockHealth(cmd: string, args: Record<string, unknown>): unknown 
     case 'estimate_meal_photo': {
       // The picture was added through Files first.
       if (!mockCatalogFile(str(args.photo))) throw notFound('photo')
-      const guess = (name: string, grams: number, per100g: Nutrients): MealItem => ({
+      const guess = (
+        name: string,
+        grams: number,
+        per100g: Nutrients,
+        doubt?: string,
+      ): MealItem => ({
         foodId: null,
         name,
         amount: grams,
@@ -3362,10 +3372,11 @@ export function mockHealth(cmd: string, args: Record<string, unknown>): unknown 
         grams,
         nutrients: scaleNutrients(per100g, grams),
         estimated: true,
+        ...(doubt ? { doubt } : {}),
       })
       return wire([
         guess('Grilled chicken', 150, nutrients(165, 31, 0, 3.6)),
-        guess('Rice', 180, nutrients(130, 2.7, 28.2, 0.3)),
+        guess('Rice', 180, nutrients(130, 2.7, 28.2, 0.3), '150-250 g; the bowl is deep'),
         guess('Green salad', 80, nutrients(20, 1.4, 3.6, 0.2)),
       ])
     }

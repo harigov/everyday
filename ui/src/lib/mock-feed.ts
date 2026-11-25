@@ -1527,7 +1527,7 @@ let settings: FeedSettings = {
     criteria: [
       { id: 'learn', text: 'Something I can learn from', weight: 2 },
       { id: 'sea', text: 'About the sea, ships or islands', weight: 1 },
-      { id: 'finish', text: 'From a show I always finish', weight: 2 },
+      { id: 'interview', text: 'A long interview with somebody who builds things', weight: 2 },
       { id: 'gossip', text: 'Mostly gossip or celebrity news', weight: -3 },
     ],
     goals: true,

@@ -688,7 +688,10 @@ impl Vault {
 
     /// The categories mail is sorted into -- see [`crate::mail::sorting`].
     pub fn mail_sorting(&self) -> Result<crate::mail::MailSorting> {
-        self.with_mail(|m| m.mail_sorting())
+        // A list still exactly as it started is brought up to today's
+        // starting list (Pitches added), so Settings shows what sorting uses.
+        // One the person has changed is left alone.
+        Ok(self.with_mail(|m| m.mail_sorting())?.upgrade_untouched_defaults())
     }
 
     /// Replace the categories. Mail already sorted keeps its label until it
