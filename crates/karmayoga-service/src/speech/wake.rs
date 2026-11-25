@@ -49,18 +49,22 @@ pub struct WakeLink {
 /// Siri". One of them, at the very start.
 const GREETINGS: &[&str] = &["hey", "hi", "ok", "okay", "oh"];
 
-/// The fewest letters a single-word name has before a recogniser's near miss
-/// of it counts ("Carma" for "Karma"). Shorter names must be heard exactly:
-/// one letter off a four-letter word is too often another word ("Siri" and
-/// "sir").
+/// The fewest letters a word of a name has, as it sounds ([`sound_of`]),
+/// before a recogniser's near miss of it counts ("Karmas" for "Karma").
+/// Shorter ones must sound the same: one letter off a four-letter word is too
+/// often another word ("Jimmy" and "Timmy", "Siri" and "sir"). A near miss
+/// never changes the first letter either: "Parma" is another word, not a
+/// mishearing of "Karma".
 const NEAR_MISS_FROM: usize = 5;
 
 /// Whether `transcript` -- one utterance, as the recogniser wrote it --
 /// begins with one of `names`, optionally after a greeting ("hey", "OK"):
-/// what was said after it, or `None`. Case, punctuation and spacing aside;
-/// a one-word name of [`NEAR_MISS_FROM`] letters or more may be one letter
-/// off. A name later in the sentence ("I asked Siri yesterday") is somebody
-/// talking about the assistant, not to it.
+/// what was said after it, or `None`. Case, punctuation and spacing aside,
+/// and spelling too where it sounds the same ([`sound_of`]): a recogniser
+/// that does not know a name writes it as it sounds. A word of
+/// [`NEAR_MISS_FROM`] letters or more may also be one letter off, though not
+/// the first. A name later in the sentence ("I asked Siri yesterday") is
+/// somebody talking about the assistant, not to it.
 pub fn heard(transcript: &str, names: &[String]) -> Option<String> {
     let words = words_of(transcript);
     let starts = match words.first() {
@@ -74,10 +78,7 @@ pub fn heard(transcript: &str, names: &[String]) -> Option<String> {
         }
         for &start in &starts {
             let Some(said) = words.get(start..start + name.len()) else { continue };
-            let matches = said.iter().zip(&name).all(|(said, name)| {
-                said.text == *name
-                    || (name.chars().count() >= NEAR_MISS_FROM && within_one(&said.text, name))
-            });
+            let matches = said.iter().zip(&name).all(|(said, name)| sounds_alike(&said.text, name));
             if matches {
                 let end = said.last().map_or(0, |w| w.end);
                 let rest = transcript[end..]
@@ -88,6 +89,48 @@ pub fn heard(transcript: &str, names: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether `said`, a word of an utterance, is `name`, a word of a name, as
+/// [`heard`] hears it: the same as it sounds, or one letter off a longer one
+/// but for the first.
+fn sounds_alike(said: &str, name: &str) -> bool {
+    let (said, name) = (sound_of(said), sound_of(name));
+    said == name
+        || (name.chars().count() >= NEAR_MISS_FROM
+            && said.chars().next() == name.chars().next()
+            && within_one(&said, &name))
+}
+
+/// A word, lower case, as it sounds -- near enough that the ways a recogniser
+/// spells one name meet: "Jimmy", "Jimmie", "Jimi" and "Gimmy" are all
+/// `jimy`, and "Carma" is `karma`. A hard "c" (before a, o or u) is the "k" it
+/// sounds like, a "g" starting a word before e, i or y the "j", a doubled
+/// letter one, and a last "ie", "ey" or "i" the "y" it sounds like. Applied to
+/// the name as much as to what was heard, so it only ever makes two spellings
+/// of one sound equal; "Timmy" and "Jamie" still are not `jimy`.
+fn sound_of(word: &str) -> String {
+    let letters: Vec<char> = word.chars().collect();
+    let mut sound = String::with_capacity(word.len());
+    for (at, &letter) in letters.iter().enumerate() {
+        let next = letters.get(at + 1).copied();
+        let letter = match letter {
+            'c' if matches!(next, Some('a' | 'o' | 'u')) => 'k',
+            'g' if at == 0 && matches!(next, Some('e' | 'i' | 'y')) => 'j',
+            other => other,
+        };
+        if !sound.ends_with(letter) {
+            sound.push(letter);
+        }
+    }
+    for ending in ["ie", "ey", "i"] {
+        if sound.len() > ending.len() && sound.ends_with(ending) {
+            sound.truncate(sound.len() - ending.len());
+            sound.push('y');
+            break;
+        }
+    }
+    sound
 }
 
 /// The punctuation a recogniser puts between a name and what follows it:
@@ -282,7 +325,59 @@ mod tests {
         assert_eq!(heard("Carma, start a timer", &karma).as_deref(), Some("start a timer"));
         assert_eq!(heard("Karmas, hello", &karma).as_deref(), Some("hello"));
         assert_eq!(heard("Comma, hello", &karma), None, "two letters off");
+        assert_eq!(heard("Parma, hello", &karma), None, "never the first letter");
         assert_eq!(heard("Seri, type hello", &names(&["Siri"])), None);
+    }
+
+    #[test]
+    fn a_name_is_heard_however_the_recogniser_spells_it() {
+        let jimmy = names(&["Jimmy"]);
+        for said in ["Jimmy", "Jimmie", "Jimi", "Gimmy", "Jimmey", "JIMMY"] {
+            let said = format!("{said}, what time is it?");
+            assert_eq!(heard(&said, &jimmy).as_deref(), Some("what time is it?"), "{said}");
+        }
+        assert_eq!(heard("Hey Jimi.", &jimmy).as_deref(), Some(""));
+        // Spelled any of those ways in Settings, it is the same name.
+        assert_eq!(heard("Jimmy, go", &names(&["Jimi"])).as_deref(), Some("go"));
+    }
+
+    #[test]
+    fn a_word_that_only_sounds_near_the_name_does_not_wake_it() {
+        // Each of these woke an assistant called Jimmy when a letter off was
+        // enough ("Timmy", "Kimmy"), or is what a recogniser writes for a
+        // word that is not the name.
+        let jimmy = names(&["Jimmy"]);
+        for said in [
+            "Timmy fell asleep on the couch.",
+            "Kimmy loves the new puppy.",
+            "Jamie is coming over tonight.",
+            "Gimme a minute, I'll be right there.",
+            "Jim, can you pass the salt?",
+            "Jiminy, that was close!",
+            "Chimney needs cleaning.",
+            "Jimmy's idea, that was.",
+        ] {
+            assert_eq!(heard(said, &jimmy), None, "{said}");
+        }
+    }
+
+    #[test]
+    fn spellings_of_one_sound_meet() {
+        for (word, sound) in [
+            ("jimmy", "jimy"),
+            ("jimmie", "jimy"),
+            ("jimi", "jimy"),
+            ("gimmy", "jimy"),
+            ("carma", "karma"),
+            ("karma", "karma"),
+            ("siri", "siry"),
+            ("timmy", "timy"),
+            ("jamie", "jamy"),
+            ("gimme", "jime"),
+            ("i", "i"),
+        ] {
+            assert_eq!(sound_of(word), sound, "{word}");
+        }
     }
 
     #[test]
