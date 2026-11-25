@@ -11,6 +11,7 @@
   // point of the arrangement, so it can do nothing at all without a route to
   // the machine that holds it.
   import { app } from '../lib/state.svelte'
+  import { mobileShell } from '../lib/api'
   import { friendlyDate } from '../lib/format'
   import Icon from './Icon.svelte'
 
@@ -41,7 +42,7 @@
 </script>
 
 <section class="connect">
-  <h2>Use a vault on another computer</h2>
+  <h2>{mobileShell ? 'Connect to your computer' : 'Use a vault on another computer'}</h2>
   <p class="lead">
     Open <strong>Settings → Vault → Share on the network</strong> on the computer that holds your vault,
     then paste the link it shows here.
@@ -88,7 +89,8 @@
 
   <p class="caveat">
     Nothing is copied to this computer. Your entries, your key and your search index stay on the
-    machine that holds them, so this window shows nothing at all when that machine is unreachable.
+    machine that holds them, so this {mobileShell ? 'phone' : 'window'} shows nothing at all when that
+    machine is unreachable.
   </p>
 </section>
 

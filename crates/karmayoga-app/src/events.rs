@@ -31,8 +31,12 @@
 //! already in front. The service therefore sends no `Notification` beside
 //! an offer. See [`crate::offers::on_calendar_offer`].
 
-use karmayoga_service::events::{Change, EventSink, Kind, MeetingOffer, Notification};
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(desktop)]
+use karmayoga_service::events::Kind;
+use karmayoga_service::events::{Change, EventSink, MeetingOffer, Notification};
+#[cfg(desktop)]
+use tauri::Manager;
+use tauri::{AppHandle, Emitter};
 
 /// A notification the interface should route. Its other half is
 /// `onShellNotification` in `ui/src/lib/api.ts`.
@@ -70,8 +74,42 @@ impl EventSink for WindowSink {
     }
 
     fn changed(&self, change: Change) {
+        #[cfg(desktop)]
         let kind = change.kind;
         self.emit(CHANGED_EVENT, change);
+        // The rest is the tray and the icon's badge, neither of which a phone
+        // has: a phone's badge is its notifications.
+        #[cfg(desktop)]
+        self.refresh_furniture(kind);
+    }
+
+    fn lock_state(&self, locked: bool) {
+        self.emit(LOCK_EVENT, locked);
+        #[cfg(desktop)]
+        self.furniture_lock_state(locked);
+    }
+
+    // A phone is never offered to take notes: it records nothing. See `offers`.
+    #[cfg(mobile)]
+    fn meeting_offer(&self, _offer: MeetingOffer) {}
+
+    #[cfg(mobile)]
+    fn meeting_brief(&self, _brief: karmayoga_core::meeting::brief::MeetingBrief) {}
+
+    #[cfg(desktop)]
+    fn meeting_offer(&self, offer: MeetingOffer) {
+        crate::offers::on_calendar_offer(&self.app, offer);
+    }
+
+    #[cfg(desktop)]
+    fn meeting_brief(&self, brief: karmayoga_core::meeting::brief::MeetingBrief) {
+        crate::offers::on_meeting_brief(&self.app, brief);
+    }
+}
+
+#[cfg(desktop)]
+impl WindowSink {
+    fn refresh_furniture(&self, kind: Kind) {
         // A calendar sync can change what the tray's optional meeting line
         // should say -- a new event landed, one moved, one was cancelled --
         // and nothing else would notice before the next minute's tick. See
@@ -100,8 +138,7 @@ impl EventSink for WindowSink {
         }
     }
 
-    fn lock_state(&self, locked: bool) {
-        self.emit(LOCK_EVENT, locked);
+    fn furniture_lock_state(&self, locked: bool) {
         // A conversation from the talk key ends with the lock, and its models
         // are held ready only while the vault is open. See `talk`.
         crate::talk::on_lock_state(&self.app, locked);
@@ -126,13 +163,5 @@ impl EventSink for WindowSink {
         if locked {
             crate::offers::on_locked(&self.app);
         }
-    }
-
-    fn meeting_offer(&self, offer: MeetingOffer) {
-        crate::offers::on_calendar_offer(&self.app, offer);
-    }
-
-    fn meeting_brief(&self, brief: karmayoga_core::meeting::brief::MeetingBrief) {
-        crate::offers::on_meeting_brief(&self.app, brief);
     }
 }

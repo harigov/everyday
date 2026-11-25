@@ -18,7 +18,7 @@ use karmayoga_core::{Error, Result, Vault, VaultConfig};
 use karmayoga_store_postgres::PostgresFactory;
 use karmayoga_store_sqlite::SqliteFactory;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// The backend the UI offers first.
 pub const DEFAULT_BACKEND: &str = karmayoga_store_sqlite::BACKEND_ID;
@@ -88,6 +88,9 @@ pub fn data_dir() -> PathBuf {
     if let Some(sandbox) = test_sandbox() {
         return sandbox.join("data");
     }
+    if let Some(dirs) = APP_DIRS.get() {
+        return dirs.data.clone();
+    }
     legacy::carry_over();
     let new = project_dirs()
         .map(|d| d.data_dir().to_path_buf())
@@ -112,6 +115,27 @@ pub fn machine_data_dir() -> PathBuf {
     data_dir()
 }
 
+/// The folders a platform hands this application itself, where there is no
+/// home directory to derive them from. See [`set_app_dirs`].
+struct AppDirs {
+    config: PathBuf,
+    data: PathBuf,
+}
+
+static APP_DIRS: OnceLock<AppDirs> = OnceLock::new();
+
+/// Use these as [`config_dir`] and [`data_dir`] for the rest of the process.
+///
+/// For a phone: an Android app has no `$HOME`, so the platform directories
+/// below come back empty and every setting would land relative to `/`, which
+/// it cannot write. Its folders are the app's private storage, which only the
+/// platform knows -- Tauri asks it -- so the phone shell sets them once at
+/// startup, before anything reads a setting. Nothing is carried across from
+/// an older installation there: there was none. The first call wins.
+pub fn set_app_dirs(config: PathBuf, data: PathBuf) {
+    let _ = APP_DIRS.set(AppDirs { config, data });
+}
+
 /// This application's platform directories.
 fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("app", "Karma Yoga", "KarmaYoga")
@@ -128,6 +152,9 @@ fn project_dirs() -> Option<directories::ProjectDirs> {
 pub fn config_dir() -> PathBuf {
     if let Some(sandbox) = test_sandbox() {
         return sandbox.join("config");
+    }
+    if let Some(dirs) = APP_DIRS.get() {
+        return dirs.config.clone();
     }
     legacy::carry_over();
     let new = project_dirs()

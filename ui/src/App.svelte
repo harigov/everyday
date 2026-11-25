@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { api, onSaveAndClose } from './lib/api'
+  import { api, mobileShell, onSaveAndClose } from './lib/api'
+  import { closesOnBack, phone } from './lib/phone.svelte'
   // The stores, then the components, rather than the two interleaved.
   //
   // Importing a store is also what *constructs* it, and construction is what
@@ -42,6 +43,7 @@
   import { badge } from './lib/badge.svelte'
   import { hearWheelWhen } from './lib/wheel'
   import AppBar from './components/AppBar.svelte'
+  import BottomBar from './components/BottomBar.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import EntryList from './components/EntryList.svelte'
   import Editor from './components/Editor.svelte'
@@ -122,8 +124,25 @@
     // every session is as wrong as closing it every session. What it holds is
     // loaded by the panel itself -- see `ensureLoaded`, which also covers the
     // rail still being open after a lock cleared everything behind it.
-    agent.restore()
+    // Not on a phone, where the assistant covers the screen: opening the
+    // app should not open on a conversation because one was open last time.
+    if (!phone.on) agent.restore()
   }
+
+  // A phone's back button closes, in turn, whatever is over the app. See
+  // `phone.svelte.ts`.
+  closesOnBack(
+    () => panels.settings !== null,
+    () => panels.closeSettings(),
+  )
+  closesOnBack(
+    () => phone.on && sidebar.peeking,
+    () => sidebar.hide(),
+  )
+  closesOnBack(
+    () => phone.on && agent.open && app.section !== 'assistant',
+    () => void agent.toggle(),
+  )
 
   // Areas and goals, loaded once the vault is open and reloaded after every
   // unlock.
@@ -200,7 +219,9 @@
   // Each app's sidebar folds on its own -- see `sidebar.svelte.ts` -- and a
   // peek belongs to the app it was raised over, so changing app (or opening
   // Settings over it) puts one away.
-  const folded = $derived(app.section !== 'overview' && sidebar.folded(app.section))
+  // Always, on a phone: there the sidebar is a drawer, out over the app when
+  // the top bar's button opens it. See `Sidebar.svelte`.
+  const folded = $derived(app.section !== 'overview' && (phone.on || sidebar.folded(app.section)))
   $effect(() => {
     void app.section
     void panels.settings
@@ -368,7 +389,8 @@
            left end on macOS, and are drawn at its right end elsewhere. -->
       <TopBar />
       <Notices />
-      {#if !pinned}
+      <!-- A phone records nothing, so is offered nothing to record. -->
+      {#if !pinned && !mobileShell}
         <MeetingOfferBanner />
       {/if}
       <div
@@ -376,8 +398,9 @@
         class:pinned
         style:--app={panels.settings === null ? `var(--app-${app.section})` : undefined}
       >
-        <!-- A window of one app has nothing to switch between. -->
-        {#if !pinned}
+        <!-- A window of one app has nothing to switch between. A phone
+             switches from the bar along the bottom, below. -->
+        {#if !pinned && !phone.on}
           <AppBar />
         {/if}
         <!-- Settings stands in the place the current app's own sidebar and
@@ -399,7 +422,11 @@
                  app's left edge stands in for it: resting the pointer there
                  draws it over the app for a quick choice. The fold button in
                  the strip above does the same. -->
-            {#if folded}
+            {#if folded && phone.on && sidebar.peeking}
+              <!-- Behind a phone's drawer, over the bars too: a tap
+                   outside it puts it away. -->
+              <div class="scrim drawer" aria-hidden="true" onclick={() => sidebar.hide()}></div>
+            {:else if folded && !phone.on}
               <div
                 class="edge"
                 aria-hidden="true"
@@ -482,6 +509,9 @@
           </button>
         {/if}
       </div>
+      {#if !pinned && phone.on}
+        <BottomBar />
+      {/if}
     </div>
 
     <!-- The window's one media element, and the player's panel: outside the
@@ -573,6 +603,9 @@
     width: 10px;
     z-index: 35;
   }
+  .scrim.drawer {
+    z-index: 63;
+  }
   .main {
     /* As tall as the stage by a stated height, not stretched: see
        `.shell-stage` in app.css. */
@@ -601,6 +634,11 @@
     transition:
       scale var(--fast) var(--ease),
       box-shadow var(--fast) var(--ease);
+  }
+  /* Above a phone's bottom bar, in the thumb's corner of the app. */
+  :global([data-phone]) .float {
+    right: calc(var(--sp-4) + var(--safe-right));
+    bottom: calc(var(--bottombar-h) + var(--safe-bottom) + var(--sp-4));
   }
   .float:hover {
     scale: 1.06;

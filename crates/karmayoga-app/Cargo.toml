@@ -20,31 +20,24 @@ tauri-build.workspace = true
 [dependencies]
 karmayoga-core.workspace = true
 karmayoga-vault.workspace = true
-# `speech`: local VAD, recognition, diarisation and speaker embeddings
-# through sherpa-onnx -- the desktop build carries it. See
-# docs/plans/meeting-notes.md and `karmayoga-service`'s own feature doc.
-# `decisions`: sorting mail on a decision model run here through llama.cpp,
-# for somebody who would rather it went to no provider. See
-# docs/plans/mail-sorting.md.
-karmayoga-service = { workspace = true, features = ["speech", "decisions"] }
-karmayoga-server.workspace = true
-karmayoga-chat.workspace = true
-# This machine's screen time: which app has focus, idle, locked. See
-# `src/screentime.rs`.
-karmayoga-focus.workspace = true
+# Without `speech` or `decisions` here: both are the desktop's, asked for in
+# its table below. The phone shell is always a remote client, so the models
+# run on the computer it connects to.
+karmayoga-service.workspace = true
+# Not the workspace entry, which cannot turn a default feature off: the
+# server's `speech` (sherpa-onnx) is wanted by the desktop, which serves its
+# vault, and not by the phone, which only ever uses `client`.
+karmayoga-server = { path = "../karmayoga-server", default-features = false }
 # Chunks of an archive arrive from the service base64'd inside JSON; the
 # shell decodes them straight into the file the user picked. Also the
 # browser extension's screen-time connection code (`src/screentime.rs`).
 base64 = "0.22"
-# This machine's default name in screen time, from its hostname. Already in
-# the build through `karmayoga-mail`.
-gethostname = "1.1"
 # `tray-icon` is not a default feature: it pulls in muda and the platform
 # status-item APIs, and an app without a tray should not carry them. See
 # `src/tray.rs`. On Linux it also wants libayatana-appindicator at runtime,
 # which is why the .deb declares it (tauri.conf.json) and `make setup`
 # installs its headers.
-tauri = { workspace = true, features = ["tray-icon"] }
+tauri.workspace = true
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # Notifications on macOS and Windows, and the permission question on all of
@@ -55,24 +48,48 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1.53.1", features = ["sync", "time", "net"] }
+futures-util = "0.3"
+jiff.workspace = true
+# A device token is a bearer credential to an unlocked vault on another
+# machine, so it goes in the operating system's own store rather than in a
+# settings file. One API over the macOS and iOS keychains, the Windows
+# credential manager and the XDG secret service. See `remotes.rs` for what
+# happens where there is none, and for Android, which it does not cover.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# What only the desktop builds. The phone shell (`src/mobile.rs`) is always a
+# remote client in one full-screen window: no tray, no OS-wide keys, no second
+# instance to turn away, no local models, and no microphone of its own to
+# record a meeting through -- talking to the assistant there goes to the
+# computer it is connected to. Not `cfg(desktop)`, which is Tauri's alias and
+# means nothing to Cargo.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# `speech`: local VAD, recognition, diarisation and speaker embeddings
+# through sherpa-onnx -- the desktop build carries it. See
+# docs/plans/meeting-notes.md and `karmayoga-service`'s own feature doc.
+# `decisions`: sorting mail on a decision model run here through llama.cpp,
+# for somebody who would rather it went to no provider. See
+# docs/plans/mail-sorting.md.
+karmayoga-service = { workspace = true, features = ["speech", "decisions"] }
+karmayoga-server = { path = "../karmayoga-server", features = ["speech"] }
+karmayoga-chat.workspace = true
+# This machine's screen time: which app has focus, idle, locked. See
+# `src/screentime.rs`.
+karmayoga-focus.workspace = true
+# This machine's default name in screen time, from its hostname. Already in
+# the build through `karmayoga-mail`.
+gethostname = "1.1"
+tauri = { workspace = true, features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 # The OS-wide hotkey that raises the palette. Registered lazily and switchable
 # off, because a global shortcut is a claim on a key combination for the whole
 # desktop and not every desktop will honour it -- Wayland wants a portal. See
 # `hotkey.rs`.
 tauri-plugin-global-shortcut = "2"
-tokio = { version = "1.53.1", features = ["sync", "time", "net"] }
 # The player's loopback server (`src/player.rs`): the same axum
 # `karmayoga-server` already builds, and a body streamed a piece at a time.
 axum = "0.8"
-futures-util = "0.3"
-jiff.workspace = true
-# A device token is a bearer credential to an unlocked vault on another
-# machine, so it goes in the operating system's own store rather than in a
-# settings file. One API over the macOS keychain, the Windows credential
-# manager and the XDG secret service. See `remotes.rs` for what happens where
-# there is none.
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 # Two microphone-and-loopback streams, resampled and framed into 30 s chunks
 # and handed to the service. See `src/capture.rs` and
 # `docs/plans/meeting-notes.md`'s "Decisions already made". `build_input_stream`

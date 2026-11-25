@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
+  import { mobileShell } from '../lib/api'
   import Icon from './Icon.svelte'
 
   let retrying = $state(false)
@@ -17,18 +18,33 @@
 <div class="wrap">
   <div class="card frost">
     <div class="mark"><Icon name="alert" size={28} weight={1.7} /></div>
-    <h1>Karma Yoga could not start</h1>
+    <h1>{mobileShell ? 'Your computer could not be reached' : 'Karma Yoga could not start'}</h1>
 
     {#if app.error}<p class="detail">{app.error}</p>{/if}
 
-    <p class="reassure">
-      Your journal has not been changed. Nothing was written, and nothing was deleted — this is a
-      problem reaching the storage backend, not a problem with your entries.
-    </p>
+    {#if mobileShell}
+      <!-- A phone keeps nothing of its own (`mobile.rs`): what failed is the
+           way to the computer that holds the vault. -->
+      <p class="reassure">
+        Nothing has changed on this phone or on your computer. Check that the computer is on, that
+        Karma Yoga is running there with Share on the network switched on, and that both are on the
+        same network or tailnet.
+      </p>
+    {:else}
+      <p class="reassure">
+        Your journal has not been changed. Nothing was written, and nothing was deleted — this is a
+        problem reaching the storage backend, not a problem with your entries.
+      </p>
+    {/if}
 
     <button class="btn btn-primary wide" onclick={retry} disabled={retrying}>
       {retrying ? 'Trying again…' : 'Try again'}
     </button>
+    {#if mobileShell}
+      <button class="btn wide other" onclick={() => app.chooseComputer()} disabled={retrying}>
+        Use another computer
+      </button>
+    {/if}
 
     {#if app.boot?.defaultPath}
       <p class="hint">Your vault should be at <code>{app.boot.defaultPath}</code></p>
@@ -37,6 +53,9 @@
 </div>
 
 <style>
+  .other {
+    margin-top: var(--sp-2);
+  }
   .wrap {
     display: grid;
     place-items: center;

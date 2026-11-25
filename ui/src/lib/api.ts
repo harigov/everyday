@@ -254,6 +254,18 @@ const MOCK = import.meta.env.DEV && !SHELL
  * through `web.ts`.
  */
 const WEB = !SHELL && !MOCK
+/**
+ * The phone shell (`crates/karmayoga-app/src/mobile.rs`): Tauri's Android or
+ * iOS build. Always a remote client in one full-screen window, so it answers
+ * only the shell commands in `PHONE_SHELL_COMMANDS` below and has none of
+ * the desktop's furniture -- no tray, no OS-wide keys, no windows of one
+ * app, no microphone of its own. In a development build `?mobile` makes the
+ * mock behave as it does, so a phone's interface can be worked on in a
+ * browser (`scripts/phone/check.mjs` opens every app that way).
+ */
+const MOBILE_SHELL =
+  (SHELL && /Android|iPhone|iPad|iPod/.test(navigator.userAgent)) ||
+  (MOCK && new URLSearchParams(location.search).has('mobile'))
 
 /**
  * `args` is a bag of named arguments for every command but one. `put_blob`
@@ -706,6 +718,56 @@ if (SHELL) {
 }
 
 /**
+ * The shell commands the phone shell registers -- `mobile.rs`'s
+ * `invoke_handler`. Service commands go through `call` there as here.
+ */
+const PHONE_SHELL_COMMANDS = new Set([
+  'bootstrap',
+  'call',
+  'list_remotes',
+  'connect_remote',
+  'reconnect_remote',
+  'disconnect_remote',
+  'forget_remote',
+  'put_blob',
+  'send_message',
+  'post_notification',
+])
+
+/**
+ * What the phone says to a desktop shell command the interface asks on its
+ * own -- at startup, on a timer, on a pref changing -- where an error would
+ * be a banner about nothing. Anything else is refused as unsupported, which
+ * is right for something a person pressed: the control should not have been
+ * offered, and the refusal says why.
+ */
+const PHONE_ANSWERS: Record<string, () => unknown> = {
+  meeting_status: () => null,
+  meeting_offers: () => [],
+  set_badge: () => undefined,
+  set_tray_menu: () => false,
+  hide_tray: () => undefined,
+  set_tray_meeting: () => undefined,
+  ready_to_close: () => undefined,
+  show_in_main: () => undefined,
+  clipboard_image: () => null,
+  hotkey_status: () => ({ registered: false, shortcut: '' }),
+}
+
+if (MOBILE_SHELL) {
+  const shell = invoke
+  invoke = async <T>(cmd: string, args?: InvokeArgs, requestId?: string): Promise<T> => {
+    if (SERVICE_COMMANDS.has(cmd) || PHONE_SHELL_COMMANDS.has(cmd)) {
+      return shell<T>(cmd, args, requestId)
+    }
+    const answer = PHONE_ANSWERS[cmd]
+    if (answer) return answer() as T
+    if (MOCK) console.warn(`the phone shell has no ${cmd}`)
+    throw new VaultError('unsupported', 'That needs the Karma Yoga app on a computer.')
+  }
+}
+
+/**
  * An id for one *logical* write, so a retry of it is answered from the first
  * attempt rather than applied twice.
  *
@@ -738,6 +800,8 @@ export function newRequestId(): string {
 }
 
 export const isMock = MOCK
+/** Tauri's phone build, or the mock standing in for it. See `MOBILE_SHELL`. */
+export const mobileShell = MOBILE_SHELL
 /** A browser on web access, with no desktop shell behind it. */
 export const isWeb = WEB
 /** The desktop shell is here: a tray, windows, files saved by the shell. */

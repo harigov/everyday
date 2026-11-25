@@ -305,6 +305,23 @@
     background: var(--bg-panel);
   }
 
+  /* A phone: the whole screen, over the app it was opened on -- a rail
+     beside a 400 px app is two unreadable columns. Its close button, and
+     back, put it away. */
+  :global([data-phone]) .panel {
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    width: auto;
+    height: auto;
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+    border-left: none;
+    border-radius: 0;
+  }
+  :global([data-phone]) .resizer {
+    display: none;
+  }
+
   /* Four pixels wide and eleven to grab: a resizer you can hit is wider than
      a resizer you can see, so the target is padded outwards over the pane
      beside it rather than drawn thicker. */

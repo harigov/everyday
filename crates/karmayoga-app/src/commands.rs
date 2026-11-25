@@ -25,9 +25,12 @@
 //! blocking pool -- it holds the window while it runs. Everything here is
 //! `async` and the service does its own hop to the blocking pool inside.
 
-use karmayoga_core::{Journal, VaultConfig, VaultStatus};
+use karmayoga_core::VaultStatus;
+#[cfg(desktop)]
+use karmayoga_core::{Journal, VaultConfig};
 use karmayoga_service::agent::AgentEvent;
 use karmayoga_service::error::{CommandError, CommandResult};
+#[cfg(desktop)]
 use karmayoga_service::service::blocking;
 use serde::Serialize;
 use serde_json::Value;
@@ -35,10 +38,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Manager, State};
 
+#[cfg(desktop)]
 use crate::badge::{Badge, BadgeSources};
 use crate::remote::{self, Remote};
 use crate::remotes;
 use crate::state::AppState;
+#[cfg(desktop)]
 use crate::tray::{Tray, TrayItem};
 use karmayoga_server::client::{Connection, RemoteClient};
 
@@ -67,8 +72,15 @@ pub struct Bootstrap {
     /// opens without a password when the process starts. Off unless somebody
     /// turned it on; see `autounlock`.
     pub opens_itself: bool,
+    /// The phone shell: always a remote client, so the setup screen offers
+    /// the vaults it has paired with and a pairing link, and never a vault of
+    /// its own. Also what tells the interface to lay itself out for a phone
+    /// and to leave alone what the shell does not have -- the tray, the
+    /// OS-wide keys, the microphone. See `mobile`.
+    pub mobile: bool,
 }
 
+#[cfg(desktop)]
 /// Turn "open this vault without a password" on or off, for this machine.
 ///
 /// The password is asked for on the way *on* rather than taken from the open
@@ -125,7 +137,6 @@ pub async fn bootstrap(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> CommandResult<Bootstrap> {
-    let service = state.service();
     // A window already looking at another machine's vault is not one that
     // should quietly open a local one underneath it.
     if state.is_remote() {
@@ -141,9 +152,40 @@ pub async fn bootstrap(
             // The key to a vault on another computer is that computer's
             // business, and this switch is about the one held here.
             opens_itself: false,
+            mobile: cfg!(mobile),
         });
     }
 
+    #[cfg(mobile)]
+    {
+        // A phone holds no vault of its own -- see `mobile` -- so there is
+        // nothing to look for on disk, open or resume serving.
+        let _ = app;
+        Ok(Bootstrap {
+            vault_exists: false,
+            default_path: PathBuf::new(),
+            backends: Vec::new(),
+            status: None,
+            protocol: karmayoga_service::PROTOCOL,
+            remotes: remotes::list(),
+            remote: None,
+            opens_itself: false,
+            mobile: true,
+        })
+    }
+    #[cfg(desktop)]
+    bootstrap_local(app, state).await
+}
+
+/// [`bootstrap`] for a window on this computer's own vault: open the one last
+/// opened, unlock it if this machine holds its key, and resume serving it
+/// wherever that was on.
+#[cfg(desktop)]
+async fn bootstrap_local(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<Bootstrap> {
+    let service = state.service();
     // Prefer the vault this user last had open. Only fall back to the default
     // location when nothing was recorded or what was recorded is gone -- an
     // external disk that is not plugged in should show the setup screen, not an
@@ -291,9 +333,11 @@ pub async fn bootstrap(
         protocol: karmayoga_service::PROTOCOL,
         remotes: remotes::list(),
         remote: None,
+        mobile: false,
     })
 }
 
+#[cfg(desktop)]
 /// Start a listener again on the way up, if it was on when the process last
 /// stopped.
 ///
@@ -316,6 +360,7 @@ async fn resume_listener(
     }
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn create_vault(
     state: State<'_, AppState>,
@@ -366,6 +411,7 @@ pub async fn create_vault(
     Ok(vault.status())
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn open_vault(state: State<'_, AppState>, path: PathBuf) -> CommandResult<VaultStatus> {
     let service = state.service();
@@ -424,7 +470,7 @@ pub async fn call(
         crate::guard::confirm_call(webview.app_handle(), &state, &name, &args).await?;
     }
     let session = state.session().as_session();
-    let ctx = crate::windows::ctx_for(webview.label()).with_request_id(request_id);
+    let ctx = ctx_for(webview.label()).with_request_id(request_id);
     session.call(ctx, &name, args).await
 }
 
@@ -509,7 +555,11 @@ async fn attach(
     // in them to the vault they were looking at -- which `connect` is about
     // to close -- and are not reopened: two windows on a remote vault would
     // not hear of each other's writes. See `windows`.
+    #[cfg(mobile)]
+    let _ = app;
+    #[cfg(desktop)]
     crate::windows::close_all(app);
+    #[cfg(desktop)]
     crate::windows::settle(app, crate::CLOSE_GRACE / 2).await;
     let remote = Remote::start(client, sink);
     state.connect(remote).await;
@@ -525,6 +575,40 @@ async fn attach(
 /// The host name, because that is what somebody looking at a list of paired
 /// devices at two in the morning will recognise. Not an identifier of any kind:
 /// it is shown to the person who owns both machines and to nobody else.
+/// Where the request came from, for the service: an app window of its own or
+/// the main one. See `windows::ctx_for`.
+#[cfg(desktop)]
+use crate::windows::ctx_for;
+
+/// A phone has one window, and it is the main one.
+#[cfg(mobile)]
+fn ctx_for(_label: &str) -> karmayoga_service::Ctx {
+    karmayoga_service::Ctx::local()
+}
+
+/// What the computer being paired with lists this device as: the phone's own
+/// maker and model, as its settings show them -- there is no hostname.
+#[cfg(target_os = "android")]
+fn device_name() -> String {
+    let prop = |name: &str| {
+        std::process::Command::new("getprop")
+            .arg(name)
+            .output()
+            .ok()
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    match (prop("ro.product.manufacturer"), prop("ro.product.model")) {
+        (Some(maker), Some(model)) if model.to_lowercase().starts_with(&maker.to_lowercase()) => {
+            model
+        }
+        (Some(maker), Some(model)) => format!("{maker} {model}"),
+        (_, Some(model)) => model,
+        _ => "An Android phone".to_string(),
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 fn device_name() -> String {
     std::env::var("HOSTNAME")
         .ok()
@@ -567,7 +651,7 @@ pub async fn put_blob(
         tauri::ipc::InvokeBody::Json(value) => serde_json::from_value::<Vec<u8>>(value.clone())
             .map_err(|_| CommandError::new("invalid", "attachment payload was not a buffer"))?,
     };
-    let ctx = crate::windows::ctx_for(webview.label());
+    let ctx = ctx_for(webview.label());
     state.session().as_session().put_blob(&ctx, bytes).await
 }
 
@@ -614,7 +698,7 @@ pub async fn send_message(
         .send_message(
             // The turn is announced to every window but the one that asked,
             // which is drawing it from `channel` already.
-            crate::windows::ctx_for(webview.label()),
+            ctx_for(webview.label()),
             serde_json::json!({
                 "conversationId": conversation_id,
                 "prompt": prompt,
@@ -627,6 +711,7 @@ pub async fn send_message(
         .await
 }
 
+#[cfg(desktop)]
 /// The interface reporting that its pending writes have landed.
 ///
 /// Second half of the close handshake begun in `run`'s `CloseRequested`
@@ -662,6 +747,7 @@ pub async fn ready_to_close(
 
 // ---- sharing this vault -------------------------------------------------
 
+#[cfg(desktop)]
 /// What the sharing pane draws.
 #[tauri::command]
 pub async fn share_status(
@@ -671,6 +757,7 @@ pub async fn share_status(
     Ok(state.sharing().status(&registry))
 }
 
+#[cfg(desktop)]
 /// Change whether a connected computer may unlock this vault.
 ///
 /// Its own command rather than an argument to `share_start`, because it is not
@@ -693,6 +780,7 @@ pub async fn set_remote_unlock(
     state.sharing().set_remote_unlock(&registry, allow)
 }
 
+#[cfg(desktop)]
 /// Start answering other machines.
 ///
 /// On an address another computer could reach -- which is the default, every
@@ -742,6 +830,7 @@ pub async fn share_start(
     Ok(status)
 }
 
+#[cfg(desktop)]
 /// Stop answering, and remember not to start next time.
 #[tauri::command]
 pub async fn share_stop(state: State<'_, AppState>) -> CommandResult<crate::sharing::ShareStatus> {
@@ -751,6 +840,7 @@ pub async fn share_stop(state: State<'_, AppState>) -> CommandResult<crate::shar
     Ok(status)
 }
 
+#[cfg(desktop)]
 /// Offer to pair, for the next five minutes.
 ///
 /// A code is what turns another computer into a device of this vault, so the
@@ -769,6 +859,7 @@ pub async fn new_pairing_code(
     state.sharing().invite(&registry)
 }
 
+#[cfg(desktop)]
 /// Withdraw the offer.
 #[tauri::command]
 pub async fn cancel_pairing(
@@ -778,6 +869,7 @@ pub async fn cancel_pairing(
     Ok(state.sharing().cancel_invite(&registry))
 }
 
+#[cfg(desktop)]
 /// Take a device's access away. It has to pair again to get it back.
 #[tauri::command]
 pub async fn revoke_device(
@@ -790,12 +882,14 @@ pub async fn revoke_device(
 
 // ---- letting an MCP client use this vault --------------------------------
 
+#[cfg(desktop)]
 /// What the MCP pane draws.
 #[tauri::command]
 pub async fn mcp_status(state: State<'_, AppState>) -> CommandResult<crate::mcp::McpStatus> {
     Ok(state.mcp().status())
 }
 
+#[cfg(desktop)]
 /// Start answering `POST /mcp`.
 ///
 /// Loopback unless the interface names another address, and another address
@@ -840,6 +934,7 @@ pub async fn mcp_start(
     Ok(status)
 }
 
+#[cfg(desktop)]
 /// Stop answering, and remember not to start next time.
 #[tauri::command]
 pub async fn mcp_stop(state: State<'_, AppState>) -> CommandResult<crate::mcp::McpStatus> {
@@ -853,6 +948,7 @@ pub async fn mcp_stop(state: State<'_, AppState>) -> CommandResult<crate::mcp::M
 // The interface in a browser on this machine's tailnet. See
 // `docs/plans/web-access.md` and `crate::web`.
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn web_status(
     state: State<'_, AppState>,
@@ -860,6 +956,7 @@ pub async fn web_status(
     Ok(state.web().status())
 }
 
+#[cfg(desktop)]
 /// Switch web access on. `port` is remembered for next time.
 #[tauri::command]
 pub async fn web_start(
@@ -895,6 +992,7 @@ pub async fn web_start(
     Ok(status)
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn web_stop(
     state: State<'_, AppState>,
@@ -904,6 +1002,7 @@ pub async fn web_stop(
     Ok(status)
 }
 
+#[cfg(desktop)]
 /// Change whether a destructive tool is offered at all. Off by default; see
 /// `docs/plans/mcp.md`'s "Destructive tools are absent, not refused".
 ///
@@ -923,6 +1022,7 @@ pub async fn mcp_set_destructive(
     Ok(status)
 }
 
+#[cfg(desktop)]
 /// Mint a token for an MCP client, and hand it back once.
 ///
 /// The interface shows it exactly once, with a copy button and a warning
@@ -951,6 +1051,7 @@ pub async fn mcp_issue_token(
 
 // ---- the OS-wide hotkey -------------------------------------------------
 
+#[cfg(desktop)]
 /// Whether the desktop granted the key that raises the palette.
 ///
 /// Answers false on a Wayland session with no portal, which is a fact about
@@ -963,6 +1064,7 @@ pub async fn hotkey_status(app: tauri::AppHandle) -> CommandResult<HotkeyStatus>
     Ok(HotkeyStatus { registered: status.registered, shortcut: status.shortcut })
 }
 
+#[cfg(desktop)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HotkeyStatus {
@@ -972,6 +1074,7 @@ pub struct HotkeyStatus {
     pub shortcut: String,
 }
 
+#[cfg(desktop)]
 /// Claim the palette's key, or give it back.
 #[tauri::command]
 pub async fn set_hotkey(app: tauri::AppHandle, on: bool) -> CommandResult<HotkeyStatus> {
@@ -984,6 +1087,7 @@ pub async fn set_hotkey(app: tauri::AppHandle, on: bool) -> CommandResult<Hotkey
 
 // ---- the tray -----------------------------------------------------------
 
+#[cfg(desktop)]
 /// Put `items` in the tray menu, showing the icon if it is not up yet.
 ///
 /// The whole menu is sent every time rather than patched. A quick action's
@@ -1003,6 +1107,7 @@ pub async fn set_tray_menu(app: tauri::AppHandle, items: Vec<TrayItem>) -> Comma
     blocking(move || app.state::<Tray>().show(&app, &items)).await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn hide_tray(app: tauri::AppHandle) -> CommandResult<()> {
     blocking(move || {
@@ -1012,6 +1117,7 @@ pub async fn hide_tray(app: tauri::AppHandle) -> CommandResult<()> {
     .await
 }
 
+#[cfg(desktop)]
 /// Turn the tray's "show the next meeting" line on or off, and show the
 /// effect immediately rather than waiting for the next minute's tick.
 ///
@@ -1032,6 +1138,7 @@ pub async fn set_tray_meeting(app: tauri::AppHandle, on: bool) -> CommandResult<
 
 // ---- the badge on the application's icon ----------------------------------
 
+#[cfg(desktop)]
 /// Choose what the number on the application's icon counts -- tasks, unread
 /// mail, the assistant's unseen work, added together -- and show it at once.
 /// Nothing chosen takes the badge off.

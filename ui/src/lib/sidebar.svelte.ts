@@ -117,6 +117,14 @@ class SidebarState {
     this.#settle(false)
   }
 
+  /** Out at once, and until put away: a phone's drawer, opened from the top
+   *  bar's button. No hold keeps it -- a finger has no hover to lose -- so
+   *  it goes when `hide` is called: a row chosen, the scrim tapped, back. */
+  open() {
+    this.#holds.clear()
+    this.#settle(true)
+  }
+
   #settle(peeking: boolean) {
     this.#clear()
     this.peeking = peeking

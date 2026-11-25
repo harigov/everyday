@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
+  import { mobileShell } from '../lib/api'
   import Logo from './Logo.svelte'
   import Connect from './Connect.svelte'
 
@@ -13,7 +14,11 @@
    * paired with something, because a machine that has done it once is usually
    * doing it again.
    */
-  let mode = $state<'create' | 'connect'>(app.remotes.length > 0 ? 'connect' : 'create')
+  // A phone keeps no vault of its own -- it is always the client of one on a
+  // computer (`mobile.rs`) -- so it is never offered the other half.
+  let mode = $state<'create' | 'connect'>(
+    mobileShell || app.remotes.length > 0 ? 'connect' : 'create',
+  )
 
   let name = $state('My Journal')
   let backend = $state('sqlite')
@@ -123,24 +128,28 @@
   <form class="card frost" onsubmit={submit}>
     <div class="mark"><Logo size={46} tile /></div>
     <h1>Karma Yoga</h1>
-    <p class="sub">A private journal. Let's set it up.</p>
+    <p class="sub">
+      {mobileShell ? 'Your vault, from your computer.' : "A private journal. Let's set it up."}
+    </p>
 
-    <div class="modes" role="tablist">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={mode === 'create'}
-        class:on={mode === 'create'}
-        onclick={() => (mode = 'create')}>Make a new vault</button
-      >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={mode === 'connect'}
-        class:on={mode === 'connect'}
-        onclick={() => (mode = 'connect')}>Use one on another computer</button
-      >
-    </div>
+    {#if !mobileShell}
+      <div class="modes" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'create'}
+          class:on={mode === 'create'}
+          onclick={() => (mode = 'create')}>Make a new vault</button
+        >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'connect'}
+          class:on={mode === 'connect'}
+          onclick={() => (mode = 'connect')}>Use one on another computer</button
+        >
+      </div>
+    {/if}
 
     {#if mode === 'connect'}
       <Connect />

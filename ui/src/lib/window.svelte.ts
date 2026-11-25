@@ -14,6 +14,8 @@
 // In the browser preview (`npm run dev`) the buttons are drawn but do
 // nothing, so the preview still shows the window the desktop build does.
 
+import { mobileShell } from './api'
+
 const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform ?? '')
 const shell = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
@@ -23,7 +25,9 @@ class WindowControls {
   /** Whether the app draws the controls itself -- everywhere but macOS. */
   // Nor in a browser on web access, whose window is the browser's own. (The
   // mock dev build keeps them, so they can be designed without the shell.)
-  readonly drawn = !mac && (shell || import.meta.env.DEV)
+  // Nor on a phone, whose one window is the screen. (`mobileShell` covers
+  // the mock's `?mobile` too.)
+  readonly drawn = !mac && !mobileShell && (shell || import.meta.env.DEV)
   /** Drives the middle button: maximise, or restore once maximised. */
   maximized = $state(false)
 

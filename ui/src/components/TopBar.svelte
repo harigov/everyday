@@ -22,6 +22,7 @@
   import { keysLabel } from '../lib/keys'
   import { panels } from '../lib/panels.svelte'
   import { sidebar } from '../lib/sidebar.svelte'
+  import { phone } from '../lib/phone.svelte'
   import CommandBar from './CommandBar.svelte'
   import Icon from './Icon.svelte'
   import ListenPlayer from './ListenPlayer.svelte'
@@ -50,16 +51,16 @@
            the sidebar will put the pointer first. -->
       <button
         class="fold"
-        class:folded
-        onclick={() => sidebar.toggle(app.section)}
+        class:folded={folded && !phone.on}
+        onclick={() => (phone.on ? sidebar.open() : sidebar.toggle(app.section))}
         onpointerenter={(e) => {
           if (folded && e.pointerType === 'mouse') sidebar.reach()
         }}
         onpointerleave={() => {
           if (folded) sidebar.release()
         }}
-        aria-pressed={!folded}
-        aria-label={folded ? 'Show the sidebar' : 'Hide the sidebar'}
+        aria-pressed={phone.on ? undefined : !folded}
+        aria-label={folded || phone.on ? 'Show the sidebar' : 'Hide the sidebar'}
         title="{folded ? 'Show the sidebar' : 'Hide the sidebar'} ({shortcut})"
       >
         <Icon name="sidebar" size={17} weight={1.7} />
@@ -152,5 +153,28 @@
   }
   .fold.folded {
     color: var(--fg-faint);
+  }
+
+  /* A phone: the button that opens the sidebar's drawer, the bar, and
+     whatever is playing, under the status bar. No logo -- the app's name is
+     on the screen it was opened from -- and no window to drag or close. */
+  :global([data-phone]) .strip {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    height: calc(var(--topbar-h) + var(--safe-top));
+    padding: var(--safe-top) var(--safe-right) 0 var(--safe-left);
+  }
+  :global([data-phone]) .lead {
+    display: none;
+  }
+  :global([data-phone]) .fold {
+    width: 40px;
+    height: 40px;
+    color: var(--fg-muted);
+  }
+  :global([data-phone]) .middle {
+    padding: 0 var(--sp-2) 0 var(--sp-1);
+  }
+  :global([data-phone]) .side:empty + .middle {
+    padding-left: var(--sp-3);
   }
 </style>

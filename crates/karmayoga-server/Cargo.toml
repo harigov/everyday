@@ -7,17 +7,25 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+# Local VAD, recognition, diarisation and speaker embeddings through
+# sherpa-onnx -- a paired server still runs the pipeline. See
+# docs/plans/meeting-notes.md and `karmayoga-service`'s own feature doc. On
+# by default; only the phone shell turns it off, because it is always the
+# client of this crate and never the server, and sherpa-onnx is a native
+# library it has no use for.
+default = ["speech"]
+speech = ["karmayoga-service/speech"]
+
 [dependencies]
 karmayoga-core.workspace = true
 karmayoga-mcp.workspace = true
-# `speech`: local VAD, recognition, diarisation and speaker embeddings
-# through sherpa-onnx -- a paired server still runs the pipeline. See
-# docs/plans/meeting-notes.md and `karmayoga-service`'s own feature doc.
+# `speech` is this crate's own default feature, below.
 # Not `decisions`: this crate is a default workspace member, and the feature
 # would build llama.cpp -- CMake, a C++ compiler -- on a plain `cargo test`.
 # A vault served from here sorts mail at a provider; the desktop app runs a
 # local decision model itself. See docs/plans/mail-sorting.md.
-karmayoga-service = { workspace = true, features = ["speech"] }
+karmayoga-service.workspace = true
 karmayoga-vault.workspace = true
 serde.workspace = true
 serde_json.workspace = true

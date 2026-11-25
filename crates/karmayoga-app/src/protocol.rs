@@ -466,6 +466,7 @@ async fn serve_mail_local(
     }
 }
 
+#[cfg(desktop)]
 /// One part of a message as bytes, for the save dialog
 /// (`transfer::save_mail_part`). The same checks and the same two paths as
 /// [`serve_mail_local`] and [`serve_mail_remote`], answering in a form with

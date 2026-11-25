@@ -5,7 +5,7 @@
 // stay declarative and the save/lock logic lives in one auditable spot.
 
 import { tick } from 'svelte'
-import { api, isMock, isWeb, newRequestId } from './api'
+import { api, isMock, isWeb, mobileShell, newRequestId } from './api'
 import { signOut } from './web'
 import { APP_ORDER, APPS, type Section } from './apps'
 import { pinned } from './appwindow'
@@ -336,6 +336,15 @@ class AppState {
       this.remotes = boot.remotes
       this.opensItself = boot.opensItself
       this.error = null
+      // A phone is always looking at a computer's vault (`mobile.rs`), and
+      // goes back to the one it last paired with, as a desktop window opens
+      // the vault it last had open. Not reached: the error screen, which
+      // offers to try again or to pair with another.
+      const last = boot.remotes.at(-1)
+      if (mobileShell && !boot.remote && last) {
+        await this.reconnectRemote(last.id)
+        return
+      }
       if (!boot.vaultExists && !boot.remote) this.screen = 'setup'
       else if (boot.status?.unlocked) await this.enterMain()
       else this.screen = 'locked'
@@ -720,6 +729,13 @@ class AppState {
     this.screen = 'loading'
     this.error = null
     await this.start()
+  }
+
+  /** From the error screen on a phone: pair with a computer, or pick another
+   *  one it already knows, rather than trying the last one again. */
+  chooseComputer() {
+    this.error = null
+    this.screen = 'setup'
   }
 
   /** Whether the window is drawing a dark theme: what a mail body or a feed
