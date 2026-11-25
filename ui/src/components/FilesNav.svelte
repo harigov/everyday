@@ -21,6 +21,7 @@
   import { acceptDrag, crumbsOf, dropInto } from '../lib/files-ui.svelte'
   import { plural } from '../lib/format'
   import { panels } from '../lib/panels.svelte'
+  import { phone } from '../lib/phone.svelte'
   import type { SymbolName } from '../lib/symbols'
   import FilesUploads from './FilesUploads.svelte'
   import Symbol from './Symbol.svelte'
@@ -155,7 +156,11 @@
   </button>
 </nav>
 
-<FilesUploads />
+<!-- On a phone they are shown over the files, where they were started
+     (`FilesView`): a drawer is put away the moment a place is chosen. -->
+{#if !phone.on}
+  <FilesUploads />
+{/if}
 
 {#if usage}
   <p

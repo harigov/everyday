@@ -419,4 +419,42 @@
   .hint {
     margin: 0;
   }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     The figures two to a row, the cards one to a column; what needs you is
+     a line of words with its button under it. */
+  :global([data-phone]) .page {
+    padding: var(--sp-2) var(--sp-3) calc(var(--fab-size) + var(--sp-6));
+    gap: var(--sp-4);
+  }
+  :global([data-phone]) .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-4) var(--sp-3);
+  }
+  :global([data-phone]) .pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-4);
+  }
+  :global([data-phone]) .attention li {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .attention .what {
+    flex: 1 1 0;
+  }
+  :global([data-phone]) .attention .btn {
+    flex: 1 1 100%;
+    height: 44px;
+  }
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  :global([data-phone]) .link.inline {
+    display: inline;
+    min-height: 0;
+  }
+  :global([data-phone]) .u-when {
+    width: 5.5em;
+  }
 </style>

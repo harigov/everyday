@@ -147,4 +147,10 @@
     background: var(--bg-hover);
     color: var(--fg);
   }
+
+  :global([data-phone]) .remove {
+    width: 36px;
+    height: 36px;
+    margin-right: 0;
+  }
 </style>

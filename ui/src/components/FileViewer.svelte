@@ -37,6 +37,7 @@
   import { formatSize, kindIcon, previewOf } from '../lib/files'
   import { files as store } from '../lib/files.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { player } from '../lib/player.svelte'
   import { formatDuration, playRequestForFile } from '../lib/podcast'
   import type { ContentRef, FileEntry } from '../lib/types'
@@ -294,6 +295,18 @@
   // ── Information ────────────────────────────────────────────────────
 
   let info = $state(false)
+
+  // On a phone the viewer is a layer back puts away, and the information over
+  // it another.
+  closesOnBack(
+    () => true,
+    () => onclose(),
+  )
+  closesOnBack(
+    () => info && phone.on,
+    () => (info = false),
+  )
+
   // The panel describes whichever file is open.
   $effect(() => {
     if (info && opened && current) {
@@ -372,6 +385,98 @@
 
 <svelte:window {onkeydown} />
 
+<!-- What the viewer's file can be given: stepping to the next and the one
+     before, reading, Up Next, a favourite, its information, saving it. A
+     desktop has them along the top, and a phone in a dock along the bottom,
+     under the thumb. -->
+{#snippet controls()}
+  {#if files.length > 1}
+    <button
+      class="tool back"
+      aria-label="Previous"
+      title="Previous (←)"
+      disabled={position <= 0}
+      onclick={() => go(-1)}
+    >
+      <Icon name="chevron" size={17} />
+    </button>
+    <button
+      class="tool"
+      aria-label="Next"
+      title="Next (→)"
+      disabled={position >= files.length - 1}
+      onclick={() => go(1)}
+    >
+      <Icon name="chevron" size={17} />
+    </button>
+  {/if}
+  {#if readable}
+    <button
+      class="tool labelled"
+      aria-label="Read"
+      title="Read it, with its contents beside it and the assistant (R)"
+      onclick={read}
+    >
+      <Icon name="book" size={16} />
+      <span class="lbl">Read</span>
+    </button>
+  {/if}
+  {#if queueable}
+    <button
+      class="tool"
+      class:on={queued}
+      aria-label={queued ? 'Remove from Up Next' : 'Add to Up Next'}
+      aria-pressed={queued}
+      title={queued ? 'In Up Next: remove it' : 'Add to Up Next'}
+      onclick={toggleQueued}
+    >
+      <Icon name="queue-add" size={16} />
+    </button>
+  {/if}
+  {#if current}
+    <button
+      class="tool"
+      class:on={current.favourite}
+      aria-label={current.favourite ? 'Remove from favourites' : 'Add to favourites'}
+      aria-pressed={current.favourite}
+      title="Favourite"
+      onclick={() => void store.toggleFavourite(current.id)}
+    >
+      <Icon name="star" size={16} filled={current.favourite} />
+    </button>
+  {/if}
+  <button
+    class="tool"
+    class:on={info}
+    aria-label="Information"
+    aria-pressed={info}
+    title="Information (I)"
+    onclick={() => (info = !info)}
+  >
+    <Icon name="info" size={16} />
+  </button>
+  {#if store.local && current}
+    <button
+      class="tool"
+      aria-label="Open in another program"
+      title="Open in another program"
+      onclick={() => void store.openExternally(current.id)}
+    >
+      <Icon name="share" size={16} />
+    </button>
+  {/if}
+  {#if current}
+    <button
+      class="tool labelled"
+      aria-label="Save"
+      onclick={() => void store.exportFiles([current.id])}
+    >
+      <Icon name="download" size={16} />
+      <span class="lbl">Save</span>
+    </button>
+  {/if}
+{/snippet}
+
 <div class="backdrop"></div>
 <div
   class="viewer"
@@ -385,93 +490,21 @@
   <!-- The window's own title bar is under this, so the bar stands in for it
        as somewhere to drag the window by. -->
   <header class="bar" data-tauri-drag-region>
+    {#if phone.on}
+      <button class="tool back" aria-label="Close" onclick={onclose}>
+        <Icon name="chevron" size={20} weight={2} />
+      </button>
+    {/if}
     <div class="what" data-tauri-drag-region>
       <span class="file" title={name} data-tauri-drag-region>{name}</span>
       <span class="facts" data-tauri-drag-region>{facts}</span>
     </div>
-    {#if files.length > 1}
-      <button
-        class="tool back"
-        aria-label="Previous"
-        title="Previous (←)"
-        disabled={position <= 0}
-        onclick={() => go(-1)}
-      >
-        <Icon name="chevron" size={17} />
-      </button>
-      <button
-        class="tool"
-        aria-label="Next"
-        title="Next (→)"
-        disabled={position >= files.length - 1}
-        onclick={() => go(1)}
-      >
-        <Icon name="chevron" size={17} />
+    {#if !phone.on}
+      {@render controls()}
+      <button class="tool" aria-label="Close" title="Close (Esc)" onclick={onclose}>
+        <Icon name="close" size={17} />
       </button>
     {/if}
-    {#if readable}
-      <button
-        class="tool labelled"
-        title="Read it, with its contents beside it and the assistant (R)"
-        onclick={read}
-      >
-        <Icon name="book" size={16} />
-        Read
-      </button>
-    {/if}
-    {#if queueable}
-      <button
-        class="tool"
-        class:on={queued}
-        aria-label={queued ? 'Remove from Up Next' : 'Add to Up Next'}
-        aria-pressed={queued}
-        title={queued ? 'In Up Next: remove it' : 'Add to Up Next'}
-        onclick={toggleQueued}
-      >
-        <Icon name="queue-add" size={16} />
-      </button>
-    {/if}
-    {#if current}
-      <button
-        class="tool"
-        class:on={current.favourite}
-        aria-label={current.favourite ? 'Remove from favourites' : 'Add to favourites'}
-        aria-pressed={current.favourite}
-        title="Favourite"
-        onclick={() => void store.toggleFavourite(current.id)}
-      >
-        <Icon name="star" size={16} filled={current.favourite} />
-      </button>
-    {/if}
-    <button
-      class="tool"
-      class:on={info}
-      aria-label="Information"
-      aria-pressed={info}
-      title="Information (I)"
-      onclick={() => (info = !info)}
-    >
-      <Icon name="info" size={16} />
-    </button>
-    {#if store.local && current}
-      <button
-        class="tool"
-        aria-label="Open in another program"
-        title="Open in another program"
-        onclick={() => void store.openExternally(current.id)}
-      >
-        <Icon name="share" size={16} />
-      </button>
-    {/if}
-    {#if current}
-      <button class="tool labelled" onclick={() => void store.exportFiles([current.id])}>
-        <Icon name="download" size={16} />
-        Save
-      </button>
-    {/if}
-    <button class="tool" aria-label="Close" title="Close (Esc)" onclick={onclose}>
-      <Icon name="close" size={17} />
-    </button>
   </header>
 
   <div class="body">
@@ -613,6 +646,10 @@
       </aside>
     {/if}
   </div>
+
+  {#if phone.on}
+    <div class="dock" role="toolbar" aria-label="This file">{@render controls()}</div>
+  {/if}
 </div>
 
 <style>
@@ -820,5 +857,83 @@
     margin: var(--sp-4) 0 0;
     font-size: var(--text-sm);
     color: var(--fg-subtle);
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     The whole screen, edge to edge, under the status bar and above the
+     gesture bar. The name is the header, with the way out at its left; what
+     can be done is a dock of icons along the bottom, where a thumb is, and
+     the information is a page over all of it. */
+  /* Not see-through: the screen is the viewer's, whatever is under it. */
+  :global([data-phone]) .backdrop {
+    background: rgb(14 13 16);
+  }
+  :global([data-phone]) .viewer {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  :global([data-phone]) .bar {
+    gap: var(--sp-1);
+    padding: calc(var(--safe-top) + 4px) calc(var(--safe-right) + 12px) 4px
+      calc(var(--safe-left) + 4px);
+  }
+  :global([data-phone]) .what {
+    flex-direction: column;
+    gap: 0;
+  }
+  :global([data-phone]) .file {
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .tool {
+    min-width: 44px;
+    height: 44px;
+  }
+  /* A chevron pointing the way back, not on; the dock's own previous button
+     is turned over by the same rule. */
+  :global([data-phone]) .stage {
+    padding: 0;
+  }
+  :global([data-phone]) .figure {
+    width: 100%;
+  }
+  :global([data-phone]) .picture {
+    border-radius: 0;
+    box-shadow: none;
+  }
+  :global([data-phone]) .paper {
+    border-radius: 0;
+    padding: var(--sp-3) var(--sp-3);
+  }
+  :global([data-phone]) .recording,
+  :global([data-phone]) .failed {
+    padding: 0 var(--sp-4);
+  }
+  .dock {
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    padding: var(--sp-1) calc(var(--safe-right) + var(--sp-2))
+      calc(var(--safe-bottom) + var(--sp-1)) calc(var(--safe-left) + var(--sp-2));
+    border-top: 1px solid rgb(255 255 255 / 0.12);
+  }
+  /* As many as eight across the smallest screen, so they share it. */
+  :global([data-phone]) .dock .tool {
+    flex: 1 1 0;
+    min-width: 40px;
+    max-width: 64px;
+    padding: 0;
+  }
+  .dock .lbl {
+    display: none;
+  }
+  /* The information, a page of its own over the viewer. */
+  :global([data-phone]) .info {
+    position: fixed;
+    inset: 0;
+    z-index: 66;
+    margin: 0;
+    padding-top: var(--safe-top);
+    border-radius: 0;
+    background: var(--bg-panel);
   }
 </style>

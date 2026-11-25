@@ -22,6 +22,7 @@
   import { DEFAULT_COLORS, colorName } from '../lib/colors'
   import { plural } from '../lib/format'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import type { CategoryKind, CategorySpend, MoneyCategory, MoneyCategoryId } from '../lib/types'
@@ -144,6 +145,16 @@
   let catColor = $state('')
   /** The name being typed for a new category, while one is being made. */
   let addingName = $state<string | null>(null)
+
+  // On a phone, back puts away the sheet that is open.
+  closesOnBack(
+    () => editingCategory !== null,
+    () => (editingCategory = null),
+  )
+  closesOnBack(
+    () => groups.length === 0 && addingName !== null,
+    () => (addingName = null),
+  )
   /** Which heading the new category goes under. */
   let addingTo = $state<string | null>(null)
 
@@ -756,5 +767,68 @@
   }
   .swatch.on {
     border-color: var(--fg);
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     A category is two lines: its name and what has been spent, then the bar
+     and what it is budgeted -- the figure that opens the field for it. The
+     menu is always there, at a finger's size, at the end of both. */
+  :global([data-phone]) .sheet-of-rows {
+    padding: var(--sp-2) var(--sp-3) calc(var(--fab-size) + var(--sp-6));
+  }
+  :global([data-phone]) .row {
+    grid-template-columns: minmax(0, 1fr) auto 44px;
+    grid-template-areas:
+      'name  spent more'
+      'bar   limit more';
+    gap: 0 var(--sp-2);
+    padding: 2px 0;
+  }
+  :global([data-phone]) .row > .name {
+    grid-area: name;
+    min-height: 40px;
+  }
+  :global([data-phone]) .row > .spent {
+    grid-area: spent;
+  }
+  :global([data-phone]) .row > .bar {
+    grid-area: bar;
+    padding: 0 0 0 var(--sp-4);
+  }
+  :global([data-phone]) .row > .limit {
+    grid-area: limit;
+    min-width: 6em;
+  }
+  :global([data-phone]) .row > .more,
+  :global([data-phone]) .row > .more-gap {
+    grid-area: more;
+  }
+  :global([data-phone]) .more {
+    width: 44px;
+    height: 44px;
+    opacity: 1;
+  }
+  /* The figure's text lines up with what was spent above it; the room to
+     press is what its padding gives on the other side. */
+  :global([data-phone]) .figure {
+    height: 36px;
+    padding: 0 var(--sp-2);
+    margin-right: calc(var(--sp-2) * -1);
+  }
+  :global([data-phone]) .edit {
+    width: 8.5em;
+    height: 40px;
+    min-width: 0;
+  }
+  :global([data-phone]) .add {
+    height: 44px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .new-cat {
+    max-width: none;
+  }
+  :global([data-phone]) .swatch {
+    width: 32px;
+    height: 32px;
   }
 </style>

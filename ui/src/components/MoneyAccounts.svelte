@@ -660,4 +660,66 @@
   .error {
     margin-left: 44px;
   }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     A bank is its name and how it is doing, with its buttons on a row under
+     that; an account is its name and balance, with its four buttons on a row
+     under them, shown at a finger's size and not on hover; the form to start
+     one is a column. */
+  :global([data-phone]) .page {
+    padding: var(--sp-2) var(--sp-3) calc(var(--fab-size) + var(--sp-6));
+  }
+  :global([data-phone]) .bar .btn {
+    height: 44px;
+  }
+  :global([data-phone]) .card {
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .card-head {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .card-actions {
+    flex: 1 1 100%;
+    margin-left: 44px;
+  }
+  :global([data-phone]) .btn.small {
+    height: 40px;
+  }
+  :global([data-phone]) .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .acct {
+    flex-wrap: wrap;
+    padding-left: 0;
+    row-gap: 0;
+  }
+  :global([data-phone]) .acct-main {
+    flex: 1 1 0;
+  }
+  :global([data-phone]) .acct-name {
+    min-height: 36px;
+  }
+  :global([data-phone]) .acct-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    opacity: 1;
+  }
+  :global([data-phone]) .empty-accts {
+    padding-left: 0;
+  }
+  :global([data-phone]) .rename {
+    max-width: none;
+    height: 44px;
+  }
+  :global([data-phone]) .create {
+    grid-template-columns: minmax(0, 1fr) 80px;
+    padding-left: 0;
+  }
+  :global([data-phone]) .create > :first-child {
+    grid-column: 1 / -1;
+  }
+  :global([data-phone]) .error {
+    margin-left: 0;
+  }
 </style>

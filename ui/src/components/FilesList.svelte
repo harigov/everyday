@@ -30,6 +30,7 @@
   import { isTyping } from '../lib/keys'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu } from '../lib/menu'
+  import { phone } from '../lib/phone.svelte'
   import type { FileEntry, FileSort } from '../lib/types'
   import FileThumb from './FileThumb.svelte'
   import Icon from './Icon.svelte'
@@ -38,9 +39,10 @@
   const ROW = 52
 
   let width = $state(900)
-  /** Narrow panes give up the date, then the size. */
-  const showWhen = $derived(width >= 520)
-  const showSize = $derived(width >= 400)
+  /** Narrow panes give up the date, then the size; a phone's rows say both
+   *  under the name instead (`phoneLine`). */
+  const showWhen = $derived(!phone.on && width >= 520)
+  const showSize = $derived(!phone.on && width >= 400)
 
   const cells = $derived(cellsOf())
   const picked = $derived(new Set(files.selection))
@@ -139,7 +141,20 @@
 
   function clickFile(e: MouseEvent, cell: Extract<Cell, { kind: 'file' }>) {
     cursor = cell.key
+    // A tap opens a file, unless some are picked already, when it picks
+    // another; picking starts at the picture (`tickFile`).
+    if (phone.on) {
+      if (files.selection.length > 0) files.select(cell.file.id, 'toggle')
+      else files.open(cell.file.id)
+      return
+    }
     pick(e, cell.file.id)
+  }
+
+  function tickFile(e: MouseEvent, cell: Extract<Cell, { kind: 'file' }>) {
+    e.stopPropagation()
+    cursor = cell.key
+    files.select(cell.file.id, 'toggle')
   }
 
   function menuFile(e: MouseEvent, cell: Extract<Cell, { kind: 'file' }>) {
@@ -233,6 +248,12 @@
     if (file.storage.kind === 'sealed') return 'Encrypted, kept in the vault'
     const at = file.storage.path.lastIndexOf('/')
     return at < 0 ? 'The top of the files folder' : file.storage.path.slice(0, at)
+  }
+
+  /** What a phone says under a name: what it is, how big, and when. */
+  function phoneLine(file: FileEntry): string {
+    const kind = KIND_LABELS[file.kind]
+    return [kind, formatSize(file.size), rowDate(fileWhen(file))].join(' · ')
   }
 
   // ── Sorting ────────────────────────────────────────────────────────
@@ -365,13 +386,26 @@
             class:slim={!showSize}
             role="option"
             aria-selected={picked.has(file.id)}
-            draggable={!trashed && renaming !== cell.key}
+            draggable={!trashed && renaming !== cell.key && !phone.on}
             onclick={(e) => clickFile(e, cell)}
             ondblclick={() => files.open(file.id)}
             oncontextmenu={(e) => menuFile(e, cell)}
             ondragstart={(e) => startDrag(e, file)}
           >
-            <span class="pic"><FileThumb {file} size={36} /></span>
+            {#if phone.on}
+              <button
+                class="pic tick"
+                class:on={picked.has(file.id)}
+                aria-label="Select {file.name}"
+                aria-pressed={picked.has(file.id)}
+                onclick={(e) => tickFile(e, cell)}
+              >
+                <FileThumb {file} size={44} />
+                <span class="ring"><Icon name="check" size={13} weight={2.5} /></span>
+              </button>
+            {:else}
+              <span class="pic"><FileThumb {file} size={36} /></span>
+            {/if}
             <span class="main">
               {#if renaming === cell.key}
                 <input
@@ -387,7 +421,7 @@
               {:else}
                 <span class="name" title={file.name}>{file.name}</span>
               {/if}
-              <span class="sub">{line(file)}</span>
+              <span class="sub">{phone.on ? phoneLine(file) : line(file)}</span>
             </span>
             {#if showWhen}<span class="when">{rowDate(fileWhen(file))}</span>{/if}
             {#if showSize}<span class="size">{formatSize(file.size)}</span>{/if}
@@ -592,5 +626,60 @@
   }
   .rename:focus {
     outline: none;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     Rows of a picture, a name over what it is, and what it carries. The
+     picture is the way to pick (a tap on the row opens it), the column
+     heads give way to the options menu, and the date and the size go under
+     the name. */
+  :global([data-phone]) .head {
+    display: none;
+  }
+  :global([data-phone]) .line.narrow.slim,
+  :global([data-phone]) .line {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    height: 60px;
+    padding: 0 var(--sp-2) 0 var(--sp-1);
+    column-gap: var(--sp-2);
+  }
+  :global([data-phone]) .rows {
+    padding-bottom: calc(var(--fab-size) + var(--sp-6));
+  }
+  .pic.tick {
+    position: relative;
+    display: block;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .pic.tick :global(img),
+  .pic.tick :global(svg) {
+    pointer-events: none;
+  }
+  /* The ring over the picture's corner: filled when picked, which tints
+     the whole picture so a picked row is seen from the far end of a list. */
+  .ring {
+    position: absolute;
+    inset: auto 3px 3px auto;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border: 2px solid rgb(255 255 255 / 0.92);
+    border-radius: 50%;
+    background: rgb(0 0 0 / 0.25);
+    color: transparent;
+  }
+  .tick.on .ring {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--fg-on-accent);
+  }
+  .tick.on {
+    outline: 3px solid var(--accent);
+    outline-offset: -3px;
   }
 </style>

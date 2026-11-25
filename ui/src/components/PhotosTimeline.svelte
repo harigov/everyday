@@ -33,6 +33,7 @@
   import { clearAll, fileMenu, filesUi, formatDuration } from '../lib/files-ui.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { phone } from '../lib/phone.svelte'
   import {
     GAP,
     PAD,
@@ -104,11 +105,22 @@
   const shown = $derived(showWithStacks(items, members))
   const list = $derived(shown.map((s) => s.file))
   const at = $derived(new Map(list.map((f, i) => [f.id, i])))
+  /** The edge a phone leaves is narrower: the pictures are the screen. */
+  const pad = $derived(phone.on ? 12 : PAD)
+  /** How big the tiles are asked to be. A phone is asked for a number across
+   *  instead -- four, three or two -- since it is the count that reads as
+   *  small, medium and large on a screen that is the same width whatever
+   *  its pixels. */
+  const target = $derived.by(() => {
+    if (!phone.on) return zoomTarget(zoom)
+    const across = zoom === 'small' ? 4 : zoom === 'large' ? 2 : 3
+    return Math.max(40, Math.floor((Math.max(0, width - 2 * pad) + GAP) / across) - GAP - 0.5)
+  })
   const layout = $derived(
     layoutTimeline(
       shown.map((s) => ({ id: s.file.id, when: s.when })),
-      Math.max(0, width - 2 * PAD),
-      zoomTarget(zoom),
+      Math.max(0, width - 2 * pad),
+      target,
       headings,
     ),
   )
@@ -192,6 +204,13 @@
   function choose(id: FileId, mode: SelectMode) {
     cursor = id
     files.select(id, mode)
+  }
+
+  /** A tap on a picture: it opens, unless some are picked already, when it
+   *  picks another -- the picking itself starts at the picture's circle. */
+  function tap(id: FileId) {
+    if (selecting) choose(id, 'toggle')
+    else openViewer(id)
   }
 
   /** Open the viewer on a picture, and point the inspector at it. */
@@ -341,10 +360,15 @@
       ids.length === 1 && {
         label: 'Open',
         icon: 'eye',
-        hint: 'Enter',
+        hint: phone.on ? undefined : 'Enter',
         run: () => openViewer(file.id),
       },
-      { label: 'Add to album…', icon: 'image', hint: 'A', run: () => (picking = { x, y, ids }) },
+      {
+        label: 'Add to album…',
+        icon: 'image',
+        hint: phone.on ? undefined : 'A',
+        run: () => (picking = { x, y, ids }),
+      },
       album && {
         label: 'Set as album cover',
         icon: 'pin',
@@ -401,7 +425,7 @@
       class:selecting
       role="group"
       aria-label="Pictures"
-      style="--pad: {PAD}px; --gap: {GAP}px; height: calc({layout.height}px + var(--fab-clear))"
+      style="--pad: {pad}px; --gap: {GAP}px; height: calc({layout.height}px + var(--fab-clear))"
     >
       {#each lines as line (line.key)}
         {#if line.kind === 'month'}
@@ -432,7 +456,7 @@
                   tabindex={i === stop ? 0 : -1}
                   aria-label={file.name}
                   aria-pressed={sel}
-                  onclick={(e) => choose(file.id, modeOf(e))}
+                  onclick={(e) => (phone.on ? tap(file.id) : choose(file.id, modeOf(e)))}
                   ondblclick={() => openViewer(file.id)}
                   oncontextmenu={(e) => onTileMenu(e, file)}
                   onkeydown={(e) => onTileKey(e, file, i)}
@@ -699,5 +723,43 @@
     z-index: 3;
     right: 6px;
     bottom: 6px;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     A tap opens a picture, so picking is the circle in its corner: a ring
+     always, filled once picked, with a finger's room round it (inside the
+     tile, which clips what is outside it). The favourite shows only where
+     there is one; the toolbar's bar is where it is given. */
+  :global([data-phone]) .check {
+    top: 4px;
+    left: 4px;
+    width: 26px;
+    height: 26px;
+    border: 2px solid rgb(255 255 255 / 0.92);
+    background: rgb(0 0 0 / 0.22);
+    color: transparent;
+    opacity: 1;
+  }
+  :global([data-phone]) .check::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+  }
+  :global([data-phone]) .check.on {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--fg-on-accent);
+  }
+  :global([data-phone]) .fav:not(.on) {
+    display: none;
+  }
+  :global([data-phone]) .fav {
+    top: 4px;
+    right: 4px;
+    width: 26px;
+    height: 26px;
+  }
+  :global([data-phone]) .chip {
+    height: 20px;
   }
 </style>

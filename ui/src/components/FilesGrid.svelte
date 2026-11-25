@@ -38,14 +38,17 @@
   import { isTyping } from '../lib/keys'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu } from '../lib/menu'
+  import { phone } from '../lib/phone.svelte'
   import FileThumb from './FileThumb.svelte'
   import Icon from './Icon.svelte'
   import VirtualList from './VirtualList.svelte'
 
-  /** The narrowest a tile is drawn, and what separates two. */
-  const TILE = 156
-  const GAP = 12
-  const PAD = 16
+  /** The narrowest a tile is drawn, and what separates two. A phone's are
+   *  closer, and a little narrower: two to a row from the smallest phone to
+   *  the largest. */
+  const TILE = $derived(phone.on ? 140 : 156)
+  const GAP = $derived(phone.on ? 8 : 12)
+  const PAD = $derived(phone.on ? 10 : 16)
 
   let width = $state(900)
   const cols = $derived(Math.max(1, Math.floor((width - PAD * 2 + GAP) / (TILE + GAP))))
@@ -203,7 +206,21 @@
 
   function clickFile(e: MouseEvent, cell: Extract<Cell, { kind: 'file' }>) {
     cursor = cell.key
+    // A finger has no double-click and no Ctrl: a tap opens the file, unless
+    // some are picked already, when it picks another -- as in any gallery.
+    if (phone.on) {
+      if (files.selection.length > 0) files.select(cell.file.id, 'toggle')
+      else files.open(cell.file.id)
+      return
+    }
     pick(e, cell.file.id)
+  }
+
+  /** The circle on a tile: picks it, which is how a phone starts picking. */
+  function tickFile(e: MouseEvent, cell: Extract<Cell, { kind: 'file' }>) {
+    e.stopPropagation()
+    cursor = cell.key
+    files.select(cell.file.id, 'toggle')
   }
 
   function menuFile(e: MouseEvent, cell: Extract<Cell, { kind: 'file' }>) {
@@ -368,7 +385,7 @@
               class:gone={missing}
               role="option"
               aria-selected={picked.has(file.id)}
-              draggable={!trashed && renaming !== cell.key}
+              draggable={!trashed && renaming !== cell.key && !phone.on}
               onclick={(e) => clickFile(e, cell)}
               ondblclick={() => files.open(file.id)}
               oncontextmenu={(e) => menuFile(e, cell)}
@@ -376,6 +393,17 @@
             >
               <div class="art">
                 <FileThumb {file} />
+                {#if phone.on}
+                  <button
+                    class="tick"
+                    class:on={picked.has(file.id)}
+                    aria-label="Select {file.name}"
+                    aria-pressed={picked.has(file.id)}
+                    onclick={(e) => tickFile(e, cell)}
+                  >
+                    <Icon name="check" size={14} weight={2.4} />
+                  </button>
+                {/if}
                 <span class="marks">
                   {#if file.favourite}
                     <span class="mark star" title="Favourite"
@@ -604,5 +632,44 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     A tap opens a file, so picking is its own control: a ring in the
+     picture's corner, filled once picked, with a finger's room around it.
+     The favourite and the rating make way for it. */
+  .tick {
+    position: absolute;
+    z-index: 2;
+    top: 6px;
+    left: 6px;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border: 2px solid rgb(255 255 255 / 0.92);
+    border-radius: 50%;
+    background: rgb(0 0 0 / 0.22);
+    color: transparent;
+  }
+  /* The room around it, inside the picture. */
+  .tick::before {
+    content: '';
+    position: absolute;
+    inset: -6px;
+  }
+  .tick.on {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--fg-on-accent);
+  }
+  :global([data-phone]) .marks:not(.end) {
+    left: 38px;
+  }
+  :global([data-phone]) .grid {
+    padding-bottom: calc(var(--fab-size) + var(--sp-6));
+  }
+  :global([data-phone]) .folder {
+    height: 56px;
   }
 </style>

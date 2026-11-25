@@ -21,6 +21,7 @@
   import { untrack } from 'svelte'
   import { money } from '../lib/money.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { plural } from '../lib/format'
   import type {
     AccountKind,
@@ -102,6 +103,12 @@
     preview = null
     onclose()
   }
+
+  // Back puts it away, on a phone.
+  closesOnBack(
+    () => true,
+    () => close(),
+  )
 
   /** A first guess at a CSV's columns when the service offered none. */
   function guess(columns: string[]): CsvMapping {
@@ -748,5 +755,46 @@
   }
   .currency {
     text-transform: uppercase;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     A sheet like the rest: at the top, as wide as the screen allows, and
+     scrolling inside itself when the preview is taller than what is left
+     above the bar of apps. */
+  :global([data-phone]) .wide {
+    top: calc(var(--safe-top) + var(--sp-3));
+    translate: -50% 0;
+    width: calc(100vw - var(--sp-4) - var(--safe-left) - var(--safe-right));
+    max-height: calc(
+      100dvh - var(--safe-top) - var(--bottombar-h) - var(--safe-bottom) - var(--sp-6)
+    );
+    overflow-y: auto;
+  }
+  :global([data-phone]) .grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .grid label,
+  :global([data-phone]) .lab {
+    margin-top: var(--sp-2);
+  }
+  :global([data-phone]) .grid select {
+    height: 44px;
+  }
+  :global([data-phone]) .new-account {
+    grid-template-columns: minmax(0, 1fr) 80px;
+  }
+  :global([data-phone]) .new-account > :first-child {
+    grid-column: 1 / -1;
+  }
+  :global([data-phone]) .modes label,
+  :global([data-phone]) .checks label {
+    min-height: 44px;
+  }
+  :global([data-phone]) .file {
+    min-height: 44px;
+  }
+  :global([data-phone]) .sample-row .d {
+    width: 5.5em;
   }
 </style>

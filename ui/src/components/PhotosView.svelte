@@ -13,6 +13,7 @@
   // end of what is loaded comes into view.
 
   import { files } from '../lib/files.svelte'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { remembered, type Zoom } from '../lib/photos'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
@@ -37,6 +38,18 @@
     remembered.facets = facetsOpen
   }
 
+  // A phone has no room for the column: the years, people and places are a
+  // sheet, shut until asked for, that back puts away and a choice closes.
+  let sheet = $state(false)
+  closesOnBack(
+    () => sheet && phone.on,
+    () => (sheet = false),
+  )
+  $effect(() => {
+    void files.facet
+    sheet = false
+  })
+
   const narrowed = $derived(!!files.facet || !!files.search.trim())
   /** A change of any of these is a different list: back to the top. */
   const resetKey = $derived(
@@ -48,12 +61,17 @@
      make this box the containing block of the viewer and the album popover,
      which are `position: fixed` and belong to the window. -->
 <div class="photos" style="--tint: {files.accent}" bind:clientWidth={paneWidth}>
-  {#if facetsOpen && paneWidth >= ROOM_FOR_FACETS}
+  {#if facetsOpen && paneWidth >= ROOM_FOR_FACETS && !phone.on}
     <div class="side"><PhotosFacets /></div>
   {/if}
 
   <div class="main">
-    <PhotosBar {zoom} onzoom={setZoom} {facetsOpen} ontoggleFacets={toggleFacets} />
+    <PhotosBar
+      {zoom}
+      onzoom={setZoom}
+      facetsOpen={phone.on ? sheet : facetsOpen}
+      ontoggleFacets={phone.on ? () => (sheet = !sheet) : toggleFacets}
+    />
 
     <PhotosTimeline
       items={files.visibleFiles}
@@ -104,6 +122,18 @@
   </div>
 </div>
 
+{#if sheet && phone.on}
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+  <div class="scrim" onclick={() => (sheet = false)}></div>
+  <div class="sheet browse" role="dialog" aria-modal="true" aria-label="Browse by">
+    <div class="browse-head">
+      <h2>Browse by</h2>
+      <button class="btn btn-sm" onclick={() => (sheet = false)}>Done</button>
+    </div>
+    <div class="browse-list"><PhotosFacets /></div>
+  </div>
+{/if}
+
 <style>
   /* No background of its own: it stands on the raised surface the shell lays
      under every app. A row, so the facet column and the timeline each get a
@@ -125,5 +155,32 @@
     flex: 1;
     min-width: 0;
     min-height: 0;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     The facets as a sheet: a heading and Done over the list, which scrolls
+     inside the sheet and not with it. */
+  .browse {
+    display: flex;
+    flex-direction: column;
+    padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  }
+  .browse-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex: none;
+    padding: 0 var(--sp-1) var(--sp-2);
+  }
+  .browse-head h2 {
+    font-size: var(--text-md);
+    font-weight: 620;
+    letter-spacing: -0.008em;
+  }
+  .browse-list {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
   }
 </style>

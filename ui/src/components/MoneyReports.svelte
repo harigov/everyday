@@ -26,6 +26,7 @@
   import { formatMoney, monthLabel, thisMonth } from '../lib/money'
   import { dateFormat } from '../lib/format'
   import type { MoneyCategoryId } from '../lib/types'
+  import { phone } from '../lib/phone.svelte'
   import RankTable from './RankTable.svelte'
 
   const currency = $derived(money.mainCurrency)
@@ -205,7 +206,9 @@
                   <span class="bar gap"></span>
                 {/if}
               </div>
-              <span class="mlabel">{columnLabel(m.month, i)}</span>
+              <span class="mlabel" class:skip={phone.on && (flow.length - 1 - i) % 2 === 1}>
+                {columnLabel(m.month, i)}
+              </span>
             </div>
           {/each}
         </div>
@@ -254,7 +257,7 @@
         limit={12}
         empty="Nothing spent this month yet."
         color="var(--fg-muted)"
-        figureWidth="7em"
+        figureWidth={phone.on ? '5.6em' : '7em'}
       />
     </section>
 
@@ -588,5 +591,50 @@
   .twin .num {
     text-align: right;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     The cards are the page's width; the cash-flow chart gives its twelve
+     columns room by naming every other month; the tables under the charts
+     scroll inside their own box rather than the page's. */
+  :global([data-phone]) .page {
+    padding: var(--sp-2) var(--sp-3) calc(var(--fab-size) + var(--sp-6));
+    gap: var(--sp-4);
+  }
+  :global([data-phone]) .card {
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .card-head {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .flow {
+    gap: 2px;
+  }
+  .mlabel.skip {
+    visibility: hidden;
+  }
+  :global([data-phone]) .bars {
+    height: 140px;
+  }
+  :global([data-phone]) .axis.split {
+    flex-wrap: wrap;
+    gap: 0 var(--sp-3);
+  }
+  :global([data-phone]) .twin {
+    overflow-x: auto;
+  }
+  :global([data-phone]) .twin summary {
+    display: flex;
+    align-items: center;
+    min-height: 40px;
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .twin table {
+    min-width: 22em;
+  }
+  :global([data-phone]) .twin th,
+  :global([data-phone]) .twin td {
+    padding: 8px 0;
+    white-space: nowrap;
   }
 </style>

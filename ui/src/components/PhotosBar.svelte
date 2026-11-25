@@ -190,4 +190,31 @@
       display: none;
     }
   }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     Wraps rather than squeezes: the facets button and the sizes on one row,
+     what the selection can be given and the facet it is narrowed to under
+     them, and every button says what it does. */
+  :global([data-phone]) .strip {
+    flex-wrap: wrap;
+    padding: var(--sp-1) var(--sp-3) var(--sp-2);
+  }
+  :global([data-phone]) .strip .btn span {
+    display: inline;
+  }
+  :global([data-phone]) .strip .grow {
+    display: none;
+  }
+  :global([data-phone]) .acts {
+    order: 3;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .filters {
+    margin-left: auto;
+  }
+  :global([data-phone]) .narrowed {
+    height: 40px;
+    padding: 0 var(--sp-3) 0 var(--sp-4);
+  }
 </style>

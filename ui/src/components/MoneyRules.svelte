@@ -584,4 +584,69 @@
   .spacer {
     flex: 1;
   }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     The intro is a line of words, then the two buttons side by side under
+     it; a rule is its sentence, with the order and the actions in a row of
+     finger-sized buttons under that, always shown; the form is a column. */
+  :global([data-phone]) .page {
+    padding: var(--sp-2) var(--sp-3) calc(var(--fab-size) + var(--sp-6));
+  }
+  :global([data-phone]) .intro {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .intro .hint {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .intro .btn {
+    flex: 1 1 auto;
+    height: 44px;
+  }
+  :global([data-phone]) .rule:not(.open) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'sentence sentence'
+      'order    actions';
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
+    padding: var(--sp-3) 0 var(--sp-1);
+  }
+  :global([data-phone]) .rule .sentence {
+    grid-area: sentence;
+  }
+  :global([data-phone]) .rule .order {
+    grid-area: order;
+    flex-direction: row;
+  }
+  :global([data-phone]) .rule .actions {
+    grid-area: actions;
+    justify-content: flex-end;
+    opacity: 1;
+  }
+  :global([data-phone]) .icon-btn,
+  :global([data-phone]) .order .icon-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius);
+  }
+  :global([data-phone]) .grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .grid > label,
+  :global([data-phone]) .lab {
+    margin-top: var(--sp-2);
+  }
+  :global([data-phone]) .field.small,
+  :global([data-phone]) .inline select {
+    height: 44px;
+  }
+  :global([data-phone]) .editor-row .btn {
+    height: 44px;
+  }
+  :global([data-phone]) .check {
+    min-height: 44px;
+  }
 </style>

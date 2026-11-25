@@ -26,6 +26,7 @@
   import { money } from '../lib/money.svelte'
   import { panels } from '../lib/panels.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import Icon from './Icon.svelte'
   import SignInLink from './SignInLink.svelte'
 
@@ -61,6 +62,15 @@
   function cancel() {
     void money.cancelLink()
   }
+
+  // Back puts it away, on a phone: it cancels a sign-in as Escape does.
+  closesOnBack(
+    () => showing,
+    () => {
+      if (linking) cancel()
+      else close()
+    },
+  )
 
   function openSettings() {
     if (money.linkError !== null) money.linkError = null

@@ -164,4 +164,25 @@
   li.over .sub {
     color: var(--fg-faint);
   }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     Shown over the list, under the toolbar: a strip with room for a finger
+     on its buttons. */
+  :global([data-phone]) .uploads {
+    padding: 0 var(--sp-3) var(--sp-2);
+    border-top: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  :global([data-phone]) ul {
+    max-height: 168px;
+  }
+  :global([data-phone]) .clear {
+    min-height: 36px;
+    padding: 0 var(--sp-2);
+  }
+  :global([data-phone]) .stop {
+    width: 36px;
+    height: 36px;
+    margin: -8px -6px -8px 0;
+  }
 </style>

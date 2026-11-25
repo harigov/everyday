@@ -15,6 +15,7 @@
   import { focusOnMount } from '../lib/focus'
   import { files } from '../lib/files.svelte'
   import { filesUi } from '../lib/files-ui.svelte'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import type { AlbumId, FileId } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -38,7 +39,7 @@
   const HEIGHT = 330
 
   const place = $derived(
-    at
+    at && !phone.on
       ? `position: fixed; left: ${Math.max(8, Math.min(at.x, window.innerWidth - WIDTH - 8))}px; ` +
           `top: ${Math.max(8, Math.min(at.y + 4, window.innerHeight - HEIGHT))}px`
       : undefined,
@@ -80,9 +81,21 @@
     if (same) void add(same.album.id)
     else void create()
   }
+
+  // Back puts it away, on a phone.
+  closesOnBack(
+    () => true,
+    () => onclose(),
+  )
 </script>
 
 <svelte:window onkeydown={(e: KeyboardEvent) => e.key === 'Escape' && onclose()} />
+
+<!-- A phone's is a sheet, hanging from the top of the screen, over a scrim. -->
+{#if phone.on}
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+  <div class="scrim" onclick={onclose}></div>
+{/if}
 
 <div
   class="pop frost"
@@ -152,5 +165,24 @@
   }
   .hint {
     padding: var(--sp-2) var(--sp-3);
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     Hung from the top of the screen like every sheet, as wide as it allows,
+     above the scrim and the bar of apps. */
+  :global([data-phone]) .pop {
+    position: fixed;
+    z-index: 66;
+    top: calc(var(--safe-top) + max(8dvh, var(--sp-4)));
+    left: calc(var(--safe-left) + var(--sp-3));
+    right: calc(var(--safe-right) + var(--sp-3));
+    width: auto;
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .field {
+    height: 44px;
+  }
+  :global([data-phone]) .list {
+    max-height: min(calc(var(--side-row-h) * 7), 40dvh);
   }
 </style>

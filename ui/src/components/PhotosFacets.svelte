@@ -100,4 +100,16 @@
   .none {
     padding: var(--sp-3);
   }
+
+  /* A phone shows it as a sheet's whole content, not a column. */
+  :global([data-phone]) .facets {
+    width: auto;
+    border-right: 0;
+    padding-top: 0;
+  }
+  :global([data-phone]) .more {
+    min-height: 44px;
+    margin-left: var(--sp-3);
+    padding: 0 var(--sp-3);
+  }
 </style>
