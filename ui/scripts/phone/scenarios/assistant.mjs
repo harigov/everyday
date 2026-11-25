@@ -54,7 +54,21 @@ const pane =
     await press(row(page, from))
     await settle(600)
     if (tab) {
-      await press(page.locator('aside.nav').getByText(tab, { exact: true }).first())
+      const beside = page.locator('aside.nav').getByText(tab, { exact: true }).first()
+      if (await beside.isVisible()) {
+        await press(beside)
+      } else {
+        // A phone's Settings is one page at a time: back to its list of
+        // pages, then the one wanted.
+        await back(page)
+        await settle(600)
+        await press(
+          page
+            .locator('nav[aria-label="Settings sections"] .tab')
+            .filter({ has: page.locator('.side-text', { hasText: new RegExp(`^${tab}$`) }) })
+            .first(),
+        )
+      }
       await settle(600)
     }
     await page.addStyleTag({ content: 'aside.nav { display: none !important }' })

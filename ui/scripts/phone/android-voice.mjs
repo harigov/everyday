@@ -71,7 +71,9 @@ if (!(await page.locator('button[aria-label="Talk to the assistant"]').isVisible
   await touch(page, '[data-bottom-bar] button:has-text("Assistant")')
   await wait(2000)
 }
-await touch(page, 'button[title^="New conversation"]')
+// The Assistant app on a phone opens on its list of conversations, with a
+// row to start a new one; the header's button is the desktop's.
+await touch(page, 'button:has-text("New conversation") >> visible=true')
 await wait(1500)
 
 // Every state the voice bar shows, as it shows it.

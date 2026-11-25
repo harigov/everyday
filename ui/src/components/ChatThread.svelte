@@ -1282,6 +1282,7 @@
             class="send"
             onclick={() => void send()}
             disabled={!canSend}
+            aria-label="Send"
             title={preparing
               ? keepsFiles
                 ? 'Adding the files…'
@@ -2302,9 +2303,12 @@
   :global([data-phone]) .send {
     border-radius: 50%;
   }
+  /* No scrollbar: a finger scrolls it, and Android's webview drew one the
+     whole height of an empty field it rounded a fraction of a line over. */
   :global([data-phone]) textarea {
     min-height: 44px;
     font-size: max(16px, var(--text-base));
+    scrollbar-width: none;
   }
   :global([data-phone]) .seen {
     min-height: 32px;
