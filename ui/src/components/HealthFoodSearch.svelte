@@ -576,4 +576,29 @@
   .spacer {
     flex: 1;
   }
+
+  /* A phone: a food is a row a finger can hit with its star beside it, the
+     pairs of fields stack, and the five nutrients wrap three and two. */
+  :global([data-phone]) .pick {
+    min-height: 48px;
+    justify-content: center;
+  }
+  :global([data-phone]) .star {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :global([data-phone]) .five {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  :global([data-phone]) .make-row,
+  :global([data-phone]) .code-row {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .code-row .field {
+    flex: 1 1 140px;
+    min-width: 0;
+  }
 </style>

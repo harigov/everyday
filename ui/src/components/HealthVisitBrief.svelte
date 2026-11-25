@@ -18,6 +18,7 @@
   import { renderMarkdown } from '../lib/markdown'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { longDate } from '../lib/format'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { addMonths, todayIso } from '../lib/time'
   import type { ConditionId, VisitBrief } from '../lib/types'
 
@@ -28,6 +29,12 @@
   }
 
   const { conditionId, onclose }: Props = $props()
+
+  // Back, on a phone, closes the sheet as Close does.
+  closesOnBack(
+    () => phone.on,
+    () => onclose(),
+  )
 
   /** The last visit's date, from a visit note filed for this condition (or
    *  for none in particular), if there is one. Read once, when the dialog
@@ -309,5 +316,36 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--bg-sunken);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     A sheet as wide as the screen under the status bar. The date and its
+     button stack, a table in the summary scrolls inside its own box rather
+     than pushing the sheet wider, and the buttons wrap. */
+  :global([data-phone]) .sheet.wide {
+    top: calc(var(--safe-top) + var(--sp-3));
+    width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
+    max-height: calc(
+      100dvh - var(--safe-top) - var(--sp-3) - var(--bottombar-h) - var(--safe-bottom) - var(--sp-3)
+    );
+  }
+  :global([data-phone]) .ask {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  :global([data-phone]) .ask-field {
+    flex: none;
+  }
+  :global([data-phone]) .brief {
+    padding: var(--sp-3);
+    overflow-wrap: anywhere;
+  }
+  :global([data-phone]) .md :global(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  :global([data-phone]) .sheet-row {
+    flex-wrap: wrap;
   }
 </style>

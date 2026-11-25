@@ -15,6 +15,7 @@
 
   import { health } from '../lib/health.svelte'
   import { fromDisplay, ruleText } from '../lib/health'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { todayIso } from '../lib/time'
   import type {
     CarePlan,
@@ -161,6 +162,13 @@
   function back() {
     chosen = null
   }
+
+  // On a phone, back from a template's plan goes to the list of templates
+  // (and from the list, to the conditions: the parent's).
+  closesOnBack(
+    () => phone.on && chosen !== null,
+    () => back(),
+  )
 
   async function add() {
     const template = chosen
@@ -652,5 +660,47 @@
     align-items: center;
     gap: var(--sp-2);
     margin-top: var(--sp-4);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     Every row a person ticks is a finger tall, with a checkbox big enough
+     to hit; the number fields are 40 px; the heading's buttons and the
+     foot's wrap beneath their text rather than off the screen. */
+  :global([data-phone]) .head,
+  :global([data-phone]) .foot {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .foot {
+    justify-content: flex-end;
+  }
+  :global([data-phone]) .foot .grow,
+  :global([data-phone]) .head .grow {
+    display: none;
+  }
+  :global([data-phone]) .head .btn:first-of-type {
+    margin-left: auto;
+  }
+  :global([data-phone]) .check {
+    min-height: 44px;
+    flex-basis: 100%;
+  }
+  :global([data-phone]) .check input {
+    width: 20px;
+    height: 20px;
+    margin-top: 2px;
+    flex: none;
+  }
+  :global([data-phone]) .check.inline {
+    flex: none;
+    min-height: 44px;
+  }
+  :global([data-phone]) .field.small {
+    height: 40px;
+  }
+  :global([data-phone]) .diag-field {
+    width: 100%;
+  }
+  :global([data-phone]) .bounds {
+    padding-left: 28px;
   }
 </style>

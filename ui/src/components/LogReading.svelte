@@ -308,4 +308,23 @@
   .cname {
     font-size: var(--text-xs);
   }
+
+  /* A phone: the field, its tick and the known trackers a finger tall. */
+  :global([data-phone]) .line {
+    height: 46px;
+  }
+  :global([data-phone]) .line input {
+    align-self: stretch;
+  }
+  :global([data-phone]) .go {
+    width: 38px;
+    height: 38px;
+  }
+  :global([data-phone]) .chip {
+    min-height: 40px;
+    padding-right: var(--sp-3);
+  }
+  :global([data-phone]) .cname {
+    font-size: var(--text-sm);
+  }
 </style>

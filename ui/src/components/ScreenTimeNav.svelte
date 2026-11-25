@@ -69,7 +69,7 @@
     </button>
   {/each}
 
-  <div class="range">
+  <div class="range desktop-only">
     <div class="filters" role="group" aria-label="How long the summary covers">
       {#each RANGES as r (r.id)}
         <button

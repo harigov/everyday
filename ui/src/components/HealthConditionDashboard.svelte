@@ -1025,4 +1025,91 @@
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
   }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     One column of cards whose rows have no room for a column of their own
+     beside their words: a target's state sits over what it says, a test's
+     due date and a medicine's meter under theirs, and the time in each
+     glucose band reads as a line and a half rather than five columns. */
+  :global([data-phone]) .title-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :global([data-phone]) .actions {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .actions .btn {
+    flex: 1;
+  }
+  :global([data-phone]) .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :global([data-phone]) .row {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  :global([data-phone]) .row .grow {
+    display: none;
+  }
+  :global([data-phone]) .target {
+    flex-direction: column;
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .state {
+    width: auto;
+    padding-top: 0;
+  }
+  :global([data-phone]) .test,
+  :global([data-phone]) .med {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .test .due {
+    padding-top: 0;
+  }
+  :global([data-phone]) .med-meter {
+    width: 100%;
+  }
+  :global([data-phone]) .tiles > :global(*) {
+    max-width: none;
+  }
+  :global([data-phone]) .tir-key li {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    row-gap: 0;
+  }
+  :global([data-phone]) .tir-key .swatch {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+  }
+  :global([data-phone]) .tir-key .tir-name {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  :global([data-phone]) .tir-key .tir-pct {
+    grid-column: 3;
+    grid-row: 1;
+    min-width: 3em;
+  }
+  :global([data-phone]) .tir-key .tir-time {
+    grid-column: 4;
+    grid-row: 1;
+    min-width: 6em;
+  }
+  :global([data-phone]) .tir-key .tir-range {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  :global([data-phone]) .plot-head {
+    flex-wrap: wrap;
+    gap: 0 var(--sp-3);
+  }
 </style>

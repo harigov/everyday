@@ -697,4 +697,45 @@
     background: color-mix(in oklab, var(--danger) 12%, transparent);
     color: var(--danger);
   }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The links and the delete buttons a finger has to hit are a finger's
+     size without making their rows any taller than the text beside them
+     (a negative margin takes back what the extra height gave); the time
+     for a dose taken at another time wraps with its buttons. */
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    margin-block: -8px;
+  }
+  :global([data-phone]) .toggle {
+    margin-block: 0;
+  }
+  :global([data-phone]) .due-actions {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .other {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .field.small {
+    height: 40px;
+  }
+  :global([data-phone]) .dose {
+    min-height: 44px;
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .dose-time {
+    width: 5em;
+  }
+  :global([data-phone]) .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .bar .grow {
+    display: none;
+  }
+  :global([data-phone]) .bar .btn {
+    flex: 1;
+  }
 </style>

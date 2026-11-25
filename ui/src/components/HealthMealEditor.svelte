@@ -31,6 +31,7 @@
   import { health } from '../lib/health.svelte'
   import { gramsOf, itemFor, slotName, sumNutrients } from '../lib/health'
   import { trapFocus } from '../lib/focus'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { addDays } from '../lib/time'
   import type { FileEntry, FileId, Food, Meal, MealItem, MealSlot, Nutrients } from '../lib/types'
   import FileCard from './FileCard.svelte'
@@ -78,6 +79,16 @@
     if (stray.length > 0) void health.discardFiles(stray)
     health.editingMeal = null
   }
+
+  // Back, on a phone, closes the food search first and then the editor.
+  closesOnBack(
+    () => phone.on,
+    () => close(),
+  )
+  closesOnBack(
+    () => phone.on && adding,
+    () => (adding = false),
+  )
 
   // Deleting asks first, through the store; once the meal is gone from the
   // store's list, so is this editor.
@@ -780,5 +791,62 @@
 
   .error {
     margin: var(--sp-3) 0 0;
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     A sheet as wide as the screen under the status bar, its three fields
+     stacked two and one, each food's name above its amount and unit rather
+     than squeezed into one line, and every control a finger's size. */
+  :global([data-phone]) .sheet.wide {
+    top: calc(var(--safe-top) + var(--sp-3));
+    width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
+    max-height: calc(
+      100dvh - var(--safe-top) - var(--sp-3) - var(--bottombar-h) - var(--safe-bottom) - var(--sp-3)
+    );
+  }
+  :global(:root[data-phone][data-keyboard]) .sheet.wide {
+    max-height: calc(100dvh - var(--safe-top) - var(--sp-6));
+  }
+  :global([data-phone]) .top {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  :global([data-phone]) .top > div:first-child {
+    grid-column: 1 / -1;
+  }
+  :global([data-phone]) .line {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .item-name,
+  :global([data-phone]) .field.grow {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .field.small {
+    height: 40px;
+  }
+  :global([data-phone]) .field.amount,
+  :global([data-phone]) .field.unit {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+  :global([data-phone]) .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .nums {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  :global([data-phone]) .estimated {
+    height: 34px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  :global([data-phone]) .sheet-row {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 </style>

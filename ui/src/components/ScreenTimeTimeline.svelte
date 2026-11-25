@@ -340,4 +340,28 @@
     font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
   }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     A run is two lines -- when it was, then what and for how long -- rather
+     than one with a column for each, and the window's title is not the only
+     way to read a run's bar: every one of them is in the list. */
+  :global([data-phone]) .runs li {
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding: var(--sp-2) 0;
+  }
+  :global([data-phone]) .when {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  :global([data-phone]) .what {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+  :global([data-phone]) .title {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .secs {
+    width: auto;
+  }
 </style>

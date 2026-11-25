@@ -17,11 +17,13 @@
   import { health } from '../lib/health.svelte'
   import { HEALTH_ACCENT, formatNumber, labKey, labOutOfRange, newId } from '../lib/health'
   import { dateFormat, plural } from '../lib/format'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { startOfDay, todayIso } from '../lib/time'
   import type { LabFlag, LabResult, LabTrend } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import HealthLine from './HealthLine.svelte'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
 
   const FLAGS: { value: LabFlag; label: string }[] = [
     { value: 'none', label: 'No flag' },
@@ -244,6 +246,17 @@
     problem = null
   }
 
+  // On a phone one test opened from the list is a page over it, and the form
+  // that adds or corrects a result a layer over that: back closes each.
+  closesOnBack(
+    () => phone.on && openKey !== null,
+    () => (openKey = null),
+  )
+  closesOnBack(
+    () => phone.on && draft !== null,
+    () => stop(),
+  )
+
   /** A name that is already a test fills in its code and unit, once. */
   function nameChosen() {
     const d = draft
@@ -420,7 +433,8 @@
   <div class="page">
     {#if trend}
       <div class="d-head">
-        <button class="back" onclick={() => (openKey = null)}>
+        <PhoneBack onclick={() => (openKey = null)} label="All tests" />
+        <button class="back desktop-only" onclick={() => (openKey = null)}>
           <span class="flip"><Icon name="chevron" size={13} /></span>
           All tests
         </button>
@@ -869,5 +883,109 @@
     .f.wider {
       grid-column: span 2;
     }
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     A test opened is a page with its way back and Add a result across the
+     top and its name under them. Its table is laid out as a card per result
+     -- date, value, then what the reference and the source were -- rather
+     than five columns in a box that scrolls sideways; the form's fields
+     are a finger tall. */
+  :global([data-phone]) .page {
+    padding-inline: var(--sp-3);
+  }
+  :global([data-phone]) .d-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0 var(--sp-2);
+  }
+  :global([data-phone]) .d-head .pane-titles {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-inline: var(--sp-2);
+  }
+  :global([data-phone]) .d-head .btn {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  :global([data-phone]) .d-head .pane-title {
+    white-space: normal;
+  }
+  :global([data-phone]) .test {
+    min-height: 64px;
+  }
+  :global([data-phone]) table,
+  :global([data-phone]) tbody,
+  :global([data-phone]) tr,
+  :global([data-phone]) td {
+    display: block;
+  }
+  :global([data-phone]) thead {
+    display: none;
+  }
+  :global([data-phone]) tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: var(--sp-2);
+    padding: var(--sp-2) 0;
+    border-bottom: 1px solid color-mix(in oklab, var(--border) 55%, transparent);
+  }
+  :global([data-phone]) td {
+    padding: 1px 0;
+    border: 0;
+    background: none;
+  }
+  :global([data-phone]) tr.editing {
+    background: var(--bg-selected);
+  }
+  :global([data-phone]) td.when {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  :global([data-phone]) td:nth-child(2) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  :global([data-phone]) td.ref {
+    grid-column: 1;
+    grid-row: 3;
+    white-space: normal;
+  }
+  :global([data-phone]) td.ref::before {
+    content: 'Reference: ';
+    color: var(--fg-faint);
+  }
+  :global([data-phone]) td.from {
+    grid-column: 1;
+    grid-row: 4;
+    max-width: none;
+  }
+  :global([data-phone]) td.from::before {
+    content: 'From: ';
+    color: var(--fg-faint);
+  }
+  :global([data-phone]) td.acts {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+  :global([data-phone]) .icon {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  :global([data-phone]) .editor {
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .editor input,
+  :global([data-phone]) .editor select {
+    min-height: 40px;
+  }
+  :global([data-phone]) .foot {
+    flex-wrap: wrap;
   }
 </style>

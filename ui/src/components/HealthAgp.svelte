@@ -17,6 +17,7 @@
 
   import { health } from '../lib/health.svelte'
   import { hourLabel } from '../lib/format'
+  import { phone } from '../lib/phone.svelte'
   import type { AgpSlot, GlucoseReport } from '../lib/types'
 
   interface Props {
@@ -134,7 +135,9 @@
           hovered.p5,
         )}–{show(hovered.p95)}.
       {:else}
-        Move across the chart to read a time of day.
+        {phone.on
+          ? 'Touch the chart to read a time of day.'
+          : 'Move across the chart to read a time of day.'}
       {/if}
     </p>
 
@@ -143,8 +146,13 @@
       role="img"
       aria-label="Ambulatory glucose profile: a typical day, midnight to midnight. The table below has the figures."
       bind:clientWidth={width}
+      onpointerdown={track}
       onpointermove={track}
-      onpointerleave={() => (hoverX = null)}
+      onpointerleave={(e) => {
+        // A finger lifting is not a pointer leaving: the time it touched
+        // stays read out.
+        if (e.pointerType !== 'touch') hoverX = null
+      }}
     >
       <svg {width} {height} viewBox="0 0 {width} {height}" aria-hidden="true">
         <!-- The target range, behind everything -->
@@ -372,5 +380,20 @@
     margin: var(--sp-1) 0 0;
     font-size: var(--text-xs);
     color: var(--fg-faint);
+  }
+
+  /* A phone: the table fits the card (its columns share it), and the
+     summary that opens it is a finger tall. */
+  :global([data-phone]) .twin summary {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  :global([data-phone]) .twin table {
+    width: 100%;
+  }
+  :global([data-phone]) .twin th,
+  :global([data-phone]) .twin td {
+    padding-right: var(--sp-2);
   }
 </style>

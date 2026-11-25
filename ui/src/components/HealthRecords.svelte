@@ -17,6 +17,7 @@
   import { health } from '../lib/health.svelte'
   import { docKindName } from '../lib/health'
   import { dateFormat, humanBytes, plural } from '../lib/format'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { startOfDay } from '../lib/time'
   import type { DocKind, HealthDocument } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
@@ -140,6 +141,13 @@
     adding = true
     problem = null
   }
+
+  // The form that adds a document is a layer on a phone: back closes it as
+  // Cancel does.
+  closesOnBack(
+    () => phone.on && adding,
+    () => cancel(),
+  )
 
   function cancel() {
     adding = false
@@ -537,5 +545,67 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--sp-2);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The two tabs take a row and the button that adds a document the one
+     under it; a document is a row with its status under its name instead
+     of squeezing the name out; the fields stack and what is chosen can be
+     taken back out with a finger. */
+  :global([data-phone]) .toolbar {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    padding-inline: var(--sp-3);
+  }
+  :global([data-phone]) .toolbar-end:not(.right),
+  :global([data-phone]) .toolbar-end.right:empty {
+    display: none;
+  }
+  :global([data-phone]) .toolbar .filters {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .toolbar .filter {
+    flex: 1;
+    justify-content: center;
+  }
+  :global([data-phone]) .toolbar-end.right {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .toolbar-end.right .btn {
+    flex: 1;
+  }
+  :global([data-phone]) .body {
+    padding-inline: var(--sp-3);
+  }
+  :global([data-phone]) .body > .page {
+    padding-inline: 0;
+  }
+  :global([data-phone]) .doc {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 2px var(--sp-3);
+    min-height: 56px;
+  }
+  :global([data-phone]) .doc-mark {
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+  :global([data-phone]) .doc .badge {
+    grid-column: 2;
+    justify-self: start;
+  }
+  :global([data-phone]) .fields label,
+  :global([data-phone]) .fields label.grow {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .chosen li {
+    min-height: 40px;
+  }
+  :global([data-phone]) .chosen-remove {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .add {
+    padding: var(--sp-3);
   }
 </style>

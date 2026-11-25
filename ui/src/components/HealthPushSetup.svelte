@@ -451,4 +451,22 @@
     color: var(--fg-muted);
     border-bottom: 1px solid color-mix(in oklab, var(--border) 55%, transparent);
   }
+
+  /* A phone: the address and the keys are fields a finger can select, each
+     with its Copy button at a finger's size and the table's cells wrapping
+     rather than scrolling; the steps read a size down on the narrow page. */
+  :global([data-phone]) .setup {
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .steps {
+    font-size: var(--text-sm);
+    padding-left: 1.2em;
+  }
+  :global([data-phone]) .foot {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) th,
+  :global([data-phone]) td {
+    padding-right: var(--sp-2);
+  }
 </style>

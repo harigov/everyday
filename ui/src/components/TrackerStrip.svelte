@@ -20,6 +20,7 @@
   import type { Reading, Tracker } from '../lib/types'
   import { dismissable } from '../lib/dismiss'
   import { focusOnMount } from '../lib/focus'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { todayIso } from '../lib/time'
   import { timeOfDay, toLocalTimeValue } from '../lib/format'
   import Icon from './Icon.svelte'
@@ -46,6 +47,15 @@
   $effect(() => {
     void tracking.open(journalId, date)
   })
+
+  // On a phone a panel is a sheet over the screen, and back puts it away.
+  closesOnBack(
+    () => phone.on && (open !== null || logging),
+    () => {
+      open = null
+      logging = false
+    },
+  )
 
   function readingsOf(tracker: Tracker): Reading[] {
     return tracking.of(tracker.id)
@@ -216,6 +226,7 @@
         </button>
 
         {#if open === tracker.id}
+          {#if phone.on}<div class="scrim" aria-hidden="true"></div>{/if}
           <!-- Today in the *local* calendar, not in UTC. `toISOString()`
                here would put someone at UTC+5:30 on tomorrow's date from
                18:30, so a reading made on yesterday's page would be stamped
@@ -346,6 +357,7 @@
       </button>
 
       {#if logging}
+        {#if phone.on}<div class="scrim" aria-hidden="true"></div>{/if}
         <div
           class="panel wide"
           class:up
@@ -657,5 +669,79 @@
   .drop:hover {
     color: var(--danger);
     background: var(--bg-hover);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The chips and the plus are a finger tall. A panel is a sheet over the
+     screen, over a scrim, along the foot of it above the bar of apps (and
+     above the keyboard when that is up) rather than a popover hung from a
+     chip that may be anywhere in the row; what is in it -- the scale's
+     notches, the amount's buttons and field, the log's times and buttons --
+     is a finger's size. */
+  :global([data-phone]) .chip {
+    height: 40px;
+  }
+  :global([data-phone]) .strip > .slot > .add {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    /* The panel's Add button, further down, is `.add` too: its white text
+       and the tracker's colour it takes are no use to a plus on the page. */
+    background: none;
+    color: var(--fg-muted);
+  }
+  :global([data-phone]) .panel,
+  :global([data-phone]) .panel.flip,
+  :global([data-phone]) .panel.up {
+    position: fixed;
+    z-index: 66;
+    top: auto;
+    right: calc(var(--sp-3) + var(--safe-right));
+    bottom: calc(var(--bottombar-h) + var(--safe-bottom) + var(--sp-3));
+    left: calc(var(--sp-3) + var(--safe-left));
+    width: auto;
+    max-height: calc(
+      100dvh - var(--safe-top) - var(--bottombar-h) - var(--safe-bottom) - var(--sp-8)
+    );
+    overflow-y: auto;
+  }
+  :global(:root[data-phone][data-keyboard]) .panel {
+    bottom: var(--sp-3);
+    max-height: calc(100dvh - var(--safe-top) - var(--sp-8));
+  }
+  :global([data-phone]) .panel.wide :global(.log) {
+    min-width: 0;
+    max-width: none;
+  }
+  :global([data-phone]) .notch {
+    height: 44px;
+  }
+  :global([data-phone]) .step {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .field {
+    height: 44px;
+    align-items: center;
+  }
+  :global([data-phone]) .amount .add {
+    width: auto;
+    min-width: 64px;
+    height: 44px;
+    display: inline-grid;
+    border-style: solid;
+    border-color: transparent;
+  }
+  :global([data-phone]) .time {
+    width: auto;
+    min-width: 9em;
+    min-height: 40px;
+  }
+  :global([data-phone]) .log li {
+    min-height: 44px;
+  }
+  :global([data-phone]) .drop {
+    width: 40px;
+    height: 40px;
   }
 </style>

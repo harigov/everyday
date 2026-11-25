@@ -20,9 +20,15 @@
   // Keyboard: the chart is one tab stop. Left and right move between bars
   // (the tooltip follows, and is read out), Home and End jump to the ends,
   // and Enter picks the bar the way a click does.
+  //
+  // A finger cannot hover, so on a phone the first tap on a bar reads its
+  // value -- the tooltip stays -- and the tooltip, or a second tap on the
+  // same bar, picks it. Dragging along the chart reads each bar in turn.
 
   import { dateFormat } from '../lib/format'
+  import { phone } from '../lib/phone.svelte'
   import { locale, startOfDay } from '../lib/time'
+  import Icon from './Icon.svelte'
 
   interface Props {
     points: { at: string; value: number }[]
@@ -194,9 +200,25 @@
     active = indexAt(e)
   }
 
+  function leave(e: PointerEvent) {
+    // A finger lifting is not a pointer leaving: the value read stays.
+    if (e.pointerType !== 'touch') active = null
+  }
+
   function pick(e: MouseEvent) {
     const i = indexAt(e)
     const p = i === null ? undefined : points[i]
+    if (i !== null && phone.on && active !== i) {
+      active = i
+      return
+    }
+    if (p && onpick) onpick(p)
+  }
+
+  function pickActive(e: MouseEvent) {
+    // Not on to the chart's own tap, which would read another bar.
+    e.stopPropagation()
+    const p = active === null ? undefined : points[active]
     if (p && onpick) onpick(p)
   }
 
@@ -237,7 +259,7 @@
       tabindex="0"
       aria-label={ariaLabel}
       onpointermove={move}
-      onpointerleave={() => (active = null)}
+      onpointerleave={leave}
       onclick={pick}
       onkeydown={key}
       onfocus={focused}
@@ -280,7 +302,14 @@
       </svg>
 
       {#if active !== null && activeText}
-        <div class="tip" style="left: {tipX}px">{activeText}</div>
+        {#if phone.on && onpick}
+          <button type="button" class="tip go" style="left: {tipX}px" onclick={pickActive}>
+            {activeText}
+            <Icon name="chevron" size={12} weight={2} />
+          </button>
+        {:else}
+          <div class="tip" style="left: {tipX}px">{activeText}</div>
+        {/if}
       {/if}
     </div>
     <span class="sr" aria-live="polite">{activeText}</span>
@@ -364,6 +393,18 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     pointer-events: none;
+  }
+
+  /* On a phone the tooltip is what opens the day: a finger-sized button. */
+  .tip.go {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    min-height: 34px;
+    padding: 0 var(--sp-3);
+    color: var(--accent);
+    font-weight: 600;
+    pointer-events: auto;
   }
 
   .none {

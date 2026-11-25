@@ -198,15 +198,17 @@
                       ></span>
                     </span>
                   </span>
-                  <ScreenTimeCategoryPicker
-                    value={item.category}
-                    suggested={item.suggested}
-                    suggestion={item.suggested ? item.category : null}
-                    itemName={name}
-                    align="right"
-                    onchange={(patch: LabelPatch) =>
-                      screentime.saveLabel(item.key, item.kind, patch)}
-                  />
+                  <span class="picker">
+                    <ScreenTimeCategoryPicker
+                      value={item.category}
+                      suggested={item.suggested}
+                      suggestion={item.suggested ? item.category : null}
+                      itemName={name}
+                      align="right"
+                      onchange={(patch: LabelPatch) =>
+                        screentime.saveLabel(item.key, item.kind, patch)}
+                    />
+                  </span>
                   <span class="secs">{formatDuration(item.secs)}</span>
                 </li>
               {/each}
@@ -414,5 +416,63 @@
     font-size: var(--text-sm);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
+  }
+  .picker {
+    display: contents;
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     One column of cards (the 320px minimum of the pair was wider than the
+     page), and an app's row as two lines: its name with its time, then the
+     category it counts under -- four columns do not fit across. */
+  :global([data-phone]) .page {
+    gap: var(--sp-3);
+  }
+  :global([data-phone]) .pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-3);
+  }
+  :global([data-phone]) .top li {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: var(--sp-2);
+    row-gap: var(--sp-1);
+    padding: var(--sp-2) 0;
+  }
+  :global([data-phone]) .top .glyph {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    align-self: start;
+  }
+  :global([data-phone]) .top .what {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  :global([data-phone]) .top .secs {
+    grid-column: 3;
+    grid-row: 1;
+    width: auto;
+  }
+  :global([data-phone]) .top .picker {
+    display: block;
+    grid-column: 2 / -1;
+    grid-row: 2;
+    justify-self: start;
+    min-width: 0;
+  }
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    min-width: 40px;
+    justify-content: flex-end;
+    margin-block: -10px;
+  }
+  :global([data-phone]) .clear {
+    width: 36px;
+    height: 36px;
+  }
+  :global([data-phone]) .filtered {
+    height: 40px;
   }
 </style>

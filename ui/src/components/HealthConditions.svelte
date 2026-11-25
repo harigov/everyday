@@ -13,12 +13,14 @@
 
   import { health } from '../lib/health.svelte'
   import { dateFormat } from '../lib/format'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { startOfDay, todayIso } from '../lib/time'
   import type { Condition, ConditionStatus } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import HealthConditionDashboard from './HealthConditionDashboard.svelte'
   import HealthTemplatePicker from './HealthTemplatePicker.svelte'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
 
   const STATUSES: { value: ConditionStatus; label: string }[] = [
     { value: 'active', label: 'Active' },
@@ -65,6 +67,12 @@
   // ── Adding ──────────────────────────────────────────────────────────────
 
   let adding = $state<'template' | 'blank' | null>(null)
+  // The template picker and the blank form are pages of their own on a
+  // phone: back returns to the list.
+  closesOnBack(
+    () => phone.on && adding !== null,
+    () => (adding = null),
+  )
   let name = $state('')
   let status = $state<ConditionStatus>('active')
   let diagnosed = $state('')
@@ -124,7 +132,8 @@
   <div class="page">
     {#if open}
       <div class="back-row">
-        <button class="back" onclick={() => health.openCondition(null)}>
+        <PhoneBack onclick={() => health.openCondition(null)} label="Conditions" />
+        <button class="back desktop-only" onclick={() => health.openCondition(null)}>
           <span class="flip"><Icon name="chevron" size={13} /></span>
           All conditions
         </button>
@@ -341,5 +350,31 @@
     display: flex;
     align-items: center;
     gap: var(--sp-2);
+  }
+
+  /* A phone: the hint over its two buttons, which share the row; the
+     blank form's pairs stack; a condition's row is a finger tall. */
+  :global([data-phone]) .bar {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .bar .hint {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .bar .btn {
+    flex: 1 1 0;
+    white-space: nowrap;
+  }
+  :global([data-phone]) .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :global([data-phone]) .row {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  :global([data-phone]) .row .grow {
+    display: none;
+  }
+  :global([data-phone]) .row-main {
+    min-height: 56px;
   }
 </style>

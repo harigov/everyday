@@ -15,6 +15,7 @@
 
   import { HEALTH_VIEWS, health, type HealthView } from '../lib/health.svelte'
   import { panels } from '../lib/panels.svelte'
+  import { details } from '../lib/phone.svelte'
   import Symbol from './Symbol.svelte'
 
   const LABELS: Record<HealthView, string> = {
@@ -90,6 +91,8 @@
     if (view === 'activity' && health.workoutId) health.openWorkout(null)
     if (view === 'conditions' && health.conditionId) health.openCondition(null)
     if (view === 'records' && health.documentId) health.openDocument(null)
+    // ...and Vitals again, from its measurement, to its list (a phone's).
+    if (view === 'vitals') details.close('health')
     health.setView(view)
   }
 

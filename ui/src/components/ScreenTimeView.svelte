@@ -13,7 +13,7 @@
   // extension, and websites need a browser connected. Every way in is a
   // button to Settings → Screen time, where each is done.
 
-  import { formatDuration } from '../lib/screentime'
+  import { formatDuration, type RangeKind } from '../lib/screentime'
   import { screentime, type ScreenView as Pane } from '../lib/screentime.svelte'
   import { panels } from '../lib/panels.svelte'
   import { friendlyDate, plural } from '../lib/format'
@@ -38,6 +38,12 @@
   const gnomeWaiting = $derived(
     status?.backend === 'gnome' && !!status.extension && !status.extension.active,
   )
+
+  const RANGES: { id: RangeKind; label: string }[] = [
+    { id: 'day', label: 'Day' },
+    { id: 'week', label: 'Week' },
+    { id: 'month', label: 'Month' },
+  ]
 
   const TITLES: Record<Pane, string> = {
     summary: 'Summary',
@@ -104,7 +110,7 @@
 </script>
 
 <main class="screentime">
-  <header class="top">
+  <header class="top" class:ranged={view === 'summary'}>
     <div class="pane-titles">
       <h1 class="pane-title">{TITLES[view]}</h1>
       {#if sub && !blank}<span class="pane-sub">{sub}</span>{/if}
@@ -112,6 +118,23 @@
 
     {#if dated && !blank}
       <div class="tools">
+        <!-- How long the summary covers. On a desktop these are in the
+             sidebar; a phone's sidebar is a drawer that choosing a chip
+             would leave open over the page it changed. -->
+        {#if view === 'summary'}
+          <div class="filters phone-only" role="group" aria-label="How long the summary covers">
+            {#each RANGES as r (r.id)}
+              <button
+                class="filter"
+                class:on={screentime.range === r.id}
+                aria-pressed={screentime.range === r.id}
+                onclick={() => screentime.setRange(r.id)}
+              >
+                {r.label}
+              </button>
+            {/each}
+          </div>
+        {/if}
         {#if !atPresent}
           <button class="btn btn-outline today" onclick={goToday}>Today</button>
         {/if}
@@ -276,5 +299,67 @@
     flex-wrap: wrap;
     justify-content: center;
     gap: var(--sp-2);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The heading and the stretch of time with its two arrows share a row
+     (they ran off the screen in one with the way back to today beside
+     them), and that way back is the row under them, when it is wanted.
+     The tools are the grid's own cells so each can be put in its place. */
+  :global([data-phone]) .top {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
+    height: auto;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .top .pane-titles {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  :global([data-phone]) .tools {
+    display: contents;
+  }
+  :global([data-phone]) .stepper {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 0;
+  }
+  :global([data-phone]) .step {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .stretch {
+    min-width: 6.5em;
+    padding: 0 var(--sp-1);
+  }
+  :global([data-phone]) .filters {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex-wrap: nowrap;
+  }
+  :global([data-phone]) .filters .filter {
+    flex: 1;
+    justify-content: center;
+    min-height: 36px;
+  }
+  :global([data-phone]) .today {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: end;
+    height: 36px;
+  }
+  :global([data-phone]) .ranged .today {
+    grid-row: 3;
+  }
+
+  /* Every pane's page is a column as wide as the screen, with a thumb's
+     width less margin than a desktop's. */
+  :global([data-phone] .screentime .scroll > .page) {
+    padding-inline: var(--sp-3);
+  }
+  :global([data-phone]) .note {
+    margin-inline: var(--sp-3);
   }
 </style>

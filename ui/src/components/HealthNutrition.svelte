@@ -29,6 +29,7 @@
     NutritionDay,
     NutritionTargets,
   } from '../lib/types'
+  import { phone } from '../lib/phone.svelte'
   import HealthBars from './HealthBars.svelte'
   import HealthLine from './HealthLine.svelte'
   import HealthMealEditor from './HealthMealEditor.svelte'
@@ -168,12 +169,16 @@
   function barLabel(p: { at: string; value: number }): string {
     return `${friendlyDate(isoDate(new Date(p.at)))}: ${Math.round(p.value).toLocaleString()} ${rangeUnit}`
   }
+  let scroller = $state<HTMLElement>()
   function openDay(p: { at: string; value: number }) {
     health.setDate(isoDate(new Date(p.at)))
+    // The day opens at the top of the page, which a phone's screen is too
+    // short to have in view beside the chart that picked it.
+    if (phone.on) scroller?.scrollTo({ top: 0, behavior: 'smooth' })
   }
 </script>
 
-<div class="nutrition scroll">
+<div class="nutrition scroll" bind:this={scroller}>
   <div class="page">
     <!-- The day, and the way to add to it -->
     <div class="bar">
@@ -708,5 +713,44 @@
   }
   .chart-goal {
     color: var(--fg-subtle);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The day's stepper and "Log a meal" wrap rather than push each other off
+     the screen; the arrows, the day and the links are a finger's size. */
+  :global([data-phone]) .bar {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .days {
+    flex: 1 1 200px;
+    justify-content: space-between;
+  }
+  :global([data-phone]) .step {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .when {
+    flex: 1;
+    min-width: 0;
+    height: 40px;
+  }
+  :global([data-phone]) .bar .grow {
+    display: none;
+  }
+  :global([data-phone]) .bar .btn {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .slot-head {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    margin-block: -10px;
+  }
+  :global([data-phone]) .meal-meter {
+    max-width: none;
   }
 </style>

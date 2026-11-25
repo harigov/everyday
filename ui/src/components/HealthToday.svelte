@@ -801,4 +801,34 @@
     font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
   }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     One column: the cards that sat in pairs stack (their 320px minimum
+     was wider than the page), and a workout's figures go under its name. */
+  :global([data-phone]) .pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-3);
+  }
+  :global([data-phone]) .page {
+    gap: var(--sp-3);
+  }
+  :global([data-phone]) .workout {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-1) var(--sp-2);
+    min-height: 44px;
+  }
+  :global([data-phone]) .workout .what {
+    grid-column: 1 / -1;
+  }
+  :global([data-phone]) .workout .fig {
+    text-align: left;
+  }
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-height: 40px;
+    min-width: 40px;
+    margin-block: -10px;
+  }
 </style>

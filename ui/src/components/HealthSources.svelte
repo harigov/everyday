@@ -148,7 +148,7 @@
   }
 </script>
 
-<section class="sources" aria-labelledby="sources-head">
+<section class="source-list" aria-labelledby="sources-head">
   <div class="head">
     <span class="eyebrow" id="sources-head">Sources</span>
     <button class="btn btn-outline btn-sm" disabled={connecting} onclick={() => void connect()}>
@@ -366,7 +366,7 @@
 {/if}
 
 <style>
-  .sources {
+  .source-list {
     display: flex;
     flex-direction: column;
     gap: var(--sp-3);
@@ -602,5 +602,43 @@
   }
   .down :global(svg) {
     rotate: 90deg;
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     A card's name gets the width beside its mark, with its buttons on a
+     line of their own under it; the little round buttons are a finger
+     wide; the order of devices is moved by its arrows, not by a drag a
+     finger cannot start. (The wrapper is not `.sources`, which Health's
+     settings page has phone rules for that size every `.icon` inside it --
+     the drawn icons are `.icon` too.) */
+  :global([data-phone]) .head {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .card-head {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .titles {
+    flex: 1 1 calc(100% - 32px - var(--sp-3));
+  }
+  :global([data-phone]) .actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) button.icon {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .rename {
+    min-height: 44px;
+  }
+  :global([data-phone]) .grip {
+    display: none;
+  }
+  :global([data-phone]) .rank {
+    padding-block: 0;
+  }
+  :global([data-phone]) .card {
+    padding: var(--sp-3);
   }
 </style>

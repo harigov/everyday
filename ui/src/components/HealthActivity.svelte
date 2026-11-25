@@ -249,4 +249,18 @@
     font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
   }
+
+  /* A phone: the workout's name and day across the top, its four figures
+     in a row under them -- five columns do not fit a narrow card. */
+  :global([data-phone]) .workout {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--sp-1) var(--sp-2);
+    min-height: 44px;
+  }
+  :global([data-phone]) .workout .what {
+    grid-column: 1 / -1;
+  }
+  :global([data-phone]) .workout .fig {
+    text-align: left;
+  }
 </style>

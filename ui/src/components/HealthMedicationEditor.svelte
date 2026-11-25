@@ -29,6 +29,7 @@
   import { health } from '../lib/health.svelte'
   import { ruleText, scheduleText } from '../lib/health'
   import { trapFocus } from '../lib/focus'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { formatInstantTime, friendlyDate } from '../lib/format'
   import { isoDate, todayIso } from '../lib/time'
   import type { MedKind, MedRule, MedSchedule, MedStatus, Medication, Supply } from '../lib/types'
@@ -74,6 +75,12 @@
   function close() {
     health.editingMedication = null
   }
+
+  // Back, on a phone, closes the editor as Cancel does.
+  closesOnBack(
+    () => phone.on,
+    () => close(),
+  )
 
   // Deleting asks first, through the store; once the medication is gone from
   // its list, so is this editor.
@@ -1043,5 +1050,69 @@
 
   .error {
     margin: var(--sp-3) 0 0;
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     A sheet as wide as the screen under the status bar, one column of
+     fields, and every small control -- the weekday chips, the tags, the
+     times and their remove buttons -- a finger's size. */
+  :global([data-phone]) .sheet.wide {
+    top: calc(var(--safe-top) + var(--sp-3));
+    width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
+    max-height: calc(
+      100dvh - var(--safe-top) - var(--sp-3) - var(--bottombar-h) - var(--safe-bottom) - var(--sp-3)
+    );
+  }
+  :global(:root[data-phone][data-keyboard]) .sheet.wide {
+    max-height: calc(100dvh - var(--safe-top) - var(--sp-6));
+  }
+  :global([data-phone]) .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :global([data-phone]) .field.small {
+    height: 40px;
+  }
+  :global([data-phone]) .chip {
+    height: 38px;
+    padding: 0 var(--sp-4);
+  }
+  :global([data-phone]) .days {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .tag.removable {
+    min-height: 34px;
+    padding-right: 2px;
+  }
+  :global([data-phone]) .tag.removable button {
+    width: 30px;
+    height: 30px;
+  }
+  :global([data-phone]) .tag-input {
+    flex: 1 1 8em;
+  }
+  :global([data-phone]) .check {
+    min-height: 44px;
+  }
+  :global([data-phone]) .check input {
+    width: 20px;
+    height: 20px;
+  }
+  :global([data-phone]) .rules li {
+    padding-block: 0;
+    padding-right: var(--sp-1);
+  }
+  :global([data-phone]) .suggest-row {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .add-rule .field.grow {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .sheet-row {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 </style>
