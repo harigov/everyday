@@ -133,7 +133,7 @@ export async function settle(page, ms = 400) {
 }
 
 /** Runs in the page: what a script can see wrong with the screen. */
-function inspect() {
+export function inspect() {
   const vw = window.innerWidth
   const vh = window.innerHeight
   const name = (el) => {
