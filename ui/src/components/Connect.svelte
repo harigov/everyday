@@ -70,7 +70,7 @@
     </ul>
   {/if}
 
-  <label class="field">
+  <label class="linkfield">
     <span>Pairing link</span>
     <input
       type="text"
@@ -181,14 +181,17 @@
     color: var(--danger);
   }
 
-  .field {
+  /* Not `.field`: that is app.css's text box (a height, a border, a fill),
+     and on this label it drew a box round the caption with the input
+     spilling out of it and over the Connect button. */
+  .linkfield {
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
     font-size: var(--text-sm);
   }
 
-  .field input {
+  .linkfield input {
     padding: 0.5rem 0.6rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -220,20 +223,7 @@
   :global([data-phone]) .connect {
     max-width: none;
   }
-  /* The label is a `.field` here -- a column of its caption and its input --
-     and app.css's own `.field` (a text box: a height, a border, a fill) lands
-     on it too, drawing a box round the caption with the input spilling out
-     of it and over the button below. The desktop's has the same; a phone's
-     is drawn properly. */
-  :global([data-phone]) label.field {
-    height: auto;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: none;
-    box-shadow: none;
-  }
-  :global([data-phone]) .field input {
+  :global([data-phone]) .linkfield input {
     min-height: 48px;
     font-size: max(16px, 1em);
   }
