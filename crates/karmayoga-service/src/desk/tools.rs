@@ -128,12 +128,15 @@ pub fn guidance(can: &Abilities) -> String {
     if can.copy {
         uses.push("copy_to_clipboard for \"copy that\"");
     }
+    // One bullet of the assistant's "Your tools here" section -- see
+    // `Guidance` in the agent -- so it begins with what it is about, and has no
+    // line breaks of its own to fall out of the list.
     let mut said = format!(
-        "\n\nYou can act on the computer they are at. Use search_site when they name a website \
-         to search -- \"search Amazon for headphones\", \"look it up on Google\", \"find it on \
-         YouTube\" -- which opens that site's results in their own browser; when they only ask \
-         a question, with no site named, answer it yourself (with web_search, if you have it). \
-         open opens {}.",
+        "This computer: you can act on the one they are at. Use search_site when they name a \
+         website to search -- \"search Amazon for headphones\", \"look it up on Google\", \
+         \"find it on YouTube\" -- which opens that site's results in their own browser; when \
+         they only ask a question, with no site named, answer it yourself (with web_search, if \
+         you have it). open opens {}.",
         listed(&opens, "or")
     );
     if !uses.is_empty() {

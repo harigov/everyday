@@ -491,6 +491,12 @@ theirs: keep them unless the cases plainly contradict them.
 - Each note is one short, concrete line a draft could be checked against -- \
 \"Says yes in one line, with no greeting\", not \"Friendly but efficient\". At \
 most 15; a few true notes are better than padding.
+- Group the notes by the situation they are about, in this order: accepting, \
+declining, scheduling, thanking, following up, and everything else. Begin each \
+note with its situation and a colon -- \"Accepting: says yes in one line, with \
+no greeting\" -- and keep a situation's notes together, one line each, so the \
+model writing a reply can find how they decline without reading all fifteen. A \
+situation with no note is left out.
 - Notes are only about how they write. Never a fact about a particular \
 person, company, event, date, number, place or link, and never wording copied \
 from a message somebody else sent.
@@ -623,10 +629,32 @@ fn carries_content(note: &str) -> bool {
         w.split_once('@').is_some_and(|(user, host)| !user.is_empty() && host.contains('.'))
     });
     let digits = note.chars().filter(char::is_ascii_digit).count();
+    let plain = without_apostrophes(note);
     let quoted = ['"', '“', '”', '\'']
         .iter()
-        .any(|q| note.split(*q).skip(1).step_by(2).any(|inside| inside.chars().count() > 40));
+        // A lone apostrophe opens nothing: "doesn't" is a word, not a quote.
+        .filter(|q| **q != '\'' || plain.matches('\'').count() >= 2)
+        .any(|q| plain.split(*q).skip(1).step_by(2).any(|inside| inside.chars().count() > 40));
     link || address || digits >= 6 || quoted || note.chars().count() > MAX_NOTE_CHARS
+}
+
+/// `note` without the apostrophes inside words -- "doesn't", "Sam's" -- which
+/// are not quote marks. Notes now begin with a situation ("Declining: ..."),
+/// which makes a long line with a contraction in it likelier, and a rule about
+/// how they decline must not be dropped for saying "doesn't".
+fn without_apostrophes(note: &str) -> String {
+    let chars: Vec<char> = note.chars().collect();
+    chars
+        .iter()
+        .enumerate()
+        .filter(|&(i, &c)| {
+            let inside_a_word = i > 0
+                && chars[i - 1].is_alphanumeric()
+                && chars.get(i + 1).is_some_and(|next| next.is_alphanumeric());
+            !(c == '\'' && inside_a_word)
+        })
+        .map(|(_, &c)| c)
+        .collect()
 }
 
 /// `line` without the bullet or number in front of it: "- ", "* ", "• ",
@@ -957,6 +985,25 @@ mod tests {
         );
     }
 
+    /// Notes are grouped by situation and begin with it, which makes a long line
+    /// with a contraction in it likelier; neither is content.
+    #[test]
+    fn a_contraction_is_not_a_quotation() {
+        let kept = normalise_notes([
+            "Declining: doesn't give a reason and never says it won't work for them again",
+            "Thanking: keeps Sam's and Dana's thanks to one plain sentence, never effusive",
+            "Scheduling: offers two times, never asks which suits them",
+            // A real quotation still is one.
+            "Following up: closes with 'Thanks again, and do take a look at our new pricing today'",
+        ]);
+        assert_eq!(
+            kept,
+            "- Declining: doesn't give a reason and never says it won't work for them again\n\
+             - Thanking: keeps Sam's and Dana's thanks to one plain sentence, never effusive\n\
+             - Scheduling: offers two times, never asks which suits them"
+        );
+    }
+
     #[test]
     fn an_answer_with_no_notes_is_no_notes() {
         assert_eq!(notes_from(&json!({})), "");
@@ -1007,6 +1054,10 @@ mod tests {
             "keep them unless the cases plainly contradict them",
             "one short, concrete line",
             "At most 15",
+            "Group the notes by the situation they are about",
+            "accepting, declining, scheduling, thanking, following up, and everything else",
+            "Begin each note with its situation and a colon",
+            "A situation with no note is left out",
             "Never a fact about a particular",
             "never wording copied",
             "invent a fact",

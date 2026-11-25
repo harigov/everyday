@@ -481,14 +481,16 @@ pub(crate) async fn summarise_and_write_from(
     let answer =
         summarise_stage(summariser, &transcript, &template.body, &facts, budget, &spelling).await?;
     let details = karmayoga_core::meeting::template::details_block(&facts);
-    let body = if details.is_empty() { answer } else { format!("{details}\n\n{answer}") };
+    let body = if details.is_empty() { answer.clone() } else { format!("{details}\n\n{answer}") };
 
     let date = {
         let zone = jiff::tz::TimeZone::get(&facts.tz).unwrap_or(jiff::tz::TimeZone::UTC);
         let at = recording.event.as_ref().map_or(recording.started_at, |e| e.start);
         at.to_zoned(zone).strftime("%-d %B %Y").to_string()
     };
-    let title = title_for(summariser, &facts.title, &body, &date).await;
+    // The title is made from what the notes say, not from the note as it is
+    // saved: the details block above them is metadata a title is better without.
+    let title = title_for(summariser, &facts.title, &answer, &date).await;
     let meeting = if facts.title.trim().is_empty() { title.clone() } else { facts.title.clone() };
 
     let note = Note::written_by(NoteOrigin::Meeting, title.clone(), &body);

@@ -1403,13 +1403,13 @@ export function mockDefaultSorting(): MailSorting {
       c(
         'needs-you',
         'Needs you',
-        "A real person directly asks you to do, answer or decide something; a deadline or a time-sensitive matter involves you; or someone is waiting on you. Not: FYI updates, anything automated, threads you are only cc'd on.",
+        "A real person directly asks you to do, answer or decide something; a deadline or a time-sensitive matter involves you; or someone is waiting on you. Not: FYI updates, anything automated, threads you are only cc'd on, or a pitch from somebody you have never written to, however personal or urgent it sounds.",
         'priority',
       ),
       c(
         'people',
         'People',
-        'Written by a real person, to you, and worth reading: conversations, replies, introductions and updates from people you know or work with, that do not need anything from you soon.',
+        'Written by a real person, to you, and worth reading: conversations, replies, introductions and updates from people you know or work with, that do not need anything from you soon. Not: sales, recruiting or partnership pitches from people you have never written to.',
         'important',
       ),
       c(
@@ -1429,6 +1429,12 @@ export function mockDefaultSorting(): MailSorting {
         'Notifications',
         'Automated messages from apps and services: alerts, account and security notices, sign-in codes, calendar notices, comments and mentions.',
         'notification',
+      ),
+      c(
+        'pitches',
+        'Pitches',
+        'Unsolicited mail from somebody you have never written to who wants something from you: sales, partnerships, investment or advertising offers, recruiting, link building, PR, podcast or event pitches, requests for a demo or a quick call, and their "just following up" emails.',
+        'other',
       ),
       c('other', 'Other', 'Anything that fits none of the other categories.', 'other'),
     ],

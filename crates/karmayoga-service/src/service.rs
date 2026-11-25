@@ -1520,7 +1520,7 @@ impl Service {
         // interface already sent one under the same name.
         let (pictures, files) =
             crate::pictures::with_files(&vault, args.attachments, args.files).await?;
-        let turned = crate::agent::run_turn(crate::agent::Turn {
+        let turned = crate::agent::run_turn_routed(crate::agent::Turn {
             service: self.clone(),
             vault,
             pending: self.pending(),

@@ -578,6 +578,16 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
         text: running ? 'Updating the plan' : done ? 'Updated the plan' : 'Update the plan',
         detail: null,
       }
+    // More of its tools for this conversation -- mail, health, money and the
+    // rest come in sets, joined when a request needs them.
+    case 'load_tools': {
+      const raw = args && typeof args === 'object' ? (args as Record<string, unknown>).kits : null
+      const kits = Array.isArray(raw) ? raw.filter((k): k is string => typeof k === 'string') : []
+      return {
+        text: running ? 'Getting tools for' : done ? 'Got tools for' : 'Get tools for',
+        detail: kits.length ? kits.join(', ') : null,
+      }
+    }
     // A mail thread or a newsletter, summarised as the Mail app's
     // Summarise does.
     case 'summarize_thread':

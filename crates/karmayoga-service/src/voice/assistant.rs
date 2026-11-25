@@ -69,7 +69,7 @@ impl VoiceAssistant for ServiceAssistant {
         let desk = via.is_none().then(|| service.desk()).flatten();
         Box::pin(async move {
             let vault = service.require()?;
-            let turned = crate::agent::run_turn(Turn {
+            let turned = crate::agent::run_turn_routed(Turn {
                 service: service.clone(),
                 vault,
                 pending: service.pending(),

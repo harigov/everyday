@@ -13,7 +13,9 @@
   //
   // A food can be added by search, from a photo of the plate (the model
   // guesses foods and weights; every guess is marked "estimated" until the
-  // person has looked at it and says it is right), or by copying what was
+  // person has looked at it and says it is right, and a guess the model was
+  // unsure of -- or whose energy and nutrients disagree -- says why under the
+  // item, until it is marked as checked), or by copying what was
   // eaten at the same meal yesterday. An item that has no food behind it --
   // a photo's guess -- has its numbers editable directly, since there is no
   // label to work them out from.
@@ -131,7 +133,7 @@
     const food = foodFor(item)
     const next = food ? itemFor(food, amount, item.unit) : null
     if (next) {
-      items[i] = { ...next, estimated: item.estimated }
+      items[i] = { ...next, estimated: item.estimated, doubt: item.doubt }
       return
     }
     // No food to work it out from: keep the proportions it had.
@@ -157,7 +159,7 @@
     const per = gramsOf(food, 1, unit)
     const amount = grams != null && per ? Math.round((grams / per) * 100) / 100 : item.amount
     const next = itemFor(food, amount, unit)
-    if (next) items[i] = { ...next, estimated: item.estimated }
+    if (next) items[i] = { ...next, estimated: item.estimated, doubt: item.doubt }
     else items[i] = { ...item, unit }
   }
 
@@ -176,7 +178,8 @@
 
   function markChecked(i: number) {
     const item = items[i]
-    if (item) items[i] = { ...item, estimated: false }
+    // Looked at: what was doubtful about it has been dealt with.
+    if (item) items[i] = { ...item, estimated: false, doubt: '' }
   }
 
   // ── A photo ─────────────────────────────────────────────────────────────
@@ -488,6 +491,12 @@
                   </button>
                 {/if}
               </div>
+              {#if item.doubt}
+                <p class="doubt">
+                  <Icon name="alert" size={12} />
+                  <span>Worth a look: {item.doubt}</span>
+                </p>
+              {/if}
               {#if !food}
                 <div class="nums">
                   <label>
@@ -694,6 +703,19 @@
     font-size: var(--text-xs);
     color: var(--fg-subtle);
     font-variant-numeric: tabular-nums;
+  }
+  .doubt {
+    margin: 0;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-1);
+    font-size: var(--text-xs);
+    line-height: var(--leading-normal);
+    color: color-mix(in oklab, var(--warning) 55%, var(--fg));
+  }
+  .doubt :global(svg) {
+    flex: none;
+    margin-top: 2px;
   }
   .estimated {
     display: inline-flex;

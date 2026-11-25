@@ -84,64 +84,137 @@ fn default_window_days() -> u32 {
 impl Default for MailSorting {
     /// The five tabs, described the way the small model's sorting prompt
     /// described them, plus the two sorts of notification people most
-    /// often want apart. A starting point to be edited, not a taxonomy.
+    /// often want apart, and a place for the pitches of people one has never
+    /// written to. A starting point to be edited, not a taxonomy.
     fn default() -> Self {
-        let c = |id: &str, name: &str, description: &str, treat_as| SortCategory {
-            id: id.into(),
-            name: name.into(),
-            description: description.into(),
-            treat_as,
-        };
         Self {
-            categories: vec![
-                c(
-                    "needs-you",
-                    "Needs you",
-                    "A real person directly asks you to do, answer or decide something; a \
-                     deadline or a time-sensitive matter involves you; or someone is waiting on \
-                     you. Not: FYI updates, anything automated, threads you are only cc'd on.",
-                    Category::Priority,
-                ),
-                c(
-                    "people",
-                    "People",
-                    "Written by a real person, to you, and worth reading: conversations, \
-                     replies, introductions and updates from people you know or work with, that \
-                     do not need anything from you soon.",
-                    Category::Important,
-                ),
-                c(
-                    "newsletters",
-                    "Newsletters",
-                    "Mail you subscribed to or were added to a list for: newsletters, digests, \
-                     blog posts, announcements, marketing and promotions.",
-                    Category::Newsletter,
-                ),
-                c(
-                    "receipts",
-                    "Receipts",
-                    "Orders, receipts, invoices, payment confirmations, bills and shipping or \
-                     delivery updates.",
-                    Category::Notification,
-                ),
-                c(
-                    "notifications",
-                    "Notifications",
-                    "Automated messages from apps and services: alerts, account and security \
-                     notices, sign-in codes, calendar notices, comments and mentions.",
-                    Category::Notification,
-                ),
-                c(
-                    "other",
-                    "Other",
-                    "Anything that fits none of the other categories.",
-                    Category::Other,
-                ),
-            ],
+            categories: starting_categories(),
             window_days: DEFAULT_WINDOW_DAYS,
             follow_up: super::FollowUpSettings::default(),
         }
     }
+}
+
+fn category(id: &str, name: &str, description: &str, treat_as: Category) -> SortCategory {
+    SortCategory { id: id.into(), name: name.into(), description: description.into(), treat_as }
+}
+
+/// What a list starts as.
+///
+/// Pitches have a category of their own, and "Needs you" and "People" say
+/// what they are not, because a stranger's "could we find fifteen minutes next
+/// week?" otherwise reads as a real person asking you "to ... decide
+/// something", word for word, and files under Priority -- where the Accounts
+/// pane promises a notification rule that is "never a pitch".
+fn starting_categories() -> Vec<SortCategory> {
+    vec![
+        category(
+            "needs-you",
+            "Needs you",
+            "A real person directly asks you to do, answer or decide something; a deadline or a \
+             time-sensitive matter involves you; or someone is waiting on you. Not: FYI updates, \
+             anything automated, threads you are only cc'd on, or a pitch from somebody you have \
+             never written to, however personal or urgent it sounds.",
+            Category::Priority,
+        ),
+        category(
+            "people",
+            "People",
+            "Written by a real person, to you, and worth reading: conversations, replies, \
+             introductions and updates from people you know or work with, that do not need \
+             anything from you soon. Not: sales, recruiting or partnership pitches from people \
+             you have never written to.",
+            Category::Important,
+        ),
+        category(
+            "newsletters",
+            "Newsletters",
+            "Mail you subscribed to or were added to a list for: newsletters, digests, blog \
+             posts, announcements, marketing and promotions.",
+            Category::Newsletter,
+        ),
+        category(
+            "receipts",
+            "Receipts",
+            "Orders, receipts, invoices, payment confirmations, bills and shipping or delivery \
+             updates.",
+            Category::Notification,
+        ),
+        category(
+            "notifications",
+            "Notifications",
+            "Automated messages from apps and services: alerts, account and security notices, \
+             sign-in codes, calendar notices, comments and mentions.",
+            Category::Notification,
+        ),
+        category(
+            "pitches",
+            "Pitches",
+            "Unsolicited mail from somebody you have never written to who wants something from \
+             you: sales, partnerships, investment or advertising offers, recruiting, link \
+             building, PR, podcast or event pitches, requests for a demo or a quick call, and \
+             their \"just following up\" emails.",
+            Category::Other,
+        ),
+        category(
+            "other",
+            "Other",
+            "Anything that fits none of the other categories.",
+            Category::Other,
+        ),
+    ]
+}
+
+/// The list this application started with before Pitches, word for word: what
+/// [`MailSorting::upgrade_untouched_defaults`] recognises a list nobody ever
+/// edited by. Never changed -- it is a record of what was saved, not of what
+/// is wanted.
+fn first_starting_categories() -> Vec<SortCategory> {
+    vec![
+        category(
+            "needs-you",
+            "Needs you",
+            "A real person directly asks you to do, answer or decide something; a \
+             deadline or a time-sensitive matter involves you; or someone is waiting on \
+             you. Not: FYI updates, anything automated, threads you are only cc'd on.",
+            Category::Priority,
+        ),
+        category(
+            "people",
+            "People",
+            "Written by a real person, to you, and worth reading: conversations, \
+             replies, introductions and updates from people you know or work with, that \
+             do not need anything from you soon.",
+            Category::Important,
+        ),
+        category(
+            "newsletters",
+            "Newsletters",
+            "Mail you subscribed to or were added to a list for: newsletters, digests, \
+             blog posts, announcements, marketing and promotions.",
+            Category::Newsletter,
+        ),
+        category(
+            "receipts",
+            "Receipts",
+            "Orders, receipts, invoices, payment confirmations, bills and shipping or \
+             delivery updates.",
+            Category::Notification,
+        ),
+        category(
+            "notifications",
+            "Notifications",
+            "Automated messages from apps and services: alerts, account and security \
+             notices, sign-in codes, calendar notices, comments and mentions.",
+            Category::Notification,
+        ),
+        category(
+            "other",
+            "Other",
+            "Anything that fits none of the other categories.",
+            Category::Other,
+        ),
+    ]
 }
 
 impl MailSorting {
@@ -202,6 +275,27 @@ impl MailSorting {
     pub fn by_id(&self, id: &str) -> Option<&SortCategory> {
         self.categories.iter().find(|c| c.id == id)
     }
+
+    /// This list, with the categories replaced by today's starting ones when
+    /// they are exactly the starting ones this application first shipped
+    /// ([`first_starting_categories`]) -- a list somebody saved by pressing Save
+    /// on the pane without changing a word of it, or a saved copy of the
+    /// old defaults. Such a list was never somebody's own opinion, and left alone it
+    /// would keep a stranger's pitch under "Needs you" for ever. Any edit at all
+    /// -- a renamed category, a changed description, a new one -- leaves the list
+    /// as it is: the person's words are theirs.
+    ///
+    /// Only the categories are looked at and replaced; the window and the
+    /// follow-up settings are the person's whatever the categories are. Pure,
+    /// so it can be applied on every read of the saved list, and nothing is
+    /// rewritten until the person saves.
+    #[must_use]
+    pub fn upgrade_untouched_defaults(mut self) -> Self {
+        if self.categories == first_starting_categories() {
+            self.categories = starting_categories();
+        }
+        self
+    }
 }
 
 /// When a decision model was last asked about a thread, and how many
@@ -245,6 +339,52 @@ pub struct SortedAs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pitches_have_a_category_of_their_own_and_the_two_that_asked_say_they_are_not() {
+        let s = MailSorting::default();
+        let pitches = s.by_id("pitches").expect("a category for pitches");
+        assert_eq!(pitches.treat_as, Category::Other, "a pitch is never Priority or Important");
+        assert!(pitches.description.contains("never written to"), "{}", pitches.description);
+        let ids: Vec<&str> = s.categories.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids.last(), Some(&"other"), "Other stays the catch-all, last");
+        assert_eq!(ids[ids.len() - 2], "pitches", "and Pitches is just before it");
+        for id in ["needs-you", "people"] {
+            let said = &s.by_id(id).unwrap().description;
+            assert!(said.contains("never written to"), "{id} says what it is not: {said}");
+        }
+    }
+
+    #[test]
+    fn a_list_that_was_never_edited_is_upgraded_and_one_that_was_is_not() {
+        let untouched = MailSorting {
+            categories: first_starting_categories(),
+            window_days: 14,
+            follow_up: crate::mail::FollowUpSettings { on: false, ..Default::default() },
+        };
+        let upgraded = untouched.clone().upgrade_untouched_defaults();
+        assert_eq!(upgraded.categories, starting_categories());
+        assert!(upgraded.by_id("pitches").is_some());
+        assert_eq!(upgraded.window_days, 14, "the window is the person's");
+        assert!(!upgraded.follow_up.on, "and so are the follow-up settings");
+        // Doing it again changes nothing, so it can be done on every read.
+        assert_eq!(upgraded.clone().upgrade_untouched_defaults(), upgraded);
+        // The list the application starts with now is not one to upgrade.
+        assert_eq!(MailSorting::default().upgrade_untouched_defaults(), MailSorting::default());
+
+        // One changed description, one renamed category, one added: theirs.
+        for edit in [
+            |s: &mut MailSorting| s.categories[0].description.push_str(" Also: my boss."),
+            |s: &mut MailSorting| s.categories[3].name = "Bills".into(),
+            |s: &mut MailSorting| {
+                s.categories.push(category("travel", "Travel", "Flights.", Category::Important))
+            },
+        ] {
+            let mut mine = untouched.clone();
+            edit(&mut mine);
+            assert_eq!(mine.clone().upgrade_untouched_defaults(), mine);
+        }
+    }
 
     #[test]
     fn the_starting_list_is_valid_and_covers_every_tab_but_none() {

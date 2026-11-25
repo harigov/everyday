@@ -61,21 +61,15 @@ pub fn next_steps(note: &str, on: Date) -> Vec<NextStep> {
     out
 }
 
-/// `name` is a step nobody took, which is never the owner's.
+/// `name` is a step nobody took, which is never the owner's -- or one that a
+/// voice nobody could name took on, which the notes write as "Unassigned" too.
 pub fn is_unassigned(name: &str) -> bool {
+    let folded = fold(name);
     matches!(
-        fold(name).as_str(),
-        "" | "unassigned"
-            | "unknown"
-            | "nobody"
-            | "someone"
-            | "somebody"
-            | "n/a"
-            | "na"
-            | "tbd"
-            | "none"
-            | "tbc"
-    )
+        folded.as_str(),
+        "" | "unknown" | "nobody" | "someone" | "somebody" | "n/a" | "na" | "tbd" | "none" | "tbc"
+    ) || folded == "unassigned"
+        || folded.strip_prefix("unassigned").is_some_and(|rest| rest.starts_with([' ', '(']))
 }
 
 /// Whether `name` is the owner, and not also somebody else in the room.
@@ -85,13 +79,21 @@ pub fn is_unassigned(name: &str) -> bool {
 /// one else invited has it: "Hari" is the owner when the profile is "Hari
 /// Govardhanam" and the invite has no other Hari, and it is not when two
 /// people share it.
+///
+/// "You" and "Me" are the owner too. Whoever has no name in their profile is
+/// "You" on the microphone's lines -- see `stages::owner_label` in the
+/// service -- so the notes write `**You:**` for their own steps; with only
+/// the name to go by, none of them would ever be proposed as tasks.
 pub fn assigned_to_owner(name: &str, owner: &Owner, others: &[impl AsRef<str>]) -> bool {
     let name = name.trim();
     if is_unassigned(name) {
         return false;
     }
     let folded = fold(name);
-    if owner.addresses.iter().any(|a| a == &folded) || contains_address(name, owner) {
+    if matches!(folded.as_str(), "you" | "me")
+        || owner.addresses.iter().any(|a| a == &folded)
+        || contains_address(name, owner)
+    {
         return true;
     }
     let mine = owner.name.trim();
@@ -296,13 +298,44 @@ fn parse_date(text: &str, on: Date) -> Option<Date> {
     if let Some(date) = iso(t) {
         return Some(date);
     }
-    let words: Vec<&str> = t.split_whitespace().collect();
+    let mut words: Vec<&str> = t.split_whitespace().collect();
+    // "Fri 28 Nov" and "Friday, 28 November": the weekday is there to be
+    // checked by a reader, not parsed. "Friday" alone is no date at all.
+    if words.first().is_some_and(|w| is_weekday(w)) {
+        words.remove(0);
+    }
     match words.as_slice() {
         [a, b, y] => dmy(a, b, y).or_else(|| mdy(a, b, y)),
-        [a, b] => dm(a, b, on.year()).or_else(|| md(a, b, on.year())),
+        [a, b] => {
+            dm(a, b, on.year()).or_else(|| md(a, b, on.year())).map(|d| next_occurrence(d, on))
+        }
         _ => None,
     }
 }
+
+/// "Fri", "Friday", "friday," or "Thurs." -- a day of the week and nothing else.
+fn is_weekday(token: &str) -> bool {
+    const DAYS: [&str; 7] =
+        ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+    let t = token.trim_matches(|c: char| matches!(c, ',' | '.')).to_ascii_lowercase();
+    t.len() >= 3 && DAYS.iter().any(|d| *d == t || (d.starts_with(&t) && t.len() <= 5))
+}
+
+/// A day that was said with no year, as of the meeting on `on`: this year's,
+/// unless that is more than [`ROLL_OVER_DAYS`] ago, in which case it is the
+/// next one. Said in December, "5 Jan" is next month's, not eleven months gone.
+/// A date a week or two back stays where it is: somebody who says "by the
+/// 3rd" on the 10th has said a date that has passed, and may well mean it.
+fn next_occurrence(date: Date, on: Date) -> Date {
+    let ago = on.since(date).map_or(0, |span| i64::from(span.get_days()));
+    if ago > ROLL_OVER_DAYS {
+        return date.checked_add(jiff::Span::new().years(1)).unwrap_or(date);
+    }
+    date
+}
+
+/// How far back a day with no year may fall before it is taken to be next year's.
+const ROLL_OVER_DAYS: i64 = 60;
 
 fn iso(t: &str) -> Option<Date> {
     let mut parts = t.split(['-', '/']);
@@ -465,5 +498,61 @@ mod tests {
         assert!(!keep(ModelSay::Theirs, true), "a sure no drops a step the name would keep");
         assert!(keep(ModelSay::Unsure, true));
         assert!(!keep(ModelSay::Unsure, false));
+    }
+
+    #[test]
+    fn a_weekday_in_front_of_a_date_is_read_past() {
+        let note = "\
+## Next steps
+- **Hari:** Send Acme the revised pricing deck, by Fri 8 May
+- **Priya:** Book the room, by Friday, 15 May
+- **Sam:** Review it by Monday 11 May 2026
+- **Sam:** Review it by Friday
+";
+        let steps = next_steps(note, on());
+        assert_eq!(steps[0].action, "Send Acme the revised pricing deck");
+        assert_eq!(steps[0].due, Some(Date::new(2026, 5, 8).unwrap()));
+        assert_eq!(steps[1].action, "Book the room");
+        assert_eq!(steps[1].due, Some(Date::new(2026, 5, 15).unwrap()));
+        assert_eq!(steps[2].due, Some(Date::new(2026, 5, 11).unwrap()));
+        assert_eq!(steps[3].due, None, "a weekday alone is still no date");
+        assert_eq!(steps[3].action, "Review it by Friday");
+    }
+
+    #[test]
+    fn a_day_said_in_december_for_january_is_next_years() {
+        let december = Date::new(2026, 12, 20).unwrap();
+        let note = "## Next steps\n- **Hari:** Send the contract, by Tue 5 Jan\n\
+                    - **Hari:** Pay the invoice, by 15 Dec\n\
+                    - **Hari:** Renew it, by 2 Jan 2026\n";
+        let steps = next_steps(note, december);
+        assert_eq!(steps[0].due, Some(Date::new(2027, 1, 5).unwrap()));
+        assert_eq!(
+            steps[1].due,
+            Some(Date::new(2026, 12, 15).unwrap()),
+            "a week back is not next year"
+        );
+        assert_eq!(
+            steps[2].due,
+            Some(Date::new(2026, 1, 2).unwrap()),
+            "a year that was said is kept"
+        );
+    }
+
+    #[test]
+    fn you_and_me_are_the_owner_and_a_step_nobody_could_name_is_nobodys() {
+        let nameless = owner("", &[]);
+        let nobody: [&str; 0] = [];
+        assert!(assigned_to_owner("You", &nameless, &nobody), "the label a nameless profile has");
+        assert!(assigned_to_owner("me", &owner("Hari Govardhanam", &[]), &nobody));
+        assert!(!assigned_to_owner("Priya", &nameless, &nobody));
+        assert!(is_unassigned("Unassigned (offered by someone on the call)"));
+        assert!(is_unassigned("Unassigned"));
+        assert!(!is_unassigned("Unassignedly Raman"));
+        assert!(!assigned_to_owner(
+            "Unassigned (offered by someone on the call)",
+            &nameless,
+            &nobody
+        ));
     }
 }

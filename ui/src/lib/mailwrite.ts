@@ -142,6 +142,18 @@ export function withSignatureSwapped(own: string, before: string, after: string)
   return words + signatureBlock(after)
 }
 
+/**
+ * What the compose sheet's subject becomes when `draft_with_ai` wrote one: the
+ * model's, only when what is there is still empty. A subject the person typed
+ * -- or a forward's "Fwd: ..." -- is theirs, and a draft written from a few words
+ * never replaces it. `null` when the subject stays as it is.
+ */
+export function subjectToFill(current: string, written: string | null | undefined): string | null {
+  const subject = (written ?? '').replace(/\s+/g, ' ').trim()
+  if (!subject || current.trim()) return null
+  return subject
+}
+
 /** How long a suggested reply stands, the same hour `mail_replies_cached` keeps
  *  one for: it may offer a time, and a time goes stale with the thread unchanged. */
 export const SUGGESTION_LASTS_MS = 60 * 60 * 1000

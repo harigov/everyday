@@ -2406,6 +2406,7 @@ fn the_database_file_contains_no_readable_health_data() {
                 grams: None,
                 nutrients,
                 estimated: false,
+                doubt: String::new(),
             }],
             photo: None,
             note: "A meal note nobody should see".into(),

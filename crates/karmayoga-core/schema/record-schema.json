@@ -7373,6 +7373,10 @@
             "format": "double",
             "type": "number"
           },
+          "doubt": {
+            "description": "Why this item should be looked at before it is believed: what else it\nmight be, the range its portion could be in, or that its energy and\nnutrients disagree. Written when a photo is read; cleared when the\nperson marks the item as checked. Empty for anything else.",
+            "type": "string"
+          },
           "estimated": {
             "default": false,
             "description": "A model's guess from a photo, not weighed or looked up.",
@@ -13223,6 +13227,14 @@
               "null"
             ]
           },
+          "areasLastWeek": {
+            "default": [],
+            "description": "The weekly brief's: where last week's time went, by area, as lines --\n\"Work: 31 h actual (35 h planned)\", \"Fun: nothing\". Rendered as plain\nlines and not drawn by the interface.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "blocks": {
             "default": [],
             "description": "Time they set aside for themselves that day.",
@@ -13282,6 +13294,14 @@
             },
             "type": "array"
           },
+          "goalProgress": {
+            "default": [],
+            "description": "The weekly brief's: for each active goal, how it stands -- when it was\nlast touched, what is open, done and due, and the projects under it.\nPlain lines, not drawn by the interface.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "goals": {
             "default": [],
             "items": {
@@ -13314,6 +13334,14 @@
             "default": [],
             "items": {
               "$ref": "#/$defs/BriefThread"
+            },
+            "type": "array"
+          },
+          "meetingNotes": {
+            "default": [],
+            "description": "The meeting notes finished today, for the evening's review: the\nmeeting's title and the note's id, so the review can read one to find\nwhat the meeting left them to do -- the digest holds only the titles of\nthe meetings, which say nothing about that.",
+            "items": {
+              "type": "string"
             },
             "type": "array"
           },
@@ -13377,6 +13405,14 @@
             "default": [],
             "items": {
               "$ref": "#/$defs/BriefSection"
+            },
+            "type": "array"
+          },
+          "slipped": {
+            "default": [],
+            "description": "The weekly brief's: tasks due in the last seven days that are still\nopen, with how late and what for. The finished ones are in\n[`BriefDigest::done`]; these are what \"what slipped\" is asked about.",
+            "items": {
+              "type": "string"
             },
             "type": "array"
           },

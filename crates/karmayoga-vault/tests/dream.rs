@@ -41,7 +41,7 @@ fn ts(s: &str) -> jiff::Timestamp {
 fn a_quiet_day_yields_an_empty_digest() {
     let (_dir, vault) = vault_for_test();
     let now = zoned(2026, 9, 16, 9, 0);
-    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
     assert!(d.is_empty());
     assert_eq!(d.from, jiff::civil::date(2026, 9, 15));
     assert_eq!(d.to, jiff::civil::date(2026, 9, 15));
@@ -83,7 +83,7 @@ fn the_day_digest_reads_tasks_and_entries_from_yesterday() {
     vault.save_entry(&note, None).unwrap();
 
     let now = zoned(2026, 9, 16, 9, 0);
-    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
     assert!(!d.is_empty());
     assert_eq!(d.tasks_created, vec!["Book the dentist".to_string()]);
     assert_eq!(d.tasks_completed, vec!["Reply to Priya".to_string()]);
@@ -124,7 +124,7 @@ fn the_week_digest_reads_the_nightly_dreams_run_summaries_not_raw_entries() {
     vault.save_entry(&entry, None).unwrap();
 
     let now = zoned(2026, 9, 20, 3, 30);
-    let d = dream::digest(&vault, DreamScope::Week, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Week, &now, &[]).unwrap();
     assert_eq!(d.entries.len(), 1);
     assert!(d.entries[0].contains("2 proposals, 1 memory"));
     assert!(!d.entries.iter().any(|e| e.contains("Secret diary")));
@@ -139,7 +139,7 @@ fn the_month_digest_names_a_goal_with_no_activity() {
     vault.save_goal(&goal).unwrap();
 
     let now = zoned(2026, 9, 30, 4, 0);
-    let d = dream::digest(&vault, DreamScope::Month, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Month, &now, &[]).unwrap();
     assert!(
         d.arcs.iter().any(|a| a.contains("Run a 10k") && a.contains("no activity")),
         "{:?}",
@@ -159,7 +159,7 @@ fn a_tracker_with_a_target_says_where_its_period_stands_even_when_nothing_was_lo
 
     // Thursday the 10th, reading Wednesday: the week began on Monday the 7th.
     let now = zoned(2026, 9, 10, 4, 0);
-    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
     let line = d.readings.iter().find(|r| r.starts_with("Piano")).expect("a line for Piano");
     assert!(line.contains("target between 60 and 120 min a week"), "{line}");
     assert!(line.contains("0 so far for 2026-09-07..2026-09-13, short"), "{line}");
@@ -170,7 +170,7 @@ fn a_tracker_with_a_target_says_where_its_period_stands_even_when_nothing_was_lo
     let mut retired = vault.tracker(piano.id).unwrap();
     retired.archived = true;
     vault.save_tracker(&retired).unwrap();
-    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
     assert!(!d.readings.iter().any(|r| r.starts_with("Piano")), "{:?}", d.readings);
 }
 
@@ -203,7 +203,7 @@ fn the_month_digest_names_birthdays_in_the_month_ahead() {
     vault.save_profile(&profile).unwrap();
 
     let now = zoned(2026, 9, 30, 4, 0);
-    let d = dream::digest(&vault, DreamScope::Month, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Month, &now, &[]).unwrap();
     let md = d.to_markdown();
     assert!(
         d.arcs.iter().any(|a| a.contains("Dana") && a.contains("last caught up 2 July 2026")),
@@ -215,6 +215,256 @@ fn the_month_digest_names_birthdays_in_the_month_ahead() {
     let dana_at = d.arcs.iter().position(|a| a.contains("Dana")).unwrap();
     let own_at = d.arcs.iter().position(|a| a.starts_with("Their own")).unwrap();
     assert!(dana_at < own_at, "soonest first");
+}
+
+// ---- the mail a dream may read ------------------------------------------------
+
+/// An account with one unread Priority thread in its Inbox. `subject` is what a
+/// stranger wrote.
+fn account_with_unread_priority(
+    vault: &karmayoga_core::Vault,
+    address: &str,
+    subject: &str,
+) -> karmayoga_core::account::Account {
+    use karmayoga_core::account::{Account, Provider};
+    use karmayoga_core::id::{MailMessageId, PackId, ThreadId};
+    use karmayoga_core::mail::{
+        Address, Category, CategorySource, Mailbox, MailboxRole, Message, MessageFlags,
+    };
+    use karmayoga_core::packstore::PackRef;
+    use karmayoga_core::store::mail::IngestMessage;
+
+    let mut account = Account::new(Provider::Custom, address);
+    account.services.mail = true;
+    vault.save_account(&account).unwrap();
+    let mailbox = Mailbox::new(account.id, MailboxRole::Inbox.as_str(), MailboxRole::Inbox);
+    vault.save_mailbox(&mailbox).unwrap();
+    let id = MailMessageId::new();
+    let message = Message {
+        id,
+        account_id: account.id,
+        thread_id: ThreadId::new(),
+        message_id_header: format!("<{id}@example.com>"),
+        date: ts("2026-09-15T14:00:00Z"),
+        from: Address::new("Pat Stranger", "pat@elsewhere.example"),
+        to: vec![Address::bare(address)],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: subject.into(),
+        snippet: "Please look at this".into(),
+        flags: MessageFlags::default(),
+        labels: Vec::new(),
+        has_attachments: false,
+        size: 128,
+        category: Some(Category::Priority),
+        category_source: CategorySource::Rules,
+        pack: PackRef { account: account.id.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    };
+    vault
+        .ingest_mail(account.id, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    account
+}
+
+#[test]
+fn a_dream_reads_mail_only_from_the_accounts_it_is_given() {
+    let (_dir, vault) = vault_for_test();
+    let shared = account_with_unread_priority(&vault, "shared@example.com", "Quarterly numbers");
+    let private = account_with_unread_priority(&vault, "private@example.com", "Secret reply");
+    let now = zoned(2026, 9, 16, 9, 0);
+
+    // Told of one account, it reads that one and not the other: the headers of
+    // an account the assistant may not read are not the assistant's to have.
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[shared.id]).unwrap();
+    let md = d.to_markdown();
+    assert!(d.mail.iter().any(|m| m.starts_with("shared@example.com: 1 unread")), "{:?}", d.mail);
+    assert!(
+        d.mail.iter().any(|m| m.contains("Awaiting reply: \"Quarterly numbers\"")),
+        "{:?}",
+        d.mail
+    );
+    assert!(!md.contains("private@example.com") && !md.contains("Secret reply"), "{md}");
+    assert!(!d.is_empty(), "mail it may read is something that happened");
+
+    // Told of neither, it reads none at all -- not "every account", which is
+    // what it did before it was told anything.
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
+    assert!(d.mail.is_empty(), "{:?}", d.mail);
+    assert!(d.is_empty());
+
+    // Told of both, both -- so it was the list that held the other back, not
+    // the mail being absent.
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[shared.id, private.id]).unwrap();
+    assert!(d.mail.iter().any(|m| m.contains("Secret reply")), "{:?}", d.mail);
+    assert!(d.mail.iter().any(|m| m.contains("Quarterly numbers")), "{:?}", d.mail);
+}
+
+// ---- what is waiting, and the wider scopes ------------------------------------
+
+#[test]
+fn what_is_waiting_for_an_answer_is_named_so_a_dream_does_not_propose_it_twice() {
+    use karmayoga_core::{Payload, Proposal, ProposedRecord};
+    let (_dir, vault) = vault_for_test();
+    let record = ProposedRecord::Task(Task::new("Call the dentist"));
+    let made = ts("2026-09-14T03:00:00Z");
+    let proposal =
+        Proposal::new(Payload::Create { record }, "Create task: Call the dentist", made, "UTC")
+            .with_why("they wrote it down on Monday");
+    vault.save_proposal(&proposal).unwrap();
+
+    let now = zoned(2026, 9, 16, 9, 0);
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
+    assert_eq!(d.waiting.len(), 1, "{:?}", d.waiting);
+    assert_eq!(d.waiting[0], "task: Create task: Call the dentist (made 2026-09-14)");
+    assert_eq!(d.pending, 1);
+    let md = d.to_markdown();
+    assert!(md.contains("## Waiting for an answer"), "{md}");
+    assert!(md.contains("Pending proposals: 1 of"), "{md}");
+
+    // Answered, it no longer waits.
+    vault.decline_proposal(proposal.id, None, now.timestamp()).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
+    assert!(d.waiting.is_empty(), "{:?}", d.waiting);
+}
+
+#[test]
+fn only_so_many_waiting_proposals_are_named_and_the_rest_are_counted() {
+    use karmayoga_core::{Payload, Proposal, ProposedRecord};
+    let (_dir, vault) = vault_for_test();
+    for n in 0..(dream::MAX_WAITING_LISTED + 3) {
+        let record = ProposedRecord::Task(Task::new(format!("Task {n}")));
+        let at = ts("2026-09-14T03:00:00Z") + jiff::SignedDuration::from_secs(n as i64);
+        vault
+            .save_proposal(&Proposal::new(
+                Payload::Create { record },
+                format!("Task {n}"),
+                at,
+                "UTC",
+            ))
+            .unwrap();
+    }
+    let d = dream::digest(&vault, DreamScope::Day, &zoned(2026, 9, 16, 9, 0), &[]).unwrap();
+    assert_eq!(d.waiting.len(), dream::MAX_WAITING_LISTED + 1, "{:?}", d.waiting);
+    assert!(d.waiting.last().unwrap().contains("and 3 more"), "{:?}", d.waiting);
+    assert!(d.waiting[0].contains("Task 14"), "newest first: {:?}", d.waiting);
+}
+
+#[test]
+fn a_week_of_tasks_is_totals_and_a_few_examples_not_the_first_eight_rows() {
+    let (_dir, vault) = vault_for_test();
+    for n in 0..12 {
+        let mut done = Task::new(format!("Finished {n}"));
+        done.status = TaskStatus::Done;
+        done.created_at = ts("2026-08-01T08:00:00Z");
+        done.completed_at = Some(ts("2026-09-14T10:00:00Z") + jiff::SignedDuration::from_secs(n));
+        vault.save_task(&done).unwrap();
+    }
+    let mut late = Task::new("Renew the passport");
+    late.due_date = Some(jiff::civil::date(2026, 9, 1));
+    vault.save_task(&late).unwrap();
+    let mut later = Task::new("Book the boiler service");
+    later.due_date = Some(jiff::civil::date(2026, 9, 10));
+    vault.save_task(&later).unwrap();
+
+    let now = zoned(2026, 9, 16, 3, 30);
+    let d = dream::digest(&vault, DreamScope::Week, &now, &[]).unwrap();
+    assert_eq!(d.tasks_completed.len(), 1, "one line of totals: {:?}", d.tasks_completed);
+    assert!(
+        d.tasks_completed[0].starts_with("12 completed over the week; the latest: "),
+        "{:?}",
+        d.tasks_completed
+    );
+    assert!(!d.tasks_completed[0].contains("and 4 more"));
+    assert_eq!(d.tasks_overdue.len(), 1);
+    assert!(
+        d.tasks_overdue[0]
+            .starts_with("2 overdue now; the oldest: Renew the passport (due 2026-09-01)"),
+        "{:?}",
+        d.tasks_overdue
+    );
+    assert!(d.tasks_overdue[0].contains("Book the boiler service (due 2026-09-10)"));
+
+    // The nightly digest is still row by row, as before.
+    let night = dream::digest(&vault, DreamScope::Day, &zoned(2026, 9, 15, 3, 0), &[]).unwrap();
+    assert!(
+        night.tasks_overdue.iter().any(|t| t == "Renew the passport"),
+        "{:?}",
+        night.tasks_overdue
+    );
+}
+
+#[test]
+fn a_months_calendar_is_a_count_and_its_busiest_days() {
+    use karmayoga_core::calendar::Calendar;
+    let (_dir, vault) = vault_for_test();
+    let calendar = Calendar::subscribed("Work", "webcal://example.com/work.ics");
+    vault.save_calendar(&calendar).unwrap();
+    let mut feed = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
+    for (n, (title, day)) in [
+        ("Standup", "20260908T090000Z"),
+        ("Planning", "20260908T100000Z"),
+        ("Review", "20260908T140000Z"),
+        ("Dentist", "20260910T110000Z"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        feed.push_str(&format!(
+            "BEGIN:VEVENT\r\nUID:e{n}@example.com\r\nSUMMARY:{title}\r\nDTSTART:{day}\r\n\
+             DTEND:{day}\r\nEND:VEVENT\r\n"
+        ));
+    }
+    feed.push_str("END:VCALENDAR\r\n");
+    let window = (jiff::civil::date(2026, 1, 1), jiff::civil::date(2026, 12, 31));
+    vault.sync_calendar_from_ics(calendar.id, &feed, window, "UTC").unwrap();
+
+    let now = zoned(2026, 9, 30, 4, 0);
+    let d = dream::digest(&vault, DreamScope::Month, &now, &[]).unwrap();
+    assert_eq!(d.events.len(), 1, "{:?}", d.events);
+    assert!(
+        d.events[0].starts_with("4 events; busiest days: Tue 8 Sep (3), Thu 10 Sep (1)"),
+        "{:?}",
+        d.events
+    );
+}
+
+#[test]
+fn the_next_scope_reads_a_nights_account_without_its_ids_and_on_the_persons_day() {
+    let (_dir, vault) = vault_for_test();
+    let mut settings = vault.agent_settings().unwrap();
+    // Los Angeles is behind UTC: a night that finished at 03:05 UTC on the 15th
+    // finished at ten past eight on the evening of the 14th, there.
+    settings.timezone = Some("America/Los_Angeles".into());
+    vault.save_agent_settings(&settings).unwrap();
+    let routines = vault.set_dreaming(true).unwrap();
+    let nightly =
+        routines.iter().find(|r| r.kind == RoutineKind::Dream { scope: DreamScope::Day }).unwrap();
+
+    let id = karmayoga_core::id::MemoryId::new();
+    let mut run = RoutineRun::new(nightly, None);
+    run.started_at = ts("2026-09-15T03:00:00Z");
+    run.finish(
+        RunOutcome::Done,
+        format!(
+            "1 proposal, 0 memories, 0 notes.\n\nNoticed:\n- Skipped the run (2026-09-13)\n\
+             Proposed:\n- Time for piano\nConfirmed memories:\n{id}\n"
+        ),
+    );
+    run.finished_at = Some(ts("2026-09-15T03:05:00Z"));
+    vault.save_run(&run).unwrap();
+
+    let la = jiff::civil::date(2026, 9, 20).at(4, 0, 0, 0).in_tz("America/Los_Angeles").unwrap();
+    let d = dream::digest(&vault, DreamScope::Week, &la, &[]).unwrap();
+    assert_eq!(d.entries.len(), 1, "{:?}", d.entries);
+    let entry = &d.entries[0];
+    assert!(entry.starts_with("2026-09-14: 1 proposal"), "the person's day, not UTC's: {entry}");
+    assert!(entry.contains("Noticed:") && entry.contains("Time for piano"), "{entry}");
+    assert!(!entry.contains(&id.to_string()) && !entry.contains("Confirmed memories"), "{entry}");
+    assert!(!entry.contains("\n\n"), "no blank line to end its bullet: {entry:?}");
+    assert!(d.to_markdown().contains("- 2026-09-14: 1 proposal, 0 memories, 0 notes.\n  Noticed:"));
 }
 
 // ---- skills -----------------------------------------------------------------
@@ -239,7 +489,7 @@ fn the_skills_section_lists_on_and_off_skills_and_stays_ambient() {
     // Nothing else happened, so the digest would otherwise be empty -- the
     // skills section must not be what breaks that.
     let now = zoned(2026, 9, 16, 9, 0);
-    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
     assert!(d.is_empty(), "skills are ambient state, not a finding in the window: {:?}", d.skills);
 
     assert!(
@@ -306,7 +556,7 @@ fn the_conversations_section_names_requests_and_the_skills_loaded_for_them() {
     vault.save_message(&dream_message).unwrap();
 
     let now = zoned(2026, 9, 16, 9, 0);
-    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
     assert!(!d.is_empty(), "somebody chatting with the assistant is a thing that happened");
     assert_eq!(d.conversations.len(), 1, "{:?}", d.conversations);
     let line = &d.conversations[0];
@@ -330,7 +580,7 @@ fn the_conversations_section_caps_how_many_conversations_it_lists() {
     }
 
     let now = zoned(2026, 9, 16, 9, 0);
-    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
     assert_eq!(d.conversations.len(), dream::MAX_DIGEST_CONVERSATIONS + 1, "{:?}", d.conversations);
     assert!(d.conversations.last().unwrap().contains("and 2 more"), "{:?}", d.conversations);
 }
@@ -355,7 +605,7 @@ fn the_conversations_section_caps_excerpts_and_their_length() {
     }
 
     let now = zoned(2026, 9, 16, 9, 0);
-    let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
+    let d = dream::digest(&vault, DreamScope::Day, &now, &[]).unwrap();
     assert_eq!(d.conversations.len(), 1, "{:?}", d.conversations);
     let line = &d.conversations[0];
     assert!(line.contains(&format!("{} requests", cap + 2)), "{line}");

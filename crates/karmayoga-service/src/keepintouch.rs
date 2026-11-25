@@ -3,7 +3,10 @@
 //! The records are `karmayoga_core::Vault`'s and the wording is
 //! [`karmayoga_core::keepintouch`]'s. What is here is when, and the one part that
 //! owns a socket: asking the model who a journal entry says you were in touch
-//! with. See `docs/plans/keep-in-touch.md`.
+//! with, and whom it says you meant to be (a call you "should" make, somebody
+//! who is unwell). Those intentions become proposals only for a name that is
+//! exactly one card on the shelf, a few at most a pass. See
+//! `docs/plans/keep-in-touch.md`.
 //!
 //! # When
 //!
@@ -27,8 +30,8 @@ use jiff::civil::{Date, Time};
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
 use karmayoga_core::keepintouch::{
-    KeepInTouch, LOOK_BACK_DAYS, MAX_ASKS_PER_PASS, MENTIONS_SYSTEM, PassReport, mentions_prompt,
-    mentions_schema, parse_mentions,
+    KeepInTouch, LOOK_BACK_DAYS, MAX_ASKS_PER_PASS, MAX_FOLLOW_UPS_PER_PASS, MENTIONS_SYSTEM,
+    PassReport, mentions_prompt, mentions_schema, parse_follow_ups, parse_mentions,
 };
 use karmayoga_core::llm::ModelTier;
 use karmayoga_core::{EntryId, Vault};
@@ -286,6 +289,9 @@ async fn read_journal(
     };
 
     let total = entries.len();
+    // How many "get in touch" proposals this pass has made from what the
+    // writer said they meant to do: capped for the whole pass, not each entry.
+    let mut followed_up = 0u32;
     let mut failed: Vec<EntryId> = Vec::new();
     let mut in_a_row = 0;
     let mut last_problem = String::new();
@@ -328,21 +334,49 @@ async fn read_journal(
         report.entries_read += 1;
 
         let mentions = parse_mentions(&answer, &title, &body);
-        if mentions.is_empty() {
-            continue;
+        let intentions = parse_follow_ups(&answer, &title, &body);
+        if !mentions.is_empty() {
+            let asks_left = MAX_ASKS_PER_PASS.saturating_sub(report.asked);
+            let done = {
+                let vault = vault.clone();
+                let tz = tz.to_string();
+                let date = entry.local_date;
+                let id = entry.id;
+                blocking(move || Ok(vault.log_mentions(id, date, &mentions, asks_left, &tz, now)?))
+                    .await
+                    .map_err(|e| e.message)?
+            };
+            report.logged += done.logged;
+            report.asked += done.asked;
         }
-        let asks_left = MAX_ASKS_PER_PASS.saturating_sub(report.asked);
-        let done = {
-            let vault = vault.clone();
-            let tz = tz.to_string();
-            let date = entry.local_date;
-            let id = entry.id;
-            blocking(move || Ok(vault.log_mentions(id, date, &mentions, asks_left, &tz, now)?))
+        // After the catch-ups above are written: somebody the entry says you
+        // called is not somebody to be told to call.
+        let left = MAX_FOLLOW_UPS_PER_PASS.saturating_sub(followed_up);
+        if !intentions.is_empty() && left > 0 {
+            let proposed = {
+                let vault = vault.clone();
+                let tz = tz.to_string();
+                let (date, id) = (entry.local_date, entry.id);
+                blocking(move || {
+                    Ok(vault.propose_follow_ups(id, date, &intentions, left, today, now, &tz)?)
+                })
                 .await
-                .map_err(|e| e.message)?
-        };
-        report.logged += done.logged;
-        report.asked += done.asked;
+            };
+            // A proposal that could not be made does not stop the entries
+            // after it being read.
+            match proposed {
+                Ok(made) => {
+                    followed_up += made;
+                    report.suggested += made;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e.message,
+                        "keeping in touch could not propose what a journal entry said"
+                    );
+                }
+            }
+        }
     }
     if !failed.is_empty() {
         report.journal_problem = Some(format!(

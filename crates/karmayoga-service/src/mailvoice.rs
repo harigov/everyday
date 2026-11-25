@@ -12,9 +12,10 @@
 //! text into a profile; everything here is the vault-reading half: finding
 //! the Sent mailbox, paging through it, reading each body, and handing the
 //! result to that module's pure [`karmayoga_core::mail::voice::analyze`].
-//! [`HUMAN_WRITING_RULES`] is the other half of what `mailwrite` needs --
-//! the fixed system-prompt rules every drafting call carries, independent
-//! of any one account's measured voice.
+//! [`VoiceContext::system_prompt`] is the other half of what `mailwrite` needs --
+//! the system-prompt block every drafting call carries ("## Writing as them":
+//! how to weigh what is known of their voice, and the rules that hold whoever
+//! they are), independent of any one account's measured voice.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -33,66 +34,70 @@ use crate::error::CommandResult;
 use crate::mailai::own_addresses;
 use crate::service::{Service, blocking};
 
-/// Writing rules every drafting prompt carries in its system message, after
-/// its own task-specific instructions: write as the person, plainly, with
-/// none of the phrases that mark text as a model's.
+/// The heading of the one block every prompt that writes as the person
+/// carries; see [`VoiceContext::system_prompt`].
+const WRITING_HEADING: &str = "## Writing as them";
+
+/// The order a model is told to weigh what it knows of how they write, said once,
+/// in the one place a model looks for an order. Before it, five rules about
+/// length and tone sat in two messages with their precedence stated in three
+/// different places ("wins over everything above" in one, "follow it unless
+/// their own words below say otherwise" in another), and a small model followed
+/// the most concrete of them: "two to four sentences" beat a learned "says yes
+/// in one line", which defeated the loop built to learn exactly that.
 ///
-/// A plain, fixed string rather than something built from a [`VoiceContext`]:
-/// these rules do not depend on which account or correspondent a given call
-/// is about, only on the fact that a model is about to write mail on a
-/// person's behalf at all. [`VoiceContext::prompt_section`] is the part that
-/// *does* vary per call, and the two are meant to sit side by side in the
-/// same system message -- this constant first, then that section.
-///
-/// Nothing here about tone or length: a rewrite of their own words (Fix,
-/// Shorter, Formal) carries these too, and must not be pushed to grow a
-/// thank-you. What is newly written gets [`WARM_WRITING_RULES`] as well.
-pub const HUMAN_WRITING_RULES: &str = "\
-Write as this person writes, guided by the style guide and the example \
-emails below: their greeting and sign-off, their casing and punctuation, \
-the words they reach for. Be specific rather than generic, with no stock \
-phrases or corporate filler. No em dashes, bullet lists, headings or bold \
-unless their own examples use them. Never say or imply that this was \
-written by an AI.
-
-When a thread is given, a message headed \"written by this person \
-themselves\" is one they sent; every other message is from whoever it \
-names. Never answer their own message as though somebody else had written \
-it, and never thank them for it.
-
-Never invent a fact, a date, a number, a name, a link or a commitment that \
-the thread or the instruction does not already support. When something \
-you would need is not given, leave a short [bracketed] gap for the person \
-to fill in themselves rather than making it up.
-
-The example emails below are for voice only -- never copy a fact, a name \
-or a detail out of one of them into what you write. Reply in the language \
-of the message being answered.";
+/// The blocks that follow keep their own sentences about precedence; this is
+/// the same order, again, at the top. Warmth is deliberately not on the list:
+/// it is a floor under every new message ([`WARMTH_FLOOR`]), and the evidence
+/// decides only the shape -- greeting, sign-off, length, wording.
+const PRECEDENCE: &str = "\
+Match their voice -- greeting, sign-off, length, wording, punctuation -- from these, strongest \
+first; where two disagree, the earlier wins:
+1. What they have told you about how they want to sound (below, if any).
+2. Notes learned from the replies they actually sent (below, if any).
+3. Their own emails, in the examples.
+4. The measured style guide.";
 
 /// How a message newly written for them should sound: suggested replies, a
 /// draft from an instruction, an auto-draft -- never a rewrite of their own
-/// words. See [`VoiceContext::writing_prompt`].
+/// words, which is the one place it is left out (see
+/// [`VoiceContext::system_prompt`]).
 ///
 /// Friendliness is asked for and not left to the examples: "plain and direct,
 /// no pleasantries", with every draft told to match their median length,
-/// wrote replies people found curt. Thanks and acknowledgement only for what
-/// the thread shows, or a new message to somebody invents a favour; and what
-/// the person said in Settings about how they sound outranks all of it.
-pub const WARM_WRITING_RULES: &str = "\
-Sound warm and friendly, the way they write to somebody they get on with. \
-When replying, acknowledge what the other person said or did, and thank them \
-for something in particular when the thread shows something to thank them \
-for; never thank them for, or acknowledge, anything the thread does not show. \
-End on a friendly note. Write in full, natural sentences and say enough to be \
-helpful: a reply that reads curt or clipped is worse than one a sentence \
-longer. If they have said below how they want to sound, that comes first.";
+/// wrote replies people found curt. Thanks only for what the thread shows, or
+/// a new message to somebody invents a favour; and what the person said in
+/// Settings about how they sound outranks all of it ("unless they have told you
+/// otherwise"). A learned "says yes in one line" is not a refusal of the floor:
+/// it makes "Thanks Sam, Thursday works.", not four sentences.
+const WARMTH_FLOOR: &str = "\
+Whatever the length, never curt, unless they have told you otherwise: acknowledge what the other \
+person said or did, thank them for something in particular only when the thread shows it, and end \
+on a friendly note. A reply that reads clipped is worse than one a sentence longer.";
+
+/// What holds for everything written as them, a rewrite of their own words
+/// included: plain, specific, theirs, and never a machine's.
+const ALWAYS: &str = "\
+Always: specific rather than generic; no stock phrases or corporate filler; no em dashes, bullet \
+lists, headings or bold unless their own emails use them; never say or imply an AI wrote it. Write \
+in the language of the message being answered. The examples are for voice only: never copy a fact, \
+a name or a detail out of one. In the thread, a message headed \"written by this person \
+themselves\" is theirs: never answer it as somebody else's, and never thank them for it.";
+
+/// The rule against inventing, which no note, example or instruction changes.
+/// A task that leaves gaps says so itself: a suggested reply is sent as it
+/// stands, a draft may have a `[bracketed]` gap, and which is the task's to say.
+const NEVER_INVENT: &str = "\
+Never invent a fact, a date, a number, a name, a link or a commitment the thread or the \
+instruction does not support.";
 
 /// What heads a message of a thread in a writing prompt, after `---`: as the
 /// person's own when [`Vault::authorship`](karmayoga_core::Vault::authorship)
 /// says they sent it, as from its quoted sender otherwise. Shown only
 /// addresses, a model cannot tell which of them is the person it writes for,
 /// and answered their own earlier message as somebody else's. The words are
-/// the ones [`HUMAN_WRITING_RULES`] explains; drafts are left out before this.
+/// the ones the writing block ([`VoiceContext::system_prompt`]) explains; drafts are
+/// left out before this.
 pub(crate) fn thread_heading(from: &Address, who: Authorship) -> String {
     match who {
         Authorship::Own => "written by this person themselves".to_string(),
@@ -159,19 +164,55 @@ pub struct VoiceContext {
 }
 
 impl VoiceContext {
-    /// A drafting prompt's whole system message: `task`, the fixed
-    /// [`HUMAN_WRITING_RULES`], what was learned from their replies, then what
-    /// the person has said themselves -- last, and in the system message
-    /// rather than with the measured part in the user's, because it is the one
-    /// thing here that is an instruction from them, and because "wins over
-    /// what was measured" is only a promise if it is said where it carries.
+    /// A rewrite's whole system message: `task`, then the "Writing as them"
+    /// block -- the order to weigh their voice in ([`PRECEDENCE`]), what holds
+    /// whoever they are ([`ALWAYS`], [`NEVER_INVENT`]), what was learned from
+    /// their replies, then what the person has said themselves -- last, and in
+    /// the system message rather than with the measured part in the user's,
+    /// because it is the one thing here that is an instruction from them, and
+    /// because "wins over what was measured" is only a promise if it is said
+    /// where it carries.
+    ///
+    /// No warmth: a rewrite of their own words (Polish, Shorter, Formal) must
+    /// not be pushed to grow a thank-you. A message newly written for them is
+    /// [`Self::writing_prompt`]'s. `Fix` has neither: it keeps every word
+    /// choice, which a style guide would argue with, and has a prompt of its
+    /// own (`mailwrite`'s).
     ///
     /// The learned notes sit in the system message too, since they are rules
     /// about every reply rather than material for this one, but above the
     /// person's own words: a model wrote them, from the person's mail, and
     /// what the person typed themselves is the last word on how they sound.
     pub fn system_prompt(&self, task: &str) -> String {
-        let mut out = format!("{task}\n\n{HUMAN_WRITING_RULES}");
+        format!("{task}\n\n{}", self.writing_block(false))
+    }
+
+    /// [`Self::system_prompt`] for a message newly written for them, with
+    /// [`WARMTH_FLOOR`] in the block: what every prompt that writes them a reply
+    /// or a message uses, and a rewrite of their own words does not.
+    pub fn writing_prompt(&self, task: &str) -> String {
+        format!("{task}\n\n{}", self.writing_block(true))
+    }
+
+    /// "## Writing as them", whole: see [`Self::system_prompt`].
+    fn writing_block(&self, warm: bool) -> String {
+        // One short line, whoever typed it: it is put into a prompt.
+        let who = self
+            .name
+            .as_deref()
+            .map(|name| name.split_whitespace().collect::<Vec<_>>().join(" "))
+            .map(|name| name.chars().take(80).collect::<String>())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "this person".to_string());
+        let mut out =
+            format!("{WRITING_HEADING}\nYou write as {who}, in the first person. {PRECEDENCE}\n\n");
+        if warm {
+            out.push_str(WARMTH_FLOOR);
+            out.push_str("\n\n");
+        }
+        out.push_str(ALWAYS);
+        out.push_str("\n\n");
+        out.push_str(NEVER_INVENT);
         let learned = self.learned.trim();
         if !learned.is_empty() {
             out.push_str(&format!(
@@ -194,13 +235,6 @@ impl VoiceContext {
             ));
         }
         out
-    }
-
-    /// [`Self::system_prompt`] for a message newly written for them, with
-    /// [`WARM_WRITING_RULES`] after `task`: what every prompt that writes them
-    /// a reply or a message uses, and a rewrite of their own words does not.
-    pub fn writing_prompt(&self, task: &str) -> String {
-        self.system_prompt(&format!("{task}\n\n{WARM_WRITING_RULES}"))
     }
 
     /// What a model wrote, with what gives a model away taken out. Only what
@@ -903,16 +937,51 @@ mod tests {
             VoiceContext { instructions: "  Never apologise.  ".into(), ..Default::default() };
         let system = voice.system_prompt("TASK");
         assert!(system.starts_with("TASK"), "{system}");
-        assert!(system.contains(HUMAN_WRITING_RULES), "{system}");
+        assert!(system.contains(WRITING_HEADING), "{system}");
         assert!(system.contains("---\nNever apologise.\n---"), "{system}");
         assert!(system.contains("wins over everything"), "{system}");
         // Measured below it, in the user's message, not repeated here.
         assert!(!voice.prompt_section().contains("Never apologise"));
     }
 
-    /// "Short and direct, no pleasantries" in Settings must beat the rules
-    /// that ask a new reply to be warm, and a rewrite of their own words never
-    /// gets those rules at all.
+    /// The order is said once, in one place, numbered: what they told you, then
+    /// what was learned from what they sent, then their emails, then the measured
+    /// guide -- and the blocks it names come in that order too.
+    #[test]
+    fn the_order_to_weigh_their_voice_in_is_said_once_and_numbered() {
+        let voice = VoiceContext {
+            name: Some("Hari".into()),
+            learned: "- Says yes in one line.".into(),
+            instructions: "Never apologise.".into(),
+            ..Default::default()
+        };
+        for system in [voice.writing_prompt("TASK"), voice.system_prompt("TASK")] {
+            let at = |needle: &str| system.find(needle).unwrap_or_else(|| panic!("{system}"));
+            assert!(at("TASK") < at("## Writing as them"), "{system}");
+            assert!(system.contains("You write as Hari, in the first person."), "{system}");
+            assert!(at("where two disagree, the earlier wins:") < at("1. What they have told you"));
+            assert!(at("1. What they have told you") < at("2. Notes learned from the replies"));
+            assert!(at("2. Notes learned from the replies") < at("3. Their own emails"));
+            assert!(at("3. Their own emails") < at("4. The measured style guide."));
+            // Learned notes, then their own words, last.
+            assert!(at("4. The measured style guide.") < at("---\n- Says yes in one line.\n---"));
+            assert!(at("---\n- Says yes in one line.\n---") < at("---\nNever apologise.\n---"));
+            assert_eq!(system.matches("## Writing as them").count(), 1, "{system}");
+        }
+        let nameless = VoiceContext::default().system_prompt("TASK");
+        assert!(nameless.contains("You write as this person, in the first person."), "{nameless}");
+        // A name is one short line, whoever typed it.
+        let long =
+            VoiceContext { name: Some(format!("A\nB {}", "x".repeat(200))), ..Default::default() };
+        let system = long.system_prompt("TASK");
+        let line = system.lines().find(|l| l.starts_with("You write as")).unwrap();
+        let who = line["You write as ".len()..].split(", in the first person.").next().unwrap();
+        assert_eq!(who, format!("A B {}", "x".repeat(76)), "{line}");
+    }
+
+    /// "Short and direct, no pleasantries" in Settings must beat the floor that
+    /// asks a new reply to be warm, and a rewrite of their own words never gets
+    /// the floor at all.
     #[test]
     fn warmth_is_for_new_writing_and_their_own_words_outrank_it() {
         let voice = VoiceContext {
@@ -921,18 +990,35 @@ mod tests {
         };
         let writing = voice.writing_prompt("TASK");
         let at = |needle: &str| writing.find(needle).unwrap_or_else(|| panic!("{writing}"));
-        assert!(at("TASK") < at(WARM_WRITING_RULES));
-        assert!(at(WARM_WRITING_RULES) < at(HUMAN_WRITING_RULES));
-        assert!(at(HUMAN_WRITING_RULES) < at("Short and direct, no pleasantries."));
-        assert!(!voice.system_prompt("TASK").contains(WARM_WRITING_RULES));
-        assert!(!HUMAN_WRITING_RULES.contains("friendly"), "tone is not every prompt's");
-        assert!(WARM_WRITING_RULES.contains("never thank them for, or acknowledge, anything"));
+        assert!(at("TASK") < at("never curt, unless they have told you otherwise"));
+        assert!(at("never curt, unless they have told you otherwise") < at("Always: specific"));
+        assert!(at("Always: specific") < at("Never invent a fact"));
+        assert!(at("Never invent a fact") < at("Short and direct, no pleasantries."));
+        assert!(
+            writing
+                .contains("thank them for something in particular only when the thread shows it")
+        );
+        assert!(writing.contains("A reply that reads clipped is worse than one a sentence longer"));
+        // A rewrite has the block without the floor.
+        let rewrite = voice.system_prompt("TASK");
+        assert!(rewrite.contains("## Writing as them"), "{rewrite}");
+        assert!(!rewrite.contains("never curt"), "{rewrite}");
+        assert!(!rewrite.contains("friendly note"), "{rewrite}");
+        assert!(!rewrite.contains("clipped"), "{rewrite}");
+        // Warmth is a floor under the list, not a place on it.
+        assert!(!PRECEDENCE.contains("warm"), "{PRECEDENCE}");
+        assert!(!ALWAYS.contains("friendly"), "tone is not every prompt's");
     }
 
     #[test]
-    fn saying_nothing_changes_nothing() {
+    fn saying_nothing_adds_no_notes_and_no_instructions() {
         let system = VoiceContext::default().system_prompt("TASK");
-        assert_eq!(system, format!("TASK\n\n{HUMAN_WRITING_RULES}"));
+        assert!(system.ends_with(NEVER_INVENT), "{system}");
+        assert!(!system.contains("What was learned"), "{system}");
+        assert!(
+            !system.contains("told you how they want to sound, in their own words"),
+            "{system}"
+        );
         let blank = VoiceContext { learned: "  \n ".into(), ..Default::default() };
         assert_eq!(blank.system_prompt("TASK"), system, "notes of nothing add nothing");
     }
@@ -947,8 +1033,8 @@ mod tests {
         let system = voice.system_prompt("TASK");
         let at = |needle: &str| system.find(needle).unwrap_or_else(|| panic!("{system}"));
         let learned = at("What was learned from the replies they actually sent");
-        assert!(at("TASK") < at(HUMAN_WRITING_RULES));
-        assert!(at(HUMAN_WRITING_RULES) < learned);
+        assert!(at("TASK") < at(WRITING_HEADING));
+        assert!(at(NEVER_INVENT) < learned);
         assert!(learned < at("---\n- Says yes in one line.\n---"));
         assert!(at("---\n- Says yes in one line.\n---") < at("---\nNever apologise.\n---"));
         assert!(

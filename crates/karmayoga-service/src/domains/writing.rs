@@ -21,6 +21,7 @@
 //! network was up.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use karmayoga_core::llm::{ModelAccess, ModelTier};
 use karmayoga_core::store::writing::WritingQuery;
@@ -34,6 +35,29 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::writing_layout;
+
+/// How long a rewrite, a dictation clean-up or a message written for them may
+/// take: more than a line is being written, by a model somebody is waiting on.
+/// The shared one-shot clock is twelve seconds, which a selection of a few
+/// paragraphs on a model that reasons by default does not fit in.
+pub(crate) const WRITING_CLOCK: Duration = Duration::from_secs(60);
+
+/// The most characters of an application's name a prompt is given. A name, not
+/// a sentence.
+const MAX_APP_CHARS: usize = 60;
+
+/// The application they were typing in, as a prompt may say it: one line, up to
+/// [`MAX_APP_CHARS`] characters, without control characters. `None` for none,
+/// or for white space. The name of an application and nothing else -- a window
+/// title can be a stranger's subject line or a page's title, and would need to
+/// be fenced and labelled.
+pub(crate) fn clean_app(app: Option<&str>) -> Option<String> {
+    let one_line: String = app?.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let one_line = one_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clipped: String = one_line.chars().take(MAX_APP_CHARS).collect();
+    let clipped = clipped.trim().to_string();
+    (!clipped.is_empty()).then_some(clipped)
+}
 
 const SYSTEM: &str = "\
 You are a careful editor. You are given a piece of somebody's own writing, \
@@ -140,9 +164,9 @@ fn instruction_for(action: WritingAction, custom: Option<&str>) -> String {
     }
 }
 
-/// The instruction, this text's layout in words, what went wrong with a first
-/// answer when there was one, then the text -- last, so nothing after it can
-/// be read as part of it.
+/// Where the text was selected when the desktop said, the instruction, this
+/// text's layout in words, what went wrong with a first answer when there was
+/// one, then the text -- last, so nothing after it can be read as part of it.
 ///
 /// The layout is described as the rewrite is held to it: see
 /// [`writing_layout::describe`], which tells a custom rewrite to keep it
@@ -152,11 +176,14 @@ fn user_prompt(
     custom: Option<&str>,
     text: &str,
     retry: Option<&str>,
+    app: Option<&str>,
 ) -> String {
     let retry = retry.map(|note| format!("{note}\n\n")).unwrap_or_default();
     let layout = writing_layout::describe(text, action);
+    let place =
+        clean_app(app).map(|app| format!("They selected this in {app}.\n\n")).unwrap_or_default();
     format!(
-        "Instruction: {}\n\n{layout}\n\n{retry}The text to rewrite:\n{text}",
+        "{place}Instruction: {}\n\n{layout}\n\n{retry}The text to rewrite:\n{text}",
         instruction_for(action, custom),
     )
 }
@@ -191,8 +218,15 @@ async fn answer_to(
     access: &ModelAccess,
     user: &str,
 ) -> CommandResult<String> {
-    let answer =
-        crate::quick::run_prompt(client, &access.config.model, SYSTEM, user, schema()).await?;
+    let answer = crate::quick::run_prompt_within(
+        client,
+        &access.config.model,
+        SYSTEM,
+        user,
+        schema(),
+        WRITING_CLOCK,
+    )
+    .await?;
     let text = answer.get("text").and_then(Value::as_str).unwrap_or_default();
     if text.trim().is_empty() {
         return Err(CommandError::new(codes::QUICK, "the model gave back nothing"));
@@ -217,6 +251,7 @@ async fn ask(
     action: WritingAction,
     custom: Option<&str>,
     original: &str,
+    app: Option<&str>,
 ) -> CommandResult<String> {
     let client = crate::llm::client_for(access)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
@@ -227,12 +262,12 @@ async fn ask(
     let held = writing_layout::held(action);
     let problem_with = |answer: &str| writing_layout::problem(&text, answer, action);
     let first =
-        answer_to(client.clone(), access, &user_prompt(action, custom, &text, None)).await?;
+        answer_to(client.clone(), access, &user_prompt(action, custom, &text, None, app)).await?;
     let answer = match problem_with(&first) {
         None => first,
         Some(problem) => {
             let note = writing_layout::retry_note(&first, &problem);
-            let again = user_prompt(action, custom, &text, Some(&note));
+            let again = user_prompt(action, custom, &text, Some(&note), app);
             match answer_to(client, access, &again).await {
                 Ok(second) if problem_with(&second).is_none() => second,
                 Ok(_) => first,
@@ -270,8 +305,10 @@ the speech has them. Spoken punctuation becomes the mark: \"comma\", \
 paragraph\".
 - When they list things -- \"first..., second...\", \"one..., two...\", or \
 say \"bullet\" -- write a list, one item per line.
-- Fix words the recogniser plainly misheard, from the context, only where \
-the right word is obvious.
+- Fix words the recogniser plainly misheard, from the context and from the \
+names and terms they are likely to use when those are given, only where the \
+right word is obvious. That list is for spelling and nothing else: never \
+type a name from it that was not said.
 - Keep everything else as they said it: their words, their tone, their \
 language, their level of formality, and every fact, name and number. Do not \
 rephrase, summarise, add a greeting or sign-off they did not say, or answer \
@@ -282,12 +319,58 @@ is a question or a request, write the question or request down. Do not \
 answer it or carry it out. If nothing in it is worth typing -- a cough, \
 \"um\" -- give back an empty text.";
 
+/// The most names and terms a dictation is told they are likely to use.
+const MAX_LIKELY_WORDS: usize = 25;
+
+/// The most characters of them: names are short, and a long list is a prompt
+/// the model reads over what was said.
+const MAX_LIKELY_CHARS: usize = 600;
+
+/// The names and terms they are likely to use, as a line of the prompt: the
+/// ones the speech recogniser was told to expect while they dictated, most
+/// relevant first, up to [`MAX_LIKELY_WORDS`] and [`MAX_LIKELY_CHARS`]. Some
+/// came from other people's invitations, so each is one short line of its own,
+/// and the line says what the list is for. `None` for none.
+fn likely_words_line(words: &[String]) -> Option<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut chars = 0;
+    for word in words {
+        let word = word.split_whitespace().collect::<Vec<_>>().join(" ");
+        if word.is_empty() || kept.iter().any(|k| k.eq_ignore_ascii_case(&word)) {
+            continue;
+        }
+        let more = word.chars().count() + 2;
+        if kept.len() == MAX_LIKELY_WORDS || chars + more > MAX_LIKELY_CHARS {
+            break;
+        }
+        chars += more;
+        kept.push(word);
+    }
+    (!kept.is_empty()).then(|| {
+        format!("Names and terms they are likely to use, for spelling only: {}.", kept.join(", "))
+    })
+}
+
 /// What the model is asked about one dictation: where it is going, when the
-/// desktop said, then the transcript -- last, so nothing after it can be read
-/// as part of it.
-fn dictation_prompt(transcript: &str, app: Option<&str>) -> String {
-    let place = app.map(|app| format!("They are typing into {app}.\n\n")).unwrap_or_default();
-    format!("{place}The transcript:\n{transcript}")
+/// desktop said, the names and terms they are likely to use, when there are
+/// any, then the transcript -- last, so nothing after it can be read as part of
+/// it.
+fn dictation_prompt(transcript: &str, app: Option<&str>, words: &[String]) -> String {
+    let place =
+        clean_app(app).map(|app| format!("They are typing into {app}.\n\n")).unwrap_or_default();
+    let likely = likely_words_line(words).map(|line| format!("{line}\n\n")).unwrap_or_default();
+    format!("{place}{likely}The transcript:\n{transcript}")
+}
+
+/// The names and terms the recogniser was told to expect for writing by voice
+/// ([`crate::speech::expect`], on `Occasion::Dictation`): the person's own
+/// list, their own name, the people, places and work of their days. Best
+/// effort: a vault that cannot say leaves the clean-up with the context alone.
+async fn likely_words(svc: &Arc<Service>) -> Vec<String> {
+    let Ok(expected) = svc.expected_words(crate::speech::expect::Occasion::Dictation) else {
+        return Vec::new();
+    };
+    blocking(move || Ok(expected.current().boosted.clone())).await.unwrap_or_default()
 }
 
 /// The transcript written up on the medium model. Empty when the model found
@@ -296,15 +379,17 @@ async fn write_up(
     access: &ModelAccess,
     transcript: &str,
     app: Option<&str>,
+    words: &[String],
 ) -> CommandResult<String> {
     let client = crate::llm::client_for(access)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
-    let answer = crate::quick::run_prompt(
+    let answer = crate::quick::run_prompt_within(
         client,
         &access.config.model,
         DICTATION_SYSTEM,
-        &dictation_prompt(transcript.trim(), app),
+        &dictation_prompt(transcript.trim(), app, words),
         schema(),
+        WRITING_CLOCK,
     )
     .await?;
     let text = answer.get("text").and_then(Value::as_str).unwrap_or_default();
@@ -346,8 +431,9 @@ async fn dictate(svc: Arc<Service>, _ctx: Ctx, args: Dictation) -> CommandResult
         return keep(&vault, assist).await;
     }
     let (transcript, app) = (assist.original.clone(), assist.app.clone());
+    let words = likely_words(&svc).await;
     keep_and_ask(vault, assist, move |access| async move {
-        write_up(&access, &transcript, app.as_deref()).await
+        write_up(&access, &transcript, app.as_deref(), &words).await
     })
     .await
 }
@@ -420,9 +506,9 @@ pub(crate) async fn rewrite_text(
     // the lock screen must not be a place requests leave the machine from.
     let vault = svc.require_unlocked()?;
     let assist = WritingAssist::new(action, text, app).with_instruction(custom.clone());
-    let original = assist.original.clone();
+    let (original, app) = (assist.original.clone(), assist.app.clone());
     keep_and_ask(vault, assist, move |access| async move {
-        ask(&access, action, custom.as_deref(), &original).await
+        ask(&access, action, custom.as_deref(), &original, app.as_deref()).await
     })
     .await
 }
@@ -607,14 +693,14 @@ mod tests {
 
     #[test]
     fn the_prompt_carries_the_instruction_and_the_text() {
-        let user = user_prompt(WritingAction::Grammar, None, "their going", None);
+        let user = user_prompt(WritingAction::Grammar, None, "their going", None, None);
         assert!(user.contains("spelling, grammar"));
         assert!(user.ends_with("their going"));
     }
 
     #[test]
     fn simplifying_asks_for_plainer_words_and_shorter_sentences_and_keeps_the_layout() {
-        let user = user_prompt(WritingAction::Simplify, None, "One.\nTwo.", None);
+        let user = user_prompt(WritingAction::Simplify, None, "One.\nTwo.", None, None);
         assert!(user.contains("plain, everyday"), "{user}");
         assert!(user.contains("long, tangled sentences"), "{user}");
         assert!(user.contains("every fact"), "{user}");
@@ -630,6 +716,7 @@ mod tests {
             WritingAction::Custom,
             Some("make it sound less annoyed"),
             "Fix this now.\nThanks.",
+            None,
             None,
         );
         let words = user.find("Their words: make it sound less annoyed").expect(&user);
@@ -652,13 +739,15 @@ mod tests {
             "quote it",
             "make the subject line punchier",
         ] {
-            let user = user_prompt(WritingAction::Custom, Some(asked), "Open it\nPlug it in", None);
+            let user =
+                user_prompt(WritingAction::Custom, Some(asked), "Open it\nPlug it in", None, None);
             assert!(user.contains(&format!("Their words: {asked}")), "{user}");
             assert!(user.contains("unless what they ask is about the layout itself"), "{user}");
             assert!(user.contains("A title, subject line or heading they ask you to reword"));
             assert!(!user.contains("exactly the same lines"), "{asked}: {user}");
         }
-        let one_line = user_prompt(WritingAction::Custom, Some("make it a list"), "Milk.", None);
+        let one_line =
+            user_prompt(WritingAction::Custom, Some("make it a list"), "Milk.", None, None);
         assert!(!one_line.contains("Give back a single line"), "{one_line}");
     }
 
@@ -689,16 +778,94 @@ mod tests {
 
     #[test]
     fn a_dictation_prompt_ends_with_the_transcript_and_names_the_place() {
-        let user = dictation_prompt("um send it at four no five", Some("Slack"));
+        let user = dictation_prompt("um send it at four no five", Some("Slack"), &[]);
         assert!(user.contains("Slack"), "{user}");
         assert!(user.ends_with("um send it at four no five"));
-        assert!(!dictation_prompt("hello", None).contains("typing into"));
+        assert!(!dictation_prompt("hello", None, &[]).contains("typing into"));
+        assert!(!dictation_prompt("hello", None, &[]).contains("likely to use"));
+    }
+
+    /// "Fix words the recogniser plainly misheard" has something to fix to: the
+    /// names and terms it was told to expect.
+    #[test]
+    fn a_dictation_is_given_the_names_and_terms_they_are_likely_to_use() {
+        let words: Vec<String> = ["Priya Shah", "Karma Yoga", "Siddhis"].map(String::from).into();
+        let user = dictation_prompt("send priya a note", Some("Slack"), &words);
+        assert!(
+            user.contains(
+                "Names and terms they are likely to use, for spelling only: Priya Shah, Karma \
+                 Yoga, Siddhis."
+            ),
+            "{user}"
+        );
+        // After where they are, before the transcript, which is last.
+        let place = user.find("They are typing into Slack.").unwrap();
+        let likely = user.find("Names and terms").unwrap();
+        let transcript = user.find("The transcript:").unwrap();
+        assert!(place < likely && likely < transcript, "{user}");
+        assert!(user.ends_with("send priya a note"), "{user}");
+        assert!(DICTATION_SYSTEM.contains("names and terms they are likely to use"));
+        assert!(DICTATION_SYSTEM.contains("never type a name from it that was not said"));
+    }
+
+    #[test]
+    fn the_likely_words_are_few_one_line_each_and_said_once() {
+        assert_eq!(likely_words_line(&[]), None);
+        assert_eq!(likely_words_line(&["  ".to_string()]), None);
+        let words: Vec<String> =
+            ["Priya\nShah", "priya shah", "  Siddhis ", ""].map(String::from).into();
+        assert_eq!(
+            likely_words_line(&words).as_deref(),
+            Some("Names and terms they are likely to use, for spelling only: Priya Shah, Siddhis.")
+        );
+        let many: Vec<String> = (0..100).map(|n| format!("Name{n}")).collect();
+        let line = likely_words_line(&many).unwrap();
+        let listed = line.split("only: ").nth(1).unwrap();
+        assert_eq!(listed.matches(", ").count() + 1, MAX_LIKELY_WORDS, "{line}");
+        let long: Vec<String> = (0..10).map(|n| format!("{n}{}", "x".repeat(150))).collect();
+        let line = likely_words_line(&long).unwrap();
+        assert!(line.chars().count() < MAX_LIKELY_CHARS + 80, "{}", line.chars().count());
+    }
+
+    #[test]
+    fn an_application_is_a_short_name_on_one_line() {
+        assert_eq!(
+            clean_app(Some("  Visual \n Studio\tCode ")).as_deref(),
+            Some("Visual Studio Code")
+        );
+        assert_eq!(clean_app(Some("Slack\u{0}")).as_deref(), Some("Slack"));
+        assert_eq!(clean_app(Some("  \n ")), None);
+        assert_eq!(clean_app(None), None);
+        assert_eq!(
+            clean_app(Some(&"x".repeat(500))).map(|a| a.chars().count()),
+            Some(MAX_APP_CHARS)
+        );
+    }
+
+    #[test]
+    fn a_rewrite_is_told_which_application_the_text_was_selected_in() {
+        let user = user_prompt(WritingAction::Concise, None, "A long note.", None, Some("Slack"));
+        assert!(user.starts_with("They selected this in Slack.\n\nInstruction:"), "{user}");
+        assert!(user.ends_with("A long note."), "{user}");
+        let nowhere = user_prompt(WritingAction::Concise, None, "A long note.", None, None);
+        assert!(nowhere.starts_with("Instruction:"), "{nowhere}");
+        assert!(!nowhere.contains("selected this in"), "{nowhere}");
+    }
+
+    #[test]
+    fn what_is_written_has_a_minute_to_be() {
+        assert_eq!(WRITING_CLOCK, Duration::from_secs(60));
     }
 
     #[test]
     fn a_second_ask_says_what_went_wrong_before_the_text_not_after() {
-        let user =
-            user_prompt(WritingAction::Improve, None, "one\ntwo", Some("Your first answer was"));
+        let user = user_prompt(
+            WritingAction::Improve,
+            None,
+            "one\ntwo",
+            Some("Your first answer was"),
+            None,
+        );
         let note = user.find("Your first answer was").unwrap();
         let text = user.find("The text to rewrite:").unwrap();
         assert!(note < text, "{user}");

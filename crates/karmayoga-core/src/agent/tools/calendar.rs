@@ -100,7 +100,7 @@ pub(super) static TOOLS: &[Tool] = &[
              a task. On this computer it becomes their own planned time; on an account's \
              calendar it is created on that account's server, with any guests invited by it. \
              Give `repeat` for a recurring event. A call with attendees is confirmed with the \
-             person first, because invitations cannot be unsent.",
+             person first.",
             run_create_event,
             Some(describe_create_event)
         )
@@ -150,10 +150,9 @@ pub(super) static TOOLS: &[Tool] = &[
             ),
             "Change an event on an account's calendar: its title, time, description, \
              location, guests or how it repeats. Only names what changes; everything left out \
-             stays as it is. Only events the person organised can be changed. Guests hear about \
-             the change from the calendar's server, so a change to an event with guests is \
-             confirmed with the person first. For your own planned time, use \
-             update_time_block instead.",
+             stays as it is. Only events the person organised can be changed. A change to an \
+             event with guests is confirmed with the person first. For your own planned \
+             time, use update_time_block instead.",
             run_update_event,
             Some(describe_update_event)
         )

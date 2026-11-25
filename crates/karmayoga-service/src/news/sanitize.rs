@@ -51,8 +51,14 @@ pub fn body(story: StoryId, html: &str, base_url: &str, origin: BodyOrigin) -> S
 /// draws round a link, and the `#`, `*` and `>` it puts in front of
 /// headings, bullets and quotes are all taken out first.
 pub fn summary(html: &str) -> String {
-    let text = readable(&html_to_text(html));
-    cut_on_word(&text, SUMMARY_CHARS)
+    readable_excerpt(html, SUMMARY_CHARS)
+}
+
+/// [`summary`] to `max` characters: what a page says as one line of plain text,
+/// cut on a word. For what goes to a model, which is shown more of a show's
+/// notes than a row is.
+pub fn readable_excerpt(html: &str, max: usize) -> String {
+    cut_on_word(&readable(&html_to_text(html)), max)
 }
 
 /// `html_to_text`'s output without its decoration, whitespace collapsed.
@@ -231,6 +237,15 @@ mod tests {
     fn a_short_summary_is_not_cut_and_has_no_ellipsis() {
         assert_eq!(summary("<p>Short.</p>"), "Short.");
         assert_eq!(summary(""), "");
+    }
+
+    #[test]
+    fn what_goes_to_a_model_is_the_same_reading_to_a_longer_length() {
+        let html = format!("<p>{}</p>", "word ".repeat(600));
+        let shown = readable_excerpt(&html, 1_500);
+        assert!(shown.chars().count() > SUMMARY_CHARS && shown.chars().count() <= 1_500);
+        assert!(shown.ends_with("word\u{2026}"), "{shown:?}");
+        assert_eq!(readable_excerpt(&html, SUMMARY_CHARS), summary(&html));
     }
 
     #[test]

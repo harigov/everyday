@@ -86,6 +86,15 @@ async fn fake_model(arguments: Value) -> FakeModel {
 /// in touch switched on, Ravi Kumar on the shelf, and today's entry saying they
 /// talked.
 fn env(endpoint: &str, assistant_on: bool) -> (Arc<Service>, tempfile::TempDir, Item) {
+    env_with_entry(endpoint, assistant_on, "Called Ravi about the move.")
+}
+
+/// [`env`], with `text` as today's entry.
+fn env_with_entry(
+    endpoint: &str,
+    assistant_on: bool,
+    text: &str,
+) -> (Arc<Service>, tempfile::TempDir, Item) {
     let (svc, dir) = support::vault::service(None);
     let vault = svc.get().unwrap();
     let settings = karmayoga_core::AgentSettings { enabled: assistant_on, ..Default::default() };
@@ -111,7 +120,7 @@ fn env(endpoint: &str, assistant_on: bool) -> (Arc<Service>, tempfile::TempDir, 
     let journal = vault.journals().unwrap().remove(0);
     let mut entry = karmayoga_core::Entry::new(journal.id, &tz);
     entry.local_date = today;
-    entry.body = karmayoga_core::richtext::RichDoc::from_plain_text("Called Ravi about the move.");
+    entry.body = karmayoga_core::richtext::RichDoc::from_plain_text(text);
     vault.save_entry(&entry, None).unwrap();
     (svc, dir, ravi)
 }
@@ -203,4 +212,52 @@ async fn nothing_runs_while_it_is_switched_off() {
     svc.get().unwrap().update_keep_in_touch(|k| k.settings.enabled = false).unwrap();
     assert!(svc.call(Ctx::local(), "run_keep_in_touch", json!({})).await.is_err());
     assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn what_the_writer_meant_to_do_is_proposed_for_somebody_on_the_shelf_and_nobody_else() {
+    // "Ghost" is not in the entry, and "Priya" is on nobody's shelf. Ravi was
+    // called, which is a catch-up and nothing to be told to do.
+    let fake = fake_model(json!({
+        "people": [{ "name": "Ravi", "via": "call", "note": "the move" }],
+        "follow_ups": [
+            { "name": "Ravi", "reason": "meant to call again" },
+            { "name": "Asha", "reason": "meant to call her" },
+            { "name": "Ghost", "reason": "not in the entry" },
+            { "name": "Priya", "reason": "interview on Friday" },
+        ],
+    }))
+    .await;
+    let (svc, _dir, ravi) = env_with_entry(
+        &fake.endpoint,
+        true,
+        "Called Ravi about the move. Should call Asha soon. Priya has her interview on Friday.",
+    );
+    let vault = svc.get().unwrap();
+    let shelf = vault.kinds().unwrap().into_iter().find(|k| k.slug == CONTACT_SLUG).unwrap();
+    let asha = Item::new(shelf.id, "Asha Menon");
+    vault.save_item(&asha).unwrap();
+
+    let report = call(&svc, "run_keep_in_touch").await;
+    assert_eq!(report["entriesRead"], 1);
+    assert_eq!(report["logged"], 1, "Ravi was called, and Asha was not: {report}");
+    assert_eq!(report["asked"], 0, "an intention never offers somebody as a new contact: {report}");
+    assert_eq!(report["suggested"], 1, "{report}");
+    assert!(
+        vault.logs(&LogQuery::for_item(asha.id)).unwrap().is_empty(),
+        "meaning to call is not a call"
+    );
+    assert_eq!(vault.logs(&LogQuery::for_item(ravi.id)).unwrap().len(), 1);
+    let pending = vault
+        .proposals(&karmayoga_core::store::proposals::ProposalQuery::pending_of(
+            karmayoga_core::ProposalKind::Task,
+        ))
+        .unwrap();
+    assert_eq!(pending.len(), 1, "Ravi was called, so not Ravi: {pending:?}");
+    assert_eq!(pending[0].caption, "Get in touch with Asha Menon");
+    assert!(pending[0].why.contains("meant to call her"), "{}", pending[0].why);
+
+    // The same entry read again by another press of "check now".
+    let again = call(&svc, "run_keep_in_touch").await;
+    assert_eq!(again["suggested"], 0, "{again}");
 }

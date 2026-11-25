@@ -1492,6 +1492,34 @@ pub struct LabResult {
     pub updated_at: Timestamp,
 }
 
+impl LabResult {
+    /// Which way this result lies outside its own reference range, or `None`
+    /// when it does not (or when nothing can be said): `"below"`, `"above"`,
+    /// or `"outside"` for a flag with no direction (abnormal, critical).
+    ///
+    /// A lab's own flag wins where it gave one, as the screens do; with none,
+    /// the numbers decide, and a result that is only text is never outside
+    /// anything. The wording is for a clinician and for a model that must not
+    /// compare numbers itself.
+    pub fn outside_range(&self) -> Option<&'static str> {
+        match self.flag {
+            LabFlag::Low => return Some("below"),
+            LabFlag::High => return Some("above"),
+            LabFlag::Abnormal | LabFlag::Critical => return Some("outside"),
+            LabFlag::Normal => return None,
+            LabFlag::None => {}
+        }
+        let value = self.value?;
+        if self.ref_low.is_some_and(|low| value < low) {
+            Some("below")
+        } else if self.ref_high.is_some_and(|high| value > high) {
+            Some("above")
+        } else {
+            None
+        }
+    }
+}
+
 /// Every result of one test, oldest first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1762,6 +1790,12 @@ pub struct MealItem {
     /// A model's guess from a photo, not weighed or looked up.
     #[serde(default)]
     pub estimated: bool,
+    /// Why this item should be looked at before it is believed: what else it
+    /// might be, the range its portion could be in, or that its energy and
+    /// nutrients disagree. Written when a photo is read; cleared when the
+    /// person marks the item as checked. Empty for anything else.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doubt: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2078,4 +2112,66 @@ pub struct VisitFacts {
     pub weight_change_kg: Option<f64>,
     pub mean_sleep_min: Option<f64>,
     pub mean_steps: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lab(value: Option<f64>, low: Option<f64>, high: Option<f64>, flag: &str) -> LabResult {
+        let mut json = serde_json::json!({
+            "id": LabResultId::new(),
+            "name": "TSH",
+            "flag": flag,
+            "collected": "2026-11-10",
+            "createdAt": "2026-11-10T12:00:00Z",
+            "updatedAt": "2026-11-10T12:00:00Z",
+        });
+        if let Some(v) = value {
+            json["value"] = v.into();
+        } else {
+            json["text"] = "Negative".into();
+        }
+        if let Some(l) = low {
+            json["refLow"] = l.into();
+        }
+        if let Some(h) = high {
+            json["refHigh"] = h.into();
+        }
+        serde_json::from_value(json).expect("a lab result")
+    }
+
+    #[test]
+    fn a_result_is_outside_its_range_by_its_flag_first_and_its_numbers_after() {
+        // The numbers decide when the report printed no flag.
+        assert_eq!(lab(Some(4.8), Some(0.4), Some(4.0), "none").outside_range(), Some("above"));
+        assert_eq!(lab(Some(0.1), Some(0.4), Some(4.0), "none").outside_range(), Some("below"));
+        assert_eq!(lab(Some(2.0), Some(0.4), Some(4.0), "none").outside_range(), None);
+        // A limit with one end only.
+        assert_eq!(lab(Some(250.0), None, Some(200.0), "none").outside_range(), Some("above"));
+        assert_eq!(lab(Some(10.0), None, Some(200.0), "none").outside_range(), None);
+        // The lab's own flag wins, either way.
+        assert_eq!(lab(Some(2.0), Some(0.4), Some(4.0), "high").outside_range(), Some("above"));
+        assert_eq!(lab(Some(2.0), Some(0.4), Some(4.0), "low").outside_range(), Some("below"));
+        assert_eq!(
+            lab(Some(2.0), Some(0.4), Some(4.0), "critical").outside_range(),
+            Some("outside")
+        );
+        assert_eq!(lab(Some(5.0), Some(0.4), Some(4.0), "normal").outside_range(), None);
+        // A result that is only words is outside nothing.
+        assert_eq!(lab(None, Some(0.4), Some(4.0), "none").outside_range(), None);
+    }
+
+    #[test]
+    fn a_meal_item_carries_a_doubt_only_when_it_has_one() {
+        let json = serde_json::json!({
+            "name": "Dal", "amount": 200.0, "unit": "g",
+            "nutrients": { "kcal": 220.0, "proteinG": 11.0, "carbsG": 30.0, "fatG": 6.0 },
+        });
+        let item: MealItem = serde_json::from_value(json).expect("an item stored before doubts");
+        assert_eq!(item.doubt, "");
+        assert!(serde_json::to_value(&item).unwrap().get("doubt").is_none());
+        let doubtful = MealItem { doubt: "paneer or tofu".into(), ..item };
+        assert_eq!(serde_json::to_value(&doubtful).unwrap()["doubt"], "paneer or tofu");
+    }
 }

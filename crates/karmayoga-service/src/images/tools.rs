@@ -122,20 +122,25 @@ pub fn generate_image_tool(
     PortableDynamicTool::new(
         GENERATE_IMAGE,
         format!(
-            "Make a picture with their image model from a description: a scene, a portrait, \
-             an object, a mood, a painting or photo style. Describe it in one rich paragraph -- \
-             subject, setting, composition, style, light, colour. Image models garble text and \
-             exact shapes: for a diagram, chart, map, labelled figure or anything with words \
-             in it, use draw_illustration instead. The picture is saved to their Files and \
-             shown to them with your reply, so do not link it or describe it at length. \
-             {speed}"
+            "Make a picture with their image model from a written description: a scene, a \
+             portrait, an object, a mood, a painting or photo style. The image model sees only \
+             your description -- not this conversation, not earlier pictures, not who anyone \
+             is -- so write it complete: lead with the subject, then the setting, composition, \
+             style or medium, light and colour, in one paragraph of plain sentences. Describe \
+             people, pets and places by how they look, since a name means nothing to it. To \
+             change a picture you made, describe the whole picture again with the change. Keep \
+             everything they asked for exactly, and fill in only what they left open. For a \
+             diagram, chart, map, timeline, labelled figure or anything whose words or exact \
+             shapes matter, use draw_illustration instead. The picture is saved to their Files \
+             and shown with your reply, so do not link it or describe it at length. {speed}"
         ),
         json!({
             "type": "object",
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "What to paint, in detail.",
+                    "description": "The complete description the image model paints from, \
+                                    subject first. It sees nothing else.",
                 },
                 "title": {
                     "type": "string",
@@ -217,10 +222,13 @@ pub fn draw_illustration_tool(
              markup: scripts do not run, and nothing is fetched -- no web fonts, stylesheets \
              or pictures from addresses; a picture can only be a data: URL. Give an SVG a \
              viewBox and a width and height. Use generic font families (sans-serif, serif, \
-             monospace). The paper is white unless you paint a background. Keep it clean: \
-             few colours, text no smaller than 14px at the drawing's size, room around \
-             everything. You cannot see the result: if the answer says something was cut \
-             off, draw it again to fit."
+             monospace). The paper is white unless you paint a background. Every number, \
+             date and label in a chart or timeline comes from this conversation or your \
+             tools; never make up data to fill one. SVG text does not wrap: break long labels \
+             into lines with <tspan>, allow about 0.6 times the font size per character, and \
+             leave margins. Keep it clean: few colours, text no smaller than 14px at the \
+             drawing's size, room around everything. You cannot see the result: if the \
+             answer says something was cut off, draw it again to fit."
         ),
         json!({
             "type": "object",
@@ -427,6 +435,53 @@ mod tests {
             assert!(err.to_string().contains("not an SVG"), "{err}");
         }
         assert_eq!(allowance.drawn.load(std::sync::atomic::Ordering::SeqCst), DRAWN_PER_TURN);
+    }
+
+    #[test]
+    fn the_picture_tool_says_the_image_model_is_stateless_and_to_lead_with_the_subject() {
+        let svc = Arc::new(Service::new());
+        let tool = |local: bool| {
+            generate_image_tool(svc.clone(), FileOrigin::Assistant, Allowance::new(), local)
+                .definition()
+        };
+        let definition = tool(false);
+        for must in [
+            "sees only your description",
+            "not this conversation, not earlier pictures",
+            "lead with the subject",
+            "Describe people, pets and places by how they look",
+            "describe the whole picture again with the change",
+            "Keep everything they asked for exactly",
+            "use draw_illustration instead",
+            "Each picture takes several seconds",
+        ] {
+            assert!(definition.description.contains(must), "{must}: {}", definition.description);
+        }
+        assert!(tool(true).description.contains("takes a minute or more"));
+        let prompt = definition.parameters["properties"]["prompt"]["description"].as_str().unwrap();
+        assert!(
+            prompt.contains("subject first") && prompt.contains("sees nothing else"),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn the_drawing_tool_forbids_made_up_data_and_says_svg_text_does_not_wrap() {
+        let svc = Arc::new(Service::new());
+        let description =
+            draw_illustration_tool(svc, FileOrigin::Assistant, Allowance::new(), true)
+                .definition()
+                .description;
+        for must in [
+            "comes from this conversation or your tools",
+            "never make up data",
+            "SVG text does not wrap",
+            "<tspan>",
+            "0.6 times the font size per character",
+            "You cannot see the result",
+        ] {
+            assert!(description.contains(must), "{must}: {description}");
+        }
     }
 
     #[test]

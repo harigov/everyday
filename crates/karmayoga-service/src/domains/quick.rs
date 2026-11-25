@@ -672,7 +672,8 @@ async fn quick_note_tasks(
     let id = args.note_id;
     let mut answer: quick::TasksAnswer = ask(&svc, &ctx, "notes.tasks", move |vault, qctx| {
         let note = vault.note(id)?;
-        Ok(quick::notes_tasks(qctx, &note.title, &note.body.plain_text()))
+        // The note's own day, which is what "by Friday" in it is counted from.
+        Ok(quick::notes_tasks(qctx, &note.title, &note.body.plain_text(), note.created_at))
     })
     .await?;
     answer.clamp();
@@ -795,7 +796,7 @@ async fn quick_goal_backfill(
 ) -> CommandResult<Vec<BackfillPick>> {
     let vault = svc.require()?;
     let id = args.goal_id;
-    let (goal_title, candidates) = {
+    let (goal_title, area_name, candidates) = {
         let vault = vault.clone();
         blocking(move || {
             let goal = vault
@@ -803,13 +804,21 @@ async fn quick_goal_backfill(
                 .into_iter()
                 .find(|g| g.id == id)
                 .ok_or_else(|| CommandError::new(codes::NOT_FOUND, "no such goal"))?;
+            // The area the goal sits in says what kind of goal it is; a goal
+            // whose area cannot be read is asked about without it.
+            let area_name = vault
+                .areas()
+                .ok()
+                .and_then(|areas| areas.into_iter().find(|a| a.id == goal.area_id))
+                .map(|a| a.name)
+                .unwrap_or_default();
             let tasks = vault.tasks(&TaskQuery { limit: Some(120), ..Default::default() })?;
             let open: Vec<(TaskId, String)> = tasks
                 .into_iter()
                 .filter(|t| t.purpose.is_none())
                 .map(|t| (t.id, t.title))
                 .collect();
-            Ok((goal.title, open))
+            Ok((goal.title, area_name, open))
         })
         .await?
     };
@@ -818,8 +827,8 @@ async fn quick_goal_backfill(
     }
     let titles: Vec<String> = candidates.iter().map(|(_, t)| t.clone()).collect();
     let list = titles.clone();
-    let answer: quick::LabelsAnswer = ask(&svc, &ctx, "purpose.backfill", move |_, qctx| {
-        Ok(quick::purpose_backfill(qctx, &goal_title, &list))
+    let answer: quick::PicksAnswer = ask(&svc, &ctx, "purpose.backfill", move |_, qctx| {
+        Ok(quick::purpose_backfill(qctx, &goal_title, &area_name, &list))
     })
     .await?;
     Ok(quick::backfill_picks(&answer, candidates.len())

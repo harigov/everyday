@@ -423,6 +423,11 @@ const KNOWN_MISMATCHES: &[&str] = &[
     // command has fired its event on an empty seed since long before this
     // phase; the assertion is what is new, not the behaviour.
     "seed_areas",
+    // Declares `Log/Updated` because a pass usually logs catch-ups, but one
+    // that found none may still write only proposals -- a suggestion to get
+    // in touch, an occasion, a follow-up the journal read turned up -- and
+    // leave the logs alone. The log list reloading for nothing is harmless.
+    "run_keep_in_touch",
     // Health's sample writes declare `HealthSample`, which names no record:
     // samples are filed by the thousand into series days, and the collector
     // sees only the records a write touched beside them -- the source whose

@@ -97,4 +97,4 @@ mod tests;
 pub use adapters::{AssistantSummariser, AudioSource, SpoolSource, Summariser};
 pub use drivers::run_recording;
 pub use enqueue::{chunk_closed, enqueue};
-pub(crate) use stages::{invitees_of, owner_of, summarise_stage, words_for};
+pub(crate) use stages::{invitees_of, owner_of, summarise_stage, words_and_agenda_for, words_for};

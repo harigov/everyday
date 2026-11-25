@@ -140,6 +140,13 @@ const MAX_PENDING_AGE_SECS: i64 = 24 * 3600;
 /// Until the vault says otherwise.
 const DEFAULT_IDLE_MINUTES: u32 = 3;
 
+/// How old the latest sample may be and still say which app has the keyboard:
+/// three samples. Older, and the person may be somewhere else by now.
+const FOCUS_FRESH: Duration = Duration::from_secs(15);
+
+/// The longest an app's name is let be when it is handed to a prompt.
+const APP_NAME_CHARS: usize = 60;
+
 /// What the status says on GNOME on Wayland, where this process cannot see
 /// focus at all.
 const GNOME_NOTE: &str = "On GNOME the Shell extension reports which app has focus; this app cannot see it from outside the Shell.";
@@ -522,6 +529,12 @@ struct Shared {
     /// Whether `idle_minutes` came from the vault (else it is the default,
     /// and is asked for again at the next flush).
     idle_known: AtomicBool,
+    /// What the latest sample saw in use, and when: the app's name, and never
+    /// its window's title, which can be a stranger's subject line or a page's
+    /// title. `None` when the latest saw nothing in use, and while nothing is
+    /// being watched (tracking off, or GNOME, where the Shell extension reports
+    /// instead and this process cannot see focus at all).
+    focus: Mutex<Option<(Instant, String)>>,
 }
 
 impl Shared {
@@ -544,6 +557,17 @@ impl Shared {
 
     fn set_sample_error(&self, error: Option<String>) {
         *self.sample_error.lock().unwrap() = error;
+    }
+
+    /// Remember what the latest sample saw in use, or that it saw nothing.
+    fn note_focus(&self, seen: Option<&Focused>) {
+        *self.focus.lock().unwrap() = seen.and_then(app_name).map(|name| (Instant::now(), name));
+    }
+
+    /// The app that had the keyboard at the latest sample, by the name a person
+    /// calls it, while that sample is fresh.
+    fn focused_app(&self) -> Option<String> {
+        fresh_name(self.focus.lock().unwrap().as_ref(), Instant::now())
     }
 
     /// Remember a delivery. Bounded, though only a misbehaving extension
@@ -588,6 +612,7 @@ impl Default for ScreenTime {
                 heard: Mutex::new(BTreeMap::new()),
                 idle_minutes: AtomicU32::new(DEFAULT_IDLE_MINUTES),
                 idle_known: AtomicBool::new(false),
+                focus: Mutex::new(None),
             }),
             listener: Listener::default(),
             listen_error: Mutex::new(None),
@@ -598,6 +623,17 @@ impl Default for ScreenTime {
 }
 
 impl ScreenTime {
+    /// The app that has the keyboard, by the name a person calls it ("Slack",
+    /// "Visual Studio Code"), from the latest sample of the watcher thread --
+    /// never the window's title. `None` where this process cannot see focus
+    /// (GNOME on Wayland reports through its Shell extension, and tracking may be
+    /// off), when the person was idle at the latest sample, or when it is old.
+    /// What the talk key's conversation tells the assistant, so that "write a
+    /// reply" in Slack is a chat message: see `karmayoga_service::agent::Typist`.
+    pub fn focused_app(&self) -> Option<String> {
+        self.shared.focused_app()
+    }
+
     /// Change the config: on disk first, in memory only once that worked.
     fn update_config(
         &self,
@@ -877,6 +913,7 @@ fn watch(app: AppHandle, shared: Arc<Shared>, stop: Arc<AtomicBool>) {
             Duration::from_secs(u64::from(shared.idle_minutes.load(Ordering::Acquire)) * 60);
         let now = Timestamp::now();
         let seen = sample(&mut *watcher, idle_limit, &shared);
+        shared.note_focus(seen.as_ref());
         runs.observe(now, seen.as_ref());
 
         // The flag is cleared only after a failed flush's beats are in the
@@ -899,6 +936,8 @@ fn watch(app: AppHandle, shared: Arc<Shared>, stop: Arc<AtomicBool>) {
 
     // Tracking was switched off: what was seen while it was on is still
     // the person's, so it goes out, once, without waiting for an answer.
+    // Nothing is watched from here on, so nobody is told what had focus.
+    shared.note_focus(None);
     runs.close();
     while let Ok(older) = back_rx.try_recv() {
         requeue(&mut pending, older);
@@ -909,6 +948,30 @@ fn watch(app: AppHandle, shared: Arc<Shared>, stop: Arc<AtomicBool>) {
         send(&app, &shared, collector, pending.into_iter().collect(), None);
     }
     tracing::info!("screentime: stopped watching focus");
+}
+
+/// The name a person calls the focused app by: the platform's own where it has
+/// one, else the table of well-known ids; `None` for an app with neither, since
+/// a bare id (`org.example.Thing`) tells a model nothing a name would. One
+/// short line, and never the window's title.
+fn app_name(focused: &Focused) -> Option<String> {
+    let name = focused.name.trim();
+    let name = if name.is_empty() {
+        karmayoga_core::screentime::defaults::friendly_name(&focused.app_id)?
+    } else {
+        name
+    };
+    let one_line = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clipped: String = one_line.chars().take(APP_NAME_CHARS).collect();
+    let clipped = clipped.trim().to_string();
+    (!clipped.is_empty()).then_some(clipped)
+}
+
+/// The name in `slot` -- what the latest sample saw, and when -- while it is
+/// no older than [`FOCUS_FRESH`] at `now`.
+fn fresh_name(slot: Option<&(Instant, String)>, now: Instant) -> Option<String> {
+    let (at, name) = slot?;
+    (now.saturating_duration_since(*at) <= FOCUS_FRESH).then(|| name.clone())
 }
 
 /// What is in use now, if anything: focused, not locked, not idle.
@@ -1663,6 +1726,44 @@ mod tests {
         config.browsers.insert("firefox".into(), "dev-1".into());
         config.save(dir.path()).unwrap();
         assert_eq!(MachineConfig::load(dir.path()), config);
+    }
+
+    fn focused(app_id: &str, name: &str, title: &str) -> Focused {
+        Focused { app_id: app_id.into(), name: name.into(), title: title.into() }
+    }
+
+    #[test]
+    fn the_app_is_named_the_way_a_person_calls_it_and_never_by_its_title() {
+        assert_eq!(
+            app_name(&focused("com.slack.Slack", "Slack", "Re: the merger -- Sam")).as_deref(),
+            Some("Slack")
+        );
+        // The platform's name, tidied to one line.
+        assert_eq!(
+            app_name(&focused("code", "  Visual \n Studio  Code ", "")).as_deref(),
+            Some("Visual Studio Code")
+        );
+        // None of its own: the table of well-known ids.
+        assert_eq!(
+            app_name(&focused("org.gnome.Ptyxis", "", "ssh prod")).as_deref(),
+            Some("Terminal")
+        );
+        assert_eq!(app_name(&focused("code.exe", "", "")).as_deref(), Some("Visual Studio Code"));
+        // Neither: nothing a model could use, and certainly not the title.
+        assert_eq!(app_name(&focused("org.example.Thing", "", "Secret subject line")), None);
+        assert_eq!(app_name(&focused("x", "   ", "")), None);
+        let long = app_name(&focused("x", &"y".repeat(500), "")).unwrap();
+        assert_eq!(long.chars().count(), APP_NAME_CHARS);
+    }
+
+    #[test]
+    fn only_a_fresh_sample_says_what_has_the_keyboard() {
+        let then = Instant::now();
+        let slot = Some((then, "Slack".to_string()));
+        assert_eq!(fresh_name(slot.as_ref(), then).as_deref(), Some("Slack"));
+        assert_eq!(fresh_name(slot.as_ref(), then + FOCUS_FRESH).as_deref(), Some("Slack"));
+        assert_eq!(fresh_name(slot.as_ref(), then + FOCUS_FRESH + Duration::from_secs(1)), None);
+        assert_eq!(fresh_name(None, then), None);
     }
 
     #[test]

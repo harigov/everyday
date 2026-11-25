@@ -116,9 +116,20 @@ export function splitDigest(content: string): SplitDigest {
   if (at < 0) return { text: content, digest: null }
   return {
     text: lines.slice(0, at).join('\n').trimEnd(),
+    // The digest reaches the model fenced as other people's writing; the
+    // fence's own two lines are for the model, not for whoever reads it here.
     digest: lines
       .slice(at + 1)
+      .filter((line) => !isFenceLine(line))
       .join('\n')
       .trim(),
   }
+}
+
+/** The opening or closing line of the fence around words somebody else wrote. */
+function isFenceLine(line: string): boolean {
+  return (
+    line.startsWith('[[ BEGIN TEXT WRITTEN BY SOMEBODY ELSE') ||
+    line.trim() === 'END TEXT WRITTEN BY SOMEBODY ELSE ]]'
+  )
 }

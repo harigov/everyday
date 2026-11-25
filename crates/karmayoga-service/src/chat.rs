@@ -776,7 +776,7 @@ impl Service {
             files.push(kept);
         }
 
-        let turned = crate::agent::run_turn(Turn {
+        let turned = crate::agent::run_turn_routed(Turn {
             service: self.clone(),
             vault,
             pending: self.pending(),

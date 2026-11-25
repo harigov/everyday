@@ -6,7 +6,7 @@ use jiff::civil::{Date, date};
 use jiff::{SignedDuration, Timestamp};
 use karmayoga_core::keepintouch::{
     CIRCLE_CLOSE, CIRCLE_INNER, FACT_ALIASES, FACT_BIRTHDAY, FACT_CELEBRATES, FACT_CIRCLE,
-    FACT_EMAIL, Mention,
+    FACT_EMAIL, Intention, Mention,
 };
 use karmayoga_core::library::{CONTACT_SLUG, Item, ItemStatus, LogEntry, LogEvent, LogSource, Via};
 use karmayoga_core::proposal::{
@@ -377,4 +377,142 @@ fn catch_ups_are_not_counted_as_things_finished() {
     let ravi = contact(&vault, "Ravi", &[]);
     vault.save_log(&LogEntry::new(ravi.id, LogEvent::Revisited, date(2026, 3, 1), "UTC")).unwrap();
     assert_eq!(vault.library_stats(2026).unwrap().finished_this_year, 0);
+}
+
+// ---- what the journal says the writer meant to do ------------------------------------
+
+fn intention(name: &str, reason: &str) -> Intention {
+    Intention { name: name.into(), reason: reason.into() }
+}
+
+#[test]
+fn something_the_writer_meant_to_do_becomes_one_proposal_and_not_two() {
+    let (_dir, vault) = vault_for_test();
+    let ravi = contact(&vault, "Ravi Kumar", &[]);
+    let entry = EntryId::new();
+    let said = [intention("Ravi", "meant to call him")];
+
+    assert_eq!(vault.propose_follow_ups(entry, TODAY, &said, 3, TODAY, now(), "UTC").unwrap(), 1);
+    let tasks = pending(&vault, ProposalKind::Task);
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].caption, "Get in touch with Ravi Kumar");
+    assert_eq!(tasks[0].why, "From your journal, 5 Nov: meant to call him");
+    let about = tasks[0].about.as_ref().unwrap();
+    assert_eq!((about.kind, about.id.as_str()), (AboutKind::Entry, entry.to_string().as_str()));
+    assert_eq!(vault.keep_in_touch().unwrap().tracked[0].people, [ravi.id], "followed");
+    assert_eq!(vault.keep_in_touch().unwrap().suggested.get(&ravi.id), Some(&TODAY));
+
+    // Read again -- an edit, or a second press of "check now" -- adds nothing.
+    assert_eq!(vault.propose_follow_ups(entry, TODAY, &said, 3, TODAY, now(), "UTC").unwrap(), 0);
+    assert_eq!(pending(&vault, ProposalKind::Task).len(), 1);
+    // Nor does the frequency pass suggest somebody the journal just did.
+    vault.update_keep_in_touch(|k| k.settings.per_week = 5).unwrap();
+    let mut inner = vault.item(ravi.id).unwrap();
+    inner.facts.insert(FACT_CIRCLE.into(), CIRCLE_INNER.into());
+    vault.save_item(&inner).unwrap();
+    assert_eq!(vault.suggest_people(TODAY, now(), "UTC").unwrap(), 0);
+}
+
+#[test]
+fn a_name_that_is_not_exactly_one_card_is_never_acted_on() {
+    let (_dir, vault) = vault_for_test();
+    contact(&vault, "Ravi Kumar", &[]);
+    contact(&vault, "Ravi Menon", &[]);
+    let said = [intention("Ravi", "meant to call"), intention("Priya", "interview on Friday")];
+    assert_eq!(
+        vault.propose_follow_ups(EntryId::new(), TODAY, &said, 3, TODAY, now(), "UTC").unwrap(),
+        0,
+        "two Ravis, and a Priya nobody has on the shelf"
+    );
+    assert!(pending(&vault, ProposalKind::Task).is_empty());
+    assert!(pending(&vault, ProposalKind::Log).is_empty(), "never \"add Priya to Contacts?\"");
+}
+
+#[test]
+fn nobody_is_proposed_who_was_then_in_touch_or_was_just_suggested_or_is_given_up_on() {
+    let (_dir, vault) = vault_for_test();
+    let in_touch = contact(&vault, "Asha", &[]);
+    let suggested = contact(&vault, "Ben", &[]);
+    let gone = contact(&vault, "Cara", &[]);
+    let fresh = contact(&vault, "Dev", &[]);
+    // Asha was called on the day of the entry; Ben suggested three days ago.
+    let mut call = LogEntry::new(in_touch.id, LogEvent::Contact, TODAY, "UTC");
+    call.via = Some(Via::Call);
+    vault.save_log(&call).unwrap();
+    vault
+        .update_keep_in_touch(|k| {
+            k.suggested.insert(suggested.id, date(2026, 11, 2));
+        })
+        .unwrap();
+    let mut cara = vault.item(gone.id).unwrap();
+    cara.status = ItemStatus::Abandoned;
+    vault.save_item(&cara).unwrap();
+    // Dev was in touch a week before the entry: that does not count.
+    vault.save_log(&LogEntry::new(fresh.id, LogEvent::Contact, date(2026, 10, 29), "UTC")).unwrap();
+
+    let said = [
+        intention("Asha", "unwell"),
+        intention("Ben", "meant to call"),
+        intention("Cara", "meant to call"),
+        intention("Dev", "interview on Friday"),
+    ];
+    assert_eq!(
+        vault.propose_follow_ups(EntryId::new(), TODAY, &said, 3, TODAY, now(), "UTC").unwrap(),
+        1
+    );
+    let tasks = pending(&vault, ProposalKind::Task);
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].caption, "Get in touch with Dev");
+
+    // Suggested more than a week ago, Ben may be again.
+    vault
+        .update_keep_in_touch(|k| {
+            k.suggested.insert(suggested.id, date(2026, 10, 25));
+        })
+        .unwrap();
+    assert_eq!(
+        vault.propose_follow_ups(EntryId::new(), TODAY, &said, 3, TODAY, now(), "UTC").unwrap(),
+        1
+    );
+}
+
+#[test]
+fn a_pass_proposes_at_most_what_it_is_left_and_none_from_an_old_entry() {
+    let (_dir, vault) = vault_for_test();
+    // The week's allowance is spent, and follow-ups do not draw on it.
+    vault.update_keep_in_touch(|k| k.settings.per_week = 0).unwrap();
+    let names = ["Asha", "Ben", "Cara", "Dev"];
+    for name in names {
+        contact(&vault, name, &[]);
+    }
+    let said: Vec<Intention> = names.iter().map(|n| intention(n, "meant to call")).collect();
+    let old = date(2026, 10, 20);
+    assert_eq!(
+        vault.propose_follow_ups(EntryId::new(), old, &said, 3, TODAY, now(), "UTC").unwrap(),
+        0,
+        "an entry from a fortnight ago is not news"
+    );
+    assert_eq!(
+        vault.propose_follow_ups(EntryId::new(), TODAY, &said, 0, TODAY, now(), "UTC").unwrap(),
+        0
+    );
+    assert_eq!(
+        vault.propose_follow_ups(EntryId::new(), TODAY, &said, 3, TODAY, now(), "UTC").unwrap(),
+        3
+    );
+    assert_eq!(pending(&vault, ProposalKind::Task).len(), 3);
+}
+
+#[test]
+fn nothing_is_proposed_when_task_proposals_are_off() {
+    let (_dir, vault) = vault_for_test();
+    contact(&vault, "Ravi Kumar", &[]);
+    let mut settings = vault.agent_settings().unwrap();
+    settings.proposals.denied.insert(ProposalKind::Task);
+    vault.save_agent_settings(&settings).unwrap();
+    let said = [intention("Ravi", "meant to call")];
+    assert_eq!(
+        vault.propose_follow_ups(EntryId::new(), TODAY, &said, 3, TODAY, now(), "UTC").unwrap(),
+        0
+    );
 }

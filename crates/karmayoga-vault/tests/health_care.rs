@@ -174,6 +174,7 @@ fn eaten(food: &Food, kcal: f64) -> MealItem {
         grams: Some(100.0),
         nutrients: Nutrients { kcal, ..Default::default() },
         estimated: false,
+        doubt: String::new(),
     }
 }
 

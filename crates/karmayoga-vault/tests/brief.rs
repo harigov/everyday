@@ -285,6 +285,187 @@ fn the_weekly_brief_looks_at_today_and_the_week_ahead() {
     assert!(md.contains("## Last seven days"), "{md}");
 }
 
+#[test]
+fn the_weekly_brief_connects_last_week_to_their_areas_and_goals() {
+    use karmayoga_core::purpose::{Area, Goal};
+    use karmayoga_core::task::{BlockKind, BlockSubject, Project, TaskStatus, TimeBlock};
+    let (_dir, vault) = vault_for_test();
+    let (work, fun) = (Area::new("Work"), Area::new("Fun"));
+    vault.save_area(&work).unwrap();
+    vault.save_area(&fun).unwrap();
+    let mut book = Goal::new(work.id, "Ship the book");
+    book.notes =
+        "Tier 1 -- the one that matters this year\nA second line, which is not quoted".into();
+    book.horizon = Some(jiff::civil::date(2027, 3, 1));
+    vault.save_goal(&book).unwrap();
+
+    // A delegated project under it with nothing finished in it, due on Wednesday.
+    let mut project = Project::new("Copy edit");
+    project.purpose = Some(book.purpose());
+    project.tags = vec!["delegated".into()];
+    project.due_date = Some(jiff::civil::date(2026, 11, 25));
+    vault.save_project(&project).unwrap();
+    let mut cover = Task::new("Approve the cover").in_project(project.id);
+    cover.due_date = Some(jiff::civil::date(2026, 11, 26));
+    vault.save_task(&cover).unwrap();
+
+    // What slipped: due last Wednesday and still open, for the goal.
+    let mut contract = Task::new("Send the contract");
+    contract.due_date = Some(jiff::civil::date(2026, 11, 18));
+    contract.purpose = Some(book.purpose());
+    vault.save_task(&contract).unwrap();
+    // What got done, for the goal.
+    let mut outline = Task::new("Outline chapter 9");
+    outline.status = TaskStatus::Done;
+    outline.completed_at = Some("2026-11-19T15:00:00Z".parse().unwrap());
+    outline.purpose = Some(book.purpose());
+    vault.save_task(&outline).unwrap();
+    // Two hours at work last week and one more; nothing at all for Fun. (What
+    // is past is what was done: the clock settles planned against actual.)
+    let start: Timestamp = "2026-11-18T10:00:00Z".parse().unwrap();
+    let morning = TimeBlock::new(BlockSubject::Adhoc, start, 120, "UTC")
+        .of_kind(BlockKind::Actual)
+        .for_purpose(karmayoga_core::purpose::Purpose::Area { id: work.id });
+    vault.save_block(&morning).unwrap();
+    let afternoon =
+        TimeBlock::new(BlockSubject::Adhoc, start + SignedDuration::from_hours(5), 60, "UTC")
+            .of_kind(BlockKind::Actual)
+            .for_purpose(karmayoga_core::purpose::Purpose::Area { id: work.id });
+    vault.save_block(&afternoon).unwrap();
+
+    let spec = BriefSpec::new(BriefKind::Weekly);
+    let now = zoned(2026, 11, 22, 8, 0);
+    let d = brief::digest(&vault, &spec, &now, Extras::default()).unwrap();
+
+    // Goal lines carry the first line of their notes, where the tier lives.
+    assert_eq!(
+        d.active_goals,
+        vec!["Ship the book (Work) -- Tier 1 -- the one that matters this year -- by 2027-03-01"]
+    );
+    // Where the time went, by area; an area with none says so.
+    assert_eq!(d.areas_last_week.len(), 2, "{:?}", d.areas_last_week);
+    assert!(d.areas_last_week.contains(&"Work: 3 h actual".to_string()), "{:?}", d.areas_last_week);
+    assert!(d.areas_last_week.contains(&"Fun: nothing".to_string()), "{:?}", d.areas_last_week);
+    // What slipped, with how late and what for.
+    assert_eq!(d.slipped.len(), 1, "{:?}", d.slipped);
+    assert!(d.slipped[0].starts_with("Send the contract (for Ship the book)"), "{:?}", d.slipped);
+    assert!(d.slipped[0].ends_with("4 day(s) late"), "{:?}", d.slipped);
+    // How the goal stands, and the project under it.
+    assert_eq!(d.goal_progress.len(), 1, "{:?}", d.goal_progress);
+    let line = &d.goal_progress[0];
+    assert!(line.starts_with("Ship the book (Work): last touched"), "{line}");
+    assert!(line.contains("open tasks 2; done last week 1; due this week 1"), "{line}");
+    assert!(
+        line.ends_with("projects: Copy edit (due Wed, #delegated, nothing done in 14 days)"),
+        "{line}"
+    );
+
+    let md = d.to_markdown();
+    assert!(md.contains("Where the time went in those seven days, by area:\n- "), "{md}");
+    assert!(md.contains("\n- Work: 3 h actual\n") && md.contains("\n- Fun: nothing\n"), "{md}");
+    assert!(md.contains("Due in those seven days and still open:\n- Send the contract"), "{md}");
+    assert!(md.contains("## Goals and projects\n- Ship the book (Work): "), "{md}");
+    assert!(md.contains("Active goals (with the first line of their notes"), "{md}");
+    assert!(!md.contains("a second line, which is not quoted"), "only the first line: {md}");
+
+    // Not for the other briefs: they never ask for it.
+    for kind in [BriefKind::Morning, BriefKind::Evening] {
+        let d = brief::digest(&vault, &BriefSpec::new(kind), &now, Extras::default()).unwrap();
+        assert!(
+            d.areas_last_week.is_empty() && d.goal_progress.is_empty() && d.slipped.is_empty(),
+            "{kind:?}"
+        );
+    }
+    // And a weekly brief that asks for neither goals nor a review reads none.
+    let mut lean = BriefSpec::new(BriefKind::Weekly);
+    lean.sections = vec![BriefSection::Week];
+    let d = brief::digest(&vault, &lean, &now, Extras::default()).unwrap();
+    assert!(d.areas_last_week.is_empty() && d.goal_progress.is_empty() && d.slipped.is_empty());
+}
+
+#[test]
+fn an_older_stored_brief_without_the_weekly_fields_still_reads() {
+    // A digest sealed before `areasLastWeek`, `goalProgress`, `slipped` and
+    // `meetingNotes` existed: none of them is there, and it decodes anyway.
+    let old = serde_json::json!({ "kind": "weekly", "week": [], "zone": "UTC", "done": [] });
+    let digest: brief::BriefDigest = serde_json::from_value(old).unwrap();
+    assert!(digest.areas_last_week.is_empty() && digest.goal_progress.is_empty());
+    assert!(digest.slipped.is_empty() && digest.meeting_notes.is_empty());
+    let json = serde_json::to_value(&digest).unwrap();
+    for field in ["areasLastWeek", "goalProgress", "slipped", "meetingNotes"] {
+        assert!(json.get(field).is_some_and(|v| v.is_array()), "{field} is camelCase on the wire");
+    }
+}
+
+#[test]
+fn the_evening_review_names_the_meeting_notes_finished_today() {
+    use karmayoga_core::id::{NoteId, TemplateId};
+    use karmayoga_core::meeting::{Recording, Stage};
+    let (_dir, vault) = vault_for_test();
+    let note = NoteId::new();
+    let mut finished = Recording::new("Design sync", None, TemplateId::new());
+    finished.started_at = "2026-11-21T14:00:00Z".parse().unwrap();
+    finished.stage = Stage::Done;
+    finished.note_id = Some(note);
+    vault.save_recording(&finished).unwrap();
+    // Yesterday's, and one still being written up, are not today's finished.
+    let mut yesterday = Recording::new("Old sync", None, TemplateId::new());
+    yesterday.started_at = "2026-11-20T14:00:00Z".parse().unwrap();
+    yesterday.stage = Stage::Done;
+    yesterday.note_id = Some(NoteId::new());
+    vault.save_recording(&yesterday).unwrap();
+    let mut writing = Recording::new("Standup", None, TemplateId::new());
+    writing.started_at = "2026-11-21T15:00:00Z".parse().unwrap();
+    vault.save_recording(&writing).unwrap();
+
+    let spec = BriefSpec::new(BriefKind::Evening);
+    let d = brief::digest(&vault, &spec, &zoned(2026, 11, 21, 20, 0), Extras::default()).unwrap();
+    assert_eq!(d.meeting_notes, vec![format!("\"Design sync\" (note {note})")]);
+    let md = d.to_markdown();
+    assert!(md.contains("## Today, so far"), "{md}");
+    assert!(
+        md.contains(&format!("\n- \"Design sync\" (note {note})\n")),
+        "the review can read the note to find what the meeting left them to do: {md}"
+    );
+    assert!(md.contains("read one with get_note"), "{md}");
+
+    // The morning has no review, so reads none.
+    let morning = brief::digest(
+        &vault,
+        &BriefSpec::new(BriefKind::Morning),
+        &zoned(2026, 11, 21, 7, 0),
+        Extras::default(),
+    )
+    .unwrap();
+    assert!(morning.meeting_notes.is_empty());
+}
+
+#[test]
+fn the_digest_says_what_the_last_brief_was_and_nothing_about_what_to_do_with_it() {
+    let (_dir, vault) = vault_for_test();
+    let routine = vault.set_brief(BriefKind::Morning, true).unwrap();
+    let mut run = RoutineRun::new(&routine, None);
+    run.started_at = "2026-11-20T07:00:00Z".parse().unwrap();
+    run.outcome = Outcome::Done;
+    run.brief = Some(Box::new(brief::Brief {
+        kind: BriefKind::Morning,
+        day: jiff::civil::date(2026, 11, 20),
+        headline: "A heavy Friday".into(),
+        parts: Vec::new(),
+        spoken: String::new(),
+        script: None,
+        audio: None,
+        digest: brief::BriefDigest::default(),
+    }));
+    vault.save_run(&run).unwrap();
+
+    let spec = BriefSpec::new(BriefKind::Morning);
+    let d = brief::digest(&vault, &spec, &zoned(2026, 11, 21, 7, 0), Extras::default()).unwrap();
+    let md = d.to_markdown();
+    assert!(md.contains("The last brief: \"A heavy Friday\" (2026-11-20)"), "{md}");
+    assert!(!md.to_lowercase().contains("do not repeat"), "an instruction inside the fence: {md}");
+}
+
 // ---- the daily podcast ------------------------------------------------------
 
 fn follow(vault: &Vault, title: &str) -> NewsSource {

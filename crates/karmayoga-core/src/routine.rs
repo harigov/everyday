@@ -46,6 +46,23 @@ pub const MAX_NAME_BYTES: usize = 200;
 /// and a few reads before it.
 pub const BRIEF_STEPS: u32 = 8;
 
+/// What a routine writes, as the whole of its last message, when it looked and
+/// found nothing worth the person's attention: a sweep over what is waiting on
+/// them that finds none of it, say. Such a run is kept in the log -- with that
+/// as its summary, so "why did I hear nothing" has an answer -- and is neither
+/// delivered nor announced nor counted as unread.
+///
+/// Matched by [`is_nothing_to_report`], not by `==`, because a model gives it
+/// a different case or a full stop.
+pub const NOTHING_TO_REPORT: &str = "Nothing to report.";
+
+/// Whether `text` is [`NOTHING_TO_REPORT`] and nothing else, whatever its case
+/// and closing punctuation.
+pub fn is_nothing_to_report(text: &str) -> bool {
+    let said = text.trim().trim_matches(|c: char| matches!(c, '.' | '!' | '*' | '_' | '"'));
+    said.trim().eq_ignore_ascii_case("nothing to report")
+}
+
 /// How long after its moment a routine will still run, when nothing else is
 /// said. An hour: long enough to survive a laptop opened after breakfast,
 /// short enough that a morning brief is still a morning brief.
@@ -530,6 +547,13 @@ impl Routine {
         routine.grace_minutes = grace_minutes;
         routine.kind = RoutineKind::Dream { scope };
         routine.enabled = false;
+        // The week and the month are where the inferring is done -- what
+        // holds across seven nightly accounts, what a month of weekly ones
+        // shows -- and each runs once. The large model is worth its cost
+        // there, and answers with the medium one when none is set up.
+        if scope != DreamScope::Day {
+            routine.model = Some(crate::llm::ModelTier::Large);
+        }
         routine
     }
 
@@ -553,6 +577,13 @@ impl Routine {
         routine.kind = RoutineKind::Brief(BriefSpec::new(kind));
         routine.max_steps = Some(BRIEF_STEPS);
         routine.enabled = false;
+        // The weekly brief runs once a week, matters more, and has the most
+        // to bring together -- last week against their goals, and the week
+        // ahead. The large model is worth it there, and answers with the
+        // medium one when none is set up.
+        if kind == BriefKind::Weekly {
+            routine.model = Some(crate::llm::ModelTier::Large);
+        }
         routine
     }
 
@@ -1191,6 +1222,43 @@ mod tests {
             // Empty instructions must not fail validation for a dream: the
             // box is the person's optional paragraph, not the whole prompt.
             r.validate().expect("a dream with nothing added yet is still valid");
+        }
+    }
+
+    #[test]
+    fn the_work_done_once_a_week_or_a_month_asks_for_the_large_model() {
+        use crate::llm::ModelTier;
+        // Where the inferring is done, and the one brief that brings the week
+        // together: Large, which answers with the medium model when none is set.
+        assert_eq!(Routine::dream(DreamScope::Week).model, Some(ModelTier::Large));
+        assert_eq!(Routine::dream(DreamScope::Month).model, Some(ModelTier::Large));
+        assert_eq!(Routine::brief(BriefKind::Weekly).model, Some(ModelTier::Large));
+        // The daily ones are the assistant's own medium model, as ever.
+        assert_eq!(Routine::dream(DreamScope::Day).model, None);
+        for kind in [BriefKind::Morning, BriefKind::Evening, BriefKind::Podcast] {
+            assert_eq!(Routine::brief(kind).model, None, "{kind:?}");
+        }
+        Routine::brief(BriefKind::Weekly).validate().expect("still a routine that would save");
+    }
+
+    #[test]
+    fn a_reply_of_nothing_to_report_is_recognised_however_it_is_written() {
+        for said in [
+            NOTHING_TO_REPORT,
+            "nothing to report",
+            "  Nothing to report.\n",
+            "**Nothing to report.**",
+            "NOTHING TO REPORT!",
+        ] {
+            assert!(is_nothing_to_report(said), "{said:?}");
+        }
+        for said in [
+            "",
+            "Nothing to report on the Acme thread, but the 3 pm needs a deck.",
+            "Nothing to report. Though the dentist rang.",
+            "Something to report.",
+        ] {
+            assert!(!is_nothing_to_report(said), "{said:?}");
         }
     }
 

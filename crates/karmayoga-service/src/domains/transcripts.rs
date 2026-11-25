@@ -263,6 +263,7 @@ async fn preview_meeting_template(
         present: present_in_order(&transcript),
         present_emails: transcript.speakers.iter().filter_map(|s| s.email.clone()).collect(),
         invitees: Vec::new(),
+        agenda: Vec::new(),
         tz,
     };
 
@@ -328,7 +329,7 @@ async fn rewrite_meeting_note(
     })
     .await?;
 
-    let facts = Facts {
+    let mut facts = Facts {
         title: recording
             .as_ref()
             .and_then(|r| r.event.as_ref().map(|e| e.title.clone()))
@@ -339,6 +340,7 @@ async fn rewrite_meeting_note(
         present: present_in_order(&transcript),
         present_emails: transcript.speakers.iter().filter_map(|s| s.email.clone()).collect(),
         invitees,
+        agenda: Vec::new(),
         tz: recording
             .as_ref()
             .and_then(|r| r.event.as_ref().map(|e| e.tz.clone()))
@@ -346,16 +348,19 @@ async fn rewrite_meeting_note(
             .unwrap_or(tz_fallback),
     };
 
-    let spelling = {
+    // The spelling rule and the invitation's agenda, from one look at the
+    // calendar: the notes are asked for the same way the first ones were.
+    let (spelling, agenda) = {
         let vault = vault.clone();
         let event = facts.event.clone();
         let settings = settings.clone();
         blocking(move || {
-            let words = pipeline::words_for(&vault, event.as_ref(), &settings);
-            Ok(karmayoga_core::meeting::vocab::spelling_line(&words))
+            let (words, agenda) = pipeline::words_and_agenda_for(&vault, event.as_ref(), &settings);
+            Ok((karmayoga_core::meeting::vocab::spelling_line(&words), agenda))
         })
         .await?
     };
+    facts.agenda = agenda;
     let summariser = pipeline::AssistantSummariser::new(vault.clone());
     let answer = pipeline::summarise_stage(
         &summariser,

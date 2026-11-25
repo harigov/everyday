@@ -948,10 +948,21 @@ export interface BriefDigest {
   done: BriefTask[]
   met: string[]
   karmaToday?: number | null
+  /** The evening's: meeting notes finished today, "Title (note id)". Read by
+   *  the model, not drawn. Absent on a brief kept before it existed. */
+  meetingNotes?: string[]
+  /** The weekly brief's: where last week's time went, by area, one line each. */
+  areasLastWeek?: string[]
+  /** The weekly brief's: how each active goal stands, one line each. */
+  goalProgress?: string[]
+  /** The weekly brief's: tasks due last week and still open. */
+  slipped?: string[]
   mail: BriefThread[]
   unreadImportant: number
   weather?: BriefWeather | null
   goals: BriefGoal[]
+  /** Each active goal as the model read it: title (area), the first line of
+   *  its notes, and the day it is hoped true by. */
   activeGoals: string[]
   occasions: BriefOccasion[]
   stories: BriefStory[]
@@ -2457,6 +2468,10 @@ export interface NeedsReply {
 export interface WrittenText {
   bodyText: string
   bodyHtml: string
+  /** A subject for the message, written only when `draft_with_ai` started a
+   *  new message (never a reply, never `improve_writing`): the compose sheet
+   *  fills its subject with it only if that is still empty. Absent otherwise. */
+  subject?: string
 }
 
 /** What `improve_writing` is asked to do. */
@@ -5548,8 +5563,10 @@ export interface MeetingBriefSettings {
   web: boolean
 }
 
-/** What to know before a meeting: agenda, who is coming, context, and what
- *  the person meant to raise. Made by the service before the meeting. */
+/** What to know before a meeting: where things stand, what is open between
+ *  the person and the people coming, the invitation's agenda, who is coming,
+ *  context, and what the person meant to raise. Made by the service before the
+ *  meeting. */
 export interface MeetingBrief {
   /** `event:{calendarId}:{uid}`, the key the meeting's offer has too. */
   key: string
@@ -5560,8 +5577,13 @@ export interface MeetingBrief {
   start: string
   end: string
   location?: string
-  /** One sentence on what the meeting is for. */
+  /** One line on where things stand, or what the meeting needs to settle. */
   summary?: string
+  /** Open loops between the person and the people coming, most pressing
+   *  first, each saying who owes what and since when: "You owe Josh the
+   *  revised deck (you said by 21 Nov)". */
+  open: string[]
+  /** What the invitation says will be covered; empty when it says nothing. */
   agenda: string[]
   people: MeetingBriefPerson[]
   context: string[]
@@ -5572,6 +5594,8 @@ export interface MeetingBrief {
   /** What could not be looked at, in words. */
   gaps: string[]
   preparedAt: string
+  /** The zone the person's times are told in; absent on an older brief. */
+  tz?: string
 }
 
 export interface MeetingBriefPerson {
@@ -7896,6 +7920,10 @@ export interface MealItem {
   grams?: number | null
   nutrients: Nutrients
   estimated: boolean
+  /** Why this item should be looked at before it is believed (what else it
+   *  might be, the range its portion could be in, or that its energy and
+   *  nutrients disagree). Left out when there is none. */
+  doubt?: string
 }
 
 export interface Meal {

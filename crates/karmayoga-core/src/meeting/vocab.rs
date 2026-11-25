@@ -325,13 +325,15 @@ pub(crate) fn and_list(items: &[&str]) -> String {
 /// The rule for the summarising model about spelling, one line starting
 /// "- Spelling: "; empty when there is nothing to spell.
 ///
-/// The person's terms and people's names are spelled right, the person's
-/// first: a term they typed wins over a company spelled the same but for
-/// its capitals, which is then not listed again. Companies are listed apart,
+/// The person's terms, people's names, the place it is held and the unusual
+/// words of the invitation's agenda are spelled right, the person's first: a
+/// term they typed wins over a company spelled the same but for its
+/// capitals, which is then not listed again. Companies are listed apart,
 /// as their addresses spell them, because an address has no capitals: the
 /// model is told so, rather than told to write "Viyamd" for ViyaMD.
 pub fn spelling_line(words: &MeetingWords) -> String {
-    let right = unique(words.terms.iter().chain(&words.names));
+    let right =
+        unique(words.terms.iter().chain(&words.names).chain(&words.places).chain(&words.topics));
     let known: HashSet<String> = right.iter().map(|w| w.to_lowercase()).collect();
     let companies =
         unique(words.companies.iter().filter(|c| !known.contains(&c.trim().to_lowercase())));
@@ -814,6 +816,24 @@ mod tests {
         assert!(line.contains("These are spelled right: zentrik, PostHog, Ann Lee."), "{line}");
         assert!(!line.contains("Zentrik"), "{line}");
         assert!(!line.contains("Companies"), "{line}");
+    }
+
+    #[test]
+    fn the_place_and_the_agendas_unusual_words_are_spelled_right_too() {
+        let w = MeetingWords {
+            names: strings(&["Ann Lee"]),
+            places: strings(&["Konark Caf\u{e9}"]),
+            topics: strings(&["PostHog", "SOC 2", "ann lee"]),
+            ..MeetingWords::default()
+        };
+        let line = spelling_line(&w);
+        assert!(
+            line.contains("These are spelled right: Ann Lee, Konark Caf\u{e9}, PostHog, SOC 2."),
+            "{line}"
+        );
+        let only_topics =
+            spelling_line(&MeetingWords { topics: strings(&["Kubernetes"]), ..Default::default() });
+        assert!(only_topics.contains("spelled right: Kubernetes."), "{only_topics}");
     }
 
     #[test]

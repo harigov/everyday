@@ -37,6 +37,17 @@
 //! the name in the profile. There is no "default account" to prefer, and a
 //! voice that came from mail somebody had not allowed would be worse than none.
 //!
+//! # The application that has the keyboard
+//!
+//! The kind of message is the biggest decision [`compose`] makes, and the
+//! application they are typing into answers it better than the phrasing does:
+//! Slack is a chat message, Messages a text, a mail program an email. The shell
+//! says which application it is where it can ([`crate::agent::Typist::focused_app`],
+//! its name and never a window title, which can be a stranger's subject line),
+//! and [`compose_in`] and [`rewrite_in`] take it. What the person said about the
+//! kind wins; the application settles only "a message", which names none
+//! ([`MessageKind::Other`]).
+//!
 //! # Why the form of the message is in the prompt twice
 //!
 //! The style guide and the person's own instructions are about their email:
@@ -58,7 +69,9 @@ use karmayoga_core::writing::{self, WritingAction, WritingAssist};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::domains::writing::{keep_and_ask, rewrite_text, said_as_it_is};
+use crate::domains::writing::{
+    WRITING_CLOCK, clean_app, keep_and_ask, rewrite_text, said_as_it_is,
+};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::mailvoice::{self, VoiceContext};
 use crate::service::{Service, blocking};
@@ -83,6 +96,52 @@ pub enum MessageKind {
 }
 
 impl MessageKind {
+    /// What kind of message an application is for, from its name as a person
+    /// calls it -- `None` where it says nothing: a browser may be showing
+    /// webmail or a chat, an editor or a terminal is for neither. Matched by
+    /// whole word, so "Mail" and "Proton Mail" are mail and "Mailchimp" is not.
+    fn of_application(app: &str) -> Option<MessageKind> {
+        const TEXT: &[&str] =
+            &["messages", "imessage", "whatsapp", "signal", "telegram", "messenger", "sms"];
+        const CHAT: &[&str] =
+            &["slack", "teams", "discord", "element", "mattermost", "zulip", "chat"];
+        const MAIL: &[&str] = &[
+            "mail",
+            "gmail",
+            "outlook",
+            "thunderbird",
+            "evolution",
+            "geary",
+            "mailspring",
+            "kmail",
+            "mimestream",
+            "superhuman",
+            "postbox",
+        ];
+        let lower = app.to_lowercase();
+        let words: Vec<&str> =
+            lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+        let named = |names: &[&str]| words.iter().any(|w| names.contains(w));
+        if named(TEXT) {
+            Some(MessageKind::Text)
+        } else if named(CHAT) {
+            Some(MessageKind::Chat)
+        } else if named(MAIL) {
+            Some(MessageKind::Email)
+        } else {
+            None
+        }
+    }
+
+    /// This kind, unless nobody said ([`MessageKind::Other`]) and the application
+    /// they are typing into does.
+    fn in_application(self, app: Option<&str>) -> MessageKind {
+        match self {
+            MessageKind::Other => app.and_then(Self::of_application).unwrap_or(self),
+            said => said,
+        }
+    }
+
     /// What it is, as the record and the prompt name it: "an email to Sam", "a
     /// chat message".
     fn phrase(self, to: Option<&str>) -> String {
@@ -178,6 +237,19 @@ pub async fn rewrite(
     action: WritingAction,
     instruction: Option<&str>,
 ) -> CommandResult<Written> {
+    rewrite_in(service, text, action, instruction, None).await
+}
+
+/// [`rewrite`], told which application the selection is in
+/// ([`crate::agent::Typist::focused_app`]) where the desktop knows: kept with the
+/// record and said to the model beside the text.
+pub async fn rewrite_in(
+    service: &Arc<Service>,
+    text: &str,
+    action: WritingAction,
+    instruction: Option<&str>,
+    app: Option<&str>,
+) -> CommandResult<Written> {
     if action == WritingAction::Dictate {
         return Err(CommandError::new(
             codes::INVALID,
@@ -187,7 +259,8 @@ pub async fn rewrite(
     // The selection goes back as it came, its own leading and trailing
     // whitespace included, so that what replaces it joins nothing to its
     // neighbours: see `domains::writing::rewrap`.
-    let assist = rewrite_text(service, action, instruction, text.to_string(), None).await?;
+    let assist =
+        rewrite_text(service, action, instruction, text.to_string(), clean_app(app)).await?;
     Ok(Written { id: assist.id, text: assist.result })
 }
 
@@ -231,8 +304,9 @@ Their style guide and emails, given below, show how they write and how they gree
 follow them for those. The sign-off carries their name; no signature block is added.";
 
 /// The rules a message is written under where no mail may be read: warm and
-/// plain, and free of what gives a model away. [`mailvoice::HUMAN_WRITING_RULES`]
-/// without its talk of the style guide and example emails there are not.
+/// plain, and free of what gives a model away. The "Writing as them" block
+/// ([`VoiceContext::writing_prompt`]) without its talk of the style guide and
+/// example emails there are not.
 fn plain_rules() -> String {
     format!(
         "Write the way a thoughtful, friendly person writes to somebody they get on with: warm \
@@ -286,9 +360,10 @@ fn compose_system(kind: MessageKind, to: Option<&str>, voice: Option<&VoiceConte
     }
 }
 
-/// The user message: what kind of message, in a line, then the voice -- the
-/// person's own, or in its place the name to sign with -- then what they said,
-/// last, so that nothing after it can be read as part of it.
+/// The user message: what kind of message, in a line, where it is being typed
+/// when the desktop said, then the voice -- the person's own, or in its place
+/// the name to sign with -- then what they said, last, so that nothing after it
+/// can be read as part of it.
 ///
 /// `signer` is the name an email is signed with where there is no voice to say
 /// so; unused when there is one, whose own section has it.
@@ -298,8 +373,12 @@ fn compose_user(
     said: &str,
     voice: Option<&VoiceContext>,
     signer: Option<&str>,
+    app: Option<&str>,
 ) -> String {
     let mut out = format!("Message: {}.\n{}\n\n", kind.phrase(to), kind.form());
+    if let Some(app) = app {
+        out.push_str(&format!("They are typing into {app}.\n\n"));
+    }
     match voice {
         Some(voice) => {
             out.push_str(&voice.prompt_section());
@@ -424,15 +503,22 @@ async fn write(
     said: &str,
     kind: MessageKind,
     to: Option<&str>,
+    app: Option<&str>,
 ) -> CommandResult<String> {
     let client = crate::llm::client_for(access)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
     let voice = gather_voice(service, vault, access, kind).await?;
     let system = compose_system(kind, to, voice.mail.as_ref());
-    let user = compose_user(kind, to, said, voice.mail.as_ref(), voice.signer.as_deref());
-    let answer =
-        crate::quick::run_prompt(client, &access.config.model, &system, &user, message_schema())
-            .await?;
+    let user = compose_user(kind, to, said, voice.mail.as_ref(), voice.signer.as_deref(), app);
+    let answer = crate::quick::run_prompt_within(
+        client,
+        &access.config.model,
+        &system,
+        &user,
+        message_schema(),
+        WRITING_CLOCK,
+    )
+    .await?;
     let text = answer.get("text").and_then(Value::as_str).unwrap_or_default();
     // Cleaned as every message written for them is: by their own voice's rules
     // where there is one, by the fixed ones where there is not.
@@ -458,17 +544,33 @@ pub async fn compose(
     kind: MessageKind,
     to: Option<&str>,
 ) -> CommandResult<Written> {
+    compose_in(service, said, kind, to, None).await
+}
+
+/// [`compose`], told which application they are typing into
+/// ([`crate::agent::Typist::focused_app`]) where the desktop knows: a message
+/// nobody gave a kind to is the kind that application is for
+/// ([`MessageKind::of_application`]), and the model is told where it is going.
+pub async fn compose_in(
+    service: &Arc<Service>,
+    said: &str,
+    kind: MessageKind,
+    to: Option<&str>,
+    app: Option<&str>,
+) -> CommandResult<Written> {
     writing::validate_request(said).map_err(said_as_it_is)?;
     let to = clean_recipient(to);
+    let app = clean_app(app);
+    let kind = kind.in_application(app.as_deref());
     // Unlocked, not merely open, as a rewrite is: what was said goes out to a
     // model, and the lock screen is no place for that to start from.
     let vault = service.require_unlocked()?;
-    let assist = WritingAssist::new(WritingAction::Compose, said, None)
+    let assist = WritingAssist::new(WritingAction::Compose, said, app.clone())
         .with_instruction(Some(kind.phrase(to.as_deref())));
     let (service, said) = (service.clone(), said.to_string());
     let asked = vault.clone();
     let assist = keep_and_ask(vault, assist, move |access| async move {
-        write(&service, &asked, &access, &said, kind, to.as_deref()).await
+        write(&service, &asked, &access, &said, kind, to.as_deref(), app.as_deref()).await
     })
     .await?;
     Ok(Written { id: assist.id, text: assist.result })
@@ -506,7 +608,7 @@ mod tests {
     const SAID: &str = "write that I am not feeling well and that I will reach out tomorrow";
 
     fn user(kind: MessageKind, to: Option<&str>) -> String {
-        compose_user(kind, to, SAID, None, Some("Hari"))
+        compose_user(kind, to, SAID, None, Some("Hari"), None)
     }
 
     #[test]
@@ -625,13 +727,13 @@ mod tests {
         };
         for kind in KINDS {
             for voice in [None, Some(&voice)] {
-                let user = compose_user(kind, Some("Sam"), SAID, voice, Some("Hari"));
+                let user = compose_user(kind, Some("Sam"), SAID, voice, Some("Hari"), None);
                 assert!(user.ends_with(&format!("What they said:\n{SAID}")), "{kind:?}: {user}");
                 assert_eq!(user.matches("What they said:").count(), 1, "{kind:?}");
             }
         }
         // Said with whitespace around it, it is still the last word.
-        let user = compose_user(MessageKind::Chat, None, "  hello there \n", None, None);
+        let user = compose_user(MessageKind::Chat, None, "  hello there \n", None, None, None);
         assert!(user.ends_with("What they said:\nhello there"), "{user}");
     }
 
@@ -650,7 +752,7 @@ mod tests {
 
     #[test]
     fn an_email_with_no_name_known_is_closed_without_one() {
-        let user = compose_user(MessageKind::Email, Some("Sam"), SAID, None, None);
+        let user = compose_user(MessageKind::Email, Some("Sam"), SAID, None, None, None);
         assert!(user.contains("Their name is not known"), "{user}");
         assert!(!user.contains("They sign as"), "{user}");
     }
@@ -670,17 +772,21 @@ mod tests {
             None,
         );
         let system = compose_system(MessageKind::Email, Some("Sam"), Some(&voice));
-        assert!(system.contains("Write as this person writes"), "their rules: {system}");
-        assert!(system.contains("Sound warm and friendly"), "the warm ones: {system}");
+        assert!(system.contains("## Writing as them"), "their rules: {system}");
+        assert!(system.contains("You write as Hari Govardhanam"), "{system}");
+        assert!(
+            system.contains("never curt, unless they have told you otherwise"),
+            "the warm ones: {system}"
+        );
         assert!(system.contains("Never use exclamation marks."), "their own words: {system}");
         assert!(system.contains("how they greet and sign off"), "{system}");
         // The kind's rules are said before the general ones, which are told so.
         let kind = system.find("This is an email").unwrap();
-        let general = system.find("Write as this person writes").unwrap();
+        let general = system.find("## Writing as them").unwrap();
         assert!(kind < general, "{system}");
         assert!(system.contains("comes before the general writing rules"), "{system}");
 
-        let user = compose_user(MessageKind::Email, Some("Sam"), SAID, Some(&voice), None);
+        let user = compose_user(MessageKind::Email, Some("Sam"), SAID, Some(&voice), None, None);
         assert!(user.contains("Examples of emails they wrote"), "{user}");
         assert!(user.contains("See you Friday."), "{user}");
         assert!(user.contains("They sign as Hari Govardhanam."), "{user}");
@@ -709,7 +815,7 @@ mod tests {
             system.contains("none of their emails' greetings, sign-offs, paragraphs"),
             "{system}"
         );
-        let user = compose_user(MessageKind::Chat, None, SAID, Some(&voice), None);
+        let user = compose_user(MessageKind::Chat, None, SAID, Some(&voice), None, None);
         assert!(!user.contains("They sign as"), "{user}");
         assert!(!user.contains("hari@example.com"), "{user}");
     }
@@ -724,6 +830,61 @@ mod tests {
         let named = VoiceContext { name: Some("Hari Govardhanam".into()), ..bare };
         let voice = fit_voice(named, MessageKind::Email, Some("Hari".into()));
         assert_eq!(voice.name.as_deref(), Some("Hari Govardhanam"));
+    }
+
+    // ---- the application that has the keyboard -------------------------------
+
+    #[test]
+    fn an_application_says_what_kind_of_message_it_is_for() {
+        for (app, kind) in [
+            ("Slack", MessageKind::Chat),
+            ("Microsoft Teams", MessageKind::Chat),
+            ("Discord", MessageKind::Chat),
+            ("Element", MessageKind::Chat),
+            ("Messages", MessageKind::Text),
+            ("Google Messages", MessageKind::Text),
+            ("WhatsApp", MessageKind::Text),
+            ("Signal", MessageKind::Text),
+            ("Mail", MessageKind::Email),
+            ("Proton Mail", MessageKind::Email),
+            ("Thunderbird", MessageKind::Email),
+            ("Microsoft Outlook", MessageKind::Email),
+            ("Evolution", MessageKind::Email),
+        ] {
+            assert_eq!(MessageKind::of_application(app), Some(kind), "{app}");
+        }
+        // Whole words only, and nothing for what could be either.
+        for app in ["Firefox", "Visual Studio Code", "Terminal", "Mailchimp Studio", "ChatGPT", ""]
+        {
+            assert_eq!(MessageKind::of_application(app), None, "{app}");
+        }
+    }
+
+    /// What they said about the kind wins; the application settles only "a
+    /// message".
+    #[test]
+    fn the_application_decides_only_what_nobody_said() {
+        let slack = Some("Slack");
+        assert_eq!(MessageKind::Other.in_application(slack), MessageKind::Chat);
+        assert_eq!(MessageKind::Other.in_application(Some("Mail")), MessageKind::Email);
+        assert_eq!(MessageKind::Other.in_application(Some("Firefox")), MessageKind::Other);
+        assert_eq!(MessageKind::Other.in_application(None), MessageKind::Other);
+        for said in [MessageKind::Email, MessageKind::Chat, MessageKind::Text] {
+            assert_eq!(said.in_application(slack), said);
+            assert_eq!(said.in_application(Some("Mail")), said);
+        }
+    }
+
+    #[test]
+    fn the_model_is_told_where_it_is_typing_and_what_they_said_is_still_last() {
+        let user = compose_user(MessageKind::Chat, Some("Sam"), SAID, None, None, Some("Slack"));
+        assert!(user.starts_with("Message: a chat message to Sam."), "{user}");
+        let place = user.find("They are typing into Slack.").expect(&user);
+        assert!(user.find("Form:").unwrap() < place, "{user}");
+        assert!(place < user.find("What they said:").unwrap(), "{user}");
+        assert!(user.ends_with(&format!("What they said:\n{SAID}")), "{user}");
+        let nowhere = compose_user(MessageKind::Chat, Some("Sam"), SAID, None, None, None);
+        assert!(!nowhere.contains("typing into"), "{nowhere}");
     }
 
     #[test]

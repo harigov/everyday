@@ -8,14 +8,22 @@
 //!
 //! # How a rank is worked out
 //!
-//! Each [`Criterion`] is a yes-or-no question somebody wrote ("about
-//! building software with AI", "a show I always finish") with a weight from
-//! -3 to 3 -- a negative weight for what they would rather skip. The
-//! decision model is asked each one about each new story, and answers yes
-//! with some probability; the score is the weighted mean of those
-//! probabilities, from -1 to 1 ([`Ranking::score`]). A rank remembers the
+//! Each [`Criterion`] is a description somebody wrote ("about building
+//! software with AI", "a long interview with a founder") with a weight from
+//! -3 to 3 -- a negative weight for what they would rather skip. The model is
+//! asked, of each new story, whether it fits each one, and answers yes with
+//! some probability; the score is the weighted mean of those probabilities,
+//! from -1 to 1 ([`Ranking::score`]). A criterion is judged from what a story
+//! shows of itself -- its title, its kind and length, how it begins -- so it
+//! can be about the story ("a long interview", "a newsletter about
+//! climate"), and cannot be about the person's own habits ("a show I always
+//! finish"), which no reading of a story can answer. A rank remembers the
 //! [`Ranking::fingerprint`] of the criteria it answered, so editing them
 //! makes every rank stale at once without touching a row.
+//!
+//! The goals are asked as one question, which of them a story would help
+//! with, and answered under [`Ranking::GOALS`]; the one chosen is also kept as
+//! `goal:<id>` so a reason can name it. The score reads only the first.
 
 use super::listening::ContentRef;
 use super::podcast::PodcastDefaults;
@@ -204,7 +212,9 @@ impl Default for Ranking {
 pub struct Criterion {
     /// Stable across edits of the text, so an answer can be matched to it.
     pub id: String,
-    /// The question, in the person's words: "about building software with AI".
+    /// The description, in the person's words: "about building software with
+    /// AI". Of the story, not of the person -- a model that reads a story can
+    /// say what it is, not whether somebody finishes shows like it.
     pub text: String,
     /// -3 to 3. Negative for what they would rather skip.
     pub weight: i8,

@@ -35,9 +35,13 @@ const MINE: &str = "mine";
 const NOT_MINE: &str = "not mine";
 
 const INSTRUCTIONS: &str = "\
-Decide whether this next step is work the person named under person took on \
-in the meeting. Choose mine only when it is clearly theirs. A step for \
-someone else, or that nobody took, is not mine.";
+The step is a line from the \"Next steps\" of the person's meeting notes, \
+written as \"**Owner:** what they will do\". Decide whether the person given \
+under person is the one who will do it. Mine: the owner is them -- their \
+name, an email address of theirs, or \"You\" or \"Me\" -- or it is theirs \
+together with others (\"Hari and Priya\"). Not mine: it names somebody else, \
+even somebody who shares their first name, a team or group that does not name \
+them, or nobody (\"Unassigned\").";
 
 /// Propose the owner's next steps from `body`. `on` dates a step that names
 /// a month and a day without a year. `others` are the other people invited,
@@ -159,7 +163,7 @@ async fn ask(
     let options = [
         ChoiceOption {
             name: MINE.into(),
-            description: "This person is the one who will do it.".into(),
+            description: "The person will do it, alone or with others.".into(),
         },
         ChoiceOption {
             name: NOT_MINE.into(),
@@ -313,5 +317,45 @@ mod tests {
         )
         .await;
         assert_eq!(vault.proposals(&ProposalQuery::pending()).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn with_no_name_in_the_profile_the_notes_you_lines_are_proposed() {
+        let (_dir, vault) = vault();
+        // No name typed: the microphone's lines, and so the notes, say "You".
+        let note = NoteId::new();
+        let body = "\
+## Next steps
+- **You:** Send Acme the revised pricing deck, by Fri 8 May
+- **Priya:** Review the pricing deck, by Mon 11 May
+- **Unassigned (offered by someone on the call):** Book the room
+";
+        let others = vec!["Priya Raman".to_string()];
+        let events = crate::events::Silent;
+        from_note(
+            &vault,
+            note,
+            body,
+            "Design sync",
+            &others,
+            Date::new(2026, 5, 4).unwrap(),
+            "UTC",
+            &events,
+        )
+        .await;
+        let pending = vault.proposals(&ProposalQuery::pending()).unwrap();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        let task = match &pending[0].payload {
+            Payload::Create { record: ProposedRecord::Task(task) } => task,
+            other => panic!("expected a task, got {other:?}"),
+        };
+        assert_eq!(task.title, "Send Acme the revised pricing deck");
+        assert_eq!(task.due_date, Some(Date::new(2026, 5, 8).unwrap()), "a weekday and a date");
+    }
+
+    #[test]
+    fn the_decision_models_instructions_guard_a_shared_first_name() {
+        assert!(INSTRUCTIONS.contains("even somebody who shares their first name"));
+        assert!(INSTRUCTIONS.contains("\"You\" or \"Me\""));
     }
 }

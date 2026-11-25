@@ -383,8 +383,22 @@ impl karmayoga_mcp::Host for VaultHost {
         }
     }
 
+    /// Who the vault belongs to and what time zone its dates are in -- the two
+    /// things an outside assistant gets wrong without being told: it calls the
+    /// owner "the user", and it reads "tomorrow" in its own server's zone.
+    /// Nothing while the vault is locked, when there is no vault to describe.
     fn instructions(&self) -> Option<String> {
-        None
+        let vault = self.service.require().ok()?;
+        let first = vault.profile().map(|p| p.first_name.trim().to_string()).unwrap_or_default();
+        let zone = vault.person_tz();
+        let mut said = String::new();
+        if !first.is_empty() {
+            said.push_str(&format!("The owner is {first}. "));
+        }
+        said.push_str(&format!(
+            "Their time zone is {zone}: every date and time the tools take or give is in it."
+        ));
+        Some(said)
     }
 
     fn tools(&self) -> impl std::future::Future<Output = Result<Vec<ToolDef>, HostError>> + Send {

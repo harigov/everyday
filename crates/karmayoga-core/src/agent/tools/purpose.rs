@@ -84,8 +84,7 @@ pub(super) static TOOLS: &[Tool] = &[
             &["goal_id"]
         ),
         "Change a goal. Only the fields given are touched. Setting status to done \
-         stamps when it was finished; dropped does not, because giving up on \
-         something is not finishing it.",
+         stamps when it was finished; dropped does not.",
         run_update_goal
     ),
     tool!(
