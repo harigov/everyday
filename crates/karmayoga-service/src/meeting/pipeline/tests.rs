@@ -744,8 +744,11 @@ async fn the_recognisers_prompt_read_back_never_reaches_the_transcript() {
     let audio = Arc::new(FakeAudio::new());
     let id = seed_recording(&vault, &audio, 0, 1);
     let source: Arc<dyn AudioSource> = audio.clone();
-    let hints =
-        Hints { language: None, prompt: "Design sync. With Priya Raman of Example.".into() };
+    let hints = Hints {
+        language: None,
+        prompt: "Design sync. With Priya Raman of Example.".into(),
+        ..Hints::default()
+    };
     for (reply, kept) in
         [("Design sync. With Priya Raman.", false), ("Priya, can you send the deck?", true)]
     {

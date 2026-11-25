@@ -401,6 +401,11 @@ pub async fn set_wake_settings(
     }
     config.pause_in_calls = pause_in_calls.unwrap_or(config.pause_in_calls);
     save_config(&config).map_err(|e| CommandError::new("wake", e))?;
+    if !enabled {
+        // Voice mode and voice typing were told to expect the names it
+        // listened for; switched off, they are nothing to expect.
+        app.state::<AppState>().service().forget_wake_names();
+    }
     {
         // What was listening listened for the old names, and a refusal is
         // worth trying again now that something has changed.

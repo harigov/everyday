@@ -542,7 +542,11 @@ mod tests {
         let captured = Captured::default();
         let base = spawn(captured.clone()).await;
         let t = OpenAiTranscriber::new(base, Some("sk-secret".into()), "whisper-1");
-        let hints = Hints { language: Some("en".into()), prompt: "Design sync, with Priya".into() };
+        let hints = Hints {
+            language: Some("en".into()),
+            prompt: "Design sync, with Priya".into(),
+            ..Hints::default()
+        };
         let out = t.do_transcribe(&chunk(), &hints).await.unwrap();
         // No segments/timestamps in this fake reply, so the fallback single
         // spanning segment is what comes back.
@@ -565,7 +569,8 @@ mod tests {
         let captured = Captured::default();
         let base = spawn(captured.clone()).await;
         let t = OpenAiTranscriber::new(base, None, "gpt-4o-transcribe-diarize");
-        let hints = Hints { language: None, prompt: "should never be sent".into() };
+        let hints =
+            Hints { language: None, prompt: "should never be sent".into(), ..Hints::default() };
         let _ = t.do_transcribe(&chunk(), &hints).await.unwrap();
 
         let fields = captured.fields.lock().unwrap().clone();

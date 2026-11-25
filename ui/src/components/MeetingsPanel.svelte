@@ -391,7 +391,8 @@
         </label>
         <p class="hint">
           Told to the speech model and the note writer in every meeting, along with the names on the
-          invite, and used to correct near misses in the transcript.
+          invite, and used to correct near misses in the transcript. The speech model is told them
+          when you talk to the assistant or type by voice too.
         </p>
 
         {#if draft.skippedSeries.length > 0}

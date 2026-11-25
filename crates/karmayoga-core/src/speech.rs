@@ -42,6 +42,8 @@
 //! Both are moved at unlock, by `Vault::carry_over_speech`, and
 //! [`crate::meeting::MeetingSettings::speech_moved`] records that they were.
 
+pub mod words;
+
 use crate::error::{Error, Result};
 use crate::llm::{LLMProviderConfig, Provider, is_loopback};
 use serde::{Deserialize, Serialize};
@@ -95,6 +97,13 @@ impl LocalModel {
     /// `karmayoga-service` to run it.
     pub fn on_llama(&self) -> bool {
         matches!(self, LocalModel::Qwen3Asr17b | LocalModel::Qwen3Asr06b)
+    }
+
+    /// Whether it reads the words to expect as a prompt, and so may write
+    /// that prompt back over silence: Qwen. Parakeet is told them as words to
+    /// boost, which it cannot read back, and Whisper here is told nothing.
+    pub fn reads_prompt(&self) -> bool {
+        self.on_llama()
     }
 }
 

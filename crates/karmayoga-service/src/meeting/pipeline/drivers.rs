@@ -153,10 +153,10 @@ pub(crate) async fn transcribe_pending(
         let settings = settings.clone();
         blocking(move || Ok(words_for(&vault, event.as_ref(), &settings))).await?
     };
-    let hints = Hints {
-        language: access.config.language.clone(),
-        prompt: karmayoga_core::meeting::vocab::transcriber_prompt(&words),
-    };
+    let hints = Hints::new(
+        access.config.language.clone(),
+        karmayoga_core::speech::words::for_meeting(&words),
+    );
 
     #[cfg(feature = "speech")]
     let kit = transcription_kit(id).await;

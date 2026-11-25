@@ -644,6 +644,8 @@ pub struct MeetingSettings {
     /// transcript's near misses. See [`vocab`]. Meetings' own rather than the
     /// speech model's, though the recogniser is told it: it is about what is
     /// said in meetings, and goes with the invite's names it is told beside.
+    /// Every other listener's recogniser is told it too -- see
+    /// [`crate::speech::words`].
     pub vocabulary: Vec<String>,
     /// The brief prepared before each meeting -- see [`brief`].
     pub brief: brief::MeetingBriefSettings,

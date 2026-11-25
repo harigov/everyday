@@ -397,7 +397,11 @@ mod tests {
 
     #[test]
     fn hints_are_folded_into_the_instruction_text() {
-        let hints = Hints { language: Some("fr".into()), prompt: "Design sync, with Priya".into() };
+        let hints = Hints {
+            language: Some("fr".into()),
+            prompt: "Design sync, with Priya".into(),
+            ..Hints::default()
+        };
         let text = instructions(&hints);
         assert!(text.contains("fr"));
         assert!(text.contains("Priya"));
