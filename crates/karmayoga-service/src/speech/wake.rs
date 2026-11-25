@@ -17,6 +17,7 @@
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::speech::SAMPLE_RATE;
+use crate::speech::access::HeardFrom;
 use crate::speech::detect::Tuning;
 use crate::speech::expect::Occasion;
 use crate::speech::live::{LiveEvent, LiveTranscription};
@@ -273,7 +274,9 @@ impl Service {
         // Every recogniser is told to expect these names from now on. This
         // one is told only them and the person's: see `Occasion::Wake`.
         self.remember_wake_names(&names);
-        let live = self.live_transcription(Tuning::CONVERSATION, Occasion::Wake).await?;
+        let live = self
+            .live_transcription(Tuning::CONVERSATION, Occasion::Wake, HeardFrom::ThisComputer)
+            .await?;
         Ok(spawn(live, names))
     }
 }

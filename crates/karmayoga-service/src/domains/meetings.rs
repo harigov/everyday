@@ -188,6 +188,10 @@ pub struct VoiceprintInfo {
     pub is_owner: bool,
     pub model: String,
     pub samples: u32,
+    /// A sample of the voice is kept with it, which taking other voices out
+    /// of the microphone needs. See `Voiceprint::voice_sample`.
+    #[serde(default)]
+    pub has_sample: bool,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -201,6 +205,7 @@ impl From<Voiceprint> for VoiceprintInfo {
             is_owner: v.is_owner,
             model: v.model,
             samples: v.samples,
+            has_sample: v.voice_sample.is_some(),
             created_at: v.created_at,
             updated_at: v.updated_at,
         }

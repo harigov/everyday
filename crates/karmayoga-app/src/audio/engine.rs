@@ -22,6 +22,35 @@
 //! ([`Cleaning::Echo`]), exist only when both devices are open and echo
 //! cancellation was asked for.
 //!
+//! # Other voices and stronger noise
+//!
+//! What listens for the person can ask for more ([`Cleanup`]): another
+//! person's voice taken out, or a stronger noise filter, both models from
+//! `karmayoga_service::speech::cleanup`. They run on a thread of their own,
+//! "mic-cleanup", after everything above, so that a model taking its time
+//! never holds up the echo canceller, which has to see the reference and the
+//! microphone in step:
+//!
+//! ```text
+//!  cleaner ─▶ batch ─▶ (bounded) ─▶ mic-cleanup: models ─▶ EngineEvent::Microphone
+//! ```
+//!
+//! Loading them takes a second or two; what the microphone hears meanwhile
+//! waits in the channel and is cleaned when they are ready, so the first
+//! words are late, not lost. A computer that cannot keep up with them gets
+//! them turned off for the rest of that microphone, audio passed on as the
+//! ordinary filter left it, and Settings says so ([`cleanup_trouble`]).
+//!
+//! The noise filter takes the canceller's own noise suppression's place, so
+//! it is loaded first, on this thread, a tenth of a second: the suppression
+//! stands aside only for a filter that is there, and comes back if the models
+//! are turned off. Each model is loaded on its own, so one that fails leaves
+//! the other.
+//!
+//! [`AudioEngine::finish`] waits for the models to hand over everything they
+//! hold, for something that wants the last words; [`AudioEngine::stop`] and
+//! dropping the engine tell their thread to stop at once.
+//!
 //! # Realtime rules
 //!
 //! The callbacks neither block nor allocate in steady state. They talk to the
@@ -55,6 +84,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, SupportedStreamConfig};
 use karmayoga_service::speech::SAMPLE_RATE;
+use karmayoga_service::speech::cleanup::{Cleanup, MicCleanup, NoiseFilter, VoiceIsolation};
 use karmayoga_service::voice::cue::{Bed, listening_chime};
 
 use super::AudioError;
@@ -84,6 +114,39 @@ const DELAY_REFRESH: Duration = Duration::from_millis(500);
 /// The delay hint when the devices say nothing about their latency. The
 /// canceller finds the remainder itself; this only has to start it near.
 const FALLBACK_DELAY_MS: i32 = 60;
+
+/// How long something that wants the last words waits for them in
+/// [`AudioEngine::finish`]: the models' whole backlog, worked off at twice
+/// real time or more, and some.
+pub const FINISH_WITHIN: Duration = Duration::from_secs(6);
+
+/// Microphone batches waiting for the models (about 30 ms each): room for
+/// them to load and prime, about two seconds, and some.
+const CLEANUP_BACKLOG: usize = 256;
+
+/// How much audio the models' pace is judged over, and the share of real
+/// time past which they are falling behind: see [`Pace`].
+const PACE_WINDOW: Duration = Duration::from_secs(10);
+const PACE_LIMIT: f64 = 0.9;
+
+/// Why the models were last turned off part-way, for Settings: see the
+/// module doc.
+static CLEANUP_TROUBLE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Why the microphone's models were last turned off part-way, if they were.
+pub fn cleanup_trouble() -> Option<String> {
+    CLEANUP_TROUBLE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Forget it: something about them has changed.
+pub fn clear_cleanup_trouble() {
+    *CLEANUP_TROUBLE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn cleanup_failed(why: String) {
+    tracing::warn!(%why, "audio: the microphone's models are off");
+    *CLEANUP_TROUBLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+}
 
 /// How much of a latency a callback reports is believed. Anything longer is a
 /// backend guessing, and a wrong hint is worse than the fallback.
@@ -130,13 +193,19 @@ pub type EngineSink = Arc<dyn Fn(EngineEvent) + Send + Sync>;
 
 /// What the pump asks of the engine thread, in order.
 enum Control {
-    Play { utterance: u64, samples: Vec<i16>, sample_rate: u32 },
+    Play {
+        utterance: u64,
+        samples: Vec<i16>,
+        sample_rate: u32,
+    },
     Pause,
     Resume,
     Clear,
     Working(bool),
     Chime,
     Stop,
+    /// Stop, once everything heard has reached the sink; then say so.
+    Finish(tokio::sync::oneshot::Sender<()>),
 }
 
 /// A running audio engine. Dropping it asks the thread to stop and lets a
@@ -154,8 +223,12 @@ impl AudioEngine {
     /// `sink` is called from the engine thread with what the microphone hears
     /// and what the speaker has finished playing. A device failing sends
     /// [`EngineEvent::Failed`] and closes both.
+    ///
+    /// `cleanup`, for a microphone, is what to take out of it besides what is
+    /// always taken out: see the module doc.
     pub async fn start(
         options: EngineOptions,
+        cleanup: Option<Arc<Cleanup>>,
         sink: EngineSink,
     ) -> Result<AudioEngine, AudioError> {
         if !options.microphone && !options.speaker {
@@ -165,7 +238,7 @@ impl AudioEngine {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let join = std::thread::Builder::new()
             .name("audio-engine".into())
-            .spawn(move || run(options, sink, ready_tx, control_rx))
+            .spawn(move || run(options, cleanup, sink, ready_tx, control_rx))
             .map_err(|e| AudioError(format!("could not start the audio thread: {e}")))?;
         // From here a failure drops `engine`, which reaps the thread.
         let engine = AudioEngine { control, join: Some(join) };
@@ -215,6 +288,18 @@ impl AudioEngine {
     /// Close the devices. Does not wait for it; safe to say twice.
     pub fn stop(&self) {
         let _ = self.control.send(Control::Stop);
+    }
+
+    /// Close the devices once all the microphone has heard has reached the
+    /// sink -- the models' backlog and what they hold back, if any run -- or
+    /// `within` has passed, whichever is first. For something that wants the
+    /// last words before it moves on.
+    pub async fn finish(&self, within: Duration) {
+        let (done, finished) = tokio::sync::oneshot::channel();
+        if self.control.send(Control::Finish(done)).is_err() {
+            return;
+        }
+        let _ = tokio::time::timeout(within, finished).await;
     }
 }
 
@@ -575,6 +660,7 @@ fn lock(queue: &Mutex<PlaybackQueue>) -> MutexGuard<'_, PlaybackQueue> {
 
 fn run(
     options: EngineOptions,
+    cleanup: Option<Arc<Cleanup>>,
     sink: EngineSink,
     ready: tokio::sync::oneshot::Sender<Result<(), AudioError>>,
     control: Receiver<Control>,
@@ -600,11 +686,15 @@ fn run(
             return;
         }
     };
+    if let Some(cleanup) = cleanup.filter(|_| opened.microphone.is_some()) {
+        pipeline.clean_with(cleanup, sink.clone());
+    }
     if ready.send(Ok(())).is_err() {
         // Nobody is waiting any more; the start was abandoned.
         return;
     }
     let failure = pipeline.run(&opened, &sink, &control);
+    pipeline.end(&sink);
     if let Some(message) = failure {
         tracing::warn!(%message, "audio: stopped");
         sink(EngineEvent::Failed(message));
@@ -632,6 +722,14 @@ struct Pipeline {
     echo: Option<Echo>,
     /// Microphone audio waiting to make a batch.
     batch: Vec<i16>,
+    /// The models' thread, when there is one: see [`Pipeline::clean_with`].
+    worker: Option<Worker>,
+    /// The canceller's own noise suppression is off, for the noise filter.
+    noise_handed_over: bool,
+    /// Told to finish rather than stop: who to tell when it has.
+    finishing: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Batches dropped because that thread had fallen this far behind.
+    dropped: u64,
     // Scratch, reused so the loop allocates nothing in steady state.
     resampled: Vec<f32>,
     finished: Vec<u64>,
@@ -663,10 +761,121 @@ impl Pipeline {
             cleaner,
             echo,
             batch: Vec::with_capacity(BATCH_SAMPLES * 2),
+            worker: None,
+            noise_handed_over: false,
+            finishing: None,
+            dropped: 0,
             resampled: Vec::new(),
             finished: Vec::new(),
             spent: Vec::new(),
         })
+    }
+
+    /// Hand every batch to `cleanup`'s models, on a thread of their own,
+    /// which give `sink` what they make of it. The noise filter is loaded
+    /// here and replaces the canceller's own noise suppression; voice
+    /// isolation, slow to load, is loaded on that thread. See the module doc.
+    fn clean_with(&mut self, cleanup: Arc<Cleanup>, sink: EngineSink) {
+        clear_cleanup_trouble();
+        let noise = if cleanup.strong_noise {
+            match NoiseFilter::load() {
+                Ok(noise) => Some(noise),
+                Err(e) => {
+                    cleanup_failed(e.to_string());
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if noise.is_some() {
+            self.suppress_noise(false);
+        }
+        let sample = cleanup.voice_sample.clone();
+        if noise.is_none() && sample.is_none() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<i16>>(CLEANUP_BACKLOG);
+        let flags = Flags::default();
+        let theirs = flags.clone();
+        let spawned = std::thread::Builder::new()
+            .name("mic-cleanup".into())
+            .spawn(move || clean(noise, sample, &rx, &sink, &theirs));
+        match spawned {
+            Ok(join) => self.worker = Some(Worker { batches: Some(tx), join: Some(join), flags }),
+            Err(e) => {
+                cleanup_failed(format!("could not start the microphone's models: {e}"));
+                self.suppress_noise(true);
+            }
+        }
+    }
+
+    /// Rebuild the canceller with its noise suppression on or off. Its echo
+    /// canceller starts learning again, so this is done before anything is
+    /// heard, or when the models give up.
+    fn suppress_noise(&mut self, on: bool) {
+        if self.noise_handed_over != on {
+            return;
+        }
+        let cleaning = if self.echo.is_some() { Cleaning::Echo } else { Cleaning::Noise };
+        self.cleaner =
+            self.microphone.as_ref().map(|_| Canceller::with_noise_suppression(cleaning, on));
+        self.noise_handed_over = !on;
+    }
+
+    /// A finished batch, to the models if they are running, else the sink.
+    fn deliver(&mut self, audio: Vec<i16>, sink: &EngineSink) {
+        if self.worker.as_ref().is_some_and(|w| w.flags.gave_up.load(Ordering::Acquire)) {
+            // The models are off: the canceller suppresses noise again.
+            self.suppress_noise(true);
+        }
+        let Some(batches) = self.worker.as_ref().and_then(|w| w.batches.as_ref()) else {
+            sink(EngineEvent::Microphone(audio));
+            return;
+        };
+        match batches.try_send(audio) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.dropped += 1;
+                if self.dropped == 1 || self.dropped.is_multiple_of(100) {
+                    tracing::warn!(
+                        dropped = self.dropped,
+                        "audio: the microphone's models are behind"
+                    );
+                }
+            }
+            Err(TrySendError::Disconnected(audio)) => {
+                // Their thread is gone: as the ordinary filter left it.
+                self.worker = None;
+                self.suppress_noise(true);
+                sink(EngineEvent::Microphone(audio));
+            }
+        }
+    }
+
+    /// The loop is over. Told to finish: what is left of a batch goes on,
+    /// the models' thread is waited for while it cleans its backlog and what
+    /// it holds, and whoever asked is told. Otherwise that thread is told to
+    /// stop at once, and not waited for.
+    fn end(&mut self, sink: &EngineSink) {
+        let Some(done) = self.finishing.take() else {
+            if let Some(worker) = &self.worker {
+                worker.flags.cancel.store(true, Ordering::Release);
+            }
+            self.worker = None;
+            return;
+        };
+        if !self.batch.is_empty() {
+            let rest = std::mem::take(&mut self.batch);
+            self.deliver(rest, sink);
+        }
+        if let Some(mut worker) = self.worker.take() {
+            drop(worker.batches.take());
+            if let Some(join) = worker.join.take() {
+                let _ = join.join();
+            }
+        }
+        let _ = done.send(());
     }
 
     /// Run until told to stop or a device fails; the last of those is
@@ -684,6 +893,10 @@ impl Pipeline {
             loop {
                 match control.try_recv() {
                     Ok(Control::Stop) | Err(TryRecvError::Disconnected) => return None,
+                    Ok(Control::Finish(done)) => {
+                        self.finishing = Some(done);
+                        return None;
+                    }
                     Ok(message) => self.apply(message, opened),
                     Err(TryRecvError::Empty) => break,
                 }
@@ -763,7 +976,7 @@ impl Pipeline {
             }
             Control::Working(on) => lock(&opened.queue).set_working(on),
             Control::Chime => lock(&opened.queue).play_chime(),
-            Control::Stop => {}
+            Control::Stop | Control::Finish(_) => {}
         }
     }
 
@@ -802,7 +1015,7 @@ impl Pipeline {
         cleaner.process(&self.resampled, &mut self.batch);
         if self.batch.len() >= BATCH_SAMPLES {
             let audio = std::mem::replace(&mut self.batch, Vec::with_capacity(BATCH_SAMPLES * 2));
-            sink(EngineEvent::Microphone(audio));
+            self.deliver(audio, sink);
         }
     }
 
@@ -830,6 +1043,122 @@ impl Pipeline {
     }
 }
 
+// ---- the models' thread -------------------------------------------------
+
+/// What the engine thread and the models' thread tell each other.
+#[derive(Clone, Default)]
+struct Flags {
+    /// The engine has stopped: stop now, whatever is left.
+    cancel: Arc<AtomicBool>,
+    /// The models have been turned off: what comes is as it went in.
+    gave_up: Arc<AtomicBool>,
+}
+
+/// The models' thread, as the engine thread holds it.
+struct Worker {
+    /// Batches for it; dropped to tell it the microphone has closed.
+    batches: Option<SyncSender<Vec<i16>>>,
+    join: Option<std::thread::JoinHandle<()>>,
+    flags: Flags,
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        // Not finished properly ([`Pipeline::end`] takes what it waits for):
+        // nothing more it makes is wanted.
+        if self.join.is_some() {
+            self.flags.cancel.store(true, Ordering::Release);
+        }
+    }
+}
+
+/// The "mic-cleanup" thread: load voice isolation, then clean every batch
+/// until the engine lets go of the channel, and then what the models still
+/// hold. Without models -- they would not load, or could not keep up --
+/// batches go on as they came. Stops as soon as the engine says so.
+fn clean(
+    noise: Option<NoiseFilter>,
+    sample: Option<Vec<i16>>,
+    batches: &Receiver<Vec<i16>>,
+    sink: &EngineSink,
+    flags: &Flags,
+) {
+    let voices = sample.and_then(|sample| match VoiceIsolation::load(&sample) {
+        Ok(voices) => Some(voices),
+        Err(e) => {
+            cleanup_failed(e.to_string());
+            None
+        }
+    });
+    let mut models = MicCleanup::new(noise, voices);
+    let mut pace = Pace::default();
+    let mut out = Vec::new();
+    while let Ok(batch) = batches.recv() {
+        if flags.cancel.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(running) = models.as_mut() else {
+            sink(EngineEvent::Microphone(batch));
+            continue;
+        };
+        let started = Instant::now();
+        running.process(&batch, &mut out);
+        if pace.behind(batch.len(), started.elapsed()) {
+            cleanup_failed(
+                "This computer could not keep up with taking other voices and noise out of the \
+                 microphone, so they were turned off until it next opens."
+                    .into(),
+            );
+            models = None;
+            flags.gave_up.store(true, Ordering::Release);
+        }
+        if !out.is_empty() {
+            sink(EngineEvent::Microphone(std::mem::take(&mut out)));
+        }
+    }
+    if let Some(running) = models.as_mut()
+        && !flags.cancel.load(Ordering::Acquire)
+    {
+        running.finish(&mut out);
+        if !out.is_empty() {
+            sink(EngineEvent::Microphone(out));
+        }
+    }
+}
+
+/// Whether the models are keeping up: the time they took over the last
+/// [`PACE_WINDOW`] of audio, as a share of that audio's length, past
+/// [`PACE_LIMIT`]. Judged only once a whole window has been heard, so the
+/// backlog left by loading, worked off as fast as they can go, is not held
+/// against them.
+#[derive(Default)]
+struct Pace {
+    /// `(samples, time taken)` for the batches of the window.
+    recent: std::collections::VecDeque<(usize, Duration)>,
+    samples: usize,
+    spent: Duration,
+}
+
+impl Pace {
+    fn behind(&mut self, samples: usize, spent: Duration) -> bool {
+        self.recent.push_back((samples, spent));
+        self.samples += samples;
+        self.spent += spent;
+        let window = (PACE_WINDOW.as_secs_f64() * f64::from(SAMPLE_RATE)) as usize;
+        while self.samples > window {
+            let Some((old_samples, old_spent)) = self.recent.pop_front() else { break };
+            if self.samples - old_samples < window {
+                self.recent.push_front((old_samples, old_spent));
+                break;
+            }
+            self.samples -= old_samples;
+            self.spent = self.spent.saturating_sub(old_spent);
+        }
+        let heard = self.samples as f64 / f64::from(SAMPLE_RATE);
+        self.samples >= window && self.spent.as_secs_f64() > heard * PACE_LIMIT
+    }
+}
+
 /// A spent block goes back to the callback it came from, if that device is
 /// open, to be used again.
 fn give_back(side: &Option<Side>, buffer: Vec<f32>) {
@@ -846,6 +1175,37 @@ fn to_f32(samples: &[i16]) -> Vec<f32> {
 mod tests {
     use super::*;
     use crate::audio::echo::FRAME;
+
+    /// Batches of `ms` of audio, each taking `took` to clean, for `seconds`:
+    /// whether the models were ever judged behind.
+    fn paced(ms: u64, took: Duration, seconds: u64) -> bool {
+        let mut pace = Pace::default();
+        let samples = (SAMPLE_RATE as u64 * ms / 1000) as usize;
+        (0..seconds * 1000 / ms).any(|_| pace.behind(samples, took))
+    }
+
+    #[test]
+    fn models_that_keep_up_are_left_running() {
+        assert!(!paced(30, Duration::from_millis(12), 60));
+    }
+
+    #[test]
+    fn models_slower_than_real_time_are_found_out() {
+        assert!(paced(30, Duration::from_millis(29), 30));
+        assert!(paced(30, Duration::from_millis(40), 30));
+    }
+
+    #[test]
+    fn a_slow_start_is_not_held_against_them() {
+        // Loading's backlog worked off in a burst, then keeping up: never
+        // judged before a whole window has been heard.
+        let mut pace = Pace::default();
+        let batch = (SAMPLE_RATE as usize * 30) / 1000;
+        assert!(!pace.behind(batch, Duration::from_millis(2_000)));
+        for _ in 0..1_000 {
+            assert!(!pace.behind(batch, Duration::from_millis(10)));
+        }
+    }
 
     #[test]
     fn a_device_that_reports_no_latency_gets_the_constant() {
@@ -1050,7 +1410,7 @@ mod tests {
     async fn an_engine_asked_for_no_device_is_refused_without_opening_any() {
         let (sink, _heard) = collecting();
         let options = EngineOptions { microphone: false, speaker: false, echo_cancellation: true };
-        let refused = AudioEngine::start(options, sink).await.err().expect("nothing to open");
+        let refused = AudioEngine::start(options, None, sink).await.err().expect("nothing to open");
         assert!(refused.0.contains("no audio device"), "{refused}");
     }
 
@@ -1068,7 +1428,7 @@ mod tests {
             let _ = tx.send(event);
         });
         let options = EngineOptions { microphone: true, speaker: true, echo_cancellation: true };
-        let engine = AudioEngine::start(options, sink).await.expect("the devices open");
+        let engine = AudioEngine::start(options, None, sink).await.expect("the devices open");
         let tone = |seconds: f32| -> Vec<i16> {
             (0..(seconds * 24_000.0) as usize)
                 .map(|i| {

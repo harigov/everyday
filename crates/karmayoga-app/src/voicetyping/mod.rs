@@ -1091,7 +1091,8 @@ async fn hear(
         EngineEvent::Played(_) => {}
     });
     let options = EngineOptions { microphone: true, speaker: false, echo_cancellation: false };
-    let mut engine = match AudioEngine::start(options, sink).await {
+    let cleanup = crate::microphone::cleanup(&state.service()).await;
+    let mut engine = match AudioEngine::start(options, cleanup, sink).await {
         Ok(engine) => Some(engine),
         Err(e) => return Err(e.to_string()),
     };
@@ -1122,8 +1123,11 @@ async fn hear(
             Ok(None) => return Ok(None),
             Err(_) if engine.is_some() => {
                 // The tail is in: close the microphone and hand on whatever
-                // it delivered before it closed.
-                drop(engine.take());
+                // it delivered before it closed -- with the microphone's
+                // models on, once they have handed over all they hold.
+                if let Some(engine) = engine.take() {
+                    engine.finish(crate::audio::engine::FINISH_WITHIN).await;
+                }
                 while let Ok(Msg::Audio(block)) = messages.try_recv() {
                     send_audio(&session, &mut backlog, block);
                 }

@@ -62,6 +62,18 @@ fn missing_voice(voice: &VoiceConfig, voice_installed: bool) -> Option<String> {
     None
 }
 
+/// Where what a [`LiveTranscription`] hears comes from, which decides whether
+/// its voice is checked ([`super::owner`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeardFrom {
+    /// This computer's microphone: checked, when Settings says to.
+    ThisComputer,
+    /// A call that came through a chat: the person's phone, whose microphone
+    /// sounds nothing like the one their voice was recorded on, from a chat
+    /// only they can call from. Never checked.
+    Call,
+}
+
 impl Service {
     /// The chosen speech model, ready to turn utterances into words, told to
     /// expect the words that matter on `occasion` ([`crate::speech::expect`]).
@@ -110,7 +122,9 @@ impl Service {
 
     /// Words from a stream of audio, as they are said: the chosen speech model,
     /// told what to expect on `occasion`, behind a detector that is tuned for
-    /// `tuning`.
+    /// `tuning`. What is heard `from` this computer's microphone is checked
+    /// for the owner's voice when Settings says to and they have recorded it
+    /// ([`super::owner`]).
     ///
     /// Needs the speech kit as well as the recogniser. Starts on the current
     /// Tokio runtime. A recogniser on this computer may still be loading when
@@ -119,12 +133,14 @@ impl Service {
         self: &Arc<Self>,
         tuning: Tuning,
         occasion: Occasion,
+        from: HeardFrom,
     ) -> CommandResult<LiveTranscription> {
         self.require_unlocked()?;
         if let Some(refusal) = missing_kit(crate::local::files::speech_kit_installed()) {
             return Err(CommandError::new(codes::INVALID, refusal));
         }
         let transcriber = self.utterance_transcriber(occasion).await?;
+        let transcriber = self.checked(transcriber, from).await;
         let detector = blocking(move || build_detector(tuning)).await?;
         // Loading a recogniser on this computer takes seconds -- 2.4 on a
         // quiet 12-core desktop, 6.7 on a busy one -- and used to begin with
@@ -134,6 +150,42 @@ impl Service {
         // talking, and the first utterance waits only for what is left.
         transcriber.warm();
         Ok(LiveTranscription::start(detector, transcriber))
+    }
+
+    /// `transcriber`, behind the owner's voice check, when what it hears
+    /// comes `from` this computer and the owner has recorded their voice to
+    /// check against. The check itself reads Settings' switch for every
+    /// utterance, so it is there to be switched on while this listens.
+    #[cfg(feature = "speech")]
+    async fn checked(
+        self: &Arc<Self>,
+        transcriber: Arc<dyn UtteranceTranscriber>,
+        from: HeardFrom,
+    ) -> Arc<dyn UtteranceTranscriber> {
+        if from != HeardFrom::ThisComputer {
+            return transcriber;
+        }
+        match self.owner_voice().await {
+            Ok(Some(voice)) if !voice.centroids.is_empty() => Arc::new(super::owner::OwnerOnly {
+                inner: transcriber,
+                voice: Arc::new(voice),
+                check: self.voice_check(),
+            }),
+            Ok(_) => transcriber,
+            Err(e) => {
+                tracing::debug!(error = %e, "speech: the owner's voice could not be read");
+                transcriber
+            }
+        }
+    }
+
+    #[cfg(not(feature = "speech"))]
+    async fn checked(
+        self: &Arc<Self>,
+        transcriber: Arc<dyn UtteranceTranscriber>,
+        _from: HeardFrom,
+    ) -> Arc<dyn UtteranceTranscriber> {
+        transcriber
     }
 }
 

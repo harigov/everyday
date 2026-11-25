@@ -28,6 +28,8 @@
 //! missing. See `docs/plans/voice.md`.
 
 pub mod access;
+#[cfg(feature = "speech")]
+pub mod cleanup;
 pub mod decode;
 pub mod detect;
 pub mod dictate;
@@ -38,6 +40,7 @@ pub mod live;
 #[cfg(feature = "speech")]
 pub mod local;
 pub mod narrate;
+pub mod owner;
 pub mod pcm;
 pub mod qwen;
 pub mod ready;

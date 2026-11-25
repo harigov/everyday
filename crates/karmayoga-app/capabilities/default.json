@@ -62,6 +62,8 @@
     "allow-talk-toggle",
     "allow-wake-settings",
     "allow-set-wake-settings",
+    "allow-microphone-settings",
+    "allow-set-microphone-settings",
     "allow-panel-state",
     "allow-panel-action",
     "allow-panel-resize",

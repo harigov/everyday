@@ -488,9 +488,25 @@ pub struct Voiceprint {
     pub centroids: Vec<Vec<f32>>,
     /// How many clusters have been folded in.
     pub samples: u32,
+    /// The owner's own voice, kept from the last time they recorded it:
+    /// 16-bit mono PCM at [`SAMPLE_RATE`], little-endian, base64, at most
+    /// [`MAX_VOICE_SAMPLE_SECONDS`]. What taking other voices out of the
+    /// microphone listens for (`karmayoga_service::speech::cleanup`), since
+    /// an embedding is not something that model can be given. Only ever on
+    /// the owner's voiceprint, and gone with it; `None` on one recorded
+    /// before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_sample: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
+
+/// The longest [`Voiceprint::voice_sample`] kept. The model that uses it
+/// picks the loudest three seconds of it, and a sample with pauses in it
+/// can leave it three seconds of the wrong thing: in testing, three seconds
+/// cut from a recording made it keep the background instead, while twelve
+/// to fifteen let it find the person.
+pub const MAX_VOICE_SAMPLE_SECONDS: u32 = 12;
 
 impl Timestamped for Voiceprint {
     fn touch(&mut self) {

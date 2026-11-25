@@ -582,6 +582,7 @@ mod tests {
             model: "test".into(),
             centroids: vec![centroid],
             samples: 1,
+            voice_sample: None,
             created_at: Timestamp::now(),
             updated_at: Timestamp::now(),
         }

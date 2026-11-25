@@ -208,6 +208,8 @@ import type {
   WritingSettings,
   VoiceTypingSettings,
   WakeSettings,
+  MicrophoneSettings,
+  VoiceCheck,
   VoiceTypingKeyMode,
   TalkSettings,
   McpConnection,
@@ -1035,6 +1037,26 @@ export const api = {
     names: string | null = null,
     pauseInCalls: boolean | null = null,
   ) => invoke<WakeSettings>('set_wake_settings', { enabled, names, pauseInCalls }),
+
+  /**
+   * The microphone: hearing only the person's voice, taking other voices out
+   * of it, and the stronger noise filter. Per machine, kept by the shell --
+   * see `crates/karmayoga-app/src/microphone.rs`. `null` leaves a switch as
+   * it is.
+   */
+  microphoneSettings: () => invoke<MicrophoneSettings>('microphone_settings'),
+  setMicrophoneSettings: (
+    onlyMyVoice: boolean | null = null,
+    strictness: VoiceCheck | null = null,
+    isolateVoice: boolean | null = null,
+    strongNoiseFilter: boolean | null = null,
+  ) =>
+    invoke<MicrophoneSettings>('set_microphone_settings', {
+      onlyMyVoice,
+      strictness,
+      isolateVoice,
+      strongNoiseFilter,
+    }),
 
   // ── Meeting capture, in the Tauri shell ────────────────────────────
   //

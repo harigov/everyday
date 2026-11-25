@@ -540,6 +540,7 @@ fn fold_named_voice(
                 model: model.to_string(),
                 centroids: vec![centroid.to_vec()],
                 samples: 1,
+                voice_sample: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -719,6 +720,10 @@ async fn enrol_voice(
     let samples: Vec<i16> =
         bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
 
+    // Kept with the voiceprint, for taking other voices out of the
+    // microphone: see `speech::owner`.
+    let voice_sample =
+        crate::speech::owner::encode_sample(crate::speech::owner::best_stretch(&samples));
     let kit = speech::speech_kit_async().await?;
     let embedding = blocking({
         let kit = kit.clone();
@@ -739,6 +744,8 @@ async fn enrol_voice(
         let vp = match existing {
             Some(mut vp) => {
                 identify::fold_into(&mut vp, &embedding, Params::default());
+                // The latest recording's, on whatever microphone it was made.
+                vp.voice_sample = Some(voice_sample);
                 vp
             }
             None => Voiceprint {
@@ -749,6 +756,7 @@ async fn enrol_voice(
                 model,
                 centroids: vec![embedding],
                 samples: 1,
+                voice_sample: Some(voice_sample),
                 created_at: now,
                 updated_at: now,
             },
@@ -1026,6 +1034,7 @@ mod tests {
             model: "test-model".into(),
             centroids: vec![vec![1.0, 0.0]],
             samples: 1,
+            voice_sample: None,
             created_at: now,
             updated_at: now,
         }

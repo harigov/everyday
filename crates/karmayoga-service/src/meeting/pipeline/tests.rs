@@ -234,6 +234,7 @@ fn voiceprint(name: &str, email: Option<&str>, model: &str) -> Voiceprint {
         model: model.to_string(),
         centroids: vec![vec![1.0, 0.0]],
         samples: 1,
+        voice_sample: None,
         created_at: Timestamp::now(),
         updated_at: Timestamp::now(),
     }

@@ -608,6 +608,7 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
         model: "fixture-embedding-model".into(),
         centroids: vec![vec![0.1, 0.2, 0.3]],
         samples: 1,
+        voice_sample: None,
         created_at: clock.next(),
         updated_at: clock.next(),
     };

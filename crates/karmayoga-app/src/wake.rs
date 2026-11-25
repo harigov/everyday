@@ -89,9 +89,11 @@ fn names_in(names: &str) -> Vec<String> {
 /// the microphone shares it with this before this lets go.
 const LOOK_EVERY: Duration = Duration::from_millis(500);
 
-/// How often, while it listens for the assistant's own name, that name is
-/// looked at again: renamed in Settings → Assistant, it answers to the new one
-/// within this.
+/// How often, while it listens, what it listens with is looked at again: the
+/// assistant's own name, renamed in Settings → Assistant, and the
+/// microphone's filters, whose models may have finished downloading
+/// ([`crate::microphone::filters`]). Either changed, it opens again with the
+/// new within this.
 const NAME_CHECK: Duration = Duration::from_secs(15);
 
 /// How long after the listening could not be started -- no speech model, the
@@ -229,6 +231,19 @@ fn stop(listener: &mut Listener) {
     listener.hearing = false;
 }
 
+/// Open the microphone again, with what has changed about it since --
+/// Settings' filters ([`crate::microphone`]) -- if it is listening; and try
+/// again now if it could not.
+pub fn relisten(app: &AppHandle) {
+    {
+        let mut listener = listener();
+        stop(&mut listener);
+        listener.problem = None;
+        listener.retry_at = None;
+    }
+    look(app);
+}
+
 /// Could not listen: say why, and try again later.
 fn refused(why: String) {
     tracing::info!(problem = %why, "wake word: not listening");
@@ -269,7 +284,9 @@ async fn listen(app: AppHandle, config: Config) {
         EngineEvent::Played(_) => {}
     });
     let options = EngineOptions { microphone: true, speaker: false, echo_cancellation: false };
-    let engine = match AudioEngine::start(options, sink).await {
+    let filters = crate::microphone::filters();
+    let cleanup = crate::microphone::cleanup(&service).await;
+    let engine = match AudioEngine::start(options, cleanup, sink).await {
         Ok(engine) => engine,
         Err(e) => return refused(e.to_string()),
     };
@@ -294,9 +311,11 @@ async fn listen(app: AppHandle, config: Config) {
                 crate::talk::wake(&app, rest);
                 return;
             }
-            _ = name_check.tick(), if own_name => {
-                // Renamed: [`look`] starts it again, listening for the new one.
-                if names_in(&assistant_name(&service).await) != names {
+            _ = name_check.tick() => {
+                // Renamed, or a filter now there or gone: [`look`] starts it
+                // again, with the new.
+                let renamed = own_name && names_in(&assistant_name(&service).await) != names;
+                if renamed || crate::microphone::filters() != filters {
                     drop(engine);
                     listener().hearing = false;
                     return;

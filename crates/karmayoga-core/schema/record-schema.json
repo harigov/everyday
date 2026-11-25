@@ -16906,6 +16906,13 @@
       "updatedAt": {
         "format": "date-time",
         "type": "string"
+      },
+      "voiceSample": {
+        "description": "The owner's own voice, kept from the last time they recorded it:\n16-bit mono PCM at [`SAMPLE_RATE`], little-endian, base64, at most\n[`MAX_VOICE_SAMPLE_SECONDS`]. What taking other voices out of the\nmicrophone listens for (`karmayoga_service::speech::cleanup`), since\nan embedding is not something that model can be given. Only ever on\nthe owner's voiceprint, and gone with it; `None` on one recorded\nbefore it was kept.",
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
     "required": [

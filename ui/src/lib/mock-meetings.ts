@@ -247,6 +247,27 @@ const speechModels: (LocalModelInfo & { installed: boolean })[] = [
     error: null,
   },
   {
+    id: 'voiceIsolation',
+    name: 'Voice isolation (VoxLock)',
+    description: 'Keeps your voice in the microphone and takes out other people talking over you.',
+    languages: 'Any',
+    bytes: 72_508_647,
+    installed: false,
+    progress: null,
+    error: null,
+  },
+  {
+    id: 'noiseFilter',
+    name: 'Noise filter (DPDFNet)',
+    description:
+      'Takes noise that comes and goes out of the microphone: a fan, dishes, a keyboard.',
+    languages: 'Any',
+    bytes: 10_249_356,
+    installed: false,
+    progress: null,
+    error: null,
+  },
+  {
     id: 'whisperTurbo',
     name: 'Whisper large-v3 turbo',
     description: 'Any language, slower',
@@ -387,6 +408,7 @@ let voiceprints: VoiceprintInfo[] = [
     isOwner: true,
     model: 'v1',
     samples: 4,
+    hasSample: false,
     createdAt: minutesAgo(60 * 24 * 20),
     updatedAt: minutesAgo(60 * 24 * 2),
   },
@@ -397,6 +419,7 @@ let voiceprints: VoiceprintInfo[] = [
     isOwner: false,
     model: 'v1',
     samples: 2,
+    hasSample: false,
     createdAt: minutesAgo(60 * 24 * 10),
     updatedAt: minutesAgo(60 * 24 * 10),
   },
@@ -414,11 +437,42 @@ export function mockDeleteAllVoiceprints(): void {
   voiceprints = []
 }
 
+// ── The microphone (the shell's, per machine) ──────────────────────────
+
+let microphone = {
+  onlyMyVoice: false,
+  strictness: 'balanced' as 'lenient' | 'balanced' | 'strict',
+  isolateVoice: false,
+  strongNoiseFilter: false,
+}
+
+export function mockMicrophoneSettings() {
+  const owner = voiceprints.find((v) => v.isOwner)
+  return {
+    ...microphone,
+    voiceRecorded: !!owner,
+    voiceSample: !!owner?.hasSample,
+    problem: null,
+  }
+}
+
+export function mockSetMicrophoneSettings(args: Record<string, unknown>) {
+  const pick = <T>(v: unknown, was: T): T => (v === null || v === undefined ? was : (v as T))
+  microphone = {
+    onlyMyVoice: pick(args.onlyMyVoice, microphone.onlyMyVoice),
+    strictness: pick(args.strictness, microphone.strictness),
+    isolateVoice: pick(args.isolateVoice, microphone.isolateVoice),
+    strongNoiseFilter: pick(args.strongNoiseFilter, microphone.strongNoiseFilter),
+  }
+  return mockMicrophoneSettings()
+}
+
 export async function mockEnrolVoice(): Promise<VoiceprintInfo> {
   await new Promise((r) => setTimeout(r, 300))
   const existing = voiceprints.find((v) => v.isOwner)
   if (existing) {
     existing.samples += 1
+    existing.hasSample = true
     existing.updatedAt = new Date().toISOString()
     return existing
   }
@@ -428,6 +482,7 @@ export async function mockEnrolVoice(): Promise<VoiceprintInfo> {
     isOwner: true,
     model: 'v1',
     samples: 1,
+    hasSample: true,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }

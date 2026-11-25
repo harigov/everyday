@@ -64,11 +64,21 @@ pub struct Canceller {
 
 impl Canceller {
     pub fn new(cleaning: Cleaning) -> Self {
+        Self::with_noise_suppression(cleaning, true)
+    }
+
+    /// [`Canceller::new`], with its noise suppression left out when
+    /// `suppress_noise` is false: for a microphone whose noise a stronger
+    /// filter takes out after this one (`karmayoga_service::speech::cleanup`),
+    /// which would otherwise be handed audio already thinned by this one and
+    /// thin it again.
+    pub fn with_noise_suppression(cleaning: Cleaning, suppress_noise: bool) -> Self {
+        let noise_suppression = suppress_noise.then(NoiseSuppression::default);
         let config = match cleaning {
             Cleaning::Echo => Config {
                 high_pass_filter: Some(HighPassFilter::default()),
                 echo_canceller: Some(EchoCanceller::default()),
-                noise_suppression: Some(NoiseSuppression::default()),
+                noise_suppression,
                 gain_controller2: Some(GainController2 {
                     // Off by default in the library, which is the part of this
                     // controller that does anything.
@@ -79,7 +89,7 @@ impl Canceller {
             },
             Cleaning::Noise => Config {
                 high_pass_filter: Some(HighPassFilter::default()),
-                noise_suppression: Some(NoiseSuppression::default()),
+                noise_suppression,
                 ..Default::default()
             },
         };
