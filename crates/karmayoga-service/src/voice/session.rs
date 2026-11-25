@@ -94,6 +94,15 @@ use tokio::time::Instant;
 /// synthesised before the person has had the chance to say stop.
 const MAX_AHEAD: usize = 2;
 
+/// How much later than its first sentence alone would have the start of a
+/// reply, or of something read aloud, may be said, to take its second
+/// sentence with it: a voice handed two at once carries the first on into the
+/// second rather than starting each afresh ([`Narrator::waiting`]). Waiting
+/// for the second sentence to be written and the time to make it both count,
+/// so a slow voice takes none of it, and the end of the reply, a tool call or
+/// a second sentence that would not fit ends the wait at once.
+const FIRST_WAIT: Duration = Duration::from_millis(500);
+
 /// How far back what was said counts as something that might be coming back
 /// through the microphone.
 const ECHO_WINDOW: Duration = Duration::from_secs(30);
@@ -180,8 +189,9 @@ const AGAIN_AFTER: Duration = Duration::from_secs(5);
 /// working sound alone.
 const MAX_PHRASES: u8 = 3;
 
-/// When a session says something of its own while the assistant works: the
-/// constants above, except in tests, most of which want none of it.
+/// When a session says something of its own while the assistant works, and
+/// how long a reply's first words may wait for more: the constants above,
+/// except in tests, most of which want none of it.
 #[derive(Debug, Clone, Copy)]
 struct Pacing {
     /// [`FILLER_AFTER`]. `None` says nothing before there is something to
@@ -189,11 +199,13 @@ struct Pacing {
     filler_after: Option<Duration>,
     /// [`AGAIN_AFTER`].
     again_after: Duration,
+    /// [`FIRST_WAIT`].
+    first_wait: Duration,
 }
 
 impl Default for Pacing {
     fn default() -> Self {
-        Self { filler_after: Some(FILLER_AFTER), again_after: AGAIN_AFTER }
+        Self { filler_after: Some(FILLER_AFTER), again_after: AGAIN_AFTER, first_wait: FIRST_WAIT }
     }
 }
 
@@ -225,7 +237,8 @@ fn spawn_with(parts: VoiceParts, pacing: Pacing) -> VoiceLink {
             let _ = finished.send(Internal::Synthesised(done));
         }),
     )
-    .joining(|a, b| a == b && matches!(a, Kind::Reply | Kind::Reading));
+    .joining(|a, b| a == b && matches!(a, Kind::Reply | Kind::Reading))
+    .waiting(pacing.first_wait);
     let mut phrasebook = Phrasebook::default();
     // What a slow turn begins with, ready before the first one.
     let to_rehearse = match pacing.filler_after {
@@ -534,6 +547,8 @@ enum Wake {
     Update,
     /// [`Session::filler_at`] came.
     Filler,
+    /// The narrator's first clip has waited long enough for a second sentence.
+    Narrate,
 }
 
 struct Session {
@@ -637,6 +652,7 @@ async fn run(
         let goodbye_at = s.goodbye_at;
         let update_at = s.update_at;
         let filler_at = s.filler_at();
+        let narrate_at = s.narrator.wake_at();
         let wake = tokio::select! {
             // Stop is read before anything else, and what was heard last: it
             // is of no use until what is already known is settled.
@@ -648,6 +664,7 @@ async fn run(
             () = wait_until(goodbye_at) => Wake::Goodbye,
             () = wait_until(update_at) => Wake::Update,
             () = wait_until(filler_at) => Wake::Filler,
+            () = wait_until(narrate_at) => Wake::Narrate,
         };
         match wake {
             // 9. A closed input is a Stop, and so is a transport that has
@@ -670,6 +687,7 @@ async fn run(
             Wake::Update => {}
             // 6. A turn has gone a while with nothing to say.
             Wake::Filler => s.think_aloud(),
+            Wake::Narrate => s.narrator.wake(),
         }
         // 13. News from background work, said now if this is a gap in which to
         // say it. Before `sync`, which tells the interface what it started.
@@ -888,6 +906,7 @@ impl Session {
                 // the words say whether they are.
                 if self.audio_outstanding() && !self.paused {
                     self.paused = true;
+                    self.narrator.pause();
                     self.send(VoiceOutput::Pause);
                 }
             }
@@ -1156,6 +1175,8 @@ impl Session {
         let Some(t) = self.turn.as_mut().filter(|t| t.id == turn) else { return };
         t.done = true;
         let cancelling = t.cancelling;
+        // Whatever the turn said is all it will say.
+        self.narrator.flush();
         let failed_already = t.failed;
         self.confirm = None;
         // 10. A turn talked over is not a goodbye that was heard.
@@ -1570,6 +1591,7 @@ impl Session {
                 if let Some(tail) = tail {
                     self.enqueue_reply(tail);
                 }
+                self.narrator.flush();
                 self.heard_whole();
             }
             AgentEvent::Failed { message } => {
@@ -1635,6 +1657,9 @@ impl Session {
         if let Some(tail) = t.splitter.finish() {
             self.enqueue_reply(tail);
         }
+        // Nor does it wait for more to be said with it: nothing comes until
+        // the tool is done.
+        self.narrator.flush();
     }
 
     /// (6) A tool is about to run. Ending the conversation takes no time, and
@@ -1849,6 +1874,7 @@ impl Session {
                 // this must not start over them.
                 if self.speaking && !self.paused {
                     self.paused = true;
+                    self.narrator.pause();
                     self.send(VoiceOutput::Pause);
                 }
             }
@@ -2022,6 +2048,9 @@ impl Session {
             }
             self.enqueue(text, Kind::Reading);
         }
+        if self.reading.as_ref().is_some_and(|r| r.ended) {
+            self.narrator.flush();
+        }
         if let Some(message) = failed {
             let any = self.reading.as_ref().is_some_and(|r| r.read_any);
             self.trouble(message);
@@ -2069,6 +2098,7 @@ impl Session {
     fn resume_if_paused(&mut self) {
         if self.paused && !self.speaking {
             self.paused = false;
+            self.narrator.resume();
             self.send(VoiceOutput::Resume);
         }
     }
@@ -2116,7 +2146,8 @@ mod tests {
         }
     }
 
-    /// Says everything, and remembers what it was asked to.
+    /// Says everything, at once, as long as a person would take to say it,
+    /// and remembers what it was asked to.
     struct FakeSynthesiser {
         asked: Arc<Mutex<Vec<String>>>,
         /// Every sentence fails, as with a voice whose key is wrong.
@@ -2131,7 +2162,9 @@ mod tests {
                 if fails {
                     return Err(CommandError::new(codes::INVALID, "the voice is unavailable"));
                 }
-                Ok(Speech { samples: vec![5; 8], sample_rate: 16_000 })
+                // Fifteen characters a second, at a thousand samples a second.
+                let samples = vec![5; text.chars().count() * 1000 / 15 + 1];
+                Ok(Speech { samples, sample_rate: 1000 })
             })
         }
     }
@@ -2391,7 +2424,8 @@ mod tests {
     /// What most tests run with: nothing said before there is something to
     /// say, and the working sound from the start, as before there were
     /// fillers. A tool phrase still comes, once in a turn this quick.
-    const QUIET: Pacing = Pacing { filler_after: None, again_after: AGAIN_AFTER };
+    const QUIET: Pacing =
+        Pacing { filler_after: None, again_after: AGAIN_AFTER, first_wait: Duration::ZERO };
 
     impl Rig {
         /// A session whose assistant plays `scripts` in turn and whose
@@ -3221,8 +3255,11 @@ mod tests {
     }
 
     /// Fillers soon, and another phrase as soon as the last has played.
-    const EAGER: Pacing =
-        Pacing { filler_after: Some(Duration::from_millis(50)), again_after: Duration::ZERO };
+    const EAGER: Pacing = Pacing {
+        filler_after: Some(Duration::from_millis(50)),
+        again_after: Duration::ZERO,
+        ..QUIET
+    };
 
     #[tokio::test]
     async fn a_turn_slow_to_say_anything_thinks_aloud_before_the_working_sound() {
@@ -3249,8 +3286,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_quick_reply_comes_with_nothing_in_front_of_it() {
-        let slow_filler =
-            Pacing { filler_after: Some(Duration::from_secs(30)), again_after: AGAIN_AFTER };
+        let slow_filler = Pacing { filler_after: Some(Duration::from_secs(30)), ..QUIET };
         let mut rig = Rig::start_paced(
             vec![short_reply("m1", &format!("{FIRST} {SECOND}"))],
             &["what is the weather"],
@@ -3288,6 +3324,90 @@ mod tests {
         assert_eq!(rig.said(), ["Let me check your calendar.", "You're free at three."]);
     }
 
+    /// No filler, and as long as a test could want for a reply's first words
+    /// to wait for its second sentence.
+    const WAITING: Pacing = Pacing { first_wait: Duration::from_secs(60), ..QUIET };
+
+    #[tokio::test]
+    async fn a_reply_s_first_sentence_waits_for_its_second_to_be_said_with_it() {
+        let script = Script {
+            events: vec![
+                started("m1"),
+                delta(&format!("{FIRST} Tomor")),
+                delta("row it will rain heavily for most of the afternoon. And on"),
+            ],
+            hang: true,
+            finish: Some("m1"),
+            error: None,
+        };
+        let mut rig = Rig::start_paced(vec![script], &["what is the weather"], WAITING).await;
+        *rig.record.between.lock().unwrap() = Some(Duration::from_millis(100));
+        rig.talk();
+        rig.next_play().await;
+        // The first was whole a tenth of a second before the second: it
+        // waited, and the two were made as one.
+        assert_eq!(rig.said(), [format!("{FIRST} {SECOND}")]);
+        rig.record.release.notify_one();
+        rig.play_out().await;
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_has_ended_or_called_a_tool_does_not_wait() {
+        // Each would wait a minute for a second sentence that never comes.
+        let ended = short_reply("m1", FIRST);
+        let tool = Script {
+            events: vec![
+                started("m2"),
+                delta("Let me check your calendar."),
+                preparing("c1", "list_events"),
+            ],
+            hang: true,
+            finish: Some("m2"),
+            error: None,
+        };
+        let mut rig =
+            Rig::start_paced(vec![ended, tool], &["what is the weather", "am I free"], WAITING)
+                .await;
+        rig.talk();
+        rig.play_out().await;
+        assert_eq!(rig.said(), [FIRST]);
+
+        rig.talk();
+        let checking = rig.next_play().await;
+        assert_eq!(rig.said()[1], "Let me check your calendar.");
+        rig.send(VoiceInput::Played { utterance: checking });
+        rig.record.release.notify_one();
+        rig.play_out().await;
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_stops_short_and_what_is_read_aloud_do_not_wait_at_their_end() {
+        // A turn that ends with no end to its reply, after one whole sentence;
+        // then one that has a story read, whose one sentence is all it has.
+        let short = Script {
+            events: vec![started("m1"), delta(&format!("{FIRST} And on"))],
+            hang: false,
+            finish: None,
+            error: None,
+        };
+        let mut rig = Rig::start_paced(
+            vec![short, short_reply("m2", "Here is the Morning Brew.")],
+            &["what is the weather", "read it to me"],
+            WAITING,
+        )
+        .await;
+        rig.talk();
+        rig.play_out().await;
+        assert_eq!(rig.said(), [FIRST]);
+
+        *rig.record.read_aloud.lock().unwrap() =
+            vec![ReadAloud::Story(karmayoga_core::StoryId::new())];
+        rig.record.reading.lock().unwrap().push_back(Ok(vec![piece("Markets rose today.", 0)]));
+        rig.talk();
+        rig.play_out().await;
+        assert_eq!(rig.said()[1..], ["Here is the Morning Brew.", "Markets rose today."]);
+    }
+
     #[tokio::test]
     async fn each_tool_after_a_wait_has_its_own_words_up_to_a_few() {
         let script = Script {
@@ -3304,7 +3424,7 @@ mod tests {
             error: None,
         };
         // No filler, which would be one of the few.
-        let pacing = Pacing { filler_after: None, again_after: Duration::ZERO };
+        let pacing = Pacing { again_after: Duration::ZERO, ..QUIET };
         let mut rig = Rig::start_paced(vec![script], &["get me ready for tomorrow"], pacing).await;
         *rig.record.between.lock().unwrap() = Some(Duration::from_millis(150));
         rig.talk();
@@ -3320,8 +3440,11 @@ mod tests {
     async fn a_conversation_being_ended_does_not_think_aloud_before_its_goodbye() {
         // The goodbye is written slower than the filler would come, and the
         // tool that ends the conversation is called before it would.
-        let pacing =
-            Pacing { filler_after: Some(Duration::from_millis(300)), again_after: Duration::ZERO };
+        let pacing = Pacing {
+            filler_after: Some(Duration::from_millis(300)),
+            again_after: Duration::ZERO,
+            ..QUIET
+        };
         let mut rig =
             Rig::start_paced(vec![goodbye("m1", "Talk soon.")], &["that's it"], pacing).await;
         *rig.record.between.lock().unwrap() = Some(Duration::from_millis(200));
