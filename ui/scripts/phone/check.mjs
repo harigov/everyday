@@ -112,6 +112,13 @@ async function startVite() {
   throw new Error(`vite did not start:\n${log}`)
 }
 
+/** Console errors that are this harness's own doing, not the page's.
+ *  Playwright's stopped clock (`context.clock`) injects a script into every
+ *  frame, and a mail body or a feed story is a sandboxed frame that runs no
+ *  script, so it refuses it; WebKit warns, at error level, about a viewport
+ *  key it does not know if one is ever added back (`interactive-widget`). */
+const NOT_THE_PAGES = ["Blocked script execution in 'about:srcdoc'", 'interactive-widget']
+
 /** Open the interface on `section` as the phone shell would show it, and
  *  unlock the mock vault. */
 export async function openApp(page, url, section) {
@@ -312,11 +319,7 @@ async function main() {
               const errors = []
               page.on('pageerror', (e) => errors.push(`exception: ${e.message}`))
               page.on('console', (m) => {
-                // WebKit logs its own warning, at error level, for the viewport
-                // meta's `interactive-widget` key (index.html): it is Chromium's
-                // way to resize for the keyboard and WebKit ignores it, which
-                // is the point. Not the page's error, and on every screen.
-                if (m.type() === 'error' && !m.text().includes('interactive-widget'))
+                if (m.type() === 'error' && !NOT_THE_PAGES.some((n) => m.text().includes(n)))
                   errors.push(`console: ${m.text().slice(0, 300)}`)
               })
               let found

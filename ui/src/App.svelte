@@ -660,6 +660,11 @@
       scale var(--fast) var(--ease),
       box-shadow var(--fast) var(--ease);
   }
+  /* With the keyboard up the room above it is for what is being typed, and
+     the corner is where an editor's last line and its tools are. */
+  :global(:root[data-keyboard]) .float {
+    display: none;
+  }
   /* Above a phone's bottom bar, in the thumb's corner of the app. */
   :global([data-phone]) .float {
     right: calc(var(--sp-4) + var(--safe-right));

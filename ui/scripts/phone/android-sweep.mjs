@@ -50,7 +50,7 @@ const FIRST_ITEM = {
   journal: ['.entries [role=option]', '[role=option]'],
   notes: ['[data-note]', '.notes-home [role=option]', '.note-row', '[role=option]'],
   todo: ['.task-row .title', '[data-task]', '.task-row'],
-  calendar: ['.agenda .row', '.block'],
+  calendar: ['.agenda button.row.event', '.agenda button.row', '.block'],
   assistant: ['.thread-row', '.conversations button.row', '[data-conversation]'],
 }
 
@@ -198,12 +198,17 @@ for (const [section, label] of APPS) {
         continue
       await touch(page, selector)
       await wait(1500)
-      await screen(`${section}--item`)
       const opened = await page
         .locator('.phone-back')
         .first()
         .isVisible()
         .catch(() => false)
+      if (!opened) {
+        // Back now would be back out of the app: say so, rather than test it.
+        console.log(`       ${section}: tapping ${selector} opened nothing`)
+        break
+      }
+      await screen(`${section}--item`)
       back()
       await wait(1200)
       const closed = !(await page

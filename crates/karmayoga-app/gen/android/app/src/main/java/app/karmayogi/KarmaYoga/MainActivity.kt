@@ -118,6 +118,19 @@ class MainActivity : TauriActivity() {
     webView?.let { view -> view.post { view.evaluateJavascript(event, null) } }
   }
 
+  /**
+   * Back with nothing left to go back to in the page -- every layer closed
+   * (`ui/src/lib/phone.svelte.ts`) -- leaves the app the way Android's own
+   * apps leave: to the background, with the process and its connection to
+   * the computer kept. Finishing the activity instead tore the process down
+   * under the threads still using it (a FORTIFY abort on a destroyed mutex),
+   * and coming back meant starting and reconnecting from nothing.
+   */
+  @Deprecated("Tauri's activity routes back through this when the page has no history left.")
+  override fun onBackPressed() {
+    moveTaskToBack(true)
+  }
+
   private companion object {
     const val MICROPHONE = 4710
   }
