@@ -176,13 +176,15 @@ class Back {
   #closed(id: number) {
     const at = this.#layers.findIndex((l) => l.id === id)
     if (at < 0) return
-    // Whatever was opened over it goes with it: a sheet over an item closed
-    // by its list closing is not left behind on the history.
-    const gone = this.#layers.splice(at)
-    const entries = gone.filter((l) => l.pushed).length
-    if (entries === 0) return
+    // Only this layer: one opened over it that closes with it -- a sheet in
+    // an item put away -- says so itself as its component goes, and one that
+    // stays -- a dialog opened from the drawer as the drawer slides away --
+    // keeps its entry, so the next back closes it rather than the app. The
+    // entries are alike, so taking any one off the end is taking this one.
+    const [layer] = this.#layers.splice(at, 1)
+    if (!layer.pushed) return
     this.#quiet++
-    history.go(-entries)
+    history.go(-1)
     // A traversal that cannot happen -- already at the first entry -- never
     // says so; the layers waiting on it are not left waiting for ever.
     clearTimeout(this.#timer)
