@@ -31,11 +31,15 @@ const STDERR_KEPT: usize = 64 * 1024;
 /// Make the scratch directory readable by this user alone. The picture is
 /// written inside it, and the temp directory is shared with every other user
 /// of the computer, so the default permissions would let one of them read it.
+///
+/// Created fresh, never adopted: a directory that already exists under this
+/// name -- which another user could have made, with any mode -- is an error
+/// rather than a place to write. The name is unique to this run.
 fn create_private_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path)
+        std::fs::DirBuilder::new().mode(0o700).create(path)
     }
     #[cfg(not(unix))]
     {

@@ -137,9 +137,9 @@ use tauri::{Emitter, Manager, WindowEvent};
 #[cfg(desktop)]
 use tray::Tray;
 
-/// The main window's label, from `tauri.conf.json`. The phone shell keeps its own
-/// (`mobile::MAIN`), which this one would only be dead code beside.
-#[cfg(desktop)]
+/// The main window's label, from `tauri.conf.json`: the desktop's main window
+/// and the phone's one window alike (`windows::MAIN`, `mobile::MAIN`), so the
+/// interface and `capabilities/` need not tell them apart.
 pub(crate) const MAIN_WINDOW: &str = "main";
 
 /// Asks the interface to write pending edits and then close the window.

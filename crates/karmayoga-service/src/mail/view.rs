@@ -1359,7 +1359,7 @@ mod tests {
         }
     }
 
-    /// Finding 9's `mailview.rs` half: an IPv6 literal host arrives from
+    /// Finding 9's `mail/view.rs` half: an IPv6 literal host arrives from
     /// `Url::host_str` with its brackets still on (`"[::1]"`), and without
     /// stripping them `lookup_host` cannot resolve it at all -- this would
     /// have failed with a `NETWORK` error ("could not be resolved") every

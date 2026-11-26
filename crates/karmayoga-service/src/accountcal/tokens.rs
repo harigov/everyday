@@ -206,6 +206,7 @@ async fn access_token(
     // both.
     let pending_key = account_id.to_string();
     let refresh_token = refresh_token_to_present(&cache, &pending_key, stored_refresh_token);
+    let presented = refresh_token.clone();
 
     let oauth = OAuthClient {
         client_id,
@@ -284,10 +285,10 @@ async fn access_token(
                         )
                         .await
                     }
-                    None => write().await.is_ok(),
+                    None => write().await,
                 };
-                if !saved {
-                    tracing::warn!(%account_id, "could not save a refreshed calendar token");
+                if let Err(e) = saved {
+                    tracing::warn!(%account_id, error = %e, "could not save a refreshed calendar token");
                 }
             }
             Ok(tokens)
@@ -298,6 +299,12 @@ async fn access_token(
         Ok(access_token) => Ok(access_token),
         Err(OAuthError::InvalidGrant { description }) => {
             cache.forget(&key).await;
+            // The provider refused the token presented. When that was a
+            // pending rotation, it is dead: presenting it again -- even
+            // after the person signs in afresh -- would only be refused
+            // again. `forget` clears pending tokens under `key`, which for
+            // Graph is not the plain account id they are kept under.
+            cache.clear_pending_refresh_token_if(&account_id.to_string(), &presented);
             mark_needs_sign_in(vault, account_id, &description, svc.now()).await;
             Err(CommandError::new(
                 codes::FORBIDDEN,

@@ -29,7 +29,7 @@ use crate::{commands, events, navigation, notice, protocol, voice};
 
 /// The one window's label: the desktop's main window's, so the interface and
 /// `capabilities/` need not tell them apart.
-pub const MAIN: &str = "main";
+pub(crate) use crate::MAIN_WINDOW as MAIN;
 
 pub fn run() {
     tauri::Builder::default()

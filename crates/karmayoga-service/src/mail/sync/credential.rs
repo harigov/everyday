@@ -185,7 +185,12 @@ pub(crate) fn rotation_owed(
     rotated: Option<String>,
     presented: &str,
 ) -> Option<String> {
-    rotated.or_else(|| cache.pending_refresh_token(account_key).map(|_| presented.to_string()))
+    rotated.or_else(|| {
+        cache
+            .pending_refresh_token(account_key)
+            .filter(|owed| owed == presented)
+            .map(|_| presented.to_string())
+    })
 }
 
 /// Save a rotated refresh token, tolerating the vault write failing --
@@ -225,7 +230,7 @@ async fn persist_rotated_refresh_token_resilient(
     )
     .await;
 
-    if !saved {
+    if saved.is_err() {
         // No token in this line, per house style -- the point of keeping it
         // in `TokenCache` at all is that this failure is not the last word.
         tracing::warn!(
@@ -248,23 +253,25 @@ pub(crate) async fn persist_with_retry_and_pending_cache<F, Fut>(
     key: &str,
     value: String,
     mut persist: F,
-) -> bool
+) -> CommandResult<()>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = CommandResult<()>>,
 {
-    cache.set_pending_refresh_token(key, value);
-    let mut saved = false;
+    cache.set_pending_refresh_token(key, value.clone());
+    let mut outcome = Ok(());
     for _attempt in 0..2 {
-        if persist().await.is_ok() {
-            saved = true;
+        outcome = persist().await;
+        if outcome.is_ok() {
             break;
         }
     }
-    if saved {
-        cache.clear_pending_refresh_token(key);
+    if outcome.is_ok() {
+        // Only if it is still this value: another refresh may have recorded
+        // a newer rotation while this one was saving.
+        cache.clear_pending_refresh_token_if(key, &value);
     }
-    saved
+    outcome
 }
 
 fn persist_rotated_refresh_token(
@@ -372,7 +379,7 @@ mod tests {
         })
         .await;
 
-        assert!(saved, "the immediate retry must have saved it");
+        assert!(saved.is_ok(), "the immediate retry must have saved it");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(
             cache.pending_refresh_token("acct-1"),
@@ -396,7 +403,7 @@ mod tests {
         })
         .await;
 
-        assert!(!saved);
+        assert!(saved.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 2, "retried exactly once, not looped forever");
         assert_eq!(
             cache.pending_refresh_token("acct-1"),
@@ -416,7 +423,7 @@ mod tests {
             })
             .await;
 
-        assert!(!saved);
+        assert!(saved.is_err());
         assert_eq!(
             cache.pending_refresh_token("acct-1"),
             Some("rt-second".to_string()),
@@ -451,5 +458,26 @@ mod tests {
             Some("rt-used".to_string()),
             "the token that worked is still unsaved, so it is still owed"
         );
+        cache.set_pending_refresh_token("acct-1", "rt-newer".into());
+        assert_eq!(
+            rotation_owed(&cache, "acct-1", None, "rt-used"),
+            None,
+            "a rotation another refresh recorded meanwhile is not this one's to overwrite"
+        );
+    }
+
+    /// The calendar's Graph refresh and mail's run under different cache
+    /// keys, so one can finish saving an older token after the other has
+    /// recorded a newer rotation. The save must not clear the newer one.
+    #[tokio::test]
+    async fn a_save_does_not_clear_a_newer_rotation_recorded_meanwhile() {
+        let cache = TokenCache::new();
+        let saved = persist_with_retry_and_pending_cache(&cache, "acct-1", "rt-old".into(), || {
+            cache.set_pending_refresh_token("acct-1", "rt-newer".into());
+            async { Ok(()) }
+        })
+        .await;
+        assert!(saved.is_ok());
+        assert_eq!(cache.pending_refresh_token("acct-1"), Some("rt-newer".to_string()));
     }
 }

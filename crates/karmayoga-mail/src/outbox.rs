@@ -69,7 +69,7 @@ pub struct Located {
 /// Everything [`execute`] needs to know that is not "how do I speak IMAP" —
 /// the caller's own bookkeeping, handed in as a trait so a test can fake it
 /// and so this crate never has to import a vault to run. One implementation,
-/// `crates/karmayoga-service/src/outbox.rs`'s, backs it with a real
+/// `crates/karmayoga-service/src/mail/outbox.rs`'s, backs it with a real
 /// [`karmayoga_core::Vault`]; this crate only ever sees the trait.
 pub trait Lookups {
     /// Every `(mailbox, uid)` any message of `thread` is currently filed
@@ -772,7 +772,7 @@ fn address(a: &CoreAddress) -> compose::Address {
 /// `InFlight`) reads the same field back and reuses it rather than minting
 /// another, which is what lets recovery ask the server "did the id I would
 /// send with already arrive?" and get an answer that actually means
-/// something -- see `crates/karmayoga-service/src/outbox.rs`'s recovery
+/// something -- see `crates/karmayoga-service/src/mail/outbox.rs`'s recovery
 /// path, the one caller that reads this back.
 ///
 /// # Once `ctx.sender.send` returns `Ok`, this can no longer fail
@@ -802,7 +802,7 @@ fn address(a: &CoreAddress) -> compose::Address {
 /// minting one, which only happens right before this function's own call to
 /// `ctx.sender.send` -- asks the server first, through
 /// [`already_delivered`], the same question
-/// `crates/karmayoga-service/src/outbox.rs`'s crash-recovery path already
+/// `crates/karmayoga-service/src/mail/outbox.rs`'s crash-recovery path already
 /// asks for the same reason. A message a server that does not save its own
 /// Sent copy (see [`crate::smtp::needs_sent_append`]) has not yet had this
 /// crate's own `AppendDraft`-equivalent append cannot be found this way --
@@ -902,7 +902,7 @@ pub fn search_roles(is_gmail: bool) -> &'static [MailboxRole] {
 /// never saw was actually an acceptance. Tried against every mailbox
 /// [`search_roles`] names for this account, in order, stopping at the first
 /// hit -- see that function's own docs for why more than one is worth
-/// asking off Gmail, and `crates/karmayoga-service/src/outbox.rs`'s
+/// asking off Gmail, and `crates/karmayoga-service/src/mail/outbox.rs`'s
 /// `already_sent` for the crash-recovery counterpart of this exact
 /// question, which searches the same roles.
 ///

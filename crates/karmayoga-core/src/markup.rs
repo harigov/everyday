@@ -57,7 +57,10 @@ mod tests {
 
     #[test]
     fn tags_go_and_words_stay() {
-        assert_eq!(strip_tags("a <b>bold</b> &amp; <i>x"), "a bold &amp; ");
+        assert_eq!(strip_tags("a <b>bold</b> &amp; <i>x"), "a bold &amp; x");
+        // A tag left open swallows the rest: there is no way to tell where it
+        // would have ended.
+        assert_eq!(strip_tags("a <b"), "a ");
         assert_eq!(strip_tags("no markup"), "no markup");
     }
 }

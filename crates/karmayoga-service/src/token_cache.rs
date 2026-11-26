@@ -194,6 +194,18 @@ impl TokenCache {
         self.pending_refresh.lock().unwrap().remove(account_key);
     }
 
+    /// [`Self::clear_pending_refresh_token`], but only while what is owed is
+    /// still `token`. Mail's refresh and the calendar's Graph refresh run
+    /// under different cache keys, so one can record a newer rotation while
+    /// the other is still saving an older token; clearing unconditionally
+    /// would drop the newer one, which is the token the provider now holds.
+    pub fn clear_pending_refresh_token_if(&self, account_key: &str, token: &str) {
+        let mut pending = self.pending_refresh.lock().unwrap();
+        if pending.get(account_key).is_some_and(|owed| owed == token) {
+            pending.remove(account_key);
+        }
+    }
+
     /// Drop every cached access token. Called when the vault locks: every
     /// account's sync task has already been stopped by then (see
     /// `Service::locked`), so nothing left in this cache can be used, and a

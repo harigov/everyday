@@ -37,17 +37,17 @@
 //!
 //! # Layout
 //!
-//! - [`settings`]: the folder and the settings.
-//! - [`read`]: reading the catalog and the bytes.
-//! - [`add`]: imports and uploads.
-//! - [`organise`]: renaming, moving, tagging, sealing, trashing.
-//! - [`albums`]: albums.
-//! - [`references`]: which records use which files.
-//! - [`reconcile`]: what the background reconciler calls.
-//! - [`internals`]: the shared cataloguing and disk steps.
-//! - [`legacy`]: pictures kept the old way, and carrying them over.
-//! - [`helpers`]: small shared functions.
-//! - [`prepare`]: one update checked once, applied to each file.
+//! - [`settings`] -- the folder and the settings.
+//! - [`read`] -- reading the catalog and the bytes.
+//! - [`add`] -- imports and uploads.
+//! - [`organise`] -- renaming, moving, tagging, sealing, trashing.
+//! - [`albums`] -- albums.
+//! - [`references`] -- which records use which files.
+//! - [`reconcile`] -- what the background reconciler calls.
+//! - [`internals`] -- the shared cataloguing and disk steps.
+//! - [`legacy`] -- pictures kept the old way, and carrying them over.
+//! - [`helpers`] -- small shared functions.
+//! - [`prepare`] -- one update checked once, applied to each file.
 
 use super::Vault;
 use super::session::Domain;

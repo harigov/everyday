@@ -851,7 +851,7 @@ impl Service {
     //
     // Three small pieces of session state `karmayoga_service::domains::mail`'s
     // write commands and the sync agent's per-account task both reach for --
-    // see `crates/karmayoga-service/src/outbox.rs`'s module docs for exactly
+    // see `crates/karmayoga-service/src/mail/outbox.rs`'s module docs for exactly
     // how the sync agent is meant to call `drain_outbox` alongside these.
 
     /// The [`tokio::sync::Notify`] `account`'s sync task should

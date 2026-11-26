@@ -185,7 +185,7 @@ pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) -> Option<tokio::task
 /// walks is exactly the disk-bound work `service::blocking`'s own docs
 /// already warn would "stall every other task" run inline, so this hands
 /// the whole walk to `tokio::spawn` -- already this crate's pattern for
-/// fire-and-forget background work (see `mailview.rs`, `signin.rs`) -- and
+/// fire-and-forget background work (see `mail/view.rs`, `signin.rs`) -- and
 /// the walk itself still goes through `blocking` underneath, exactly like
 /// `rebuild_mail_index`'s own command handler.
 ///

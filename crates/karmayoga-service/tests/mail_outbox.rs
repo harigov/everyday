@@ -3,7 +3,7 @@
 //!
 //! `karmayoga-core`'s conformance suite already checks the storage layer in
 //! isolation; what is worth checking here, once, through the command layer
-//! and `crates/karmayoga-service/src/outbox.rs` together, is the handful of
+//! and `crates/karmayoga-service/src/mail/outbox.rs` together, is the handful of
 //! behaviours `docs/plans/mail.md`'s phase 3 section is explicit about and
 //! that only show up when several pieces move in the same call: an
 //! optimistic local write that a permanent failure actually reverts, undo

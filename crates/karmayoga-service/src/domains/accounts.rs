@@ -452,6 +452,7 @@ async fn attach_oauth_sign_in(
         CommandError::new(codes::NOT_FOUND, "that sign-in has no tokens waiting to be saved")
     })?;
     let now = svc.now();
+    let fresh_refresh_token = tokens.refresh_token.is_some();
     let account = blocking({
         let vault = vault.clone();
         move || {
@@ -478,6 +479,14 @@ async fn attach_oauth_sign_in(
         }
     })
     .await?;
+    // A fresh consent that brought its own refresh token supersedes any
+    // rotation an earlier refresh could not save: the vault now holds the
+    // new one, and a pending one would otherwise be presented in its place.
+    // One that brought none (a re-consent often does not) left the stored
+    // token as it was, so a pending rotation of it is still the live one.
+    if fresh_refresh_token {
+        svc.token_cache().clear_pending_refresh_token(&account.id.to_string());
+    }
     // See `save_account_password`'s own comment: a working credential just
     // landed, so this is the other moment a task should start immediately
     // rather than wait for the next unlock.
