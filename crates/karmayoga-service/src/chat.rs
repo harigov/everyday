@@ -1049,7 +1049,7 @@ fn vault_dir_name(vault: &Vault) -> String {
 /// derive from, which is the right answer: a bot has no business opening its
 /// store behind a locked vault.
 pub fn store_passphrase(vault: &Vault, link: ChatLinkId) -> karmayoga_core::Result<String> {
-    let key = vault.derive_subkey(&format!("chat-store:{link}"))?;
+    let key = vault.derive_subkey(&store_key_label(link))?;
     let mut hex = String::with_capacity(key.expose().len() * 2);
     for byte in key.expose() {
         write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
@@ -1057,9 +1057,23 @@ pub fn store_passphrase(vault: &Vault, link: ChatLinkId) -> karmayoga_core::Resu
     Ok(hex)
 }
 
+/// The label a link's store key is derived under. An input to the cipher,
+/// not a name: a different label is a different passphrase, and the link's
+/// store -- its Matrix session and keys -- would no longer open.
+fn store_key_label(link: ChatLinkId) -> String {
+    format!("chat-store:{link}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_links_store_key_label_is_pinned() {
+        // See `store_key_label`: this string is an input to the cipher.
+        let link = ChatLinkId::parse("0190f0e0-0000-7000-8000-000000000001").unwrap();
+        assert_eq!(store_key_label(link), "chat-store:0190f0e0-0000-7000-8000-000000000001");
+    }
 
     fn at(seconds: i64) -> Timestamp {
         Timestamp::from_second(seconds).unwrap()

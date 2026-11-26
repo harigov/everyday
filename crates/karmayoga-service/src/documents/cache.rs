@@ -229,6 +229,17 @@ impl std::fmt::Debug for DocCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The labels the cache's keys are derived under. Each is an input to the
+    /// cipher, not a name: changing one re-keys the cache, so every parsed
+    /// document would read as unreadable and be parsed again, and the index
+    /// rebuilt from nothing. A change here has to be on purpose.
+    #[test]
+    fn the_key_labels_are_pinned() {
+        assert_eq!(KEY_LABEL, "karmayoga.documents.cache.v1");
+        assert_eq!(NAMES_LABEL, "karmayoga.documents.cache.names.v1");
+        assert_eq!(INDEX_LABEL, "karmayoga.documents.cache.index.v1");
+    }
     use karmayoga_core::documents::{DocBlock, DocFormat};
     use karmayoga_core::files::{FileKind, FileOrigin, FileStatus, FileStorage, MediaInfo};
     use karmayoga_core::id::FileId;
