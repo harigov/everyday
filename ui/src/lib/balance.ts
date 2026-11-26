@@ -34,7 +34,7 @@ export interface AreaTotals {
 
 /** What the unattributed row is called and drawn in. */
 export const UNFILED = {
-  name: 'Not filed',
+  name: 'No goal or area',
   // `--fg-faint`, not the `--text-faint` this was until it was traced from
   // `BalanceBars`: that token is not in `theme.css`, so the browser dropped
   // the whole declaration and drew no fill at all. The row still counted

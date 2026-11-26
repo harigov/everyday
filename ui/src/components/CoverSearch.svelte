@@ -17,6 +17,7 @@
   import { app, errorMessage, isLocked } from '../lib/state.svelte'
   import type { ImageResult, Item } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   let {
     item,
@@ -178,7 +179,7 @@
   </form>
 
   {#if searching}
-    <p class="hint">Searching…</p>
+    <Loading label="Searching…" />
   {:else if error}
     <p class="error">{error}</p>
   {:else if searched && results.length === 0}

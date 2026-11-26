@@ -24,7 +24,7 @@
   import TaskGhostRow from './TaskGhostRow.svelte'
   import QuickAdd from './QuickAdd.svelte'
   import type { Task, TaskStatus } from '../lib/types'
-  import { STATUS_LABELS as LABELS } from '../lib/labels'
+  import { STATUS_LABELS as LABELS, PRIORITY_LABELS } from '../lib/labels'
 
   /** Pending task-create proposals for one column, at its foot. Never counted
    *  in the column's own total -- a ghost is not yet a card. */
@@ -118,7 +118,7 @@
    * to a piece of work whose steps the board deliberately does not draw.
    */
   function cardMenu(task: Task): MenuItem[] {
-    return taskMenu(task, { onDelete: () => (pendingDelete = task) })
+    return taskMenu(task, { reorder: false, onDelete: () => (pendingDelete = task) })
   }
 
   /** A column, where there is no card under the pointer. */
@@ -216,12 +216,18 @@
               onclick={() => todo.open(todo.selectedTask === task.id ? null : task.id)}
             >
               <span class="title">{task.title}</span>
-              {#if task.dueDate || task.estimateMinutes || task.tags.length || progress(task)[1] > 0 || task.priority !== 'none'}
+              {#if task.dueDate || task.estimateMinutes || task.tags.length || progress(task)[1] > 0 || task.priority !== 'none' || (todo.scope.kind !== 'project' && todo.projectOf(task.projectId))}
                 <span class="meta">
+                  {#if todo.scope.kind !== 'project' && todo.projectOf(task.projectId)}
+                    {@const home = todo.projectOf(task.projectId)}
+                    <span class="chip project" style="--dot: {home?.color}">
+                      <span class="pdot"></span>{home?.name}
+                    </span>
+                  {/if}
                   {#if task.priority !== 'none' && task.priority !== 'low'}
                     <span class="chip p-{task.priority}">
                       <Icon name="flag" size={10} weight={1.8} />
-                      {task.priority}
+                      {PRIORITY_LABELS[task.priority]}
                     </span>
                   {/if}
                   {#if task.dueDate}
@@ -370,14 +376,18 @@
     border-radius: var(--radius-sm);
     background: var(--bg-raised);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow-sm);
     cursor: grab;
+    /* No resting shadow: a Done column can hold hundreds of cards, and a
+       blurred shadow each is what made long lists slow to scroll. The border
+       draws the card; hover changes it instead. */
     transition:
-      box-shadow var(--fast) var(--ease),
+      border-color var(--fast) var(--ease),
+      background var(--fast) var(--ease),
       opacity var(--fast) var(--ease);
   }
   .card:hover {
-    box-shadow: var(--shadow);
+    border-color: var(--border-strong);
+    background: color-mix(in oklab, var(--bg-raised) 94%, var(--fg));
   }
   .card:active {
     cursor: grabbing;
@@ -387,7 +397,8 @@
   .card.lifted {
     opacity: 0.35;
   }
-  .card.sel {
+  .card.sel,
+  .card.sel:hover {
     border-color: var(--accent);
   }
 
@@ -418,7 +429,7 @@
     font-weight: 550;
     color: var(--fg-faint);
     padding: 1px var(--sp-2);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     white-space: nowrap;
   }
@@ -431,8 +442,18 @@
   }
   /* How far behind, filled so it outranks the tinted date beside it. */
   .chip.late {
-    color: #fff;
+    color: var(--fg-on-danger);
     background: var(--danger);
+  }
+  .chip.project {
+    background: none;
+    padding-left: 0;
+  }
+  .pdot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--dot);
   }
   .chip.p-high {
     color: var(--warning);
@@ -500,7 +521,7 @@
     gap: var(--sp-2);
     min-height: 40px;
     padding: 0 var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-subtle);
     font-size: var(--text-sm);
     font-weight: 550;

@@ -19,6 +19,7 @@
   import type { McpStatus } from '../lib/types'
   import Icon from './Icon.svelte'
   import MailActionsList from './MailActionsList.svelte'
+  import RemoteNote from './RemoteNote.svelte'
 
   // The domains a token can be narrowed to, in `karmayoga_service::domains::
   // meta::scope_of`'s order, labelled for what each one *grants* rather than
@@ -145,11 +146,16 @@
   }
 </script>
 
-{#if mcp && !app.remote}
+{#if app.remote}
+  <section>
+    <span class="eyebrow">Let another agent in</span>
+    <RemoteNote what="Letting another agent use this vault" />
+  </section>
+{:else if mcp}
   <section>
     <span class="eyebrow">Let another agent in</span>
 
-    <label class="toggle">
+    <label class="check-row">
       <input type="checkbox" checked={mcp.running} disabled={busy} onchange={toggle} />
       <span>
         <b>Let an AI agent use this vault</b>
@@ -260,7 +266,7 @@
         </div>
       {/if}
 
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={mcp.allowDestructive}
@@ -363,32 +369,6 @@
     gap: 0.4rem;
   }
 
-  /* The switch and its explanation, as every other settings panel draws
-     them (SettingsView's own copy is scoped to that file and does not reach
-     this one): the sentence under the title, not run on beside it. */
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small,
   .hint {
     margin: 0;
     font-size: var(--text-sm);

@@ -67,6 +67,7 @@
   } from '../lib/types'
   import { OPENAI_IMAGE_MODELS } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import Meter from './Meter.svelte'
   import SubTabs from './SubTabs.svelte'
 
@@ -85,9 +86,19 @@
   let keys = $state<Record<ModelSlot, string>>({ ...NO_KEYS })
   let notice = $state<string | null>(null)
   let saving = $state(false)
+  // Nothing to save until the draft differs from what the vault holds, or a
+  // key has been typed. A key stored or removed with its own button goes
+  // straight to the vault and does not count.
+  const dirty = $derived(
+    !!draft &&
+      !!models.settings &&
+      (JSON.stringify($state.snapshot(draft)) !==
+        JSON.stringify($state.snapshot(models.settings)) ||
+        Object.values(keys).some((k) => k.trim() !== '')),
+  )
   /** Clears "Saved." after a moment, and only that -- see `AgentPanel`. */
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
-  function confirm(message: string) {
+  function say(message: string) {
     notice = message
     if (noticeTimer) clearTimeout(noticeTimer)
     noticeTimer = setTimeout(() => {
@@ -750,7 +761,7 @@
       keys = { ...NO_KEYS }
       draft = structuredClone($state.snapshot(models.settings!))
       speechChanged()
-      confirm('Saved.')
+      say('Saved.')
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
     } finally {
@@ -777,24 +788,27 @@
 {:else if !draft && models.error}
   <p class="hint">Where the models are could not be read: {models.error}</p>
 {:else if !draft}
-  <p class="hint">Loading…</p>
+  <Loading centred />
 {:else}
-  <p class="hint lead intro">
+  <p class="hint lead">
     Each kind of model is chosen once, here, and everything that needs one uses it. What you ask
-    about is sent to the provider of whichever model does the work; a model on this machine sends
-    nothing anywhere. Which features may ask a model is chosen under
-    <button class="link" onclick={() => panels.openSettings('ai')}>AI features</button>.
+    about is sent to the provider of whichever model does the work; a model on this computer sends
+    nothing anywhere.
   </p>
+  <details class="hint how intro">
+    <summary>How this works</summary>
+    <p>
+      Which features may ask a model is chosen under
+      <button class="link" onclick={() => panels.openSettings('ai')}>AI features</button>.
+    </p>
+  </details>
 
   <SubTabs tabs={SUBS} bind:value={sub} label="Kinds of model" />
 
   <div class="panes">
     {#if sub === 'language'}
       <p class="hint">
-        Three models, one for each size of work, each with its own provider and model name. Anything
-        that speaks the OpenAI chat API works — leave the address empty for OpenAI itself. A
-        reasoning effort left at the provider's default is the provider's choice, and can be no
-        thinking at all — OpenAI's gpt-5.1 defaults to None.
+        Three models, one for each size of work, each with its own provider and model name.
       </p>
 
       {#each CARDS as card (card.tier)}
@@ -803,13 +817,13 @@
           <div class="head">
             <span class="eyebrow" id="model-{card.tier}">{card.title}</span>
             {#if card.fresh}
-              <label class="toggle compact">
+              <label class="check-row compact">
                 <input
                   type="checkbox"
                   checked={config != null}
                   onchange={(e) => toggle(card, e.currentTarget.checked)}
                 />
-                <span>{config ? 'On' : 'Off'}</span>
+                <span>Use its own model</span>
               </label>
             {/if}
           </div>
@@ -843,35 +857,51 @@
             </div>
 
             <label class="setting">
-              <span>Base URL</span>
-              <input
-                value={config.baseUrl ?? ''}
-                oninput={(e) => (config.baseUrl = e.currentTarget.value.trim() || null)}
-                placeholder="https://api.openai.com/v1"
-                spellcheck="false"
-              />
-            </label>
-
-            <label class="setting">
               <span>Model name</span>
               <input bind:value={config.model} placeholder={card.placeholder} spellcheck="false" />
             </label>
 
-            <label class="setting">
-              <span>Reasoning effort</span>
-              <select
-                value={config.reasoningEffort ?? ''}
-                onchange={(e) =>
-                  (config.reasoningEffort = (e.currentTarget.value ||
-                    null) as ReasoningEffort | null)}
-              >
-                <option value="">The provider's default</option>
-                {#each card.efforts as effort (effort.value)}
-                  <option value={effort.value}>{effort.label}</option>
-                {/each}
-              </select>
-            </label>
-            <p class="hint">{card.effortHint}</p>
+            <!-- Rarely changed, so folded away -- but open when the card
+                 already points somewhere custom or has an effort set, so a
+                 custom endpoint is never hidden from the person who made it. -->
+            <details
+              class="advanced"
+              open={config.reasoningEffort != null ||
+                !KNOWN_LLM_ENDPOINTS.some((p) => p.url === (config.baseUrl ?? ''))}
+            >
+              <summary>Advanced</summary>
+              <label class="setting">
+                <span>Server address</span>
+                <input
+                  value={config.baseUrl ?? ''}
+                  oninput={(e) => (config.baseUrl = e.currentTarget.value.trim() || null)}
+                  placeholder="https://api.openai.com/v1"
+                  spellcheck="false"
+                />
+              </label>
+              <p class="hint">
+                Anything that speaks the OpenAI chat API works. Leave it empty for OpenAI itself.
+              </p>
+
+              <label class="setting">
+                <span>Reasoning effort</span>
+                <select
+                  value={config.reasoningEffort ?? ''}
+                  onchange={(e) =>
+                    (config.reasoningEffort = (e.currentTarget.value ||
+                      null) as ReasoningEffort | null)}
+                >
+                  <option value="">The provider's default</option>
+                  {#each card.efforts as effort (effort.value)}
+                    <option value={effort.value}>{effort.label}</option>
+                  {/each}
+                </select>
+              </label>
+              <p class="hint">
+                {card.effortHint} Left at the provider's default, it is the provider's choice, and can
+                be no thinking at all — OpenAI's gpt-5.1 defaults to None.
+              </p>
+            </details>
 
             {#if keyed}
               <div class="stored">
@@ -916,20 +946,23 @@
       <section class="card" aria-labelledby="model-decision">
         <div class="head">
           <span class="eyebrow" id="model-decision">Decision</span>
-          <label class="toggle compact">
+          <label class="check-row compact">
             <input
               type="checkbox"
               checked={draft.decision != null}
               onchange={(e) => toggleDecision(e.currentTarget.checked)}
             />
-            <span>{draft.decision ? 'On' : 'Off'}</span>
+            <span>Use a decision model</span>
           </label>
         </div>
         <p class="hint">
-          Sorting mail into your own categories, under Settings → Mail sorting. A decision model
-          does not write: it is shown a message and your categories, and picks one. At a provider
-          that takes a fraction of a second and a fraction of what a chat model costs; on this
-          computer it costs nothing, takes a second or a few, and your mail never leaves it.
+          Sorting mail into your own categories, set under <button
+            class="link"
+            onclick={() => panels.openSettings('sorting')}>Mail sorting</button
+          >. A decision model does not write: it is shown a message and your categories, and picks
+          one. At a provider that takes a fraction of a second and a fraction of what a chat model
+          costs; on this computer it costs nothing, takes a second or a few, and your mail never
+          leaves it.
         </p>
         {#if !draft.decision}
           <p class="hint">Off: mail is sorted on the Small model, into the five inbox tabs.</p>
@@ -1011,9 +1044,8 @@
             {/each}
             <p class="hint">
               Runs here, so your mail goes nowhere: no account's “I understand” is needed, only
-              sorting switched on under Settings → AI features. Nothing is sorted until the model
-              you pick is downloaded. It is loaded when mail is sorted, and let go of after 15
-              minutes unused.
+              sorting switched on under AI features. Nothing is sorted until the model you pick is
+              downloaded. It is loaded when mail is sorted, and let go of after 15 minutes unused.
             </p>
           {:else}
             {@const endpoint = decisionEndpointOf(decision) ?? ''}
@@ -1074,8 +1106,7 @@
             </label>
             <p class="hint">
               Switching it on, or moving it to another provider, changes where mail may go, so each
-              account's “I understand” under Settings → Accounts needs ticking again before anything
-              is sorted.
+              account's “I understand” under Accounts needs ticking again before anything is sorted.
             </p>
           {/if}
         {/if}
@@ -1086,13 +1117,13 @@
       <section class="card" aria-labelledby="model-speech">
         <div class="head">
           <span class="eyebrow" id="model-speech">Speech</span>
-          <label class="toggle compact">
+          <label class="check-row compact">
             <input
               type="checkbox"
               checked={draft.speech != null}
               onchange={(e) => toggleSpeech(e.currentTarget.checked)}
             />
-            <span>{draft.speech ? 'On' : 'Off'}</span>
+            <span>Use a speech model</span>
           </label>
         </div>
         <p class="hint">
@@ -1261,7 +1292,7 @@
             </label>
           {:else if t.type === 'compatible'}
             <label class="setting">
-              <span>Base URL</span>
+              <span>Server address</span>
               <input
                 value={t.baseUrl}
                 oninput={(e) => (t.baseUrl = e.currentTarget.value.trim())}
@@ -1338,9 +1369,9 @@
               {testingSpeech ? 'Testing…' : 'Test'}
             </button>
             {#if speechTested}
-              <span class="notice">{speechTested}</span>
+              <span class="hint" role="status">{speechTested}</span>
             {:else if speechUnsaved}
-              <span class="notice">Test tries what is saved, so save first.</span>
+              <span class="hint" role="status">Test tries what is saved, so save first.</span>
             {/if}
           </div>
         {/if}
@@ -1351,13 +1382,13 @@
       <section class="card" aria-labelledby="model-voice">
         <div class="head">
           <span class="eyebrow" id="model-voice">Voice</span>
-          <label class="toggle compact">
+          <label class="check-row compact">
             <input
               type="checkbox"
               checked={draft.voice != null}
               onchange={(e) => toggleVoice(e.currentTarget.checked)}
             />
-            <span>{draft.voice ? 'On' : 'Off'}</span>
+            <span>Use a voice model</span>
           </label>
         </div>
         <p class="hint">
@@ -1483,7 +1514,7 @@
           {:else}
             {#if t.type === 'compatible'}
               <label class="setting">
-                <span>Base URL</span>
+                <span>Server address</span>
                 <input
                   value={t.baseUrl}
                   oninput={(e) => (t.baseUrl = e.currentTarget.value.trim())}
@@ -1572,9 +1603,9 @@
               {tryingVoice ? 'Playing…' : 'Try it'}
             </button>
             {#if voiceTried}
-              <span class="notice">{voiceTried}</span>
+              <span class="hint" role="status">{voiceTried}</span>
             {:else if voiceUnsaved}
-              <span class="notice">Try it plays what is saved, so save first.</span>
+              <span class="hint" role="status">Try it plays what is saved, so save first.</span>
             {/if}
           </div>
         {/if}
@@ -1645,13 +1676,13 @@
       <section class="card" aria-labelledby="model-image">
         <div class="head">
           <span class="eyebrow" id="model-image">Image</span>
-          <label class="toggle compact">
+          <label class="check-row compact">
             <input
               type="checkbox"
               checked={draft.image != null}
               onchange={(e) => toggleImage(e.currentTarget.checked)}
             />
-            <span>{draft.image ? 'On' : 'Off'}</span>
+            <span>Use an image model</span>
           </label>
         </div>
         <p class="hint">
@@ -1764,9 +1795,9 @@
               {makingImage ? 'Making…' : 'Try it'}
             </button>
             {#if imageTried}
-              <span class="notice">{imageTried}</span>
+              <span class="hint" role="status">{imageTried}</span>
             {:else if imageUnsaved}
-              <span class="notice">Try it uses what is saved, so save first.</span>
+              <span class="hint" role="status">Try it uses what is saved, so save first.</span>
             {/if}
           </div>
           {#if imageUrl}
@@ -1784,9 +1815,9 @@
     </p>
   </div>
 
-  <div class="save">
-    {#if notice}<span class="notice">{notice}</span>{/if}
-    <button class="btn btn-primary" onclick={() => void save()} disabled={saving}>
+  <div class="save save-row">
+    {#if notice}<span class="notice" role="status">{notice}</span>{/if}
+    <button class="btn btn-primary" onclick={() => void save()} disabled={saving || !dirty}>
       {saving ? 'Saving…' : 'Save'}
     </button>
   </div>
@@ -1828,18 +1859,16 @@
     border-radius: var(--radius);
   }
 
-  .toggle {
-    display: flex;
-    gap: var(--sp-2);
+  /* The shared switch row, drawn smaller and beside the card's title: one
+     line saying what ticking it does. */
+  .check-row.compact {
     align-items: center;
-    min-width: 0;
-    cursor: pointer;
+    gap: var(--sp-2);
     font-size: var(--text-sm);
     color: var(--fg-muted);
   }
-  .toggle input {
-    flex: none;
-    accent-color: var(--accent);
+  .check-row.compact input {
+    margin-top: 0;
   }
   .hint {
     margin: 0;
@@ -1849,6 +1878,22 @@
     overflow-wrap: anywhere;
   }
   .hint.lead {
+    color: var(--fg-muted);
+  }
+  .how summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .how p {
+    margin: var(--sp-2) 0 0;
+  }
+  .advanced > :not(summary) {
+    margin-top: var(--sp-3);
+  }
+  .advanced > summary {
+    cursor: pointer;
+    font-size: var(--text-sm);
+    font-weight: 550;
     color: var(--fg-muted);
   }
   /* The lead says what holds on every tab, so it sits over the tabs, with the
@@ -1866,7 +1911,7 @@
     height: 30px;
     padding: 0 var(--sp-3);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg);
     color: var(--fg-muted);
     font-size: var(--text-sm);
@@ -2010,25 +2055,9 @@
     min-width: 0;
   }
 
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-    margin-top: var(--sp-6);
-    padding-top: var(--sp-4);
-    border-top: 1px solid var(--border);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
-  }
-
-  /* A phone: the On/Off switch on a card and the provider chips are a
+  /* A phone: the switch on a card and the provider chips are a
      finger's size. */
-  :global([data-phone]) .toggle.compact {
+  :global([data-phone]) .check-row.compact {
     min-height: 44px;
     padding-inline: var(--sp-1);
   }

@@ -144,8 +144,11 @@ pub fn spoken_answer(heard: &str) -> SpokenAnswer {
 /// doc for when it does not), and the session may ask aloud about a delete
 /// of one that it still stops.
 ///
-/// A project, a whole shelf's worth, a tracker, a memory and the rest are
-/// not here: nobody asked for them by voice, and removing one is not undone.
+/// A time block is the same thing as an event, on this computer, so
+/// deleting one is here with deleting an event. A project, a whole shelf's
+/// worth, a tracker, a memory, a note, a journal entry and a reading or log
+/// are not: nobody asked for them by voice, and removing one is not undone,
+/// or is a personal record that stays behind a card.
 pub const CHANGED_BY_VOICE: &[&str] = &[
     "create_task",
     "update_task",
@@ -153,6 +156,7 @@ pub const CHANGED_BY_VOICE: &[&str] = &[
     "create_event",
     "update_event",
     "delete_event",
+    "delete_time_block",
     "create_item",
     "update_item",
     "delete_item",
@@ -381,12 +385,35 @@ pub fn question(kind: &str, subject: &str) -> String {
     }
 }
 
-/// What is said when only a click can answer.
-pub const NEEDS_A_CLICK: &str = "That needs your go-ahead on screen.";
+/// What is said when only a click can answer and there is nothing short
+/// enough to name: where the person will find the card.
+pub const NEEDS_A_CLICK: &str = "You'll need to approve that on screen.";
 
 /// [`NEEDS_A_CLICK`], on a call through a chat: the question is asked in the
 /// chat, where a tap answers it.
-pub const NEEDS_A_TAP: &str = "That needs your go-ahead in our chat.";
+pub const NEEDS_A_TAP: &str = "You'll need to approve that in our chat.";
+
+/// What is said when only a click can answer a question of this `kind` about
+/// `subject`. `fallback` is [`NEEDS_A_CLICK`] or [`NEEDS_A_TAP`], which says
+/// where the card is, and is all that is said for most kinds.
+///
+/// Only a delete names its subject -- "To delete the deck, …" -- because only
+/// a delete's subject is a short name the person gave something, held to one
+/// line and [`MAX_SUBJECT_CHARS`] by [`what_goes`]. Every other kind's subject
+/// is text the model wrote or was handed: something to type or copy (a code, a
+/// command whose second line is the one that matters), a page's link text, a
+/// mail subject after reading a stranger's mail. Read aloud as a plain
+/// statement in the assistant's own voice, any of those could say what it
+/// liked, so they are not read at all; the card says what they are.
+pub fn approval_line(fallback: &str, kind: &str, subject: &str) -> String {
+    let place = if fallback == NEEDS_A_TAP { "in our chat" } else { "on screen" };
+    match (kind, what_goes(subject)) {
+        ("destructive", Some(what)) => {
+            format!("To delete {what}, you'll need to approve it {place}.")
+        }
+        _ => fallback.to_string(),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -458,10 +485,28 @@ mod tests {
     }
 
     #[test]
+    fn a_click_only_question_names_only_a_delete() {
+        assert_eq!(
+            approval_line(NEEDS_A_CLICK, "destructive", "the deck"),
+            "To delete the deck, you'll need to approve it on screen."
+        );
+        // Text to type, copy or send is never read out: its first line can
+        // hide what the rest does, and it is somebody else's wording.
+        assert_eq!(approval_line(NEEDS_A_TAP, "outward", "Send to Sam"), NEEDS_A_TAP);
+        assert_eq!(approval_line(NEEDS_A_CLICK, "desktop", "ls\nrm -rf ~/projects"), NEEDS_A_CLICK);
+        assert_eq!(approval_line(NEEDS_A_CLICK, "copy", "482 913"), NEEDS_A_CLICK);
+        // A delete whose subject is long or runs over lines says only where.
+        let long = "x".repeat(MAX_SUBJECT_CHARS + 1);
+        assert_eq!(approval_line(NEEDS_A_CLICK, "destructive", &long), NEEDS_A_CLICK);
+        assert_eq!(approval_line(NEEDS_A_TAP, "destructive", "one\ntwo"), NEEDS_A_TAP);
+        assert_eq!(approval_line(NEEDS_A_TAP, "destructive", ""), NEEDS_A_TAP);
+    }
+
+    #[test]
     fn only_a_search_a_fetch_or_a_delete_asked_for_by_voice_may_be_answered_aloud() {
         assert!(may_answer_aloud("search", "web_search", "best e-bike"));
         assert!(may_answer_aloud("fetch", "read_web_page", "https://news.example.org/today"));
-        for tool in ["delete_task", "delete_event", "delete_item"] {
+        for tool in ["delete_task", "delete_event", "delete_time_block", "delete_item"] {
             assert!(may_answer_aloud("destructive", tool, "Book the dentist"), "{tool}");
         }
         for tool in ["delete_project", "delete_tracker", "forget", "delete_note", "trash_thread"] {

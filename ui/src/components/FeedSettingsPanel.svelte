@@ -34,6 +34,7 @@
     TranscribePolicy,
   } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   void upnext.loadSettings()
   // For the status line under the criteria: which model ranks, and how far
@@ -295,7 +296,7 @@
   {#if upnext.error}
     <p class="hint err" role="alert">{upnext.error}</p>
   {:else}
-    <p class="hint">Loading…</p>
+    <Loading />
   {/if}
 {:else}
   {@const d = draft}
@@ -306,12 +307,13 @@
       <div class="field-row">
         <span class="label" id="feed-download">Download new episodes</span>
         <div class="when">
-          <div class="segmented" role="group" aria-labelledby="feed-download">
+          <div class="seg-group" role="radiogroup" aria-labelledby="feed-download">
             {#each DOWNLOADS as choice (choice.id)}
               <button
-                class="seg"
+                class="seg-opt"
+                role="radio"
                 class:on={d.podcasts.download.type === choice.id}
-                aria-pressed={d.podcasts.download.type === choice.id}
+                aria-checked={d.podcasts.download.type === choice.id}
                 onclick={() => setDownload(choice.id)}
               >
                 {choice.label}
@@ -349,12 +351,13 @@
       <div class="field-row">
         <span class="label" id="feed-keep">Keep a downloaded episode</span>
         <div class="when">
-          <div class="segmented" role="group" aria-labelledby="feed-keep">
+          <div class="seg-group" role="radiogroup" aria-labelledby="feed-keep">
             {#each KEEPS as k (k.id)}
               <button
-                class="seg"
+                class="seg-opt"
+                role="radio"
                 class:on={d.podcasts.keep.type === k.id}
-                aria-pressed={d.podcasts.keep.type === k.id}
+                aria-checked={d.podcasts.keep.type === k.id}
                 onclick={() => setKeep(k.id)}
               >
                 {k.label}
@@ -400,12 +403,13 @@
 
       <div class="field-row">
         <span class="label" id="feed-transcribe">Transcribe episodes</span>
-        <div class="segmented" role="group" aria-labelledby="feed-transcribe">
+        <div class="seg-group" role="radiogroup" aria-labelledby="feed-transcribe">
           {#each TRANSCRIBES as t (t.id)}
             <button
-              class="seg"
+              class="seg-opt"
+              role="radio"
               class:on={d.podcasts.transcribe === t.id}
-              aria-pressed={d.podcasts.transcribe === t.id}
+              aria-checked={d.podcasts.transcribe === t.id}
               onclick={() => (d.podcasts.transcribe = t.id)}
             >
               {t.label}
@@ -418,7 +422,7 @@
         </span>
       </div>
 
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={d.podcasts.queueNew} />
         <span>
           <b>Put new episodes in Up Next</b>
@@ -433,7 +437,7 @@
     <section class="block">
       <h3 class="eyebrow">Recommended</h3>
 
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={d.ranking.enabled} />
         <span>
           <b>Rank what is new for me</b>
@@ -500,7 +504,7 @@
         </div>
       </div>
 
-      <label class="toggle" class:disabled={!d.ranking.enabled}>
+      <label class="check-row" class:disabled={!d.ranking.enabled}>
         <input type="checkbox" disabled={!d.ranking.enabled} bind:checked={d.ranking.goals} />
         <span>
           <b>Also ask about my goals</b>
@@ -536,9 +540,7 @@
             <span class="hint">
               Nothing to rank with, so Recommended is newest first. Set up a decision model or the
               Small model in
-              <button class="link" onclick={() => panels.openSettings('models')}
-                >Settings → Models</button
-              >.
+              <button class="link" onclick={() => panels.openSettings('models')}>Models</button>.
             </span>
           {:else}
             <span class="hint">
@@ -564,7 +566,7 @@
       <h3 class="eyebrow">Up Next and the player</h3>
 
       <div class="field-row">
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={d.autofill != null}
@@ -595,7 +597,7 @@
         {/if}
       </div>
 
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={d.autoplay} />
         <span>
           <b>Play the next one when one ends</b>
@@ -605,7 +607,7 @@
         </span>
       </label>
 
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={d.resumeAfterVoice} />
         <span>
           <b>Pick up where it was when a conversation ends</b>
@@ -644,7 +646,7 @@
 
     <section class="block">
       <h3 class="eyebrow">Memory</h3>
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={d.keepRead} />
         <span>
           <b>Keep what I read or hear</b>
@@ -750,13 +752,13 @@
     </section>
   </div>
 
-  <div class="save">
+  <div class="save save-row">
     {#if problem}
       <span class="notice err" role="alert">{problem}</span>
     {:else if notice && !dirty}
       <span class="notice" role="status">{notice}</span>
     {:else}
-      <span class="notice"></span>
+      <span class="notice" role="status"></span>
     {/if}
     <button class="btn btn-primary" disabled={saving || !dirty} onclick={() => void save()}>
       {saving ? 'Saving…' : 'Save'}
@@ -803,33 +805,6 @@
     color: var(--fg);
   }
 
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle.disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small,
   .hint {
     margin: 0;
     font-size: var(--text-sm);
@@ -857,35 +832,6 @@
   .sec {
     width: auto;
     min-width: 8rem;
-  }
-
-  .segmented {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    background: var(--bg-sunken);
-    border-radius: var(--radius);
-  }
-  .seg {
-    flex: 1;
-    height: 30px;
-    padding: 0 var(--sp-3);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    white-space: nowrap;
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .seg:hover {
-    color: var(--fg);
-  }
-  .seg.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
   }
 
   /* The questions Recommended asks: the words, how much, and a way out. */
@@ -1012,21 +958,5 @@
   }
   .link:hover {
     text-decoration: underline;
-  }
-
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-    margin-top: var(--sp-6);
-    padding-top: var(--sp-4);
-    border-top: 1px solid var(--border);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
   }
 </style>

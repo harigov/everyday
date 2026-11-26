@@ -118,7 +118,9 @@ export default {
     {
       name: 'apps-search',
       run: steps(apps, async ({ page, settle }) => {
-        await page.getByLabel('Find an app or site').fill('c')
+        // The search is the top bar's now (it narrows the Apps pane through
+        // the store), not a field in the pane.
+        await page.getByRole('searchbox').first().fill('c')
         await settle()
       }),
     },

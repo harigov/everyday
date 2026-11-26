@@ -260,7 +260,7 @@
     height: 28px;
     padding: 0 var(--sp-3);
     border: 1px solid transparent;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--accent) 9%, transparent);
     font-size: var(--text-sm);
     font-weight: 500;

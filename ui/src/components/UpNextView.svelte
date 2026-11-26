@@ -40,6 +40,7 @@
   import { upnext } from '../lib/upnext.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   // Loaded when the page opens: the sidebar's count is read from the same
   // list, and a change made on another device lands through `live`, but a
@@ -323,7 +324,7 @@
   </div>
 
   {#if upnext.loading && items.length === 0}
-    <p class="hint wait">Loading…</p>
+    <Loading label="Loading Up Next" centred />
   {:else if items.length === 0}
     <EmptyState lead="Nothing is lined up.">
       {#snippet icon()}<Icon name="queue-add" size={30} weight={1.3} />{/snippet}
@@ -497,10 +498,12 @@
     min-height: var(--header-h);
     padding: var(--sp-2) var(--sp-5) var(--sp-1);
     flex: none;
-  }
-  .wait {
-    padding: var(--sp-4) var(--sp-5);
-    color: var(--fg-faint);
+    /* The same column as the queue below, so Play all sits over the end of
+       the rows it plays and not at the far edge of a wide window. */
+    box-sizing: border-box;
+    width: 100%;
+    max-width: var(--page-w);
+    margin: 0 auto;
   }
   .actions {
     display: flex;
@@ -517,7 +520,7 @@
   /* A measure to read the queue at: a title across a wide window is a long
      way from the buttons that belong to it. */
   .queue {
-    max-width: 780px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: 0;
     list-style: none;
@@ -623,6 +626,14 @@
   }
   .dotsep {
     color: var(--fg-faint);
+  }
+  /* A wrapped line would leave a dot dangling at its end; on a phone the
+     facts wrap often, so the gap alone separates them. */
+  :global([data-phone]) .dotsep {
+    display: none;
+  }
+  :global([data-phone]) .meta {
+    gap: 0 var(--sp-2);
   }
   .note {
     color: var(--accent);

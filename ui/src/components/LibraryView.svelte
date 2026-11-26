@@ -8,6 +8,8 @@
   // grown past the point where pictures help.
 
   import { files } from '../lib/files.svelte'
+  import { keysLabel } from '../lib/keys'
+  import { userAgentMac } from '../lib/platform'
   import { article, plural } from '../lib/format'
   import { FILTERS, coverRatio, library, type Filter } from '../lib/library.svelte'
   import { menu } from '../lib/menu.svelte'
@@ -23,6 +25,8 @@
   import Icon from './Icon.svelte'
   import ItemCard from './ItemCard.svelte'
   import { rovingFocus } from '../lib/roving'
+  import { proposals } from '../lib/proposals.svelte'
+  import ProposalGhost from './ProposalGhost.svelte'
   import ItemDetail from './ItemDetail.svelte'
   import Rating from './Rating.svelte'
 
@@ -83,7 +87,7 @@
       target && {
         label: `Add ${article(target.singular)} ${target.singular.toLowerCase()}`,
         icon: 'plus',
-        hint: 'Ctrl+N',
+        hint: keysLabel('mod+n', userAgentMac),
         run: () => library.focusCapture(),
       },
       SEP,
@@ -97,7 +101,7 @@
       },
       {
         label: 'Sort by',
-        icon: 'layers',
+        icon: 'sort',
         items: SORTS.map((s) => ({
           label: s.label,
           checked: library.sort === s.id,
@@ -127,6 +131,48 @@
     ])
   }
 
+  /**
+   * How many are shown, and of how many when something narrows them.
+   *
+   * "0 of 1 items, to hear" says where the empty list went; the bare count
+   * of the filtered list read as the size of the shelf. The total is the
+   * open shelf's own count, or the whole library in the everything view.
+   */
+  const countLine = $derived.by(() => {
+    const shown = library.items.length
+    const total = library.favouritesOnly
+      ? null
+      : shelf
+        ? shelf.items
+        : (library.stats?.items ?? null)
+    const how = library.filter !== 'all' ? filterLabel(library.filter).toLowerCase() : ''
+    if (total !== null && total > shown) {
+      return `${shown} of ${plural(total, 'item')}${how ? `, ${how}` : ''}`
+    }
+    return `${plural(shown, 'item')}${how ? `, ${how}` : ''}`
+  })
+
+  /**
+   * Catch-ups the assistant read out of the journal, waiting to be told who
+   * with. Drawn at the top of the Contacts shelf, where the accepted row
+   * would be, and nowhere a person is not what is being looked at.
+   */
+  const catchUps = $derived(
+    proposals.enabled && isContactShelf(shelf) ? proposals.forKind('log') : [],
+  )
+
+  const sortLabel = $derived(
+    (library.dueFirst && isContactShelf(shelf)
+      ? 'Due to get in touch'
+      : (SORTS.find((s) => s.id === library.sort)?.label ?? '')
+    ).toLowerCase(),
+  )
+
+  /** What is still ahead on a shelf: the number the sidebar shows beside it. */
+  function openOn(id: string): number {
+    return library.stats?.byKind.find((c) => c.kindId === id)?.open ?? 0
+  }
+
   const heading = $derived(library.favouritesOnly ? 'Favourites' : (shelf?.name ?? 'Everything'))
   // One frame for the whole grid; see `coverRatio` for why that beats one
   // frame per card. The everything view has no shelf, so it gets portrait.
@@ -139,7 +185,7 @@
       <div class="pane-titles">
         <h1 class="pane-title">{heading}</h1>
         <span class="pane-sub">
-          {plural(library.items.length, 'item')}
+          {countLine}
           {#if library.loading}· loading…{/if}
         </span>
       </div>
@@ -150,6 +196,7 @@
         <select
           class="sort"
           aria-label="Sort"
+          title="Sorted by {sortLabel}"
           value={library.dueFirst && isContactShelf(shelf) ? 'due' : library.sort}
           onchange={(e) => {
             const value = e.currentTarget.value
@@ -165,7 +212,7 @@
           {/each}
         </select>
         <span class="sort-icon phone-only" aria-hidden="true">
-          <Icon name="layers" size={18} />
+          <Icon name="sort" size={18} />
         </span>
       </span>
 
@@ -245,10 +292,11 @@
           <button
             class="shelfchip"
             style="--dot: {k.color}"
+            title="{k.name} — {plural(k.items, 'item')}, {openOn(k.id)} still ahead"
             onclick={() => void library.selectShelf(k.id)}
           >
             <span class="dot"></span>{k.name}
-            {#if k.items > 0}<span class="n">{k.items}</span>{/if}
+            {#if openOn(k.id) > 0}<span class="n">{openOn(k.id)}</span>{/if}
           </button>
         {/each}
       </div>
@@ -267,6 +315,9 @@
       oncontextmenu={(e) => menu.show(e, shelfMenu())}
       use:rovingFocus={library.selected}
     >
+      {#each catchUps as p (p.id)}
+        <div class="ghosts"><ProposalGhost proposal={p} /></div>
+      {/each}
       {#if library.items.length === 0 && !library.loading}
         {#if library.query.trim()}
           <EmptyState lead={`Nothing matches “${library.query.trim()}”.`}>
@@ -280,11 +331,9 @@
             {#snippet note()}The star on a card puts it here.{/snippet}
           </EmptyState>
         {:else if library.filter !== 'all'}
-          <EmptyState lead="Nothing here under this filter.">
-            {#snippet note()}
-              Nothing on {shelf ? `the ${shelf.name.toLowerCase()} shelf` : 'any shelf'} is
-              <b>{filterLabel(library.filter).toLowerCase()}</b> at the moment.
-            {/snippet}
+          <EmptyState
+            lead={`Nothing ${shelf ? `on the ${shelf.name.toLowerCase()} shelf` : 'on any shelf'} is ${filterLabel(library.filter).toLowerCase()}`}
+          >
             {#snippet action()}
               <button class="btn" onclick={() => library.setFilter('all')}>Show everything</button>
             {/snippet}
@@ -443,7 +492,7 @@
     height: 34px;
     padding: 0 var(--sp-3);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-raised);
     font-size: var(--text-sm);
     color: var(--fg-muted);
@@ -455,7 +504,7 @@
     display: flex;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
   }
   .view {
@@ -535,7 +584,7 @@
     gap: var(--sp-2);
     height: 28px;
     padding: 0 var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-weight: 550;
     color: var(--fg-subtle);
@@ -587,7 +636,7 @@
     height: 26px;
     padding: 0 var(--sp-3);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     color: var(--fg-muted);
     white-space: nowrap;
@@ -622,6 +671,10 @@
     padding: var(--sp-1) var(--sp-4) var(--fab-clear);
   }
 
+  .ghosts {
+    margin-bottom: var(--sp-3);
+  }
+
   .grid {
     display: grid;
     /* Auto-fill rather than a fixed column count: a wide window should show
@@ -637,7 +690,10 @@
   .rows {
     display: flex;
     flex-direction: column;
-    margin-inline: calc(var(--sp-2) * -1);
+    /* Capped so the year and stars stay near the title on a wide window,
+       instead of a column a metre from the name it belongs to. */
+    max-width: var(--page-w-wide);
+    margin-inline: calc(var(--sp-2) * -1) auto;
   }
   .row {
     display: flex;

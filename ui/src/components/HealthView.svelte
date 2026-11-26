@@ -65,9 +65,14 @@
 
   const day = $derived(health.date || todayIso())
 
-  /** The panes that look at the shared window. An open workout hides it. */
+  /** The panes that look at the shared window. An open workout hides it.
+   *  Nutrition has a day stepper of its own for its meals, so its window's
+   *  chips and stepper sit in its chart's card instead: two steppers side by
+   *  side asked which one moved what. */
   const ranged = $derived(
-    HEALTH_RANGE_VIEWS.includes(view) && !(view === 'activity' && health.workoutId),
+    HEALTH_RANGE_VIEWS.includes(view) &&
+      view !== 'nutrition' &&
+      !(view === 'activity' && health.workoutId),
   )
 
   const sub = $derived(view === 'today' ? longDate(day) : '')
@@ -187,8 +192,11 @@
     <EmptyState lead="No health data yet.">
       {#snippet icon()}<Icon name="info" size={30} weight={1.3} />{/snippet}
       {#snippet note()}
-        Bring in your history from Apple Health, or let an iPhone send new readings as they happen.
-        You can also add a reading by hand.
+        Bring in your history from Apple Health or a file, or let an iPhone send new readings as
+        they happen. You can also add a reading by hand.
+        {#if app.remote}
+          Where readings come from is set up on the computer that holds this vault.
+        {/if}
       {/snippet}
       {#snippet action()}
         <div class="actions">
@@ -260,7 +268,7 @@
     align-items: center;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
   }
   .step {

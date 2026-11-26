@@ -10,6 +10,7 @@
   import { api } from '../lib/api'
   import { friendlyDate, plural } from '../lib/format'
   import { app, handle } from '../lib/state.svelte'
+  import Loading from './Loading.svelte'
   import type { KeepInTouchSettings, KeepInTouchStatus, PassReport } from '../lib/types'
 
   let status = $state<KeepInTouchStatus | null>(null)
@@ -93,10 +94,10 @@
 </script>
 
 {#if !draft || !status}
-  <p class="hint">Loading…</p>
+  <Loading centred />
 {:else}
   <div class="panes">
-    <label class="toggle">
+    <label class="check-row">
       <input type="checkbox" bind:checked={draft.enabled} />
       <span>
         <b>Keep in touch</b>
@@ -153,7 +154,7 @@
 
     <section>
       <span class="eyebrow">Your journal</span>
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={draft.readJournal} />
         <span>
           <b>Read the journal for who you talked to</b>
@@ -182,8 +183,8 @@
     {/if}
   </div>
 
-  <div class="save">
-    {#if notice}<span class="notice" class:err={failed}>{notice}</span>{/if}
+  <div class="save save-row">
+    {#if notice}<span class="notice" class:err={failed} role="status">{notice}</span>{/if}
     <button
       class="btn"
       disabled={running || !status.settings.enabled || dirty || !app.supportsLibrary}
@@ -211,29 +212,6 @@
     gap: var(--sp-3);
     min-width: 0;
   }
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small,
   .hint {
     margin: 0;
     font-size: var(--text-sm);
@@ -274,21 +252,6 @@
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 16%, transparent);
-  }
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-    margin-top: var(--sp-6);
-    padding-top: var(--sp-4);
-    border-top: 1px solid var(--border);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
   }
   .notice.err {
     color: var(--danger);

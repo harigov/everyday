@@ -63,12 +63,15 @@ import { latest } from './store/latest'
 import { addDays, isoDate, localeWeekStart, minutesBetween, startOfWeek, todayIso } from './time'
 import { todo } from './todo.svelte'
 import { tracking } from './tracking.svelte'
+import { thisMonth } from './money'
+import { localZone } from './screentime'
 import { isOpen, TASK_STATUSES, VaultError } from './types'
 import type {
   BalanceReport,
   CalendarEvent,
   CalendarInfo,
   EntrySummary,
+  HealthDay,
   Item,
   KarmaReport,
   KindInfo,
@@ -79,7 +82,9 @@ import type {
   MailCategory,
   MailboxId,
   MeetingActivity,
+  MonthSummary,
   NoteSummary,
+  ScreenReport,
   SourceSummary,
   Story,
   Task,
@@ -338,6 +343,13 @@ class OverviewState {
   /** Today's events on the visible calendars, all-day first, then by start. */
   todayEvents = $state<CalendarEvent[]>([])
 
+  /** This month in Money, in the main currency, for "Money this month". */
+  moneyMonth = $state<MonthSummary | null>(null)
+  /** Today in Health -- doses due, steps, last night's sleep. */
+  healthDay = $state<HealthDay | null>(null)
+  /** Today's screen time, one report over the one day. */
+  screenToday = $state<ScreenReport | null>(null)
+
   /** The forecast where you live, for the Weather widget. `null` until a
    *  read lands, or while the card is showing one of the two states below
    *  instead. */
@@ -353,6 +365,14 @@ class OverviewState {
   weatherError = $state<string | null>(null)
 
   #generation = latest()
+  /**
+   * The needs a read has already answered, so `loading` is true only for what
+   * has never been fetched. The page refreshes itself on every live change,
+   * and "loading…" in the header on each of those is a flash over figures
+   * that did not go anywhere; a card just added, which needs something new,
+   * still reads as loading until its own data lands.
+   */
+  #loadedNeeds = new Set<Need>()
   #weekStart = localeWeekStart()
   #weatherGeneration = latest()
   #weatherTimer: ReturnType<typeof setInterval> | null = null
@@ -612,6 +632,10 @@ class OverviewState {
     this.snoozedMail = []
     this.followUps = []
     this.todayEvents = []
+    this.moneyMonth = null
+    this.healthDay = null
+    this.screenToday = null
+    this.#loadedNeeds.clear()
     this.bookedToday = { logged: 0, planned: 0 }
     this.weather = null
     this.weatherNoLocation = false
@@ -639,7 +663,7 @@ class OverviewState {
     if (!this.enabled) return
     const mine = this.#generation.next()
     const needs = this.needs
-    this.loading = true
+    this.loading = [...needs].some((need) => !this.#loadedNeeds.has(need))
     /** The first read that failed, if any. Reported once, at the end. */
     let failure: unknown = null
 
@@ -742,7 +766,16 @@ class OverviewState {
         mail,
         meetings,
         calendars,
-        [todayTasks, importantMail, snoozedMail, followUps, todayEvents],
+        [
+          todayTasks,
+          importantMail,
+          snoozedMail,
+          followUps,
+          todayEvents,
+          moneyMonth,
+          healthDay,
+          screenToday,
+        ],
         karma,
       ] = await Promise.all([
         Promise.all([
@@ -855,6 +888,21 @@ class OverviewState {
                 .then((events) => dayAgenda(events)),
             [],
           ),
+          ask(
+            needs.has('moneyMonth') && app.supportsMoney,
+            () => api.moneyMonth(thisMonth()),
+            null,
+          ),
+          ask(
+            needs.has('healthToday') && app.supportsHealth,
+            () => api.healthToday(today, localZone()),
+            null,
+          ),
+          ask(
+            needs.has('screenToday') && app.supportsScreenTime,
+            () => api.screenTimeReport({ from: today, to: today, tz: localZone(), devices: [] }),
+            null,
+          ),
         ]),
         // A year of Karma, whatever the card's size: the narrower heatmap
         // draws fewer of the same weeks.
@@ -883,6 +931,9 @@ class OverviewState {
       this.snoozedMail = snoozedMail
       this.followUps = followUps
       this.todayEvents = todayEvents
+      this.moneyMonth = moneyMonth
+      this.healthDay = healthDay
+      this.screenToday = screenToday
       this.karma = karma
       this.bookedToday = blocks.reduce(
         (sum, b) => {
@@ -897,6 +948,7 @@ class OverviewState {
       this.weather = weather.report
       this.weatherNoLocation = weather.noLocation
       this.weatherError = weather.error
+      for (const need of needs) this.#loadedNeeds.add(need)
 
       // Areas, goals and what has happened against them belong to `purpose`,
       // which the todo app and the pickers also read. Asked for here rather

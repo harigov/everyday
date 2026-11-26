@@ -247,7 +247,7 @@
     <!-- Who may use it -->
     <section class="block" aria-labelledby="conn-use">
       <span class="eyebrow" id="conn-use">Use</span>
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={view.connection.enabled}
@@ -260,7 +260,7 @@
           >
         </span>
       </label>
-      <label class="toggle" class:disabled={!view.connection.enabled}>
+      <label class="check-row" class:disabled={!view.connection.enabled}>
         <input
           type="checkbox"
           checked={view.connection.unattended}

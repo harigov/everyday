@@ -125,7 +125,11 @@ assert.ok(
 )
 assert.equal(money.summary?.month, money.month, 'the month’s summary too')
 assert.equal(money.mainCurrency, 'USD')
-assert.equal(money.accent, '#15803d', 'Money has an accent of its own')
+assert.equal(
+  money.accent,
+  'var(--app-money)',
+  'Money tints the window with its own colour, the one its icon wears',
+)
 assert.equal(
   money.netWorthNow,
   421_837 + 1_264_012 + 8_500 - 64_218,

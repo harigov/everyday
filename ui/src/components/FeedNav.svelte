@@ -89,6 +89,12 @@
 
   let search = $state('')
   const searching = $derived(search.trim() !== '')
+  /** A short list is read at a glance and the top bar's search finds stories;
+   *  this field narrows the sidebar's rows, so it appears once there are more
+   *  rows than fit. It stays while something is typed, so it cannot vanish
+   *  under the cursor as the list shrinks. */
+  const LONG_LIST = 8
+  const showFind = $derived(searching || feed.sources.length > LONG_LIST)
 
   /** The folders under the chip, as the search leaves them. */
   const shown = $derived(searchNav(feed.folders, search))
@@ -233,16 +239,18 @@
     {/each}
   </div>
 
-  <input
-    class="field find"
-    type="search"
-    bind:value={search}
-    placeholder="Find a feed"
-    aria-label="Find a feed"
-    spellcheck="false"
-    autocomplete="off"
-    onkeydown={findKey}
-  />
+  {#if showFind}
+    <input
+      class="field find"
+      type="search"
+      bind:value={search}
+      placeholder="Filter sources"
+      aria-label="Filter sources"
+      spellcheck="false"
+      autocomplete="off"
+      onkeydown={findKey}
+    />
+  {/if}
 
   <button
     class="side-row"
@@ -417,13 +425,14 @@
      "Sidebars". What is the Feed's own: a folder that folds, a source set in
      under it, and a source that is paused. */
 
-  /* The kind chips fill the sidebar's width, each as wide as its word needs. A
-     narrow sidebar wraps them, which the shared bar is made to do. */
+  /* The kind chips are four, set as two rows of two: at the sidebar's width
+     they used to wrap with the last one alone on a row of its own. */
   .kinds {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
     margin: var(--sp-1) 0 var(--sp-2);
   }
   .kinds .filter {
-    flex: 1 1 auto;
     justify-content: center;
     padding: 0 6px;
     font-size: var(--text-xs);

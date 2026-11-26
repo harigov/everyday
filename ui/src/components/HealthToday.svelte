@@ -34,6 +34,7 @@
   import { isoDate, locale, minutesBetween } from '../lib/time'
   import type { DoseStatus, DueDose, HealthSource, Latest, Metric, SleepStage } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import Meter from './Meter.svelte'
   import ShareBar from './ShareBar.svelte'
   import StatTile from './StatTile.svelte'
@@ -308,7 +309,7 @@
 <div class="today scroll">
   <div class="page">
     {#if !day}
-      <p class="quiet">Loading…</p>
+      <Loading centred />
     {:else}
       {#if stale.length > 0}
         <p class="stale" role="status">
@@ -324,7 +325,9 @@
         <section class="card" aria-labelledby="ht-doses">
           <div class="card-head">
             <h2 class="eyebrow" id="ht-doses">Medications</h2>
-            <button class="link" onclick={() => health.setView('medications')}>All of them</button>
+            <button class="card-link" onclick={() => health.setView('medications')}
+              >All medications</button
+            >
           </div>
           <ul class="doses">
             {#each due as d (slot(d))}
@@ -362,7 +365,9 @@
             <section class="card" aria-labelledby="ht-move">
               <div class="card-head">
                 <h2 class="eyebrow" id="ht-move">Activity</h2>
-                <button class="link" onclick={() => health.setView('activity')}>More</button>
+                <button class="card-link" onclick={() => health.setView('activity')}
+                  >Activity details</button
+                >
               </div>
               <div class="meters">
                 <Meter
@@ -401,7 +406,9 @@
             <section class="card" aria-labelledby="ht-sleep">
               <div class="card-head">
                 <h2 class="eyebrow" id="ht-sleep">Last night</h2>
-                <button class="link" onclick={() => health.setView('sleep')}>More</button>
+                <button class="card-link" onclick={() => health.setView('sleep')}
+                  >Sleep details</button
+                >
               </div>
               <div class="tiles">
                 <StatTile label="Asleep" value={durationText(night.asleepMin)} note={slept} />
@@ -442,7 +449,7 @@
         <section class="card" aria-labelledby="ht-vitals">
           <div class="card-head">
             <h2 class="eyebrow" id="ht-vitals">Latest readings</h2>
-            <button class="link" onclick={() => health.setView('vitals')}>All readings</button>
+            <button class="card-link" onclick={() => health.setView('vitals')}>All readings</button>
           </div>
           <div class="tiles wide">
             {#each vitals.slice(0, MOST_READINGS) as t (t.key)}
@@ -458,7 +465,9 @@
             <section class="card" aria-labelledby="ht-food">
               <div class="card-head">
                 <h2 class="eyebrow" id="ht-food">Eaten today</h2>
-                <button class="link" onclick={() => health.setView('nutrition')}>Nutrition</button>
+                <button class="card-link" onclick={() => health.setView('nutrition')}
+                  >Nutrition</button
+                >
               </div>
               <div class="meters">
                 {#each food as f (f.key)}
@@ -521,7 +530,7 @@
         <section class="card" aria-labelledby="ht-labs">
           <div class="card-head">
             <h2 class="eyebrow" id="ht-labs">Tests coming due</h2>
-            <button class="link" onclick={() => health.setView('records')}>Records</button>
+            <button class="card-link" onclick={() => health.setView('records')}>Records</button>
           </div>
           <ul class="notes">
             {#each labs as l, i (i)}
@@ -543,7 +552,9 @@
         <section class="card" aria-labelledby="ht-workouts">
           <div class="card-head">
             <h2 class="eyebrow" id="ht-workouts">Workouts</h2>
-            <button class="link" onclick={() => health.setView('activity')}>Activity</button>
+            <button class="card-link" onclick={() => health.setView('activity')}
+              >All workouts</button
+            >
           </div>
           <ul class="rows">
             {#each workouts as w (w.id)}
@@ -581,7 +592,7 @@
     overflow-y: auto;
   }
   .page {
-    max-width: 960px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;
@@ -609,6 +620,9 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: var(--sp-5);
+    /* Each card its own height: a short "Last night" beside a tall Activity
+       card should not be stretched to match it. */
+    align-items: start;
   }
 
   .quiet {
@@ -671,7 +685,7 @@
     gap: 1px;
     width: 100%;
     height: 10px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     overflow: hidden;
   }
   .strip span {
@@ -823,7 +837,8 @@
   :global([data-phone]) .workout .fig {
     text-align: left;
   }
-  :global([data-phone]) .link {
+  :global([data-phone]) .link,
+  :global([data-phone]) .card-link {
     display: inline-flex;
     align-items: center;
     justify-content: flex-end;

@@ -23,6 +23,7 @@
   import { startOfDay, todayIso } from '../lib/time'
   import type { ScreenCategoryId, ScreenItem } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import RankTable from './RankTable.svelte'
   import ScreenTimeCategoryPicker from './ScreenTimeCategoryPicker.svelte'
   import ScreenTimeColumns, { type Column } from './ScreenTimeColumns.svelte'
@@ -114,7 +115,7 @@
 <div class="summary scroll">
   <div class="page">
     {#if !report}
-      <p class="quiet">Loading…</p>
+      <Loading label="Loading the summary" centred />
     {:else}
       <div class="tiles">
         <StatTile
@@ -165,7 +166,9 @@
         <section class="card" aria-labelledby="st-cats">
           <div class="card-head">
             <h2 class="eyebrow" id="st-cats">By category</h2>
-            <button class="link" onclick={() => screentime.setView('categories')}>Edit</button>
+            <button class="card-link" onclick={() => screentime.setView('categories')}
+              >Edit categories</button
+            >
           </div>
           <ScreenTimeShare totals={report.categories} />
         </section>
@@ -173,7 +176,9 @@
         <section class="card" aria-labelledby="st-top">
           <div class="card-head">
             <h2 class="eyebrow" id="st-top">Top apps and sites</h2>
-            <button class="link" onclick={() => screentime.setView('apps')}>All of them</button>
+            <button class="card-link" onclick={() => screentime.setView('apps')}
+              >All apps and sites</button
+            >
           </div>
           {#if top.length === 0}
             <p class="quiet">Nothing recorded in this range.</p>
@@ -245,7 +250,7 @@
     overflow-y: auto;
   }
   .page {
-    max-width: 960px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;
@@ -269,7 +274,7 @@
     height: 28px;
     margin-left: auto;
     padding: 0 4px 0 var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     color: var(--fg-muted);
     font-size: var(--text-sm);
@@ -320,15 +325,6 @@
   .foot {
     font-size: var(--text-xs);
     color: var(--fg-faint);
-  }
-
-  .link {
-    color: var(--accent);
-    font-size: var(--text-sm);
-    font-weight: 550;
-  }
-  .link:hover {
-    text-decoration: underline;
   }
 
   .dot {
@@ -460,7 +456,7 @@
     justify-self: start;
     min-width: 0;
   }
-  :global([data-phone]) .link {
+  :global([data-phone]) .card-link {
     display: inline-flex;
     align-items: center;
     min-height: 40px;

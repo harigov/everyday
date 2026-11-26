@@ -33,7 +33,7 @@
        scale -- this one, these, all of them -- rather than as a row of
        buttons whose order has to be puzzled out. -->
   <div class="choices">
-    {#each options as option (option.label)}
+    {#each options as option, i (i)}
       <button
         class="btn"
         class:btn-outline={!option.danger}

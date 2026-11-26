@@ -66,18 +66,23 @@
   import SharePanel from './SharePanel.svelte'
   import WebAccessPanel from './WebAccessPanel.svelte'
   import SubTabs from './SubTabs.svelte'
+  import RemoteNote from './RemoteNote.svelte'
   import { shownTab } from '../lib/subtabs'
   import { settingsPage } from '../lib/settings-pages'
   import { userAgentMac, userAgentWindows } from '../lib/platform'
   import ThemePicker from './ThemePicker.svelte'
   import Icon from './Icon.svelte'
   import Symbol from './Symbol.svelte'
-  import type { IconName } from '../lib/icons'
+  import type { SymbolName } from '../lib/symbols'
   import type { BadgeSources, HotkeyStatus } from '../lib/types'
 
   let changing = $state(false)
   let current = $state('')
   let next = $state('')
+  let repeat = $state('')
+  /** What happened to the password change, said in its own section. */
+  let passwordNotice = $state<string | null>(null)
+  /** What happened to the keychain switch, said in its own section. */
   let notice = $state<string | null>(null)
 
   /**
@@ -169,88 +174,266 @@
   ]
 
   /** `sub` marks a tab drawn indented under the one before it. */
-  const TABS: { id: SettingsTab; label: string; icon: IconName; group: Group; sub?: true }[] = [
-    { id: 'general', label: 'General', icon: 'settings', group: 'platform' },
-    // "About You" rather than "You": the tab now holds the areas as well as
+  const TABS: {
+    id: SettingsTab
+    label: string
+    icon: SymbolName
+    group: Group
+    sub?: true
+    /** The one line under the page's title on a desktop. */
+    about: string
+  }[] = [
+    {
+      id: 'general',
+      label: 'General',
+      icon: 'settings',
+      group: 'platform',
+      about: 'Appearance, the tray and badge, and keyboard shortcuts.',
+    },
+    // "About you" rather than "You": the tab now holds the areas as well as
     // the six fields, and "You" beside a list of the parts of a life read as
-    // a label for one of them.
-    { id: 'profile', label: 'About You', icon: 'star', group: 'platform' },
+    // a label for one of them. Sentence case, like every other row.
+    {
+      id: 'profile',
+      label: 'About you',
+      icon: 'star',
+      group: 'platform',
+      about: 'Who you are, and the areas of your life everything else is filed under.',
+    },
     // Platform rather than the assistant's: research, the quick asks, mail
     // sorting and meeting notes run on these too, and the assistant's own
     // tab is who it is and how it behaves, not which model it is.
-    { id: 'models', label: 'Models', icon: 'layers', group: 'platform' },
+    {
+      id: 'models',
+      label: 'Models',
+      icon: 'layers',
+      group: 'platform',
+      about: 'Which model does each size of work.',
+    },
     // What the models are used for, beside where they are: mail's background
     // work, the other apps' quick asks, writing help and voice typing. The
     // mail switches were per account, at the foot of each account's sheet,
     // and the quick asks hung off the small model's card; neither is where
     // anybody looks for "what does the AI do for me". See `AiFeaturesPanel`.
-    { id: 'ai', label: 'AI features', icon: 'sparkle', group: 'platform' },
+    {
+      id: 'ai',
+      label: 'AI features',
+      icon: 'sparkle',
+      group: 'platform',
+      about: 'What the models do for you across the apps.',
+    },
     // Under AI features: steering two of its mail switches -- the categories
     // a decision model sorts into, and what writing help knows about how you
     // write. They were under Accounts, whose mail it is, but they are
     // choices about the work the models do, made once for every account.
-    { id: 'sorting', label: 'Mail sorting', icon: 'tag', group: 'platform', sub: true },
-    { id: 'writing', label: 'Mail writing', icon: 'sparkle', group: 'platform', sub: true },
+    {
+      id: 'sorting',
+      label: 'Mail sorting',
+      icon: 'tag',
+      group: 'platform',
+      sub: true,
+      about: 'The categories your mail is sorted into.',
+    },
+    {
+      id: 'writing',
+      label: 'Mail writing',
+      icon: 'pencil',
+      group: 'platform',
+      sub: true,
+      about: 'What writing help knows about how you write.',
+    },
     // The other services the assistant may use, each through its MCP server.
     // Platform: a connection serves the assistant in every app.
-    { id: 'connections', label: 'Connections', icon: 'link', group: 'platform' },
+    {
+      id: 'connections',
+      label: 'Connections',
+      icon: 'link',
+      group: 'platform',
+      about: 'Other services the assistant may use.',
+    },
     // Sealed copies of the whole vault, every app's records at once. Before
     // Data, the other way out: the same records unsealed.
-    { id: 'backup', label: 'Backup', icon: 'archive', group: 'platform' },
-    { id: 'data', label: 'Data', icon: 'upload', group: 'platform' },
-    { id: 'vault', label: 'Vault', icon: 'lock', group: 'platform' },
-    { id: 'accounts', label: 'Accounts', icon: 'inbox', group: 'apps' },
-    { id: 'assistant', label: 'Assistant', icon: 'sparkle', group: 'apps' },
+    {
+      id: 'backup',
+      label: 'Backup',
+      icon: 'archive',
+      group: 'platform',
+      about: 'Sealed copies of your whole vault, kept somewhere safe.',
+    },
+    {
+      id: 'data',
+      label: 'Data',
+      icon: 'upload',
+      group: 'platform',
+      about: 'Your records, taken out of or brought into the vault.',
+    },
+    {
+      id: 'vault',
+      label: 'Vault',
+      icon: 'lock',
+      group: 'platform',
+      about: 'How your vault is locked, who else may reach it, and what it is.',
+    },
+    {
+      id: 'accounts',
+      label: 'Accounts',
+      icon: 'mail',
+      group: 'apps',
+      about: 'Your mailboxes and calendars.',
+    },
+    {
+      id: 'assistant',
+      label: 'Assistant',
+      icon: 'compass',
+      group: 'apps',
+      about: 'Who the assistant is and how it behaves.',
+    },
     // The assistant's standing work, which was the Assistant app's four
     // panes until that app became the conversation. Under the Assistant tab
     // rather than beside it, because they are its, and a flat list of eleven
     // tabs would hide that. See `AssistantPanes.svelte`.
-    { id: 'routines', label: PANE_LABELS.routines, icon: 'clock', group: 'apps', sub: true },
+    {
+      id: 'routines',
+      label: PANE_LABELS.routines,
+      icon: 'clock',
+      group: 'apps',
+      sub: true,
+      about: 'Work the assistant does on a schedule.',
+    },
     // Routines too, but the application's: when each brief comes, what it
     // covers, and where it goes. Beside Routines, which lists them and sends
     // their Edit here.
-    { id: 'briefs', label: 'Briefs', icon: 'newspaper', group: 'apps', sub: true },
-    { id: 'runs', label: PANE_LABELS.runs, icon: 'inbox', group: 'apps', sub: true },
-    { id: 'memory', label: 'Memory', icon: 'sparkle', group: 'apps', sub: true },
+    {
+      id: 'briefs',
+      label: 'Briefs',
+      icon: 'newspaper',
+      group: 'apps',
+      sub: true,
+      about: 'When each brief comes, what it covers and where it goes.',
+    },
+    {
+      id: 'runs',
+      label: PANE_LABELS.runs,
+      icon: 'receipt',
+      group: 'apps',
+      sub: true,
+      about: 'What the assistant has done on its own.',
+    },
+    {
+      id: 'memory',
+      label: 'Memory',
+      icon: 'notebook',
+      group: 'apps',
+      sub: true,
+      about: 'What the assistant remembers about you.',
+    },
     // A skill is managed from here, not drawn as a pane of the Assistant
     // app -- see `panels.svelte.ts`'s own note on why `SettingsTab` carries
     // it apart from `Pane`.
-    { id: 'skills', label: 'Skills', icon: 'book', group: 'apps', sub: true },
-    { id: 'proposals', label: PANE_LABELS.proposals, icon: 'tick', group: 'apps', sub: true },
+    {
+      id: 'skills',
+      label: 'Skills',
+      icon: 'book',
+      group: 'apps',
+      sub: true,
+      about: 'Instructions the assistant can load when a task needs them.',
+    },
+    {
+      id: 'proposals',
+      label: PANE_LABELS.proposals,
+      icon: 'tick',
+      group: 'apps',
+      sub: true,
+      about: 'Things the assistant suggests, waiting for your word.',
+    },
     // The assistant, reached from a phone. Not indented under Assistant with
     // the panes above: those are what it does, and this is how it is reached
     // -- bot accounts on a server the person runs, much as Accounts holds
     // mailboxes.
-    { id: 'chat', label: 'Chat', icon: 'globe', group: 'apps' },
+    {
+      id: 'chat',
+      label: 'Chat',
+      icon: 'send',
+      group: 'apps',
+      about: 'Talk to the assistant from a chat app on your phone.',
+    },
     // The Plaid keys a person brings to link banks. Its own tab rather than
     // under Accounts, which holds mailboxes: a bank is not signed in to here,
     // only the keys that let Money ask Plaid to sign one in.
-    { id: 'money', label: 'Money', icon: 'wallet', group: 'apps' },
+    {
+      id: 'money',
+      label: 'Money',
+      icon: 'wallet',
+      group: 'apps',
+      about: 'The keys that let Money link your banks.',
+    },
     // Whether this computer records its screen time, what it is called, the
     // GNOME and browser extensions that do the watching, and how long the
     // vault keeps it. Mostly this machine's, not the vault's -- which is why
     // it is a tab here rather than a pane of the app.
-    { id: 'screentime', label: 'Screen time', icon: 'hourglass', group: 'apps' },
+    {
+      id: 'screentime',
+      label: 'Screen time',
+      icon: 'hourglass',
+      group: 'apps',
+      about: 'Whether this computer records its screen time.',
+    },
     // Where the files folder is, what is kept encrypted, how long the trash
     // waits, and what the assistant and the network may be told. See
     // `FilesSettingsPanel`.
-    { id: 'files', label: 'Files', icon: 'folder', group: 'apps' },
+    {
+      id: 'files',
+      label: 'Files',
+      icon: 'folder',
+      group: 'apps',
+      about: 'Where your files live and what is kept encrypted.',
+    },
     // What the Feed downloads and keeps of the podcasts it follows, how
     // Recommended is ranked, Up Next and the player. Beside Files, since
     // that is where the episodes it downloads end up. See `FeedSettingsPanel`.
-    { id: 'feed', label: 'Feed', icon: 'rss', group: 'apps' },
+    {
+      id: 'feed',
+      label: 'Feed',
+      icon: 'rss',
+      group: 'apps',
+      about: 'What the Feed downloads and keeps.',
+    },
     // Where health data comes from -- a phone's automations, an Apple export
     // -- the units and goals it is shown against, and the key for the food
     // database. Not a pane of the app: those are for reading, and a token
     // shown once is for setting up.
-    { id: 'health', label: 'Health', icon: 'heart-pulse', group: 'apps' },
-    { id: 'meetings', label: 'Meetings', icon: 'mic', group: 'apps' },
+    {
+      id: 'health',
+      label: 'Health',
+      icon: 'heart-pulse',
+      group: 'apps',
+      about: 'Where health data comes from and how it is shown.',
+    },
+    {
+      id: 'meetings',
+      label: 'Meetings',
+      icon: 'mic',
+      group: 'apps',
+      about: 'How meetings are noticed and written up.',
+    },
     // After Meetings and not under it: one list serves the journal, notes and
     // meeting notes alike, and each of those picks from it in its own place.
-    { id: 'templates', label: 'Templates', icon: 'layers', group: 'apps' },
+    {
+      id: 'templates',
+      label: 'Templates',
+      icon: 'note',
+      group: 'apps',
+      about: 'Starting points for journal entries, notes and meeting notes.',
+    },
     // Beside Meetings: another thing the app does with your days on its own,
     // reading the Library's Contacts shelf rather than a calendar.
-    { id: 'keepintouch', label: 'Keeping in touch', icon: 'people', group: 'apps' },
+    {
+      id: 'keepintouch',
+      label: 'Keeping in touch',
+      icon: 'people',
+      group: 'apps',
+      about: 'Catch-ups with the people in your Contacts.',
+    },
   ]
 
   const PANES: readonly SettingsTab[] = ['routines', 'runs', 'memory', 'proposals']
@@ -311,18 +494,21 @@
    * facts about it -- into one page taller than most windows. Split by the
    * question being asked: how it is kept shut, who else may reach it, and
    * what it is. Security is only there for an encrypted vault, which is
-   * the only kind with a lock or a password; Sharing is never drawn in a
-   * browser that is itself one of the ways in.
+   * the only kind with a lock or a password; Sharing is always there, and on
+   * a phone or a browser -- which only ever look at a vault and serve none --
+   * it says where it is set up instead of vanishing.
    */
   type VaultSub = 'security' | 'sharing' | 'about'
   const vaultSubs = $derived(
     [
       { id: 'security' as VaultSub, label: 'Security', show: !!status?.encrypted },
-      // Nor on a phone, which only ever looks at a vault and serves none.
-      { id: 'sharing' as VaultSub, label: 'Sharing', show: !isWeb && !app.remote && !mobileShell },
+      { id: 'sharing' as VaultSub, label: 'Sharing', show: true },
       { id: 'about' as VaultSub, label: 'About', show: true },
     ].filter((t) => t.show),
   )
+  /** A window onto somebody else's vault serves none itself: a phone, a
+   *  browser over web access, a computer using another's vault. */
+  const servesNothing = $derived(isWeb || app.remote || mobileShell)
   let vaultPicked = $state<VaultSub>('security')
   // Opened at a part of the tab -- "Use a vault on another computer" in the
   // palette lands on Sharing.
@@ -338,15 +524,18 @@
 
   async function changePassword(e: Event) {
     e.preventDefault()
-    notice = null
+    passwordNotice = null
     try {
       await api.changePassword(current, next)
-      notice = 'Password changed.'
+      passwordNotice = 'Password changed.'
       current = ''
       next = ''
+      repeat = ''
       changing = false
     } catch (err) {
-      notice = err instanceof Error ? err.message : String(err)
+      // Left open, with what was typed, so a wrong current password is a
+      // retry and not a start over.
+      passwordNotice = err instanceof Error ? err.message : String(err)
     }
   }
 
@@ -511,20 +700,32 @@
     {/if}
     <main class="pane scroll" aria-label="Settings">
       <div class="content">
+        <!-- A desktop's page has a title too, drawn here for every tab so the
+           pages need not each draw their own. A phone's is in the header
+           above, outside what scrolls, so it is not said twice. -->
+        {#if !phone.on}
+          {@const here = TABS.find((t) => t.id === tab)}
+          {#if here}
+            <header class="pagetitle">
+              <h2 class="pane-title">{here.label}</h2>
+              <p class="pane-sub">{here.about}</p>
+            </header>
+          {/if}
+        {/if}
         {#if Page}
           <Page />
         {:else if isPane(tab)}
           <AssistantPanes pane={tab} />
         {:else if tab === 'general'}
           <section>
-            <span class="eyebrow">Appearance</span>
+            <h3 class="eyebrow">Appearance</h3>
             <ThemePicker />
           </section>
 
           {#if tray.supported}
             <section>
-              <span class="eyebrow">Quick actions</span>
-              <label class="toggle">
+              <h3 class="eyebrow">Quick actions</h3>
+              <label class="check-row">
                 <input
                   type="checkbox"
                   checked={tray.enabled}
@@ -554,7 +755,7 @@
                  rather than hidden, the same way the lock choices above are
                  suspended while the keychain switch is on, so the choice
                  underneath is still visible for when it is turned back on. -->
-              <label class="toggle" class:disabled={!tray.enabled}>
+              <label class="check-row" class:disabled={!tray.enabled}>
                 <input
                   type="checkbox"
                   checked={tray.meetingEnabled}
@@ -578,17 +779,18 @@
 
           {#if badge.supported}
             <section>
-              <span class="eyebrow">Icon badge</span>
+              <h3 class="eyebrow">Icon badge</h3>
               <p class="hint">
                 A number on Karma Yoga's icon in the {DOCK_WORD}, adding up whatever you choose
                 here. Nothing is shown while the vault is locked.
               </p>
-              <div class="segmented">
+              <div class="seg-group" role="radiogroup" aria-label="Tasks to count on the icon">
                 {#each BADGE_TASKS as c (c.value)}
                   <button
-                    class="seg"
+                    class="seg-opt"
                     class:on={badge.sources.tasks === c.value}
-                    aria-pressed={badge.sources.tasks === c.value}
+                    role="radio"
+                    aria-checked={badge.sources.tasks === c.value}
                     onclick={() => badge.set({ tasks: c.value })}
                   >
                     {c.label}
@@ -602,7 +804,7 @@
               {:else if badge.sources.tasks === 'open'}
                 <p class="hint">Every task not yet done, the number beside All tasks in Todo.</p>
               {/if}
-              <label class="toggle">
+              <label class="check-row">
                 <input
                   type="checkbox"
                   checked={badge.sources.mail}
@@ -613,7 +815,7 @@
                   <small>Unread messages in every account's inbox, leaving out snoozed ones.</small>
                 </span>
               </label>
-              <label class="toggle">
+              <label class="check-row">
                 <input
                   type="checkbox"
                   checked={badge.sources.assistant}
@@ -631,14 +833,14 @@
           {/if}
 
           <section class="desktop-only">
-            <span class="eyebrow">Keyboard</span>
+            <h3 class="eyebrow">Keyboard</h3>
             <p class="hint">
               Two keys for anything you do often: <kbd>G</kbd> then <kbd>J</kbd> for the journal,
               <kbd>C</kbd> to start the next thing, <kbd>/</kbd> to search.
             </p>
 
             {#if hotkey}
-              <label class="toggle">
+              <label class="check-row">
                 <input
                   type="checkbox"
                   checked={hotkey.registered}
@@ -679,15 +881,22 @@
           {/if}
           {#if vaultSub === 'security'}
             <section>
-              <span class="eyebrow">Lock after</span>
+              <h3 class="eyebrow">Lock after</h3>
               <!-- Suspended rather than hidden while the key is in the
                  keychain: the choice underneath is still there, waiting, for
                  the day the switch below goes off again. -->
-              <div class="segmented" class:disabled={opensItself}>
+              <div
+                class="seg-group"
+                class:disabled={opensItself}
+                role="radiogroup"
+                aria-label="Lock after"
+              >
                 {#each LOCK_CHOICES as c (c.value)}
                   <button
-                    class="seg"
+                    class="seg-opt"
                     class:on={status?.autoLockSeconds === c.value}
+                    role="radio"
+                    aria-checked={status?.autoLockSeconds === c.value}
                     disabled={opensItself}
                     onclick={() => setAutoLock(c.value)}
                   >
@@ -707,12 +916,19 @@
             </section>
 
             <section>
-              <span class="eyebrow">Forget the key after</span>
-              <div class="segmented" class:disabled={opensItself}>
+              <h3 class="eyebrow">Forget the key after</h3>
+              <div
+                class="seg-group"
+                class:disabled={opensItself}
+                role="radiogroup"
+                aria-label="Forget the key after"
+              >
                 {#each KEY_CHOICES as c (c.value)}
                   <button
-                    class="seg"
+                    class="seg-opt"
                     class:on={status?.forgetKeySeconds === c.value}
+                    role="radio"
+                    aria-checked={status?.forgetKeySeconds === c.value}
                     disabled={opensItself}
                     onclick={() => setForgetKey(c.value)}
                   >
@@ -737,12 +953,12 @@
              reach, nor a phone: the keychain is the desktop's. -->
             {#if !isWeb && !mobileShell}
               <section>
-                <span class="eyebrow">Opening this vault</span>
+                <h3 class="eyebrow">Opening this vault</h3>
                 <!-- The box is driven by `opensItself` and nothing else, and the
                  handler puts it straight back: turning it on only opens the
                  password step, so a cancelled or refused attempt must not
                  leave a switch that says the key is kept when it is not. -->
-                <label class="toggle">
+                <label class="check-row">
                   <input
                     type="checkbox"
                     checked={opensItself}
@@ -754,15 +970,16 @@
                   <span>
                     <b>Open without a password when the app starts</b>
                     <small>
-                      This computer keeps the key in its own keychain. The vault is then as safe as
-                      your login here, rather than as safe as its password — anybody already sitting
-                      at this desk, logged in as you, can read it. Signing in here is what unlocks
-                      it from then on, so it also stops both idle locks above from firing; lock it
-                      yourself with
+                      This computer keeps the key in its own keychain and unlocks the vault when you
+                      sign in here. Both idle locks above stop firing; lock it yourself with
                       {LOCK_SHORTCUT} when you mean to.
                     </small>
                   </span>
                 </label>
+                <p class="hint risk">
+                  The vault is then only as safe as your login on this computer: anybody already
+                  sitting at this desk, logged in as you, can read it.
+                </p>
                 <p class="hint">
                   Worth it for one thing: the assistant's routines run where the vault is, and a
                   vault that is shut from the moment this machine boots until somebody types a
@@ -786,17 +1003,19 @@
                     </div>
                   </form>
                 {/if}
+                {#if notice}<p class="notice" role="status">{notice}</p>{/if}
               </section>
             {/if}
 
             <section>
-              <span class="eyebrow">Password</span>
+              <h3 class="eyebrow">Password</h3>
               {#if changing}
                 <form onsubmit={changePassword}>
                   <input
                     class="field"
                     type="password"
                     placeholder="Current password"
+                    aria-label="Current password"
                     bind:value={current}
                     autocomplete="current-password"
                   />
@@ -805,19 +1024,44 @@
                     class="field"
                     type="password"
                     placeholder="New password"
+                    aria-label="New password"
                     bind:value={next}
                     autocomplete="new-password"
                   />
+                  <div class="gap"></div>
+                  <input
+                    class="field"
+                    type="password"
+                    placeholder="Repeat new password"
+                    aria-label="Repeat new password"
+                    bind:value={repeat}
+                    autocomplete="new-password"
+                  />
+                  <p class="hint">
+                    At least 8 characters.
+                    {#if repeat && next !== repeat}The two new passwords are not the same.{/if}
+                  </p>
                   <p class="hint">
                     The new password locks the same key, it does not make a new one. A copy of this
                     vault or a backup taken before today still opens with the old password, so if
                     the old one was found out, those copies are worth deleting too.
                   </p>
                   <div class="row">
-                    <button class="btn" type="button" onclick={() => (changing = false)}>
+                    <button
+                      class="btn"
+                      type="button"
+                      onclick={() => {
+                        changing = false
+                        repeat = ''
+                      }}
+                    >
                       Cancel
                     </button>
-                    <button class="btn btn-primary" type="submit" disabled={next.length < 8}>
+                    <button
+                      class="btn btn-primary"
+                      type="submit"
+                      disabled={next.length < 8 || next !== repeat}
+                    >
                       Change
                     </button>
                   </div>
@@ -829,32 +1073,38 @@
                   </button>
                 </div>
               {/if}
+              {#if passwordNotice}<p class="notice" role="status">{passwordNotice}</p>{/if}
             </section>
-
-            {#if notice}<p class="notice">{notice}</p>{/if}
           {:else if vaultSub === 'sharing'}
-            <!-- Said first, and always: each of the three draws nothing until
-               the shell has answered whether it can serve the vault, and a
-               build that cannot draws none of them at all. -->
-            <p class="hint lead">
-              Ways to reach this vault from somewhere other than this window: other computers on
-              your network, a browser over your tailnet, and other agents through MCP.
-            </p>
-            <SharePanel />
+            {#if servesNothing}
+              <!-- The tab stays, and says why it is empty: it used to vanish,
+                 and somebody looking for web access on a phone found no
+                 trace of it. -->
+              <RemoteNote what="Sharing" />
+            {:else}
+              <!-- Said first, and always: each of the three draws nothing
+                 until the shell has answered whether it can serve the vault,
+                 and a build that cannot draws none of them at all. -->
+              <p class="hint lead">
+                Ways to reach this vault from somewhere other than this window: other computers on
+                your network, a browser over your tailnet, and other agents through MCP.
+              </p>
+              <SharePanel />
 
-            <WebAccessPanel />
+              <WebAccessPanel />
 
-            <McpPanel />
+              <McpPanel />
 
-            <!-- The other direction: this window looking at a vault on
-                 another computer. The setup screen offers it only to a
-                 computer with no vault yet, so this is where one that has a
-                 vault does it -- and where "Use a vault on another computer"
-                 in the palette lands. -->
-            <Connect inSettings />
+              <!-- The other direction: this window looking at a vault on
+                   another computer. The setup screen offers it only to a
+                   computer with no vault yet, so this is where one that has a
+                   vault does it -- and where "Use a vault on another computer"
+                   in the palette lands. -->
+              <Connect inSettings />
+            {/if}
           {:else}
             <section>
-              <span class="eyebrow">This vault</span>
+              <h3 class="eyebrow">This vault</h3>
               <div class="facts">
                 <div><span>Name</span><b>{status?.name}</b></div>
                 <div><span>Storage</span><b>{status?.backend}</b></div>
@@ -995,6 +1245,20 @@
     background: var(--float);
   }
 
+  /* The page's title and the one line under it, above whichever tab is
+     drawn. */
+  .pagetitle {
+    margin-bottom: var(--sp-6);
+  }
+  .pagetitle .pane-title {
+    font-size: var(--text-xl);
+  }
+  .pagetitle .pane-sub {
+    margin-top: var(--sp-1);
+    font-size: var(--text-sm);
+    white-space: normal;
+  }
+
   /* One column, every tab: the same `--measure` the journal's own editor is
      wrapped to, centred the same way. This used to opt a handful of
      list-heavy tabs out to the pane's full width -- a row of email accounts
@@ -1018,78 +1282,6 @@
   }
   section + section {
     margin-top: var(--sp-6);
-  }
-
-  .segmented {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    background: var(--bg-sunken);
-    border-radius: var(--radius);
-  }
-  /* Suspended, not hidden: the choice underneath is still there for the day
-     the keychain switch goes off again. */
-  .segmented.disabled {
-    opacity: 0.5;
-  }
-  .seg {
-    flex: 1;
-    height: 30px;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .seg:hover {
-    color: var(--fg);
-  }
-  .seg:disabled {
-    cursor: default;
-  }
-  .seg:disabled:hover {
-    color: var(--fg-subtle);
-  }
-  .seg.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
-  }
-
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    min-width: 0;
-    cursor: pointer;
-  }
-  /* Suspended, the same `.segmented.disabled` reads above: the choice
-     underneath stays visible rather than vanishing while it cannot be used. */
-  .toggle.disabled {
-    opacity: 0.5;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small,
-  .hint {
-    font-size: var(--text-sm);
-    line-height: var(--leading-normal);
-    color: var(--fg-subtle);
   }
 
   kbd {
@@ -1117,10 +1309,15 @@
     margin-top: var(--sp-3);
   }
 
+  /* What a change just did, said inside the section it was made in. */
   .notice {
-    margin-top: var(--sp-6);
     font-size: var(--text-sm);
     color: var(--fg-muted);
+  }
+  /* The one sentence that says what turning the keychain on risks, set off
+     from the plain description above it. */
+  .risk {
+    color: color-mix(in oklab, var(--warning) 70%, var(--fg));
   }
 
   .facts {
@@ -1217,11 +1414,13 @@
   }
   /* A choice between a few words -- the same control, drawn again in every
      page that has one -- wraps rather than cutting off its last option, each
-     a finger tall. */
-  :global([data-phone]) .settings-stage :global(.segmented) {
+     a finger tall. `.segmented` is the older per-page copy some pages still
+     draw; it goes when they move to `.seg-group`. */
+  :global([data-phone]) .settings-stage :global(:is(.segmented, .seg-group)) {
     flex-wrap: wrap;
   }
-  :global([data-phone]) .settings-stage :global(.segmented > .seg) {
+  :global([data-phone]) .settings-stage :global(.segmented > .seg),
+  :global([data-phone]) .settings-stage :global(.seg-group > .seg-opt) {
     flex: 1 1 auto;
     height: auto;
     min-height: 40px;

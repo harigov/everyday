@@ -32,6 +32,7 @@
   import { templates } from '../lib/templates.svelte'
   import type { MeetingSettings, Offer, VoiceprintInfo } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import Loading from './Loading.svelte'
   import SubTabs from './SubTabs.svelte'
 
   // Read afresh each time the tab opens: the speech model may have been
@@ -47,7 +48,7 @@
   let sub = $state<'general' | 'calls' | 'voices'>('general')
 
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
-  function confirm(message: string) {
+  function say(message: string) {
     notice = message
     if (noticeTimer) clearTimeout(noticeTimer)
     noticeTimer = setTimeout(() => {
@@ -70,13 +71,23 @@
     try {
       await meetings.save($state.snapshot(draft))
       draft = structuredClone($state.snapshot(meetings.view!.settings))
-      confirm('Saved.')
+      say('Saved.')
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
     } finally {
       saving = false
     }
   }
+
+  // Nothing to save until something differs from what the vault holds, the way
+  // Briefs and Keeping in touch work. The voices are recorded and deleted by
+  // their own buttons and never ride on this draft.
+  const dirty = $derived(
+    !!draft &&
+      !!meetings.view &&
+      JSON.stringify($state.snapshot(draft)) !==
+        JSON.stringify($state.snapshot(meetings.view.settings)),
+  )
 
   // ── Speech ──────────────────────────────────────────────────────────
 
@@ -174,7 +185,7 @@
 </script>
 
 {#if !draft}
-  <p class="hint">Loading…</p>
+  <Loading centred />
 {:else}
   <SubTabs
     tabs={[
@@ -188,7 +199,7 @@
 
   <div class="panes">
     {#if sub === 'general'}
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={draft.enabled}
@@ -201,7 +212,7 @@
             {#if meetings.view?.usable}
               Offers to take notes when a meeting starts, and writes a note from the call.
             {:else}
-              {meetings.view?.problem ?? 'Choose a speech model in Settings → Models first.'}
+              {meetings.view?.problem ?? 'Choose a speech model under Models first.'}
             {/if}
           </small>
         </span>
@@ -214,8 +225,8 @@
           <button class="btn" onclick={() => panels.openSettings('models')}>Open Models</button>
         </div>
         <p class="hint">
-          Chosen in Settings → Models, with its key and its downloads, and shared with anything else
-          in the app that turns speech into text.
+          Chosen under Models, with its key and its downloads, and shared with anything else in the
+          app that turns speech into text.
         </p>
       </section>
 
@@ -259,7 +270,7 @@
 
       <section>
         <span class="eyebrow">Before a meeting</span>
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.brief.enabled} />
           <span>
             <b>Prepare a brief before each meeting with other people</b>
@@ -279,7 +290,7 @@
             {/each}
           </select>
         </label>
-        <label class="toggle small">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.brief.web} disabled={!draft.brief.enabled} />
           <span>Look up organisations on the web</span>
         </label>
@@ -292,11 +303,13 @@
     {:else if sub === 'calls'}
       <section>
         <span class="eyebrow">When calls start</span>
-        <div class="segmented">
+        <div class="seg-group" role="radiogroup" aria-label="When calls start">
           {#each OFFER_CHOICES as c (c.value)}
             <button
-              class="seg"
+              class="seg-opt"
               class:on={draft.offer === c.value}
+              role="radio"
+              aria-checked={draft.offer === c.value}
               onclick={() => draft && (draft.offer = c.value)}
             >
               {c.label}
@@ -316,7 +329,7 @@
           {/if}
         </p>
         {#if draft.offer === 'ask'}
-          <label class="toggle small">
+          <label class="check-row">
             <input type="checkbox" bind:checked={draft.autoRecord} />
             <span>Start recording automatically after you join</span>
           </label>
@@ -325,7 +338,7 @@
             another way, recording starts in 15 seconds unless you cancel.
           </p>
         {/if}
-        <label class="toggle small">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.micOffer} disabled={draft.offer === 'off'} />
           <span>Also offer when another app starts using the microphone</span>
         </label>
@@ -373,7 +386,7 @@
           calendars are not individually ticked.
         </p>
 
-        <label class="toggle small">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.autoStop} />
           <span>Stop automatically when the calendar event ends</span>
         </label>
@@ -440,7 +453,7 @@
     {:else}
       <section>
         <span class="eyebrow">Voices</span>
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.voiceprints} />
           <span>
             <b>Match voices to names</b>
@@ -457,7 +470,7 @@
             <button class="btn" disabled={enrolling} onclick={() => void enrol()}>
               {enrolling ? 'Recording…' : 'Record my voice (20s)'}
             </button>
-            {#if enrolNotice}<span class="notice">{enrolNotice}</span>{/if}
+            {#if enrolNotice}<span class="hint" role="status">{enrolNotice}</span>{/if}
           </div>
 
           {#if meetings.voiceprints.length > 0}
@@ -485,9 +498,9 @@
     {/if}
   </div>
 
-  <div class="save">
-    {#if notice}<span class="notice">{notice}</span>{/if}
-    <button class="btn btn-primary" onclick={() => void save()} disabled={saving}>
+  <div class="save save-row">
+    {#if notice}<span class="notice" role="status">{notice}</span>{/if}
+    <button class="btn btn-primary" onclick={() => void save()} disabled={saving || !dirty}>
       {saving ? 'Saving…' : 'Save'}
     </button>
   </div>
@@ -527,35 +540,6 @@
     min-width: 0;
   }
 
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle.small {
-    align-items: center;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle.small input {
-    margin-top: 0;
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small,
   .hint {
     margin: 0;
     font-size: var(--text-sm);
@@ -696,42 +680,5 @@
   .vp-text small {
     color: var(--fg-subtle);
     font-size: var(--text-xs);
-  }
-
-  .segmented {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    background: var(--bg-sunken);
-    border-radius: var(--radius);
-  }
-  .seg {
-    flex: 1;
-    height: 30px;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-  }
-  .seg.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
-  }
-
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-    margin-top: var(--sp-6);
-    padding-top: var(--sp-4);
-    border-top: 1px solid var(--border);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
   }
 </style>

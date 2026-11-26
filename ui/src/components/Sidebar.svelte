@@ -386,8 +386,8 @@
     opacity: 1;
     translate: -100% 0;
     transition:
-      translate var(--normal, 0.2s) var(--ease),
-      visibility 0s linear var(--normal, 0.2s);
+      translate var(--med) var(--ease),
+      visibility 0s linear var(--med);
   }
   /* `none`, not `0 0`, once out: any translate makes the drawer the box a
      `position: fixed` dialog inside it -- Add a calendar, Unfollow -- is
@@ -395,7 +395,7 @@
   :global([data-phone]) .sidebar.folded.peeking {
     translate: none;
     transition:
-      translate var(--normal, 0.2s) var(--ease),
+      translate var(--med) var(--ease),
       visibility 0s;
   }
   @media (prefers-reduced-motion: reduce) {

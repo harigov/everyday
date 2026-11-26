@@ -298,7 +298,7 @@
         </div>
       {:else if phase === 'cancelled'}
         <p class="hint">
-          Sign-in cancelled. The account is saved and waiting -- try again, or close and sign in
+          Sign-in cancelled. The account is saved and waiting — try again, or close and sign in
           later from its details.
         </p>
         <div class="sheet-row">
@@ -316,11 +316,13 @@
       {/if}
     </div>
   {:else}
-    <div class="providers" role="group" aria-label="Provider">
+    <div class="seg-group providers" role="radiogroup" aria-label="Provider">
       {#each accounts.presets as p (p.provider)}
         <button
-          class="provider"
+          class="seg-opt"
           class:on={provider === p.provider}
+          role="radio"
+          aria-checked={provider === p.provider}
           onclick={() => (provider = p.provider)}>{p.label}</button
         >
       {/each}
@@ -395,7 +397,7 @@
       </div>
       {#if preset?.appPasswordHelpUrl}
         <p class="hint">
-          Use an app password, not your ordinary one -- a second, single-purpose password this
+          Use an app password, not your ordinary one — a second, single-purpose password this
           provider can issue and revoke on its own, without touching the one you sign in with
           everywhere else.
           <a href={preset.appPasswordHelpUrl} target="_blank" rel="noreferrer">How to get one</a>.
@@ -523,32 +525,11 @@
     margin-bottom: var(--sp-3);
   }
 
+  /* The shared segmented control, wrapped: a dozen providers do not fit on
+     one line. */
   .providers {
-    display: flex;
     flex-wrap: wrap;
-    gap: 2px;
-    padding: 2px;
     margin-bottom: var(--sp-3);
-    border-radius: var(--radius-sm);
-    background: var(--bg-active);
-  }
-  .provider {
-    flex: 1;
-    height: 28px;
-    padding: 0 var(--sp-2);
-    border-radius: 4px;
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    white-space: nowrap;
-  }
-  .provider:hover {
-    color: var(--fg);
-  }
-  .provider.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
   }
 
   .row {

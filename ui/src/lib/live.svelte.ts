@@ -19,6 +19,7 @@
 
 import { onChange, onLockState, onPalette, onShowInMain, onTalk, type ShowInMain } from './api'
 import { ownOrigin, pinned } from './appwindow'
+import { onWebStream } from './web'
 import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
@@ -57,6 +58,15 @@ import type { ChangeEvent, ChangeKind } from './types'
  * single edit on another machine still feels immediate.
  */
 const COALESCE_MS = 250
+
+/**
+ * How long the stream has to stay down before the window says so.
+ *
+ * A phone changing from wifi to mobile data, or a laptop waking, drops the
+ * stream for a second or two and picks it up again by itself; a notice that
+ * came and went each time would be the flapping it is meant to prevent.
+ */
+const DOWN_MS = 3000
 
 /**
  * The things that can be reloaded, by name.
@@ -430,6 +440,30 @@ class Live {
   #pendingChanges: ChangeWithIds[] = []
   #timer: ReturnType<typeof setTimeout> | null = null
   #started = false
+  #downTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * Whether the computer holding the vault is being heard from. False only
+   * once its event stream has been down for `DOWN_MS`; `Notices.svelte`
+   * reads it. The stream's own loop keeps retrying, so this clears by itself
+   * on the first reconnect.
+   */
+  reachable = $state(true)
+
+  /** What the stream loop sees, however it is carried. Debounced down, not
+   *  up: coming back is good news to say at once. */
+  setStream(up: boolean) {
+    if (up) {
+      if (this.#downTimer !== null) clearTimeout(this.#downTimer)
+      this.#downTimer = null
+      this.reachable = true
+    } else if (this.#downTimer === null && this.reachable) {
+      this.#downTimer = setTimeout(() => {
+        this.#downTimer = null
+        this.reachable = false
+      }, DOWN_MS)
+    }
+  }
 
   /**
    * Begin listening. Called once, from the root component.
@@ -442,6 +476,9 @@ class Live {
     this.#started = true
 
     onChange((change: ChangeEvent) => this.#note(change))
+    // Only a browser on web access has a stream of its own to watch; the
+    // desktop shell's remote client would feed `setStream` from its own.
+    onWebStream((up) => this.setStream(up))
     // The main window's alone, both of these: the shell raises the main
     // window for either, and a window of one app opening its palette as well,
     // behind it, would be a second palette nobody can see.

@@ -28,6 +28,8 @@
   import { lookOf } from '../lib/companion'
   import { panels } from '../lib/panels.svelte'
   import { phone } from '../lib/phone.svelte'
+  import { keysLabel } from '../lib/keys'
+  import { macPlatform } from '../lib/platform'
   import { pref } from '../lib/prefs'
   import { app } from '../lib/state.svelte'
   import AssistantDog from './AssistantDog.svelte'
@@ -225,12 +227,18 @@
       <button
         class="ghost desktop-only"
         onclick={() => void app.goTo('assistant')}
+        aria-label="Open in the Assistant app"
         title="Open in the Assistant app"
       >
         <Icon name="monitor" size={16} />
       </button>
     {/if}
-    <button class="ghost" onclick={() => void agent.toggle()} aria-label="Close" title="Close">
+    <button
+      class="ghost"
+      onclick={() => void agent.toggle()}
+      aria-label="Close"
+      title="Close ({keysLabel('a', macPlatform)})"
+    >
       <Icon name="close" size={16} />
     </button>
   </header>
@@ -407,7 +415,7 @@
     margin-top: -6px;
     padding: 3px var(--sp-3);
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-raised);
     box-shadow:
       0 0 0 1px var(--border),

@@ -14,6 +14,7 @@
   import { panels } from '../lib/panels.svelte'
   import { phoneBar, BAR_SIZE } from '../lib/phonebar.svelte'
   import { closesOnBack } from '../lib/phone.svelte'
+  import { trapFocus } from '../lib/focus'
   import Icon from './Icon.svelte'
   import Symbol from './Symbol.svelte'
 
@@ -49,6 +50,14 @@
   }
 </script>
 
+<!-- A keyboard on a phone is rare, but an external one is not unheard of, and
+     a dialog that cannot be left with Escape is a trap. -->
+<svelte:window
+  onkeydown={(e: KeyboardEvent) => {
+    if (e.key === 'Escape' && more) close()
+  }}
+/>
+
 <nav class="bottombar" data-bottom-bar aria-label="Apps">
   {#each bar as id (id)}
     {@const on = app.section === id && panels.settings === null && !more}
@@ -57,6 +66,7 @@
       class:on
       style:--app="var(--app-{id})"
       aria-current={on ? 'page' : undefined}
+      title={APPS[id].label}
       onclick={() => open(id)}
     >
       <span class="glyph">
@@ -73,6 +83,7 @@
     class:on={more || elsewhere}
     aria-expanded={more}
     aria-haspopup="dialog"
+    title="More apps"
     onclick={() => (more ? close() : (more = true))}
   >
     <span class="glyph"><Icon name="grid" size={22} weight={1.7} /></span>
@@ -83,7 +94,7 @@
 {#if more}
   <!-- Over everything but the bar's own row, so "More" closes it again. -->
   <div class="scrim" aria-hidden="true" onclick={close}></div>
-  <div class="moresheet sheet" role="dialog" aria-label="All apps">
+  <div class="moresheet sheet" role="dialog" aria-modal="true" aria-label="All apps" use:trapFocus>
     <div class="head">
       <h2>{editing ? `Up to ${BAR_SIZE} on the bar` : 'Apps'}</h2>
       <button class="btn btn-sm" onclick={() => (editing = !editing)}>
@@ -201,7 +212,7 @@
     min-width: 16px;
     height: 16px;
     padding: 0 4px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--accent);
     color: var(--fg-on-accent);
     font-size: 10px;
@@ -275,7 +286,7 @@
     place-items: center;
     width: 18px;
     height: 18px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--accent);
     color: var(--fg-on-accent);
   }

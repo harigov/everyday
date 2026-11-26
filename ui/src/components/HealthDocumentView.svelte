@@ -492,7 +492,7 @@
     gap: var(--sp-1);
     height: 28px;
     padding: 0 var(--sp-3) 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-weight: 550;
     color: var(--fg-subtle);
@@ -589,7 +589,7 @@
     height: 32px;
     padding: 0 var(--sp-4);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--float);
     color: var(--fg);
     font-size: var(--text-sm);

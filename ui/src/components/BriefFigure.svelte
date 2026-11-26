@@ -661,15 +661,6 @@
     color: var(--fg-subtle);
   }
 
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
   .subhead {
     display: flex;
     align-items: baseline;
@@ -784,7 +775,7 @@
     gap: 5px;
     height: 24px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg);
     font-size: var(--text-xs);
     font-weight: 600;
@@ -898,7 +889,7 @@
     gap: 5px;
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--warning) 14%, transparent);
     color: var(--fg);
     font-size: var(--text-xs);
@@ -1039,14 +1030,14 @@
     display: block;
     flex: 0 0 56px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--info) 16%, transparent);
     overflow: hidden;
   }
   .meter-fill {
     position: absolute;
     inset: 0 auto 0 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--info);
   }
 
@@ -1097,7 +1088,7 @@
     left: 50%;
     width: 8px;
     translate: -50% 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     overflow: hidden;
   }
   .o-heat {

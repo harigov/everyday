@@ -6034,8 +6034,11 @@ export const mockInvoke = async <T>(
         if (at < 0) return null
         const start = Math.max(0, at - 60)
         const snippet = (start > 0 ? '…' : '') + text.slice(start, at + 140)
-        const rel = at - start + (start > 0 ? 1 : 0)
-        return { snippet, highlights: [[rel, rel + q.length]] as [number, number][] }
+        // In UTF-8 bytes, the way the vault's search counts (see `pieces`).
+        const bytes = (s: string) => new TextEncoder().encode(s).length
+        const rel = bytes(snippet.slice(0, at - start + (start > 0 ? 1 : 0)))
+        const end = rel + bytes(text.slice(at, at + q.length))
+        return { snippet, highlights: [[rel, end]] as [number, number][] }
       }
       // Naming a journal narrows to entries as well, because a note is in no
       // journal. Same rule as the real one.

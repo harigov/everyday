@@ -130,7 +130,7 @@
     gap: 2px;
     width: 100%;
     height: 14px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     overflow: hidden;
   }
   .seg {

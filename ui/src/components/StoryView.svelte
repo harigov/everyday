@@ -33,6 +33,7 @@
   import { openExternal } from '../lib/open-external'
   import { phone } from '../lib/phone.svelte'
   import { episodeProgress, formatDuration } from '../lib/podcast'
+  import { app } from '../lib/state.svelte'
   import { upnext } from '../lib/upnext.svelte'
   import type { Story } from '../lib/types'
   import EpisodeActions from './EpisodeActions.svelte'
@@ -132,6 +133,10 @@
     const id = storyId
     void hasBody
     void stamp
+    // The body is drawn for the window's theme as it is loaded, so a change of
+    // theme (or of light and dark) loads it again.
+    void app.dark
+    void app.frame
     if (feed.extracting) return
     const target = untrack(() => story)
     const mine = ++loads
@@ -399,7 +404,13 @@
             {#if media}
               <span class="art">
                 {#if artwork && !artBroken}
-                  <img src={artwork} alt="" decoding="async" onerror={() => (artBroken = true)} />
+                  <img
+                    src={artwork}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    onerror={() => (artBroken = true)}
+                  />
                 {:else if source}
                   <SourceIcon source={source.source} size={88} />
                 {/if}
@@ -540,7 +551,7 @@
     place-items: center;
     width: 32px;
     height: 32px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     transform: rotate(180deg);
     transition: background var(--fast) var(--ease);

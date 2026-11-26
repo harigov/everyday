@@ -75,8 +75,8 @@ const PAGE = 100
 /** The most the service will return at once, which bounds how much a reload covers. */
 const MOST = 500
 
-/** What the Feed tints the window with: the palette's blue, the default accent being orange. */
-const FEED_ACCENT = '#0369a1'
+/** What the Feed tints the window with: the app's own colour from the theme, so it follows the palette. */
+const FEED_ACCENT = 'var(--app-feed)'
 
 /**
  * What the sidebar has selected.

@@ -7,7 +7,7 @@
 import { load, makeCheck } from './harness.mjs'
 
 const { module: bar, close } = await load('/src/lib/commandbar.ts')
-const { score, rankActions, headingOf, keyOf } = bar
+const { score, rankActions, headingOf, keyOf, mentionsWhen } = bar
 const { check, finish } = makeCheck()
 
 const act = (label, group = 'Everywhere', keywords) => ({ label, group, keywords, run: () => {} })
@@ -49,6 +49,15 @@ check(
     keyOf({ kind: 'capture', label: 'Add a task: milk', icon: 'check', hint: '', run: () => {} }),
   true,
 )
+
+// Booking is offered only for a line that names a day or a time.
+check('a day name is a when', mentionsWhen('Lunch with Sam on Friday'), true)
+check('a clock time is a when', mentionsWhen('call the bank at 3pm'), true)
+check('a date is a when', mentionsWhen('dentist 2026-12-03'), true)
+check('a relative span is a when', mentionsWhen('check the oven in 20 minutes'), true)
+check('a month and a day are a when', mentionsWhen('Mum’s birthday Dec 14'), true)
+check('a plain sentence is not', mentionsWhen('buy milk'), false)
+check('a month name alone is not', mentionsWhen('may I ask'), false)
 
 finish('commandbar')
 await close()

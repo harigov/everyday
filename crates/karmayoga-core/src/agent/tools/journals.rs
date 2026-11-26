@@ -74,10 +74,11 @@ pub(super) static TOOLS: &[Tool] = &[
             &["query"]
         ),
         "Full-text search over journal entries and notes together, or over either \
-         one on its own with scope. The way to find something \u{2014} an entry or a \
-         note \u{2014} when you know roughly what it said but not where it is filed. \
-         This is also how a note is found by what is in it; list_notes only filters \
-         by tag and pinned state.",
+         one on its own with scope. The way to find an entry or a note when you \
+         know roughly what it said but not where it is filed. This is also how a \
+         note is found by what is in it; list_notes only filters by tag and pinned \
+         state. It does not search the rest: for tasks use list_tasks with text, \
+         for mail search_mail, for files find_files, for shelves list_items.",
         run_search
     ),
     // ---- journals and entries -----------------------------------------------
@@ -209,7 +210,8 @@ pub(super) static TOOLS: &[Tool] = &[
          read_own_journal when that day comes. Use it for what a plan or review decided \
          about a particular day, so the run on that day knows. A note is added to the \
          day's page, never replacing what is there. Never write your notes into their \
-         journals.",
+         journals. Not for what they want to write down (create_entry in their \
+         journal, or create_note for a note).",
         run_write_own_journal
     ),
     tool!(

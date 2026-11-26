@@ -58,14 +58,14 @@ export function colourItems(current: string, choose: (colour: string) => unknown
 }
 
 /**
- * A "File under" submenu: the areas, with their goals nested under each.
+ * A "File under…" submenu: the areas, with their goals nested under each.
  *
  * Offered from a project, a block, an entry, a shelf item and a subscribed
  * calendar. Two levels rather than one flat list, because the flat version
  * is a column of thirty rows in which "Parent" and "Viya rides without
  * stabilisers" look like peers, and they are not.
  *
- * The first row is always "Nothing in particular". Purpose is optional
+ * The first row is always "No goal or area". Purpose is optional
  * everywhere, so taking it off has to be as easy as putting it on — and a
  * submenu whose only way out is Escape teaches people not to open it.
  */
@@ -78,12 +78,12 @@ export function purposeItems(
   if (areas.length === 0) {
     // Nothing to file under yet. Said rather than shown as an empty menu,
     // which reads as a bug.
-    return [{ label: 'No areas yet — add one in About You', disabled: true }]
+    return [{ label: 'No areas yet — add one in About you', disabled: true }]
   }
 
   const items: MenuItem[] = [
     {
-      label: 'Nothing in particular',
+      label: 'No goal or area',
       checked: !current,
       run: () => choose(null),
     },
@@ -191,6 +191,12 @@ export interface TaskMenuHooks {
   onAddSubtask?: () => void
   /** Edit the title in place. Absent where the view has no field for it. */
   onRename?: () => void
+  /**
+   * Offer the moves that reorder and nest (Move up, Make a subtask of…).
+   * On unless `false`: the board's cards are ordered by column, which the
+   * list's placements do not know about.
+   */
+  reorder?: boolean
   /** Ask before deleting: the dialog belongs to the view holding the row. */
   onDelete: () => void
 }
@@ -200,6 +206,7 @@ export function taskMenu(task: Task, hooks: TaskMenuHooks): MenuItem[] {
   const done = task.status === 'done'
   const showing = todo.selectedTask === task.id
   const today = todayIso()
+  const reorder = hooks.reorder !== false
 
   const due = (label: string, date: string | null): MenuItem => ({
     label,
@@ -276,12 +283,64 @@ export function taskMenu(task: Task, hooks: TaskMenuHooks): MenuItem[] {
         })),
       ]),
     },
+    {
+      label: 'File under…',
+      icon: 'compass',
+      items: purposeItems(task.purpose, (next) => todo.patch(task.id, { purpose: next })),
+    },
+    // Taking a task back is offered here; handing one over is not. Handed
+    // over, the assistant starts on it within a minute with its own tools,
+    // and that is a choice for the task's panel, where the hint beside the
+    // field says so -- not a row in a menu one slip away from "File under…".
+    task.assignee === 'assistant' && {
+      label: 'Do it myself',
+      icon: 'sparkle',
+      run: () => todo.patch(task.id, { assignee: 'owner' }),
+    },
     SEP,
     hooks.onAddSubtask && {
       label: 'Add a subtask',
       icon: 'plus',
       run: hooks.onAddSubtask,
     },
+    // The placements a drag makes, for the phone and the keyboard -- see
+    // `todo.moveBy`. Each shows only where it would change something.
+    reorder &&
+      todo.canMoveBy(task.id, 'top') && {
+        label: 'Move to top',
+        icon: 'arrow-up',
+        run: () => todo.moveBy(task.id, 'top'),
+      },
+    reorder &&
+      todo.canMoveBy(task.id, 'up') && {
+        label: 'Move up',
+        icon: 'arrow-up',
+        run: () => todo.moveBy(task.id, 'up'),
+      },
+    reorder &&
+      todo.canMoveBy(task.id, 'down') && {
+        label: 'Move down',
+        run: () => todo.moveBy(task.id, 'down'),
+      },
+    reorder &&
+      todo.subtaskParents(task.id).length > 0 && {
+        label: 'Make a subtask of…',
+        icon: 'list',
+        // Capped: a list of two hundred tasks is not a menu.
+        items: todo
+          .subtaskParents(task.id)
+          .slice(0, 15)
+          .map((parent) => ({
+            label: parent.title,
+            run: () => todo.makeSubtaskOf(task.id, parent.id),
+          })),
+      },
+    reorder &&
+      todo.canMakeTopLevel(task.id) && {
+        label: 'Make top-level',
+        icon: 'list',
+        run: () => todo.makeTopLevel(task.id),
+      },
     SEP,
     { label: 'Delete task…', icon: 'trash', danger: true, run: hooks.onDelete },
   ])
@@ -397,7 +456,7 @@ export function blockMenu(block: TimeBlock): MenuItem[] {
     // task and that task's project. Mostly used on an adhoc block: the
     // dentist appointment that belongs under looking after yourself.
     {
-      label: 'File under',
+      label: 'File under…',
       icon: 'compass',
       items: purposeItems(block.purpose, (purpose) => calendar.patch(block.id, { purpose })),
     },
@@ -784,7 +843,7 @@ export function itemMenu(item: Item, hooks: ItemMenuHooks): MenuItem[] {
       },
     SEP,
     {
-      label: 'File under',
+      label: 'File under…',
       icon: 'compass',
       items: purposeItems(item.purpose, (purpose) => library.patch(item.id, { purpose })),
     },

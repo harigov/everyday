@@ -78,7 +78,12 @@
         {toast.action.label}
       </button>
     {/if}
-    <button class="dismiss" onclick={() => notify.dismiss(toast.id)} aria-label="Dismiss">
+    <button
+      class="dismiss"
+      onclick={() => notify.dismiss(toast.id)}
+      aria-label="Dismiss"
+      title="Dismiss"
+    >
       <Icon name="close" size={14} />
     </button>
   </div>
@@ -196,6 +201,13 @@
     }
   }
 
+  /* While the round assistant button is out (`data-fab`, set by `App.svelte`)
+     the stack stands above it rather than covering it: a toast is the
+     thing that arrives late, and it is the button that is always there. */
+  :global(:root[data-fab]) .stack {
+    bottom: calc(var(--sp-6) + var(--fab-size) + var(--sp-3));
+  }
+
   /* A phone: the width of the screen between its edges, standing on the bar
      of apps along the bottom (or on the gesture bar where there is none, and
      on the keyboard while it is up) rather than under them. */
@@ -209,6 +221,21 @@
     bottom: calc(var(--bottombar-h) + var(--safe-bottom) + var(--sp-3));
   }
   :global(:root[data-phone][data-keyboard]) .stack {
+    bottom: var(--sp-3);
+  }
+  /* The button sits a step above the bar on the right; the stack, which
+     runs the whole width, goes above it. With the keyboard up the button is
+     away and so is the lift. */
+  :global(:root[data-phone][data-fab]) .stack {
+    bottom: calc(var(--safe-bottom) + var(--sp-3) + var(--fab-size) + var(--sp-3));
+  }
+  :global(:root[data-phone][data-fab]:has([data-bottom-bar])) .stack {
+    bottom: calc(
+      var(--bottombar-h) + var(--safe-bottom) + var(--sp-4) + var(--fab-size) + var(--sp-3)
+    );
+  }
+  :global(:root[data-phone][data-keyboard][data-fab]:has([data-bottom-bar])) .stack,
+  :global(:root[data-phone][data-keyboard][data-fab]) .stack {
     bottom: var(--sp-3);
   }
   /* A finger's reach to put one away, drawn as small as before. */

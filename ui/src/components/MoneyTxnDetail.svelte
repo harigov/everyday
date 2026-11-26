@@ -17,7 +17,7 @@
   // before it deletes.
 
   import { money } from '../lib/money.svelte'
-  import { shownPayee } from '../lib/money'
+  import { bankCategoryWords, shownPayee } from '../lib/money'
   import { longDate } from '../lib/format'
   import type { MoneyCategoryId, Txn } from '../lib/types'
   import Icon from './Icon.svelte'
@@ -39,7 +39,9 @@
       case 'rule':
         return 'Chosen by a rule'
       case 'bank':
-        return txn.bankCategory ? `From the bank's “${txn.bankCategory}”` : 'From the bank'
+        return txn.bankCategory
+          ? `The bank calls this “${bankCategoryWords(txn.bankCategory)}”`
+          : 'From the bank'
       default:
         return null
     }
@@ -112,9 +114,17 @@
           onchange={(id: MoneyCategoryId | null) => money.categorize([txn.id], id)}
           label="Category"
         />
-        {#if decidedBy}<p class="hint">{decidedBy}</p>{/if}
+        {#if decidedBy}
+          <p
+            class="hint decided"
+            title={txn.categorizedBy.by === 'bank' ? txn.bankCategory : undefined}
+          >
+            {decidedBy}
+          </p>
+        {/if}
         {#if category && payee}
           <button class="link" onclick={makeRule}>Always put {payee} in {category.name}</button>
+          <p class="hint">Makes a rule for this and future transactions.</p>
         {/if}
       </section>
 
@@ -137,6 +147,8 @@
               Use that
             </button>
           </p>
+        {:else if txn.payee}
+          <p class="hint">Your own name for it. Left empty, it shows the bank’s: {txn.payee}.</p>
         {/if}
       </section>
 
@@ -281,6 +293,9 @@
     overflow-wrap: anywhere;
   }
 
+  .decided {
+    overflow-wrap: anywhere;
+  }
   .link {
     align-self: flex-start;
     margin-top: var(--sp-1);

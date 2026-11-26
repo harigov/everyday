@@ -264,7 +264,7 @@
     margin: 0;
     padding: 3px 10px;
     border: 1px solid var(--border-strong);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--float);
     box-shadow: var(--shadow-sm);
     font-family: var(--font-ui);

@@ -170,6 +170,20 @@ export const NEEDS = [
    * what makes "Today's brief" ask it to.
    */
   'brief',
+  /**
+   * This month in Money: what came in, what went out, what is left over. One
+   * read of the month summary -- the budgets' own -- and only where the
+   * backend keeps Money.
+   */
+  'moneyMonth',
+  /**
+   * Today in Health: the doses due, the steps so far, last night's sleep. One
+   * read of the day Health's Today page is drawn from, and only where the
+   * backend keeps Health.
+   */
+  'healthToday',
+  /** Screen time so far today, as one report over the day. Only where the backend keeps it. */
+  'screenToday',
 ] as const
 export type Need = (typeof NEEDS)[number]
 
@@ -186,6 +200,7 @@ export const GROUPS = [
   'Meetings',
   'Mail',
   'People',
+  'Money and health',
   'Everything else',
 ] as const
 export type Group = (typeof GROUPS)[number]
@@ -299,7 +314,7 @@ export const WIDGETS = {
     needs: ['taskStats'],
   },
   recordedToday: {
-    label: 'Recorded today',
+    label: 'Time logged today',
     note: 'Hours you have logged so far, against the hours you set aside.',
     group: 'Today',
     app: 'calendar',
@@ -340,6 +355,16 @@ export const WIDGETS = {
   },
 
   // ── Your time ──────────────────────────────────────────────────────
+  screenToday: {
+    label: 'Screen time today',
+    note: 'How long you have been at a screen so far today, and what took most of it.',
+    group: 'Your time',
+    app: 'screentime',
+    icon: 'hourglass',
+    size: 'small',
+    sizes: ['small', 'medium'],
+    needs: ['screenToday'],
+  },
   areaBalance: {
     label: 'Where the week went',
     note: 'One bar per area: what you recorded, against what you planned.',
@@ -609,6 +634,32 @@ export const WIDGETS = {
     needs: ['mail'],
     windows: [7, 30, 90],
     window: 30,
+  },
+
+  // ── Money and health ───────────────────────────────────────────────
+  //
+  // The apps with the most to say in a glance that the page used to leave
+  // out. Each is one small read, offered only where the backend keeps the
+  // app, and each opens it.
+  moneyMonth: {
+    label: 'Money this month',
+    note: 'What came in, what went out, and what is left over so far this month.',
+    group: 'Money and health',
+    app: 'money',
+    icon: 'wallet',
+    size: 'small',
+    sizes: ['small', 'medium'],
+    needs: ['moneyMonth'],
+  },
+  healthToday: {
+    label: 'Health today',
+    note: 'The doses due, the steps so far, and how long you slept last night.',
+    group: 'Money and health',
+    app: 'health',
+    icon: 'heart-pulse',
+    size: 'small',
+    sizes: ['small', 'medium'],
+    needs: ['healthToday'],
   },
 
   // ── Everything else ────────────────────────────────────────────────

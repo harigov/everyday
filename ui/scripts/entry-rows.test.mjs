@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { load } from './harness.mjs'
 
 const { module: entryRows, close } = await load('/src/lib/entry-rows.ts')
-const { toRows } = entryRows
+const { toRows, pieces } = entryRows
 const { module: timeModule } = await load('/src/lib/time.ts')
 const { todayIso, addDays } = timeModule
 
@@ -77,6 +77,42 @@ assert.equal(
 for (const row of rows) {
   if (row.kind === 'entry') assert.equal(row.key, row.entry.id)
   else assert.equal(typeof row.label, 'string')
+}
+
+// ── Search highlights ───────────────────────────────────────────────────
+// The vault's ranges are UTF-8 bytes; the marks must land on the word anyway.
+const marked = (text, ranges) =>
+  pieces(text, ranges)
+    .filter((p) => p.hit)
+    .map((p) => p.text)
+const bytes = (s) => new TextEncoder().encode(s).length
+{
+  const text = '…the budget for Q3'
+  const from = bytes('…the ')
+  assert.deepEqual(marked(text, [[from, from + bytes('budget')]]), ['budget'], 'after a leading …')
+}
+{
+  const text = 'Café crème, then the budget'
+  const from = bytes('Café crème, then the ')
+  assert.deepEqual(marked(text, [[from, from + 6]]), ['budget'], 'after accented letters')
+}
+{
+  const text = 'plain budget and budget'
+  assert.deepEqual(
+    marked(text, [
+      [6, 12],
+      [17, 23],
+    ]),
+    ['budget', 'budget'],
+    'ASCII is unchanged, and every range is marked',
+  )
+  assert.equal(
+    pieces(text, [[6, 12]])
+      .map((p) => p.text)
+      .join(''),
+    text,
+    'nothing is lost between the pieces',
+  )
 }
 
 await close()

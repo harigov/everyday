@@ -20,7 +20,7 @@ pub(super) struct TurnMeta {
     pub(super) conversation: ConversationId,
     /// Set when this turn arrived through a chat -- see [`Turn::via`] --
     /// where nothing the panel draws is seen. Read by [`build`], which offers
-    /// `offer_choices` only where its buttons can be pressed.
+    /// `offer_choices` only where its buttons can be pressed (not out loud).
     pub(super) from_chat: bool,
     /// Set when nobody is watching this turn: a scheduled run -- see
     /// [`Turn::unattended`] -- or a background job's -- see [`Turn::job`].
@@ -559,15 +559,17 @@ pub(super) fn build(
     }
     // A plan is a checklist the panel draws: not for a turn that writes
     // nothing, which is left no tool to keep one with and no paragraph about
-    // keeping one.
-    let planning = may_reach_out && may_write;
+    // keeping one, and not for a spoken turn, where nobody sees the panel
+    // (the spoken note says to say the steps instead).
+    let planning = may_reach_out && may_write && !meta.spoken;
     if planning {
         offered.push(update_plan_tool());
     }
     // Options to pick from, drawn as buttons -- so only where somebody is at
     // the panel to press one. A chat gets a numbered list in the reply
-    // instead (see `chat_context`); a routine has `ask_owner`'s choices.
-    let choosing = !is_dream && may_write && !meta.unattended && !meta.from_chat;
+    // instead (see `chat_context`); a routine has `ask_owner`'s choices; a
+    // spoken turn asks its question in a sentence (the spoken note).
+    let choosing = !is_dream && may_write && !meta.unattended && !meta.from_chat && !meta.spoken;
     if choosing {
         offered.push(offer_choices_tool());
     }

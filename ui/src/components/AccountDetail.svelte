@@ -72,6 +72,7 @@
   import SignatureField from './SignatureField.svelte'
   import SignInLink from './SignInLink.svelte'
   import SubTabs from './SubTabs.svelte'
+  import Loading from './Loading.svelte'
   import { shownTab } from '../lib/subtabs'
 
   let { id, onclose }: { id: AccountId; onclose: () => void } = $props()
@@ -570,7 +571,7 @@
   use:trapFocus
 >
   {#if !original || !draft}
-    <p class="hint">Loading…</p>
+    <Loading label="Loading account…" />
   {:else}
     {@const st = statusLabel(original.status)}
     <div class="head">
@@ -581,7 +582,7 @@
             {accounts.preset(original.provider)?.label ?? PROVIDER_LABELS[original.provider]}
           </p>
         </div>
-        <button class="ghost" onclick={onclose} title="Close"
+        <button class="ghost" onclick={onclose} title="Close" aria-label="Close"
           ><Icon name="close" size={16} /></button
         >
       </header>
@@ -603,14 +604,14 @@
              above says it needs signing in should not have its button hidden
              behind another tab. -->
         <section>
-          <span class="eyebrow">Signing in</span>
+          <h3 class="eyebrow">Signing in</h3>
           {#if signInPhase === 'idle'}
             <div>
               <button class="btn" onclick={startSignIn}>Sign in again</button>
             </div>
           {:else if signInPhase === 'clientSecret'}
             <p class="hint">
-              Google and Microsoft do not hand a client secret back once it is set the first time --
+              Google and Microsoft do not hand a client secret back once it is set the first time —
               type it again to continue.
             </p>
             <input
@@ -666,7 +667,7 @@
             {#if original.services.calendar && calendarScopesMissing}
               <p class="error">
                 Signed in, but without permission to change calendars. The consent page gives each
-                permission its own checkbox -- sign in again and tick the calendar ones too.
+                permission its own checkbox — sign in again and tick the calendar ones too.
               </p>
               <div>
                 <button class="btn" onclick={startSignIn}>Sign in again</button>
@@ -693,7 +694,7 @@
         </section>
 
         <section>
-          <span class="eyebrow">Services</span>
+          <h3 class="eyebrow">Services</h3>
           <div class="services">
             <label class="check">
               <input type="checkbox" bind:checked={draft.services.mail} />
@@ -707,7 +708,7 @@
         </section>
 
         <section>
-          <span class="eyebrow">Signature</span>
+          <h3 class="eyebrow">Signature</h3>
           <SignatureField label="Signature" bind:value={draft.signatureHtml} />
           <p class="hint">
             Starts off every new message, reply and forward from this account, under where you write
@@ -717,7 +718,7 @@
         </section>
 
         <section>
-          <span class="eyebrow">Identities</span>
+          <h3 class="eyebrow">Identities</h3>
           <p class="hint">
             A second address this account can send as, chosen under From when you write. With no
             signature of its own, it uses the one above.
@@ -826,8 +827,8 @@
         </section>
 
         <section>
-          <span class="eyebrow">Attachments</span>
-          <label class="toggle">
+          <h3 class="eyebrow">Attachments</h3>
+          <label class="check-row">
             <input type="checkbox" bind:checked={draft.capEnabled} />
             <span>
               <b>Cap how large an attachment is kept</b>
@@ -846,7 +847,7 @@
         </section>
       {:else if shownSub === 'servers'}
         <section>
-          <span class="eyebrow">Servers</span>
+          <h3 class="eyebrow">Servers</h3>
           {#each [{ key: 'imap', label: 'Incoming (IMAP)' }, { key: 'smtp', label: 'Outgoing (SMTP)' }] as const as server (server.key)}
             <div class="server">
               <div class="grow">
@@ -917,7 +918,7 @@
         </section>
       {:else if shownSub === 'calendars'}
         <section>
-          <span class="eyebrow">Calendars</span>
+          <h3 class="eyebrow">Calendars</h3>
           {#if calendarScopesMissing}
             <p class="hint">This account was signed in before calendar access was requested.</p>
             <div>
@@ -956,7 +957,7 @@
         </section>
       {:else}
         <section>
-          <span class="eyebrow">What agents may do</span>
+          <h3 class="eyebrow">What agents may do</h3>
           <AgentAccessGrid
             assistantAccess={original.assistantAccess}
             mcpAccess={original.mcpAccess}
@@ -1021,7 +1022,7 @@
 {#if pendingRemove && original}
   <ConfirmDialog
     title={'Remove ' + original.address + '?'}
-    detail="The local copy of its mail is deleted from this vault. Nothing changes on the server itself -- signing in again later starts a fresh copy."
+    detail="The local copy of its mail is deleted from this vault. Nothing changes on the server itself — signing in again later starts a fresh copy."
     confirmLabel="Remove account"
     onconfirm={confirmRemove}
     oncancel={() => (pendingRemove = false)}
@@ -1121,12 +1122,14 @@
     border-radius: 50%;
     background: var(--fg-faint);
   }
-  .status.tone-warn .dot,
+  .status.tone-warn .dot {
+    background: var(--warning);
+  }
   .status.tone-error .dot {
     background: var(--danger);
   }
   .status.tone-ok .dot {
-    background: var(--accent);
+    background: var(--success);
   }
 
   section {
@@ -1163,32 +1166,6 @@
     gap: var(--sp-2);
     font-size: var(--text-sm);
     cursor: pointer;
-  }
-
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small {
-    font-size: var(--text-sm);
-    color: var(--fg-subtle);
-    line-height: var(--leading-normal);
   }
 
   .cap-row {

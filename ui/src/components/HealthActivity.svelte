@@ -172,7 +172,7 @@
     overflow-y: auto;
   }
   .page {
-    max-width: 960px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;

@@ -86,6 +86,24 @@ export const CADENCE_LABELS: Record<Cadence, string> = {
 // ── Amounts ──────────────────────────────────────────────────────────────
 
 /**
+ * The bank's own category, in words. The service keeps it as the bank sent
+ * it -- `GROUP/GROUP_DETAIL_WORDS`, shouted and with underscores -- which is
+ * for matching, not for reading: the last part, without the group it
+ * repeats, in lower case with spaces and a capital to begin.
+ */
+export function bankCategoryWords(raw: string): string {
+  const parts = raw
+    .split('/')
+    .map((p) => p.trim())
+    .filter(Boolean)
+  const last = parts[parts.length - 1] ?? ''
+  const group = parts.length > 1 ? parts[0] : ''
+  const detail = group && last.startsWith(`${group}_`) ? last.slice(group.length + 1) : last
+  const words = detail.replace(/_/g, ' ').trim().toLowerCase()
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+/**
  * How many decimal places `currency`'s minor unit is. ISO 4217: almost
  * everything has two, these have none or three, and an unknown code is taken
  * to have two. The same table as `amount::minor_exponent` in the core.

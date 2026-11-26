@@ -19,6 +19,7 @@ import { jobs } from './jobs.svelte'
 import { panels } from './panels.svelte'
 import { proposals } from './proposals.svelte'
 import { app, handle, isLocked } from './state.svelte'
+import { optimisticRemove } from './store/optimistic-remove'
 import type {
   Account,
   ChatLinkView,
@@ -53,6 +54,12 @@ class AssistantState {
   unseen = $state(0)
   loading = $state(false)
 
+  /**
+   * The tab shown inside the Assistant app, or `null` for the conversation.
+   * Set only while the Assistant app is the one open (see `setPane`); from
+   * anywhere else the same tabs open in Settings.
+   */
+  pane = $state<Pane | null>(null)
   /** The routine open in the editor, or `null`. A draft, saved explicitly. */
   editing = $state<RoutineInfo | null>(null)
   /** The run whose transcript is open in the rail. */
@@ -77,6 +84,7 @@ class AssistantState {
     this.templates = []
     this.unseen = 0
     this.editing = null
+    this.pane = null
     this.openRun = null
     this.expanded = null
     this.chatLinks = []
@@ -174,8 +182,18 @@ class AssistantState {
     }
   }
 
-  /** Open one of the tabs. What it shows is marked seen by `show`. */
+  /**
+   * Open one of the tabs. What it shows is marked seen by `show`.
+   *
+   * From inside the Assistant app it opens beside the conversations, so the
+   * sidebar row stays selected and the app is not left; from another app, or
+   * from Settings itself, it is the Settings tab, as it always was.
+   */
   setPane(pane: Pane) {
+    if (app.section === 'assistant' && panels.settings === null) {
+      this.pane = pane
+      return
+    }
     panels.openSettings(pane)
   }
 
@@ -274,25 +292,36 @@ class AssistantState {
     }
   }
 
+  /**
+   * Switch a routine on or off. The card flips at once and flips back if the
+   * save is refused; only `enabled` is touched, because the rows here carry
+   * derived `when`/`nextDue` that a replaced list would briefly lose.
+   */
   async toggle(routine: RoutineInfo) {
+    const row = this.routines.find((r) => r.id === routine.id)
+    const was = routine.enabled
+    if (row) row.enabled = !was
     try {
       const { when: _when, nextDue: _next, ...rest } = $state.snapshot(routine)
-      await api.saveRoutine({ ...rest, enabled: !rest.enabled })
-      await this.refresh()
+      await api.saveRoutine({ ...rest, enabled: !was })
+      void this.refresh()
     } catch (e) {
+      if (row) row.enabled = was
       await handle(e)
     }
   }
 
   async remove(id: RoutineId) {
-    try {
-      await api.deleteRoutine(id)
-      if (this.editing?.id === id) this.editing = null
-      if (this.expanded === id) this.expanded = null
-      await this.refresh()
-    } catch (e) {
-      await handle(e)
-    }
+    await optimisticRemove({
+      optimistic: () => {
+        this.routines = this.routines.filter((r) => r.id !== id)
+        if (this.editing?.id === id) this.editing = null
+        if (this.expanded === id) this.expanded = null
+      },
+      call: () => api.deleteRoutine(id),
+      onSuccess: () => void this.refresh(),
+      rollback: () => this.refresh(),
+    })
   }
 
   /** Ask for a run now. Queued; the scheduler carries it out. */
@@ -363,25 +392,31 @@ class AssistantState {
     }
   }
 
+  /** The pin shows at once; the saved list replaces it, or the old state returns if the save fails. */
   async togglePinned(memory: Memory) {
+    const row = this.memories.find((m) => m.id === memory.id)
+    const was = memory.pinned
+    if (row) row.pinned = !was
     try {
       this.memories = await api.saveMemory({
         ...$state.snapshot(memory),
-        pinned: !memory.pinned,
+        pinned: !was,
         updatedAt: new Date().toISOString(),
       })
     } catch (e) {
+      if (row) row.pinned = was
       await handle(e)
     }
   }
 
   async forget(id: string) {
-    try {
-      await api.deleteMemory(id)
-      this.memories = await api.memories()
-    } catch (e) {
-      await handle(e)
-    }
+    await optimisticRemove({
+      optimistic: () => {
+        this.memories = this.memories.filter((m) => m.id !== id)
+      },
+      call: () => api.deleteMemory(id),
+      rollback: () => this.refreshMemories(),
+    })
   }
 
   /**

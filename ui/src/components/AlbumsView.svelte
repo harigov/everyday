@@ -21,6 +21,7 @@
   import EmptyState from './EmptyState.svelte'
   import FileThumb from './FileThumb.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import PhotosBar from './PhotosBar.svelte'
   import PhotosTimeline from './PhotosTimeline.svelte'
 
@@ -229,7 +230,7 @@
     >
       {#snippet empty()}
         {#if files.page === null}
-          <EmptyState lead="Loading the album…" />
+          <Loading label="Loading the album…" centred />
         {:else if files.search.trim()}
           <EmptyState lead="No pictures here match.">
             {#snippet action()}
@@ -345,7 +346,7 @@
     gap: var(--sp-1);
     height: 28px;
     padding: 0 var(--sp-3) 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-weight: 550;
     color: var(--fg-subtle);
@@ -420,7 +421,7 @@
      one row, the name and its line under them -- and the pencil that a
      pointer finds on hover is always there. */
   :global([data-phone]) .grid-pane {
-    padding: var(--sp-2) var(--sp-3) calc(var(--fab-size) + var(--sp-6));
+    padding: var(--sp-2) var(--sp-3) var(--fab-clear);
   }
   :global([data-phone]) .grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

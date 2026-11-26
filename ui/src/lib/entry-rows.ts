@@ -42,3 +42,52 @@ export function toRows(entries: EntrySummary[]): EntryRow[] {
   }
   return rows
 }
+
+/**
+ * Split a search snippet on its highlight ranges so the matches can be
+ * marked. Shared by the journal's results and the notes' -- the notes list
+ * printed the snippet plain, so a hit never said which word it was.
+ *
+ * The ranges are UTF-8 byte offsets, the way the search in Rust counts
+ * (`search.rs`'s `snippet_for`), and a JavaScript string is indexed in UTF-16
+ * units. Sliced as they came, the mark landed two letters late after the
+ * leading "…" (three bytes, one unit) and further after any accented letter,
+ * or cut a character in half. So each offset is turned into an index first.
+ */
+export function pieces(text: string, ranges: [number, number][]) {
+  const at = indexOfByte(text)
+  const out: { text: string; hit: boolean }[] = []
+  let done = 0
+  for (const [from, to] of ranges) {
+    const s = Math.max(at(from), done)
+    const e = Math.max(at(to), s)
+    if (s > done) out.push({ text: text.slice(done, s), hit: false })
+    if (e > s) out.push({ text: text.slice(s, e), hit: true })
+    done = e
+  }
+  if (done < text.length) out.push({ text: text.slice(done), hit: false })
+  return out
+}
+
+/** Where in `text`, in UTF-16 units, a UTF-8 byte offset falls: at the start
+ *  of the character it lands in, and at the end for anything past it. */
+function indexOfByte(text: string): (byte: number) => number {
+  const starts: [number, number][] = []
+  let byte = 0
+  let unit = 0
+  for (const ch of text) {
+    starts.push([byte, unit])
+    const cp = ch.codePointAt(0) ?? 0
+    byte += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+    unit += ch.length
+  }
+  return (wanted) => {
+    if (wanted >= byte) return text.length
+    let found = 0
+    for (const [b, u] of starts) {
+      if (b > wanted) break
+      found = u
+    }
+    return found
+  }
+}

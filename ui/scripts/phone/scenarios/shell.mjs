@@ -78,7 +78,12 @@ export default {
       name: 'assistant',
       section: 'todo',
       run: async ({ page, settle }) => {
-        await tap(page, 'button[aria-label="Open the assistant"]')
+        // The round button is not drawn while the Assistant is a tab on the
+        // bar (it is by default), so the way in is the tab.
+        const fab = page.locator('button[aria-label="Open the assistant"]')
+        if ((await fab.count()) > 0) await tap(page, 'button[aria-label="Open the assistant"]')
+        else
+          await press(page.locator('[data-bottom-bar]').getByRole('button', { name: 'Assistant' }))
         await settle(800)
       },
     },

@@ -33,6 +33,7 @@
   import { isWebUrl } from '../lib/feed'
   import { openExternal } from '../lib/open-external'
   import { minutesBetween, offsetInDay } from '../lib/time'
+  import { currentDay } from '../lib/today.svelte'
   import { menu } from '../lib/menu.svelte'
   import {
     accountLabel,
@@ -41,7 +42,9 @@
     calendarTaskMenu,
     eventMenu,
   } from '../lib/menus'
+  import { notify } from '../lib/notify.svelte'
   import { panels } from '../lib/panels.svelte'
+  import { todo } from '../lib/todo.svelte'
   import { details, phone } from '../lib/phone.svelte'
   import { describeRecurrence } from '../lib/recurrence'
   import BlockProposalDetail from './BlockProposalDetail.svelte'
@@ -221,6 +224,15 @@
     } catch (e) {
       startNotesError = e instanceof Error ? e.message : String(e)
     }
+  }
+
+  // A follow-up to a meeting is the commonest thing to want from it, and it
+  // should not mean retyping the title in another app. The title as written,
+  // into the inbox with no date (`todo.addFrom`): an invitation's title is
+  // somebody else's, and "#2 @ Acme" in it is not a tag and a date.
+  async function makeTask(ev: CalendarEvent) {
+    const task = await todo.addFrom(ev.title)
+    if (task) notify.info(`Added “${task.title}” to your tasks`)
   }
 
   // Meeting notes' own settings decide whether "Take notes" can work, and
@@ -682,19 +694,28 @@
             <Icon name="clock" size={14} />
             Set this time aside
           </button>
+          <p class="hint">Puts a block on your calendar for this time.</p>
           <button class="btn" onclick={() => calendar.startTimer({ type: 'adhoc' }, event.title)}>
             <Icon name="play" size={14} />
             I'm in it now
           </button>
+          <button class="btn" onclick={() => void makeTask(event)}>
+            <Icon name="check" size={14} />
+            Make a task
+          </button>
           {#if meetings.canRecord && !meetings.capture && takeNotesWindow(event)}
             {@const join = joinLink(event)}
-            <button class="btn" disabled={meetings.starting} onclick={() => void takeNotes(event)}>
+            <button
+              class={['btn', !(join && !needsSetup) && 'btn-primary']}
+              disabled={meetings.starting}
+              onclick={() => void takeNotes(event)}
+            >
               <Icon name="mic" size={14} />
               {needsSetup ? 'Set up meeting notes' : meetings.starting ? 'Starting…' : 'Take notes'}
             </button>
             {#if join && !needsSetup}
               <button
-                class="btn"
+                class="btn btn-primary"
                 disabled={meetings.starting}
                 onclick={() => void takeNotes(event, join)}
               >
@@ -730,7 +751,7 @@
              have -- so Enter finds the task a slot instead. -->
         <button
           class="todo"
-          class:overdue={!!task.dueDate && task.dueDate < calendar.anchor}
+          class:overdue={!!task.dueDate && task.dueDate < currentDay()}
           style="--c: {project?.color ?? 'var(--fg-subtle)'}"
           title="Drag onto the grid, or press Enter to find it a slot"
           draggable={!phone.on}
@@ -743,7 +764,13 @@
             <span class="tname">{task.title}</span>
             <span class="tmeta">
               {#if project}<span class="pname">{project.name}</span>{/if}
-              {#if task.dueDate}<span>{friendlyDate(task.dueDate)}</span>{/if}
+              {#if task.dueDate}
+                <!-- Against today, not the day the calendar is showing: a
+                     week ahead, Tuesday's task is not late yet. -->
+                <span class:late={task.dueDate < currentDay()}>
+                  {task.dueDate < currentDay() ? 'Overdue · ' : ''}{friendlyDate(task.dueDate)}
+                </span>
+              {/if}
               {#if task.estimateMinutes}<span>{formatMinutes(task.estimateMinutes)}</span>{/if}
             </span>
           </span>
@@ -818,7 +845,9 @@
     font-weight: 650;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--c);
+    /* Small type in a user's colour: pulled toward the text colour so a dark
+       calendar colour is still readable on a dark theme. */
+    color: color-mix(in oklab, var(--c) 70%, var(--fg));
   }
   .cdot {
     width: 7px;
@@ -879,7 +908,7 @@
   .badge {
     align-self: flex-start;
     padding: 2px var(--sp-2);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--c) 15%, transparent);
     color: color-mix(in oklab, var(--c) 70%, var(--fg));
     font-size: var(--text-xs);
@@ -996,6 +1025,10 @@
   }
   .actions .btn {
     justify-content: flex-start;
+  }
+  .actions .hint {
+    margin: calc(-1 * var(--sp-1)) 0 var(--sp-1);
+    padding-left: var(--sp-1);
   }
   /* Edit and Delete side by side above the rest: the two things done to the
      event itself, apart from the two done with your own time. */
@@ -1193,6 +1226,9 @@
   .pname {
     color: color-mix(in oklab, var(--c) 70%, var(--fg-faint));
   }
+  .tmeta .late {
+    color: var(--danger);
+  }
 
   .blank {
     font-size: var(--text-sm);
@@ -1251,7 +1287,7 @@
   :global([data-phone]) .actions .btn {
     min-height: 44px;
   }
-  :global([data-phone]) .actions .btn:not(.btn-outline) {
+  :global([data-phone]) .actions .btn:not(.btn-outline):not(.btn-primary) {
     border: 1px solid var(--border);
   }
   :global([data-phone]) .textlink {

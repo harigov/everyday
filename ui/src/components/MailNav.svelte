@@ -649,7 +649,7 @@
     white-space: nowrap;
   }
   .status.error {
-    color: var(--danger, #c0392b);
+    color: var(--danger);
   }
   .status-link {
     color: inherit;

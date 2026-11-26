@@ -497,7 +497,7 @@
     height: 32px;
     padding: 0 14px;
     border: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: transparent;
     color: var(--fg-muted);
     font: inherit;
@@ -535,7 +535,7 @@
     align-items: center;
     gap: 2px;
     border: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: transparent;
     color: var(--fg-muted);
     font: inherit;

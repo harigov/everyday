@@ -134,7 +134,11 @@ assert.equal(
 assert.equal(feed.kind, 'all', 'every kind of feed is how it opens')
 assert.ok(sourceNamed('The Old Radio Blog').lastError, 'the dead feed says why it is dead')
 assert.equal(feed.mailAvailable, true, 'the mock has mail, so newsletters can be offered')
-assert.equal(feed.accent, '#0369a1', 'the Feed has an accent of its own')
+assert.equal(
+  feed.accent,
+  'var(--app-feed)',
+  'the Feed tints the window with its own colour, the one its icon wears',
+)
 
 // ── the chip, and remembering it ─────────────────────────────────────
 

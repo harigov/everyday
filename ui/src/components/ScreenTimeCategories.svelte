@@ -13,12 +13,26 @@
 
   import { CATEGORY_COLORS } from '../lib/screentime'
   import { screentime } from '../lib/screentime.svelte'
+  import { plural } from '../lib/format'
   import { dismissable } from '../lib/dismiss'
   import { closesOnBack, phone } from '../lib/phone.svelte'
   import type { ScreenCategory, ScreenCategoryId } from '../lib/types'
   import Icon from './Icon.svelte'
 
   const categories = $derived([...screentime.categories].sort((a, b) => a.sortOrder - b.sortOrder))
+
+  /** How many apps and sites count under each category, as the Apps pane
+   *  files them: the person's label, else the collector's suggestion. */
+  const usage = $derived.by(() => {
+    const n = new Map<string, number>()
+    for (const r of screentime.apps) {
+      const l = r.label
+      if (l?.uncategorized) continue
+      const id = l?.category ?? r.suggested
+      if (id) n.set(id, (n.get(id) ?? 0) + 1)
+    }
+    return n
+  })
 
   /** A prefix unique to this instance, so `dismissable` knows a palette's own swatch. */
   const uidBase = `stc-${Math.random().toString(36).slice(2, 9)}`
@@ -140,6 +154,9 @@
               onblur={(e) => rename(c, e.currentTarget)}
               onkeydown={(e) => nameKeys(c, e)}
             />
+
+            <span class="uses">{plural(usage.get(c.id) ?? 0, 'app or site', 'apps and sites')}</span
+            >
 
             <div class="tools">
               <button
@@ -285,6 +302,13 @@
       0 0 0 2px var(--bg-raised),
       0 0 0 4px var(--fg-muted);
     outline: none;
+  }
+
+  .uses {
+    flex: none;
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    white-space: nowrap;
   }
 
   /* A field that reads as the name until it is clicked. */

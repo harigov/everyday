@@ -5,8 +5,16 @@
   // loaded set can be re-cut without another round trip -- which is what
   // makes flipping between "by due date" and "by priority" instant.
 
-  import { FILTER_LABELS, TASK_FILTERS, todo, type GroupBy } from '../lib/todo.svelte'
+  import {
+    FILTER_LABELS,
+    TASK_FILTERS,
+    UPCOMING_DAYS,
+    groupChoices,
+    todo,
+  } from '../lib/todo.svelte'
   import { plural } from '../lib/format'
+  import { keysLabel } from '../lib/keys'
+  import { appleKeyboard } from '../lib/platform'
   import { todayIso } from '../lib/time'
   import { dueBucket, purposeKey, type Bucket } from '../lib/tasklist'
   import { menu } from '../lib/menu.svelte'
@@ -41,7 +49,7 @@
       const label = purpose.describe(resolved)
       return resolved
         ? { key: purposeKey(resolved), label: label.name, order: 0 }
-        : { key: 'none', label: 'Not filed', order: 9 }
+        : { key: 'none', label: 'No goal or area', order: 9 }
     }
     if (todo.groupBy === 'status') {
       const key = task.status
@@ -113,16 +121,7 @@
     if (shownGhosts.length > 0) void proposals.markSeen(shownGhosts)
   })
 
-  const GROUPS = $derived.by((): { id: GroupBy; label: string }[] => [
-    { id: 'due', label: 'Due date' },
-    { id: 'status', label: 'Status' },
-    { id: 'priority', label: 'Priority' },
-    // Offered only where there is somewhere to file things. A grouping whose
-    // every row would say "Not filed" is a menu item that teaches people the
-    // feature does not work.
-    ...(purpose.enabled ? [{ id: 'purpose' as const, label: 'Goal' }] : []),
-    { id: 'none', label: 'Nothing' },
-  ])
+  const GROUPS = $derived(groupChoices(purpose.enabled))
 
   /**
    * The list itself, where there is no task under the pointer.
@@ -135,7 +134,7 @@
       {
         label: 'New task',
         icon: 'plus',
-        hint: 'Ctrl+N',
+        hint: keysLabel('Mod+N', appleKeyboard),
         // The capture line is `TodoView`'s, and this component is inside it
         // rather than around it; `App.svelte` reaches the search field the
         // same way for Ctrl+F.
@@ -148,7 +147,7 @@
         items: GROUPS.map((g) => ({
           label: g.label,
           checked: todo.groupBy === g.id,
-          run: () => (todo.groupBy = g.id),
+          run: () => todo.setGroupBy(g.id),
         })),
       },
       {
@@ -198,14 +197,14 @@
          means something else. The chips and dropdowns are applied here, so
          over those the total is honest and worth saying. -->
     {#if todo.filter.trim()}
-      <EmptyState lead={`Nothing matches “${todo.filter.trim()}”.`}>
+      <EmptyState lead={`Nothing matches “${todo.filter.trim()}”`}>
         {#snippet note()}Try fewer words, or a different list.{/snippet}
         {#snippet action()}
           <button class="btn" onclick={() => todo.clearFilters()}>Clear the filters</button>
         {/snippet}
       </EmptyState>
     {:else if todo.narrowed}
-      <EmptyState lead="Nothing under these filters.">
+      <EmptyState lead="Nothing under these filters">
         {#snippet note()}
           {plural(todo.tasks.length, 'task')}
           {todo.tasks.length === 1 ? 'is' : 'are'} in this list in all.
@@ -215,15 +214,19 @@
         {/snippet}
       </EmptyState>
     {:else if todo.scope.kind === 'today'}
-      <EmptyState lead="Nothing due today.">
+      <EmptyState lead="Nothing due today">
         {#snippet note()}Anything overdue would be here too.{/snippet}
       </EmptyState>
+    {:else if todo.scope.kind === 'upcoming'}
+      <EmptyState lead="Nothing coming up">
+        {#snippet note()}Tasks with a date in the next {UPCOMING_DAYS} days will show here.{/snippet}
+      </EmptyState>
     {:else if todo.scope.kind === 'inbox'}
-      <EmptyState lead="The inbox is empty.">
+      <EmptyState lead="The inbox is empty">
         {#snippet note()}Tasks land here when you add one without a project.{/snippet}
       </EmptyState>
     {:else}
-      <EmptyState lead="No tasks yet.">
+      <EmptyState lead="No tasks yet">
         {#snippet note()}
           Add one above — try <code>Buy milk @tomorrow !high</code>.
         {/snippet}

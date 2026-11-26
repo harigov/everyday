@@ -60,6 +60,43 @@ export function rankActions(actions: Binding[], needle: string, limit = Infinity
     .map(({ action, score }) => ({ kind: 'action' as const, action, score }))
 }
 
+const DAY =
+  'mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?'
+const MONTH =
+  'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?'
+
+/** The shapes of a day or a time somebody writes into a sentence. */
+const WHEN = new RegExp(
+  [
+    String.raw`\b(?:today|tonight|tomorrow|tmrw|noon|midnight)\b`,
+    String.raw`\b(?:${DAY})\b`,
+    String.raw`\b(?:${MONTH})\.?\s+\d{1,2}\b`,
+    String.raw`\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:${MONTH})\b`,
+    String.raw`\b\d{1,2}(?::\d{2})?\s?(?:am|pm)\b`,
+    String.raw`\b\d{1,2}:\d{2}\b`,
+    String.raw`\b\d{4}-\d{2}-\d{2}\b`,
+    String.raw`\b\d{1,2}[/.]\d{1,2}(?:[/.]\d{2,4})?\b`,
+    String.raw`\b(?:next|this)\s+(?:week|weekend|month|year)\b`,
+    String.raw`\bin\s+(?:\d+|an?|a\s+few)\s+(?:minutes?|mins?|hours?|days?|weeks?|months?)\b`,
+    String.raw`\bat\s+\d{1,2}\b`,
+  ].join('|'),
+  'i',
+)
+
+/**
+ * Does the text name a day or a time at all?
+ *
+ * Decides whether the bar offers to book it. The real reading is the
+ * calendar's own and may go through a model, so it is not run on every
+ * keystroke; this is the cheap look that keeps "Book: buy milk" from being
+ * offered for a sentence with nothing in it to book. A false yes costs one
+ * row that says it could not find a day; a false no is a row not offered, and
+ * the calendar's own New event is still there.
+ */
+export function mentionsWhen(text: string): boolean {
+  return WHEN.test(text)
+}
+
 /** The heading a row is filed under in the dropdown. */
 export function headingOf(row: Row): string {
   switch (row.kind) {

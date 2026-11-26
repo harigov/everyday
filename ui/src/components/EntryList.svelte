@@ -9,18 +9,24 @@
   import { details, phone } from '../lib/phone.svelte'
   import { dayNumber, plural, weekdayShort } from '../lib/format'
   import { fileUrl, mediaUrl } from '../lib/api'
+  import { keysLabel } from '../lib/keys'
   import { menu } from '../lib/menu.svelte'
+  import { userAgentMac } from '../lib/platform'
   import { onOffPref } from '../lib/prefs'
   import { rovingFocus, type RovingParams, type RovingVirtual } from '../lib/roving'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { purposeItems } from '../lib/menus'
-  import { toRows, type EntryRow } from '../lib/entry-rows'
+  import { pieces, toRows, type EntryRow } from '../lib/entry-rows'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
+  import Loading from './Loading.svelte'
   import EntryCalendar from './EntryCalendar.svelte'
   import Icon from './Icon.svelte'
   import VirtualList from './VirtualList.svelte'
   import type { EntryId, EntrySummary, JournalId } from '../lib/types'
+
+  /** How "new" is pressed here, for the hints: never a hard-coded Ctrl. */
+  const newKeys = keysLabel('mod+n', userAgentMac)
 
   let pendingDelete = $state<{ id: EntryId; title: string } | null>(null)
 
@@ -215,7 +221,7 @@
       },
       SEP,
       {
-        label: 'File under',
+        label: 'File under…',
         icon: 'compass',
         items: purposeItems(row.purpose, (purpose) => app.setEntryPurpose(row.id, purpose)),
       },
@@ -255,7 +261,7 @@
   /** The list itself, where there is no row under the pointer. */
   function listMenu(): MenuItem[] {
     return tidyMenu([
-      { label: "Today's entry", icon: 'plus', hint: 'Ctrl+N', run: () => startToday() },
+      { label: "Today's entry", icon: 'plus', hint: newKeys, run: () => startToday() },
       !!app.query.trim() && { label: 'Clear search', icon: 'close', run: () => app.clearSearch() },
       SEP,
       {
@@ -265,19 +271,6 @@
         run: toggleCalendar,
       },
     ])
-  }
-
-  /** Split a snippet on its highlight ranges so matches can be marked. */
-  function pieces(text: string, ranges: [number, number][]) {
-    const out: { text: string; hit: boolean }[] = []
-    let at = 0
-    for (const [s, e] of ranges) {
-      if (s > at) out.push({ text: text.slice(at, s), hit: false })
-      out.push({ text: text.slice(s, e), hit: true })
-      at = e
-    }
-    if (at < text.length) out.push({ text: text.slice(at), hit: false })
-    return out
   }
 </script>
 
@@ -336,14 +329,14 @@
       onclick={toggleCalendar}
       title={showCalendar ? 'Hide the month' : 'Show the month'}
       aria-pressed={showCalendar}
-      aria-label="Show the month"
+      aria-label="The month"
     >
       <Icon name="calendar" size={16} />
     </button>
     <button
       class="new"
       onclick={() => startToday()}
-      title="Today's entry (Ctrl+N)"
+      title={`Today's entry (${newKeys})`}
       aria-label="Today's entry"
     >
       <Icon name="plus" size={17} />
@@ -370,7 +363,7 @@
   >
     {#if app.query.trim()}
       {#if app.searching && app.results.length === 0}
-        <p class="note">Searching…</p>
+        <Loading label="Searching…" />
       {:else if app.results.length === 0}
         <EmptyState lead={`Nothing matches “${app.query.trim()}”.`}>
           {#snippet note()}Try a shorter word, or a different journal.{/snippet}
@@ -588,7 +581,7 @@
     font-weight: 500;
     color: var(--fg-faint);
     padding: 1px var(--sp-2);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
   }
   .place {
@@ -623,13 +616,6 @@
     background: color-mix(in oklab, var(--accent) 26%, transparent);
     color: var(--fg);
     border-radius: 2px;
-  }
-
-  .note {
-    padding: var(--sp-6) var(--sp-4);
-    color: var(--fg-subtle);
-    font-size: var(--text-sm);
-    text-align: center;
   }
 
   /* ── On a phone ──────────────────────────────────────────────────────── */

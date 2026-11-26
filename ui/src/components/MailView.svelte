@@ -6,6 +6,7 @@
 
   import { onMount, untrack } from 'svelte'
   import { userAgentMac } from '../lib/platform'
+  import { keysLabel } from '../lib/keys'
   import { accounts } from '../lib/accounts.svelte'
   import { accountColor } from '../lib/avatar'
   import {
@@ -19,6 +20,7 @@
     isUnifiedMailbox,
     mailboxDisplayName,
     newestSyncedAt,
+    mailboxEmptyCopy,
     onlyEmptyLead,
     recentActionLine,
     snippetText,
@@ -41,9 +43,14 @@
   import { panels } from '../lib/panels.svelte'
   import { closesOnBack, details, phone } from '../lib/phone.svelte'
   import { sorting } from '../lib/sorting.svelte'
+  import { app } from '../lib/state.svelte'
+  import { todo } from '../lib/todo.svelte'
+  import { calendar } from '../lib/calendar.svelte'
+  import { notes } from '../lib/notes.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { compactCount, plural, relativeTime } from '../lib/format'
+  import { todayIso } from '../lib/time'
   import type { IconName } from '../lib/icons'
   import type {
     AccountId,
@@ -58,6 +65,7 @@
   } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
+  import Loading from './Loading.svelte'
   import Icon from './Icon.svelte'
   import MailCleanup from './MailCleanup.svelte'
   import MailCompose from './MailCompose.svelte'
@@ -649,6 +657,87 @@
     () => (composeSheet ? composeSheet.close() : mail.closeCompose()),
   )
 
+  /**
+   * Mail into the other apps, through each one's own public door: a task
+   * in the inbox, an event as the calendar's own new-event
+   * draft, a note as a note. Only offered where the vault carries the app.
+   */
+  function bridgeItems(
+    open: ThreadDetail,
+    newest: MailMessageDetail | undefined,
+  ): (MenuItem | false)[] {
+    const subject = open.thread.subject.trim() || '(no subject)'
+    const own = accounts.ownAddresses(open.thread.accountId)
+    // Who it is from, for a note made of it: the newest message not sent by
+    // the person themself.
+    const from = [...open.messages]
+      .reverse()
+      .find((m) => !own.has(m.from.email) && !own.has(m.from.email.toLowerCase()))?.from
+    return [
+      app.canShow('todo') && {
+        label: 'Make a task',
+        icon: 'check',
+        run: async () => {
+          // The subject as written, into the inbox with no date: see
+          // `todo.addFrom`. Not "raise with" the sender -- that makes it a
+          // talking point for the next meeting with them, which a task from
+          // a newsletter or an invoice is not.
+          const task = await todo.addFrom(subject)
+          if (!task) return
+          notify.info('Task added', {
+            key: 'mail-task',
+            action: {
+              label: 'Open',
+              run: () => {
+                void app.goTo('todo').then((went) => {
+                  if (went) void todo.open(task.id)
+                })
+              },
+            },
+          })
+        },
+      },
+      app.canShow('calendar') && {
+        label: 'Add to calendar',
+        icon: 'calendar',
+        run: async () => {
+          if (!(await app.goTo('calendar'))) return
+          await calendar.newEvent({
+            day: todayIso(),
+            // The next whole hour, kept inside today.
+            startMinutes: Math.min((new Date().getHours() + 1) * 60, 23 * 60),
+            minutes: 60,
+            title: subject,
+          })
+        },
+      },
+      app.canShow('notes') && {
+        label: 'Save to a note',
+        icon: 'pencil',
+        run: async () => {
+          const lines = [
+            from ? `From ${from.name ? `${from.name} <${from.email}>` : from.email}` : '',
+            newest ? snippetText(newest.snippet) : '',
+          ].filter(Boolean)
+          // Made before the Notes app is on screen, so its editor opens
+          // already holding the text rather than being told afterwards.
+          await notes.create(subject)
+          if (notes.open && lines.length > 0) {
+            notes.open.body = {
+              type: 'doc',
+              content: lines.map((text) => ({
+                type: 'paragraph',
+                content: [{ type: 'text', text }],
+              })),
+            }
+            notes.edited()
+          }
+          await app.goTo('notes')
+        },
+      },
+    ]
+  }
+
   /** What a thread's toolbar has no room for on a phone. */
   function threadMenu(open: ThreadDetail, newest: MailMessageDetail | undefined): MenuItem[] {
     const priority = open.thread.category === 'priority'
@@ -671,6 +760,9 @@
         run: () => void mail.markUnread(open.thread.id),
       },
       { label: 'Label…', icon: 'tag', run: () => (mail.wantsLabel = [open.thread.id]) },
+      SEP,
+      ...bridgeItems(open, newest),
+      SEP,
       canListen && {
         label: listeningToOpen ? 'Stop reading aloud' : 'Listen',
         icon: listeningToOpen ? 'stop' : 'play',
@@ -953,7 +1045,9 @@
               class="only-toggle"
               class:on
               aria-pressed={on}
-              title={key === 'unread' ? `Show only ${label.toLowerCase()} (G then R)` : undefined}
+              title={key === 'unread'
+                ? `Show only ${label.toLowerCase()} (${keysLabel('g r', userAgentMac)})`
+                : `Show only ${label.toLowerCase()}`}
               onclick={() => mail.toggleOnly(key)}
             >
               <Icon name={ONLY_ICONS[key]} size={13} filled={on && key === 'starred'} />
@@ -1004,9 +1098,11 @@
           or <code>is:unread</code>.
         </p>
         {#if mail.searching && mail.searchResults.length === 0}
-          <p class="hint">Searching…</p>
+          <Loading label="Searching…" centred />
         {:else if mail.searchResults.length === 0}
-          <p class="hint">Nothing matched “{mail.searchQuery}”.</p>
+          <EmptyState lead="Nothing matched “{mail.searchQuery}”">
+            {#snippet note()}Try fewer words, or a different spelling.{/snippet}
+          </EmptyState>
         {:else}
           <!-- `SearchMailResult.threads` is the same `Thread` shape every other
              row already draws from -- see `types.ts`'s own doc on why a
@@ -1031,7 +1127,7 @@
           </div>
         {/if}
       {:else if mail.loading && listEmpty}
-        <p class="hint">Loading…</p>
+        <Loading centred />
       {:else if listEmpty && mail.only.size > 0}
         <EmptyState lead={onlyEmptyLead(mail.only)}>
           {#snippet action()}
@@ -1041,8 +1137,9 @@
           {/snippet}
         </EmptyState>
       {:else if listEmpty}
-        <EmptyState lead="Nothing here.">
-          {#snippet note()}This mailbox has no threads matching what is showing.{/snippet}
+        {@const copy = mailboxEmptyCopy(mail.mailbox, inSnoozedView)}
+        <EmptyState lead={copy.lead}>
+          {#snippet note()}{copy.note}{/snippet}
         </EmptyState>
       {:else}
         <!-- The scrolling parent `VirtualList` needs: `virtua` watches its
@@ -1101,6 +1198,8 @@
       class:checked={picked}
       class:unread={t.unreadCount > 0}
       class:follow={followUp !== null}
+      aria-current={mail.selectedThread === t.id ? 'true' : undefined}
+      aria-pressed={picked ? true : undefined}
       onmousedown={noTextRange}
       onclick={(e) => clickRow(e, t.id)}
       oncontextmenu={(e) => menu.show(e, menuFor(t))}
@@ -1111,6 +1210,7 @@
         <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
       {/if}
       <span class="who">
+        {#if t.unreadCount > 0}<span class="sr-only">Unread, </span>{/if}
         <span class="from">{threadPeople(t.participants, accounts.ownAddresses(t.accountId))}</span>
         {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
       </span>
@@ -1133,13 +1233,19 @@
       </span>
       <span class="side">
         {#if t.category === 'priority'}
-          <span class="mark priority" title="Priority"><Icon name="flag" size={12} /></span>
+          <span class="mark priority" title="Priority"
+            ><Icon name="flag" size={12} /><span class="sr-only">Priority</span></span
+          >
         {/if}
         {#if t.starred}
-          <span class="mark starred" title="Starred"><Icon name="star" size={12} filled /></span>
+          <span class="mark starred" title="Starred"
+            ><Icon name="star" size={12} filled /><span class="sr-only">Starred</span></span
+          >
         {/if}
         {#if t.hasAttachments}
-          <span class="mark" title="Has an attachment"><Icon name="paperclip" size={12} /></span>
+          <span class="mark" title="Has an attachment"
+            ><Icon name="paperclip" size={12} /><span class="sr-only">Has an attachment</span></span
+          >
         {/if}
         <span class="date">{rowDate(t)}</span>
         {#if unifiedView}
@@ -1147,7 +1253,8 @@
             class="acct"
             style:background={accountColor(t.accountId, accountIds)}
             title={accountLabel(t.accountId)}
-          ></span>
+            ><span class="sr-only">{accountLabel(t.accountId)}</span></span
+          >
         {/if}
       </span>
     </button>
@@ -1165,7 +1272,7 @@
         aria-label="Not needed — take it off the top"
         onclick={() => void mail.dismissFollowUp(t.id)}
       >
-        <Icon name="tick" size={13} weight={2.5} />
+        <Icon name="close" size={13} />
       </button>
     </div>
   {/snippet}
@@ -1258,6 +1365,7 @@
                 <button
                   class="tool"
                   aria-label="Reply"
+                  title="Reply"
                   onclick={() => mail.reply(newest.id, false)}
                 >
                   <Icon name="reply" size={20} />
@@ -1266,6 +1374,7 @@
               <button
                 class="tool"
                 aria-label="Archive"
+                title="Archive"
                 onclick={() => void mail.archive(open.thread.id)}
               >
                 <Icon name="archive" size={20} />
@@ -1273,6 +1382,7 @@
               <button
                 class="tool"
                 aria-label="Snooze"
+                title="Snooze"
                 onclick={() => (mail.wantsSnooze = [open.thread.id])}
               >
                 <Icon name="clock" size={20} />
@@ -1282,6 +1392,7 @@
                 <button
                   class="tool"
                   aria-label="Delete forever"
+                  title="Delete forever"
                   onclick={() => (mail.wantsForever = { ids: [open.thread.id], mailbox: box })}
                 >
                   <Icon name="trash" size={20} />
@@ -1290,6 +1401,7 @@
                 <button
                   class="tool"
                   aria-label="Trash"
+                  title="Trash"
                   onclick={() => void mail.trash(open.thread.id)}
                 >
                   <Icon name="trash" size={20} />
@@ -1298,6 +1410,7 @@
               <button
                 class="tool"
                 aria-label="More actions"
+                title="More actions"
                 aria-haspopup="menu"
                 onclick={(e) => menu.show(e, threadMenu(open, newest))}
               >
@@ -1413,6 +1526,15 @@
                 >
                   <Icon name="tag" size={17} />
                 </button>
+                <button
+                  class="tool"
+                  title="Make a task, add to the calendar, save to a note"
+                  aria-label="Send to another app"
+                  aria-haspopup="menu"
+                  onclick={(e) => menu.show(e, tidyMenu(bridgeItems(open, newest)))}
+                >
+                  <Icon name="more" size={17} />
+                </button>
               </div>
               <span class="spacer"></span>
               {#if canListen}
@@ -1460,6 +1582,7 @@
             <button
               class="close"
               aria-label="Dismiss the summary"
+              title="Dismiss the summary"
               onclick={() => mail.dismissSummary()}><Icon name="close" size={13} /></button
             >
           </div>
@@ -1470,8 +1593,11 @@
           <div class="summary-panel">
             <Icon name="play" size={14} />
             <p>{listening.sentences.join(' ')}</p>
-            <button class="close" aria-label="Stop reading aloud" onclick={() => listening.stop()}
-              ><Icon name="close" size={13} /></button
+            <button
+              class="close"
+              aria-label="Stop reading aloud"
+              title="Stop reading aloud"
+              onclick={() => listening.stop()}><Icon name="close" size={13} /></button
             >
           </div>
         {/if}
@@ -1503,7 +1629,7 @@
           <div class="phone-bar">
             <PhoneBack onclick={() => mail.closeThread()} />
           </div>
-          <p class="hint">Opening…</p>
+          <Loading label="Opening…" centred />
         </div>
       {/if}
     </main>
@@ -1544,23 +1670,6 @@
 
 {#if cleaning}
   <MailCleanup accountId={scopeAccount} onclose={() => (cleaning = false)} />
-{/if}
-
-{#if mail.sendingUndo}
-  <div class="undo-toast">
-    <span>
-      {#if mail.sendingUndo.scheduled}
-        <!-- A "send later" window can be hours out -- a countdown in seconds
-             would either read as an absurd number or, worse, look wrong the
-             instant it started (Bug 11). `relativeTime` gives the same
-             "in 3 hours" shape the rest of the app already uses. -->
-        Scheduled — sending {relativeTime(new Date(mail.sendingUndo.at).toISOString())}
-      {:else}
-        Sending in {mail.sendingUndo.secondsLeft}s…
-      {/if}
-    </span>
-    <button class="link" onclick={() => void mail.undoSend()}>Undo</button>
-  </div>
 {/if}
 
 <style>
@@ -1729,7 +1838,7 @@
     gap: 5px;
     height: 26px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-xs);
     font-weight: 550;
     color: var(--fg-subtle);
@@ -1774,7 +1883,7 @@
     gap: 5px;
     height: 26px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-weight: 600;
     color: var(--danger);
     white-space: nowrap;
@@ -1874,7 +1983,11 @@
   }
   @container (min-width: 560px) {
     .row {
-      grid-template: 'who gist side' auto / 168px minmax(0, 1fr) auto;
+      /* The gist stops at a reading width and the date follows it, rather than
+         sitting at the far edge of a 1440px-wide list, a long way from the
+         name it belongs to. The row's card still runs the full width. */
+      grid-template: 'who gist side' auto / 168px minmax(0, var(--measure)) auto;
+      justify-content: start;
       column-gap: var(--sp-4);
     }
   }
@@ -2100,7 +2213,7 @@
     align-items: center;
     gap: 1px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
   }
   .tool {
@@ -2108,7 +2221,7 @@
     place-items: center;
     width: 36px;
     height: 32px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     transition:
       background var(--fast) var(--ease),
@@ -2194,7 +2307,7 @@
     gap: var(--sp-2);
     margin: var(--sp-2) 0 0;
     padding: 4px var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--accent) 10%, transparent);
     color: var(--fg-muted);
     font-size: var(--text-xs);
@@ -2210,7 +2323,7 @@
     gap: 6px;
     height: 34px;
     padding: 0 var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--accent) 10%, transparent);
     font-size: var(--text-sm);
     font-weight: 600;
@@ -2307,27 +2420,6 @@
     font-size: var(--text-xs);
     color: var(--fg-subtle);
     line-height: var(--leading-normal);
-  }
-
-  .undo-toast {
-    position: fixed;
-    left: 50%;
-    bottom: var(--sp-8);
-    translate: -50% 0;
-    z-index: 60;
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    padding: var(--sp-2) var(--sp-4);
-    border-radius: 999px;
-    background: var(--float);
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow-lg);
-    font-size: var(--text-sm);
-  }
-  .undo-toast .link {
-    color: var(--journal-accent, var(--accent));
-    font-weight: 650;
   }
 
   /* ── On a phone ─────────────────────────────────────────────────────
@@ -2515,18 +2607,28 @@
     padding: 0;
   }
 
-  /* Above the bar of apps, not behind it. */
-  :global([data-phone]) .undo-toast {
-    left: 0;
-    right: 0;
-    translate: none;
-    margin-inline: auto;
-    width: max-content;
-    max-width: calc(100vw - var(--sp-4) * 2);
-    bottom: calc(var(--bottombar-h) + var(--safe-bottom) + var(--sp-4));
+  /* A phone's row is three lines, not the desktop's two squeezed: who and
+     when, then the subject, then the start of the message, with a category
+     or follow-up word wrapping under rather than taking width from them. */
+  :global([data-phone]) .gist {
+    flex-wrap: wrap;
   }
-  :global([data-phone]) .undo-toast .link {
-    min-height: 44px;
-    padding: 0 var(--sp-2);
+  :global([data-phone]) .words {
+    display: flex;
+    flex: 1 1 100%;
+    flex-direction: column;
+    gap: 1px;
+    overflow: visible;
+    white-space: normal;
+  }
+  :global([data-phone]) .subject,
+  :global([data-phone]) .snippet {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  :global([data-phone]) .snippet {
+    margin-left: 0;
   }
 </style>

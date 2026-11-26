@@ -28,6 +28,7 @@
   import { phone } from '../lib/phone.svelte'
   import { friendlyDate, formatClock, formatMinutes } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
+  import { PRIORITY_LABELS } from '../lib/labels'
   import { taskMenu } from '../lib/menus'
   import { lateLabel, nextReminder, reminderLabel, zoneAt } from '../lib/tasklist'
   import { tick } from 'svelte'
@@ -223,7 +224,7 @@
       >
         <span class="title">
           {#if task.priority === 'urgent' || task.priority === 'high'}
-            <span class="flag p-{task.priority}" title="{task.priority} priority">
+            <span class="flag p-{task.priority}" title="{PRIORITY_LABELS[task.priority]} priority">
               <Icon name="flag" size={12} weight={1.7} />
             </span>
           {/if}
@@ -233,7 +234,26 @@
         {#if task.dueDate || task.estimateMinutes || task.tags.length || showProject || task.status === 'blocked' || task.status === 'doing' || reminder || assistants || raiseWith.length}
           <span class="meta">
             {#if showProject && project}
-              <span class="chip project" style="--dot: {project.color}">
+              <!-- Not a button: it sits inside the row's own button, and
+                   buttons do not nest. Out of the tab order for the same
+                   reason; the sidebar and the row's menu reach a project by
+                   keyboard. -->
+              <span
+                class="chip project"
+                role="link"
+                tabindex="-1"
+                title="Open {project.name}"
+                style="--dot: {project.color}"
+                onclick={(e) => {
+                  e.stopPropagation()
+                  void todo.setScope({ kind: 'project', id: project.id })
+                }}
+                onkeydown={(e) => {
+                  if (e.key !== 'Enter') return
+                  e.stopPropagation()
+                  void todo.setScope({ kind: 'project', id: project.id })
+                }}
+              >
                 <span class="dot"></span>{project.name}
               </span>
             {/if}
@@ -297,14 +317,6 @@
           <Icon name="plus" size={13} weight={1.8} />
         </button>
       {/if}
-      <button
-        class="act danger"
-        title="Delete"
-        aria-label="Delete"
-        onclick={() => (confirming = true)}
-      >
-        <Icon name="trash" size={13} weight={1.7} />
-      </button>
       <button
         class="act"
         data-menu-trigger
@@ -568,7 +580,7 @@
     font-weight: 550;
     color: var(--fg-faint);
     padding: 1px var(--sp-2);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     white-space: nowrap;
   }
@@ -582,7 +594,7 @@
   /* Filled rather than tinted like the due chip beside it: that one says
      when, this one says how far behind, and it should be the louder. */
   .chip.state.late {
-    color: #fff;
+    color: var(--fg-on-danger);
     background: var(--danger);
   }
   .chip.state.doing {
@@ -596,6 +608,11 @@
   .chip.project {
     background: none;
     padding-left: 0;
+    cursor: pointer;
+  }
+  .chip.project:hover {
+    color: var(--fg);
+    text-decoration: underline;
   }
   .chip.assistant {
     color: var(--accent);
@@ -666,10 +683,6 @@
   .act:hover {
     background: var(--bg-active);
     color: var(--fg);
-  }
-  .act.danger:hover {
-    background: color-mix(in oklab, var(--danger) 12%, transparent);
-    color: var(--danger);
   }
 
   /* Always shown, not just on hover -- a proposed deletion is not the kind
@@ -744,7 +757,7 @@
 
   /* What shows on hover on a desktop is not there on a phone: the one control
      that opens the rest -- the same menu a long press raises -- is, always,
-     and the three it holds are not drawn twice. */
+     and the ones it holds are not drawn twice. */
   :global([data-phone]) .actions {
     opacity: 1;
     margin: -12px -4px -12px 0;

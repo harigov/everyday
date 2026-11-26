@@ -122,7 +122,7 @@
     gap: 4px var(--sp-3);
     margin: var(--sp-2) 0 0;
     padding: 4px var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--accent) 10%, transparent);
     color: var(--fg-muted);
     font-size: var(--text-xs);

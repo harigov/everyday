@@ -134,8 +134,8 @@ const PAGE = 200
 const MOST = 1000
 /** How many months the cash flow report draws. */
 const CASH_FLOW_MONTHS = 12
-/** What Money tints the window with: the palette's green, the default accent being orange. */
-const MONEY_ACCENT = '#15803d'
+/** What Money tints the window with: the theme's own Money hue, so it follows the theme like every other app. */
+const MONEY_ACCENT = 'var(--app-money)'
 /** The largest file sent to be read. The service refuses more; this saves sending it. */
 const MAX_IMPORT_CHARS = 5 * 1024 * 1024
 /**

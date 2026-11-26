@@ -27,6 +27,7 @@
   import type { MailWriting, VoiceLearningView } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import SubTabs from './SubTabs.svelte'
 
   /** `MAX_INSTRUCTIONS_CHARS` in `crates/karmayoga-core/src/mail/writing.rs`. */
@@ -228,7 +229,7 @@
 {#if !draft && loadError}
   <p class="hint">Mail writing could not be read: {loadError}</p>
 {:else if !draft}
-  <p class="hint">Loading…</p>
+  <Loading />
 {:else}
   <SubTabs
     tabs={[
@@ -243,10 +244,10 @@
   <div class="panes">
     {#if sub === 'writing'}
       <p class="hint lead">
-        How the model should sound when it writes mail for you: the three replies under a message,
-        Write with AI, rewriting what you wrote, drafts it prepares ahead, and mail the assistant
-        drafts. It already reads your sent mail for how you write. This is for what it cannot work
-        out from that.
+        How your mail should sound when the assistant writes it for you: the three replies under a
+        message, Write with AI, rewriting what you wrote, drafts it prepares ahead, and mail the
+        assistant drafts. It already reads your sent mail for how you write. This is for what it
+        cannot work out from that.
       </p>
     {/if}
 
@@ -260,7 +261,7 @@
 
     {#if sub === 'writing'}
       <section>
-        <label class="eyebrow" for="writing-instructions">How you write</label>
+        <label class="sr-only" for="writing-instructions">How you write</label>
         <textarea
           id="writing-instructions"
           rows="9"
@@ -277,17 +278,17 @@
 
       <section>
         <span class="eyebrow">Your calendar</span>
-        <label class="switch">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.useCalendar} />
-          <span class="switch-text">
-            <span class="switch-label">Use my calendar to suggest meeting times</span>
-            <span class="switch-blurb">
+          <span>
+            <b>Use my calendar to suggest meeting times</b>
+            <small>
               Off until you tick it. With each suggested reply and each Write with AI, the next four
               weeks of the calendars you show in Calendar go to the model: times and titles, never
               descriptions or guest lists. From an account with writing help off it gets the times
               only, so it can keep clear of them. It is told to keep what is on them to itself, and
               you read every draft before it goes.
-            </span>
+            </small>
           </span>
         </label>
         <p class="hint">
@@ -300,11 +301,11 @@
       </section>
     {:else if sub === 'checks'}
       <section>
-        <span class="eyebrow" id="writing-checks">Checks before sending</span>
+        <span class="sr-only" id="writing-checks">Checks before sending</span>
         <p class="hint">
-          When you press Send, each check switched on is put to your decision model, or to the Small
-          model when you have none switched on, along with the message. It needs writing help on for
-          the account you send from. A check that does not pass warns you, and you can still send.
+          When you press Send, each check that is switched on is run on the message by your sorting
+          model, or your smaller model when none is set up. It needs writing help on for the account
+          you send from. A check that does not pass warns you, and you can still send.
         </p>
         {#if draft.sendChecks.length > 0}
           <ul class="checks" aria-labelledby="writing-checks">
@@ -369,17 +370,17 @@
     {:else}
       <section>
         <span class="eyebrow">Your replies</span>
-        <label class="switch">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.learn} />
-          <span class="switch-text">
-            <span class="switch-label">Learn from the replies I send</span>
-            <span class="switch-blurb">
-              Now and then the model reads replies you sent — the message each answered, the replies
-              it suggested if it did, and what you wrote instead — and keeps a few short notes on
+          <span>
+            <b>Learn from the replies I send</b>
+            <small>
+              Now and then your replies are read — the message each answered, the replies it
+              suggested if it did, and what you wrote instead — and a few short notes are kept on
               how you reply. Everything it writes for you goes with them after that, under what you
               say in How you write, which wins. It reads only accounts with writing help on, on the
               same model.
-            </span>
+            </small>
           </span>
         </label>
       </section>
@@ -388,11 +389,11 @@
            it is saved by its own buttons, and the Save at the foot of the
            tab is not for it -- only for the switch. -->
       <section class="card">
-        <label class="eyebrow" for="writing-learned">What it has learned</label>
+        <label class="sr-only" for="writing-learned">What it has learned</label>
         {#if learnedError}
           <p class="hint">What it has learned could not be read: {learnedError}</p>
         {:else if !learned}
-          <p class="hint">Loading…</p>
+          <Loading />
         {:else}
           <textarea
             id="writing-learned"
@@ -445,9 +446,16 @@
     {/if}
   </div>
 
-  <div class="save">
-    {#if notice}<span class="notice">{notice}</span>{/if}
-    <button class="btn btn-primary" onclick={() => void save()} disabled={saving}>
+  <div class="save save-row">
+    {#if notice}<span class="notice" role="status">{notice}</span>{/if}
+    <button
+      class="btn btn-primary"
+      onclick={() => void save()}
+      disabled={saving}
+      title={sub === 'learning'
+        ? 'Saves the switch above. The notes have their own Save notes button.'
+        : undefined}
+    >
       {saving ? 'Saving…' : 'Save'}
     </button>
   </div>
@@ -516,35 +524,6 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 16%, transparent);
   }
-  .switch {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-2);
-    cursor: pointer;
-  }
-  .switch input {
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .switch-text {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .switch-label {
-    font-size: var(--text-sm);
-  }
-  .switch-blurb {
-    color: var(--fg-subtle);
-    font-size: var(--text-xs);
-    line-height: var(--leading-normal);
-  }
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-  }
   /* The same card Mail sorting draws its "Older mail" in. */
   .card {
     padding: var(--sp-4);
@@ -612,11 +591,5 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--sp-2);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
   }
 </style>

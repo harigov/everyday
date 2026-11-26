@@ -44,6 +44,7 @@
     SortCategory,
   } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import SubTabs from './SubTabs.svelte'
 
   /** `MailSorting` as this pane edits it: with its follow-up settings always
@@ -208,7 +209,7 @@
 {#if !draft && sorting.error}
   <p class="hint">Mail sorting could not be read: {sorting.error}</p>
 {:else if !draft}
-  <p class="hint">Loading…</p>
+  <Loading />
 {:else}
   <SubTabs
     tabs={[
@@ -223,9 +224,9 @@
   <div class="panes">
     {#if sub === 'categories'}
       <p class="hint lead">
-        Your own categories for mail. A decision model reads each new message and picks the one it
-        fits, going by the descriptions you write here, and the message is filed under that
-        category's inbox tab. You only see the category's name beside the message in the list.
+        Your own categories for mail. Each new message is read and filed under the category it fits,
+        going by the descriptions you write here, and it lands in that category's inbox tab. You
+        only see the category's name beside the message in the list.
       </p>
     {/if}
 
@@ -233,10 +234,10 @@
       <div class="stored">
         <span>
           <Icon name="info" size={14} />
-          No decision model is switched on, so these categories are not used yet: mail is sorted on the
-          Small model into the five inbox tabs. Follow-ups are decided on the Small model too.
+          No model is set up for sorting yet, so these categories are not used: mail goes into the five
+          inbox tabs, sorted by your smaller model, which also decides follow-ups.
         </span>
-        <button class="link" onclick={() => panels.openSettings('models')}>Set one up</button>
+        <button class="link" onclick={() => panels.openSettings('models')}>Set up a model</button>
       </div>
     {:else if sub !== 'followups'}
       <p class="hint">Sorting on {sorting.view.decisionModel}.</p>
@@ -246,9 +247,9 @@
       <section class="card" aria-labelledby="sorting-categories">
         <span class="eyebrow" id="sorting-categories">Categories</span>
         <p class="hint">
-          The model sees each name and description and picks one, so say what belongs and what does
-          not. Keep a catch-all such as Other for mail that fits none of them. A message you file
-          yourself always stays where you put it.
+          Each message is filed by the names and descriptions here, so say what belongs and what
+          does not. Keep a catch-all such as Other for mail that fits none of them. A message you
+          file yourself always stays where you put it.
         </p>
 
         <ol class="categories">
@@ -332,21 +333,21 @@
         <p class="hint">
           New mail is sorted as it arrives, and anything in your inbox from this far back that has
           not been sorted yet. Older mail is left alone unless you ask, under Older mail. Each
-          account sorts only while sorting is switched on for it under Settings → AI features.
+          account sorts only while sorting is switched on for it under
+          <button class="link inline" onclick={() => panels.openSettings('ai')}>AI features</button
+          >.
         </p>
       </section>
     {:else if sub === 'followups'}
       <section class="card" aria-labelledby="sorting-follow-ups">
         <span class="eyebrow" id="sorting-follow-ups">Follow-ups</span>
-        <label class="switch">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.followUp.on} />
-          <span class="switch-text">
-            <span class="switch-label">
-              Show mail that needs your reply, and mail to nudge, at the top of the Inbox
-            </span>
-            <span class="switch-blurb">
+          <span>
+            <b>Show mail that needs your reply, and mail to nudge, at the top of the Inbox</b>
+            <small>
               Somebody waiting on an answer from you, and mail you sent that nobody has answered.
-            </span>
+            </small>
           </span>
         </label>
         <div class="row numbers">
@@ -388,11 +389,12 @@
           </label>
         </div>
         <p class="hint">
-          It runs on the decision model, or on the Small model when none is switched on, for each
-          account whose sorting is switched on under Settings → AI features. It reads the same parts
-          of a message sorting does, and for a nudge your own last message as well. Cold outreach,
-          newsletters and automated mail are left out: a stranger's pitch ends in a question too,
-          but it is not waiting on you.
+          It runs for each account whose sorting is switched on under
+          <button class="link inline" onclick={() => panels.openSettings('ai')}>AI features</button
+          >, using your sorting model, or your smaller model when none is set up. It reads the same
+          parts of a message sorting does, and for a nudge your own last message as well. Cold
+          outreach, newsletters and automated mail are left out: a stranger's pitch ends in a
+          question too, but it is not waiting on you.
         </p>
 
         {#if followUps && followUpsOn}
@@ -446,12 +448,12 @@
             </select>
           </label>
         </div>
-        <label class="switch">
+        <label class="check-row">
           <input type="checkbox" bind:checked={olderAgain} />
-          <span class="switch-text">
-            <span class="switch-label">Sort again what was already sorted</span>
-            <span class="switch-blurb"
-              >For after you change the categories. Mail you filed yourself is still left alone.</span
+          <span>
+            <b>Sort again what was already sorted</b>
+            <small
+              >For after you change the categories. Mail you filed yourself is still left alone.</small
             >
           </span>
         </label>
@@ -484,8 +486,8 @@
        keeps what was typed on the other. With the follow-up numbers wrong
        the button says where, since the reason may be on the other tab. -->
   {#if sub !== 'older'}
-    <div class="save">
-      {#if notice}<span class="notice">{notice}</span>{/if}
+    <div class="save save-row">
+      {#if notice}<span class="notice" role="status">{notice}</span>{/if}
       <button
         class="btn btn-primary"
         onclick={() => void save()}
@@ -707,40 +709,9 @@
     text-decoration: underline;
   }
 
-  .switch {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-2);
-    cursor: pointer;
-  }
-  .switch input {
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .switch-text {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .switch-label {
-    font-size: var(--text-sm);
-  }
-  .switch-blurb {
-    color: var(--fg-subtle);
-    font-size: var(--text-xs);
-  }
-
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
+  /* A link in the middle of a sentence stays on its line. */
+  .link.inline {
+    font-size: inherit;
   }
 
   /* A phone: a category's name on a line of its own, then where it files and

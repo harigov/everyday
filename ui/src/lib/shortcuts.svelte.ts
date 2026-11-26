@@ -55,6 +55,7 @@ import { assistant } from './assistant.svelte'
 import { app, type Section } from './state.svelte'
 import { addDays, todayIso } from './time'
 import { todo } from './todo.svelte'
+import { voice } from './voice.svelte'
 
 /**
  * Put the caret in the bar at the top of the window, which searches the open
@@ -514,6 +515,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => void api.openAppWindow(app.section).catch(() => {}),
   },
   {
+    id: 'assistant:open',
     keys: 'a',
     label: 'The assistant',
     group: 'Everywhere',
@@ -589,14 +591,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   // ── Journal ─────────────────────────────────────────────────────────
   {
     keys: 'j',
-    label: 'The entry below',
+    label: 'Next entry',
     group: 'Journal',
     when: () => anywhere() && inApp('journal')(),
     run: () => stepEntry(1),
   },
   {
     keys: 'k',
-    label: 'The entry above',
+    label: 'Previous entry',
     group: 'Journal',
     when: () => anywhere() && inApp('journal')(),
     run: () => stepEntry(-1),
@@ -622,7 +624,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'The board, or the list',
     group: 'Todo',
     when: () => anywhere() && inApp('todo')() && todo.boardable,
-    run: () => todo.setView(todo.view === 'board' ? 'list' : 'board'),
+    run: () => todo.setView(todo.effectiveView === 'board' ? 'list' : 'board'),
   },
 
   // ── Calendar ────────────────────────────────────────────────────────
@@ -732,14 +734,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   //   same reason.
   {
     keys: 'j',
-    label: 'The thread below',
+    label: 'Next thread',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')(),
     run: () => stepThread(1),
   },
   {
     keys: 'k',
-    label: 'The thread above',
+    label: 'Previous thread',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')(),
     run: () => stepThread(-1),
@@ -749,28 +751,28 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   // scrolls with them once it is the pane last clicked. See `listOwnsArrows`.
   {
     keys: 'ArrowDown',
-    label: 'The thread below',
+    label: 'Next thread',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')() && listOwnsArrows(),
     run: () => stepThread(1),
   },
   {
     keys: 'ArrowUp',
-    label: 'The thread above',
+    label: 'Previous thread',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')() && listOwnsArrows(),
     run: () => stepThread(-1),
   },
   {
     keys: 'shift+ArrowDown',
-    label: 'Select the thread below too',
+    label: 'Select the next thread too',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')() && listOwnsArrows() && mailListShowing(),
     run: () => mail.extendChecked(1),
   },
   {
     keys: 'shift+ArrowUp',
-    label: 'Select the thread above too',
+    label: 'Select the previous thread too',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')() && listOwnsArrows() && mailListShowing(),
     run: () => mail.extendChecked(-1),
@@ -1077,14 +1079,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   // app's own heading, so the help sheet lists it where somebody looks.
   {
     keys: 'j',
-    label: 'The story below',
+    label: 'Next story',
     group: 'Feed',
     when: () => anywhere() && inApp('feed')(),
     run: () => void feed.move(1),
   },
   {
     keys: 'k',
-    label: 'The story above',
+    label: 'Previous story',
     group: 'Feed',
     when: () => anywhere() && inApp('feed')(),
     run: () => void feed.move(-1),
@@ -1181,14 +1183,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   // sheet lists it where somebody looks.
   {
     keys: 'j',
-    label: 'The transaction below',
+    label: 'Next transaction',
     group: 'Money',
     when: () => anywhere() && inApp('money')() && money.view === 'transactions',
     run: () => void money.move(1),
   },
   {
     keys: 'k',
-    label: 'The transaction above',
+    label: 'Previous transaction',
     group: 'Money',
     when: () => anywhere() && inApp('money')() && money.view === 'transactions',
     run: () => void money.move(-1),
@@ -1368,7 +1370,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   },
   {
     id: 'overview:log',
-    label: 'Record a reading',
+    label: 'Log a habit',
     group: 'Overview',
     keywords: ['tracker', 'habit', 'dose', 'tick'],
     icon: 'plus',
@@ -1566,7 +1568,10 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   },
   {
     id: 'assistant:runs',
-    label: 'What the assistant did',
+    // Neutral words rather than "What the assistant did": it is named by
+    // its owner (`agent.displayName`), and a table row's label is a plain
+    // string the tray and the help sheet also read.
+    label: 'Assistant activity',
     group: 'Assistant',
     keywords: ['runs', 'log', 'routine', 'brief', 'report'],
     icon: 'inbox',
@@ -1575,6 +1580,50 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     // Settings rather than the app: the run log is a tab there now, and the
     // app is the conversation. See `AssistantPanes.svelte`.
     run: () => assistant.setPane('runs'),
+  },
+  // The three ways in from anywhere in the window. Palette only (no `quick`,
+  // no `tray`): they are for the person who has the bar open already.
+  {
+    id: 'assistant:new-conversation',
+    label: 'New conversation',
+    group: 'Assistant',
+    keywords: ['chat', 'new chat', 'start', 'ask', 'assistant'],
+    icon: 'sparkle',
+    when: () => app.screen === 'main' && !pinned && agent.supported,
+    run: async () => {
+      // In its own app the thread is the page; elsewhere it is the rail.
+      if (app.section !== 'assistant' && !agent.open) await agent.toggle()
+      await agent.startThread()
+    },
+  },
+  {
+    id: 'assistant:talk',
+    label: 'Talk to the assistant',
+    group: 'Assistant',
+    keywords: ['voice', 'speak', 'say', 'dictate', 'listen', 'chat'],
+    icon: 'sparkle',
+    // Only where there is a microphone to hold: not a browser on web access.
+    when: () => app.screen === 'main' && !pinned && agent.supported && voice.available,
+    run: () => void voice.start(),
+  },
+  {
+    id: 'assistant:ask-about-this',
+    label: 'Ask about this',
+    group: 'Assistant',
+    keywords: ['assistant', 'what am i looking at', 'explain', 'help with', 'chat'],
+    icon: 'sparkle',
+    // Not in the Assistant's own app, where there is nothing else on screen
+    // to ask about. The rail sends what is showing with the next message.
+    when: () =>
+      app.screen === 'main' &&
+      !pinned &&
+      agent.supported &&
+      app.section !== 'assistant' &&
+      panels.settings === null,
+    run: async () => {
+      if (!agent.open) await agent.toggle()
+      agent.focusComposer()
+    },
   },
   {
     id: 'assistant:new-routine',
@@ -1587,7 +1636,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => void assistant.draft(),
   },
   {
-    label: 'What the assistant remembers',
+    label: 'Assistant memory',
     group: 'Assistant',
     keywords: ['memory', 'facts', 'forget'],
     icon: 'sparkle',
@@ -2072,6 +2121,17 @@ function group(bindings: Binding[]): { group: string; items: Binding[] }[] {
     else items.set(binding.group, [binding])
   }
   return GROUPS.filter((g) => items.has(g)).map((g) => ({ group: g, items: items.get(g)! }))
+}
+
+/**
+ * The keys an action is declared with, by its id, for a button's tooltip --
+ * so a hint is read from the table and never typed beside the button, where
+ * it goes stale the first time a key is rebound. `undefined` for an action
+ * with no id or no keys. Doesn't ask `when`: a tooltip is for a button that
+ * is already on screen.
+ */
+export function hintFor(id: string): string | undefined {
+  return ACTIONS.find((a) => a.id === id)?.keys
 }
 
 /** Every spelling of one action, for the row the sheet draws. */

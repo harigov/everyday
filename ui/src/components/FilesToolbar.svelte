@@ -38,6 +38,13 @@
   import Icon from './Icon.svelte'
   import PhoneBack from './PhoneBack.svelte'
 
+  /** The pane's own width, not the window's: the details rail narrows the
+   *  pane, so a media query would still leave the selection bar cramped. */
+  let room = $state(1200)
+  /** Below this the bar keeps to icons and the less-asked actions fold into More. */
+  const ROOM_FOR_LABELS = 900
+  const tight = $derived(!phone.on && room < ROOM_FOR_LABELS)
+
   const view = $derived(files.view)
   const browsing = $derived(view === 'browse')
 
@@ -70,7 +77,11 @@
     if (browsing) {
       const folders = files.listing?.folders.length ?? 0
       const n = files.visibleFiles.length
-      return [folders > 0 ? plural(folders, 'folder') : '', plural(n, 'file')]
+      // A folder of folders only: "0 files" says nothing the cards don't.
+      return [
+        folders > 0 ? plural(folders, 'folder') : '',
+        n > 0 || folders === 0 ? plural(n, 'file') : '',
+      ]
         .filter(Boolean)
         .join(' · ')
     }
@@ -235,12 +246,14 @@
   async function moreMenu(e: MouseEvent) {
     const button = e.currentTarget as HTMLElement
     // A phone's bar has room for the few that are asked for most; the rest
-    // are here.
+    // are here. A narrow desktop pane folds Rate, Tag and Export in too, but
+    // keeps its Album button.
     if (phone.on) await filesUi.ensureAlbums()
+    const folded = phone.on || tight
     menuUnder(
       button,
       tidyMenu([
-        phone.on && {
+        folded && {
           label: 'Rate',
           icon: 'star',
           items: [
@@ -253,7 +266,7 @@
             { label: 'No rating', run: () => files.setRating(ids, 0) },
           ],
         },
-        phone.on && { label: 'Tag…', icon: 'tag', run: tag },
+        folded && { label: 'Tag…', icon: 'tag', run: tag },
         phone.on && {
           label: 'Add to album',
           icon: 'image',
@@ -266,13 +279,13 @@
             { label: 'New album…', run: () => filesUi.askName(newAlbumAsk(ids)) },
           ]),
         },
-        phone.on &&
+        folded &&
           !mobileShell && {
             label: 'Export…',
             icon: 'download',
             run: () => void files.exportFiles(ids),
           },
-        phone.on && SEP,
+        folded && SEP,
         one && { label: 'Open', icon: 'eye', run: () => files.open(one.id) },
         // A document is also read, in the reader with its contents beside it.
         // For a PDF or an EPUB "Open" goes there too, and this is the same.
@@ -394,7 +407,7 @@
   }}
 />
 
-<header class="top">
+<header class="top" bind:clientWidth={room}>
   {#if browsing && trail.length > 0}
     <PhoneBack onclick={() => files.up()} label={parentName} />
   {/if}
@@ -458,11 +471,12 @@
         {/each}
       </select>
       <button
-        class="round desktop-only"
-        title={order}
+        class="order desktop-only"
+        title="Reverse the order"
         aria-label="{order}. Reverse the order"
         onclick={() => files.setSort(files.sort, !files.descending)}
       >
+        {#if !tight}<span>{order}</span>{/if}
         <span class="arrow" class:down={files.descending}><Icon name="chevron" size={14} /></span>
       </button>
     {/if}
@@ -502,9 +516,20 @@
     </button>
 
     {#if browsing}
-      <button class="btn desktop-only" onclick={newFolder}>
-        <Icon name="plus" size={14} /> New folder
-      </button>
+      {#if tight}
+        <button
+          class="round desktop-only"
+          title="New folder"
+          aria-label="New folder"
+          onclick={newFolder}
+        >
+          <Icon name="plus" size={15} />
+        </button>
+      {:else}
+        <button class="btn desktop-only" onclick={newFolder}>
+          <Icon name="plus" size={14} /> New folder
+        </button>
+      {/if}
     {/if}
     {#if view === 'trash' && (files.status?.usage.trashedFiles ?? 0) > 0}
       <button class="btn btn-outline btn-ghost-danger" onclick={() => files.emptyTrash()}>
@@ -515,7 +540,8 @@
       <!-- The store picks the way: the system picker on the vault's own
            machine, an input anywhere else, into the folder on screen. -->
       <button class="btn btn-primary" onclick={() => files.create()}>
-        <Icon name="upload" size={15} /> Add
+        <Icon name="upload" size={15} />
+        {tight || phone.on ? 'Add' : 'Add files'}
       </button>
     {/if}
     <button
@@ -559,52 +585,94 @@
         class="tool"
         class:on={allFavourite}
         aria-label={allFavourite ? 'Unfavourite' : 'Favourite'}
+        title={allFavourite ? 'Unfavourite' : 'Favourite'}
         aria-pressed={allFavourite}
         onclick={() => void files.update(ids, { favourite: !allFavourite })}
       >
         <Icon name="star" size={19} filled={allFavourite} />
+        <span class="cap">{allFavourite ? 'Unfavourite' : 'Favourite'}</span>
       </button>
-      <button class="tool" aria-label="Move" onclick={() => filesUi.pickFolder([...ids])}>
+      <button
+        class="tool"
+        aria-label="Move"
+        title="Move"
+        onclick={() => filesUi.pickFolder([...ids])}
+      >
         <Icon name="folder" size={19} />
+        <span class="cap">Move</span>
       </button>
       {#if ids.length === 1}
-        <button class="tool" aria-label="Details" onclick={showDetails}>
+        <button class="tool" aria-label="Details" title="Details" onclick={showDetails}>
           <Icon name="info" size={19} />
+          <span class="cap">Details</span>
         </button>
       {/if}
-      <button class="tool" aria-label="More" onclick={(e) => void moreMenu(e)}>
+      <button class="tool" aria-label="More" title="More" onclick={(e) => void moreMenu(e)}>
         <Icon name="more" size={19} />
+        <span class="cap">More</span>
       </button>
-      <button class="tool danger" aria-label="Trash" onclick={() => void files.trash(ids)}>
+      <button
+        class="tool danger"
+        aria-label="Trash"
+        title="Trash"
+        onclick={() => void files.trash(ids)}
+      >
         <Icon name="trash" size={19} />
+        <span class="cap">Trash</span>
       </button>
     {:else}
       <button
         class="btn btn-sm"
+        class:icon={tight}
         aria-pressed={allFavourite}
+        aria-label={allFavourite ? 'Unfavourite' : 'Favourite'}
+        title={allFavourite ? 'Unfavourite' : 'Favourite'}
         onclick={() => void files.update(ids, { favourite: !allFavourite })}
       >
         <Icon name="star" size={14} filled={allFavourite} />
-        {allFavourite ? 'Unfavourite' : 'Favourite'}
+        {#if !tight}{allFavourite ? 'Unfavourite' : 'Favourite'}{/if}
       </button>
-      <button class="btn btn-sm" onclick={rateMenu}>Rate</button>
-      <button class="btn btn-sm" onclick={tag}><Icon name="tag" size={14} /> Tag</button>
-      <button class="btn btn-sm" onclick={(e) => void albumMenu(e)}>
-        <Icon name="image" size={14} /> Album
+      {#if !tight}
+        <button class="btn btn-sm" onclick={rateMenu}><Icon name="star" size={14} /> Rate</button>
+        <button class="btn btn-sm" onclick={tag}><Icon name="tag" size={14} /> Tag</button>
+      {/if}
+      <button
+        class="btn btn-sm"
+        class:icon={tight}
+        aria-label="Album"
+        title="Add to album"
+        onclick={(e) => void albumMenu(e)}
+      >
+        <Icon name="book" size={14} />
+        {#if !tight}Album{/if}
       </button>
-      <button class="btn btn-sm" onclick={() => filesUi.pickFolder([...ids])}>
-        <Icon name="folder" size={14} /> Move
+      <button
+        class="btn btn-sm"
+        class:icon={tight}
+        aria-label="Move"
+        title="Move"
+        onclick={() => filesUi.pickFolder([...ids])}
+      >
+        <Icon name="folder" size={14} />
+        {#if !tight}Move{/if}
       </button>
-      {#if !mobileShell}
+      {#if !mobileShell && !tight}
         <button class="btn btn-sm" onclick={() => void files.exportFiles(ids)}>
           <Icon name="download" size={14} /> Export
         </button>
       {/if}
-      <button class="btn btn-sm" aria-label="More" title="More" onclick={moreMenu}>
+      <button class="btn btn-sm icon" aria-label="More" title="More" onclick={moreMenu}>
         <Icon name="more" size={14} />
       </button>
-      <button class="btn btn-sm btn-ghost-danger" onclick={() => void files.trash(ids)}>
-        <Icon name="trash" size={14} /> Trash
+      <button
+        class="btn btn-sm btn-ghost-danger"
+        class:icon={tight}
+        aria-label="Trash"
+        title="Trash"
+        onclick={() => void files.trash(ids)}
+      >
+        <Icon name="trash" size={14} />
+        {#if !tight}Trash{/if}
       </button>
     {/if}
   </div>
@@ -702,12 +770,15 @@
     overflow: hidden;
     white-space: nowrap;
   }
+  /* The folder you are in is the last to give up its name: the steps above it
+     shrink first, the heading keeps at least ten characters. */
   .crumbs .pane-title {
     flex: 0 1 auto;
-    min-width: 0;
+    min-width: 10ch;
   }
   .crumb {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 2.2em;
     max-width: 14em;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -740,7 +811,7 @@
     height: 32px;
     padding: 0 var(--sp-2);
     border: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     color: var(--fg-muted);
     font: inherit;
@@ -767,6 +838,26 @@
     background: var(--bg-selected);
     color: var(--accent);
   }
+  /* The order is said in words beside its arrow, so it is not mistaken for a
+     second menu. */
+  .order {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    height: 32px;
+    padding: 0 var(--sp-2);
+    border-radius: var(--radius-pill);
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    font-weight: 550;
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  .order:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
   .arrow {
     display: grid;
     place-items: center;
@@ -781,7 +872,7 @@
     display: flex;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
   }
   .layout button {
@@ -803,7 +894,6 @@
   .selbar {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
     gap: var(--sp-2);
     flex: none;
     margin: 0 var(--sp-4) var(--sp-2) var(--sp-6);
@@ -812,10 +902,14 @@
     background: var(--bg-selected);
   }
   .count {
+    white-space: nowrap;
     font-size: var(--text-sm);
     font-weight: 600;
     color: var(--accent);
     font-variant-numeric: tabular-nums;
+  }
+  .selbar :global(.btn.icon) {
+    padding-inline: var(--sp-2);
   }
   .clear {
     font-size: var(--text-sm);
@@ -879,13 +973,21 @@
      the options button, and what a selection can be given is a bar of
      icons. */
   .tool {
-    display: grid;
-    place-items: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
     flex: none;
     width: 44px;
-    height: 44px;
+    height: 48px;
     border-radius: var(--radius);
     color: var(--fg-muted);
+  }
+  .cap {
+    font-size: 10px;
+    line-height: 1.1;
+    white-space: nowrap;
   }
   .tool:active {
     background: var(--bg-hover);
@@ -926,7 +1028,10 @@
     height: 44px;
   }
 
+  /* Two lines on a phone -- the count, then the icons -- so it wraps here
+     even though the desktop bar never does (it drops words instead). */
   :global([data-phone]) .selbar {
+    flex-wrap: wrap;
     margin: 0 var(--sp-3) var(--sp-2);
     padding: 0 var(--sp-1) 0 var(--sp-3);
     row-gap: 0;
@@ -946,6 +1051,7 @@
   }
   :global([data-phone]) .selbar .tool {
     flex: 1 1 0;
+    min-width: 0;
   }
   :global([data-phone]) .selbar .btn {
     flex: 1 1 auto;

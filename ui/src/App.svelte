@@ -2,6 +2,8 @@
   import { untrack } from 'svelte'
   import { api, mobileShell, onSaveAndClose } from './lib/api'
   import { closesOnBack, details, phone } from './lib/phone.svelte'
+  import { appleKeyboard } from './lib/platform'
+  import { keysLabel } from './lib/keys'
   // The stores, then the components, rather than the two interleaved.
   //
   // Importing a store is also what *constructs* it, and construction is what
@@ -38,7 +40,7 @@
   import { menu } from './lib/menu.svelte'
   import { notify } from './lib/notify.svelte'
   import { panels } from './lib/panels.svelte'
-  import { shortcuts } from './lib/shortcuts.svelte'
+  import { hintFor, shortcuts } from './lib/shortcuts.svelte'
   import { sidebar } from './lib/sidebar.svelte'
   import { tray } from './lib/tray.svelte'
   import { badge } from './lib/badge.svelte'
@@ -67,6 +69,7 @@
   import Logo from './components/Logo.svelte'
   import Notices from './components/Notices.svelte'
   import Toasts from './components/Toasts.svelte'
+  import MailSendUndo from './components/MailSendUndo.svelte'
   import ContextMenu from './components/ContextMenu.svelte'
   import ChoiceDialog from './components/ChoiceDialog.svelte'
   import ChatPanel from './components/ChatPanel.svelte'
@@ -245,6 +248,76 @@
     sidebar.hide()
   })
 
+  // Whether the round assistant button is out, which is also what the toasts
+  // need to know so they can stand above it rather than on it. Kept on a
+  // phone even with the Assistant in the bottom bar: the tab opens the
+  // Assistant app, the button a conversation about what is on screen here,
+  // and that is the one way to ask about it. Scrolling lists leave room for
+  // it at their end (`--fab-clear`).
+  const fabShown = $derived(
+    !pinned &&
+      app.screen === 'main' &&
+      agent.supported &&
+      !agent.open &&
+      app.section !== 'assistant' &&
+      panels.settings === null,
+  )
+  $effect(() => {
+    document.documentElement.toggleAttribute('data-fab', fabShown)
+    return () => document.documentElement.removeAttribute('data-fab')
+  })
+
+  // The button wears the open app's tint, which is not one colour: an app's
+  // own `--app-<id>` is drawn light on a dark theme, while a journal's,
+  // project's or shelf's colour is whatever was picked, usually dark and
+  // saturated. `--fg-on-accent` is right only against `--accent`, so the
+  // icon is chosen against the colour actually drawn -- white or dark ink,
+  // whichever reads better -- each time the tint or the theme changes.
+  let fab = $state<HTMLButtonElement | null>(null)
+  let fabInk = $state<string | undefined>(undefined)
+  $effect(() => {
+    void accent
+    void app.shown
+    if (!fab) return
+    fabInk = inkOn(getComputedStyle(fab).backgroundColor) ?? undefined
+  })
+
+  /** White or near-black, whichever has the more contrast on `colour`; null
+   *  for a colour the engine cannot draw. A canvas reads any CSS colour --
+   *  hex, `oklch()`, a resolved `var()` -- back as plain RGB. */
+  function inkOn(colour: string): string | null {
+    const g = document.createElement('canvas').getContext('2d')
+    if (!g || !colour) return null
+    g.fillStyle = colour
+    g.fillRect(0, 0, 1, 1)
+    const [r = 0, gr = 0, b = 0, a = 0] = g.getImageData(0, 0, 1, 1).data
+    if (a === 0) return null
+    const lin = (v: number) => {
+      const c = v / 255
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+    }
+    const lum = 0.2126 * lin(r) + 0.7152 * lin(gr) + 0.0722 * lin(b)
+    // #16110a, the dark ink, has a luminance of about 0.006.
+    return 1.05 / (lum + 0.05) >= (lum + 0.05) / 0.056 ? '#fff' : '#16110a'
+  }
+
+  // What the window is called, for the task switcher and for telling the
+  // windows of one app apart from the main one and from each other.
+  $effect(() => {
+    const open = panels.settings !== null ? 'Settings' : APPS[app.section].label
+    document.title = app.screen === 'main' ? `${open} — Karma Yoga` : 'Karma Yoga'
+  })
+
+  // A rough guess at the first-run wait: past a few seconds on the boot
+  // screen, say what it is doing and offer another way out.
+  let bootSlow = $state(false)
+  $effect(() => {
+    bootSlow = false
+    if (app.screen !== 'loading') return
+    const t = setTimeout(() => (bootSlow = true), 8000)
+    return () => clearTimeout(t)
+  })
+
   /**
    * The window's one keyboard handler.
    *
@@ -320,6 +393,9 @@
      the application, so it has to arrive on the lock screen and the error
      screen too. Those are the moments something has gone wrong. -->
 <Toasts />
+<!-- Beside the toasts for the same reason: it is a fact about a message that
+     is going out, which outlives leaving the Mail app. -->
+<MailSendUndo />
 <!-- Also outside the screen switch, and mounted once: there is one context
      menu in the window, and every list opens it through the store. -->
 <ContextMenu />
@@ -389,7 +465,23 @@
     </div>
   {/if}
   {#if app.screen === 'loading'}
-    <div class="boot"><div class="mark"><Logo size={40} tile /></div></div>
+    <div class="boot" role="status">
+      <div class="mark"><Logo size={40} tile /></div>
+      <p class="boot-text">
+        {app.remote ? `Connecting to ${app.remote.name}…` : 'Opening your vault…'}
+      </p>
+      {#if bootSlow}
+        <!-- A fresh start, not a second `start()` beside the one still
+             waiting: two bootstraps racing would let the slower one move
+             the screen after the person had chosen where to go. -->
+        <div class="boot-slow">
+          <p>This is taking longer than usual.</p>
+          <div class="boot-actions">
+            <button class="btn" onclick={() => location.reload()}>Try again</button>
+          </div>
+        </div>
+      {/if}
+    </div>
   {:else if app.screen === 'error'}
     <ErrorScreen />
   {:else if app.screen === 'setup'}
@@ -461,44 +553,59 @@
             <!-- A document being read stands in the place of the open app's
                  view: the sidebar and the assistant's rail stay either side
                  of it. -->
-            {#if reader.open && app.section === reader.host}
-              <ReaderView />
-            {:else if app.section === 'assistant'}
-              <AssistantView />
-            {:else if app.section === 'notes'}
-              <NotesView />
-            {:else if app.section === 'todo'}
-              <TodoView />
-            {:else if app.section === 'calendar'}
-              <CalendarView />
-            {:else if app.section === 'library'}
-              <LibraryView />
-            {:else if app.section === 'mail'}
-              <MailView />
-            {:else if app.section === 'feed'}
-              <FeedView />
-            {:else if app.section === 'money'}
-              <MoneyView />
-            {:else if app.section === 'screentime'}
-              <ScreenTimeView />
-            {:else if app.section === 'files'}
-              <FilesView />
-            {:else if app.section === 'health'}
-              <HealthView />
-            {:else if app.section === 'overview'}
-              <OverviewView />
-            {:else if phone.on}
-              <!-- A phone has room for the list or the entry: see
-                   `details` in `phone.svelte.ts`. -->
-              {#if details.isOpen('journal')}
-                <main class="main"><Editor /></main>
-              {:else}
-                <EntryList />
-              {/if}
-            {:else}
-              <EntryList />
-              <main class="main"><Editor /></main>
-            {/if}
+            <!-- One view failing to draw is that view's trouble, not the
+                 window's: without this a single thrown error in a render
+                 blanks the whole app with nothing to press. -->
+            {#key app.section}
+              <svelte:boundary
+                onerror={(e) => console.error(`${APPS[app.section].label} failed to draw`, e)}
+              >
+                {#if reader.open && app.section === reader.host}
+                  <ReaderView />
+                {:else if app.section === 'assistant'}
+                  <AssistantView />
+                {:else if app.section === 'notes'}
+                  <NotesView />
+                {:else if app.section === 'todo'}
+                  <TodoView />
+                {:else if app.section === 'calendar'}
+                  <CalendarView />
+                {:else if app.section === 'library'}
+                  <LibraryView />
+                {:else if app.section === 'mail'}
+                  <MailView />
+                {:else if app.section === 'feed'}
+                  <FeedView />
+                {:else if app.section === 'money'}
+                  <MoneyView />
+                {:else if app.section === 'screentime'}
+                  <ScreenTimeView />
+                {:else if app.section === 'files'}
+                  <FilesView />
+                {:else if app.section === 'health'}
+                  <HealthView />
+                {:else if app.section === 'overview'}
+                  <OverviewView />
+                {:else if phone.on}
+                  <!-- A phone has room for the list or the entry: see
+                     `details` in `phone.svelte.ts`. -->
+                  {#if details.isOpen('journal')}
+                    <main class="main"><Editor /></main>
+                  {:else}
+                    <EntryList />
+                  {/if}
+                {:else}
+                  <EntryList />
+                  <main class="main"><Editor /></main>
+                {/if}
+                {#snippet failed(_error, reset)}
+                  <div class="failed" role="alert">
+                    <p>Something went wrong showing {APPS[app.section].label}.</p>
+                    <button class="btn" onclick={reset}>Try again</button>
+                  </div>
+                {/snippet}
+              </svelte:boundary>
+            {/key}
           </div>
         {/if}
         <!-- Last in the row, so it is the right-hand rail whichever app is
@@ -523,11 +630,13 @@
         <!-- Not over Settings either: its corner is where a tab's Save is
              pinned (see `SettingsView.svelte`'s `.save` rule), and there is
              nothing selected on a settings page for it to ask about. -->
-        {#if !pinned && agent.supported && !agent.open && app.section !== 'assistant' && panels.settings === null}
+        {#if fabShown}
           <button
             class="float"
+            bind:this={fab}
+            style:color={fabInk}
             onclick={() => void agent.toggle()}
-            title="Assistant (A)"
+            title="Assistant ({keysLabel(hintFor('assistant:open') ?? 'a', appleKeyboard)})"
             aria-label="Open the assistant"
           >
             <Icon name="sparkle" size={20} weight={1.7} />
@@ -677,14 +786,17 @@
     scale: 0.97;
   }
 
+  /* At the top, under the strip: the bottom edge is where the toasts and
+     the mail send-undo stand, and a pending key sequence lasts a second, so
+     it must never sit on either. */
   .chord {
     position: fixed;
     left: 50%;
-    bottom: var(--sp-8);
+    top: calc(var(--topbar-h) + var(--sp-3));
     translate: -50% 0;
     z-index: 50;
     padding: var(--sp-2) var(--sp-4);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--float);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);
@@ -695,9 +807,48 @@
   }
 
   .boot {
-    display: grid;
-    place-items: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-3);
     height: 100%;
+    text-align: center;
+  }
+  .boot-text {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+  }
+  .boot-slow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-3);
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+  }
+  .boot-slow p {
+    margin: 0;
+  }
+  .boot-actions {
+    display: flex;
+    gap: var(--sp-2);
+  }
+  /* Where the open app was: said calmly, centred in the stage. */
+  .failed {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-3);
+    height: 100%;
+    padding: var(--sp-6);
+    text-align: center;
+    color: var(--fg-muted);
+  }
+  .failed p {
+    margin: 0;
   }
   .mark {
     animation: pulse 1.6s ease-in-out infinite;

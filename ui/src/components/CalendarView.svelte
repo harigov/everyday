@@ -377,7 +377,7 @@
     display: flex;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
   }
 
@@ -386,7 +386,7 @@
     height: 22px;
     display: grid;
     place-items: center;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-subtle);
     transition:
       background var(--fast) var(--ease),
@@ -494,14 +494,14 @@
     display: flex;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
   }
   .pview {
     flex: 1;
     min-width: 0;
     height: 38px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-base);
     font-weight: 550;
     color: var(--fg-subtle);
@@ -553,7 +553,7 @@
   .pcount {
     min-width: 22px;
     padding: 1px 7px;
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
     font-size: var(--text-xs);
     font-weight: 600;

@@ -66,6 +66,7 @@
   } from '../lib/types'
   import AttachmentViewer from './AttachmentViewer.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import MailQuickReplies from './MailQuickReplies.svelte'
 
   interface Props {
@@ -568,7 +569,7 @@
           {/if}
 
           {#if !loaded || loaded === 'loading'}
-            <p class="loading">Loading…</p>
+            <Loading />
           {:else if loaded === 'error' || !view}
             <p class="loading">This message could not be loaded.</p>
           {:else}
@@ -960,7 +961,7 @@
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
     transform: rotate(90deg);
-    transition: transform var(--dur-fast, 120ms);
+    transition: transform var(--fast);
   }
   .more:hover {
     background: var(--bg-hover);
@@ -1058,7 +1059,7 @@
     align-items: center;
     gap: 6px;
     padding: 3px var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     font-size: var(--text-xs);
     color: var(--fg-muted);
@@ -1094,7 +1095,7 @@
     align-items: center;
     gap: 6px;
     color: inherit;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
   }
   .chip-open {
     padding: 3px 4px 3px var(--sp-2);

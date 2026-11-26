@@ -162,28 +162,58 @@
     width: number
   }
 
-  function place(iso: string): Placed[] {
+  /** Most side-by-side lanes a week column draws. A fourth would be a sliver
+   *  with no room for a title, so the rest are folded into a "+N" chip. */
+  const MAX_LANES = 3
+
+  /** The chip standing for what a crowded cluster does not show. */
+  interface More {
+    key: string
+    top: number
+    count: number
+  }
+
+  function layout(iso: string): { placed: Placed[]; more: More[] } {
     const slots = calendar.slotsOn(iso).filter((s) => !isDragging(s))
-    return packLanes(slots.map((s) => ({ ...s, start: s.start, end: s.end }))).map(
-      ({ item, lane, lanes }) => {
-        const slot = item
-        const height = Math.max(
-          ((slot.end - slot.start) / 60) * HOUR,
-          (MIN_BLOCK_MINUTES / 60) * HOUR,
-        )
-        // Lanes overlap slightly rather than tiling exactly: a 4% bleed lets
-        // three clashing meetings still show a sliver of the one behind,
-        // which is how you notice there are three.
-        const width = lanes === 1 ? 100 : 100 / lanes + 4
-        return {
-          slot,
-          top: (slot.start / 60) * HOUR,
-          height,
-          left: (lane * (100 - width)) / Math.max(1, lanes - 1),
-          width,
-        }
-      },
-    )
+    // One day is a wide column, so every lane fits and nothing is folded. A
+    // week folds, and the day view is where the folded ones can be read.
+    const cap = days.length > 1 ? MAX_LANES : Infinity
+    const placed: Placed[] = []
+    const hidden: Slot[] = []
+    for (const { item: slot, lane, lanes } of packLanes(
+      slots.map((s) => ({ ...s, start: s.start, end: s.end })),
+    )) {
+      if (lane >= cap) {
+        hidden.push(slot)
+        continue
+      }
+      const shown = Math.min(lanes, cap)
+      const height = Math.max(
+        ((slot.end - slot.start) / 60) * HOUR,
+        (MIN_BLOCK_MINUTES / 60) * HOUR,
+      )
+      // Lanes overlap slightly rather than tiling exactly: a 4% bleed lets
+      // three clashing meetings still show a sliver of the one behind,
+      // which is how you notice there are three.
+      const width = shown === 1 ? 100 : 100 / shown + 4
+      placed.push({
+        slot,
+        top: (slot.start / 60) * HOUR,
+        height,
+        left: (lane * (100 - width)) / Math.max(1, shown - 1),
+        width,
+      })
+    }
+    // One chip per run of overlapping hidden things, at the run's start.
+    const more: More[] = []
+    let end = -Infinity
+    for (const slot of hidden.sort((a, b) => a.start - b.start)) {
+      const last = more[more.length - 1]
+      if (last && slot.start < end) last.count++
+      else more.push({ key: slot.key, top: (slot.start / 60) * HOUR, count: 1 })
+      end = Math.max(end, slot.end, slot.start + MIN_BLOCK_MINUTES)
+    }
+    return { placed, more }
   }
 
   /** Is this slot the one currently under the pointer? It is drawn as the draft. */
@@ -603,12 +633,19 @@
         </button>
         <div class="daymeta">
           {#if calendar.hasEntry(iso)}
-            <span class="wrote" title="You wrote something on this day">
+            <span
+              class="wrote"
+              role="img"
+              title="You wrote something on this day"
+              aria-label="You wrote something on this day"
+            >
               <Icon name="quote" size={11} weight={2} />
             </span>
           {/if}
           {#if booked > 0}
-            <span class="tally" title="Time booked">{formatMinutes(booked)}</span>
+            <span class="tally" title="Time booked" aria-label="{formatMinutes(booked)} booked"
+              >{formatMinutes(booked)}</span
+            >
           {/if}
         </div>
       </div>
@@ -633,7 +670,8 @@
             style="--c: {calendar.colorOfCalendar(calendar.draft?.calendarId ?? null)}"
             title="Not saved yet"
             oncontextmenu={(e) => menu.show(e, draftMenu())}
-            >{calendar.draft?.draft.title.trim() || 'New event'}</span
+            ><span class="chip-text">{calendar.draft?.draft.title.trim() || 'New event'}</span
+            ></span
           >
         {/if}
         {#each calendar.allDayOn(iso) as event (event.id)}
@@ -653,7 +691,7 @@
             oncontextmenu={(e) => {
               calendar.selection = { kind: 'event', id: event.id }
               menu.show(e, eventMenu(event))
-            }}>{event.title}</button
+            }}><span class="chip-text">{event.title}</span></button
           >
         {/each}
         {#each calendar.untimedMarksOn(iso) as mark (mark.key)}
@@ -670,7 +708,7 @@
               size={13}
               tile={false}
             />
-            {mark.label}
+            <span class="chip-text">{mark.label}</span>
           </span>
         {/each}
         {#each calendar.tasksOn(iso) as task (task.id)}
@@ -685,7 +723,7 @@
             oncontextmenu={(e) => menu.show(e, calendarTaskMenu(task))}
           >
             <Icon name={task.status === 'done' ? 'check' : 'circle'} size={11} weight={2} />
-            {task.title}
+            <span class="chip-text">{task.title}</span>
           </button>
         {/each}
       </div>
@@ -704,6 +742,7 @@
       {#each days as iso (iso)}
         {@const draft = draftOn(iso)}
         {@const pending = pendingOn(iso)}
+        {@const lay = layout(iso)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="col"
@@ -718,7 +757,7 @@
         >
           {#each hours as h (h)}<div class="rule" style="top: {h * HOUR}px"></div>{/each}
 
-          {#each place(iso) as p (p.slot.key)}
+          {#each lay.placed as p (p.slot.key)}
             {#if p.slot.proposal}
               <!-- A dream's plan: dashed, faded, and drawn through the shared
                    ghost shell rather than the ordinary slot, so accept and
@@ -760,7 +799,7 @@
                   .slot.color}"
                 title={p.slot.saving
                   ? `Moving it on ${calendar.calendarOf(p.slot.event!.calendarId)?.name ?? 'its calendar'}…`
-                  : undefined}
+                  : `${p.slot.title} · ${clockOf(p.slot.start)}`}
                 onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
                 onclick={(e) => onSlotClick(e, p.slot)}
                 oncontextmenu={(e) => onSlotContextMenu(e, p.slot)}
@@ -797,6 +836,20 @@
                 {#if p.slot.movable}<span class="handle"></span>{/if}
               </div>
             {/if}
+          {/each}
+
+          {#each lay.more as m (m.key)}
+            <button
+              class="more"
+              style="top: {m.top}px"
+              title="{m.count} more at this time. Open the day to see them."
+              aria-label="{m.count} more at this time. Open the day to see them."
+              onpointerdown={(e) => e.stopPropagation()}
+              onclick={() => {
+                calendar.view = 'day'
+                calendar.goto(iso)
+              }}>+{m.count}</button
+            >
           {/each}
 
           <!-- Tracked moments, on a rail down the left of the column.
@@ -911,6 +964,22 @@
     padding: var(--sp-2) var(--sp-2) var(--sp-1);
     border-left: 1px solid var(--border);
     min-width: 0;
+    container-type: inline-size;
+  }
+  /* A narrow week column -- a laptop with the assistant's rail open leaves
+     about sixty pixels a day -- stacks the weekday over the date instead of
+     clipping "MON 23" to "MO", and lets the tally end in an ellipsis rather
+     than run into the next day's header. */
+  @container (max-width: 84px) {
+    .daylabel {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0;
+      padding: 0;
+    }
+    .weekday {
+      letter-spacing: 0;
+    }
   }
   .daylabel {
     display: flex;
@@ -954,12 +1023,18 @@
     align-items: center;
     gap: 6px;
     flex: none;
+    max-width: 100%;
+    min-width: 0;
   }
   .wrote {
     color: var(--fg-faint);
     display: flex;
   }
   .tally {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
     color: var(--fg-faint);
@@ -989,6 +1064,15 @@
     min-width: 0;
   }
 
+  /* The title inside a chip. A chip is a flex row (an icon, then words), and
+     `text-overflow` on a flex container never reaches its text -- a long
+     title was cut off mid-letter, "Ring the der". The words get a box of
+     their own that can shrink and end in an ellipsis. */
+  .chip-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .chip {
     display: flex;
     align-items: center;
@@ -1121,6 +1205,29 @@
     z-index: 4;
   }
 
+  /* What a crowded week column folds away. Sits on the right edge, over the
+     last lane, so it reads as part of the cluster it stands for. */
+  .more {
+    position: absolute;
+    right: 2px;
+    z-index: 5;
+    height: 16px;
+    padding: 0 6px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-pill);
+    background: var(--float);
+    color: var(--fg-muted);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 14px;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .more:hover {
+    color: var(--fg);
+    background: var(--bg-hover);
+  }
+
   /* A ghost's own shell fills the same rectangle a real block would. */
   .slotwrap {
     position: absolute;
@@ -1199,8 +1306,9 @@
     width: 16px;
     height: 16px;
     margin-top: -8px;
-    border-radius: 99px;
-    color: var(--c);
+    border-radius: var(--radius-pill);
+    /* A thin glyph: the raw tracker colour is too dark on a dark theme. */
+    color: color-mix(in oklab, var(--c) 70%, var(--fg));
     background: var(--bg-raised);
     box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 26%, transparent);
     /* Still not a button -- there is nothing to open, and a pointerdown on

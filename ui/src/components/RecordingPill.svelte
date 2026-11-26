@@ -15,6 +15,8 @@
   import { formatTimer, SYSTEM_SILENT_WARN_MS } from '../lib/meetings-format'
   import { meetings } from '../lib/meetings.svelte'
   import { timeOfDay } from '../lib/format'
+  import { trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
   import Meter from './Meter.svelte'
@@ -39,7 +41,28 @@
   async function keepRecording() {
     meetings.stillOn = null
   }
+
+  // The popover and the "still on the call?" prompt both sit over a scrim that
+  // swallows every click behind them, so they are modal and behave like it: a
+  // phone's back button and Escape close the topmost one. The discard
+  // confirmation handles its own Escape and back, so it is left alone here.
+  closesOnBack(
+    () => open && !confirmingDiscard && !stillOn,
+    () => (open = false),
+  )
+  closesOnBack(
+    () => stillOn && !confirmingDiscard,
+    () => void keepRecording(),
+  )
+
+  function onkeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || confirmingDiscard) return
+    if (stillOn) void keepRecording()
+    else if (open) open = false
+  }
 </script>
+
+<svelte:window {onkeydown} />
 
 {#if capture}
   <div class="wrap">
@@ -57,7 +80,7 @@
     {#if open}
       <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
       <div class="scrim" onclick={() => (open = false)}></div>
-      <div class="panel" role="dialog" aria-label="Recording">
+      <div class="panel" role="dialog" aria-modal="true" aria-label="Recording" use:trapFocus>
         <header>
           <span class="dot" aria-hidden="true"></span>
           <span class="title">{capture.title}</span>
@@ -70,7 +93,7 @@
 
         <div class="meters">
           <Meter label="You" value={capture.micLevel} color="var(--accent)" />
-          <Meter label="Call" value={capture.systemLevel} color="var(--accent-2, var(--accent))" />
+          <Meter label="Call" value={capture.systemLevel} color="var(--info)" />
         </div>
 
         {#if capture.systemSilentMs > SYSTEM_SILENT_WARN_MS}
@@ -102,7 +125,13 @@
 {#if stillOn}
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div class="scrim" onclick={keepRecording}></div>
-  <div class="prompt" role="alertdialog" aria-label="Still on the call?">
+  <div
+    class="prompt"
+    role="alertdialog"
+    aria-modal="true"
+    aria-label="Still on the call?"
+    use:trapFocus
+  >
     <p><strong>Still on the call?</strong></p>
     <div class="actions">
       <button class="btn" onclick={() => void stop()}>Stop</button>
@@ -133,7 +162,7 @@
     height: 26px;
     padding: 0 var(--sp-2);
     margin: var(--sp-2) 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--danger) 14%, transparent);
     color: var(--danger);
     font-size: var(--text-xs);
@@ -209,7 +238,7 @@
   .badge {
     align-self: flex-start;
     padding: 2px var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     color: var(--fg-muted);
     font-size: var(--text-xs);

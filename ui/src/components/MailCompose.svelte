@@ -40,6 +40,7 @@
     formatSenders,
     isBlankDraft,
     parseTypedAddress,
+    weekdayAndTime,
   } from '../lib/mail'
   import {
     escapeHtml,
@@ -68,7 +69,7 @@
   import type { MenuItem } from '../lib/menu'
   import { declineItems, proposals } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
-  import { timeOfDay, toLocalInputValue } from '../lib/format'
+  import { toLocalInputValue } from '../lib/format'
   import type {
     AccountView,
     DeclineReason,
@@ -1084,6 +1085,8 @@
     return true
   }
 
+  let fileInput: HTMLInputElement | undefined = $state()
+
   async function onFiles(files: FileList | null) {
     if (files) await attachFiles(Array.from(files))
   }
@@ -1579,6 +1582,7 @@
             oncontextmenu={(e) => chipMenu(e, field, a.email)}
             >{a.name || a.email}<button
               aria-label={`Remove ${a.name || a.email}`}
+              title={`Remove ${a.name || a.email}`}
               onclick={() => removeAddress(field, a.email)}><Icon name="close" size={10} /></button
             ></span
           >
@@ -1736,6 +1740,7 @@
       <button
         class="ai-icon-btn"
         aria-label="Close the prompt"
+        title="Close the prompt"
         disabled={aiBusy || dictating}
         onclick={closeAiPrompt}
       >
@@ -1778,8 +1783,10 @@
     <div class="attachments">
       {#each fileAttachments as { attachment: a, index } (index)}
         <span class="chip"
-          >{a.filename}<button onclick={() => removeAttachment(index)}
-            ><Icon name="close" size={10} /></button
+          >{a.filename}<button
+            aria-label="Remove {a.filename}"
+            title="Remove {a.filename}"
+            onclick={() => removeAttachment(index)}><Icon name="close" size={10} /></button
           ></span
         >
       {/each}
@@ -1864,7 +1871,7 @@
               {#each sendLaterChoices() as choice (choice.key)}
                 <button role="menuitem" onclick={() => void send(choice.at.toISOString())}>
                   <span>{choice.label}</span>
-                  <span class="when">{timeOfDay(choice.at)}</span>
+                  <span class="when">{weekdayAndTime(choice.at.toISOString())}</span>
                 </button>
               {/each}
               <button role="menuitem" onclick={() => (pickingDateTime = true)}>
@@ -1918,12 +1925,29 @@
       disabled={!writingEnabled || improving}
       onclick={openImproveMenu}
     >
-      <Icon name="pencil" size={15} />
+      <Icon name="broom" size={16} />
     </button>
-    <label class="tool" title="Attach files" aria-label="Attach files">
+    <!-- A button, not a label around a hidden input: a label is not in the
+         tab order, so the keyboard could not attach anything. -->
+    <button
+      class="tool"
+      title="Attach files"
+      aria-label="Attach files"
+      onclick={() => fileInput?.click()}
+    >
       <Icon name="paperclip" size={16} />
-      <input type="file" multiple hidden onchange={(e) => void onFiles(e.currentTarget.files)} />
-    </label>
+    </button>
+    <input
+      bind:this={fileInput}
+      type="file"
+      multiple
+      hidden
+      onchange={(e) => {
+        void onFiles(e.currentTarget.files)
+        // So choosing the same file again still fires `change`.
+        e.currentTarget.value = ''
+      }}
+    />
     {#if !proposal}
       <button
         class="tool"
@@ -2052,7 +2076,7 @@
     align-items: center;
     gap: 3px;
     padding: 2px var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     color: var(--accent);
     font-size: var(--text-xs);
@@ -2113,7 +2137,7 @@
     align-items: center;
     gap: 4px;
     padding: 2px var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     font-size: var(--text-sm);
   }
@@ -2381,7 +2405,7 @@
     height: 28px;
     margin-left: calc(-1 * var(--sp-2));
     border-radius: var(--radius-sm);
-    color: var(--fg-faint);
+    color: var(--fg-muted);
     cursor: pointer;
     transition:
       background var(--fast) var(--ease),

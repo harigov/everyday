@@ -47,7 +47,7 @@
   } from '../lib/brief'
   import { briefs } from '../lib/brief.svelte'
   import { feed } from '../lib/feed.svelte'
-  import { relativeTime } from '../lib/format'
+  import { plural, relativeTime } from '../lib/format'
   import type { IconName } from '../lib/icons'
   import { models } from '../lib/models.svelte'
   import { overview } from '../lib/overview.svelte'
@@ -69,6 +69,7 @@
     Weekday,
   } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import SubTabs from './SubTabs.svelte'
 
   void briefs.start()
@@ -375,6 +376,14 @@
   }
 
   const making = $derived(briefs.isMaking(kind))
+
+  /** How long a missed brief may still be made, as people say it: "4 hours",
+   *  not "240 minutes" -- minutes only when it is not a whole number of hours. */
+  function graceText(minutes: number): string {
+    return minutes >= 60 && minutes % 60 === 0
+      ? plural(minutes / 60, 'hour')
+      : plural(minutes, 'minute')
+  }
 </script>
 
 {#if !briefs.enabled}
@@ -384,12 +393,18 @@
   </p>
 {:else}
   <p class="hint lead">
-    What a good chief of staff hands you before the day starts: its shape in one sentence, then only
-    what helps you act — who you are meeting, what is due, what is waiting on you. Written from what
-    this vault already holds, and nothing is changed while it is written. Every brief is kept in the
-    Overview, on its Brief page. To hear one, press <b>Listen</b> there, or in voice mode or on a call
-    say “read me my brief”.
+    What a good chief of staff hands you before the day starts: only what helps you act — who you
+    are meeting, what is due, what is waiting on you. Every brief is kept in the Overview, on its
+    Brief page.
   </p>
+  <details class="hint how">
+    <summary>How this works</summary>
+    <p>
+      Each brief is written from what this vault already holds, and nothing is changed while it is
+      written. To hear one, press <b>Listen</b> on its Brief page, or in voice mode or on a call say “read
+      me my brief”.
+    </p>
+  </details>
 
   <SubTabs
     tabs={TABS}
@@ -404,10 +419,10 @@
   />
 
   {#if !briefs.loaded}
-    <p class="hint">Loading…</p>
+    <Loading centred />
   {:else}
     <div class="panes">
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={on}
@@ -419,8 +434,9 @@
           <small>{KIND_INFO[kind].blurb}</small>
           {#if on && routine}
             <small class="note">
-              {routine.when}{#if routine.lastRunAt}
-                · last made {relativeTime(routine.lastRunAt)}{/if}
+              {routine.when}{#if routine.lastRunAt}&nbsp;· last made {relativeTime(
+                  routine.lastRunAt,
+                )}{/if}
             </small>
           {/if}
         </span>
@@ -464,8 +480,8 @@
               {:else}
                 No day chosen means every day.
               {/if}
-              Missed by more than {draft.graceMinutes} minutes — the computer asleep, the app shut — it
-              is recorded as skipped rather than made late.
+              Missed by more than {graceText(draft.graceMinutes)} — the computer asleep, the app shut
+              — it is recorded as skipped rather than made late.
             </span>
           {:else}
             <p class="hint">{routine?.when}</p>
@@ -475,7 +491,7 @@
         {#if kind === 'podcast' && podcast}
           <div class="field-row">
             <span class="eyebrow">What it covers</span>
-            <label class="toggle">
+            <label class="check-row">
               <input
                 type="radio"
                 name="podcast-sources"
@@ -490,7 +506,7 @@
                 </small>
               </span>
             </label>
-            <label class="toggle">
+            <label class="check-row">
               <input
                 type="radio"
                 name="podcast-sources"
@@ -593,7 +609,7 @@
                     <p class="hint section-note">
                       Asks Open-Meteo for the forecast where you live, as
                       <button class="link" onclick={() => panels.openSettings('profile')}
-                        >Settings → About you</button
+                        >About you</button
                       > has it.
                     </p>
                   {/if}
@@ -629,20 +645,20 @@
             <span class="eyebrow">Who says it</span>
             <span class="hint">
               One voice for now: the voice chosen in
-              <button class="link" onclick={() => panels.openSettings('models')}
-                >Settings → Models</button
-              > reads it all. More voices, as two hosts in conversation, come later.
+              <button class="link" onclick={() => panels.openSettings('models')}>Models</button> reads
+              it all. More voices, as two hosts in conversation, come later.
             </span>
           </div>
         {:else}
           <div class="field-row">
             <span class="eyebrow">Length</span>
-            <div class="segmented" role="group" aria-label="Length">
+            <div class="seg-group lengths" role="radiogroup" aria-label="Length">
               {#each BRIEF_LENGTHS as length (length)}
                 <button
-                  class="seg"
+                  class="seg-opt"
                   class:on={spec.length === length}
-                  aria-pressed={spec.length === length}
+                  role="radio"
+                  aria-checked={spec.length === length}
                   onclick={() => setSpec({ ...spec, length })}
                 >
                   {LENGTH_INFO[length].label}
@@ -658,7 +674,7 @@
 
         <div class="field-row">
           <span class="eyebrow">Where it goes</span>
-          <label class="toggle">
+          <label class="check-row">
             <input type="checkbox" checked disabled />
             <span>
               <b>In the Overview</b>
@@ -671,7 +687,7 @@
               </small>
             </span>
           </label>
-          <label class="toggle">
+          <label class="check-row">
             <input
               type="checkbox"
               checked={!!draft.delivery?.chat}
@@ -697,7 +713,7 @@
             </select>
           {/if}
           {#if draft.delivery?.chat}
-            <label class="toggle sub">
+            <label class="check-row sub">
               <input type="checkbox" bind:checked={draft.delivery.call} />
               <span>
                 <b>Call me with it</b>
@@ -708,7 +724,7 @@
               </span>
             </label>
           {/if}
-          <label class="toggle">
+          <label class="check-row">
             <input
               type="checkbox"
               checked={!!draft.delivery?.email}
@@ -761,7 +777,7 @@
             <span class="hint">steps at most</span>
           </div>
           <span class="hint">
-            Which model writes it, from Settings → Models, and how many steps it may take — each one
+            Which model writes it, as set up under Models, and how many steps it may take — each one
             a look at a note, a thread or a meeting's notes for one more useful fact. Left empty, it
             gets the assistant's own {defaultSteps}.
           </span>
@@ -783,7 +799,7 @@
       {/if}
     </div>
 
-    <div class="save">
+    <div class="save save-row">
       {#if briefs.error}
         <span class="notice err" role="alert">{briefs.error}</span>
       {:else if notice}
@@ -830,36 +846,23 @@
     min-width: 0;
   }
 
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
+  .how {
+    margin: 0 0 var(--sp-4);
+  }
+  .how summary {
     cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
     font-weight: 600;
   }
-  .toggle small,
+  .how p {
+    margin: var(--sp-2) 0 0;
+  }
   .hint {
     margin: 0;
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
     color: var(--fg-subtle);
   }
-  .toggle small.note {
+  small.note {
     color: var(--fg-muted);
   }
 
@@ -1018,41 +1021,20 @@
     transform: rotate(90deg);
   }
 
-  .segmented {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    background: var(--bg-sunken);
-    border-radius: var(--radius);
-  }
-  .seg {
-    flex: 1;
+  /* The shared segmented control, with a second line of small print under
+     each label: how long that length takes to hear. */
+  .lengths .seg-opt {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 1px;
     min-height: 40px;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
   }
-  .seg small {
+  .lengths .seg-opt small {
     font-size: var(--text-xs);
     font-weight: 450;
     color: var(--fg-faint);
-  }
-  .seg:hover {
-    color: var(--fg);
-  }
-  .seg.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
   }
 
   .area {
@@ -1069,21 +1051,6 @@
     text-decoration: underline;
   }
 
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-    margin-top: var(--sp-6);
-    padding-top: var(--sp-4);
-    border-top: 1px solid var(--border);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
-  }
   .notice.err {
     color: var(--danger);
   }

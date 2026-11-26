@@ -329,7 +329,7 @@ class UpNext {
   /** Put `what` in Up Next (at the end unless `place` says). */
   async add(what: ContentRef, place?: QueuePlace): Promise<void> {
     try {
-      await api.addToQueue(what, place)
+      await api.addToQueue($state.snapshot(what), place && $state.snapshot(place))
     } catch (e) {
       await handle(e)
       return
@@ -429,7 +429,7 @@ class UpNext {
     const wasFinished = !!this.progressOf(progress.what)?.finished
     let stored: Consumption
     try {
-      stored = await api.recordProgress(progress)
+      stored = await api.recordProgress($state.snapshot(progress))
     } catch (e) {
       // Not worth a banner: a report is sent every fifteen seconds, and a
       // refusal changes nothing the person is looking at.
@@ -887,7 +887,7 @@ class UpNext {
     const known = this.#known[refKey(what)]
     if (known) return known
     try {
-      const stored = await api.getConsumption(what)
+      const stored = await api.getConsumption($state.snapshot(what))
       if (!stored) return undefined
       this.#remember(stored)
       return stored
@@ -978,7 +978,11 @@ class UpNext {
       await quietly(e)
       return
     }
-    this.error = errorMessage(e)
+    // The raw message is for the console: it can name an engine, a file or a
+    // proxy that means nothing to a reader. The page says what happened and
+    // offers the retry.
+    console.error('Up Next could not be loaded', e)
+    this.error = 'Up Next could not be loaded.'
   }
 
   /** What `report` and `lookup` learned. */

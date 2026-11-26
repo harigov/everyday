@@ -199,7 +199,7 @@ assert.equal(usage.files, 57)
 assert.equal(usage.sealedFiles, 1)
 assert.equal(usage.trashedFiles, 2)
 assert.equal(usage.missingFiles, 1)
-assert.equal(files.accent, '#0f766e')
+assert.equal(files.accent, 'var(--app-files)')
 assert.equal(files.view, FILES_VIEWS[0])
 
 // ── browsing ─────────────────────────────────────────────────────────

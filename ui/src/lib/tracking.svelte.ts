@@ -254,6 +254,83 @@ class TrackingState {
   }
 
   /**
+   * What tapping a chip that is already lit does, and how to take it back.
+   *
+   * It used to record another reading, which for a tick is a second tick
+   * nobody wanted and for a dose is a second dose nobody could undo. A lit
+   * tick now takes the day's readings back; a lit chip of any other kind
+   * adds one more, since two doses or two glasses are two real events. Either
+   * way the answer is words and an undo for the caller's toast, or `null`
+   * when nothing changed.
+   *
+   * Read from the vault rather than from `readings`, which is the day a
+   * journal page has open and says nothing about a day tapped from the
+   * Overview.
+   */
+  async tapLit(
+    tracker: Tracker,
+    date: string,
+  ): Promise<{ message: string; undo: () => Promise<void> } | null> {
+    try {
+      if (tracker.kind === 'check') {
+        const rows = await api.readings({
+          trackerIds: [tracker.id],
+          from: date,
+          to: date,
+          recordedOnly: true,
+        })
+        if (rows.length === 0) return null
+        for (const r of rows) await api.deleteReading(r.id)
+        await this.refresh()
+        return {
+          message: `Took back ${tracker.name}`,
+          undo: async () => {
+            try {
+              for (const r of rows) {
+                await api.logReading({
+                  trackerId: tracker.id,
+                  value: r.value,
+                  date,
+                  at: r.at ?? null,
+                  journalId: r.journalId ?? null,
+                  entryId: r.entryId ?? null,
+                })
+              }
+              await this.refresh()
+            } catch (e) {
+              await handle(e)
+            }
+          },
+        }
+      }
+      // Tied to no journal page: tapped from the Overview, the page last
+      // open may be another day's, and a reading dated today must not point
+      // at yesterday's entry.
+      const made = await api.logReading({
+        trackerId: tracker.id,
+        value: tracker.defaultValue,
+        date,
+        entryId: null,
+      })
+      await this.refresh()
+      return {
+        message: `Logged ${tracker.name} again`,
+        undo: async () => {
+          try {
+            await api.deleteReading(made.id)
+            await this.refresh()
+          } catch (e) {
+            await handle(e)
+          }
+        },
+      }
+    } catch (e) {
+      await handle(e)
+      return null
+    }
+  }
+
+  /**
    * Record one line, making the tracker if there is not one yet.
    *
    * The lazy half of capture, and the reason it is in the store rather than

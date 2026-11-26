@@ -23,6 +23,7 @@
   import { addDays, offsetInDay, todayIso } from '../lib/time'
   import type { Dose, Meal, SamplePoint } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   const date = $derived(health.date || todayIso())
   const atPresent = $derived(date >= todayIso())
@@ -270,7 +271,7 @@
   </div>
 
   {#if !tl}
-    <p class="none">Loading the day…</p>
+    <Loading label="Loading the day…" />
   {:else}
     {#if glucose.length === 0}
       <p class="none">No glucose readings on this day.</p>
@@ -459,7 +460,7 @@
     align-items: center;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
   }
   .step {
@@ -486,7 +487,7 @@
     min-width: 7.5em;
     height: 26px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-weight: 600;
     color: var(--fg);

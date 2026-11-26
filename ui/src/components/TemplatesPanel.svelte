@@ -17,6 +17,7 @@
   import { app } from '../lib/state.svelte'
   import { ALL_USES, USE_LABELS, templates } from '../lib/templates.svelte'
   import { closesOnBack } from '../lib/phone.svelte'
+  import { panels } from '../lib/panels.svelte'
   import { todayIso } from '../lib/time'
   import type { RenderedTemplate, Template, TemplateUse } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -201,6 +202,24 @@
     preview ? renderMarkdown(sliceToMarkdown((preview.body.content ?? []) as PMNode[], 0, 0)) : '',
   )
 
+  const canSave = $derived(
+    !!editing && !!editing.name.trim() && (!!editing.body.trim() || !!editing.title.trim()),
+  )
+
+  /** What deleting the template one is asked about would leave without it:
+   *  the journals that start days from it, and meeting notes' default. */
+  const deleteUses = $derived.by(() => {
+    if (!pendingDelete) return ''
+    const out: string[] = []
+    const journals = journalUse.get(pendingDelete.id)
+    if (journals)
+      out.push(`It starts days in ${journals.join(', ')}, which will start empty instead.`)
+    if (meetingDefault === pendingDelete.id) {
+      out.push('It is the default for meeting notes, which will use the built-in shape instead.')
+    }
+    return out.join(' ')
+  })
+
   const forWriting = $derived(
     editing ? editing.uses.includes('journal') || editing.uses.includes('notes') : false,
   )
@@ -221,7 +240,8 @@
     <header class="head">
       <p class="lead">
         A template is the page a journal entry, a note or a meeting's notes starts with. Journals
-        choose theirs in their own settings; meetings in the Meetings tab.
+        choose theirs in their own settings, from the journal’s menu in the sidebar; meetings in
+        <button class="link" onclick={() => panels.openSettings('meetings')}>Meetings</button>.
       </p>
       <span class="spacer"></span>
       <button class="btn btn-primary" onclick={() => void draft()}>New template</button>
@@ -232,12 +252,12 @@
     {#if editing}
       <section class="editor" aria-label="Edit template">
         <label class="field-row">
-          <span class="eyebrow">Name</span>
+          <span class="field-label">Name</span>
           <input class="field" placeholder="Weekly review" bind:value={editing.name} />
         </label>
 
         <div class="field-row">
-          <span class="eyebrow">Use it for</span>
+          <span class="field-label">Use it for</span>
           <div class="uses">
             {#each ALL_USES as place (place)}
               <label class="use">
@@ -254,7 +274,7 @@
 
         {#if forWriting}
           <label class="field-row">
-            <span class="eyebrow">Title</span>
+            <span class="field-label">Title</span>
             <input
               class="field"
               placeholder="Week {'{{week}}'} review — leave empty to start untitled"
@@ -265,7 +285,7 @@
         {/if}
 
         <label class="field-row">
-          <span class="eyebrow">Text</span>
+          <span class="field-label">Text</span>
           <textarea
             class="field area"
             rows="14"
@@ -306,7 +326,7 @@
 
         {#if forWriting}
           <label class="field-row">
-            <span class="eyebrow">Tags</span>
+            <span class="field-label">Tags</span>
             <input
               class="field"
               placeholder="review, weekly"
@@ -374,16 +394,15 @@
           {/if}
           <span class="spacer"></span>
           <button class="btn" onclick={() => (editing = null)}>Cancel</button>
-          <button
-            class="btn btn-primary"
-            disabled={saving ||
-              !editing.name.trim() ||
-              (!editing.body.trim() && !editing.title.trim())}
-            onclick={() => void save()}
-          >
+          <button class="btn btn-primary" disabled={saving || !canSave} onclick={() => void save()}>
             Save
           </button>
         </footer>
+        {#if !canSave}
+          <p class="hint">
+            A template needs a name, and some text or a title, before it can be saved.
+          </p>
+        {/if}
       </section>
     {:else if templates.loaded && templates.all.length === 0}
       <EmptyState lead="No templates yet">
@@ -431,7 +450,8 @@
     title="Delete this template?"
     detail={'“' +
       pendingDelete.name +
-      '” will be gone. Entries, notes and meeting notes already written from it keep their text.'}
+      '” will be gone. Entries, notes and meeting notes already written from it keep their text. ' +
+      deleteUses}
     confirmLabel="Delete template"
     onconfirm={remove}
     oncancel={() => (pendingDelete = null)}
@@ -501,7 +521,7 @@
   .pill {
     padding: 1px var(--sp-2);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     font-size: var(--text-xs);
     white-space: nowrap;
@@ -543,6 +563,10 @@
   .field-row {
     display: grid;
     gap: var(--sp-2);
+  }
+  /* The row's own gap spaces the label; `.field-label` adds its own. */
+  .field-row .field-label {
+    margin-bottom: 0;
   }
 
   .uses {

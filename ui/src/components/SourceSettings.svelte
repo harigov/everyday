@@ -267,7 +267,7 @@
     {/if}
 
     <div class="switches">
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={images} />
         <span>
           <b>Load pictures</b>
@@ -279,7 +279,7 @@
       </label>
 
       {#if isWeb && !isShow}
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={fullText} />
           <span>
             <b>Always fetch the full article</b>
@@ -292,7 +292,7 @@
       {/if}
 
       {#if isMail}
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={keepOutOfInbox} />
           <span>
             <b>Keep these out of the inbox</b>
@@ -304,7 +304,7 @@
         </label>
       {/if}
 
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={paused} />
         <span>
           <b>Pause</b>
@@ -317,7 +317,7 @@
     <h3 class="eyebrow section">Automation</h3>
 
     <div class="switches under">
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={auto.summarize} />
         <span>
           <b>{isShow ? 'Write an article from each transcript' : 'Summarise new stories'}</b>
@@ -334,7 +334,7 @@
       </label>
 
       {#if !isShow}
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={auto.audio} />
           <span>
             <b>Make each new article into audio</b>
@@ -498,7 +498,7 @@
 
     {#if fromSender}
       <div class="switches">
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={trashMail} />
           <span>
             <b>Also move each issue’s email to Trash when it is cleaned up</b>
@@ -597,33 +597,6 @@
   .switches.under {
     margin-top: 0;
   }
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small {
-    font-size: var(--text-sm);
-    color: var(--fg-subtle);
-    line-height: var(--leading-normal);
-  }
-
-  .keep,
   .choice {
     display: flex;
     flex-wrap: wrap;
@@ -645,7 +618,7 @@
 
   /* A phone: a tick to hit, and fields at the size that keeps iOS from
      zooming into them. */
-  :global([data-phone]) .toggle input {
+  :global([data-phone]) .check-row input {
     width: 24px;
     height: 24px;
   }

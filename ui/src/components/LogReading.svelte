@@ -85,7 +85,7 @@
       entryId: entryId ?? undefined,
       date,
     })
-    if (tracker) said = `Recorded ${tracker.name}.`
+    if (tracker) said = `Logged ${tracker.name}.`
   }
 
   function submit() {
@@ -109,8 +109,8 @@
       .then((done) => {
         if (!done) return
         said = done.created
-          ? `Made “${done.tracker.name}” and recorded it.`
-          : `Recorded ${done.tracker.name}.`
+          ? `Made “${done.tracker.name}” and logged it.`
+          : `Logged ${done.tracker.name}.`
       })
       .catch(() => {
         /* already reported by the store's one error policy */
@@ -124,7 +124,7 @@
     chain = chain
       .then(() => tracking.log(tracker, tracker.defaultValue))
       .then(() => {
-        said = `Recorded ${tracker.name}.`
+        said = `Logged ${tracker.name}.`
       })
       .catch(() => {})
       .finally(() => field?.focus())
@@ -143,7 +143,7 @@
     <Suggestions
       scope={readingChip.name}
       items={[{ key: 'r', label: readingChip.label || readingChip.name }]}
-      label="Record:"
+      label="Log:"
       onaccept={() => void acceptReading()}
       ondismiss={() => readingSlot.dismiss(() => (readingChip = null))}
     />
@@ -158,7 +158,7 @@
       bind:this={field}
       bind:value={draft}
       placeholder="swim 60min"
-      aria-label="Record a reading"
+      aria-label="Log a habit"
       oninput={() => (said = '')}
       onkeydown={(e) => {
         if (e.key === 'Enter') {
@@ -170,7 +170,13 @@
         }
       }}
     />
-    <button class="go" disabled={!ready} onclick={submit} title="Record it (Enter)">
+    <button
+      class="go"
+      disabled={!ready}
+      onclick={submit}
+      title="Log it (Enter)"
+      aria-label="Log it"
+    >
       <Icon name="check" size={14} />
     </button>
   </div>
@@ -191,7 +197,7 @@
         <button
           class="chip"
           style="--c: {tracker.color}"
-          title="Record {tracker.name} at {formatValue(tracker, tracker.defaultValue)}"
+          title="Log {tracker.name} at {formatValue(tracker, tracker.defaultValue)}"
           onclick={() => quick(tracker)}
         >
           <TrackerIcon name={tracker.icon} color={tracker.color} size={18} />
@@ -296,7 +302,7 @@
     gap: var(--sp-1);
     padding: 2px var(--sp-2) 2px 2px;
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
   }
 

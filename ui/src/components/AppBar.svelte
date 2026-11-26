@@ -17,6 +17,8 @@
   import { app, type Section } from '../lib/state.svelte'
   import { api } from '../lib/api'
   import { canOpenWindows } from '../lib/appwindow'
+  import { appleKeyboard } from '../lib/platform'
+  import { keysLabel } from '../lib/keys'
   import { APPS as APP_REGISTRY } from '../lib/apps'
   import { assistant } from '../lib/assistant.svelte'
   import { jobs } from '../lib/jobs.svelte'
@@ -153,6 +155,10 @@
       ...tray.entriesFor(entry.label).map(toItem),
     ])
   }
+
+  // Said as the keys are spelt on this machine, not as one platform prints them.
+  const settingsKeys = keysLabel('mod+,', appleKeyboard)
+  const lockKeys = keysLabel('mod+l', appleKeyboard)
 </script>
 
 <!-- No cap at the top any more: the window controls sit over the strip
@@ -228,12 +234,12 @@
       class="barbtn"
       class:on={panels.settings !== null}
       onclick={() => panels.openSettings()}
-      title="Settings (Ctrl+,)"
+      title="Settings ({settingsKeys})"
     >
       <span><Symbol name="settings" size={21} /></span>
       <span class="barlabel">Settings</span>
     </button>
-    <button class="barbtn" onclick={() => app.lock()} title="Lock now (Ctrl+L)">
+    <button class="barbtn" onclick={() => app.lock()} title="Lock now ({lockKeys})">
       <span><Symbol name="lock" size={21} /></span>
       <span class="barlabel">Lock</span>
     </button>
@@ -272,7 +278,7 @@
     min-width: 15px;
     height: 15px;
     padding: 0 4px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--accent);
     color: var(--fg-on-accent);
     font-size: 10px;

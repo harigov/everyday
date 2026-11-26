@@ -16,6 +16,7 @@
   import type { Assignee, Priority, Purpose, QuickTaskDraft, TaskStatus } from '../lib/types'
   import { nextReminder, reminderSent } from '../lib/tasklist'
   import { personSaid } from '../lib/taskperson'
+  import { mergeTags } from '../lib/tags'
   import { STATUS_LABELS, PRIORITY_LABELS } from '../lib/labels'
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
@@ -36,6 +37,25 @@
   let bookMinutes = $state(30)
   let tagDraft = $state('')
   let raiseDraft = $state('')
+
+  // The fields most tasks never use -- when it starts, who does it, a
+  // reminder, what it is for, who to bring it up with -- wait behind "More"
+  // and open themselves on a task that has any of them set, so nothing set is
+  // ever hidden.
+  let moreOpen = $state(false)
+  const moreSet = $derived(
+    !!task &&
+      (!!task.startDate ||
+        task.assignee === 'assistant' ||
+        !!task.remindAt ||
+        !!task.purpose ||
+        (task.raiseWith?.length ?? 0) > 0),
+  )
+  const showMore = $derived(moreOpen || moreSet)
+  $effect(() => {
+    void task?.id
+    moreOpen = false
+  })
 
   // ── breaking it down, and sizing it ──────────────────────────────────
   //
@@ -103,8 +123,9 @@
     const tag = tagDraft.trim().replace(/^#/, '')
     tagDraft = ''
     if (!task || !tag) return
-    if (task.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
-    todo.patch(task.id, { tags: [...task.tags, tag] })
+    const next = mergeTags(task.tags, [tag])
+    if (next.length === task.tags.length) return
+    todo.patch(task.id, { tags: next })
   }
 
   // Who this is to be raised with. A name is all a person needs here, but an
@@ -223,67 +244,6 @@
           />
         </div>
 
-        <label class="lab" for="d-assignee">Who</label>
-        <select
-          id="d-assignee"
-          class="pick"
-          value={task.assignee ?? 'owner'}
-          onchange={(e) => {
-            const assignee = e.currentTarget.value as Assignee
-            // Handed over: whatever went out for it as yours is not the
-            // assistant having done it, so its start is due afresh.
-            todo.patch(
-              task.id,
-              assignee === 'assistant' ? { assignee, remindedAt: null } : { assignee },
-            )
-          }}
-        >
-          <option value="owner">Me</option>
-          <option value="assistant">The assistant</option>
-        </select>
-
-        <label class="lab" for="d-remind">{assistants ? 'Do at' : 'Remind'}</label>
-        <div class="pair">
-          <input
-            id="d-remind"
-            class="pick"
-            type="datetime-local"
-            value={task.remindAt ? toLocalInputValue(new Date(task.remindAt)) : ''}
-            onchange={(e) =>
-              todo.patch(task.id, {
-                // Read as local time, which is what the field shows.
-                remindAt: e.currentTarget.value
-                  ? new Date(e.currentTarget.value).toISOString()
-                  : null,
-              })}
-          />
-          {#if sent}<span class="unit">Sent</span>{/if}
-        </div>
-        {#if assistants}
-          <span></span>
-          <p class="hint">
-            {#if task.status === 'doing'}
-              The assistant is on it. What it did is sent to you when it finishes.
-            {:else if ran}
-              Done once. Set a later time to have it go again.
-            {:else if task.remindAt}
-              The assistant does it then, with its own tools, and sends you what it did.
-            {:else}
-              The assistant starts within a minute, with its own tools, and sends you what it did.
-              Set a time to have it wait.
-            {/if}
-          </p>
-        {/if}
-
-        <label class="lab" for="d-start">Start</label>
-        <input
-          id="d-start"
-          class="pick"
-          type="date"
-          value={task.startDate ?? ''}
-          onchange={(e) => todo.patch(task.id, { startDate: e.currentTarget.value || null })}
-        />
-
         <label class="lab" for="d-estimate">Estimate</label>
         <div class="pair">
           <input
@@ -325,16 +285,86 @@
           />
         {/if}
 
-        <label class="lab" for="d-purpose">For</label>
-        <div id="d-purpose">
-          <!-- Left blank on nearly every task, and that is the expected
-               shape: a task under a filed project is already attributed. -->
-          <PurposeField
-            value={task.purpose}
-            onchange={(purpose: Purpose | null) => todo.patch(task.id, { purpose })}
-            placeholder={project?.purpose ? 'Same as the project' : 'Not filed'}
+        {#if !showMore}
+          <span></span>
+          <button class="mini more" aria-expanded="false" onclick={() => (moreOpen = true)}>
+            <Icon name="plus" size={12} weight={2} /> More
+          </button>
+        {:else}
+          <label class="lab" for="d-assignee">Done by</label>
+          <select
+            id="d-assignee"
+            class="pick"
+            value={task.assignee ?? 'owner'}
+            onchange={(e) => {
+              const assignee = e.currentTarget.value as Assignee
+              // Handed over: whatever went out for it as yours is not the
+              // assistant having done it, so its start is due afresh.
+              todo.patch(
+                task.id,
+                assignee === 'assistant' ? { assignee, remindedAt: null } : { assignee },
+              )
+            }}
+          >
+            <option value="owner">Me</option>
+            <option value="assistant">The assistant</option>
+          </select>
+
+          <label class="lab" for="d-remind">{assistants ? 'Do at' : 'Remind'}</label>
+          <div class="pair">
+            <input
+              id="d-remind"
+              class="pick"
+              type="datetime-local"
+              value={task.remindAt ? toLocalInputValue(new Date(task.remindAt)) : ''}
+              onchange={(e) =>
+                todo.patch(task.id, {
+                  // Read as local time, which is what the field shows.
+                  remindAt: e.currentTarget.value
+                    ? new Date(e.currentTarget.value).toISOString()
+                    : null,
+                })}
+            />
+            {#if sent}<span class="unit">Sent</span>{/if}
+          </div>
+          {#if assistants}
+            <span></span>
+            <p class="hint">
+              {#if task.status === 'doing'}
+                The assistant is on it. What it did is sent to you when it finishes.
+              {:else if ran}
+                Done once. Set a later time to have it go again.
+              {:else if task.remindAt}
+                The assistant does it then, with its own tools, and sends you what it did.
+              {:else}
+                The assistant starts within a minute, with its own tools, and sends you what it did.
+                Set a time to have it wait.
+              {/if}
+            </p>
+          {/if}
+
+          <label class="lab" for="d-start">Start</label>
+          <input
+            id="d-start"
+            class="pick"
+            type="date"
+            value={task.startDate ?? ''}
+            onchange={(e) => todo.patch(task.id, { startDate: e.currentTarget.value || null })}
           />
-        </div>
+
+          <label class="lab" for="d-purpose" title="Which goal or area of your life this is for"
+            >Goal or area</label
+          >
+          <div id="d-purpose">
+            <!-- Left blank on nearly every task, and that is the expected
+               shape: a task under a filed project is already attributed. -->
+            <PurposeField
+              value={task.purpose}
+              onchange={(purpose: Purpose | null) => todo.patch(task.id, { purpose })}
+              placeholder={project?.purpose ? 'Same as the project' : 'No goal or area'}
+            />
+          </div>
+        {/if}
       </div>
 
       <div class="head"><span class="eyebrow">Tags</span></div>
@@ -371,39 +401,41 @@
         </datalist>
       </div>
 
-      <div class="head"><span class="eyebrow">Raise with</span></div>
-      <div class="tags">
-        {#each task.raiseWith ?? [] as person, i (i)}
-          <span class="tag" title={person.email}>
-            {person.name}
-            <button
-              class="x"
-              title="Remove {person.name}"
-              aria-label="Remove {person.name}"
-              onclick={() => removeRaiseWith(i)}
-            >
-              <Icon name="close" size={10} weight={2} />
-            </button>
-          </span>
-        {/each}
-        <input
-          class="tagin who"
-          placeholder="Add a person"
-          title="A name or an address. Shown on the card before your next meeting with them"
-          aria-label="Raise with"
-          bind:value={raiseDraft}
-          onblur={addRaiseWith}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              addRaiseWith()
-            }
-            if (e.key === 'Escape') raiseDraft = ''
-          }}
-        />
-      </div>
-      {#if task.raiseWith?.length}
-        <p class="hint raise">Shown on the card before your next meeting with them.</p>
+      {#if showMore}
+        <div class="head"><span class="eyebrow">Bring up with</span></div>
+        <div class="tags">
+          {#each task.raiseWith ?? [] as person, i (i)}
+            <span class="tag" title={person.email}>
+              {person.name}
+              <button
+                class="x"
+                title="Remove {person.name}"
+                aria-label="Remove {person.name}"
+                onclick={() => removeRaiseWith(i)}
+              >
+                <Icon name="close" size={10} weight={2} />
+              </button>
+            </span>
+          {/each}
+          <input
+            class="tagin who"
+            placeholder="Add a person"
+            title="A name or an address. Shown on the card before your next meeting with them"
+            aria-label="Bring up with"
+            bind:value={raiseDraft}
+            onblur={addRaiseWith}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                addRaiseWith()
+              }
+              if (e.key === 'Escape') raiseDraft = ''
+            }}
+          />
+        </div>
+        {#if task.raiseWith?.length}
+          <p class="hint raise">Shown on the card before your next meeting with them.</p>
+        {/if}
       {/if}
 
       <div class="head"><span class="eyebrow">Notes</span></div>
@@ -504,8 +536,7 @@
         </p>
       {/if}
 
-      <div class="head"><span class="eyebrow">Danger</span></div>
-      <button class="btn btn-ghost-danger wide" onclick={() => (confirming = true)}>
+      <button class="btn btn-ghost-danger wide delete" onclick={() => (confirming = true)}>
         <Icon name="trash" size={14} /> Delete task
       </button>
 
@@ -535,7 +566,7 @@
 
 <style>
   .detail {
-    width: 320px;
+    width: var(--detail-w);
     flex: none;
     display: flex;
     flex-direction: column;
@@ -584,13 +615,13 @@
     color: var(--fg);
     user-select: text;
   }
-  .title:focus {
+  .title:focus:not(:focus-visible) {
     outline: none;
   }
 
   .grid {
     display: grid;
-    grid-template-columns: 62px 1fr;
+    grid-template-columns: 88px 1fr;
     align-items: center;
     gap: var(--sp-2) var(--sp-2);
     margin-top: var(--sp-4);
@@ -613,8 +644,10 @@
     user-select: text;
   }
   .pick:focus {
-    outline: none;
     border-color: var(--accent);
+  }
+  .pick:focus:not(:focus-visible) {
+    outline: none;
   }
   .pick:disabled {
     opacity: 0.45;
@@ -674,7 +707,7 @@
     gap: 3px;
     height: 22px;
     padding: 0 5px 0 var(--sp-2);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     border: 1px solid var(--border);
     font-size: var(--text-xs);
@@ -683,7 +716,7 @@
   .x {
     display: flex;
     color: var(--fg-faint);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     padding: 2px;
   }
   .x:hover {
@@ -695,13 +728,15 @@
     width: 84px;
     padding: 0 var(--sp-2);
     border: 1px dashed var(--border-strong);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: none;
     font-size: var(--text-xs);
     user-select: text;
   }
-  .tagin:focus {
+  .tagin:focus:not(:focus-visible) {
     outline: none;
+  }
+  .tagin:focus {
     border-style: solid;
     border-color: var(--accent);
   }
@@ -726,8 +761,10 @@
     user-select: text;
   }
   .notes:focus {
-    outline: none;
     border-color: var(--accent);
+  }
+  .notes:focus:not(:focus-visible) {
+    outline: none;
   }
 
   .totals {
@@ -801,6 +838,13 @@
   .wide {
     width: 100%;
   }
+  .delete {
+    margin-top: var(--sp-5);
+  }
+  /* The row that opens the rarely used fields, under the ones everybody uses. */
+  .more {
+    justify-self: start;
+  }
   .stamp {
     margin-top: var(--sp-4);
     font-size: var(--text-xs);
@@ -840,7 +884,7 @@
   /* The fields, one to a row of a size a finger can hit; the labels wider,
      since they are no longer squeezed beside a rail. */
   :global([data-phone]) .grid {
-    grid-template-columns: 74px 1fr;
+    grid-template-columns: 96px 1fr;
     gap: var(--sp-3) var(--sp-2);
   }
   :global([data-phone]) .lab {

@@ -15,6 +15,7 @@
   // than being drawn twice.
 
   import { DEFAULT_COLORS } from '../lib/colors'
+  import { focusOnMount } from '../lib/focus'
   import { plural } from '../lib/format'
   import { GOAL_STATUS_LABELS } from '../lib/labels'
   import { menu } from '../lib/menu.svelte'
@@ -77,6 +78,23 @@
     if (!(await purpose.saveGoal({ ...$state.snapshot(goal), status }))) select.value = goal.status
   }
 
+  /** Is the goal's name being edited in the header? */
+  let renaming = $state(false)
+  let renameDraft = $state('')
+
+  function startRename() {
+    if (!goal) return
+    renameDraft = goal.title
+    renaming = true
+  }
+
+  async function commitRename() {
+    const title = renameDraft.trim()
+    renaming = false
+    if (!goal || !title || title === goal.title) return
+    await purpose.saveGoal({ ...$state.snapshot(goal), title })
+  }
+
   /** The goals pane, with its rail open on this goal: targets, notes, horizon. */
   async function openDetails() {
     purpose.selected = id
@@ -116,7 +134,7 @@
       },
       SEP,
       {
-        label: 'File under',
+        label: 'File under…',
         icon: 'compass',
         items: purposeItems(p.purpose, (next) =>
           todo
@@ -139,6 +157,7 @@
   /** The pane itself, where there is no project under the pointer. */
   function paneMenu(): MenuItem[] {
     return tidyMenu([
+      { label: 'Rename…', icon: 'pencil', run: startRename },
       { label: 'Targets and notes…', icon: 'target', run: openDetails },
       { label: 'All goals', icon: 'layers', run: () => todo.setScope({ kind: 'goals' }) },
     ])
@@ -148,7 +167,7 @@
 <div class="pane">
   {#if !goal}
     <!-- Deleted from another window, or a goal the vault no longer has. -->
-    <EmptyState lead="This goal is not here any more.">
+    <EmptyState lead="This goal is not here any more">
       {#snippet action()}
         <button class="btn" onclick={() => todo.setScope({ kind: 'goals' })}>See every goal</button>
       {/snippet}
@@ -160,9 +179,26 @@
           <span class="mark">
             {#if area?.icon}{area.icon}{:else}<Icon name="target" size={15} />{/if}
           </span>
-          <span class="name" class:closed={goal.status === 'done' || goal.status === 'dropped'}
-            >{goal.title}</span
-          >
+          {#if renaming}
+            <input
+              class="titleedit"
+              aria-label="Goal name"
+              bind:value={renameDraft}
+              use:focusOnMount
+              onblur={commitRename}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') void commitRename()
+                if (e.key === 'Escape') renaming = false
+              }}
+            />
+          {:else}
+            <button
+              class="name"
+              class:closed={goal.status === 'done' || goal.status === 'dropped'}
+              title="Rename this goal"
+              onclick={startRename}>{goal.title}</button
+            >
+          {/if}
         </h1>
         <span class="pane-sub">{summary}</span>
       </div>
@@ -171,7 +207,7 @@
         <!-- The goal's area, changed where the goal is being looked at. -->
         <label class="pick">
           <span class="dot" aria-hidden="true"></span>
-          <span class="vh">Area</span>
+          <span class="sr-only">Area</span>
           <select
             class="select"
             value={goal.areaId}
@@ -190,7 +226,7 @@
           </select>
         </label>
         <label class="pick">
-          <span class="vh">Status</span>
+          <span class="sr-only">Status</span>
           <select
             class="select"
             value={goal.status}
@@ -203,7 +239,7 @@
           </select>
         </label>
         <button class="select" onclick={openDetails} title="Targets, notes and horizon">
-          Details
+          Targets and notes
         </button>
       </div>
     </header>
@@ -331,10 +367,25 @@
     line-height: 1;
     color: var(--dot);
   }
+  /* The name is a button so that it can be renamed in place; it reads as the heading. */
   .name {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    text-align: left;
+    cursor: text;
+  }
+  .titleedit {
+    min-width: 0;
+    padding: 0 var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
   }
   .name.closed {
     opacity: 0.6;
@@ -363,7 +414,7 @@
     height: 26px;
     padding: 0 var(--sp-2);
     border: none;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     font: inherit;
     font-size: var(--text-sm);
@@ -374,9 +425,6 @@
     background: var(--bg-hover);
     color: var(--fg);
   }
-  .select:focus {
-    outline: none;
-  }
 
   .list {
     flex: 1;
@@ -384,7 +432,7 @@
     padding: var(--sp-2) var(--sp-4) var(--sp-4);
   }
   .list > * {
-    max-width: 56rem;
+    max-width: var(--page-w);
   }
 
   .plain {
@@ -457,7 +505,7 @@
   .tag {
     flex: none;
     padding: 1px 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
     color: var(--fg-subtle);
     font-size: var(--text-xs);
@@ -505,15 +553,6 @@
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
     color: var(--fg-faint);
-  }
-
-  /* Visually hidden, still announced. */
-  .vh {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
   }
 
   /* ── On a phone ──────────────────────────────────────────────────────── */

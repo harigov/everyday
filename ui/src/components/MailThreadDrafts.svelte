@@ -114,7 +114,7 @@
     padding: var(--sp-2) var(--sp-3);
     border: 1px dashed var(--border-strong, var(--border));
     border-radius: var(--radius-lg);
-    background: var(--bg-subtle, transparent);
+    background: var(--bg-sunken);
   }
   .open {
     min-width: 0;

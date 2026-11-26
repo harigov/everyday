@@ -304,7 +304,7 @@
     {/snippet}
 
     {#if tab === 'address'}
-      <label class="field-label" for="follow-address">Address</label>
+      <label class="field-label" for="follow-address">Web address</label>
       <div class="find">
         <input
           id="follow-address"

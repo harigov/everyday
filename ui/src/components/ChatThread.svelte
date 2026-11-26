@@ -42,6 +42,7 @@
   import { addFiles } from '../lib/files'
   import { files as filesStore } from '../lib/files.svelte'
   import { jobs } from '../lib/jobs.svelte'
+  import { askExamples } from '../lib/suggestions'
   import { renderMarkdown } from '../lib/markdown'
   import { notify } from '../lib/notify.svelte'
   import { headline, toWire } from '../lib/onscreen'
@@ -811,6 +812,32 @@
 
   const web = $derived(agent.settings?.web === true)
 
+  /**
+   * What it can reach, from the apps this vault actually has: a sentence
+   * that lists a shelf the vault does not hold promises what it cannot do.
+   */
+  const reach = $derived(
+    [
+      app.canShow('journal') && 'journal',
+      app.supportsNotes && 'notes',
+      app.supportsTasks && 'tasks',
+      app.supportsCalendar && 'calendar',
+      app.supportsLibrary && 'library',
+      app.supportsMail && 'mail',
+      app.supportsHealth && 'health',
+      app.supportsFiles && 'files',
+    ].filter((x): x is string => typeof x === 'string'),
+  )
+  const reachNote = $derived.by(() => {
+    const list =
+      reach.length > 1
+        ? `${reach.slice(0, -1).join(', ')} and ${reach.at(-1)}`
+        : (reach[0] ?? 'what is here')
+    return `${agent.displayName} can read and change your ${list}${web ? ', and look things up on the web' : ''}. Deletions stop and ask first.`
+  })
+  /** Chips for the open app, in the rail; the page has its own, larger set. */
+  const railStarts = $derived(askExamples(app.section))
+
   /** A dog floats over the top of the thread, and is its face: no sparkle. */
   const dog = $derived(agent.settings !== null && lookOf(agent.settings.companion) !== null)
 
@@ -841,7 +868,18 @@
 {#snippet sparkle()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
 
 <div class="thread {variant}">
-  <div class="log scroll" bind:this={scroller} onscroll={onScroll}>
+  <!-- A log, so a reply is read out when it arrives; busy while it is still
+       being written, so it is heard once it is whole rather than word by word. -->
+  <div
+    class="log scroll"
+    bind:this={scroller}
+    onscroll={onScroll}
+    role="log"
+    aria-live="polite"
+    aria-relevant="additions"
+    aria-busy={agent.busy}
+    aria-label="Conversation"
+  >
     <div class="column">
       {#if agent.turns.length === 0}
         {#if variant === 'page'}
@@ -850,11 +888,7 @@
               <span class="glyph"><Icon name="sparkle" size={30} weight={1.4} /></span>
             {/if}
             <h2>What can I do for you?</h2>
-            <p>
-              It can read and change your journal, notes, tasks, calendar, library and trackers{web
-                ? ', and look things up on the web'
-                : ''}. Deletions stop and ask first.
-            </p>
+            <p>{reachNote}</p>
             <div class="starts">
               {#each suggestions as s (s)}
                 <button class="start" disabled={voice.active} onclick={() => void send(s)}
@@ -872,11 +906,20 @@
             {/if}
           </div>
         {:else}
-          <EmptyState lead="Ask about anything in this vault." icon={dog ? undefined : sparkle}>
+          <EmptyState lead="Ask about anything in Karma Yoga" icon={dog ? undefined : sparkle}>
             {#snippet note()}
-              It can read and change your journal, tasks, calendar, shelves and trackers{web
-                ? ', and look things up on the web'
-                : ''}. Deletions stop and ask first.
+              {reachNote}
+            {/snippet}
+            {#snippet action()}
+              {#if railStarts.length > 0}
+                <div class="chips">
+                  {#each railStarts as s (s)}
+                    <button class="filter" disabled={voice.active} onclick={() => void send(s)}
+                      >{s}</button
+                    >
+                  {/each}
+                </div>
+              {/if}
             {/snippet}
           </EmptyState>
         {/if}
@@ -1178,8 +1221,8 @@
         onclick={() => (withScreen = !withScreen)}
         aria-pressed={withScreen}
         title={withScreen
-          ? 'Sent with your message so “this” means what you are looking at. Click to leave it out.'
-          : 'Left out of your next message. Click to send it.'}
+          ? `Sent with your message so “this” means what you are looking at. ${phone.on ? 'Tap' : 'Click'} to leave it out.`
+          : `Left out of your next message. ${phone.on ? 'Tap' : 'Click'} to send it.`}
       >
         <Icon name={withScreen ? 'eye' : 'hidden'} size={13} />
         <span class="seen-app">{appName}</span>
@@ -1188,6 +1231,9 @@
           <span class="seen-what">{seenNow.label}</span>
         {/if}
       </button>
+      {#if phone.on && agent.turns.length === 0}
+        <p class="hint">What you are looking at is sent along. Tap to leave it out.</p>
+      {/if}
     {/if}
     {#if picking.length || pictureError}
       <div class="picking">
@@ -1252,11 +1298,7 @@
           bind:value={draft}
           onkeydown={onKeydown}
           onpaste={onPaste}
-          placeholder={phone.on
-            ? 'Ask anything…'
-            : variant === 'page'
-              ? 'Ask anything, or tell it what to do…'
-              : 'Ask, or tell it what to do…'}
+          placeholder="Ask, or tell it what to do…"
           rows={variant === 'page' || phone.on ? 1 : 2}
           aria-label="Message the assistant"
         ></textarea>
@@ -1275,7 +1317,12 @@
           <!-- Stop where Send was, so the thing to press is where the hand
                already is. The box stays writable: the next question can be
                typed while this one is answered. -->
-          <button class="send stop" onclick={() => void agent.stop()} title="Stop (Esc)">
+          <button
+            class="send stop"
+            onclick={() => void agent.stop()}
+            title={phone.on ? 'Stop' : 'Stop (Esc)'}
+            aria-label="Stop"
+          >
             <Icon name="stop" size={14} weight={2} />
           </button>
         {:else}
@@ -1396,6 +1443,12 @@
     border-color: var(--border-strong);
     color: var(--fg);
   }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--sp-2);
+  }
   .hello .aside {
     font-size: var(--text-sm);
     color: var(--fg-faint);
@@ -1483,7 +1536,7 @@
     max-width: 100%;
     padding: 0;
     cursor: zoom-in;
-    background: #fff;
+    background: var(--bg-sunken);
   }
   /* Sized by `fitted`; these only shrink it further in a narrow panel, and
      keep one whose size is not known yet from being a thumbnail's square. */
@@ -1683,12 +1736,7 @@
     border: 1.5px solid color-mix(in oklab, var(--accent) 25%, transparent);
     border-top-color: var(--accent);
     border-radius: 50%;
-    animation: turn 0.8s linear infinite;
-  }
-  @keyframes turn {
-    to {
-      rotate: 360deg;
-    }
+    animation: ky-spin 0.8s linear infinite;
   }
 
   /* ── Steps, and the line they fold under ──────────────────────────── */
@@ -1879,7 +1927,7 @@
     max-width: 100%;
     padding: 0 var(--sp-2);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     color: var(--accent);
     font: inherit;
@@ -2114,7 +2162,7 @@
     max-width: 100%;
     margin: 0 0 var(--sp-2);
     padding: 2px var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     color: var(--fg-muted);
     font-size: var(--text-xs);

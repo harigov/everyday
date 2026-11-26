@@ -302,7 +302,8 @@
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="stage" onclick={(e) => e.target === e.currentTarget && onclose()}>
     {#if shown.state === 'loading'}
-      <p class="quiet">Loading…</p>
+      <!-- On the viewer's dark stage, where `Loading`'s own quiet colour would vanish. -->
+      <p class="quiet" role="status">Opening the file…</p>
     {:else if shown.state === 'failed'}
       <div class="failed">
         <p>{shown.reason}</p>
@@ -410,7 +411,7 @@
     min-width: 34px;
     height: 34px;
     padding: 0 8px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: inherit;
   }
   .tool:hover:not(:disabled) {

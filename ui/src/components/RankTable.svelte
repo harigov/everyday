@@ -239,7 +239,7 @@
   .tag {
     flex: none;
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
     color: var(--fg-muted);
     font-size: var(--text-xs);

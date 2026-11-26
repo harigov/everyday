@@ -365,12 +365,23 @@ async function readLines(body: ReadableStream<Uint8Array>, each: (line: string) 
 const changeHandlers: ((change: ChangeEvent) => void)[] = []
 const lockHandlers: ((locked: boolean) => void)[] = []
 const notifyHandlers: ((spec: ShellNotification) => void)[] = []
+const streamHandlers: ((up: boolean) => void)[] = []
 
 export const onWebChange = (handler: (change: ChangeEvent) => void) => {
   changeHandlers.push(handler)
 }
 export const onWebLockState = (handler: (locked: boolean) => void) => {
   lockHandlers.push(handler)
+}
+/** Whether the event stream is up: false from the moment it fails to open or
+ *  is cut off, true again once it has opened. What the window turns into
+ *  "can't reach the computer" is `live.svelte.ts`'s business; this only says
+ *  what the loop saw, every time it sees it. */
+export const onWebStream = (handler: (up: boolean) => void) => {
+  streamHandlers.push(handler)
+}
+function streamIs(up: boolean) {
+  for (const h of streamHandlers) h(up)
 }
 export const onWebNotification = (handler: (spec: ShellNotification) => void) => {
   notifyHandlers.push(handler)
@@ -388,6 +399,8 @@ function startEvents() {
 function stopEvents() {
   events?.abort()
   events = null
+  // Nobody is listening any more, so nothing is being missed.
+  streamIs(true)
 }
 
 async function runEvents(controller: AbortController) {
@@ -402,11 +415,13 @@ async function runEvents(controller: AbortController) {
       })
     } catch {
       if (controller.signal.aborted) return
+      streamIs(false)
       await sleep(delay)
       delay = Math.min(delay * 2, 30_000)
       continue
     }
     if (res.status === 401) {
+      streamIs(true)
       // The session is over. Tell the interface, which goes to its lock
       // screen; the next password opens a new session and a new stream.
       if (events === controller) events = null
@@ -415,16 +430,21 @@ async function runEvents(controller: AbortController) {
       return
     }
     if (!res.ok || !res.body) {
+      streamIs(false)
       await sleep(delay)
       delay = Math.min(delay * 2, 30_000)
       continue
     }
     delay = 1000
+    streamIs(true)
     try {
       await readEvents(res.body)
     } catch {
       // Cut off; go round again.
     }
+    // Ended, however it ended: until the next pass opens it again, changes
+    // made elsewhere are not arriving.
+    if (!controller.signal.aborted) streamIs(false)
   }
 }
 

@@ -33,7 +33,9 @@
   import { panels } from '../lib/panels.svelte'
   import { closesOnBack, phone } from '../lib/phone.svelte'
   import { purpose } from '../lib/purpose.svelte'
-  import { todayIso } from '../lib/time'
+  import { app } from '../lib/state.svelte'
+  import { todo } from '../lib/todo.svelte'
+  import { currentDay } from '../lib/today.svelte'
   import AddWidgetDialog from './AddWidgetDialog.svelte'
   import BriefView from './BriefView.svelte'
   import EmptyState from './EmptyState.svelte'
@@ -116,7 +118,9 @@
     if (!home) placing = null
   })
 
-  const today = todayIso()
+  // Followed across midnight, as the cards are: a reading logged from the
+  // popover after the clock turned belongs to the new day.
+  const today = $derived(currentDay())
   /** Does anything on the page care which week is showing? */
   const weekly = $derived(
     home && overview.widgets.some((w) => specOf(w.type).needs.includes('balance')),
@@ -163,6 +167,12 @@
     return trueSizes ? SPAN[w.size] : (filled?.get(w.id) ?? SPAN[w.size])
   }
 
+  /** Goals are kept in the Todo app, beside the tasks that make them happen. */
+  async function openGoals() {
+    if (!(await app.goTo('todo'))) return
+    await todo.setScope({ kind: 'goals' })
+  }
+
   /** The page itself, where there is no card under the pointer. */
   function pageMenu(): MenuItem[] {
     return tidyMenu([
@@ -172,15 +182,16 @@
         icon: 'grip',
         run: () => (overview.editing = !overview.editing),
       },
-      { label: 'Record a reading…', icon: 'plus', run: () => (logging = true) },
+      { label: 'Log a habit…', icon: 'plus', run: () => (logging = true) },
       SEP,
       { label: 'Refresh', icon: 'refresh', run: () => void overview.refresh() },
       {
-        label: 'Areas and goals…',
+        label: 'Areas…',
         icon: 'compass',
         hint: 'in Settings',
         run: () => panels.openSettings('profile'),
       },
+      { label: 'Goals…', icon: 'target', hint: 'in Todo', run: () => void openGoals() },
       SEP,
       home && {
         label: 'Put the page back as it was',
@@ -238,7 +249,10 @@
       <h1 class="pane-title">Overview</h1>
       <span class="pane-sub">
         {#if weekly}{weekLabel}{/if}
-        {#if home && overview.loading}{#if weekly}·{/if} loading…{/if}
+        {#if home && overview.loading}
+          {#if weekly}·{/if}
+          <span role="status"><span class="spinner" aria-hidden="true"></span> Loading…</span>
+        {/if}
       </span>
     </div>
 
@@ -261,13 +275,13 @@
           aria-expanded={logging}
           onclick={() => (logging = !logging)}
         >
-          <Icon name="plus" size={14} /> Record something
+          <Icon name="plus" size={14} /> Log a habit
         </button>
         {#if logging}
           <div
             class="logpop"
             role="dialog"
-            aria-label="Record a reading"
+            aria-label="Log a habit"
             use:dismissable={{ onaway: () => (logging = false), within: '.logwrap .btn' }}
           >
             <!-- No journal and no entry: this was ticked on no page at all,
@@ -280,11 +294,21 @@
 
       {#if weekly}
         <div class="week-nav">
-          <button class="step" aria-label="The week before" onclick={() => overview.goWeek(-1)}>
+          <button
+            class="step"
+            aria-label="The week before"
+            title="The week before"
+            onclick={() => overview.goWeek(-1)}
+          >
             <span class="prev"><Icon name="chevron" size={14} /></span>
           </button>
           <button onclick={() => overview.goWeek(0)} disabled={overview.thisWeek}>Today</button>
-          <button class="step" aria-label="The week after" onclick={() => overview.goWeek(1)}>
+          <button
+            class="step"
+            aria-label="The week after"
+            title="The week after"
+            onclick={() => overview.goWeek(1)}
+          >
             <span class="next"><Icon name="chevron" size={14} /></span>
           </button>
         </div>
@@ -321,6 +345,7 @@
       <button
         class="btn icon-only phone-only more"
         aria-label="Page options"
+        title="Page options"
         aria-haspopup="menu"
         onclick={openMore}
       >
@@ -438,7 +463,7 @@
           Some of these are about <em>areas</em> — the parts of your life — and nothing has said
           what yours are.
           <button class="link" onclick={() => panels.openSettings('profile')}>
-            Set them up in About You
+            Set them up in About you
           </button>
         </p>
       {/if}
@@ -623,7 +648,7 @@
     place-items: center;
     height: 28px;
     padding: 0 var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     font-size: var(--text-sm);
   }

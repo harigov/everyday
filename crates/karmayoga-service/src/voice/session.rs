@@ -1758,7 +1758,10 @@ impl Session {
                 }
             }
             // Only a click can answer it, and the card is on screen.
-            None => self.say(self.needs_a_click.to_string()),
+            None => {
+                let line = self.approval_line();
+                self.say(line)
+            }
         }
     }
 
@@ -1809,7 +1812,17 @@ impl Session {
         if let Some(c) = self.confirm.as_mut() {
             c.voice = false;
         }
-        self.say(self.needs_a_click.to_string());
+        let line = self.approval_line();
+        self.say(line);
+    }
+
+    /// What is said of a question only a click can answer: what it is about,
+    /// from its sanitised subject, and where the card is.
+    fn approval_line(&self) -> String {
+        match &self.confirm {
+            Some(c) => confirm::approval_line(self.needs_a_click, &c.kind, &c.subject),
+            None => self.needs_a_click.to_string(),
+        }
     }
 
     /// The card was answered where it is drawn, or the call ran or failed
@@ -2933,7 +2946,10 @@ mod tests {
                 .await;
         rig.talk();
         let said = rig.next_play().await;
-        assert_eq!(rig.said(), [confirm::NEEDS_A_CLICK]);
+        assert_eq!(
+            rig.said(),
+            [confirm::approval_line(confirm::NEEDS_A_CLICK, "destructive", "the deck")]
+        );
         // The state came as the card did, ahead of the sentence.
         assert!(rig.states().contains(&VoiceState::WaitingForClick), "{:?}", rig.states());
         rig.send(VoiceInput::Played { utterance: said });

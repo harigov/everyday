@@ -292,10 +292,12 @@ check(
 // twenty-two since the home cards -- today's tasks, today's events, and the
 // three Inbox cards, each a read of its own so a page with one of them does
 // not decrypt the other two's threads. The three shelf cards share `going`.
-// Twenty-four since the brief, whose one need is the briefs store's own load.
+// Twenty-four since the brief, whose one need is the briefs store's own load;
+// twenty-seven since Money, Health and Screen time each brought one small
+// read of their own.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 24,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 27,
 )
 check(
   'the three shelf cards share one read with "What\'s going on"',

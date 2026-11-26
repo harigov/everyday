@@ -63,6 +63,7 @@
   } from '../lib/types'
   import Companion from './Companion.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import MailActionsList from './MailActionsList.svelte'
   import SubTabs from './SubTabs.svelte'
 
@@ -140,6 +141,16 @@
 
   let notice = $state<string | null>(null)
   let saving = $state(false)
+  // Nothing to save until the draft differs from what the vault holds, as
+  // Briefs and Keeping in touch do. The safe-websites list saves as it goes
+  // and is not part of the draft.
+  // Safe sites are left out of the comparison: they save the moment they
+  // change (see `sites` below) and the draft's copy is never written back,
+  // so trusting a site would otherwise light Save with nothing to save.
+  const comparable = (s: object) => JSON.stringify({ ...$state.snapshot(s), safeSites: null })
+  const dirty = $derived(
+    !!draft && !!agent.settings && comparable(draft) !== comparable(agent.settings),
+  )
   /**
    * Clears "Saved." after a moment, and only that.
    *
@@ -150,7 +161,7 @@
    * thing to notice.
    */
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
-  function confirm(message: string) {
+  function say(message: string) {
     notice = message
     if (noticeTimer) clearTimeout(noticeTimer)
     noticeTimer = setTimeout(() => {
@@ -169,6 +180,17 @@
   // as somebody clicks and the header only once they press Save.
 
   const look = $derived(draft ? lookOf(draft.companion) : null)
+
+  // The breed, coat and markings are a lot of buttons for something most
+  // people set once: they stay folded behind a line saying which dog this is
+  // until "Change" is pressed.
+  let changingDog = $state(false)
+  const dogLine = $derived.by(() => {
+    if (!look) return 'No dog'
+    const breed = BREEDS.find((b) => b.id === look.breed)?.label
+    const coat = COATS.find((c) => c.id === look.coat)?.label
+    return [coat, breed].filter(Boolean).join(' ')
+  })
 
   function pick(part: Partial<Look>) {
     if (!draft) return
@@ -401,7 +423,7 @@
       // to go and look, or "Dreams" would not appear until something else
       // happened to reload it.
       if (draft.dreaming && !wasDreaming) await assistant.refresh()
-      confirm('Saved.')
+      say('Saved.')
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
     } finally {
@@ -416,21 +438,22 @@
     configure. A SQLite or Postgres vault does.
   </p>
 {:else if !draft}
-  <p class="hint">Loading…</p>
+  <Loading centred />
 {:else}
   <!-- The switch, and the sentence that has to be next to it. This is the
        only feature in the application that sends what you wrote to a
        computer you do not own, and that is not something to discover. -->
-  <label class="toggle intro">
+  <label class="check-row intro">
     <input type="checkbox" bind:checked={draft.enabled} />
     <span>
       <b>Use the assistant</b>
       <small>
         {#if local}
-          Your journal is sent to the models running on this machine. Nothing leaves it.
+          What you ask about is read by the models running on this computer. Nothing leaves it.
         {:else}
           What you ask about — entries, tasks, whatever it reads — is sent to the providers of the
-          models it runs on, set under Models.
+          models it runs on, set under
+          <button class="link" onclick={() => panels.openSettings('models')}>Models</button>.
         {/if}
       </small>
     </span>
@@ -475,63 +498,79 @@
             {/if}
           </div>
 
-          <div class="choices">
-            <div class="breeds" role="group" aria-label="Breed">
-              {#each BREEDS as breed (breed.id)}
-                <button
-                  class="breed"
-                  class:on={look?.breed === breed.id}
-                  aria-pressed={look?.breed === breed.id}
-                  onclick={() => pick({ breed: breed.id })}
-                >
-                  {#if portraits[breed.id]}
-                    <img src={portraits[breed.id]} alt="" width={PORTRAIT_W} height={PORTRAIT_H} />
-                  {:else}
-                    <span class="blank"></span>
-                  {/if}
-                  {breed.label}
-                </button>
-              {/each}
-              <button
-                class="breed"
-                class:on={!look}
-                aria-pressed={!look}
-                onclick={() => draft && (draft.companion = null)}
-              >
-                <span class="blank"><Icon name="close" size={18} /></span>
-                No dog
-              </button>
+          {#if !changingDog}
+            <div class="dog-line">
+              <span>{dogLine}</span>
+              <button class="btn btn-sm" onclick={() => (changingDog = true)}>Change</button>
             </div>
-
-            {#if look}
-              <div class="swatches" role="group" aria-label="Coat">
-                {#each COATS as coat (coat.id)}
+          {:else}
+            <div class="choices">
+              <div class="breeds" role="group" aria-label="Breed">
+                {#each BREEDS as breed (breed.id)}
                   <button
-                    class="swatch"
-                    class:on={look.coat === coat.id}
-                    style="--coat: {coat.base}"
-                    aria-pressed={look.coat === coat.id}
-                    aria-label={coat.label}
-                    title={coat.label}
-                    onclick={() => pick({ coat: coat.id })}
-                  ></button>
-                {/each}
-              </div>
-
-              <div class="presets" role="group" aria-label="Markings">
-                {#each MARKINGS as markings (markings.id)}
-                  <button
-                    class="chip"
-                    class:on={look.markings === markings.id}
-                    aria-pressed={look.markings === markings.id}
-                    onclick={() => pick({ markings: markings.id })}
+                    class="breed"
+                    class:on={look?.breed === breed.id}
+                    aria-pressed={look?.breed === breed.id}
+                    onclick={() => pick({ breed: breed.id })}
                   >
-                    {markings.label}
+                    {#if portraits[breed.id]}
+                      <img
+                        src={portraits[breed.id]}
+                        alt=""
+                        width={PORTRAIT_W}
+                        height={PORTRAIT_H}
+                      />
+                    {:else}
+                      <span class="blank"></span>
+                    {/if}
+                    {breed.label}
                   </button>
                 {/each}
+                <button
+                  class="breed"
+                  class:on={!look}
+                  aria-pressed={!look}
+                  onclick={() => draft && (draft.companion = null)}
+                >
+                  <span class="blank"><Icon name="close" size={18} /></span>
+                  No dog
+                </button>
               </div>
-            {/if}
-          </div>
+
+              {#if look}
+                <div class="swatches" role="group" aria-label="Coat">
+                  {#each COATS as coat (coat.id)}
+                    <button
+                      class="swatch"
+                      class:on={look.coat === coat.id}
+                      style="--coat: {coat.base}"
+                      aria-pressed={look.coat === coat.id}
+                      aria-label={coat.label}
+                      title={coat.label}
+                      onclick={() => pick({ coat: coat.id })}
+                    ></button>
+                  {/each}
+                </div>
+
+                <div class="presets" role="group" aria-label="Markings">
+                  {#each MARKINGS as markings (markings.id)}
+                    <button
+                      class="chip"
+                      class:on={look.markings === markings.id}
+                      aria-pressed={look.markings === markings.id}
+                      onclick={() => pick({ markings: markings.id })}
+                    >
+                      {markings.label}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+
+              <div>
+                <button class="btn btn-sm" onclick={() => (changingDog = false)}>Done</button>
+              </div>
+            </div>
+          {/if}
         </div>
         <p class="hint">
           It sits over the conversation, in the rail and in the Assistant app, and acts out what the
@@ -583,14 +622,14 @@
     {#if sub === 'behaviour'}
       <section>
         <span class="eyebrow">Behaviour</span>
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.confirmDestructive} />
           <span>
             <b>Ask before deleting anything</b>
             <small>There is no undo in this application. Leaving this on is the undo.</small>
           </span>
         </label>
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.remember} />
           <span>
             <b>Let it remember things about you</b>
@@ -610,7 +649,7 @@
       {#if app.supportsProposals}
         <section>
           <span class="eyebrow">Dreaming</span>
-          <label class="toggle">
+          <label class="check-row">
             <input
               type="checkbox"
               checked={draft.dreaming ?? false}
@@ -646,13 +685,13 @@
               </div>
             </div>
             <p class="hint">
-              Switched off, a kind is never proposed -- the assistant behaves as though it had
+              Switched off, a kind is never proposed — the assistant behaves as though it had
               nothing to say about it. The three dream routines themselves are edited under
               Routines, just below this tab.
             </p>
           {/if}
 
-          <label class="toggle">
+          <label class="check-row">
             <input
               type="checkbox"
               checked={draft.parkUnattended ?? false}
@@ -673,7 +712,7 @@
     {#if sub === 'web'}
       <section>
         <span class="eyebrow">The web</span>
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.web} />
           <span>
             <b>Let it use the web</b>
@@ -689,7 +728,7 @@
           </span>
         </label>
         {#if draft.web}
-          <label class="toggle">
+          <label class="check-row">
             <input
               type="checkbox"
               checked={draft.browser ?? false}
@@ -706,7 +745,7 @@
               </small>
             </span>
           </label>
-          <label class="toggle">
+          <label class="check-row">
             <input
               type="checkbox"
               checked={draft.confirmWeb ?? true}
@@ -787,7 +826,7 @@
            computer -- which is the sentence that has to be beside it. -->
       <section>
         <span class="eyebrow">This computer</span>
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={desktopOn}
@@ -916,7 +955,7 @@
               >{/each}
           </select>
         </div>
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={eventReminders.own}
@@ -940,7 +979,7 @@
 
       <section>
         <span class="eyebrow">Quiet hours</span>
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={quiet.enabled}
@@ -1031,9 +1070,9 @@
     {/if}
   </div>
 
-  <div class="save">
-    {#if notice}<span class="notice">{notice}</span>{/if}
-    <button class="btn btn-primary" onclick={() => void save()} disabled={saving}>
+  <div class="save save-row">
+    {#if notice}<span class="notice" role="status">{notice}</span>{/if}
+    <button class="btn btn-primary" onclick={() => void save()} disabled={saving || !dirty}>
       {saving ? 'Saving…' : 'Save'}
     </button>
   </div>
@@ -1173,29 +1212,6 @@
     min-width: 0;
   }
 
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small,
   .hint {
     margin: 0;
     font-size: var(--text-sm);
@@ -1225,7 +1241,7 @@
     height: 30px;
     padding: 0 var(--sp-3);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg);
     color: var(--fg-muted);
     font-size: var(--text-sm);
@@ -1244,6 +1260,16 @@
     flex-wrap: wrap;
     gap: var(--sp-4);
     align-items: flex-start;
+  }
+  .dog-line {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    min-width: 12rem;
+    font-size: var(--text-base);
+    font-weight: 550;
   }
   .stage {
     display: flex;
@@ -1382,22 +1408,6 @@
   }
   .link:hover {
     text-decoration: underline;
-  }
-
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-    margin-top: var(--sp-6);
-    padding-top: var(--sp-4);
-    border-top: 1px solid var(--border);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
   }
 
   /* A phone: a label over its field rather than squeezed beside it, and the

@@ -315,7 +315,8 @@ pub(super) static TOOLS: &[Tool] = &[
          goes to the end, or to the front with next. Something already in Up Next is moved \
          to where it is asked to go and not added twice. An episode that is not downloaded \
          yet is downloaded before it plays. Do this when the person asks to line something \
-         up; do not queue things on your own.",
+         up; do not queue things on your own. It does not start playback: control_media \
+         plays what is playing, and the person starts the queue.",
         run_add_to_up_next
     ),
     tool!(

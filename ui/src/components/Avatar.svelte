@@ -37,6 +37,7 @@
     width: var(--avatar-size);
     height: var(--avatar-size);
     border-radius: 50%;
+    /* White on every swatch in `AVATAR_COLORS`, which are chosen to hold 4.5:1 against it. */
     color: #fff;
     font-size: calc(var(--avatar-size) * 0.38);
     font-weight: 600;

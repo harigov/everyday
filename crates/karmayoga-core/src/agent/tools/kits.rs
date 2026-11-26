@@ -229,6 +229,9 @@ impl Kit {
                 "draft a message",
                 "send an email",
                 "send a message to",
+                "let them know",
+                "let him know",
+                "let her know",
                 "accept the invite",
                 "decline the invite",
             ],
@@ -658,7 +661,8 @@ fn catalogue_kit(name: &str, domain: Domain) -> Option<Kit> {
     // The few that are in the core although their domain is in a kit, or the
     // other way about.
     match name {
-        // Orientation, and the one for finding anything.
+        // Orientation, and the search of entries and notes (the description
+        // says where the rest of what they keep is searched).
         "overview" | "search" => return None,
         // Which a conversation about a calendar needs on the first turn: the
         // events themselves, and the calendars to put one on -- the preamble
@@ -1005,6 +1009,8 @@ mod tests {
         assert_eq!(kits("Every Monday morning, send me a digest"), vec![Kit::Routines]);
         assert_eq!(kits("Draw a diagram of the plan"), vec![Kit::Pictures]);
         assert_eq!(kits("block out Friday afternoon"), vec![Kit::Time]);
+        assert_eq!(kits("cancel my three o'clock"), vec![Kit::Time]);
+        assert_eq!(kits("let them know I'm running late"), vec![Kit::Mail]);
         assert_eq!(kits("What did we decide in the meeting?"), vec![Kit::Meetings]);
         // Common words that mean something else as often as not.
         assert_eq!(kits("don't forget to call Mom"), vec![]);

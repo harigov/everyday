@@ -10,7 +10,7 @@
 
   import { menu } from '../lib/menu.svelte'
   import { declineItems, proposals, recordAs } from '../lib/proposals.svelte'
-  import { notes, previewText } from '../lib/notes.svelte'
+  import { notes, previewParagraphs, previewText } from '../lib/notes.svelte'
   import { plural } from '../lib/format'
   import Icon from './Icon.svelte'
   import type { DeclineReason, Proposal } from '../lib/types'
@@ -19,6 +19,7 @@
 
   const note = $derived(recordAs(proposal, 'note'))
   const text = $derived(note ? previewText(note.body) : '')
+  const paragraphs = $derived(note ? previewParagraphs(note.body) : [])
   const busy = $derived(proposals.isBusy(proposal.id))
   const reasons = Symbol('decline reasons')
   const choosing = $derived(menu.owner === reasons)
@@ -58,10 +59,16 @@
         </header>
 
         <!-- Plain text, not the rich editor: there is nothing to edit here,
-             and the editor's whole job is editing. `previewText` is the same
-             walk the list's own excerpt is built from. -->
-        <p class="body">{text || 'Nothing written yet.'}</p>
+             and the editor's whole job is editing. One paragraph to a
+             paragraph of the note (`previewParagraphs`), so a page of notes
+             does not run together into one block. -->
+        {#each paragraphs as para, i (i)}
+          <p class="body">{para}</p>
+        {:else}
+          <p class="body">Nothing written yet.</p>
+        {/each}
         <p class="wordcount">{plural(text.split(/\s+/).filter(Boolean).length, 'word')}</p>
+        <p class="accepts">Accepting saves this as a note you can edit.</p>
       </div>
     </div>
 
@@ -90,7 +97,6 @@
     min-width: 0;
     flex-direction: column;
     height: 100%;
-    background: var(--bg-raised);
   }
   .canvas {
     flex: 1;
@@ -111,8 +117,9 @@
     margin-bottom: var(--sp-2);
     font-size: var(--text-xs);
     font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
     color: var(--accent);
-    text-transform: lowercase;
   }
   .title {
     font-family: var(--font-read);
@@ -139,7 +146,7 @@
   }
   .chip {
     padding: 2px var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     color: var(--fg-muted);
     font-size: var(--text-xs);
@@ -151,6 +158,14 @@
     line-height: var(--leading-normal);
     color: var(--fg);
     white-space: pre-wrap;
+  }
+  .body + .body {
+    margin-top: var(--sp-3);
+  }
+  .accepts {
+    margin-top: var(--sp-1);
+    font-size: var(--text-xs);
+    color: var(--fg-subtle);
   }
   .wordcount {
     margin-top: var(--sp-4);

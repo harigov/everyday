@@ -38,6 +38,7 @@
   import HealthLine from './HealthLine.svelte'
   import HealthVisitBrief from './HealthVisitBrief.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import Meter from './Meter.svelte'
   import StatTile from './StatTile.svelte'
   import { steadiness } from '../lib/health-doses'
@@ -307,7 +308,7 @@
 </script>
 
 {#if !condition}
-  <p class="quiet">Loading…</p>
+  <Loading centred />
 {:else}
   <div class="dash">
     <!-- The condition -->
@@ -932,7 +933,7 @@
     gap: 2px;
     width: 100%;
     height: 14px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     overflow: hidden;
   }
   .seg {

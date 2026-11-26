@@ -74,7 +74,12 @@
           {item.label}
         </button>
       {/each}
-      <button class="close" onclick={ondismiss} aria-label="Dismiss these suggestions">
+      <button
+        class="close"
+        onclick={ondismiss}
+        aria-label="Dismiss these suggestions"
+        title="Dismiss these suggestions"
+      >
         <Icon name="close" size={12} />
       </button>
     {/if}
@@ -106,7 +111,7 @@
     gap: var(--sp-1);
     padding: 3px var(--sp-2);
     border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--accent) 8%, transparent);
     color: var(--fg);
     font: inherit;
@@ -121,7 +126,7 @@
     display: inline-flex;
     padding: 3px;
     border: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     color: var(--fg-faint);
     cursor: pointer;

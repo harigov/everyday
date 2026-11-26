@@ -36,10 +36,11 @@
   import { agent } from '../lib/agent.svelte'
   import { APPS } from '../lib/apps'
   import { calendar } from '../lib/calendar.svelte'
-  import { headingOf, keyOf, rankActions, type Row } from '../lib/commandbar'
+  import { headingOf, keyOf, mentionsWhen, rankActions, type Row } from '../lib/commandbar'
   import { feed } from '../lib/feed.svelte'
   import { keysLabel } from '../lib/keys'
   import { library } from '../lib/library.svelte'
+  import { notes } from '../lib/notes.svelte'
   import { notify } from '../lib/notify.svelte'
   import { toWire } from '../lib/onscreen'
   import { panels } from '../lib/panels.svelte'
@@ -49,7 +50,7 @@
   import { describeQuickTrack, isRecordable, parseQuickTrack } from '../lib/quicktrack'
   import { onScreenNow, searchNow } from '../lib/screen.svelte'
   import { applicableActions } from '../lib/shortcuts.svelte'
-  import { app } from '../lib/state.svelte'
+  import { app, type Section } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
   import { tracking } from '../lib/tracking.svelte'
   import Icon from './Icon.svelte'
@@ -97,16 +98,31 @@
     }
   }
 
-  /** What to do with the text when it is not the name of anything. */
+  /**
+   * What to do with the text when it is not the name of anything.
+   *
+   * Ordered by the app that is open: in Notes the first offer is to keep it
+   * as a note, in the Calendar to book it, and so on, because Enter takes the
+   * first row and "what I am doing here" is the best guess at what a line
+   * typed here is for. An address to follow stays ahead of all of them, for
+   * the reason given below.
+   */
   function captures(typed: string): Row[] {
     const rows: Row[] = []
+    /** The app each capture belongs to, for the ordering at the end. */
+    const homes = new Map<Row, Section>()
+    const add = (home: Section, row: Row) => {
+      homes.set(row, home)
+      rows.push(row)
+    }
     // First, so it is the one capture a search offers: pasting an address is
     // nearly always to follow it, and "Add a task: https://…" is the other
     // reading. A row rather than a guess -- nothing is looked up until it is
     // chosen, and the add sheet opens with the address in it to find the
     // feed at, since most pages that have one are not themselves it.
+    let follow: Row | null = null
     if (app.supportsNews && looksLikeAddress(typed)) {
-      rows.push({
+      follow = {
         kind: 'capture',
         label: `Follow ${typed}`,
         icon: 'rss',
@@ -114,11 +130,11 @@
         run: async () => {
           if (await app.goTo('feed')) feed.follow(typed)
         },
-      })
+      }
     }
     if (app.supportsTasks) {
       const parsed = parseQuickAdd(typed)
-      rows.push({
+      add('todo', {
         kind: 'capture',
         label: `Add a task: ${parsed.title || typed}`,
         icon: 'check',
@@ -134,13 +150,24 @@
         run: () => todo.add(typed),
       })
     }
+    // Kept as it is, titled with the line: a note is where a thought goes
+    // that is not a task, a reading or an appointment.
+    if (app.supportsNotes) {
+      add('notes', {
+        kind: 'capture',
+        label: `Keep as a note: ${typed}`,
+        icon: 'pencil',
+        hint: '',
+        run: () => notes.create(typed),
+      })
+    }
     // A reading, when the line names a tracker -- or describes one worth
     // making. `logLine` is the one place that resolve-or-create step lives,
     // shared with the journal's strip and the Overview's pane.
     if (app.supportsTrackers) {
       const reading = parseQuickTrack(typed, tracking.trackers)
       if (isRecordable(reading)) {
-        rows.push({
+        add('overview', {
           kind: 'capture',
           label: `Record: ${describeQuickTrack(reading)}`,
           icon: 'compass',
@@ -155,9 +182,12 @@
     // calendar it will land on when that is an account's, because from
     // here it is written straight to that server -- invitations and all --
     // with no editor in between to see it in first.
-    if (app.supportsCalendar && quickState.enabled('calendar.parse')) {
+    //
+    // Only when the line names a day or a time: "Book: buy milk" offered for
+    // every sentence is a row that can only answer "which day?".
+    if (app.supportsCalendar && quickState.enabled('calendar.parse') && mentionsWhen(typed)) {
       const target = calendar.defaultCalendar
-      rows.push({
+      add('calendar', {
         kind: 'capture',
         label: target ? `Book on ${target.name}: ${typed}` : `Book: ${typed}`,
         icon: 'calendar',
@@ -167,7 +197,7 @@
     }
     if (app.supportsLibrary && library.kinds.length > 0) {
       const shelf = library.kind ?? library.kinds[0]!
-      rows.push({
+      add('library', {
         kind: 'capture',
         label: `Add to ${shelf.name}: ${typed}`,
         icon: 'book',
@@ -175,7 +205,10 @@
         run: () => library.add(shelf.id, typed),
       })
     }
-    return rows
+    // The open app's own first; the rest keep the order they were made in.
+    const mine = rows.filter((r) => homes.get(r) === app.section)
+    const rest = rows.filter((r) => homes.get(r) !== app.section)
+    return [...(follow ? [follow] : []), ...mine, ...rest]
   }
 
   const rows = $derived.by((): Row[] => {
@@ -192,7 +225,9 @@
       const ranked = rankActions(actions, needle)
       const named = ranked.filter((r) => r.kind === 'action' && r.score >= 3)
       out.push(...named, ...searchRow, ...ranked.slice(named.length))
-      if (needle) out.push(...captures(needle))
+      // Three at most: Enter takes the first, and a list of seven ways to
+      // keep a line is a list nobody reads.
+      if (needle) out.push(...captures(needle).slice(0, 3))
     } else if (needle) {
       out.push(...searchRow)
       // Under a search the list is a suggestion, not the point, and it sits
@@ -443,13 +478,16 @@
       <button
         class="clear"
         aria-label="Clear the search"
+        title="Clear the search"
         onmousedown={(e) => e.preventDefault()}
         onclick={() => search?.set('')}
       >
         <Icon name="close" size={13} />
       </button>
     {:else if mode === null}
-      <kbd class="hint" aria-hidden="true">{keysLabel('mod+k', mac)}</kbd>
+      <kbd class="hint" aria-hidden="true" title="Commands and quick capture"
+        >{keysLabel('mod+k', mac)}</kbd
+      >
     {/if}
   </div>
 

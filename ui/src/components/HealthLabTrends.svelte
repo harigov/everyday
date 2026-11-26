@@ -607,20 +607,12 @@
   .page {
     flex: 1 0 auto;
     width: 100%;
-    max-width: 860px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;
     flex-direction: column;
     gap: var(--sp-3);
-  }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 
   .l-head,
@@ -637,7 +629,7 @@
     gap: var(--sp-1);
     height: 28px;
     padding: 0 var(--sp-3) 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-weight: 550;
     color: var(--fg-subtle);
@@ -714,7 +706,7 @@
     gap: var(--sp-1);
     height: 20px;
     padding: 0 var(--sp-2);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--warning) 16%, transparent);
     color: color-mix(in oklab, var(--warning) 55%, var(--fg));
     font-size: var(--text-xs);

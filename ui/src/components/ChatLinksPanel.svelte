@@ -67,6 +67,7 @@
   import { focusOnMount } from '../lib/focus'
   import { keysLabel } from '../lib/keys'
   import { menu } from '../lib/menu.svelte'
+  import { panels } from '../lib/panels.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { app } from '../lib/state.svelte'
   import type {
@@ -77,7 +78,9 @@
     VerificationAnswer,
   } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   void chat.load()
 
@@ -269,35 +272,34 @@
 </script>
 
 <section>
+  <!-- No title of its own: the page already has one. One sentence of what this
+       is, the empty state (or the list) straight under it, and the rest of the
+       explaining folded away below. -->
   <div class="head">
-    <span class="eyebrow">Chat</span>
-    <button class="btn btn-primary" disabled={!writable || draft !== null} onclick={add}>
-      <Icon name="plus" size={13} /> Add a Matrix bot
-    </button>
+    <p class="hint">
+      Talk to the assistant from any chat app through your own Matrix server. It answers only you,
+      and only from the devices you trust.
+    </p>
+    {#if chat.list.length > 0 || draft !== null}
+      <button class="btn btn-primary" disabled={!writable || draft !== null} onclick={add}>
+        <Icon name="plus" size={13} /> Add a Matrix bot
+      </button>
+    {/if}
   </div>
-  <p class="hint">
-    Talk to the assistant from any device through your own Matrix server. It is a bot with an
-    account of its own, and it answers only your Matrix ID, in a private encrypted room it invites
-    you to, and only to the devices you pick below. There, <code>!new</code> starts a fresh
-    conversation, <code>!stop</code> stops one that is running, and <code>!help</code> lists the commands.
-  </p>
-  <p class="hint">
-    Your Matrix ID alone is not enough: anybody who signs in to that account on a new device could
-    write under it. So the bot believes an encrypted message only from a device you tick under
-    <b>Trusted devices</b>, and only those devices can read what it says. Being verified or
-    cross-signed does not make a device trusted. Until you pick one, the bot answers nobody.
-  </p>
-  <p class="hint">
-    It keeps working while this window is locked for being idle. Locking the vault by hand ({LOCK_SHORTCUT},
-    or from the tray) stops it until you unlock.
-  </p>
 
   {#if chat.loading && chat.list.length === 0}
-    <p class="hint">Loading…</p>
+    <Loading centred />
   {:else if chat.list.length === 0 && draft === null}
-    <p class="hint">
-      No bot yet. Give it an account on your server, add it here, and it will invite you to a room.
-    </p>
+    <EmptyState lead="No bot yet" centred={false}>
+      {#snippet note()}
+        Give it an account on your Matrix server, add it here, and it will invite you to a room.
+      {/snippet}
+      {#snippet action()}
+        <button class="btn btn-primary" disabled={!writable} onclick={add}>
+          <Icon name="plus" size={13} /> Add a Matrix bot
+        </button>
+      {/snippet}
+    </EmptyState>
   {/if}
 
   {#if chat.list.length > 0}
@@ -388,7 +390,9 @@
             <div class="sheet-row">
               {#if verificationOver(v)}
                 <span class="spacer"></span>
-                <button class="btn" onclick={() => (dismissed = [...dismissed, v.flow])}>OK</button>
+                <button class="btn" onclick={() => (dismissed = [...dismissed, v.flow])}
+                  >Done</button
+                >
               {:else}
                 <button
                   class="btn"
@@ -437,6 +441,31 @@
       {/each}
     </ul>
   {/if}
+
+  <details class="hint how">
+    <summary>How it stays safe</summary>
+    <p>
+      The bot is an account of its own on your Matrix server. It answers only your Matrix ID, in a
+      private encrypted room it invites you to. There, <code>!new</code> starts a fresh
+      conversation, <code>!stop</code> stops one that is running, and <code>!help</code> lists the commands.
+    </p>
+    <p>
+      Your Matrix ID alone is not enough: anybody who signs in to that account on a new device could
+      write under it. So the bot believes an encrypted message only from a device you tick under
+      <b>Trusted devices</b>, and only those devices can read what it says. Being verified or
+      cross-signed does not make a device trusted. Until you pick one, the bot answers nobody.
+    </p>
+    <p>
+      It keeps working while this window is locked for being idle. Locking the vault by hand ({LOCK_SHORTCUT},
+      or from the tray) stops it until you unlock.
+    </p>
+    <p>
+      To open the vault itself in a browser, see Web access under
+      <button class="inline-link" onclick={() => panels.openSettings('vault', 'sharing')}
+        >Vault</button
+      >.
+    </p>
+  </details>
 </section>
 
 {#if draft}
@@ -450,7 +479,7 @@
       }}
     >
       <div class="block">
-        <label class="field-label" for="chat-homeserver">Homeserver address</label>
+        <label class="field-label" for="chat-homeserver">Matrix server address</label>
         <input
           id="chat-homeserver"
           class="field"
@@ -461,7 +490,7 @@
           bind:value={draft.service.homeserver}
           use:focusOnMount={saved === null}
         />
-        <p class="hint">Where the homeserver's client API answers, from this machine.</p>
+        <p class="hint">Where your Matrix server answers, as this computer reaches it.</p>
       </div>
 
       <div class="block">
@@ -526,7 +555,7 @@
         <p class="hint">{minutes === null ? sentence(HOURS_INVALID) : quietNote(minutes)}</p>
       </div>
 
-      <label class="toggle">
+      <label class="check-row">
         <input type="checkbox" bind:checked={draft.enabled} />
         <span>
           <b>Switched on</b>
@@ -576,7 +605,7 @@
       <ul class="devices">
         {#each picking.devices as device (device.deviceId)}
           <li>
-            <label class="toggle">
+            <label class="check-row">
               <input
                 type="checkbox"
                 checked={picking.chosen.includes(device.deviceId)}
@@ -649,9 +678,34 @@
 
   .head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: var(--sp-3);
+  }
+  .head .hint {
+    margin: 0;
+  }
+  .head .btn {
+    flex: none;
+  }
+
+  .how {
+    margin-top: var(--sp-2);
+  }
+  .how summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .how p {
+    margin: var(--sp-2) 0 0;
+  }
+  .inline-link {
+    color: var(--accent);
+    font: inherit;
+    font-weight: 550;
+  }
+  .inline-link:hover {
+    text-decoration: underline;
   }
 
   code {
@@ -904,32 +958,6 @@
   }
   .hours {
     width: 80px;
-  }
-
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small {
-    font-size: var(--text-sm);
-    color: var(--fg-subtle);
-    line-height: var(--leading-normal);
   }
 
   /* `.sheet-row` brings its own top margin for a sheet; the form's gap

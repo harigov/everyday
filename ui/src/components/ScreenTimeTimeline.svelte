@@ -18,6 +18,7 @@
   import { hourLabel } from '../lib/format'
   import { addDays, offsetInDay, startOfDay, todayIso } from '../lib/time'
   import type { TimelineRun } from '../lib/types'
+  import Loading from './Loading.svelte'
 
   const date = $derived(screentime.timelineDate || todayIso())
   const runs = $derived(
@@ -73,6 +74,23 @@
     secs: number
   }
 
+  /** A category's name, for the legend and the rows: colour alone is not
+   *  how anyone should have to tell them apart. */
+  function catName(id: TimelineRun['category']): string {
+    return screentime.categoryOf(id)?.name ?? 'Uncategorised'
+  }
+
+  /** The categories this day used, in the stack's order. */
+  const legend = $derived.by(() => {
+    const used = new Set<string>(runs.map((r) => r.category ?? ''))
+    const known = screentime.categories
+      .filter((c) => used.has(c.id))
+      .map((c) => ({ id: c.id, name: c.name }))
+    return used.has('') || known.length < used.size
+      ? [...known, { id: null as TimelineRun['category'], name: 'Uncategorised' }]
+      : known
+  })
+
   /** Consecutive runs of one item on one device, joined. */
   const joined = $derived.by(() => {
     const out: Joined[] = []
@@ -103,7 +121,7 @@
 <div class="timeline scroll">
   <div class="page">
     {#if loading}
-      <p class="quiet">Loading…</p>
+      <Loading label="Loading the day" centred />
     {:else if runs.length === 0}
       <p class="quiet">Nothing was recorded on this day.</p>
     {:else}
@@ -143,6 +161,11 @@
             <span style:left="{(h / 24) * 100}%">{hourLabel(h)}</span>
           {/each}
         </div>
+        <ul class="legend" aria-label="Categories this day">
+          {#each legend as l (l.id ?? '')}
+            <li><span class="dot" style:background={screentime.colorOf(l.id)}></span>{l.name}</li>
+          {/each}
+        </ul>
       </section>
 
       <section class="card" aria-labelledby="tl-runs">
@@ -154,6 +177,7 @@
               <span class="dot" style:background={screentime.colorOf(r.category)}></span>
               <span class="what">
                 <span class="name" title={r.name}>{r.name}</span>
+                <span class="cat">{catName(r.category)}</span>
                 {#if r.title}<span class="title" title={r.title}>{r.title}</span>{/if}
               </span>
               {#if devices.length > 1}<span class="dev">{r.device}</span>{/if}
@@ -173,7 +197,7 @@
     overflow-y: auto;
   }
   .page {
-    max-width: 960px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;
@@ -304,6 +328,26 @@
     display: flex;
     align-items: baseline;
     gap: var(--sp-2);
+  }
+  .cat {
+    flex: none;
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-4);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+  }
+  .legend li {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
   }
   .name {
     flex: 0 1 auto;

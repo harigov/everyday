@@ -399,7 +399,7 @@
   }
   .page {
     width: 100%;
-    max-width: 860px;
+    max-width: var(--page-w);
     margin: 0 auto;
     display: flex;
     flex-direction: column;
@@ -456,7 +456,7 @@
     display: inline-flex;
     align-items: center;
     padding: 0 var(--sp-2);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--accent) 16%, transparent);
     color: color-mix(in oklab, var(--accent) 72%, var(--fg));
     font-size: var(--text-xs);
@@ -469,7 +469,7 @@
 
   .add {
     width: 100%;
-    max-width: 860px;
+    max-width: var(--page-w);
     margin: 0 auto var(--sp-4);
     display: flex;
     flex-direction: column;

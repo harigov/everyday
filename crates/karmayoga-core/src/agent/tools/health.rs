@@ -515,7 +515,7 @@ pub(super) static TOOLS: &[Tool] = &[
          that is neither gets your own best estimate, passed with estimated true so it is \
          never mistaken for a measurement. Time defaults to now and the slot to the time of \
          day. Do it when they tell you what they ate, not on a guess; they can correct it in \
-         Health.",
+         Health. Not for a tracker's reading (log_reading).",
         run_log_meal
     ),
     tool!(
@@ -551,7 +551,7 @@ pub(super) static TOOLS: &[Tool] = &[
          or name from list_medications, at the time they say (default now). If a dose was due \
          around then it answers that due time. Only record what they tell you happened, once. \
          You cannot start, stop or change a medication or a dose; those are for them and \
-         their clinician.",
+         their clinician. Not for a tracker's reading (log_reading).",
         run_log_dose
     ),
     tool!(
@@ -591,7 +591,7 @@ pub(super) static TOOLS: &[Tool] = &[
          the rest by itself. It is stored beside the watch's own readings and shows in \
          health_series. The vault refuses a value that cannot be real (a weight of 1800 \
          kilograms), and the reason comes back to you. To record against one of their \
-         trackers instead, log_reading.",
+         trackers instead, log_reading. Not for a meal (log_meal) or a dose (log_dose).",
         run_log_health_reading
     ),
     tool!(

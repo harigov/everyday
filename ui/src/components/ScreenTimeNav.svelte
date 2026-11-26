@@ -15,6 +15,7 @@
 
   import { SCREEN_VIEWS, screentime, type ScreenView } from '../lib/screentime.svelte'
   import { formatDuration, type RangeKind } from '../lib/screentime'
+  import { app } from '../lib/state.svelte'
   import { panels } from '../lib/panels.svelte'
   import { relativeTime } from '../lib/format'
   import type { IconName } from '../lib/icons'
@@ -48,6 +49,15 @@
   const picked = $derived(screentime.devices.length === 1 ? screentime.devices[0] : null)
   const notTracking = $derived(screentime.status?.tracking === false)
 
+  /** Recording is set up on the computer that holds the vault, so from here
+   *  the row is not "this computer's" settings. */
+  const elsewhere = $derived(app.remote || (!screentime.status && !!screentime.statusError))
+
+  /** Devices narrow Summary and Timeline only; the other two panes count
+   *  every device, so the block is dimmed there and says so. */
+  const devicesApply = $derived(screentime.view === 'summary' || screentime.view === 'timeline')
+  const devicesTitle = 'Applies to Summary and Timeline'
+
   function openSettings() {
     panels.openSettings('screentime')
   }
@@ -70,7 +80,12 @@
   {/each}
 
   <div class="range desktop-only">
-    <div class="filters" role="group" aria-label="How long the summary covers">
+    <div
+      class="filters"
+      role="group"
+      aria-label="How long the summary covers"
+      title="Applies to Summary"
+    >
       {#each RANGES as r (r.id)}
         <button
           class="filter"
@@ -87,12 +102,14 @@
     </div>
   </div>
 
-  <div class="side-head">
+  <div class="side-head" class:dim={!devicesApply} title={devicesTitle}>
     <span class="eyebrow">Devices</span>
   </div>
   <button
     class="side-row"
     class:sel={picked === null}
+    class:dim={!devicesApply}
+    title={devicesTitle}
     aria-pressed={picked === null}
     onclick={() => screentime.setDevices([])}
   >
@@ -103,6 +120,7 @@
     <button
       class="side-row"
       class:sel={picked === d.device}
+      class:dim={!devicesApply}
       aria-pressed={picked === d.device}
       title="{d.device} — last heard from {relativeTime(d.lastSeen)}"
       onclick={() => screentime.setDevices(picked === d.device ? [] : [d.device])}
@@ -110,7 +128,7 @@
       <span class="side-icon"><Symbol name="monitor" size={16} /></span>
       <span class="side-text">{d.device}</span>
       {#if screentime.status && d.device === screentime.status.device}
-        <span class="side-count">this one</span>
+        <span class="tag">this one</span>
       {/if}
     </button>
   {/each}
@@ -120,9 +138,9 @@
 
   <button class="side-row settings" onclick={openSettings}>
     <span class="side-icon"><Symbol name="settings" size={16} /></span>
-    <span class="side-text">This computer…</span>
-    {#if notTracking}
-      <span class="side-count">off</span>
+    <span class="side-text">{elsewhere ? 'Screen time settings…' : 'This computer…'}</span>
+    {#if notTracking && !app.remote}
+      <span class="tag">off</span>
     {/if}
   </button>
 </nav>
@@ -142,6 +160,12 @@
   .range .filter {
     flex: 1;
     justify-content: center;
+  }
+
+  /* Still clickable, only quieter: the choice is kept for when the summary or
+     the timeline is back. */
+  .dim {
+    opacity: 0.55;
   }
 
   .hint {

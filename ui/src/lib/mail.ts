@@ -272,7 +272,7 @@ export function snoozedUntilLabel(until: string): string {
  * The Scheduled list's own one line: "Sends Tue 8:00 (in 3 hours)" -- the
  * same weekday-and-time half `snoozedUntilLabel` draws from, plus
  * `relativeTime`'s own "in 3 hours", the way the undo toast already spells
- * a send-later instant (`MailView.svelte`'s own `sendingUndo` toast).
+ * a send-later instant (`MailSendUndo.svelte`'s countdown).
  */
 export function scheduledSendLabel(sendAt: string): string {
   return `Sends ${weekdayAndTime(sendAt)} (${relativeTime(sendAt)})`
@@ -1144,10 +1144,48 @@ export function onlyPhrase(only: ReadonlySet<MailOnly>): string {
 
 /** What a narrowed list says when nothing is left in it. */
 export function onlyEmptyLead(only: ReadonlySet<MailOnly>): string {
-  if (only.size !== 1) return 'Nothing matches these filters.'
-  if (only.has('unread')) return 'No unread mail here.'
-  if (only.has('starred')) return 'Nothing starred here.'
-  return 'No attachments here.'
+  if (only.size !== 1) return 'Nothing matches these filters'
+  if (only.has('unread')) return 'No unread mail here'
+  if (only.has('starred')) return 'Nothing starred here'
+  return 'No attachments here'
+}
+
+/** What a mailbox with nothing in it says, by what it is for: an empty Inbox
+ *  is good news, an empty Trash is just empty. `note` is the quieter line. */
+export function mailboxEmptyCopy(
+  mailbox: Pick<Mailbox, 'role' | 'pseudo'> | null | undefined,
+  snoozed: boolean,
+): { lead: string; note: string } {
+  if (snoozed)
+    return {
+      lead: 'Nothing snoozed',
+      note: 'Snooze a conversation and it comes back here until then.',
+    }
+  if (mailbox?.pseudo === 'starred') {
+    return { lead: 'Nothing starred', note: 'Star a conversation to keep it close.' }
+  }
+  switch (mailbox?.role) {
+    case 'inbox':
+      return { lead: 'Nothing needs you', note: 'New mail will show up here.' }
+    case 'drafts':
+      return { lead: 'No drafts', note: 'Messages you start and leave unfinished are kept here.' }
+    case 'sent':
+      return { lead: 'Nothing sent yet', note: 'Messages you send will be listed here.' }
+    case 'trash':
+      return {
+        lead: 'Trash is empty',
+        note: 'Conversations you delete wait here before they are gone for good.',
+      }
+    case 'spam':
+      return { lead: 'No spam', note: 'Mail that looks unwanted is kept here.' }
+    case 'archive':
+      return {
+        lead: 'Nothing archived',
+        note: 'Archived conversations are kept here, out of your Inbox.',
+      }
+    default:
+      return { lead: 'Nothing here', note: 'This mailbox has no conversations right now.' }
+  }
 }
 
 /** Which toggles each mailbox was left on, as `karmayoga.mail.list.only`

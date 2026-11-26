@@ -504,7 +504,7 @@
   }
   .sheet-of-rows {
     width: 100%;
-    max-width: 860px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
   }
@@ -615,7 +615,7 @@
     display: block;
     width: 100%;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--c, var(--accent)) 16%, transparent);
     overflow: hidden;
   }
@@ -625,7 +625,7 @@
   .fill {
     display: block;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--c, var(--accent));
     transition: width var(--med) var(--ease);
   }
@@ -724,7 +724,7 @@
     margin-top: var(--sp-1);
     height: 28px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     color: var(--fg-faint);
   }

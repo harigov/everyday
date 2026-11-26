@@ -41,6 +41,7 @@
   import FilesToolbar from './FilesToolbar.svelte'
   import FilesUploads from './FilesUploads.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import PhotosView from './PhotosView.svelte'
 
   // Loaded when the view appears rather than when the store is imported, so a
@@ -170,7 +171,7 @@
     },
     unused: {
       lead: 'Every file is in use.',
-      note: 'A file that no journal entry, note or conversation refers to is listed here -- a way to find what could be cleared out. Nothing is ever deleted for you.',
+      note: 'A file that no journal entry, note or conversation refers to is listed here, a way to find what could be cleared out. Nothing is ever deleted for you.',
     },
     missing: {
       lead: 'Nothing is missing.',
@@ -252,7 +253,7 @@
   </section>
 {/snippet}
 
-<main class="files" class:detailing style:--tint={files.accent}>
+<main class="files" class:detailing style:--tint={files.accent} inert={viewing >= 0 || undefined}>
   {#if !files.supported}
     <EmptyState lead="Files are not kept in this vault.">
       {#snippet icon()}<Icon name="folder" size={30} weight={1.3} />{/snippet}
@@ -317,7 +318,7 @@
         <code>{folder.path}</code>
         <br />
         Nothing has been changed while it is away, and nothing is marked missing. What you added to your
-        files -- captions, tags, albums -- is safe in the vault.
+        files, such as captions, tags and albums, is safe in the vault.
       {/snippet}
       {#snippet action()}
         <div class="actions">
@@ -352,7 +353,7 @@
       {:else if view === 'albums'}
         <AlbumsView />
       {:else if !listed}
-        <p class="loading" role="status">Loading…</p>
+        <Loading label="Looking in this folder…" centred />
       {:else if empty}
         {@const words = EMPTY[view] ?? EMPTY.browse!}
         {#if nothingElse}
@@ -386,6 +387,13 @@
         {/if}
       {:else}
         {#if inside.length > 0}{@render found()}{/if}
+        {#if view === 'browse' && list.length === 0 && !searching}
+          <!-- Folders and nothing else: say how a file gets in, as the empty
+               folder does. -->
+          <p class="hint folder-hint">
+            {phone.on ? 'Press Add to put files in here.' : 'Drag files in, or press Add files.'}
+          </p>
+        {/if}
         {#if files.layout === 'list'}
           <FilesList />
         {:else}
@@ -454,8 +462,13 @@
   .rail {
     flex: none;
     display: flex;
-    width: 340px;
+    width: var(--detail-w);
     min-height: 0;
+  }
+  .folder-hint {
+    flex: none;
+    margin: 0;
+    padding: var(--sp-1) var(--sp-6) var(--sp-2);
   }
   .several {
     flex: 1;
@@ -501,12 +514,6 @@
     z-index: 3;
     width: auto;
     background: var(--bg-panel);
-  }
-
-  .loading {
-    margin: var(--sp-6);
-    font-size: var(--text-sm);
-    color: var(--fg-subtle);
   }
 
   /* What the search found inside documents: a short list above the files
@@ -628,7 +635,7 @@
     align-items: center;
     gap: var(--sp-2);
     padding: var(--sp-2) var(--sp-4);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--accent);
     color: var(--fg-on-accent);
     font-weight: 600;

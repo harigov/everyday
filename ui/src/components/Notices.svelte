@@ -15,15 +15,34 @@
                all can be saved
     error      anything else that failed, dismissible
 
+  And above all three, when the window is reading another computer's vault
+  and has lost it: not dismissible either, since it stays true until the
+  stream comes back, and clears itself then. It is its own block rather than
+  a fourth case because it can hold at the same time as a read-only vault or
+  an error, and each of those is still worth seeing.
+
   The conflict is not dismissible on purpose. It is the only one with a
   decision attached, and clearing it without answering would leave autosave
   silently off.
 -->
 <script lang="ts">
   import { app } from '../lib/state.svelte'
+  import { live } from '../lib/live.svelte'
 
   const readOnly = $derived(app.status?.writable === false)
+  // The computer's own name for the vault where it is known; failing that, a
+  // plain "your computer", which is true of a browser on web access too.
+  const computer = $derived(app.remote?.name ?? app.status?.name ?? 'your computer')
 </script>
+
+{#if !live.reachable}
+  <div class="notice offline" role="status">
+    <div class="text">
+      <strong>Can’t reach {computer}.</strong>
+      <span>Showing what was last loaded. Changes will come through when it is back.</span>
+    </div>
+  </div>
+{/if}
 
 {#if app.conflict}
   <div class="notice conflict" role="alert">
@@ -100,7 +119,8 @@
     color: var(--danger);
   }
 
-  .readonly {
+  .readonly,
+  .offline {
     background: var(--bg-sunken);
   }
 

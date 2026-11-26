@@ -886,7 +886,7 @@
     align-items: center;
     height: 28px;
     padding: 0 var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid var(--border-strong);
     font-size: var(--text-sm);
     font-weight: 550;

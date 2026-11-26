@@ -9,8 +9,7 @@
   import { isTyping } from '../lib/keys'
   import Sheet from './Sheet.svelte'
   import { mail } from '../lib/mail.svelte'
-  import { customSnoozeInstant, earliestSnoozeDate } from '../lib/mail'
-  import { toLocalInputValue } from '../lib/format'
+  import { customSnoozeInstant, earliestSnoozeDate, weekdayAndTime } from '../lib/mail'
 
   let { onchoose, oncancel }: { onchoose: (at: Date) => void; oncancel: () => void } = $props()
 
@@ -50,8 +49,8 @@
   <div class="choices">
     {#each mail.snoozeOptions() as choice, i (choice.key)}
       <button class="choice" use:focusOnMount={i === 0} onclick={() => onchoose(choice.at)}>
-        {choice.label}
-        <span class="when">{toLocalInputValue(choice.at).replace('T', ' ')}</span>
+        <span class="name"><kbd aria-hidden="true">{i + 1}</kbd>{choice.label}</span>
+        <span class="when">{weekdayAndTime(choice.at.toISOString())}</span>
       </button>
     {/each}
   </div>
@@ -59,7 +58,7 @@
     <!-- Never today: today's 8am may already be behind `now`, which would
          release the thread almost immediately -- `snoozeChoices`'s own
          "Later today" is what picking "later, today" means instead. -->
-    <input type="date" bind:value={customDate} min={earliestSnoozeDate()} />
+    <input type="date" bind:value={customDate} min={earliestSnoozeDate()} aria-label="Date" />
     <input type="time" bind:value={customTime} aria-label="Time" />
     <button class="btn" disabled={!customDate} onclick={pickCustom}>Snooze</button>
   </div>
@@ -91,6 +90,21 @@
   }
   .choice:hover {
     background: var(--bg-hover);
+  }
+  .name {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+  }
+  /* The digit that picks the row, quiet; a phone has no keyboard for it. */
+  kbd {
+    min-width: 1ch;
+    font: inherit;
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
+  :global([data-phone]) kbd {
+    display: none;
   }
   .when {
     font-size: var(--text-xs);

@@ -35,6 +35,7 @@ import {
   numberOrder,
   planDrop,
   proposalBelongsInScope,
+  sectionKeyOf,
   sectionPatch,
   type GroupBy,
   type ProposalScope,
@@ -59,7 +60,7 @@ import type {
 import { PRIORITIES, TASK_STATUSES, isOpen, priorityRank } from './types'
 
 /** How far ahead "Upcoming" looks. */
-const UPCOMING_DAYS = 14
+export const UPCOMING_DAYS = 14
 
 /**
  * Idle delay before a keystroke in the filter box becomes a query.
@@ -105,6 +106,32 @@ const viewPref = pref<View | null>(
   (raw) => (raw === 'list' || raw === 'board' ? raw : null),
   null,
 )
+
+const GROUP_BYS: GroupBy[] = ['due', 'status', 'priority', 'purpose', 'none']
+
+// How the list is grouped, kept like the view: the next visit opens the way
+// this one was left.
+const groupPref = pref<GroupBy | null>(
+  'karmayoga.todo.group',
+  (raw) => (GROUP_BYS.includes(raw as GroupBy) ? (raw as GroupBy) : null),
+  null,
+)
+
+/**
+ * The ways the list can be grouped, as the header select and the list's own
+ * menu offer them: one list for both. Goal or area appears only where there
+ * is somewhere to file things -- a grouping whose every row said "No goal or
+ * area" would teach people the feature does not work.
+ */
+export function groupChoices(purposeEnabled: boolean): { id: GroupBy; label: string }[] {
+  return [
+    { id: 'due', label: 'Due date' },
+    { id: 'status', label: 'Status' },
+    { id: 'priority', label: 'Priority' },
+    ...(purposeEnabled ? [{ id: 'purpose' as const, label: 'Goal or area' }] : []),
+    { id: 'none', label: 'Nothing' },
+  ]
+}
 
 /**
  * The status filter, as the filter bar offers it.
@@ -261,6 +288,8 @@ class TodoState {
     this.#started = true
     const view = viewPref.get()
     if (view) this.view = view
+    const group = groupPref.get()
+    if (group) this.groupBy = group
     // The proposals store is loaded once, after unlock, by whichever app
     // opens first -- WP5's wiring does this too, but idempotently, so it is
     // safe to ask again here rather than hope the todo app is never first.
@@ -318,7 +347,7 @@ class TodoState {
     const base: TaskQuery = {
       // Sorting is done here rather than in the view so that paging and
       // grouping see the same order the backend chose.
-      sort: this.view === 'board' ? 'manual' : 'dueAsc',
+      sort: this.effectiveView === 'board' ? 'manual' : 'dueAsc',
       text: this.filter.trim(),
       limit: 2000,
     }
@@ -350,10 +379,9 @@ class TodoState {
     this.scope = scope
     this.selectedTask = null
     this.detailBlocks = []
-    // A board only makes sense where cards have somewhere to sit: the smart
-    // lists are date queries, and dragging a card between columns in one
-    // would silently change a status the list was not filtered on.
-    if (!this.boardable && this.view === 'board') this.view = 'list'
+    // A board only makes sense where cards have somewhere to sit -- see
+    // `effectiveView`. `view` is left as the person chose it, so going
+    // through Today and back to a project returns to the board.
     // The goals pane reads areas, goals and what has happened against each.
     // Loaded on the way in rather than by the component, so that arriving
     // from a widget with a goal already selected does not draw an empty
@@ -387,6 +415,21 @@ class TodoState {
   /** Can this scope be shown as a board? */
   get boardable(): boolean {
     return this.scope.kind === 'project' || this.scope.kind === 'inbox' || this.scope.kind === 'all'
+  }
+
+  /**
+   * The view actually drawn: the person's choice, except where the scope
+   * cannot be a board. The smart lists are date queries, and dragging a card
+   * between columns in one would silently change a status the list was not
+   * filtered on. Kept apart from `view` so the choice survives a visit there.
+   */
+  get effectiveView(): View {
+    return this.boardable ? this.view : 'list'
+  }
+
+  setGroupBy(groupBy: GroupBy) {
+    this.groupBy = groupBy
+    groupPref.set(groupBy)
   }
 
   setView(view: View) {
@@ -724,6 +767,32 @@ class TodoState {
    * Returns the new task so the caller can keep focus and go straight into
    * the next one, which is the entire point of the input this comes from.
    */
+  /**
+   * A task made from something in another app -- a mail's subject, an
+   * event's title -- kept exactly as written and put in the inbox with no
+   * date. Not `add`: that reads `#`, `!` and `@` in the line as tags, a
+   * priority and a date, which in somebody else's subject they are not, and
+   * files the task under whatever project or list Todo last showed, due today
+   * when that was Today. The list is refreshed rather than added to, so a
+   * project left open in Todo does not show an inbox task until it reloads.
+   */
+  async addFrom(title: string): Promise<Task | null> {
+    const clean = title.trim()
+    if (!clean) return null
+    try {
+      const task = await api.newTask({ projectId: null, parentId: null, status: null })
+      task.title = clean
+      task.sortOrder = this.#nextSortOrder(null)
+      await api.saveTask($state.snapshot(task))
+      void this.refresh()
+      void this.refreshStats()
+      return task
+    } catch (e) {
+      await handle(e)
+      return null
+    }
+  }
+
   async add(
     line: string,
     opts: { parentId?: TaskId; status?: TaskStatus } = {},
@@ -936,6 +1005,104 @@ class TodoState {
     this.#renumber(plan.order, id)
 
     await this.flush()
+  }
+
+  // ── moving without dragging ───────────────────────────────────────────
+  //
+  // The same placements the list's drag makes, reached from a menu: a phone
+  // has no drag, and a keyboard never did. Each is a drop planned by
+  // `planDrop` beside or onto a neighbour, with the task's own section as
+  // the section "dropped on" so that nothing but the order (and the parent)
+  // changes.
+
+  #ownSection(task: Task): string {
+    return sectionKeyOf(this.groupBy, task, {
+      today: todayIso(),
+      projectPurpose: this.projectOf(task.projectId)?.purpose ?? null,
+    })
+  }
+
+  /** The tasks drawn beside `task`: its siblings, in manual order, in its section. */
+  #neighbours(task: Task): Task[] {
+    const drawn = this.#drawn()
+    const top = drawnAtTop(task, drawn)
+    const mine = top ? this.#ownSection(task) : null
+    return byManualOrder(
+      this.visible.filter((t) =>
+        top ? drawnAtTop(t, drawn) && this.#ownSection(t) === mine : t.parentId === task.parentId,
+      ),
+    )
+  }
+
+  #moveTarget(
+    id: TaskId,
+    how: 'top' | 'up' | 'down',
+  ): { id: TaskId; zone: Zone; parentId: TaskId | null } | null {
+    const task = this.tasks.find((t) => t.id === id)
+    if (!task) return null
+    const row = this.#neighbours(task)
+    const at = row.findIndex((t) => t.id === id)
+    if (at < 0) return null
+    // A subtask whose parent is not on screen -- a done parent under the Open
+    // filter -- is drawn among the top-level tasks, but it is still a step of
+    // that parent. Moving it among those strangers would quietly take it out
+    // of its parent, so these only reorder siblings; leaving a parent is
+    // "Make top-level", said in so many words.
+    if (task.parentId && drawnAtTop(task, this.#drawn())) return null
+    const parentId = task.parentId ?? null
+    if (how === 'down') {
+      const next = row[at + 1]
+      return next ? { id: next.id, zone: 'after', parentId } : null
+    }
+    const before = how === 'top' ? row[0] : row[at - 1]
+    return before && before.id !== id ? { id: before.id, zone: 'before', parentId } : null
+  }
+
+  /** Is there somewhere for "Move to top / up / down" to take this task? */
+  canMoveBy(id: TaskId, how: 'top' | 'up' | 'down'): boolean {
+    return this.#moveTarget(id, how) !== null
+  }
+
+  /** Move a task among its siblings. */
+  async moveBy(id: TaskId, how: 'top' | 'up' | 'down') {
+    const target = this.#moveTarget(id, how)
+    const task = this.tasks.find((t) => t.id === id)
+    if (!target || !task) return
+    await this.place(id, target, this.#ownSection(task))
+  }
+
+  /** The tasks `id` could become a subtask of: top-level, drawn, not itself. */
+  subtaskParents(id: TaskId): Task[] {
+    const task = this.tasks.find((t) => t.id === id)
+    if (!task || this.tasks.some((t) => t.parentId === id)) return []
+    const drawn = this.#drawn()
+    return byManualOrder(
+      this.visible.filter((t) => t.id !== id && !t.parentId && drawnAtTop(t, drawn)),
+    ).filter((t) => t.id !== task.parentId)
+  }
+
+  /** Make `id` a subtask of `parentId`, as dropping it onto that row would. */
+  async makeSubtaskOf(id: TaskId, parentId: TaskId) {
+    const task = this.tasks.find((t) => t.id === id)
+    if (!task) return
+    await this.place(id, { id: parentId, zone: 'into', parentId: null }, this.#ownSection(task))
+  }
+
+  /** Can `id` be lifted out of its parent? */
+  canMakeTopLevel(id: TaskId): boolean {
+    const task = this.tasks.find((t) => t.id === id)
+    return !!task?.parentId && this.#drawn().has(task.parentId)
+  }
+
+  /** Lift a subtask out to the top level, just after the task it came from. */
+  async makeTopLevel(id: TaskId) {
+    const task = this.tasks.find((t) => t.id === id)
+    if (!task?.parentId) return
+    await this.place(
+      id,
+      { id: task.parentId, zone: 'after', parentId: null },
+      this.#ownSection(task),
+    )
   }
 
   #sectionPatchFor(id: TaskId, section: string) {

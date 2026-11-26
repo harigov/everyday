@@ -22,6 +22,7 @@
   import { startOfDay, todayIso } from '../lib/time'
   import type { BrowserConnection, ScreenTimeSettings } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   void screentime.refreshStatus()
   // The vault's half comes with the app's first load; opened straight from
@@ -166,9 +167,18 @@
     <span class="eyebrow" id="st-here">This computer</span>
 
     {#if !status}
-      <p class="hint">Asking this computer…</p>
+      {#if screentime.statusError}
+        <!-- The ask failed: this device has no recorder to ask (a phone, or a
+             browser over web access), which is an answer, not a wait. -->
+        <p class="hint">
+          This device doesn’t record screen time. Recording is set up on the computer that holds
+          your vault.
+        </p>
+      {:else}
+        <Loading label="Asking this computer…" />
+      {/if}
     {:else}
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={status.tracking}
@@ -279,8 +289,11 @@
         {#if connection}
           <div class="code">
             <p class="hint">
-              Install the extension from <code>extensions/browser</code> (Load unpacked in Chrome; about:debugging
-              in Firefox), open its options, and paste this code. It is shown once.
+              Add the Karma Yoga browser extension to your browser — it is in the <code
+                >extensions/browser</code
+              >
+              folder of the app — then open its options and paste this code. You will only see the code
+              once.
             </p>
             <div class="code-row">
               <input
@@ -325,7 +338,7 @@
     <span class="eyebrow" id="st-vault">For this vault</span>
 
     {#if !settings}
-      <p class="hint">Loading…</p>
+      <Loading />
     {:else}
       <label class="row-setting">
         <span>
@@ -346,7 +359,7 @@
         </span>
       </label>
 
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={settings.keepTitles}
@@ -450,19 +463,6 @@
     color: var(--fg-muted);
   }
 
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle > span,
   .row-setting > span:first-child,
   .danger-zone > span:first-child {
     display: flex;
@@ -470,11 +470,13 @@
     gap: 3px;
     min-width: 0;
   }
-  b {
+  .row-setting b,
+  .danger-zone b {
     font-size: var(--text-base);
     font-weight: 600;
   }
-  small {
+  .row-setting small,
+  .danger-zone small {
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
     color: var(--fg-subtle);
@@ -533,6 +535,7 @@
   }
   .setting input {
     width: 100%;
+    max-width: 24rem;
   }
   .with-unit {
     flex: none;

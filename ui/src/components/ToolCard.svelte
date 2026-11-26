@@ -161,8 +161,10 @@
   const subjectText = $derived(newline < 0 ? '' : card.subject.slice(newline + 1).trim())
 </script>
 
+<!-- A question stopped for an answer is announced when it appears: the rest of the log is not. -->
 <div
   class="card"
+  role={card.state === 'waiting' ? 'alert' : undefined}
   class:waiting={card.state === 'waiting'}
   class:outward
   class:bad={card.state === 'failed'}
@@ -202,13 +204,13 @@
       {:else if card.state === 'done' && card.summary}
         <span class="said">{card.summary}</span>
       {:else if card.state === 'failed'}
-        <span class="said bad">{card.summary || 'failed'}</span>
+        <span class="said bad">{card.summary || 'Could not finish'}</span>
       {:else if card.state === 'declined'}
-        <span class="said">declined</span>
+        <span class="said">Declined</span>
       {:else if card.state === 'later'}
-        <span class="said">saved for later</span>
+        <span class="said">Saved for later (see Waiting for you)</span>
       {:else if card.state === 'stopped'}
-        <span class="said">stopped</span>
+        <span class="said">Stopped</span>
       {/if}
       {#if trustedNote}
         <!-- What "Always allow" did, beside whatever the page came to: it
@@ -226,11 +228,16 @@
     {/if}
     <p class="ask">{ask}</p>
     <div class="answer">
-      <button class="no" onclick={() => onanswer('decline')}>Don't</button>
+      <button class="btn btn-sm btn-outline no" onclick={() => onanswer('decline')}>Don’t</button>
       {#if card.canPark}
-        <button class="later" onclick={() => onanswer('later')}>Later</button>
+        <button class="btn btn-sm later" onclick={() => onanswer('later')}>Later</button>
       {/if}
-      <button class="yes" class:outward onclick={() => onanswer('confirm')}>
+      <button
+        class="btn btn-sm yes"
+        class:btn-danger={!outward}
+        class:btn-primary={outward}
+        onclick={() => onanswer('confirm')}
+      >
         <Icon name={asking.icon} size={13} />
         {yes}
       </button>
@@ -343,12 +350,7 @@
     border: 1.5px solid color-mix(in oklab, var(--accent) 25%, transparent);
     border-top-color: var(--accent);
     border-radius: 50%;
-    animation: turn 0.8s linear infinite;
-  }
-  @keyframes turn {
-    to {
-      rotate: 360deg;
-    }
+    animation: ky-spin 0.8s linear infinite;
   }
   .mark {
     display: grid;
@@ -431,18 +433,11 @@
     gap: var(--sp-2);
     margin-top: var(--sp-2);
   }
-  .answer button {
-    padding: var(--sp-1) var(--sp-3);
-    border-radius: var(--radius-sm);
-    font: inherit;
-    font-size: var(--text-sm);
-    cursor: pointer;
-  }
   /* Declining is the wider, plainer button and comes first: it is the
      recoverable answer, and the one a misread click should land on. */
   .no {
     flex: 1;
-    border: 1px solid var(--border-strong);
+    justify-content: center;
     background: var(--bg-raised);
     color: var(--fg);
   }
@@ -453,26 +448,9 @@
      as urgently as "don't" or as committing as "delete"/"send". */
   .later {
     flex: none;
-    border: 1px solid transparent;
-    background: none;
-    color: var(--fg-muted);
-  }
-  .later:hover {
-    background: var(--bg-hover);
   }
   .yes {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-1);
-    border: 1px solid transparent;
-    background: var(--danger);
-    color: #fff;
-  }
-  .yes.outward {
-    background: var(--accent);
-  }
-  .yes:hover {
-    filter: brightness(1.08);
+    flex: none;
   }
   /* The shared pill, kept to the card's width: a long host name shortens
      rather than pushing the card wider than the rail. */

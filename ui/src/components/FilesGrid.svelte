@@ -667,7 +667,7 @@
     left: 38px;
   }
   :global([data-phone]) .grid {
-    padding-bottom: calc(var(--fab-size) + var(--sp-6));
+    padding-bottom: var(--fab-clear);
   }
   :global([data-phone]) .folder {
     height: 56px;

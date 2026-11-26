@@ -39,6 +39,7 @@
   // it, and the recording's own record points at it (`feed.transcript`).
 
   import { untrack } from 'svelte'
+  import { focusOnMount } from '../lib/focus'
   import { docFormatOf, isReadable } from '../lib/documents'
   import { formatSize } from '../lib/files'
   import { files } from '../lib/files.svelte'
@@ -153,6 +154,14 @@
 
   // Rating: one to five stars, and the one already given clears it.
   let hovered = $state(0)
+
+  // People and Place are mostly empty, and two empty fields in a narrow rail
+  // push everything else down: they open from a "+ Add" row, for the file they
+  // were opened on.
+  let reveal = $state({ id: '', people: false, place: false })
+  function show(f: FileEntry, what: 'people' | 'place') {
+    reveal = { id: f.id, people: false, place: false, [what]: true }
+  }
   function rate(f: FileEntry, n: number) {
     void files.setRating([f.id], f.rating === n ? 0 : n)
   }
@@ -569,12 +578,13 @@
             onclick={() => void files.toggleFavourite(f.id)}
           >
             <Icon name="star" size={16} filled={f.favourite} />
-            {f.favourite ? 'Favourite' : 'Favourite?'}
+            {f.favourite ? 'Favourited' : 'Favourite'}
           </button>
+          <span class="field-label rating-label" id="{uid}-rating">Rating</span>
           <div
             class="stars"
             role="radiogroup"
-            aria-label="Rating"
+            aria-labelledby="{uid}-rating"
             onmouseleave={() => (hovered = 0)}
           >
             {#each [1, 2, 3, 4, 5] as n (n)}
@@ -592,6 +602,8 @@
             {/each}
           </div>
         </section>
+
+        <h3 class="eyebrow group">About it</h3>
 
         <section>
           <label class="field-label" for="{uid}-caption">Caption</label>
@@ -640,65 +652,80 @@
           </datalist>
         </section>
 
-        <section>
-          <span class="field-label">People</span>
-          <div class="chips">
-            {#each f.people ?? [] as person (person)}
-              <span class="chip">
-                <span class="chip-text">{person}</span>
-                {#if !locked}
-                  <button
-                    class="chip-x"
-                    aria-label="Remove {person}"
-                    onclick={() => dropWord(f, 'people', person)}
-                  >
-                    <Icon name="close" size={11} />
-                  </button>
-                {/if}
-              </span>
-            {/each}
-            <input
-              class="chip-input"
-              list="{uid}-people"
-              placeholder={(f.people?.length ?? 0) > 0 ? 'Add' : 'Who is in it'}
-              aria-label="Add a person"
-              disabled={locked}
-              autocomplete="off"
-              spellcheck="false"
-              onkeydown={(e) => wordKeys(e, f, 'people')}
-              onblur={(e) => addWords(f, 'people', e.currentTarget)}
-            />
-          </div>
-          <datalist id="{uid}-people">
-            {#each names.people as name (name)}<option value={name}></option>{/each}
-          </datalist>
-        </section>
+        {#if (f.people?.length ?? 0) > 0 || (reveal.id === f.id && reveal.people)}
+          <section>
+            <span class="field-label">People</span>
+            <div class="chips">
+              {#each f.people ?? [] as person (person)}
+                <span class="chip">
+                  <span class="chip-text">{person}</span>
+                  {#if !locked}
+                    <button
+                      class="chip-x"
+                      aria-label="Remove {person}"
+                      onclick={() => dropWord(f, 'people', person)}
+                    >
+                      <Icon name="close" size={11} />
+                    </button>
+                  {/if}
+                </span>
+              {/each}
+              <input
+                class="chip-input"
+                list="{uid}-people"
+                placeholder={(f.people?.length ?? 0) > 0 ? 'Add' : 'Who is in it'}
+                aria-label="Add a person"
+                disabled={locked}
+                autocomplete="off"
+                spellcheck="false"
+                onkeydown={(e) => wordKeys(e, f, 'people')}
+                onblur={(e) => addWords(f, 'people', e.currentTarget)}
+                use:focusOnMount={reveal.id === f.id && reveal.people}
+              />
+            </div>
+            <datalist id="{uid}-people">
+              {#each names.people as name (name)}<option value={name}></option>{/each}
+            </datalist>
+          </section>
+        {:else if !locked}
+          <button class="btn btn-sm add" onclick={() => show(f, 'people')}>
+            <Icon name="plus" size={12} /> Add people
+          </button>
+        {/if}
 
-        <section>
-          <label class="field-label" for="{uid}-place">Place</label>
-          <input
-            id="{uid}-place"
-            class="field small"
-            list="{uid}-places"
-            value={f.place ?? ''}
-            disabled={locked}
-            placeholder="Where it was taken"
-            autocomplete="off"
-            onchange={(e) => savePlace(f, e.currentTarget.value)}
-            onkeydown={commitOnEnter}
-          />
-          <datalist id="{uid}-places">
-            {#each files.facets?.places ?? [] as p (p.name)}<option value={p.name}></option>{/each}
-          </datalist>
-          {#if f.media.gps && !files.settings?.namePlaces && !f.place}
-            <p class="hint">
-              This picture knows where it was taken.
-              <button class="link inline" onclick={() => panels.openSettings('files')}>
-                Name places
-              </button> in Settings to fill this in.
-            </p>
-          {/if}
-        </section>
+        {#if f.place || (f.media.gps && !files.settings?.namePlaces) || (reveal.id === f.id && reveal.place)}
+          <section>
+            <label class="field-label" for="{uid}-place">Place</label>
+            <input
+              id="{uid}-place"
+              class="field small"
+              list="{uid}-places"
+              value={f.place ?? ''}
+              disabled={locked}
+              placeholder="Where it was taken"
+              autocomplete="off"
+              onchange={(e) => savePlace(f, e.currentTarget.value)}
+              onkeydown={commitOnEnter}
+              use:focusOnMount={reveal.id === f.id && reveal.place}
+            />
+            <datalist id="{uid}-places">
+              {#each files.facets?.places ?? [] as p (p.name)}<option value={p.name}
+                ></option>{/each}
+            </datalist>
+            {#if f.media.gps && !files.settings?.namePlaces && !f.place}
+              <p class="hint">
+                This picture knows where it was taken.
+                <button class="link inline" onclick={() => panels.openSettings('files')}>
+                  Name places
+                </button> in Settings to fill this in.
+              </p>
+            {/if}
+          </section>
+        {:else if !locked}
+          <button class="btn btn-sm add" onclick={() => show(f, 'place')}>
+            <Icon name="plus" size={12} /> Add a place
+          </button>
+        {/if}
 
         <section>
           <span class="field-label">Albums</span>
@@ -755,6 +782,8 @@
             </form>
           {/if}
         </section>
+
+        <h3 class="eyebrow group">The file</h3>
 
         <section>
           <span class="field-label">Properties</span>
@@ -845,7 +874,7 @@
                 </select>
               </div>
               {#if newType === 'bool'}
-                <label class="toggle">
+                <label class="check-row">
                   <input type="checkbox" bind:checked={newFlag} />
                   <span><b>Yes</b></span>
                 </label>
@@ -1057,7 +1086,7 @@
         </section>
 
         <section class="foot">
-          <label class="toggle">
+          <label class="check-row">
             <input
               type="checkbox"
               checked={f.hidden}
@@ -1094,7 +1123,7 @@
 <style>
   /* The rail every app's detail is: `TaskDetail`'s width and surface. */
   .detail {
-    width: 340px;
+    width: var(--detail-w);
     flex: none;
     display: flex;
     flex-direction: column;
@@ -1131,7 +1160,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 0 var(--sp-4) var(--sp-8);
+    padding: 0 var(--sp-4) calc(var(--sp-8) + var(--fab-clear));
     display: flex;
     flex-direction: column;
     gap: var(--sp-5);
@@ -1169,6 +1198,12 @@
   }
   .field-label {
     margin-bottom: 2px;
+  }
+  .rating-label {
+    margin: 0 0 0 auto;
+  }
+  .group {
+    margin: var(--sp-2) 0 calc(var(--sp-1) * -1);
   }
   .field.small {
     height: 32px;
@@ -1223,7 +1258,7 @@
     gap: 6px;
     height: 30px;
     padding: 0 var(--sp-3) 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-weight: 550;
     color: var(--fg-muted);
@@ -1362,8 +1397,7 @@
     overflow-wrap: anywhere;
     user-select: text;
   }
-  .pvalue input[type='checkbox'],
-  .toggle input {
+  .pvalue input[type='checkbox'] {
     flex: none;
     accent-color: var(--accent);
   }
@@ -1487,30 +1521,6 @@
     gap: var(--sp-2);
     align-items: flex-start;
   }
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    cursor: pointer;
-  }
-  .toggle input {
-    margin-top: 3px;
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .toggle b {
-    font-size: var(--text-sm);
-    font-weight: 600;
-  }
-  .toggle small {
-    font-size: var(--text-xs);
-    color: var(--fg-subtle);
-    line-height: var(--leading-snug);
-  }
-
   /* ── A phone ──────────────────────────────────────────────────────────
      A page of its own, the whole width, with the way back at its head and
      fields a finger can aim at. */
