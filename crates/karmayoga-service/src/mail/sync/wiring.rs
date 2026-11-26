@@ -387,6 +387,16 @@ pub async fn stop_account_task(svc: &Service, account_id: AccountId) {
 pub(crate) mod tests {
     use super::*;
     use jiff::Timestamp;
+
+    /// Mail's storage keys are derived under these labels. They are inputs to
+    /// the cipher, not names -- the `everyday` in them stays through the
+    /// rename for exactly that reason -- and a different label would leave
+    /// every packed message and the search index unreadable.
+    #[test]
+    fn the_storage_key_labels_are_pinned() {
+        assert_eq!(PACKSTORE_KEY_LABEL, "everyday.mail.packstore.v1");
+        assert_eq!(SEARCHINDEX_KEY_LABEL, "everyday.mail.searchindex.v1");
+    }
     use karmayoga_core::MailQuery;
     use karmayoga_core::account::{Account, Provider};
     use karmayoga_core::id::{MailMessageId, MailboxId, PackId, ThreadId};
