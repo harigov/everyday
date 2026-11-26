@@ -14,8 +14,8 @@
 
   /* Interface: menus, lists, buttons, labels. */
   --font-ui:
-    'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI',
-    system-ui, 'Ubuntu', 'Cantarell', 'Noto Sans', sans-serif;
+    var(--face, 'Inter Variable'), -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text',
+    'Segoe UI', system-ui, 'Ubuntu', 'Cantarell', 'Noto Sans', sans-serif;
 
   /* Writing: entry bodies, titles, and the few places that should feel like
    * the journal rather than the application around it. */
@@ -164,6 +164,12 @@
  *   --shell-radius   their corners (0 = square, edge to edge)
  *   --shell-rule     the line between touching panels (`none` once apart)
  *   --shell-shadow   what lifts a panel off the backdrop
+ *
+ * The typeface
+ *   --face           the face `--font-ui` leads with: Inter, or a platform's
+ *                    own where a theme copies that platform's look (Mica's
+ *                    Segoe UI Variable), with Inter after it for a machine
+ *                    that lacks it
  *
  * The content
  *   --bg             the page under cards; inset wells inside a card

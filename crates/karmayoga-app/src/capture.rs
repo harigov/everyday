@@ -1105,6 +1105,9 @@ fn run(
     if let Err(e) = sink.begin() {
         tracing::warn!(error = %e, "meeting capture: sink refused to begin");
         emit(&app, STATUS_EVENT, Option::<CaptureStatus>::None);
+        if let Some(app) = &app {
+            crate::recordcard::on_ended(app, recording.id);
+        }
         return;
     }
 
@@ -1117,6 +1120,9 @@ fn run(
             tracing::warn!(error = %e, "meeting capture: could not open the microphone");
             let _ = sink.discard();
             emit(&app, STATUS_EVENT, Option::<CaptureStatus>::None);
+            if let Some(app) = &app {
+                crate::recordcard::on_ended(app, recording.id);
+            }
             return;
         }
     };
@@ -1265,6 +1271,11 @@ fn run(
                 auto_stop_at: auto_stop_at_value,
             };
             emit(&app, STATUS_EVENT, &current);
+            // The panel's recording card: the level for its meter, and
+            // whatever else on it the status changes.
+            if let Some(app) = &app {
+                crate::recordcard::on_status(app, &current);
+            }
             *status.lock().unwrap() = Some(current);
 
             if let Some(quiet) = auto_stop_quiet {
@@ -1354,6 +1365,12 @@ fn run(
 
     *status.lock().unwrap() = None;
     emit(&app, STATUS_EVENT, Option::<CaptureStatus>::None);
+    // The recording card comes down however capture ended. An explicit stop
+    // took it down already; this is for the rest, and keeps a card for a
+    // newer recording up.
+    if let Some(app) = &app {
+        crate::recordcard::on_ended(app, recording.id);
+    }
 
     // Capture ending on its own -- auto-stop, a dead microphone, a sink
     // error -- is not the same as somebody stopping it: nothing has told

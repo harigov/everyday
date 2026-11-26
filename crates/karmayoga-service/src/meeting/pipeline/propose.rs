@@ -21,7 +21,7 @@ use karmayoga_core::meeting::steps::{self, ModelSay, NextStep};
 use karmayoga_core::proposal::{About, AboutKind, Payload, Proposal, ProposalKind, ProposedRecord};
 use karmayoga_core::store::proposals::ProposalQuery;
 use karmayoga_core::store::tasks::TaskQuery;
-use karmayoga_core::{NoteId, ProposalState, Task, Vault};
+use karmayoga_core::{NoteId, ProposalId, ProposalState, Task, Vault};
 use serde_json::{Map, json};
 
 use crate::decision::{self, ChoiceOption, Content};
@@ -46,6 +46,12 @@ them, or nobody (\"Unassigned\").";
 /// Propose the owner's next steps from `body`. `on` dates a step that names
 /// a month and a day without a year. `others` are the other people invited,
 /// so a shared first name is not treated as the owner's.
+///
+/// The ids of the proposals saved, in the order of the steps -- what the
+/// "notes are ready" notice carries, so the desktop's panel can offer each
+/// one to accept or reject there. Empty when nothing was proposed, for
+/// whatever reason: none of the steps were the owner's, proposals are off,
+/// or saving failed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn from_note(
     vault: &Arc<Vault>,
@@ -56,23 +62,23 @@ pub(crate) async fn from_note(
     on: Date,
     tz: &str,
     events: &dyn EventSink,
-) {
+) -> Vec<ProposalId> {
+    let mut made: Vec<ProposalId> = Vec::new();
     let steps = steps::next_steps(body, on);
     if steps.is_empty() {
-        return;
+        return made;
     }
     let prepared = {
         let vault = vault.clone();
         match blocking(move || prepare(&vault)).await {
             Ok(Some(prepared)) => prepared,
-            Ok(None) => return,
+            Ok(None) => return made,
             Err(e) => {
                 tracing::warn!(error = %e, "meeting pipeline: could not prepare task proposals");
-                return;
+                return made;
             }
         }
     };
-    let mut made = 0u32;
     for step in steps {
         if steps::is_unassigned(&step.owner) {
             continue;
@@ -85,13 +91,18 @@ pub(crate) async fn from_note(
             continue;
         }
         match save(vault, note_id, meeting, tz, &step, events).await {
-            Save::Wrote => made += 1,
+            Save::Wrote(id) => made.push(id),
             Save::Full | Save::Failed => break,
         }
     }
-    if made > 0 {
-        tracing::info!(meeting, proposals = made, "meeting pipeline: proposed tasks from the note");
+    if !made.is_empty() {
+        tracing::info!(
+            meeting,
+            proposals = made.len(),
+            "meeting pipeline: proposed tasks from the note"
+        );
     }
+    made
 }
 
 struct Prepared {
@@ -180,7 +191,7 @@ async fn ask(
 }
 
 enum Save {
-    Wrote,
+    Wrote(ProposalId),
     Full,
     Failed,
 }
@@ -208,7 +219,7 @@ async fn save(
     let id = proposal.id;
     let vault = vault.clone();
     let saved = blocking(move || match vault.save_proposal(&proposal) {
-        Ok(()) => Ok(Save::Wrote),
+        Ok(()) => Ok(Save::Wrote(id)),
         Err(karmayoga_core::Error::Invalid(reason)) => {
             tracing::debug!(%reason, "meeting pipeline: stopped proposing tasks");
             Ok(Save::Full)
@@ -220,11 +231,11 @@ async fn save(
     })
     .await;
     match saved {
-        Ok(Save::Wrote) => {
+        Ok(Save::Wrote(id)) => {
             let mut change = Change::new(Kind::Proposal, Op::Created);
             change.id = Some(id.to_string());
             events.changed(change);
-            Save::Wrote
+            Save::Wrote(id)
         }
         Ok(other) => other,
         Err(e) => {
@@ -280,7 +291,7 @@ mod tests {
 ";
         let others = vec!["Priya Raman".to_string()];
         let events = crate::events::Silent;
-        from_note(
+        let made = from_note(
             &vault,
             note,
             body,
@@ -293,6 +304,7 @@ mod tests {
         .await;
         let pending = vault.proposals(&ProposalQuery::pending()).unwrap();
         assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(made, [pending[0].id], "the one saved is the one named");
         let task = match &pending[0].payload {
             Payload::Create { record: ProposedRecord::Task(task) } => task,
             other => panic!("expected a task, got {other:?}"),
@@ -305,7 +317,7 @@ mod tests {
             Some(note.to_string().as_str())
         );
 
-        from_note(
+        let again = from_note(
             &vault,
             note,
             body,
@@ -317,6 +329,7 @@ mod tests {
         )
         .await;
         assert_eq!(vault.proposals(&ProposalQuery::pending()).unwrap().len(), 1);
+        assert!(again.is_empty(), "nothing new was proposed, so nothing is named");
     }
 
     #[tokio::test]

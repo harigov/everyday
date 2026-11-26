@@ -7,7 +7,7 @@ use karmayoga_core::{Note, NoteOrigin, RecordingId, TranscriptId, Vault};
 
 use crate::ctx::Scope;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::events::{Change, Kind, Notification, Op};
+use crate::events::{Change, Kind, MeetingNotesNotice, NoticeCard, Notification, Op};
 use crate::service::blocking;
 use crate::speech::transcribe::Hints;
 
@@ -478,10 +478,23 @@ pub(crate) async fn summarise_and_write_from(
     let facts = facts_for(&recording, &identified, &tz);
 
     let spelling = karmayoga_core::meeting::vocab::spelling_line(&identified.words);
-    let answer =
-        summarise_stage(summariser, &transcript, &template.body, &facts, budget, &spelling).await?;
+    // What the person wrote down on the panel during the call goes to the
+    // model with everything else, and into the note word for word, last.
+    let answer = summarise_stage_noted(
+        summariser,
+        &transcript,
+        &template.body,
+        &facts,
+        budget,
+        &spelling,
+        &recording.notes,
+    )
+    .await?;
     let details = karmayoga_core::meeting::template::details_block(&facts);
-    let body = if details.is_empty() { answer.clone() } else { format!("{details}\n\n{answer}") };
+    let body = with_own_notes(
+        if details.is_empty() { answer.clone() } else { format!("{details}\n\n{answer}") },
+        &recording.notes,
+    );
 
     let date = {
         let zone = jiff::tz::TimeZone::get(&facts.tz).unwrap_or(jiff::tz::TimeZone::UTC);
@@ -573,24 +586,241 @@ pub(crate) async fn summarise_and_write_from(
     t_change.id = Some(transcript.id.to_string());
     events.changed(t_change);
 
-    events.notify(
-        Notification::new(crate::events::Level::Info, format!("Notes from {meeting} are ready"))
-            .domain(Scope::Meetings)
-            .for_user()
-            .key(format!("meeting:{id}")),
-    );
-
-    // After the note is announced, and not allowed to fail it: a proposal is
-    // a question to the model for each next step, and the note is worth
-    // reading before those are answered. One that cannot be saved leaves the
-    // note where it is. See `propose`.
+    // The note's next steps become task proposals, and not allowed to fail
+    // the note: a proposal is a question to the decision model for each next
+    // step, and one that cannot be saved leaves the note where it is. See
+    // `propose`. The note is saved already -- the window's list shows it --
+    // but it is announced after this, so the notice can carry the
+    // proposals: the desktop's panel offers each one there, to accept or
+    // reject, and a notice sent first would have none to offer. Only for
+    // [`PROPOSALS_WAIT`], though; see there.
     let on = {
         let zone = jiff::tz::TimeZone::get(&facts.tz).unwrap_or(jiff::tz::TimeZone::UTC);
         let at = recording.event.as_ref().map_or(recording.started_at, |e| e.start);
         at.to_zoned(zone).date()
     };
     let others: Vec<String> = facts.invitees.iter().map(|i| i.name.clone()).collect();
-    super::propose::from_note(vault, note_id, &body, &meeting, &others, on, &tz, events).await;
+    let mut proposing = std::pin::pin!(super::propose::from_note(
+        vault, note_id, &body, &meeting, &others, on, &tz, events
+    ));
+    let proposals = within(&mut proposing, PROPOSALS_WAIT).await;
+    let late = proposals.is_none();
+    if late {
+        tracing::info!(
+            meeting = %meeting,
+            "meeting pipeline: the next steps are still being proposed; announcing the note first"
+        );
+    }
+
+    events.notify(
+        Notification::new(crate::events::Level::Info, format!("Notes from {meeting} are ready"))
+            .domain(Scope::Meetings)
+            .for_user()
+            .key(format!("meeting:{id}"))
+            .card(NoticeCard::MeetingNotes(MeetingNotesNotice {
+                recording_id: id.to_string(),
+                note_id: note_id.to_string(),
+                title: title.clone(),
+                summary: glance(&answer),
+                proposals: proposals.unwrap_or_default().iter().map(ToString::to_string).collect(),
+            })),
+    );
+
+    // Announced without them, the rest are still proposed: they wait in the
+    // main window's list. The panel's card, told of no ids, shows whichever
+    // were saved by the time it went up (it lists the note's own pending
+    // ones).
+    if late {
+        proposing.await;
+    }
 
     Ok(())
+}
+
+/// How long the "notes are ready" notice waits for the note's next steps to
+/// become proposals before it goes without them. Each step is a question to
+/// the decision model, one after another, and a slow one -- a remote endpoint
+/// that hangs until its own timeout on every step, a local model loading cold
+/// behind mail sorting -- must not hold the notice up for minutes, nor leave
+/// it unsent should the task be stopped meanwhile: the recording is `Done` by
+/// then, so nothing would ever send it.
+const PROPOSALS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What `work` comes to, if it does within `wait`; else `None`, with `work`
+/// left where it got to for the caller to carry on awaiting. Work that is
+/// done as the time runs out counts as done.
+async fn within<F: std::future::Future + Unpin>(
+    work: &mut F,
+    wait: std::time::Duration,
+) -> Option<F::Output> {
+    tokio::select! {
+        biased;
+        done = work => Some(done),
+        () = tokio::time::sleep(wait) => None,
+    }
+}
+
+/// The note's body with what the person wrote down during the call kept
+/// word for word under "## Your notes", last -- after the next steps, so the
+/// proposals read from those stop where they end. The body alone when they
+/// wrote nothing.
+pub(crate) fn with_own_notes(
+    body: String,
+    notes: &[karmayoga_core::meeting::RecordingNote],
+) -> String {
+    let theirs = karmayoga_core::meeting::owner_notes_section(notes);
+    if theirs.is_empty() { body } else { format!("{}\n\n{theirs}", body.trim_end()) }
+}
+
+/// The most lines of the notes a notice carries for a glance.
+const GLANCE_LINES: usize = 2;
+/// The longest one of those lines may be, in characters.
+const GLANCE_LINE_CHARS: usize = 160;
+
+/// The first lines of what the model wrote, for a glance at the notice: the
+/// first [`GLANCE_LINES`] that say something, without headings, list marks,
+/// emphasis, tables or fences, each cut to [`GLANCE_LINE_CHARS`]. `None` for
+/// notes with nothing but headings in them.
+pub(crate) fn glance(answer: &str) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut fenced = false;
+    for line in answer.lines() {
+        let line = line.trim();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced || line.is_empty() || line.starts_with('#') || line.starts_with('|') {
+            continue;
+        }
+        if line.chars().all(|c| matches!(c, '-' | '*' | '_' | ' ')) {
+            continue;
+        }
+        let words = plain_line(line);
+        if words.is_empty() {
+            continue;
+        }
+        lines.push(clip_line(&words, GLANCE_LINE_CHARS));
+        if lines.len() == GLANCE_LINES {
+            break;
+        }
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// One line of Markdown as plain words: its list mark or check box, its quote
+/// mark and its emphasis taken off.
+fn plain_line(line: &str) -> String {
+    let mut rest = line.trim_start_matches('>').trim_start();
+    for mark in ["- [ ] ", "- [x] ", "- [X] ", "* [ ] ", "* [x] ", "- ", "* ", "+ "] {
+        if let Some(after) = rest.strip_prefix(mark) {
+            rest = after;
+            break;
+        }
+    }
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0
+        && let Some(after) = rest[digits..].strip_prefix(". ").or(rest[digits..].strip_prefix(") "))
+    {
+        rest = after;
+    }
+    rest.replace("**", "").replace("__", "").replace('`', "").trim().to_string()
+}
+
+/// `text` cut to `max` characters, with an ellipsis where anything was cut.
+fn clip_line(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.truncate(out.trim_end().len());
+    out.push('\u{2026}');
+    out
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+    use karmayoga_core::meeting::RecordingNote;
+
+    #[test]
+    fn a_glance_is_the_first_two_lines_that_say_something() {
+        let answer = "\
+## Budget
+- **Decided:** the budget is $40k, because hiring slipped
+
+1. Priya owns the migration
+- a third line nobody reads
+
+## Next steps
+- **Hari:** send the deck
+";
+        assert_eq!(
+            glance(answer).as_deref(),
+            Some("Decided: the budget is $40k, because hiring slipped\nPriya owns the migration")
+        );
+    }
+
+    #[test]
+    fn a_glance_skips_tables_fences_rules_and_check_boxes() {
+        let answer = "\
+| Owner | Action |
+|---|---|
+---
+```
+code
+```
+- [ ] Ship it
+> Quoted `words`
+";
+        assert_eq!(glance(answer).as_deref(), Some("Ship it\nQuoted words"));
+        assert_eq!(glance("## Only\n### Headings\n"), None);
+        let long = format!("- {}", "word ".repeat(80));
+        let one = glance(&long).unwrap();
+        assert_eq!(one.chars().count(), GLANCE_LINE_CHARS);
+        assert!(one.ends_with('\u{2026}'));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_notice_waits_for_the_proposals_only_so_long() {
+        use std::time::Duration;
+        let quick = async {
+            tokio::time::sleep(PROPOSALS_WAIT / 2).await;
+            vec![1]
+        };
+        let mut quick = std::pin::pin!(quick);
+        assert_eq!(within(&mut quick, PROPOSALS_WAIT).await, Some(vec![1]));
+
+        let slow = async {
+            tokio::time::sleep(PROPOSALS_WAIT * 6).await;
+            vec![2, 3]
+        };
+        let mut slow = std::pin::pin!(slow);
+        let started = tokio::time::Instant::now();
+        assert_eq!(within(&mut slow, PROPOSALS_WAIT).await, None, "the notice goes without them");
+        let waited = started.elapsed();
+        assert!(waited >= PROPOSALS_WAIT && waited < PROPOSALS_WAIT * 2, "{waited:?}");
+        // Left where it got to, it still finishes: the rest are proposed.
+        assert_eq!(slow.await, vec![2, 3]);
+        assert!(started.elapsed() < PROPOSALS_WAIT * 7, "not begun again");
+
+        let done = std::future::ready(vec![4]);
+        let mut done = std::pin::pin!(done);
+        assert_eq!(within(&mut done, Duration::ZERO).await, Some(vec![4]), "done counts as done");
+    }
+
+    #[test]
+    fn the_note_keeps_the_owners_words_last_and_only_when_there_are_some() {
+        let body = "## Next steps\n- **Hari:** send the deck\n".to_string();
+        assert_eq!(with_own_notes(body.clone(), &[]), body, "nothing written, nothing added");
+        let notes = [RecordingNote { at_ms: 180_000, text: "Budget is $40k".into() }];
+        let kept = with_own_notes(body, &notes);
+        let expected = "## Next steps\n- **Hari:** send the deck\n\n\
+                        ## Your notes\n\n- **3 min** Budget is $40k";
+        assert_eq!(kept, expected);
+        // The proposals are read from the next steps, which stop at it.
+        let on = jiff::civil::Date::new(2026, 5, 4).unwrap();
+        let steps = karmayoga_core::meeting::steps::next_steps(&kept, on);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+    }
 }

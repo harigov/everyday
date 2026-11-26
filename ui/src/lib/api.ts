@@ -212,6 +212,7 @@ import type {
   VoiceCheck,
   VoiceTypingKeyMode,
   TalkSettings,
+  PanelSettings,
   McpConnection,
   ConnectionAuth,
   ConnectionId,
@@ -359,6 +360,19 @@ export interface ShowInMain {
   settings: string | null
   /** The part of that tab to open at -- see `panels.openSettings`. */
   part?: string | null
+  /**
+   * One thing to open in its app -- a thread from a mail card on the panel,
+   * the note its notes card is about. `kind` is the shell's word for it
+   * (`windows::open_item`): `thread`, `note`, `task`, `event`; one this
+   * window has no way to open by id falls back to `section`.
+   */
+  open?: OpenItem | null
+}
+
+/** What `ShowInMain.open` names: a kind of record, and its id. */
+export interface OpenItem {
+  kind: string
+  id: string
 }
 
 /**
@@ -1099,6 +1113,26 @@ export const api = {
     }),
   /** Start a spoken conversation from the panel, or end the one under way. */
   talkToggle: () => invoke<void>('talk_toggle'),
+
+  /**
+   * The panel in the corner of the screen: which things become a card on it
+   * and which stay the desktop's own notifications, and how long its cards
+   * stay up. Per machine, kept by the shell -- see
+   * `crates/karmayoga-app/src/panel/settings.rs`. Refused on a phone and on
+   * web access, which have no panel; the pane leaves the section out there.
+   */
+  panelSettings: () => invoke<PanelSettings>('panel_settings'),
+  /** Change them; answers with them as kept. */
+  setPanelSettings: (settings: PanelSettings) =>
+    invoke<PanelSettings>('set_panel_settings', { settings }),
+  /**
+   * Tell the panel which theme this window shows, resolved (never
+   * `system`), so its cards are drawn in the same one. The main window's
+   * alone -- see `app.applyTheme`.
+   */
+  setPanelTheme: (id: string) => invoke<void>('set_panel_theme', { theme: id }),
+  /** Put the panel back in its corner and forget where it was dragged to. */
+  panelResetPlace: () => invoke<void>('panel_reset_place'),
 
   /**
    * The wake word: calling the assistant by name instead of pressing the

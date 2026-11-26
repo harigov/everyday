@@ -199,3 +199,347 @@ Per-machine `talk.json`: `enabled` (off), `shortcut`, `mode` (toggle | hold),
 Shared files (`lib.rs`, `build.rs`, capabilities, `hotkey.rs`, `events.rs`,
 `service.rs`, `scheduler.rs`, `types.ts`, `api.ts`, generated client) were
 laid by the supervisor; ask rather than edit.
+
+---
+
+# The panel, second version (Nov 26 2026)
+
+Hari's asks: the panel (meeting card, voice typing, talk key) reimagined from
+first principles -- themed like the app, plainly *ours*, structured (an event
+drawn as an event, a task as a task, a note as a note; who said what kept
+apart; the mode and the tool at work shown), movable (dragged out of the way,
+and opening where it was left next time), on every desktop platform -- and
+able to carry, through one extensible module:
+
+1. **New mail, answered there**: who, what, a reply box (with the mail AI's
+   suggested replies when that is on), archive / mark read / open.
+2. **A meeting coming up** (and an invitation arriving by mail): who is coming
+   and their answers, the description and agenda, and what to cover (talking
+   points, open items) -- with Accept / Maybe / Decline for an invitation.
+3. **A meeting being recorded**: the clock and the level, a box for your own
+   notes, and questions answered from what has been transcribed so far.
+4. **Notes written**: the action items found, each accepted or rejected there;
+   if nobody decides within the set time the card goes and they stay
+   proposals.
+5. **The assistant needing you**: a routine / project / job asking a yes-or-no
+   or a question, and a question from a main-window conversation while that
+   window is out of sight -- answered with quick actions.
+
+Plus Windows 11 light and dark themes (Mica, Mica Dark -- done: `themes.css`,
+`THEMES`, `--face` typeface token).
+
+Some things still go to the desktop's own notifications; which, per kind, is a
+per-machine setting (`panel.json`, Settings → Panel).
+
+## Shape
+
+```
+owners (offers, mailcard, notescard, recordcard, askcard, talk, voicetyping)
+   │  panel::show / update / dismiss / level / hold          ▲ on_panel_action(id, action, text)
+   ▼                                                         │
+hub (panel/mod.rs): the stack, expiry timers, theme, routing presses
+   │ STATE/LEVEL/THEME events                    │ ToChild (JSON lines on stdin)
+   ▼                                             ▼
+host in this process (panel/window.rs)      host in the child (panel/child.rs, Wayland+XWayland):
+  macOS/Windows/X11, Wayland fallback         this binary re-run with GDK_BACKEND=x11 as a tiny
+                                              Tauri app, same window.rs code, same page
+   └──────────────► one page: ui/src/panel/ (PanelStack, PanelCard, blocks/) ◄──────┘
+```
+
+* **One renderer.** The GTK child (`topcard.rs`, 1,800 lines drawing a second,
+  two-theme copy of the cards in GTK) is gone. On Wayland the child is a
+  minimal Tauri app (`panel::child::run_child`, built from the same
+  `crate::context()`), so the page that draws the panel everywhere draws it
+  there too, in every theme, with inputs.
+* **The contract** is `panel/mod.rs` (Rust) and `ui/src/panel/panel.ts` (TS),
+  field for field: a `Panel` has a head (kind, tone, kicker, title, count,
+  body, meter, busy), `blocks: Vec<Block>`, `actions`, and `expires`. Blocks:
+  `activity` (mode + tool with icon), `conversation` (turns: you / assistant /
+  heard / typed), `event`, `mail`, `people`, `task`, `note`, `text`, `quote`,
+  `list` (the old sections), `proposals` (accept:{id} / reject:{id}),
+  `choices`, `input` (with `suggestions` and `modes`), `clock` (ticked by the
+  page from `sinceMs`).
+* **Presses** come back as `panel_action {id, action, copied, text}` →
+  `panel::on_action(app, id, action, copied, text)` → the owner's
+  `on_panel_action`. In the child, `on_action` writes `FromChild::Pressed` to
+  stdout instead and the app calls `on_action` itself.
+
+## The hub (`panel/mod.rs`)
+
+* Stack semantics unchanged (put/replace in place, bottom = newest, MAX_SHOWN
+  3 drawn, "+N more"), non-blocking callers, one `panel-hub` worker.
+* **Expiry**: an owner sets `expires: {afterMs, action}`. The hub keeps a
+  deadline per card id from when that expiry first appeared (a change to
+  `afterMs`/`action` restarts it; removing it cancels), pauses it while the
+  card is *held* (`panel::hold(id, true)` from `panel_hold` -- the page holds
+  a card while the pointer is on it and while a box in it has the keyboard),
+  and when the time is up calls `on_action(app, id, action, false, None)` and
+  then dismisses the card if the owner did not. One thread waits for the
+  earliest unheld deadline (condvar). The copy of the stack sent to renderers
+  has `remainingMs`/`held` filled in; equality checks (`put`/`change`) use the
+  owner's copy. Pure helpers, tested without an app.
+* **Theme**: `set_theme(app, Option<String>)` from the main window's
+  `set_panel_theme` (resolved id, sent whenever `app.shown` changes); kept in
+  `Panels`, emitted as `THEME_EVENT` to the in-process window and sent to the
+  child (`ToChild::Theme`, also on child start). `panel_theme` answers it.
+* `drawn_order`, `shown`, `hidden` stay as documented helpers mirrored by the
+  page (`#[allow(dead_code)]`), or are removed with their tests -- not both.
+
+## The host (`panel/window.rs`, `panel/place.rs`)
+
+Used in the app process and, unchanged, in the child process.
+
+* **Width** 400 logical px (cards 376 + 12 px of shadow room each side).
+* **Placement**: the corner (top-right of the primary monitor's work area,
+  16 px in) until the person drags it; then where they let go, remembered in
+  `panel-place.json` (`place::Place {x, y, moved}`, physical px, top-left),
+  saved by whichever process hosts the window. On every show/resize: a saved
+  place that is no longer on any monitor (unplugged) falls back to the
+  corner; one that is, is kept, except that the window is moved up (not
+  saved) when its height would run past the bottom of that monitor's work
+  area, and kept inside it horizontally. `reset_place` forgets it.
+  Geometry is pure functions over rectangles, tested.
+* **Drag**: the page calls `panel_drag` on pointer-down on a card's grip (the
+  head); `window::drag` calls `start_dragging()` on the main thread and marks
+  a drag as under way; `WindowEvent::Moved` events while it is (and ~400 ms
+  after the last) are the person's -- the last one is saved. Moves the host
+  makes itself are never saved. Double-click on the grip → `panel_reset_place`.
+  Wayland in-process fallback: the desktop places windows, so nothing is
+  saved there.
+* **Keyboard on demand** (`window::focus(app, want)`): the panel never takes
+  the keyboard -- except when the person clicks into a box on a card.
+  - macOS: `set_focusable(true)` (tao writes the `focusable` ivar the
+    `KarmaYogaOverlayPanel` class reads) then, on the main thread,
+    `[ns_window makeKeyWindow]` and `webview.set_focus()`. **Never
+    `window.set_focus()`**: tao's calls `[NSApp activateIgnoringOtherApps:]`,
+    which activates the whole app -- the main window comes forward and, over a
+    full-screen app, the Space can switch. Release: `set_focusable(false)`;
+    the next click elsewhere takes the keyboard back.
+  - Windows: `set_focusable(true)` (lifts WS_EX_NOACTIVATE) then
+    `set_focus()` and `webview.set_focus()`; release `set_focusable(false)`.
+  - X11 (in-process and the child): on the main thread
+    `gtk_window.set_accept_focus(true)` and `present_with_time(server time)`
+    (as `writing::desktop::show_focused` does with
+    `x11_get_server_time`), then `webview.set_focus()`; release
+    `set_accept_focus(false)`.
+  - Wayland in-process fallback: GNOME already gives the window the keyboard.
+* **macOS full-screen** (Hari: there was a bug where the panel did not show
+  over full-screen apps; `overlay::float_over_full_screen` is the fix): keep
+  calling it on the built window; after it, never call
+  `set_always_on_top(false)`, `set_visible_on_all_workspaces(false)`,
+  `set_decorations(..)` or `window.set_focus()` on the panel (each undoes part
+  of the NSPanel or activates the app). Build with `.accept_first_mouse(true)`
+  so the first click on a never-key panel reaches the page.
+* `reveal` / Gate / resize as before; resize keeps the top edge where it is
+  (the saved place's or the corner's).
+
+## The child (`panel/child.rs`, Linux)
+
+* Parent side keeps topcard's process handling: one worker thread; spawn
+  `/proc/self/exe --panel` with `GDK_BACKEND=x11`; stdin JSON lines
+  `ToChild::{Panels, Level, Theme, ResetPlace}`; stdout `FromChild::{Ready,
+  Pressed, Hold}` (non-JSON lines ignored -- GLib and WebKit write there);
+  `Ready` within **10 s** or FAILED → the in-process window draws until the
+  stack empties; a broken pipe restarts once. The child is **kept alive,
+  hidden, for 10 minutes** after the stack empties (a webview takes a moment
+  to start), then its stdin is closed.
+* Child side (`run_child`, before logging): `tauri::Builder::default()` with
+  only `Panels` managed and the panel commands registered (the same functions
+  -- `on_action` and `hold` forward up the pipe when `child::is_child()`),
+  `.build(crate::context())`. A reader thread applies `ToChild` to the local
+  stack (`show`/`dismiss` semantics: replace the whole stack) and theme. The
+  window is `window::window` with `.data_directory(<cache>/panel-webview)`
+  **and** `.incognito(true)` (an incognito window sharing the main context's
+  key gets no protocol handlers), then on X11 `keep_above`, `stick`,
+  skip taskbar/pager, type hint `Utility` (Notification-typed windows may
+  never take the keyboard under Mutter), accept focus false until
+  `focus(true)`. `Ready` is written when the page first calls `panel_state`.
+  On stdin EOF: exit, unless a Copy was pressed in the last 120 s (the X11
+  clipboard dies with its owner) -- then hide and linger up to 120 s.
+* `is_child()` true only in the child.
+
+## Settings (`panel/settings.rs`, `panel.json`)
+
+`PanelSettings {mail, notes, asks: Route(panel|notification), mailSeconds 45,
+notesSeconds 120, recordingCard true}`; `panel_settings` /
+`set_panel_settings` (main window). Cached in memory; `get()` cheap.
+Settings → General gets a **Panel** section (U2): the three routes, the two
+times, the recording card switch, and "Put the panel back in its corner"
+(calls `panel_reset_place` -- main window needs that grant too).
+
+## Owners and their cards
+
+Every card shows the app's mark (the Konark wheel) and the kind's app symbol;
+ids and actions below are the contract between the owner and the page only
+through the generic blocks -- the page has no per-owner code.
+
+* **Meeting** (`offers.rs`): `kind: meeting`. Head: kicker "Meeting · in 5
+  min" / "Recording starts in", count while counting down. Blocks: `event`
+  (when, date, place, join service, calendar, people faces with RSVP status),
+  `people` (who they are, from the brief, folded beyond 3), `text` summary,
+  `list` "To raise" (checkable talking points, `done:{taskId}`) and "Worth
+  covering" (open items), `list` Agenda, `text`/`list` Context folded.
+  `MeetingBriefPerson` gains `response: Option<AttendeeResponse>` (core
+  brief, from `event.guests`). Actions as before (join / take / notNow), with
+  icons.
+* **Recording** (`recordcard.rs`, hooks in `meeting.rs`/`capture.rs`):
+  `id recording:{recordingId}`, `kind: meeting`, tone listening. Blocks:
+  `activity` (recording; muted mic shown), `clock` since start, `input` with
+  modes `note` ("Add a note", "Add") and `ask` ("Ask about the meeting so
+  far", "Ask"), `list` "Your notes" (last 3, with the minute), a
+  `conversation` of the last two Q&As. Meter fed from `CaptureStatus.micLevel`
+  (via `panel::level`). Actions: `stop` ("Stop and write notes", primary).
+  Service: `add_recording_note {id, text} -> RecordingNote` (appends to
+  `Recording.notes` with `atMs` = now − started_at; refuses unless stage is
+  recording), `ask_recording {id, question} -> {answer, heard: bool}` (the
+  transcript so far from `Recording.partial`, sorted by start, labelled You /
+  Others, plus the notes; Medium tier via `agent_credentials`, short timeout;
+  says plainly when nothing has been transcribed yet -- live transcription
+  runs only with a cloud model or ≥8 cores). The summariser gets the notes in
+  its prompt ("what the owner wrote down"), and the written note keeps them
+  verbatim under "## Your notes".
+* **Notes** (`notescard.rs`): triggered by `NoticeCard::MeetingNotes`
+  (drivers.rs now emits the "Notes from X are ready" notification *after*
+  `propose::from_note`, carrying the note id, the summary's first lines and
+  the pending proposal ids). `id notes:{recordingId}`, `kind: notes`. Blocks:
+  `note` (title, excerpt), `proposals` (task title, due, detail). Actions:
+  `acceptAll` (primary), `open` (the note in the main window). `accept:{id}`
+  → `accept_proposal`, `reject:{id}` → `decline_proposal` (no reason). When
+  every item is decided the card says so and goes after 4 s. `expires
+  {notesSeconds, "expire"}`: undecided ones stay proposals. No proposals:
+  note + Open, 30 s.
+* **Mail** (`mailcard.rs`): triggered by `NoticeCard::Mail` (single new
+  message; `arrivals::new_mail_notice` fills it -- `NewMail` gains thread id,
+  account, from address, date, to address, attachments, invite). Taken by the
+  panel when `mail` routes to the panel; the notification is then not
+  forwarded to the window (no system banner) -- unless the main window turns
+  out to be focused and visible, then it is forwarded after all and no card
+  shown. `id mail:{messageId}`, `kind: mail`. Blocks: `mail` (from, subject,
+  snippet, received, account), `input` (`reply`, "Reply to {first name}…",
+  "Send", multiline, `suggestions` from `suggest_replies` when the account's
+  mail AI writing is on -- fetched after the card is up, never blocking it).
+  Actions: `archive`, `read`, `open`, with icons. Reply: `new_draft
+  {account, inReplyTo}` → body = the typed text as HTML paragraphs before the
+  quoted part (as `MailQuickReplies.svelte` does: own words, then the
+  signature/quote the draft came with) → `save_draft` → `send_draft` (the
+  undo delay applies): the card shows "Sending…" with `undo` until the delay
+  passes, then "Sent" and goes after 3 s. Invitation (`invite` present):
+  `kind: invite`, an `event` block (summary, time, place, organizer + people
+  with responses, your rsvp) instead of the snippet, and actions `accepted` /
+  `tentative` / `declined` → `respond_to_invite {messageId, response}`. Open
+  → `windows::open_item(app, "thread", threadId)`. `expires {mailSeconds,
+  "expire"}`.
+* **Ask** (`askcard.rs`): implements `karmayoga_service::asking::DeskAsker`,
+  handed over with `Service::set_desk_asker` when the service is built.
+  `confirm` → card `ask:{id}`, `kind: assistant`, tone attention, kicker "{from}
+  asks", title from the kind ("Delete these?", "Send this?", "Open this
+  page?"…), `quote` with the subject, actions `allow` (primary) / `deny` /
+  `always` ("Always allow {site}") / `later` (when `can_park`); `ask` → title
+  the question, `choices` (one per choice → `choice:{n}`) and an `input`
+  (`answer`) for a free answer. Not put (returns None) when `asks` routes to
+  notifications. Withdraw = dismiss. The service races it with the chat
+  (`asking.rs`). **Window questions**: a `ConfirmationRequired` on the main
+  window's `send_message` channel (`commands.rs`) while the main window is not
+  focused also becomes an `ask` card (`confirm:{callId}`), answered through
+  `confirm_tool_call`; taken down on that call's `ToolFinished` or the turn's
+  end.
+* **Talk** (`talk/card.rs`): `kind: assistant`. Blocks: `activity` (mode from
+  `VoiceState` + muted/dictating; `tool` = name + `tool_line` + a `ToolIcon`
+  from the same words), `conversation` (the last few turns: you / assistant,
+  pending caret), result cards from the call's arguments on `ToolStarted`
+  (create/add task → `task`, create/update event → `event`, create/save note
+  → `note`), marked done or failed on `ToolFinished`; a confirm → `quote` +
+  allow/deny/always/(later). An `input` (`say`, "Type to {name}…", "Send")
+  sends typed words into the conversation (`voice::shell_heard`). Actions
+  end / mute / open with icons.
+* **Voice typing** (`voicetyping`): `kind: voiceTyping`. `activity`
+  (listening/working/done/failed) + a `conversation` of one `heard` turn; on
+  failure a `quote` with the text and Copy.
+
+## Opening things in the main window
+
+`windows::open_item(app, kind, id)` (and `ShowInMain.open: Option<OpenItem
+{kind, id}>`): raises the main window and opens a thread (`mail.openFromElsewhere`)
+or a note; any other kind falls back to its app.
+
+## The page (`ui/src/panel/`)
+
+One page, no per-owner code. `PanelStack` (stack, levels, presses, height
+reports, hold on hover/typing, keyboard on demand, drag/reset, theme from
+`panel_theme` + `THEME_EVENT` over localStorage), `PanelCard` (the head: the
+app mark + kind symbol + kicker, title, count, meter, collapse, close-less;
+the blocks; the foot actions; the expiry bar), `blocks/*.svelte` (one per
+block type), `cards.ts` (pure rules, tested in `scripts/panel.test.mjs`),
+`mock.ts` (`?cards=` samples of every kind, `?theme=`), `source.ts`.
+Design: the app's theme tokens only (`--float`, `--edge`, `--shadow-lg`,
+`--radius-*`, `--app-<kind>`), `--face`; glass where the theme is glass;
+legible without `backdrop-filter`. Motion only opacity/transform, honouring
+reduced motion; no wheel listeners.
+
+## Who owns what (Nov 26 build)
+
+| Agent | Owns |
+|-------|------|
+| H (host) | `crates/karmayoga-app/src/panel/{mod,window,place,child,settings}.rs`, `lib.rs`, `build.rs`, `capabilities/*.json`, `acl.rs`, `guard.rs`, `overlay.rs`, `windows.rs` (open_item) |
+| M (meetings) | `offers.rs`, `recordcard.rs`, `meeting.rs`, `capture.rs` (hooks only), `crates/karmayoga-core/src/meeting/{brief,mod}.rs`, `crates/karmayoga-service/src/meeting/**` (incl. `pipeline/drivers.rs`: the notes notification moved after proposals, carrying `NoticeCard::MeetingNotes`), `crates/karmayoga-service/src/domains/meetings.rs` |
+| N (mail + notes) | `mailcard.rs`, `notescard.rs`, `crates/karmayoga-app/src/events.rs`, `crates/karmayoga-service/src/arrivals.rs`, `crates/karmayoga-service/src/mail/sync/**` and `mail/ai/categorize.rs` (NewMail fields only) |
+| A (asks) | `askcard.rs`, `crates/karmayoga-app/src/commands.rs` (window questions), `crates/karmayoga-app/src/state.rs` (set_desk_asker), `crates/karmayoga-service/src/{asking,reach,scheduler}.rs`, `jobs/answer.rs` |
+| T (talk + typing) | `talk/**`, `voicetyping/**` |
+| U1 (panel page) | `ui/panel.html`, `ui/src/panel/**`, `ui/scripts/panel.test.mjs` |
+| U2 (main UI) | Settings Panel section, theme → `set_panel_theme`, `ShowInMain.open`, `ui/src/lib/{api,types,live.svelte}.ts` and mocks for those |
+
+## After the cross-platform review (Nov 26 2026)
+
+A review of the whole change per platform (36 findings confirmed by a second,
+adversarial read) changed these, on top of what is described above:
+
+* **Expiry counts only what is drawn.** A card waiting under "+N more" has
+  its clock stopped until it is one of the first `MAX_SHOWN`; it counts from
+  when it is first drawn. A renderer that (re)loads its page, or a new child
+  saying Ready, lets go of every hold (`renderer_loaded`): what held a card
+  before is gone.
+* **Holds.** The page holds a card while the pointer is on it, while a box in
+  it has the keyboard, and while a box in it holds words not yet sent. It lets
+  go on window `blur` and on a `mouseout` to nowhere (WebKitGTK sends the
+  cards no `focusout`/`pointerleave` when the whole window loses focus -- seen
+  in the headless GNOME test). A pointer hold the webview cannot follow (a
+  macOS panel that is not key gets no hover events) lapses 3 s after the last
+  pointer event. `panel::held(app, id)` lets an owner ask; the talk card uses
+  it so a conversation does not end for quiet while the person types.
+* **Keyboard back.** macOS: `overlay::give_back_key` (`orderOut:` then
+  `orderFrontRegardless`, so the panel is no longer key); Windows: the window
+  that was in front when the panel took the keyboard is put back in front;
+  X11: the next click elsewhere. Showing the window never makes it key
+  (`set_focusable(false)` before `show`). A suggestion chip asks for the
+  keyboard like the box does.
+* **Placement.** The monitor a place belongs to is the one holding the
+  largest share of the window (a drop against a top edge stays on its
+  screen). On macOS placement is in points, the one global coordinate space
+  there (monitors of different scales overlap in "physical" pixels).
+* **Drag.** On macOS and Windows the mouse button is watched (until 1 s after
+  release, 30 s at most) rather than trusting the first `Moved` within 5 s;
+  a `Moved` to the same place is ignored, so a click on the head followed by
+  a resize is never saved as a place.
+* **Child.** Restarted once per run of cards, not on every change; the
+  in-process fallback window is taken down when the stack empties or the child
+  draws again; Alt+F4 on the panel hides it and keeps it down until a new
+  card appears.
+* **Mail.** The reply runs the person's checks before sending
+  (`check_draft`): a failed or skipped check keeps the draft and shows what
+  was found, with Open draft and Send anyway. A mail or notes card nobody
+  touched passes its notification on to the window when it goes by itself,
+  so it still reaches the notification centre. No card while the desktop is
+  quiet (GNOME's Do Not Disturb, Windows' presentation / quiet time / full
+  screen; macOS has no public Focus API) -- the notification goes on as
+  before. No card goes up after the vault locks. Open and the other actions
+  are not offered while a reply is being sent.
+* **Notes.** "Notes are ready" waits at most 10 s for the action items; if
+  they take longer the card lists every pending proposal about the note.
+  Deciding items holds off the expiry.
+* **Asks.** A job follow-up's desk question waits 4 min (three fit inside the
+  15-minute turn). A desk-only asker does not make a run count as remote for
+  `confirms_destructive` (`Asker::asks_in_chat`). The relay closes a routine's
+  chat question the computer answered with a neutral line, and never sends a
+  question whose asker had already gone.
+* The stack scrolls when it is taller than the window (80 % of the work
+  area).

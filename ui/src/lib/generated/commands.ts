@@ -273,7 +273,9 @@ import type {
   RecategorizeResult,
   Recommendation,
   Recording,
+  RecordingAnswer,
   RecordingId,
+  RecordingNote,
   RecordingQuery,
   Recurrence,
   Recurring,
@@ -406,6 +408,7 @@ export interface Commands {
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
   addManualTransaction: { args: { txn: NewTxn }; result: Txn }
   addNewsSource: { args: { source: NewSource }; result: NewsSource }
+  addRecordingNote: { args: { id: RecordingId; text: string }; result: RecordingNote }
   addStoryToLibrary: { args: { id: StoryId }; result: ItemId }
   addToAlbum: { args: { id: string; files: string[] }; result: void }
   addToQueue: { args: { what: ContentRef; place?: QueuePlace | null }; result: QueueEntry }
@@ -431,6 +434,7 @@ export interface Commands {
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
   applyMoneyRules: { args: { ruleId?: MoneyRuleId | null }; result: number }
   archive: { args: { threads: ThreadId[] }; result: Op[] }
+  askRecording: { args: { id: RecordingId; question: string }; result: RecordingAnswer }
   attachOauthSignIn: {
     args: { id: AccountId; signInId: string; clientSecret?: string; scopes?: string[] }
     result: void
@@ -1260,6 +1264,7 @@ export const COMMAND_NAMES = {
   addItem: 'add_item',
   addManualTransaction: 'add_manual_transaction',
   addNewsSource: 'add_news_source',
+  addRecordingNote: 'add_recording_note',
   addStoryToLibrary: 'add_story_to_library',
   addToAlbum: 'add_to_album',
   addToQueue: 'add_to_queue',
@@ -1273,6 +1278,7 @@ export const COMMAND_NAMES = {
   applyMetadata: 'apply_metadata',
   applyMoneyRules: 'apply_money_rules',
   archive: 'archive',
+  askRecording: 'ask_recording',
   attachOauthSignIn: 'attach_oauth_sign_in',
   awaitConnectionSignIn: 'await_connection_sign_in',
   awaitOauthSignIn: 'await_oauth_sign_in',
@@ -1853,6 +1859,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
   'add_manual_transaction',
   'add_news_source',
+  'add_recording_note',
   'add_story_to_library',
   'add_to_album',
   'add_to_queue',
@@ -1866,6 +1873,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'apply_metadata',
   'apply_money_rules',
   'archive',
+  'ask_recording',
   'attach_oauth_sign_in',
   'await_connection_sign_in',
   'await_oauth_sign_in',
@@ -2439,6 +2447,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_item',
   'add_manual_transaction',
   'add_news_source',
+  'add_recording_note',
   'add_story_to_library',
   'add_to_album',
   'add_to_queue',
@@ -2762,6 +2771,7 @@ export const CHANGE_KINDS = {
   add_item: 'item',
   add_manual_transaction: 'txn',
   add_news_source: 'newsSource',
+  add_recording_note: 'recording',
   add_story_to_library: 'item',
   add_to_album: 'album',
   add_to_queue: 'queue',

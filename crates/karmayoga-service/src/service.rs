@@ -201,6 +201,8 @@ pub struct Service {
     /// handed over by the app when it starts, and `None` in a server, the
     /// command line, or a test that did not set one. See [`crate::desk`].
     desk: RwLock<Option<Arc<dyn crate::desk::Desk>>>,
+    /// The person at this computer, to ask -- see [`crate::asking`].
+    desk_asker: RwLock<Option<Arc<dyn crate::asking::DeskAsker>>>,
     /// The timers the assistant has set, ringing through `desk`. See
     /// [`crate::desk::timers`].
     pub(crate) timers: crate::desk::timers::Timers,
@@ -253,6 +255,7 @@ impl Service {
             reach: crate::reach::ReachState::default(),
             money: crate::money::MoneyRuntime::default(),
             desk: RwLock::new(None),
+            desk_asker: RwLock::new(None),
             timers: crate::desk::timers::Timers::default(),
             weather_cache: WeatherCache::new(),
             listen_briefings: std::sync::Mutex::default(),
@@ -666,6 +669,21 @@ impl Service {
     /// This computer's desktop, when the app has handed it over.
     pub fn desk(&self) -> Option<Arc<dyn crate::desk::Desk>> {
         self.desk.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Hand over a way to ask the person at this computer, so the assistant's
+    /// questions reach them on the panel as well as in their chat. The app's,
+    /// once, as it starts. See [`crate::asking`].
+    pub fn set_desk_asker(&self, asker: Arc<dyn crate::asking::DeskAsker>) {
+        *self.desk_asker.write().unwrap_or_else(|e| e.into_inner()) = Some(asker);
+    }
+
+    /// The way to ask the person at this computer, when the app has handed one
+    /// over and the person wants the assistant's questions there
+    /// ([`crate::asking::DeskAsker::wanted`]).
+    pub fn desk_asker(&self) -> Option<Arc<dyn crate::asking::DeskAsker>> {
+        let desk = self.desk_asker.read().unwrap_or_else(|e| e.into_inner()).clone();
+        desk.filter(|desk| desk.wanted())
     }
 
     pub fn clock(&self) -> Arc<dyn Clock> {

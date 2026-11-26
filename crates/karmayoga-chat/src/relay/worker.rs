@@ -219,9 +219,15 @@ async fn for_routine(
         RoutineJob::Post { from, markdown, done } => {
             let _ = done.send(post_for_run(context, chat, memory, &from, &markdown).await);
         }
-        RoutineJob::Confirm { from, kind, subject, can_park, site, answer } => {
+        RoutineJob::Confirm { from, kind, subject, can_park, site, mut answer } => {
+            // Nobody is waiting for it any more -- it was answered on the
+            // computer's panel, or the run that asked it stopped, while it
+            // sat in this queue behind other work: it is never put.
+            if answer.is_closed() {
+                return;
+            }
             running(&from);
-            let given = ask(
+            let asked = ask(
                 context,
                 chat,
                 shared,
@@ -230,16 +236,46 @@ async fn for_routine(
                 can_park,
                 site.as_deref(),
                 Asking::Routine(&from.routine),
-            )
-            .await;
+            );
+            // The same question may be up on the computer's panel too
+            // (`karmayoga_service::asking`), and whichever is answered first
+            // is the answer; and the run that asked may stop waiting for
+            // other reasons (cancelled, out of time). Either way the question
+            // must not stay open in the chat, where the owner's next message
+            // would be taken for its answer. The owner's own answer, there at
+            // the same moment, is the one taken.
+            let given = tokio::select! {
+                biased;
+                given = asked => Some(given),
+                () = answer.closed() => None,
+            };
             shared.lock().unwrap().running = None;
-            let _ = answer.send(given);
+            match given {
+                Some(given) => {
+                    let _ = answer.send(given);
+                }
+                None => no_longer_wanted(context, chat, shared).await,
+            }
         }
-        RoutineJob::Ask { from, question, choices, answer } => {
+        RoutineJob::Ask { from, question, choices, mut answer } => {
+            // As for a yes or no, above.
+            if answer.is_closed() {
+                return;
+            }
             running(&from);
-            let given = ask_free(context, chat, shared, &from.routine, &question, &choices).await;
+            let asked = ask_free(context, chat, shared, &from.routine, &question, &choices);
+            let given = tokio::select! {
+                biased;
+                given = asked => Some(given),
+                () = answer.closed() => None,
+            };
             shared.lock().unwrap().running = None;
-            let _ = answer.send(given);
+            match given {
+                Some(given) => {
+                    let _ = answer.send(given);
+                }
+                None => no_longer_wanted(context, chat, shared).await,
+            }
         }
         RoutineJob::Call { from, markdown, spoken, delivered } => {
             call_owner(context, chat, shared, memory, from, markdown, spoken, delivered).await;
@@ -258,6 +294,24 @@ async fn for_routine(
                 _ => Ok(sent),
             });
         }
+    }
+}
+
+/// What the chat is told when the run that put a question here stops
+/// waiting for its answer. The relay is not told why -- the person answered
+/// it on the computer's panel, or the run was cancelled, ran out of time or
+/// was stopped with the vault -- so it says only what is true of them all.
+const NO_LONGER_WANTED: &str = "I don't need an answer to that any more.";
+
+/// A routine's question is no longer wanted: close it here, so the owner's
+/// next message is a message again, and say so if it had reached the chat.
+/// One still being sent when the run stopped waiting is closed without a
+/// word: a line about a question the owner may never have seen says nothing
+/// to them.
+async fn no_longer_wanted(context: &Context, chat: &ChatId, shared: &Mutex<Shared>) {
+    let waiting = shared.lock().unwrap().waiting.take();
+    if waiting.is_some_and(|waiting| waiting.question.is_some()) {
+        context.tell(chat, NO_LONGER_WANTED).await;
     }
 }
 

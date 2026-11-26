@@ -35,7 +35,7 @@ use crate::keepintouch::{
     FACT_ALIASES, FACT_CIRCLE, fold, last_catch_up, list_fact, names_in_a_line, note_from_journal,
 };
 use crate::library::{Item, LogEntry, Via};
-use crate::mail::FollowUpKind;
+use crate::mail::{AttendeeResponse, FollowUpKind};
 use crate::task::{Task, TaskPerson, TaskStatus};
 use crate::zone::zone_of;
 
@@ -128,6 +128,11 @@ pub struct MeetingBriefPerson {
     /// November about the launch."
     #[serde(default)]
     pub line: String,
+    /// Their answer to the invitation, as the calendar has it -- what the
+    /// meeting card draws on their face. Absent when the calendar does not
+    /// say, which is every event synced before answers were kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<AttendeeResponse>,
 }
 
 /// Something the person meant to bring up with somebody at the meeting.
@@ -227,11 +232,15 @@ pub struct Guest {
     /// Other names they go by: the card's nicknames, and what the invitation
     /// called them before the card gave them a name of its own.
     pub aliases: Vec<String>,
+    /// Their answer to the invitation, where the calendar says
+    /// ([`Event::guests`]). Never used to match anybody: only carried through
+    /// to the brief, for the card.
+    pub response: Option<AttendeeResponse>,
 }
 
 impl Guest {
     pub fn new(name: impl Into<String>, email: Option<String>) -> Self {
-        Self { name: name.into(), email, contact: None, aliases: Vec::new() }
+        Self { name: name.into(), email, contact: None, aliases: Vec::new(), response: None }
     }
 
     /// What to call them: their name, or failing that their address.
@@ -317,6 +326,7 @@ impl Guest {
             email: self.email.clone(),
             contact: self.contact,
             line,
+            response: self.response,
         }
     }
 }
@@ -329,6 +339,7 @@ impl From<&TaskPerson> for Guest {
             email: person.email.as_ref().map(|e| e.trim().to_ascii_lowercase()),
             contact: person.contact,
             aliases: Vec::new(),
+            response: None,
         }
     }
 }
@@ -353,30 +364,35 @@ fn name_in_address(email: &str) -> Option<String> {
 /// Everybody at the event besides the person: its guests (or, for an event
 /// synced before guests were kept, its attendees), and its organiser when
 /// they came with an address -- minus `owners`, the person's own addresses,
-/// lower-cased. One entry each, by address or else by name.
+/// lower-cased. One entry each, by address or else by name, with their
+/// answer to the invitation where the guest list has one.
 ///
 /// An organiser with a name and no address is left out unless somebody on
 /// the list has the same name: nothing says it is not the person, and a
 /// brief that tells somebody who they are about to meet is worse than one
 /// that leaves out the host.
 pub fn guests_of(event: &Event, owners: &HashSet<String>) -> Vec<Guest> {
-    let mut raw: Vec<(String, Option<String>)> = Vec::new();
+    let mut raw: Vec<(String, Option<String>, Option<AttendeeResponse>)> = Vec::new();
     if event.guests.is_empty() {
         for attendee in &event.attendees {
             let (name, email) = parse_attendee(attendee);
-            raw.push((name.unwrap_or_default(), email));
+            raw.push((name.unwrap_or_default(), email, None));
         }
     } else {
         for guest in &event.guests {
             let email = guest.key();
-            raw.push((guest.name.trim().to_string(), (!email.is_empty()).then_some(email)));
+            let email = (!email.is_empty()).then_some(email);
+            raw.push((guest.name.trim().to_string(), email, guest.response));
         }
     }
     let (organiser_name, organiser_email) = parse_attendee(&event.organizer);
     let organiser_name = organiser_name.unwrap_or_default();
 
     let mut out: Vec<Guest> = Vec::new();
-    let mut add = |name: String, email: Option<String>, may_join: bool| {
+    let mut add = |name: String,
+                   email: Option<String>,
+                   response: Option<AttendeeResponse>,
+                   may_join: bool| {
         if email.as_ref().is_some_and(|e| owners.contains(e)) {
             return;
         }
@@ -395,15 +411,18 @@ pub fn guests_of(event: &Event, owners: &HashSet<String>) -> Vec<Guest> {
                 if out[i].email.is_none() {
                     out[i].email = email;
                 }
+                if out[i].response.is_none() {
+                    out[i].response = response;
+                }
             }
-            None if may_join => out.push(Guest::new(name, email)),
+            None if may_join => out.push(Guest { response, ..Guest::new(name, email) }),
             None => {}
         }
     };
-    for (name, email) in raw {
-        add(name, email, true);
+    for (name, email, response) in raw {
+        add(name, email, response, true);
     }
-    add(organiser_name, organiser_email.clone(), organiser_email.is_some());
+    add(organiser_name, organiser_email.clone(), None, organiser_email.is_some());
     out
 }
 
@@ -2178,6 +2197,46 @@ mod tests {
         let guests = guests_of(&e, &owners());
         assert_eq!(guests.len(), 1);
         assert_eq!(guests[0].email.as_deref(), Some("lee@x.com"));
+    }
+
+    #[test]
+    fn each_guests_answer_is_carried_to_the_brief_for_the_card() {
+        let mut e = event(&[]);
+        e.guests = vec![
+            Attendee {
+                email: "josh@acme.com".into(),
+                name: "Josh".into(),
+                response: Some(AttendeeResponse::Declined),
+            },
+            Attendee { email: "priya@acme.com".into(), name: "Priya".into(), response: None },
+            Attendee {
+                email: "me@viya.example".into(),
+                name: "Me".into(),
+                response: Some(AttendeeResponse::Accepted),
+            },
+        ];
+        // The organiser is on the list already: their entry keeps its answer.
+        e.organizer = "Josh <josh@acme.com>".into();
+        let guests = guests_of(&e, &owners());
+        let answers: Vec<_> = guests.iter().map(|g| (g.display(), g.response)).collect();
+        assert_eq!(
+            answers,
+            [("Josh".to_string(), Some(AttendeeResponse::Declined)), ("Priya".to_string(), None)]
+        );
+        assert!(guests[0].matches_text("Josh"), "an answer has nothing to do with matching");
+
+        let mut facts = Facts::for_event(&e);
+        facts.set_people(guests.into_iter().map(PersonFacts::stranger).collect());
+        let brief = facts.into_brief(None, Timestamp::now());
+        let said: Vec<_> = brief.people.iter().map(|p| p.response).collect();
+        assert_eq!(said, [Some(AttendeeResponse::Declined), None]);
+
+        let json = serde_json::to_value(&brief.people).unwrap();
+        assert_eq!(json[0]["response"], "declined");
+        assert!(json[1].get("response").is_none(), "absent, not null");
+        let old: MeetingBriefPerson =
+            serde_json::from_value(json!({ "name": "Sam", "line": "" })).unwrap();
+        assert_eq!(old.response, None, "a brief from before answers were kept still reads");
     }
 
     // ---- matching a task's person ----------------------------------------

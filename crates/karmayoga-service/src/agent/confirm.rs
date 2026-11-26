@@ -48,6 +48,16 @@ pub trait Asker: Send + Sync + 'static {
         question: String,
         choices: Vec<String>,
     ) -> futures::future::BoxFuture<'static, Option<String>>;
+
+    /// Whether a question put through this can reach the person's chat -- a
+    /// phone -- rather than only the desk at this computer. A scheduled run
+    /// whose asker does counts as remote for `confirms_destructive`: a
+    /// destructive call then always asks, whatever the desktop's "confirm
+    /// destructive" setting says. True unless said otherwise: every asker but
+    /// the desk's ([`crate::asking::DeskOrChat`]) is a chat's.
+    fn asks_in_chat(&self) -> bool {
+        true
+    }
 }
 
 /// What types into the text field the person is working in, on this

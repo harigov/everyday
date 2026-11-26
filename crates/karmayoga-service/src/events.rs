@@ -110,11 +110,119 @@ pub struct Notification {
     /// exactly what it was.
     #[serde(skip)]
     pub domain: Option<Scope>,
+    /// What the notice is about, structured, for a listener that draws more
+    /// than a title and a line -- the desktop's panel, which shows a new
+    /// message as a message with a box to reply in, and a meeting's notes
+    /// with the action items found in them. Absent for a plain notice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<NoticeCard>,
+}
+
+/// The structured half of a [`Notification`]: see [`Notification::card`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum NoticeCard {
+    /// One new message (`mail:{messageId}`). Boxed: a message's notice is
+    /// several times the size of the other kinds, and every notification
+    /// would otherwise carry its room.
+    Mail(Box<MailNotice>),
+    /// A meeting's notes written, and the action items proposed from them
+    /// (`meeting:{recordingId}`).
+    MeetingNotes(MeetingNotesNotice),
+}
+
+/// A new message, for a card that shows it and answers it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailNotice {
+    pub account_id: String,
+    /// The vault's id for the message (`MailMessageId`), as `new_draft`'s
+    /// `inReplyTo` and `respond_to_invite`'s `messageId` take it.
+    pub message_id: String,
+    pub thread_id: String,
+    /// The sender's name, or their address where they gave none.
+    pub from_name: String,
+    pub from_address: String,
+    pub subject: String,
+    /// The first words of it; empty when the body was not fetched.
+    #[serde(default)]
+    pub snippet: String,
+    pub date: Timestamp,
+    /// The address it came to, where the account has several.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_address: Option<String>,
+    #[serde(default)]
+    pub attachments: u32,
+    /// An invitation the message carries (a REQUEST), to be answered on the
+    /// card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<InviteNotice>,
+}
+
+/// An invitation, for a card that shows it and answers it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteNotice {
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<Timestamp>,
+    #[serde(default)]
+    pub all_day: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// The organiser's name, or address.
+    pub organizer: String,
+    #[serde(default)]
+    pub attendees: Vec<InviteeNotice>,
+    /// The answer already given, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub my_response: Option<karmayoga_core::mail::AttendeeResponse>,
+}
+
+/// Somebody invited.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteeNotice {
+    pub name: String,
+    pub email: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<karmayoga_core::mail::AttendeeResponse>,
+}
+
+/// A meeting's notes, written, and what was proposed from them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingNotesNotice {
+    pub recording_id: String,
+    pub note_id: String,
+    pub title: String,
+    /// The first lines of the summary, for a glance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The task proposals made from the note's next steps, pending.
+    #[serde(default)]
+    pub proposals: Vec<String>,
 }
 
 impl Notification {
     pub fn new(level: Level, title: impl Into<String>) -> Self {
-        Self { level, reach: Reach::App, title: title.into(), body: None, key: None, domain: None }
+        Self {
+            level,
+            reach: Reach::App,
+            title: title.into(),
+            body: None,
+            key: None,
+            domain: None,
+            card: None,
+        }
+    }
+
+    /// Say what the notice is about, structured. See [`Notification::card`].
+    pub fn card(mut self, card: NoticeCard) -> Self {
+        self.card = Some(card);
+        self
     }
 
     pub fn warning(title: impl Into<String>) -> Self {

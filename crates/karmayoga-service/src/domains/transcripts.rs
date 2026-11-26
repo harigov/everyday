@@ -362,17 +362,25 @@ async fn rewrite_meeting_note(
     };
     facts.agenda = agenda;
     let summariser = pipeline::AssistantSummariser::new(vault.clone());
-    let answer = pipeline::summarise_stage(
+    // What the person wrote down during the call goes into the rewrite as it
+    // went into the first writing, and stays at the foot of the note: a
+    // rewrite that dropped it would lose the one part of the note that was
+    // theirs.
+    let notes = recording.as_ref().map(|r| r.notes.clone()).unwrap_or_default();
+    let answer = pipeline::summarise_stage_noted(
         &summariser,
         &transcript,
         &template.body,
         &facts,
         budget,
         &spelling,
+        &notes,
     )
     .await?;
     let details = karmayoga_core::meeting::template::details_block(&facts);
-    Ok(if details.is_empty() { answer } else { format!("{details}\n\n{answer}") })
+    let body = if details.is_empty() { answer } else { format!("{details}\n\n{answer}") };
+    let yours = karmayoga_core::meeting::owner_notes_section(&notes);
+    Ok(if yours.is_empty() { body } else { format!("{}\n\n{yours}", body.trim_end()) })
 }
 
 /// Relabel a speaker, and fold their voice into a voiceprint when the vault

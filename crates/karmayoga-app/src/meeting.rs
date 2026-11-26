@@ -241,8 +241,15 @@ pub(crate) async fn begin_headless_as(
     }
 
     let result =
-        try_begin(ctx, session, events, event_id, title, template_id, automatic, app).await;
-    finish_reservation(capture_slot, result)
+        try_begin(ctx, session, events, event_id, title, template_id, automatic, app.clone()).await;
+    let result = finish_reservation(capture_slot, result);
+    // The recording card on the panel, wherever there is a panel to put it
+    // on: every start that has a window comes through here, a press, the
+    // countdown and "Always" alike.
+    if let (Ok(recording), Some(app)) = (&result, app.as_ref()) {
+        crate::recordcard::on_started(app, recording);
+    }
+    result
 }
 
 /// Everything [`begin_headless`] does *after* reserving the slot: the
@@ -401,6 +408,7 @@ pub(crate) async fn stop(app: &AppHandle, discard: bool) -> CommandResult<()> {
     });
     let Some(handle) = handle else { return Ok(()) };
     crate::offers::on_recording_stopped(app);
+    crate::recordcard::on_stopped(app);
     if let Some(tray) = app.try_state::<Tray>() {
         let _ = tray.set_recording(app, None);
     }

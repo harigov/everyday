@@ -115,6 +115,7 @@ import type {
   FeedSettings,
   ProgressReport,
   QueuePlace,
+  PanelSettings,
 } from './types'
 import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
 import type {
@@ -297,6 +298,8 @@ import {
 } from './mock-mail'
 import {
   mockActiveRecording,
+  mockAddRecordingNote,
+  mockAskRecording,
   mockBenchmarkDecisionModel,
   mockBenchmarkSpeechModel,
   mockCancelSpeechModelDownload,
@@ -9027,6 +9030,12 @@ export const mockInvoke = async <T>(
     case 'retry_recording':
       requireUnlocked()
       return mockRetryRecording(str(args.id)) as T
+    case 'add_recording_note':
+      requireUnlocked()
+      return mockAddRecordingNote(str(args.id), str(args.text)) as T
+    case 'ask_recording':
+      requireUnlocked()
+      return (await mockAskRecording(str(args.id), str(args.question))) as T
     case 'discard_recording':
       requireUnlocked()
       mockDiscardRecording(str(args.id))
@@ -9175,6 +9184,19 @@ export const mockInvoke = async <T>(
     case 'show_in_main':
       return undefined as T
 
+    // The panel in the corner of the screen -- see `api.ts`'s
+    // `panelSettings`. No panel in a browser tab, but its settings are kept
+    // here so Settings → General can be looked at and changed; the theme and
+    // the corner have nothing to tell.
+    case 'panel_settings':
+      return { ...panelSettings } as T
+    case 'set_panel_settings':
+      panelSettings = { ...(args.settings as PanelSettings) }
+      return { ...panelSettings } as T
+    case 'set_panel_theme':
+    case 'panel_reset_place':
+      return undefined as T
+
     // ── The shell's half: capture, called by name -- see `api.ts`'s
     //    "Meeting capture, in the Tauri shell" ───────────────────────────
 
@@ -9242,6 +9264,17 @@ export const mockInvoke = async <T>(
     default:
       throw new VaultError('unknown', `no mock for command ${cmd}`)
   }
+}
+
+/** The panel's settings on this "machine", as `panel/settings.rs` starts
+ *  them. */
+let panelSettings: PanelSettings = {
+  mail: 'panel',
+  notes: 'panel',
+  asks: 'panel',
+  mailSeconds: 45,
+  notesSeconds: 120,
+  recordingCard: true,
 }
 
 /** Archives in flight, keyed by the handle the pane was given. */

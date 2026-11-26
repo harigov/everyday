@@ -1278,6 +1278,15 @@ async fn every_offline_write_announces_what_was_written_down() {
         }),
     )
     .await;
+    // A line the person wrote down during the call, on the panel's recording
+    // card: a write to the same row, announced as the recording changing.
+    run(
+        &svc,
+        &h,
+        "add_recording_note",
+        json!({ "id": recording_id.to_string(), "text": "Ask about the budget" }),
+    )
+    .await;
 
     // ---- assistant settings and memory --------------------------------------
     let agent_settings = AgentSettings { enabled: false, ..Default::default() };

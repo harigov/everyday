@@ -1,7 +1,8 @@
 <script lang="ts">
   // How loud the microphone is: a few bars, each one a reading, the newest on
   // the right. Only `transform` and `opacity` move, so a reading twenty times
-  // a second is the compositor's work and not a repaint of the card.
+  // a second is the compositor's work and not a repaint of the card -- and
+  // nothing else on the card reads the levels, so nothing else is redrawn.
   import { barScale, isQuiet } from './cards'
 
   let { levels }: { levels: readonly number[] } = $props()
@@ -16,7 +17,7 @@
 <style>
   .meter {
     flex: none;
-    height: 28px;
+    height: 24px;
     display: flex;
     align-items: center;
     gap: 2px;
@@ -27,24 +28,14 @@
     width: 3px;
     height: 100%;
     border-radius: 2px;
-    background: var(--tone);
+    background: var(--meter, var(--kind));
     transition: transform 70ms linear;
   }
 
   /* Nothing said lately: the whole meter breathes, one layer, instead of
-     sitting still. */
+     sitting still -- the microphone is open, and the card should say so. */
   .meter.quiet {
-    animation: breathe 2s ease-in-out infinite;
-  }
-
-  @keyframes breathe {
-    0%,
-    100% {
-      opacity: 0.45;
-    }
-    50% {
-      opacity: 1;
-    }
+    animation: pc-breathe 2s ease-in-out infinite;
   }
 
   @media (prefers-reduced-motion: reduce) {

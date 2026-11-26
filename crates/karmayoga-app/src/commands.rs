@@ -762,7 +762,15 @@ pub async fn send_message(
     channel: tauri::ipc::Channel<AgentEvent>,
 ) -> CommandResult<()> {
     let session = state.session().as_session();
+    // A question the turn puts while the window that asked is out of sight
+    // goes on the panel too, answered there as the window would answer it,
+    // and taken down once the call goes on or the turn ends. See `askcard`.
+    #[cfg(desktop)]
+    let questions =
+        crate::askcard::WindowQuestions::new(webview.app_handle().clone(), webview.label());
     let sink: karmayoga_service::agent::Sink = Arc::new(move |event| {
+        #[cfg(desktop)]
+        questions.see(&event);
         let _ = channel.send(event);
     });
     session

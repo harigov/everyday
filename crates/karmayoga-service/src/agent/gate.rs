@@ -156,7 +156,11 @@ impl ConfirmGate {
     ///
     /// Not with nobody to ask: those are refused or parked one by one, as
     /// before. "Later" is not offered, because parking several calls as one
-    /// proposal is not something a proposal can be.
+    /// proposal is not something a proposal can be. Nor for a scheduled run
+    /// whose only way to ask is this computer's panel
+    /// ([`crate::agent::Asker::asks_in_chat`] false): nobody may be at it,
+    /// and a grouped question that nobody answers is a no to every call in
+    /// it, where one by one each call can still be parked for the morning.
     pub(super) async fn ask_together(
         &self,
         content: &[rig_agent::core::message::AssistantContent],
@@ -176,7 +180,8 @@ impl ConfirmGate {
                 asked.push((name.to_string(), arguments.clone(), self.describe(name, arguments)));
             }
         }
-        if asked.len() < ASK_TOGETHER_FROM || (self.unattended && self.asker.is_none()) {
+        let desk_only = self.asker.as_ref().is_none_or(|asker| !asker.asks_in_chat());
+        if asked.len() < ASK_TOGETHER_FROM || (self.unattended && desk_only) {
             return;
         }
         let kind = if kinds.contains(&"outward") { "outward" } else { "destructive" };

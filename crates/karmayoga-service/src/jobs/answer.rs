@@ -39,7 +39,8 @@
 //! relay carries on in it when the owner replies. Nobody on a phone is
 //! looking at the rail.
 
-use crate::agent::{AgentEvent, ConfirmAnswer, Pending, Reach, Sink, Turn, Turned};
+use crate::agent::{AgentEvent, Asker, ConfirmAnswer, Pending, Reach, Sink, Turn, Turned};
+use crate::asking::DeskOrChat;
 use crate::chat::{ChatOutlet, FromRun};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Op};
@@ -63,6 +64,21 @@ const WAIT_LIMIT: Duration = Duration::from_secs(10 * 60);
 /// turn, for the same reason: long enough for a slow endpoint, short enough
 /// that a wedged one does not hold the worker's pass until the process ends.
 const TURN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// How long a question the follow-up asks waits on the desk's panel before
+/// nobody answering is taken as the answer (see [`questions_for`]). Well
+/// under [`TURN_TIMEOUT`], which a follow-up asking two or three things must
+/// still finish inside: a desk that waited its usual half hour would have the
+/// turn cut off first, the job left owing, and the same follow-up -- and the
+/// same card -- tried again every [`RETRY_AFTER`] for as long as the person
+/// is away.
+const FOLLOW_UP_DESK_WAIT: Duration = Duration::from_secs(4 * 60);
+
+/// How long the desk may keep one follow-up turn waiting, all its questions
+/// together: however many it asks, their silences must add up to less than
+/// [`TURN_TIMEOUT`], or the turn is cut off and the follow-up tried again --
+/// with the same cards -- for as long as nobody is there.
+const FOLLOW_UP_DESK_BUDGET: Duration = Duration::from_secs(10 * 60);
 
 /// How long to leave a job alone after a follow-up for it failed.
 ///
@@ -497,8 +513,12 @@ fn failed(job: JobId, error: CommandError) -> CommandError {
 /// A conversation that came from a chat whose link is running here has
 /// somebody to ask: the owner, on their phone, through the link's
 /// [`ChatOutlet`] -- the same yes, no or later a turn they started in that
-/// chat would put to them. Anything else has nobody listening, and
-/// [`decline_questions`] says no for them.
+/// chat would put to them. When the app has handed over a desk
+/// ([`Service::desk_asker`]) the person at this computer is asked too, on the
+/// panel, and the first answer is taken ([`ask_at_desk`]); the panel waits
+/// only [`FOLLOW_UP_DESK_WAIT`] for it. Anything else has nobody listening,
+/// and [`decline_questions`] says no for them -- as does a desk that does not
+/// put the question, with no chat beside it.
 fn questions_for(
     service: &Arc<Service>,
     conversation: &Conversation,
@@ -506,11 +526,101 @@ fn questions_for(
     asked_in: ConversationId,
 ) -> Sink {
     let outlet = conversation.via.as_ref().and_then(|via| service.chat_outlet(via.link));
+    let from = from_job(job.kind.label(), job.id, asked_in);
+    if let Some(desk) = service.desk_asker() {
+        let chat = outlet.map(|outlet| service.chat_asker(outlet, from));
+        let asker = follow_up_asker(desk, chat, job);
+        return ask_at_desk(service.pending(), Arc::new(asker));
+    }
     match outlet {
-        Some(outlet) => {
-            ask_in_chat(service.pending(), outlet, from_job(job.kind.label(), job.id, asked_in))
-        }
+        Some(outlet) => ask_in_chat(service.pending(), outlet, from),
         None => decline_questions(service.pending()),
+    }
+}
+
+/// The desk, and the chat when there is one, asked about `job`'s follow-up.
+/// Declined with nobody to ask, as it always was: never parked. And answered
+/// by silence after [`FOLLOW_UP_DESK_WAIT`], before the turn runs out of time.
+fn follow_up_asker(
+    desk: Arc<dyn crate::asking::DeskAsker>,
+    chat: Option<Arc<dyn Asker>>,
+    job: &Job,
+) -> DeskOrChat {
+    DeskOrChat::new(desk, chat, desk_from(job))
+        .park_unasked(false)
+        .waiting(FOLLOW_UP_DESK_WAIT)
+        .budget(FOLLOW_UP_DESK_BUDGET)
+}
+
+/// Who the desk's card says is asking: the kind of job and what it was
+/// about -- "Research: flights to Lisbon".
+fn desk_from(job: &Job) -> String {
+    format!("{}: {}", job.kind.label(), shorten(&job.kind.title(), DESK_FROM_CHARS))
+}
+
+/// Longest the job's title may run to in the desk card's "… asks" line.
+const DESK_FROM_CHARS: usize = 60;
+
+/// A sink that puts each question the follow-up asks to `asker` -- the desk,
+/// and the chat when there is one -- and answers the waiting call with what
+/// came back.
+///
+/// As [`ask_in_chat`], each from a task of its own, the call registered
+/// before the event is sent. Unlike a chat, the desk shows a card that must
+/// not outlive the question: a question whose call has started or finished,
+/// or whose turn has ended -- answered in the window, cancelled, out of time
+/// -- has its task stopped, which takes the card down (see [`Asked`]).
+fn ask_at_desk(pending: Arc<Pending>, asker: Arc<dyn Asker>) -> Sink {
+    let asked = Asked::default();
+    Arc::new(move |event| match event {
+        AgentEvent::ConfirmationRequired { call_id, kind, subject, can_park, site, .. } => {
+            let (pending, asker, id) = (pending.clone(), asker.clone(), call_id.clone());
+            let task = tokio::spawn(async move {
+                let answer = asker.confirm(&kind, &subject, can_park, site.as_deref()).await;
+                pending.answer(&id, answer);
+            });
+            asked.put(call_id, task.abort_handle());
+        }
+        AgentEvent::ToolStarted { call_id, .. } | AgentEvent::ToolFinished { call_id, .. } => {
+            asked.settled(&call_id);
+        }
+        AgentEvent::Finished { .. } | AgentEvent::Failed { .. } => asked.all_settled(),
+        _ => {}
+    })
+}
+
+/// The questions an [`ask_at_desk`] sink has put and not yet seen settled,
+/// by call id, each the task waiting on its answer. Stopping one drops the
+/// wait, and the desk's card goes with it; all are stopped when the sink
+/// itself goes, with the turn that held it.
+#[derive(Default)]
+struct Asked(Mutex<HashMap<String, tokio::task::AbortHandle>>);
+
+impl Asked {
+    fn put(&self, call_id: String, task: tokio::task::AbortHandle) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(call_id, task);
+    }
+
+    /// The call `call_id` has started or finished: its question, if still
+    /// open, is no longer wanted.
+    fn settled(&self, call_id: &str) {
+        let task = self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(call_id);
+        if let Some(task) = task {
+            task.abort();
+        }
+    }
+
+    fn all_settled(&self) {
+        let tasks: Vec<_> = self.0.lock().unwrap_or_else(|e| e.into_inner()).drain().collect();
+        for (_, task) in tasks {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for Asked {
+    fn drop(&mut self) {
+        self.all_settled();
     }
 }
 
@@ -1127,5 +1237,120 @@ mod tests {
         assert!(Claim::take(JobId::new()).is_some(), "another job is unaffected");
         drop(first);
         assert!(Claim::take(job).is_some(), "released when dropped");
+    }
+
+    // ---- questions at the desk ----
+
+    /// The panel, as the app hands it over: every question put, none ever
+    /// answered, each withdrawal kept.
+    #[derive(Default)]
+    struct WaitingDesk {
+        put: Mutex<Vec<crate::asking::DeskQuestion>>,
+        withdrawn: Mutex<Vec<String>>,
+    }
+
+    impl crate::asking::DeskAsker for WaitingDesk {
+        fn confirm(
+            &self,
+            question: crate::asking::DeskQuestion,
+        ) -> futures::future::BoxFuture<'static, Option<ConfirmAnswer>> {
+            self.put.lock().unwrap().push(question);
+            Box::pin(std::future::pending())
+        }
+
+        fn ask(
+            &self,
+            _ask: crate::asking::DeskAsk,
+        ) -> futures::future::BoxFuture<'static, Option<Option<String>>> {
+            Box::pin(std::future::pending())
+        }
+
+        fn withdraw(&self, id: &str) {
+            self.withdrawn.lock().unwrap().push(id.to_string());
+        }
+    }
+
+    fn question(call_id: &str, subject: &str) -> AgentEvent {
+        AgentEvent::ConfirmationRequired {
+            call_id: call_id.into(),
+            name: "delete_task".into(),
+            subject: subject.into(),
+            arguments: serde_json::Value::Null,
+            kind: "destructive".into(),
+            site: None,
+            can_park: true,
+        }
+    }
+
+    /// Let the spawned tasks run until `done` holds, or give up after a
+    /// while.
+    async fn until(done: impl Fn() -> bool) {
+        for _ in 0..1_000 {
+            if done() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_question_at_the_desk_goes_once_its_call_or_its_turn_is_over() {
+        let desk = Arc::new(WaitingDesk::default());
+        let asker = DeskOrChat::new(desk.clone(), None, "Research: heat pumps");
+        let sink = ask_at_desk(Arc::new(Pending::default()), Arc::new(asker));
+
+        sink(question("c1", "the old plan"));
+        sink(question("c2", "the deck"));
+        until(|| desk.put.lock().unwrap().len() == 2).await;
+        let put = desk.put.lock().unwrap().clone();
+        assert_eq!(put.len(), 2, "both were put at the desk");
+        assert!(put.iter().all(|q| q.from == "Research: heat pumps" && q.kind == "destructive"));
+        let id_of = |subject: &str| put.iter().find(|q| q.subject == subject).unwrap().id.clone();
+
+        // The first is answered in the window: its call starts.
+        sink(AgentEvent::ToolStarted {
+            call_id: "c1".into(),
+            name: "delete_task".into(),
+            arguments: serde_json::Value::Null,
+        });
+        until(|| !desk.withdrawn.lock().unwrap().is_empty()).await;
+        assert_eq!(*desk.withdrawn.lock().unwrap(), [id_of("the old plan")]);
+
+        // The turn ends with the second still open.
+        sink(AgentEvent::Finished { message_id: "m1".into() });
+        until(|| desk.withdrawn.lock().unwrap().len() == 2).await;
+        assert_eq!(*desk.withdrawn.lock().unwrap(), [id_of("the old plan"), id_of("the deck")]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_follow_ups_question_nobody_answers_at_the_desk_is_answered_before_the_turn_ends() {
+        // Two or three questions one after another still fit in the turn.
+        assert!(FOLLOW_UP_DESK_WAIT * 3 < TURN_TIMEOUT);
+        assert!(FOLLOW_UP_DESK_BUDGET < TURN_TIMEOUT, "every silence together fits the turn");
+        let desk = Arc::new(WaitingDesk::default());
+        let asker = follow_up_asker(desk.clone(), None, &research("Heat pumps?"));
+        let started = tokio::time::Instant::now();
+
+        // Not parkable: nobody answering is a no.
+        let answer = asker.confirm("fetch", "https://x.dev", false, None).await;
+        assert_eq!(answer, ConfirmAnswer::Decline);
+        let waited = started.elapsed();
+        assert!(waited >= FOLLOW_UP_DESK_WAIT && waited < TURN_TIMEOUT, "{waited:?}");
+        let put = desk.put.lock().unwrap().clone();
+        assert_eq!(put.len(), 1);
+        assert_eq!(put[0].from, "Research: Heat pumps?");
+        assert_eq!(*desk.withdrawn.lock().unwrap(), [put[0].id.clone()], "its card is taken down");
+    }
+
+    #[test]
+    fn the_desk_is_told_which_job_is_asking() {
+        assert_eq!(desk_from(&research("Heat pumps?")), "Research: Heat pumps?");
+        // Cut at sixty characters: the card's line is "… asks".
+        let job =
+            research("Which heat pumps suit a 1930s semi with solid walls and a small garden?");
+        assert_eq!(
+            desk_from(&job),
+            "Research: Which heat pumps suit a 1930s semi with solid walls and a sm\u{2026}"
+        );
     }
 }

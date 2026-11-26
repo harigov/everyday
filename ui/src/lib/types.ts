@@ -2213,6 +2213,72 @@ export interface ShellNotification {
   body?: string | null
   /** Identity for a condition that recurs; replaces rather than stacks. */
   key?: string | null
+  /** What the notice is about, structured, for the panel in the corner of
+   *  the screen to draw as a card it can be answered on. The window posts
+   *  the title and body as it always did and leaves this alone. */
+  card?: NoticeCard
+}
+
+/**
+ * The structured half of a `ShellNotification`. Mirrors `NoticeCard` in
+ * `crates/karmayoga-service/src/events.rs`: tagged by `type`, the variant's
+ * own fields beside it.
+ */
+export type NoticeCard =
+  ({ type: 'mail' } & MailNotice) | ({ type: 'meetingNotes' } & MeetingNotesNotice)
+
+/** One new message, for a card that shows it and answers it. */
+export interface MailNotice {
+  accountId: AccountId
+  /** The vault's id for the message, as `newDraft`'s `inReplyTo` and
+   *  `respondToInvite`'s `messageId` take it. */
+  messageId: MailMessageId
+  threadId: ThreadId
+  /** The sender's name, or their address where they gave none. */
+  fromName: string
+  fromAddress: string
+  subject: string
+  /** The first words of it; empty when the body was not fetched. */
+  snippet: string
+  /** When it was received, RFC 3339. */
+  date: string
+  /** The address it came to, where the account has several. */
+  toAddress?: string | null
+  attachments: number
+  /** An invitation the message carries, to be answered on the card. */
+  invite?: InviteNotice | null
+}
+
+/** An invitation carried by a new message. */
+export interface InviteNotice {
+  summary: string
+  start?: string | null
+  end?: string | null
+  allDay: boolean
+  location?: string | null
+  /** The organiser's name, or address. */
+  organizer: string
+  attendees: InviteeNotice[]
+  /** The answer already given, if any. */
+  myResponse?: AttendeeResponse | null
+}
+
+/** Somebody invited, with their answer when the invitation says. */
+export interface InviteeNotice {
+  name: string
+  email: string
+  response?: AttendeeResponse | null
+}
+
+/** A meeting's notes, written, and the action items proposed from them. */
+export interface MeetingNotesNotice {
+  recordingId: RecordingId
+  noteId: NoteId
+  title: string
+  /** The first lines of the summary, for a glance. */
+  summary?: string | null
+  /** The task proposals made from the note's next steps, still pending. */
+  proposals: ProposalId[]
 }
 
 /**
@@ -3369,6 +3435,29 @@ export interface TalkSettings {
    *  on; `0` always starts a new one. */
   continueMinutes: number
   key: KeyStatus
+}
+
+/** Where something that wants the person's attention goes: a card on the
+ *  panel, answered there, or the desktop's own notification. */
+export type PanelRoute = 'panel' | 'notification'
+
+/** The panel's per-machine settings (`panel.json`) -- see
+ *  `crates/karmayoga-app/src/panel/settings.rs`. */
+export interface PanelSettings {
+  /** New mail and invitations, those the account lets through at all. */
+  mail: PanelRoute
+  /** A meeting's notes written, with the action items found in them. */
+  notes: PanelRoute
+  /** The assistant asking for a yes, a no or an answer while it works on its
+   *  own, and a question from a conversation in a window out of sight. */
+  asks: PanelRoute
+  /** How long a mail card stays up unread, in seconds. */
+  mailSeconds: number
+  /** How long the action items stay up to be decided before what was not is
+   *  left as proposals, in seconds. */
+  notesSeconds: number
+  /** The live card while a meeting is recorded: your notes, questions. */
+  recordingCard: boolean
 }
 
 /** The wake word's per-machine setting: calling the assistant by name
@@ -5287,7 +5376,26 @@ export interface Recording {
   chunks: ChunkMeta[]
   partial: TrackSegment[]
   noteId?: NoteId | null
+  /** What the person wrote down while it was recorded (from the panel's
+   *  recording card), in the order written. The note keeps them. */
+  notes?: RecordingNote[]
   updatedAt: string
+}
+
+/** A line the person wrote down during a recording. */
+export interface RecordingNote {
+  /** How far into the recording it was written, in milliseconds. */
+  atMs: number
+  text: string
+}
+
+/** What `askRecording` answers: a question about a meeting while it is
+ *  still being recorded, answered from what has been transcribed so far. */
+export interface RecordingAnswer {
+  answer: string
+  /** Something had been transcribed to answer from; false when the answer
+   *  only says that nothing has yet. */
+  heard: boolean
 }
 
 /** Filter for `listRecordings`. */
@@ -5609,6 +5717,9 @@ export interface MeetingBriefPerson {
   contact?: ItemId
   /** Who they are, in a line. */
   line: string
+  /** Their answer to the invitation, from the event's guest list, when the
+   *  calendar says. */
+  response?: AttendeeResponse
 }
 
 export interface TalkingPoint {

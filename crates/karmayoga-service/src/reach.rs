@@ -65,6 +65,7 @@
 //! [`VoiceInput::Update`]: crate::voice::VoiceInput::Update
 
 use crate::agent::{Asker, ConfirmAnswer};
+use crate::asking::DeskOrChat;
 use crate::chat::{CallDelivered, ChatOutlet, FromRun, escape_markdown};
 use crate::ctx::Scope;
 use crate::delivery::{CALL_TIMEOUT, POST_TIMEOUT};
@@ -343,14 +344,40 @@ impl Service {
         !voices.is_empty()
     }
 
-    /// Who a background job may ask while it works: the owner, in their chat,
+    /// Who a background job may ask while it works: the owner, in their chat
     /// through the first running chat link -- the way a routine asks
-    /// ([`crate::agent::Reach::asker`]). `None` when no link is running here,
-    /// and the job then asks nobody. Questions go to the chat only, never to
-    /// this computer: the person may be anywhere.
+    /// ([`crate::agent::Reach::asker`]) -- and on this computer's panel when
+    /// the app has handed one over ([`Service::desk_asker`]), both at once,
+    /// the first answer taken ([`DeskOrChat`]): the person may be anywhere.
+    /// `None` when there is neither, and the job then asks nobody.
+    ///
+    /// The desk's card names who is asking by `from.routine`.
     pub fn owner_asker(self: &Arc<Self>, from: FromRun) -> Option<Arc<dyn Asker>> {
-        let outlet = self.running_outlets().into_iter().next()?;
-        Some(Arc::new(OwnerAsker { outlet, from, withdrawn: self.runs_withdrawn() }))
+        let chat = self
+            .running_outlets()
+            .into_iter()
+            .next()
+            .map(|outlet| self.chat_asker(outlet, from.clone()));
+        match self.desk_asker() {
+            // Told to stop waiting when the scheduler stops or the vault
+            // closes, as the chat's own asker is, so the card goes too.
+            // The desk's waits are budgeted: a project's time keeps running
+            // while it waits, and nobody may be at the computer.
+            Some(desk) => Some(Arc::new(
+                DeskOrChat::new(desk, chat, from.routine)
+                    .until(self.runs_withdrawn())
+                    .budget(crate::asking::PROJECT_DESK_BUDGET),
+            )),
+            None => chat,
+        }
+    }
+
+    /// The owner in their chat on `outlet`, asked as `from`: what
+    /// [`Service::owner_asker`] asks through, and a job's follow-up beside
+    /// the desk (`jobs::answer`). Stops waiting -- with a no -- when the
+    /// scheduler stops or the vault closes.
+    pub(crate) fn chat_asker(&self, outlet: Arc<dyn ChatOutlet>, from: FromRun) -> Arc<dyn Asker> {
+        Arc::new(OwnerAsker { outlet, from, withdrawn: self.runs_withdrawn() })
     }
 
     /// Hand held updates to the voice sessions still open, once quiet hours
@@ -485,7 +512,7 @@ async fn ring_owner(
 }
 
 /// A job's way to ask the owner, in their chat. What a project is handed as
-/// [`crate::agent::Reach::asker`].
+/// [`crate::agent::Reach::asker`] -- alone, or raced with the desk.
 ///
 /// A scheduled run's asker also pauses the run's clock while it waits; a job
 /// has no such clock, so this only answers when told to stop waiting -- the
@@ -1178,5 +1205,88 @@ mod tests {
         );
         assert!(second.confirms.lock().unwrap().is_empty());
         assert!(second.asks.lock().unwrap().is_empty());
+    }
+
+    /// The panel, as the app hands it over: answers every question at once
+    /// with `answer`, or puts none when that is `None`.
+    struct FakeDesk {
+        answer: Option<ConfirmAnswer>,
+        put: Mutex<Vec<crate::asking::DeskQuestion>>,
+        asked: Mutex<Vec<crate::asking::DeskAsk>>,
+    }
+
+    impl FakeDesk {
+        fn answering(answer: Option<ConfirmAnswer>) -> Arc<FakeDesk> {
+            Arc::new(FakeDesk { answer, put: Mutex::default(), asked: Mutex::default() })
+        }
+    }
+
+    impl crate::asking::DeskAsker for FakeDesk {
+        fn confirm(
+            &self,
+            question: crate::asking::DeskQuestion,
+        ) -> BoxFuture<'static, Option<ConfirmAnswer>> {
+            self.put.lock().unwrap().push(question);
+            let answer = self.answer;
+            Box::pin(async move { answer })
+        }
+
+        fn ask(&self, ask: crate::asking::DeskAsk) -> BoxFuture<'static, Option<Option<String>>> {
+            self.asked.lock().unwrap().push(ask);
+            let put = self.answer.is_some();
+            Box::pin(async move { put.then(|| Some("at the desk".to_string())) })
+        }
+
+        fn withdraw(&self, _id: &str) {}
+    }
+
+    #[tokio::test]
+    async fn with_a_desk_a_job_asks_there_even_with_no_chat_running() {
+        let (svc, _told) = service();
+        let desk = FakeDesk::answering(Some(ConfirmAnswer::Decline));
+        svc.set_desk_asker(desk.clone());
+        let from = FromRun { routine: "Project".into(), conversation: None, job: None };
+        let asker = svc.owner_asker(from).expect("the desk is somebody to ask");
+
+        assert_eq!(asker.confirm("outward", "to bob", false, None).await, ConfirmAnswer::Decline);
+        assert_eq!(asker.ask("Which day?".into(), vec![]).await.as_deref(), Some("at the desk"));
+        let put = desk.put.lock().unwrap();
+        assert_eq!(put.len(), 1);
+        assert_eq!(put[0].from, "Project", "the card names who is asking");
+        assert_eq!(put[0].subject, "to bob");
+        assert!(!put[0].can_park);
+    }
+
+    #[tokio::test]
+    async fn with_a_desk_and_a_chat_both_are_asked_and_the_first_answer_taken() {
+        let (svc, _told) = service();
+        let chat = open_chat(&svc, FakeOutlet::default());
+        let desk = FakeDesk::answering(Some(ConfirmAnswer::Later));
+        svc.set_desk_asker(desk.clone());
+        let from = FromRun { routine: "Project".into(), conversation: None, job: None };
+        let asker = svc.owner_asker(from.clone()).expect("somebody to ask");
+
+        // The desk answers at once; the fake chat would have said yes.
+        let answer = asker.confirm("destructive", "the old itinerary", true, None).await;
+        assert_eq!(answer, ConfirmAnswer::Later);
+        assert_eq!(desk.put.lock().unwrap().len(), 1);
+        assert_eq!(
+            *chat.confirms.lock().unwrap(),
+            [(from, "destructive".to_string(), "the old itinerary".to_string(), true)],
+            "the chat was asked too"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_desk_that_puts_nothing_leaves_the_question_to_the_chat() {
+        let (svc, _told) = service();
+        let chat = open_chat(&svc, FakeOutlet::default());
+        svc.set_desk_asker(FakeDesk::answering(None));
+        let from = FromRun { routine: "Project".into(), conversation: None, job: None };
+        let asker = svc.owner_asker(from).expect("somebody to ask");
+
+        assert_eq!(asker.confirm("outward", "to bob", false, None).await, ConfirmAnswer::Confirm);
+        assert_eq!(asker.ask("Which hotel?".into(), vec![]).await.as_deref(), Some("the red one"));
+        assert_eq!(chat.confirms.lock().unwrap().len(), 1);
     }
 }

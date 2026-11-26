@@ -71,6 +71,7 @@
   import { settingsPage } from '../lib/settings-pages'
   import { userAgentMac, userAgentWindows } from '../lib/platform'
   import ThemePicker from './ThemePicker.svelte'
+  import PanelSettingsSection from './PanelSettingsSection.svelte'
   import Icon from './Icon.svelte'
   import Symbol from './Symbol.svelte'
   import type { SymbolName } from '../lib/symbols'
@@ -188,7 +189,7 @@
       label: 'General',
       icon: 'settings',
       group: 'platform',
-      about: 'Appearance, the tray and badge, and keyboard shortcuts.',
+      about: 'Appearance, the panel in the corner, the tray and badge, and keyboard shortcuts.',
     },
     // "About you" rather than "You": the tab now holds the areas as well as
     // the six fields, and "You" beside a list of the parts of a life read as
@@ -721,6 +722,10 @@
             <h3 class="eyebrow">Appearance</h3>
             <ThemePicker />
           </section>
+
+          <!-- The cards in the corner of the screen. Draws itself only where
+             there is a panel to set: a desktop, not a phone or a browser. -->
+          <PanelSettingsSection />
 
           {#if tray.supported}
             <section>

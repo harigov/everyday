@@ -102,6 +102,15 @@ const APP_COMMANDS: &[&str] = &[
     "panel_state",
     "panel_action",
     "panel_resize",
+    "panel_focus",
+    "panel_hold",
+    "panel_drag",
+    "panel_reset_place",
+    "panel_theme",
+    // The main window's half of the panel: its theme, its settings.
+    "set_panel_theme",
+    "panel_settings",
+    "set_panel_settings",
     // The ones that are not JSON in and JSON out.
     "put_blob",
     "clipboard_image",

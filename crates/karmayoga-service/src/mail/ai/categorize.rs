@@ -790,6 +790,8 @@ pub(crate) async fn announce_filed(
     // much as from `hari@gmail.com`.
     let mailboxes = own_mailboxes(account);
     let mut mail = Vec::new();
+    // Per arrival, its message id when it has files to count.
+    let mut with_files = Vec::new();
     for item in filed {
         let id = item.message;
         if !statuses.arrived_lately(&id.to_string(), at) {
@@ -856,12 +858,22 @@ pub(crate) async fn announce_filed(
         if !statuses.first_announcement(&msg.id.to_string()) {
             continue;
         }
-        mail.push(crate::arrivals::NewMail {
-            message_id: msg.id.to_string(),
-            from: crate::arrivals::sender_label(&msg.from.name, &msg.from.email),
-            subject: msg.subject,
-            snippet: msg.snippet,
-        });
+        let arrival = crate::arrivals::NewMail::from_message(&msg, &own);
+        mail.push(arrival);
+        with_files.push(msg.has_attachments.then_some(id));
+    }
+    // The message says only that it has files; its body says how many. Read
+    // only for a message announced alone -- the one case whose notice carries
+    // a card to show the count on -- and only when it has some.
+    if let ([arrival], [Some(id)]) = (mail.as_mut_slice(), with_files.as_slice()) {
+        let (reader, id) = (vault.clone(), *id);
+        let counted = blocking(move || {
+            Ok(reader.body(id).ok().map(|body| crate::arrivals::attachment_count(&body)))
+        })
+        .await;
+        if let Ok(Some(count)) = counted {
+            arrival.attachments = count;
+        }
     }
     if let Some(notice) =
         crate::arrivals::new_mail_notice(&account.id.to_string(), &mail, mail.len())

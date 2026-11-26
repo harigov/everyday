@@ -998,10 +998,30 @@ pub(crate) async fn summarise_stage(
     budget: u32,
     spelling: &str,
 ) -> CommandResult<String> {
+    summarise_stage_noted(summariser, transcript, template_body, facts, budget, spelling, &[]).await
+}
+
+/// [`summarise_stage`], told what the person wrote down during the meeting
+/// (`notes`, from the panel's recording card): every request carries them,
+/// after the meeting itself -- see [`owner_notes_block`] -- so the notes give
+/// what they point at its place. They are the person's own words and are not
+/// fenced. The note keeps them word for word as well, but that is the writing
+/// stage's to add: this returns the answer alone, as `summarise_stage` does.
+///
+/// [`owner_notes_block`]: karmayoga_core::meeting::owner_notes_block
+pub(crate) async fn summarise_stage_noted(
+    summariser: &dyn Summariser,
+    transcript: &Transcript,
+    template_body: &str,
+    facts: &Facts,
+    budget: u32,
+    spelling: &str,
+    notes: &[karmayoga_core::meeting::RecordingNote],
+) -> CommandResult<String> {
     use karmayoga_core::meeting::{prompt, template};
 
     let filled = template::fill(template_body, facts);
-    let meeting = template::meeting_block(facts);
+    let meeting = with_owner_notes(template::meeting_block(facts), notes);
     let people = prompt::people_block(transcript, &facts.invitees);
     let room = prompt::room_note(transcript);
     let cx = prompt::Context {
@@ -1057,6 +1077,20 @@ pub(crate) async fn summarise_stage(
     };
 
     Ok(template::enforce_headings(&filled, &answer))
+}
+
+/// The meeting block with what the person wrote down during it after it, a
+/// blank line between, or the block alone when they wrote nothing.
+pub(crate) fn with_owner_notes(
+    meeting: String,
+    notes: &[karmayoga_core::meeting::RecordingNote],
+) -> String {
+    let theirs = karmayoga_core::meeting::owner_notes_block(notes);
+    match (meeting.trim().is_empty(), theirs.is_empty()) {
+        (_, true) => meeting,
+        (true, false) => theirs,
+        (false, false) => format!("{}\n\n{theirs}", meeting.trim_end()),
+    }
 }
 
 // ============================================================================

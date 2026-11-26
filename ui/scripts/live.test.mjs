@@ -283,5 +283,17 @@ const everything = targetsFor([...KINDS, ...KINDS, ...KINDS], true)
 assert.equal(new Set(everything).size, everything.length, 'a target ran twice')
 assert.ok(everything.length <= Object.keys(RELOAD).length)
 
+// What the shell opens in the main window from a card on the panel: each
+// kind it names opens in its own app, and a kind it does not know -- or a
+// name that happens to be an Object.prototype property -- opens nothing.
+const { appForItem } = live
+assert.equal(appForItem({ kind: 'thread', id: 't' }), 'mail')
+assert.equal(appForItem({ kind: 'note', id: 'n' }), 'notes')
+assert.equal(appForItem({ kind: 'task', id: 'k' }), 'todo')
+assert.equal(appForItem({ kind: 'event', id: 'e' }), 'calendar')
+assert.equal(appForItem({ kind: 'constructor', id: 'x' }), null)
+assert.equal(appForItem({ kind: 'routine', id: 'x' }), null)
+assert.equal(appForItem(null), null)
+
 await close()
 console.log('live: all checks passed')

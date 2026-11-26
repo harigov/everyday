@@ -2,7 +2,9 @@
 //! voiceprints, and recording itself: `begin`/`append`/`finish`/`discard`/
 //! `retry`, `dismiss_meeting_offer` and `meeting_now`, each a thin wire wrapper over
 //! `karmayoga_service::meeting::spool` and `karmayoga_service::meeting::watch`,
-//! which hold the actual behaviour. `karmayoga_core::meeting` decides what a
+//! which hold the actual behaviour; and, while a call is recorded, the
+//! person's own notes and questions about it (`add_recording_note`,
+//! `ask_recording`), over `karmayoga_service::meeting::live`. `karmayoga_core::meeting` decides what a
 //! call needs to be one; `karmayoga_core::vault::Vault` holds it; this is the
 //! surface a client -- the interface, the shell's capture code, the
 //! assistant -- reaches both through.
@@ -34,14 +36,15 @@ use super::Nothing;
 use crate::command;
 use crate::ctx::{Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes};
-use crate::meeting::{spool, watch};
+use crate::meeting::{live, spool, watch};
 use crate::service::{Service, blocking};
 use base64::Engine;
 use jiff::Timestamp;
 use karmayoga_core::id::EventId;
 use karmayoga_core::llm::ModelSlot;
 use karmayoga_core::meeting::{
-    MeetingSettings, Recording, Stage, Track, TranscriberConfig, Transcript, Voiceprint,
+    MeetingSettings, Recording, RecordingNote, Stage, Track, TranscriberConfig, Transcript,
+    Voiceprint,
 };
 use karmayoga_core::speech::SpeechConfig;
 use karmayoga_core::store::meetings::RecordingQuery;
@@ -74,6 +77,22 @@ pub struct ListRecordings {
 #[serde(rename_all = "camelCase")]
 pub struct RecordingRef {
     pub id: RecordingId,
+}
+
+/// A line the person wrote down on the panel's recording card.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddRecordingNote {
+    pub id: RecordingId,
+    pub text: String,
+}
+
+/// A question about the meeting being recorded, from the same card.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskRecording {
+    pub id: RecordingId,
+    pub question: String,
 }
 
 #[derive(Deserialize)]
@@ -627,6 +646,29 @@ async fn retry_recording(
     blocking(move || spool::retry(&svc, args.id)).await
 }
 
+/// Add a line the person wrote down to the recording running now -- see
+/// `live::add_note`. Refused once the call has stopped being recorded.
+async fn add_recording_note(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: AddRecordingNote,
+) -> CommandResult<RecordingNote> {
+    let vault = svc.require()?;
+    let now = svc.now();
+    blocking(move || live::add_note(&vault, args.id, &args.text, now)).await
+}
+
+/// Answer a question about the meeting being recorded, from what has been
+/// transcribed of it so far and the person's notes -- see `live::ask`. A
+/// read: it asks the assistant's model and changes nothing.
+async fn ask_recording(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: AskRecording,
+) -> CommandResult<live::RecordingAnswer> {
+    live::ask(&svc, args.id, &args.question).await
+}
+
 async fn dismiss_meeting_offer(
     svc: Arc<Service>,
     _ctx: Ctx,
@@ -796,6 +838,20 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: RecordingRef, returns: "Recording",
         signature: &[("id", "RecordingId", true)],
         run: retry_recording,
+    },
+    command! {
+        name: "add_recording_note", scope: Meetings, effect: Write,
+        change: Recording / Updated,
+        id: |a: &AddRecordingNote| Some(a.id.to_string()),
+        args: AddRecordingNote, returns: "RecordingNote",
+        signature: &[("id", "RecordingId", true), ("text", "string", true)],
+        run: add_recording_note,
+    },
+    command! {
+        name: "ask_recording", scope: Meetings, effect: Read,
+        args: AskRecording, returns: "RecordingAnswer",
+        signature: &[("id", "RecordingId", true), ("question", "string", true)],
+        run: ask_recording,
     },
     command! {
         name: "dismiss_meeting_offer", scope: Meetings, effect: Write,

@@ -236,7 +236,81 @@ pub struct Recording {
     /// Set at `Done`. Cleared if the note is deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_id: Option<NoteId>,
+    /// What the person wrote down themself while it was recorded (the
+    /// panel's recording card), in the order written. The note is written
+    /// with them, and keeps them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<RecordingNote>,
     pub updated_at: Timestamp,
+}
+
+/// A line the person wrote down during a recording.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingNote {
+    /// How far into the recording it was written, in milliseconds.
+    pub at_ms: u64,
+    pub text: String,
+}
+
+/// How far into a recording something happened, as the panel's card, the
+/// model writing the notes and the note itself all say it: "12 min", "1 h",
+/// "1 h 5 min". Whole minutes, rounded down, so a note written in the first
+/// minute is at "0 min" -- the minute it belongs to, as a clock would show it.
+pub fn minute_mark(at_ms: u64) -> String {
+    let minutes = at_ms / 60_000;
+    match (minutes / 60, minutes % 60) {
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours} h"),
+        (hours, minutes) => format!("{hours} h {minutes} min"),
+    }
+}
+
+/// What the person wrote down during the meeting, for the model writing its
+/// notes: each line with how far in it was written, oldest first, under a
+/// heading that says whose they are. Empty when they wrote nothing.
+///
+/// Not fenced as somebody else's words, as the invitation and the transcript
+/// are: these are the person's own, written as it happened, and the best
+/// guide there is to what they thought mattered.
+pub fn owner_notes_block(notes: &[RecordingNote]) -> String {
+    let lines = note_lines(notes, |mark, text| format!("- {mark}: {text}"));
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "What the owner wrote down during the meeting:\n{}\nThese are their own words, written \
+         as it happened: give what they point at its place in the notes, and never contradict \
+         them with a guess.",
+        lines.join("\n")
+    )
+}
+
+/// The note's last section, keeping what the person wrote down word for word:
+/// "## Your notes" and a line each, with how far in it was written. Empty when
+/// they wrote nothing, so a note without any has no empty heading.
+pub fn owner_notes_section(notes: &[RecordingNote]) -> String {
+    let lines = note_lines(notes, |mark, text| format!("- **{mark}** {text}"));
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("## Your notes\n\n{}", lines.join("\n"))
+}
+
+/// The notes with any words in them, oldest first, each made into one line
+/// by `line` from its [`minute_mark`] and its text. A note is kept to one line
+/// when it is written, but one from elsewhere is made one here too: a line
+/// break inside a list item would end it.
+fn note_lines(notes: &[RecordingNote], line: impl Fn(&str, &str) -> String) -> Vec<String> {
+    let mut sorted: Vec<&RecordingNote> = notes.iter().collect();
+    sorted.sort_by_key(|n| n.at_ms);
+    sorted
+        .into_iter()
+        .map(|n| (n, n.text.split_whitespace().collect::<Vec<_>>().join(" ")))
+        .filter(|(_, text)| !text.is_empty())
+        .map(|(n, text)| line(&minute_mark(n.at_ms), &text))
+        .collect()
 }
 
 impl Recording {
@@ -254,6 +328,7 @@ impl Recording {
             chunks: Vec::new(),
             partial: Vec::new(),
             note_id: None,
+            notes: Vec::new(),
             updated_at: now,
         }
     }
@@ -786,6 +861,52 @@ mod tests {
             assert!(json.get(gone).is_none(), "{gone} is still written");
         }
         assert_eq!(json["speechMoved"], true);
+    }
+
+    fn note(at_ms: u64, text: &str) -> RecordingNote {
+        RecordingNote { at_ms, text: text.into() }
+    }
+
+    #[test]
+    fn a_minute_mark_is_whole_minutes_and_then_hours() {
+        assert_eq!(minute_mark(0), "0 min");
+        assert_eq!(minute_mark(59_999), "0 min");
+        assert_eq!(minute_mark(12 * 60_000 + 30_000), "12 min");
+        assert_eq!(minute_mark(60 * 60_000), "1 h");
+        assert_eq!(minute_mark(65 * 60_000), "1 h 5 min");
+    }
+
+    #[test]
+    fn the_owners_notes_reach_the_model_oldest_first_with_their_minutes() {
+        assert_eq!(owner_notes_block(&[]), "", "nothing written, nothing said");
+        assert_eq!(owner_notes_block(&[note(0, "   ")]), "", "a blank note is not a note");
+        let block =
+            owner_notes_block(&[note(12 * 60_000, "Budget\nis $40k"), note(60_000, "Ask Priya")]);
+        assert!(block.starts_with("What the owner wrote down during the meeting:\n"));
+        let lines: Vec<&str> = block.lines().skip(1).take(2).collect();
+        assert_eq!(lines, ["- 1 min: Ask Priya", "- 12 min: Budget is $40k"]);
+    }
+
+    #[test]
+    fn the_note_keeps_the_owners_words_in_a_section_of_their_own() {
+        assert_eq!(owner_notes_section(&[]), "", "no empty heading");
+        assert_eq!(
+            owner_notes_section(&[note(3 * 60_000, "Ship by Friday"), note(65 * 60_000, "Done")]),
+            "## Your notes\n\n- **3 min** Ship by Friday\n- **1 h 5 min** Done"
+        );
+    }
+
+    #[test]
+    fn a_recording_from_before_notes_reads_with_none_and_writes_none() {
+        let mut recording = Recording::new("Design sync", None, TemplateId::new());
+        let json = serde_json::to_value(&recording).unwrap();
+        assert!(json.get("notes").is_none(), "an empty list is not written");
+        let back: Recording = serde_json::from_value(json).unwrap();
+        assert!(back.notes.is_empty());
+        recording.notes.push(note(90_000, "Ask about the budget"));
+        let json = serde_json::to_value(&recording).unwrap();
+        assert_eq!(json["notes"][0]["atMs"], 90_000);
+        assert_eq!(serde_json::from_value::<Recording>(json).unwrap(), recording);
     }
 
     #[test]
