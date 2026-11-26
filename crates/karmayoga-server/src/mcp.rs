@@ -196,7 +196,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
-use crate::auth::Registry;
+use crate::auth::{Leniency, Registry, bearer};
 
 /// The port an MCP listener binds by default.
 ///
@@ -797,10 +797,7 @@ fn reject_bad_origin(headers: &HeaderMap) -> Option<Response> {
 /// function's error the size of a whole HTTP response for a caller that
 /// only ever throws it straight into `into_response`.
 fn authenticate(server: &Server, headers: &HeaderMap) -> Result<Ctx, StatusCode> {
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
+    let token = bearer(headers, Leniency::Exact);
     let Some(token) = token else { return Err(StatusCode::UNAUTHORIZED) };
     server.registry.authenticate(token).map_err(|_| StatusCode::UNAUTHORIZED)
 }

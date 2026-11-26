@@ -4,7 +4,7 @@
 //! Two doors onto one handler, both speaking the same two routes:
 //!
 //! ```text
-//! GET  /v1/screentime/hello       -> Hello
+//! GET  /v1/screentime/hello       -> CollectorHello
 //! POST /v1/screentime/heartbeats  <- HeartbeatBody   -> IngestReport
 //! ```
 //!
@@ -90,8 +90,9 @@ use karmayoga_service::{Caller, CommandError, CommandResult, Ctx, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::auth::Registry;
+use crate::auth::{Leniency, Registry, bearer};
 use crate::routes::{Server, Transport};
+use crate::wire::path;
 
 /// The port the loopback listener binds by default: two along from sharing,
 /// one from MCP.
@@ -120,7 +121,7 @@ pub struct HeartbeatBody {
 /// What `GET /v1/screentime/hello` answers.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Hello {
+pub struct CollectorHello {
     /// This machine's name on the loopback listener; empty on the sharing
     /// server, where a collector names its own.
     pub device: String,
@@ -130,7 +131,7 @@ pub struct Hello {
     pub version: String,
 }
 
-impl Hello {
+impl CollectorHello {
     fn new(device: String, config: CollectorConfig) -> Self {
         Self {
             device,
@@ -146,7 +147,7 @@ impl Hello {
 /// through whichever vault its window is looking at.
 pub trait Forward: Send + Sync + 'static {
     /// This machine's current name: every loopback delivery is stamped with
-    /// it, and [`Hello`] answers it.
+    /// it, and [`CollectorHello`] answers it.
     fn device(&self) -> String;
     fn record(&self, body: HeartbeatBody) -> BoxFuture<'static, CommandResult<IngestReport>>;
     fn config(&self) -> BoxFuture<'static, CommandResult<CollectorConfig>>;
@@ -190,28 +191,14 @@ fn answer<T: Serialize>(outcome: CommandResult<T>) -> Response {
 /// `403` with one that may not send them -- see the module doc for why a
 /// token minted for an MCP client has to name the scope.
 pub(crate) fn authenticate(registry: &Arc<Registry>, headers: &HeaderMap) -> CommandResult<Ctx> {
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
+    let token = bearer(headers, Leniency::Trimmed)
         .ok_or_else(|| CommandError::new("unauthorized", "this request carried no token"))?;
-    let ctx = registry.authenticate(token)?;
-    let minted_for_mcp = matches!(
-        &ctx.caller,
-        Caller::Device(id) if karmayoga_core::agent::tools::is_mcp_device_id(id)
-    );
-    let may_send =
-        if minted_for_mcp { ctx.names(Scope::Heartbeats) } else { ctx.holds(Scope::Heartbeats) };
-    if !may_send {
-        return Err(CommandError::new(
-            codes::FORBIDDEN,
-            "this token may not send screen-time heartbeats; issue one for a collector in \
-             Settings → Screen time",
-        ));
-    }
-    Ok(ctx)
+    registry.authenticate_for(
+        token,
+        Scope::Heartbeats,
+        "this token may not send screen-time heartbeats; issue one for a collector in \
+         Settings → Screen time",
+    )
 }
 
 /// Read a batch, at most [`MAX_BODY_BYTES`] of it. Only ever called once
@@ -269,11 +256,11 @@ async fn shared_config(
     server: &Arc<Server>,
     transport: Transport,
     headers: &HeaderMap,
-) -> CommandResult<Hello> {
+) -> CommandResult<CollectorHello> {
     let ctx = shared_caller(server, transport, headers)?;
     let value = server.service.call(ctx, "screen_time_collector", json!({})).await?;
     let config: CollectorConfig = serde_json::from_value(value).map_err(internal)?;
-    Ok(Hello::new(String::new(), config))
+    Ok(CollectorHello::new(String::new(), config))
 }
 
 /// `POST /v1/screentime/heartbeats` on the sharing server: the batch, as
@@ -322,8 +309,8 @@ fn router(listener: Arc<Listener>) -> Router {
         // would run: named here so a preflight is a request to a route this
         // router has, whatever axum does with a method a route was not
         // given.
-        .route("/v1/screentime/hello", get(loopback_hello).options(preflight))
-        .route("/v1/screentime/heartbeats", post(loopback_heartbeats).options(preflight))
+        .route(path::SCREENTIME_HELLO, get(loopback_hello).options(preflight))
+        .route(path::SCREENTIME_HEARTBEATS, post(loopback_heartbeats).options(preflight))
         .layer(middleware::from_fn(guard))
         .with_state(listener)
 }
@@ -334,10 +321,13 @@ async fn loopback_hello(State(listener): State<Arc<Listener>>, headers: HeaderMa
     answer(loopback_config(&listener, &headers).await)
 }
 
-async fn loopback_config(listener: &Listener, headers: &HeaderMap) -> CommandResult<Hello> {
+async fn loopback_config(
+    listener: &Listener,
+    headers: &HeaderMap,
+) -> CommandResult<CollectorHello> {
     authenticate(&listener.registry, headers)?;
     let config = listener.forward.config().await?;
-    Ok(Hello::new(listener.forward.device(), config))
+    Ok(CollectorHello::new(listener.forward.device(), config))
 }
 
 /// `POST /v1/screentime/heartbeats` on loopback: the batch, with this
@@ -696,8 +686,8 @@ mod router_tests {
         Body::from(serde_json::to_vec(&body).unwrap())
     }
 
-    const BEATS: &str = "/v1/screentime/heartbeats";
-    const HELLO: &str = "/v1/screentime/hello";
+    const BEATS: &str = path::SCREENTIME_HEARTBEATS;
+    const HELLO: &str = path::SCREENTIME_HELLO;
 
     #[tokio::test]
     async fn a_batch_is_always_handed_on_with_this_machines_current_name() {

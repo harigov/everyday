@@ -48,17 +48,17 @@
 //! log: what a push carries is somebody's body.
 
 use crate::Server;
-use crate::auth::Registry;
+use crate::auth::{Leniency, Registry, bearer};
 use crate::routes::Transport;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use karmayoga_core::health::PushHeaders;
 use karmayoga_core::id::HealthSourceId;
 use karmayoga_service::error::codes;
-use karmayoga_service::{Caller, CommandError, CommandResult, Ctx, Scope};
+use karmayoga_service::{CommandError, CommandResult, Ctx, Scope};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -128,34 +128,13 @@ async fn accept(
 /// see the module doc for why a token minted for an MCP client has to name
 /// the scope.
 fn authenticate(registry: &Arc<Registry>, headers: &HeaderMap) -> CommandResult<Ctx> {
-    let token = bearer(headers)
+    let token = bearer(headers, Leniency::AnyCase)
         .ok_or_else(|| CommandError::new("unauthorized", "this request carried no token"))?;
-    let ctx = registry.authenticate(token)?;
-    let minted_for_mcp = matches!(
-        &ctx.caller,
-        Caller::Device(id) if karmayoga_core::agent::tools::is_mcp_device_id(id)
-    );
-    let may_push = if minted_for_mcp {
-        ctx.names(Scope::HealthIngest)
-    } else {
-        ctx.holds(Scope::HealthIngest)
-    };
-    if !may_push {
-        return Err(CommandError::new(
-            codes::FORBIDDEN,
-            "this token may not push health data; set the phone up again in Settings → Health",
-        ));
-    }
-    Ok(ctx)
-}
-
-/// The token in `Authorization: Bearer <token>`. The scheme's case is
-/// whatever the phone's header field was typed with.
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let (scheme, token) = value.split_once(' ')?;
-    let token = token.trim();
-    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+    registry.authenticate_for(
+        token,
+        Scope::HealthIngest,
+        "this token may not push health data; set the phone up again in Settings → Health",
+    )
 }
 
 /// What Health Auto Export says about the automation that sent this, each
@@ -218,9 +197,9 @@ mod tests {
             ("abc", None),
         ] {
             let headers = with("authorization", given.as_bytes());
-            assert_eq!(bearer(&headers), want, "{given:?}");
+            assert_eq!(bearer(&headers, Leniency::AnyCase), want, "{given:?}");
         }
-        assert_eq!(bearer(&HeaderMap::new()), None);
+        assert_eq!(bearer(&HeaderMap::new(), Leniency::AnyCase), None);
     }
 
     #[test]
