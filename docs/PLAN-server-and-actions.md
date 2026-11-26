@@ -197,7 +197,7 @@ local processes over a socket.
 | `POST /pair` | pairing code | in: `{ code, deviceName, scopes }`; out: `{ token, deviceId, scopes }` |
 | `POST /call/:name` | bearer or socket peer | JSON args in, JSON result out, `{ code, message }` on error; a `streams` command answers NDJSON |
 | `POST /blob` | same | raw body in, blob id out; sized so a chunked, resumable form can be added beside it |
-| `GET /blob/:id` | same | honours `Range`; uses `karmayoga_vault::media::plan` exactly as `protocol.rs` does |
+| `GET /blob/:id` | same | honours `Range`; uses `karmayoga_core::media::plan` exactly as `protocol.rs` does |
 | `GET /events` | same | SSE: `notify`, `changed`, `lockState` |
 
 Every request carries `X-KarmaYoga-Protocol: <n>`, `X-KarmaYoga-Client: <deviceId>`
