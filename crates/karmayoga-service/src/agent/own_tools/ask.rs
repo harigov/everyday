@@ -7,8 +7,9 @@ pub(in crate::agent) const MAX_QUESTIONS_PER_RUN: u32 = 3;
 /// The most choices one question may offer.
 pub(in crate::agent) const MAX_ASK_CHOICES: usize = 6;
 
-/// Put a question to the person a scheduled run belongs to, in their chat,
-/// and wait for what they say -- [`Asker::ask`], as a tool.
+/// Put a question to the person a scheduled run belongs to -- on their
+/// computer's panel or in their chat, whichever reaches them -- and wait for
+/// what they say: [`Asker::ask`], as a tool.
 ///
 /// Offered only to a run that has somebody to ask (see [`Reach::asker`]).
 /// Every way of not getting an answer -- silence, the chat going away, the
@@ -19,12 +20,13 @@ pub(in crate::agent) fn ask_owner_tool(asker: Arc<dyn Asker>) -> PortableDynamic
     let budget = Arc::new(AtomicU32::new(MAX_QUESTIONS_PER_RUN));
     PortableDynamicTool::new(
         ASK_OWNER,
-        "Ask them a question in their chat and wait for the answer. Use it only for what \
-         you cannot sensibly decide yourself: a choice that is theirs to make, a fact only \
-         they know. One plain question at a time; offer choices when there are a few \
-         obvious answers. They may not answer -- then you get nothing back, and should \
-         carry on with the sensible reading and say what you assumed. Approvals for \
-         deleting or sending are asked for you; do not ask those yourself.",
+        "Ask them a question -- it reaches them on their computer or in their chat -- and \
+         wait for the answer. Use it only for what you cannot sensibly decide yourself: a \
+         choice that is theirs to make, a fact only they know. One plain question at a \
+         time; offer choices when there are a few obvious answers. They may not answer -- \
+         then you get nothing back, and should carry on with the sensible reading and say \
+         what you assumed. Approvals for deleting or sending are asked for you; do not ask \
+         those yourself.",
         serde_json::json!({
             "type": "object",
             "properties": {

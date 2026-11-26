@@ -25,9 +25,11 @@
 //! the palette's hotkey, meeting offers, Settings. Each is one thing per
 //! process, and two webviews each pushing a tray menu or posting the same
 //! notification is two of it. A window here asks the main window to show
-//! anything that is not its own app -- see [`show_in_main`] -- and only the
-//! app: whatever the window meant to open there (a note, an event) has no
-//! store here to be opened in, so that is left to the person.
+//! anything that is not its own app -- see [`show_in_main`] -- and, where it
+//! can say which, the thing in it to open: a mail thread, a note (see
+//! [`OpenItem`]). The panel's cards hand things over the same way
+//! ([`open_item`]): "Open" on a new message is that thread in the main
+//! window.
 //!
 //! Closing one of these closes it, never the application: it saves first,
 //! through the same handshake as the main window's, and nothing is locked
@@ -43,7 +45,7 @@ use std::time::Duration;
 
 use karmayoga_service::ctx::Ctx;
 use karmayoga_service::error::{CommandError, CommandResult};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent};
 
 use crate::SAVE_AND_CLOSE;
@@ -183,7 +185,8 @@ pub async fn open_app_window(
 }
 
 /// What [`SHOW_IN_MAIN_EVENT`] carries: an app to switch to, or a tab of
-/// Settings to open. The interface checks the tab against its own list.
+/// Settings to open, and perhaps a thing in that app to open. The interface
+/// checks the tab against its own list, and looks the thing up itself.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ShowInMain {
@@ -191,24 +194,70 @@ struct ShowInMain {
     settings: Option<String>,
     /// A part of that tab to open at ("sharing" in Vault), passed through.
     part: Option<String>,
+    /// The thing to open in the app, where there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open: Option<OpenItem>,
+}
+
+/// One thing to open in the main window: a mail thread (`kind: "thread"`), a
+/// note, a task, an event, by its id. Passed through to the interface, which
+/// opens it if it can find it and otherwise shows its app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenItem {
+    pub kind: String,
+    pub id: String,
+}
+
+/// The app a thing of `kind` is opened in: mail for a thread, and so on. A
+/// kind that is not one of those but is an app's own name is that app; any
+/// other is no app, and the main window stays on what it shows.
+fn section_for(kind: &str) -> Option<&'static str> {
+    match kind {
+        "thread" => Some("mail"),
+        "note" => Some("notes"),
+        "task" => Some("todo"),
+        "event" => Some("calendar"),
+        other => app_named(other).ok().map(|(section, _)| section),
+    }
 }
 
 /// Bring the main window forward showing `section`, or Settings at the tab
-/// named `settings`.
+/// named `settings` -- and, with `open`, a thing in it.
 ///
 /// What a window of one app does with anything that is not that app: a
 /// link to an event from a task, "Go to Mail" from the palette, the key for
 /// Settings. It cannot show them itself without becoming a second main
-/// window, so it hands them over.
+/// window, so it hands them over. With `open` and no `section`, the app is
+/// the one the thing is opened in.
 #[tauri::command]
 pub async fn show_in_main(
     app: AppHandle,
     section: Option<String>,
     settings: Option<String>,
     part: Option<String>,
+    open: Option<OpenItem>,
 ) -> CommandResult<()> {
-    let section = section.map(|asked| app_named(&asked).map(|(s, _)| s)).transpose()?;
-    raise_main(&app, ShowInMain { section, settings, part })
+    let section = match section {
+        Some(asked) => Some(app_named(&asked)?.0),
+        None => open.as_ref().and_then(|item| section_for(&item.kind)),
+    };
+    raise_main(&app, ShowInMain { section, settings, part, open })
+}
+
+/// Bring the main window forward with the thing of `kind` (`thread`, `note`,
+/// `task`, `event`) called `id` open in its app: what "Open" does on a card
+/// on the panel, which has no interface of its own to open anything in.
+pub fn open_item(app: &AppHandle, kind: &str, id: &str) -> CommandResult<()> {
+    raise_main(
+        app,
+        ShowInMain {
+            section: section_for(kind),
+            settings: None,
+            part: None,
+            open: Some(OpenItem { kind: kind.to_string(), id: id.to_string() }),
+        },
+    )
 }
 
 /// Bring the main window forward showing the app called `section`: what
@@ -219,7 +268,7 @@ pub async fn show_in_main(
 /// supplies is checked here and not trusted.
 pub fn show_section(app: &AppHandle, section: &str) -> CommandResult<()> {
     let (section, _) = app_named(section)?;
-    raise_main(app, ShowInMain { section: Some(section), settings: None, part: None })
+    raise_main(app, ShowInMain { section: Some(section), settings: None, part: None, open: None })
 }
 
 /// The two halves of showing something in the main window: lift it, and
@@ -320,6 +369,41 @@ mod tests {
             assert!(app_named(section).is_ok(), "{section}");
         }
         assert!(app_named("settings").is_err());
+    }
+
+    #[test]
+    fn each_kind_of_thing_opens_in_its_app() {
+        assert_eq!(section_for("thread"), Some("mail"));
+        assert_eq!(section_for("note"), Some("notes"));
+        assert_eq!(section_for("task"), Some("todo"));
+        assert_eq!(section_for("event"), Some("calendar"));
+        assert_eq!(section_for("files"), Some("files"), "an app's own name is that app");
+        assert_eq!(section_for("settings"), None);
+        assert_eq!(section_for(""), None);
+        for kind in ["thread", "note", "task", "event"] {
+            let section = section_for(kind).unwrap();
+            assert!(app_named(section).is_ok(), "{kind} opens in {section}, which is no app");
+        }
+    }
+
+    #[test]
+    fn what_the_main_window_is_told_to_open_uses_the_names_it_reads() {
+        let show = ShowInMain {
+            section: Some("mail"),
+            settings: None,
+            part: None,
+            open: Some(OpenItem { kind: "thread".into(), id: "t-1".into() }),
+        };
+        let json = serde_json::to_value(&show).unwrap();
+        assert_eq!(json["section"], "mail");
+        assert_eq!(json["open"], serde_json::json!({ "kind": "thread", "id": "t-1" }));
+        let nothing = ShowInMain { section: Some("todo"), settings: None, part: None, open: None };
+        let json = serde_json::to_value(&nothing).unwrap();
+        assert!(json.get("open").is_none(), "absent, not null");
+        assert!(json.get("section").is_some(), "the others are as they always were");
+        let read: OpenItem =
+            serde_json::from_value(serde_json::json!({ "kind": "note", "id": "n" })).unwrap();
+        assert_eq!(read, OpenItem { kind: "note".into(), id: "n".into() });
     }
 
     #[test]

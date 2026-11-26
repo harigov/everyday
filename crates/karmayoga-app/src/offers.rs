@@ -898,12 +898,15 @@ fn spawn_clock(app: &AppHandle, key: String, generation: u64) {
 /// `now` and `zone` are the clock and the person's own time zone, passed in so
 /// that this has no clock in it.
 ///
-/// Before the call is joined the kicker says when the meeting is, and the
-/// body gives its hours in the person's own time and where it is; with a
-/// brief, the first thing under that is what the meeting is for. What to know
-/// -- what the person promised to raise, the agenda, who is there, and the
-/// rest folded away -- comes after, in that order and with nothing in it that
-/// is empty.
+/// The kicker says when the meeting is, or what the countdown counts to. Under
+/// the head the meeting is drawn as an event -- its hours in the person's own
+/// time, the day, where it is, the call's service, the calendar, and a face
+/// for each person coming with their answer to the invitation -- and then, with
+/// a brief, who they are, what the meeting is for, what the person promised to
+/// raise (boxes to tick), what is open between them and these people, the
+/// invitation's agenda, and the context folded away: in that order, and with
+/// nothing in it that is empty. A call nobody put on a calendar has no event
+/// to draw.
 fn meeting_panel(
     phase: CardPhase,
     seconds: u32,
@@ -912,25 +915,24 @@ fn meeting_panel(
     now: jiff::Timestamp,
     zone: &TimeZone,
 ) -> crate::panel::Panel {
-    use crate::panel::{Action, Owner, Panel, Tone};
-    let action = |id: &str, label: &str, primary: bool| Action {
-        id: id.into(),
-        label: label.into(),
-        primary,
-        copy: None,
-    };
+    use crate::panel::{Action, Block, Kind, Owner, Panel, Tone};
     let counting = phase == CardPhase::Countdown;
+    let event = event_card(payload, brief, now, zone).map(Block::Event);
+    let from_brief = brief.map(brief_blocks).unwrap_or_default();
+    let blocks: Vec<Block> = event.into_iter().chain(from_brief).collect();
+    let not_now = |label: &str| Action::new("notNow", label).icon("close");
     Panel {
         id: payload.key.clone(),
         owner: Owner::Meeting,
+        kind: Kind::Meeting,
         tone: if counting { Tone::Attention } else { Tone::Neutral },
         kicker: kicker(phase, payload, now),
         title: payload.title.clone(),
         count: counting.then(|| format!("{seconds}s")),
-        body: card_body(payload, brief, zone),
-        lines: Vec::new(),
+        body: None,
         meter: false,
-        sections: brief.map(brief_sections).unwrap_or_default(),
+        blocks,
+        expires: None,
         actions: match phase {
             CardPhase::Join => {
                 let first = if payload.join_url.is_some() {
@@ -938,13 +940,13 @@ fn meeting_panel(
                 } else {
                     "Start recording"
                 };
-                vec![action("join", first, true), action("notNow", "Not now", false)]
+                vec![Action::new("join", first).primary().icon("join"), not_now("Not now")]
             }
             CardPhase::Countdown => {
-                vec![action("take", "Take notes", true), action("notNow", "Cancel", false)]
+                vec![Action::new("take", "Take notes").primary().icon("mic"), not_now("Cancel")]
             }
             CardPhase::Ask => {
-                vec![action("take", "Take notes", true), action("notNow", "Not now", false)]
+                vec![Action::new("take", "Take notes").primary().icon("mic"), not_now("Not now")]
             }
         },
         busy: false,
@@ -986,33 +988,93 @@ fn span_words(minutes: i64) -> String {
     }
 }
 
-/// The card's body: the meeting's hours in the person's own time and where
-/// it is, then, on a line of its own, what the brief says it is for.
-fn card_body(
+/// The meeting as an event: its hours in the person's own time ("10:00–10:30"),
+/// the day said from today ([`day_words`]), where it is, the call's service,
+/// the calendar, and the people coming as faces with their answers. `None`
+/// for a call with no start, which is a call nobody put on a calendar.
+///
+/// Where it is comes from the brief's room; a brief that names only the
+/// call's service, or none, leaves it to the service, which is drawn once.
+fn event_card(
     payload: &OfferPayload,
     brief: Option<&MeetingBrief>,
+    now: jiff::Timestamp,
     zone: &TimeZone,
-) -> Option<String> {
-    let hours = match (payload.start, payload.end) {
-        (Some(start), Some(end)) => Some(format!(
-            "{}\u{2013}{}",
-            start.to_zoned(zone.clone()).strftime("%H:%M"),
-            end.to_zoned(zone.clone()).strftime("%H:%M")
-        )),
-        (Some(start), None) => Some(start.to_zoned(zone.clone()).strftime("%H:%M").to_string()),
-        _ => None,
+) -> Option<crate::panel::EventCard> {
+    let start = payload.start?;
+    let clock = |at: jiff::Timestamp| at.to_zoned(zone.clone()).strftime("%H:%M").to_string();
+    let when = match payload.end {
+        Some(end) => format!("{}\u{2013}{}", clock(start), clock(end)),
+        None => clock(start),
     };
+    let join = payload.join_url.as_deref().and_then(join_service).map(str::to_owned);
     let place = brief
         .and_then(|b| b.location.as_deref())
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .map(str::to_owned)
-        .or_else(|| payload.join_url.as_deref().and_then(join_service).map(str::to_owned));
-    let first = [hours, place].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ");
-    let summary = brief.and_then(|b| b.summary.as_deref()).map(str::trim).filter(|s| !s.is_empty());
-    let lines: Vec<&str> =
-        [Some(first.as_str()).filter(|f| !f.is_empty()), summary].into_iter().flatten().collect();
-    (!lines.is_empty()).then(|| lines.join("\n"))
+        .filter(|l| join.as_deref().is_none_or(|j| !l.eq_ignore_ascii_case(j)))
+        .map(str::to_owned);
+    let calendar = payload.calendar_name.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    let calendar = calendar.map(str::to_owned);
+    let people = brief
+        .map(|b| {
+            b.people
+                .iter()
+                .filter(|p| !p.name.trim().is_empty())
+                .map(|p| crate::panel::Person { detail: None, ..person_of(p) })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(crate::panel::EventCard {
+        title: payload.title.clone(),
+        when,
+        date: Some(day_words(start, now, zone)),
+        place,
+        join,
+        calendar,
+        people,
+        rsvp: None,
+    })
+}
+
+/// The day a meeting is on, said from today in the person's own time:
+/// "Today", "Tomorrow", or the weekday and the date -- "Thu 27 Nov".
+fn day_words(start: jiff::Timestamp, now: jiff::Timestamp, zone: &TimeZone) -> String {
+    let day = start.to_zoned(zone.clone()).date();
+    let today = now.to_zoned(zone.clone()).date();
+    if day == today {
+        "Today".to_string()
+    } else if today.tomorrow().is_ok_and(|t| t == day) {
+        "Tomorrow".to_string()
+    } else {
+        day.strftime("%a %-d %b").to_string()
+    }
+}
+
+/// Somebody on the brief as the panel draws a person: their name, address,
+/// the line on who they are, and their answer to the invitation.
+fn person_of(p: &karmayoga_core::meeting::brief::MeetingBriefPerson) -> crate::panel::Person {
+    crate::panel::Person {
+        name: p.name.trim().to_string(),
+        email: p.email.clone(),
+        detail: Some(p.line.trim()).filter(|l| !l.is_empty()).map(str::to_owned),
+        status: p.response.map(rsvp_of),
+        organizer: false,
+        you: false,
+    }
+}
+
+/// An answer to an invitation, as the calendar keeps it, as the panel draws
+/// it.
+fn rsvp_of(response: karmayoga_core::mail::AttendeeResponse) -> crate::panel::Rsvp {
+    use crate::panel::Rsvp;
+    use karmayoga_core::mail::AttendeeResponse;
+    match response {
+        AttendeeResponse::Accepted => Rsvp::Accepted,
+        AttendeeResponse::Tentative => Rsvp::Tentative,
+        AttendeeResponse::Declined => Rsvp::Declined,
+        AttendeeResponse::NeedsAction => Rsvp::NeedsAction,
+    }
 }
 
 /// The most agenda lines the card shows. The brief keeps more, for the
@@ -1021,17 +1083,38 @@ const CARD_AGENDA: usize = 5;
 /// More people than this are folded under "More".
 const CARD_PEOPLE_OPEN: usize = 3;
 
-/// What the brief adds to the card, in the order that matters walking in:
-/// what to raise (the boxes), what is open between the person and the people
-/// there (not folded: it is what they most need to read), the invitation's
-/// agenda, who is there, and the context, which is the longest and so the one
-/// folded away. A part with nothing in it is left out.
-fn brief_sections(brief: &MeetingBrief) -> Vec<crate::panel::Section> {
-    use crate::panel::{Check, Item, Section};
+/// What the brief adds to the card under the event, in the order that matters
+/// walking in: who the people are (folded when there are more than
+/// [`CARD_PEOPLE_OPEN`]), what the meeting is for, what to raise (the boxes),
+/// what is open between the person and the people there (not folded: it is
+/// what they most need to read), the invitation's agenda, and the context,
+/// which is the longest and so the one folded away. A part with nothing in it
+/// is left out.
+fn brief_blocks(brief: &MeetingBrief) -> Vec<crate::panel::Block> {
+    use crate::panel::{Block, Check, Item, Section};
     let plain = |text: &String| Item { text: text.trim().to_string(), detail: None, check: None };
     let lines = |lines: &[String]| -> Vec<Item> {
         lines.iter().filter(|l| !l.trim().is_empty()).map(plain).collect()
     };
+    let list = |heading: &str, items: Vec<Item>, folded: bool| {
+        (!items.is_empty())
+            .then(|| Block::List(Section { heading: heading.to_string(), items, folded }))
+    };
+
+    let people: Vec<crate::panel::Person> =
+        brief.people.iter().filter(|p| !p.name.trim().is_empty()).map(person_of).collect();
+    let folded_people = people.len() > CARD_PEOPLE_OPEN;
+    let people = (!people.is_empty()).then(|| Block::People {
+        heading: Some("Who\u{2019}s coming".to_string()),
+        people,
+        folded: folded_people,
+    });
+    let summary = brief
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| Block::Text { heading: None, text: s.to_string(), folded: false });
     let to_raise: Vec<Item> = brief
         .talking_points
         .iter()
@@ -1041,29 +1124,18 @@ fn brief_sections(brief: &MeetingBrief) -> Vec<crate::panel::Section> {
             check: Some(Check { action: format!("done:{}", point.task_id), done: point.done }),
         })
         .collect();
-    let open = lines(&brief.open);
     let mut agenda = lines(&brief.agenda);
     agenda.truncate(CARD_AGENDA);
-    let people: Vec<Item> = brief
-        .people
-        .iter()
-        .map(|p| Item {
-            text: p.name.trim().to_string(),
-            detail: Some(p.line.trim()).filter(|l| !l.is_empty()).map(str::to_owned),
-            check: None,
-        })
-        .collect();
-    let folded_people = people.len() > CARD_PEOPLE_OPEN;
     [
-        ("To raise", to_raise, false),
-        ("Open", open, false),
-        ("Agenda", agenda, false),
-        ("With", people, folded_people),
-        ("Context", lines(&brief.context), true),
+        people,
+        summary,
+        list("To raise", to_raise, false),
+        list("Worth covering", lines(&brief.open), false),
+        list("Agenda", agenda, false),
+        list("Context", lines(&brief.context), true),
     ]
     .into_iter()
-    .filter(|(_, items, _)| !items.is_empty())
-    .map(|(heading, items, folded)| Section { heading: heading.to_string(), items, folded })
+    .flatten()
     .collect()
 }
 
@@ -1581,6 +1653,8 @@ pub(crate) fn on_locked(app: &AppHandle) {
         std::mem::take(&mut o.shown)
     });
     crate::panel::dismiss_owner(app, crate::panel::Owner::Meeting);
+    // The recording card's notes and answers are the meeting's words too.
+    crate::recordcard::on_locked(app);
     emit(app, COUNTDOWN_EVENT, &json!({ "key": "", "seconds": null }));
     for key in shown {
         crate::notice::withdraw(app, &key);
@@ -1832,7 +1906,7 @@ pub async fn meeting_offers(app: AppHandle) -> CommandResult<Vec<OfferPayload>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panel::Panel;
+    use crate::panel::{Block, Panel};
     use karmayoga_core::Completable;
     use karmayoga_core::meeting::brief::{MeetingBriefPerson, TalkingPoint};
 
@@ -2245,7 +2319,13 @@ mod tests {
     }
 
     fn person(name: &str, line: &str) -> MeetingBriefPerson {
-        MeetingBriefPerson { name: name.into(), email: None, contact: None, line: line.into() }
+        MeetingBriefPerson {
+            name: name.into(),
+            email: None,
+            contact: None,
+            line: line.into(),
+            response: None,
+        }
     }
 
     fn point(text: &str, with: &str, done: bool) -> TalkingPoint {
@@ -2260,28 +2340,89 @@ mod tests {
         meeting_panel(phase, 12, p, brief, at(NOW), &pacific())
     }
 
+    /// The buttons, with whether each is the primary one and its mark.
     fn ids(panel: &crate::panel::Panel) -> Vec<(&str, &str, bool)> {
         panel.actions.iter().map(|a| (a.id.as_str(), a.label.as_str(), a.primary)).collect()
     }
 
+    fn icons(panel: &crate::panel::Panel) -> Vec<Option<&str>> {
+        panel.actions.iter().map(|a| a.icon.as_deref()).collect()
+    }
+
+    /// The card's event block, if it has one.
+    fn event(panel: &crate::panel::Panel) -> Option<&crate::panel::EventCard> {
+        panel.blocks.iter().find_map(|b| match b {
+            Block::Event(e) => Some(e),
+            _ => None,
+        })
+    }
+
+    /// The card's list headed `heading`.
+    fn list<'a>(panel: &'a crate::panel::Panel, heading: &str) -> &'a crate::panel::Section {
+        panel
+            .blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::List(s) if s.heading == heading => Some(s),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no list {heading}: {:?}", panel.blocks))
+    }
+
+    /// The people block's people and whether they are folded.
+    fn people(panel: &crate::panel::Panel) -> Option<(&[crate::panel::Person], bool)> {
+        panel.blocks.iter().find_map(|b| match b {
+            Block::People { people, folded, .. } => Some((people.as_slice(), *folded)),
+            _ => None,
+        })
+    }
+
+    /// What the card holds, top to bottom: each block's kind, or a list's
+    /// heading, and whether it is folded.
+    fn shape(panel: &crate::panel::Panel) -> Vec<(String, bool)> {
+        panel
+            .blocks
+            .iter()
+            .map(|b| match b {
+                Block::Event(_) => ("event".to_string(), false),
+                Block::People { folded, .. } => ("people".to_string(), *folded),
+                Block::Text { folded, .. } => ("text".to_string(), *folded),
+                Block::List(s) => (s.heading.clone(), s.folded),
+                other => (format!("{other:?}"), false),
+            })
+            .collect()
+    }
+
+    fn named(shape: &[(String, bool)]) -> Vec<(&str, bool)> {
+        shape.iter().map(|(name, folded)| (name.as_str(), *folded)).collect()
+    }
+
     #[test]
-    fn the_join_card_asks_to_join_and_says_when_the_meeting_is() {
+    fn the_join_card_asks_to_join_and_draws_the_meeting_as_an_event() {
         let mut p = payload();
         let card = draw(CardPhase::Join, &p, None);
         assert_eq!(card.id, p.key);
         assert_eq!(card.owner, crate::panel::Owner::Meeting);
+        assert_eq!(card.kind, crate::panel::Kind::Meeting);
         assert_eq!(card.tone, crate::panel::Tone::Neutral);
         assert_eq!(card.kicker, "Meeting \u{b7} in 5 min");
         assert_eq!(card.title, "Design sync");
         assert_eq!(card.count, None);
+        assert_eq!(card.body, None, "the event says when and where");
+        let shown = event(&card).expect("an event");
         // 1_300 and 4_900 seconds after the epoch, eight hours behind it.
-        assert_eq!(card.body.as_deref(), Some("16:21\u{2013}17:21"));
-        assert!(card.sections.is_empty());
+        assert_eq!(shown.when, "16:21\u{2013}17:21");
+        assert_eq!(shown.date.as_deref(), Some("Today"));
+        assert_eq!(shown.calendar.as_deref(), Some("Work"));
+        assert_eq!((shown.place.as_deref(), shown.join.as_deref()), (None, None));
+        assert!(shown.people.is_empty() && shown.rsvp.is_none());
+        assert_eq!(named(&shape(&card)), [("event", false)], "no brief, nothing more");
         assert_eq!(ids(&card), [("join", "Start recording", true), ("notNow", "Not now", false)]);
+        assert_eq!(icons(&card), [Some("join"), Some("close")]);
 
         p.join_url = Some("https://us02web.zoom.us/j/123".into());
         let card = draw(CardPhase::Join, &p, None);
-        assert_eq!(card.body.as_deref(), Some("16:21\u{2013}17:21 \u{b7} Zoom"));
+        assert_eq!(event(&card).unwrap().join.as_deref(), Some("Zoom"));
         assert_eq!(
             ids(&card),
             [("join", "Join and start recording", true), ("notNow", "Not now", false)]
@@ -2296,6 +2437,8 @@ mod tests {
         assert_eq!(card.count.as_deref(), Some("12s"));
         assert_eq!(card.tone, crate::panel::Tone::Attention);
         assert_eq!(ids(&card), [("take", "Take notes", true), ("notNow", "Cancel", false)]);
+        assert_eq!(icons(&card), [Some("mic"), Some("close")]);
+        assert!(event(&card).is_some(), "the event is drawn while counting too");
     }
 
     #[test]
@@ -2306,6 +2449,7 @@ mod tests {
         assert_eq!(card.count, None);
         assert_eq!(card.tone, crate::panel::Tone::Neutral);
         assert_eq!(ids(&card), [("take", "Take notes", true), ("notNow", "Not now", false)]);
+        assert_eq!(icons(&card), [Some("mic"), Some("close")]);
     }
 
     #[test]
@@ -2315,7 +2459,7 @@ mod tests {
         assert_eq!(card.kicker, "Call");
         assert_eq!(card.title, "Call on Zoom");
         assert_eq!(card.body, None);
-        assert!(card.sections.is_empty());
+        assert!(card.blocks.is_empty(), "no event to draw: {:?}", card.blocks);
     }
 
     #[test]
@@ -2332,76 +2476,145 @@ mod tests {
     }
 
     #[test]
-    fn the_hours_are_the_persons_own() {
+    fn the_hours_and_the_day_are_the_persons_own() {
         let p = payload();
         let utc = meeting_panel(CardPhase::Join, 0, &p, None, at(NOW), &TimeZone::UTC);
-        assert_eq!(utc.body.as_deref(), Some("00:21\u{2013}01:21"));
-        let pacific = draw(CardPhase::Join, &p, None);
-        assert_eq!(pacific.body.as_deref(), Some("16:21\u{2013}17:21"));
+        assert_eq!(event(&utc).unwrap().when, "00:21\u{2013}01:21");
+        let local = draw(CardPhase::Join, &p, None);
+        assert_eq!(event(&local).unwrap().when, "16:21\u{2013}17:21");
+
+        // 20:00 UTC on Wednesday 25 November 2026 is noon in the Pacific.
+        let wednesday: jiff::Timestamp = "2026-11-25T20:00:00Z".parse().unwrap();
+        let zone = pacific();
+        let day = |start: &str| day_words(start.parse().unwrap(), wednesday, &zone);
+        assert_eq!(day("2026-11-26T01:00:00Z"), "Today", "5 pm the same day there");
+        assert_eq!(day("2026-11-26T17:00:00Z"), "Tomorrow");
+        assert_eq!(day("2026-11-27T17:00:00Z"), "Fri 27 Nov");
+        assert_eq!(day_words(wednesday, wednesday, &TimeZone::UTC), "Today");
     }
 
     #[test]
-    fn where_it_is_comes_from_the_brief_before_the_link() {
+    fn a_meeting_with_no_end_is_drawn_at_its_start() {
+        let mut p = payload();
+        p.end = None;
+        assert_eq!(event(&draw(CardPhase::Join, &p, None)).unwrap().when, "16:21");
+    }
+
+    #[test]
+    fn where_it_is_comes_from_the_brief_and_the_service_from_the_link() {
         let mut p = payload();
         p.join_url = Some("https://meet.google.com/abc-defg-hij".into());
         let mut brief = brief_for(&p);
-        assert_eq!(
-            draw(CardPhase::Join, &p, Some(&brief)).body.as_deref(),
-            Some("16:21\u{2013}17:21 \u{b7} Google Meet"),
-            "the link's own service when the brief names no room"
-        );
+        let card = draw(CardPhase::Join, &p, Some(&brief));
+        let shown = event(&card).unwrap();
+        assert_eq!(shown.join.as_deref(), Some("Google Meet"));
+        assert_eq!(shown.place, None, "the service is drawn once, as the service");
+
+        brief.location = Some("Google Meet".into());
+        let card = draw(CardPhase::Join, &p, Some(&brief));
+        assert_eq!(event(&card).unwrap().place, None, "a room that is only the service");
+
         brief.location = Some("  Room 4B  ".into());
         brief.summary = Some("Settle the Q3 budget.".into());
-        assert_eq!(
-            draw(CardPhase::Join, &p, Some(&brief)).body.as_deref(),
-            Some("16:21\u{2013}17:21 \u{b7} Room 4B\nSettle the Q3 budget.")
-        );
+        let card = draw(CardPhase::Join, &p, Some(&brief));
+        let shown = event(&card).unwrap();
+        assert_eq!(shown.place.as_deref(), Some("Room 4B"));
+        assert_eq!(shown.join.as_deref(), Some("Google Meet"));
+        assert!(card.blocks.iter().any(|b| matches!(
+            b,
+            Block::Text { heading: None, text, folded: false } if text == "Settle the Q3 budget."
+        )));
     }
 
     #[test]
     fn a_link_with_no_room_names_its_service_and_an_unknown_one_names_nothing() {
         let mut p = payload();
         p.join_url = Some("https://teams.microsoft.com/l/meetup-join/19".into());
-        assert_eq!(
-            draw(CardPhase::Join, &p, None).body.as_deref(),
-            Some("16:21\u{2013}17:21 \u{b7} Microsoft Teams")
-        );
+        let card = draw(CardPhase::Join, &p, None);
+        assert_eq!(event(&card).unwrap().join.as_deref(), Some("Microsoft Teams"));
         p.join_url = Some("https://evil.example/zoom.us".into());
-        assert_eq!(draw(CardPhase::Join, &p, None).body.as_deref(), Some("16:21\u{2013}17:21"));
+        let card = draw(CardPhase::Join, &p, None);
+        assert_eq!(event(&card).unwrap().join, None);
     }
 
     #[test]
     fn the_brief_adds_its_parts_in_the_order_that_matters() {
         let p = payload();
         let mut brief = brief_for(&p);
+        brief.summary = Some("Settle the budget.".into());
         brief.talking_points = vec![point("Talk about the Q3 budget", "Josh", false)];
+        brief.open = vec!["You owe Josh the revised deck".into()];
         brief.agenda = vec!["Budget".into(), "Hiring".into()];
         brief.people = vec![person("Josh", "Head of design at Acme"), person("Priya", "")];
         brief.context = vec!["Last met on 3 November about the launch.".into()];
         let card = draw(CardPhase::Join, &p, Some(&brief));
-        let headings: Vec<_> =
-            card.sections.iter().map(|s| (s.heading.as_str(), s.folded)).collect();
         assert_eq!(
-            headings,
-            [("To raise", false), ("Agenda", false), ("With", false), ("Context", true)]
+            named(&shape(&card)),
+            [
+                ("event", false),
+                ("people", false),
+                ("text", false),
+                ("To raise", false),
+                ("Worth covering", false),
+                ("Agenda", false),
+                ("Context", true),
+            ]
         );
 
-        let raise = &card.sections[0].items[0];
+        let raise = &list(&card, "To raise").items[0];
         assert_eq!(raise.text, "Talk about the Q3 budget");
         assert_eq!(raise.detail.as_deref(), Some("with Josh"));
         let check = raise.check.as_ref().unwrap();
         assert_eq!(check.action, format!("done:{}", brief.talking_points[0].task_id));
         assert!(!check.done);
 
-        let with = &card.sections[2].items;
-        assert_eq!(with[0].text, "Josh");
+        let (with, folded) = people(&card).unwrap();
+        assert!(!folded);
+        assert_eq!(with[0].name, "Josh");
         assert_eq!(with[0].detail.as_deref(), Some("Head of design at Acme"));
         assert_eq!(with[1].detail, None, "no line, no detail");
-        assert!(with.iter().all(|i| i.check.is_none()));
     }
 
     #[test]
-    fn what_is_open_is_on_the_card_unfolded_after_what_to_raise() {
+    fn the_people_coming_are_faces_on_the_event_with_their_answers() {
+        use karmayoga_core::mail::AttendeeResponse;
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.people = vec![
+            MeetingBriefPerson {
+                response: Some(AttendeeResponse::Accepted),
+                email: Some("josh@acme.com".into()),
+                ..person("Josh", "Head of design at Acme")
+            },
+            MeetingBriefPerson {
+                response: Some(AttendeeResponse::Declined),
+                ..person("Priya", "")
+            },
+            person("Sam", ""),
+            person("  ", "nobody"),
+        ];
+        let card = draw(CardPhase::Join, &p, Some(&brief));
+        let faces = &event(&card).unwrap().people;
+        let seen: Vec<_> = faces.iter().map(|f| (f.name.as_str(), f.status)).collect();
+        assert_eq!(
+            seen,
+            [
+                ("Josh", Some(crate::panel::Rsvp::Accepted)),
+                ("Priya", Some(crate::panel::Rsvp::Declined)),
+                ("Sam", None),
+            ],
+            "a nameless entry is nobody to draw"
+        );
+        assert!(faces.iter().all(|f| f.detail.is_none()), "faces; the people block says who");
+        assert_eq!(faces[0].email.as_deref(), Some("josh@acme.com"));
+        let (with, _) = people(&card).unwrap();
+        assert_eq!(with[0].status, Some(crate::panel::Rsvp::Accepted), "and there too");
+        assert_eq!(rsvp_of(AttendeeResponse::NeedsAction), crate::panel::Rsvp::NeedsAction);
+        assert_eq!(rsvp_of(AttendeeResponse::Tentative), crate::panel::Rsvp::Tentative);
+    }
+
+    #[test]
+    fn what_is_open_is_worth_covering_unfolded_after_what_to_raise() {
         let p = payload();
         let mut brief = brief_for(&p);
         brief.talking_points = vec![point("Talk about the Q3 budget", "Josh", false)];
@@ -2413,22 +2626,27 @@ mod tests {
         brief.agenda = vec!["Budget".into()];
         brief.context = vec!["Last met on 3 November.".into()];
         let card = draw(CardPhase::Join, &p, Some(&brief));
-        let headings: Vec<_> =
-            card.sections.iter().map(|s| (s.heading.as_str(), s.folded)).collect();
         assert_eq!(
-            headings,
-            [("To raise", false), ("Open", false), ("Agenda", false), ("Context", true)]
+            named(&shape(&card)),
+            [
+                ("event", false),
+                ("To raise", false),
+                ("Worth covering", false),
+                ("Agenda", false),
+                ("Context", true),
+            ]
         );
-        let open: Vec<_> = card.sections[1].items.iter().map(|i| i.text.as_str()).collect();
+        let open = list(&card, "Worth covering");
+        let texts: Vec<_> = open.items.iter().map(|i| i.text.as_str()).collect();
         assert_eq!(
-            open,
+            texts,
             [
                 "You owe Josh the revised deck (you said by 21 Nov)",
                 "Still open from last time: who owns the migration"
             ],
             "a blank line is not an item"
         );
-        assert!(card.sections[1].items.iter().all(|i| i.check.is_none()));
+        assert!(open.items.iter().all(|i| i.check.is_none()));
     }
 
     #[test]
@@ -2451,11 +2669,12 @@ mod tests {
         let p = payload();
         let mut brief = brief_for(&p);
         brief.agenda = vec!["  ".into(), "Budget".into()];
+        brief.summary = Some("   ".into());
         let card = draw(CardPhase::Join, &p, Some(&brief));
-        assert_eq!(card.sections.len(), 1);
-        assert_eq!(card.sections[0].heading, "Agenda");
-        assert_eq!(card.sections[0].items.len(), 1, "a blank line is not an item");
-        assert!(draw(CardPhase::Join, &p, Some(&brief_for(&p))).sections.is_empty());
+        assert_eq!(named(&shape(&card)), [("event", false), ("Agenda", false)]);
+        assert_eq!(list(&card, "Agenda").items.len(), 1, "a blank line is not an item");
+        let bare = draw(CardPhase::Join, &p, Some(&brief_for(&p)));
+        assert_eq!(named(&shape(&bare)), [("event", false)]);
     }
 
     #[test]
@@ -2465,14 +2684,17 @@ mod tests {
         brief.agenda = (1..=8).map(|n| format!("Item {n}")).collect();
         brief.people = ["A", "B", "C"].iter().map(|n| person(n, "")).collect();
         let card = draw(CardPhase::Join, &p, Some(&brief));
-        assert_eq!(card.sections[0].items.len(), 5);
-        assert!(!card.sections[0].folded);
-        assert!(!card.sections[1].folded, "three people are shown");
+        let agenda = list(&card, "Agenda");
+        assert_eq!(agenda.items.len(), 5);
+        assert!(!agenda.folded);
+        assert!(!people(&card).unwrap().1, "three people are shown");
 
         brief.people.push(person("D", ""));
         let card = draw(CardPhase::Join, &p, Some(&brief));
-        assert!(card.sections[1].folded, "four are folded");
-        assert_eq!(card.sections[1].items.len(), 4);
+        let (with, folded) = people(&card).unwrap();
+        assert!(folded, "four are folded");
+        assert_eq!(with.len(), 4);
+        assert_eq!(event(&card).unwrap().people.len(), 4, "every face is on the event");
     }
 
     #[test]
@@ -2482,7 +2704,7 @@ mod tests {
         brief.talking_points = vec![point("Budget", "Josh", true), point("Hiring", "Josh", false)];
         let card = draw(CardPhase::Ask, &p, Some(&brief));
         let done: Vec<_> =
-            card.sections[0].items.iter().map(|i| i.check.as_ref().unwrap().done).collect();
+            list(&card, "To raise").items.iter().map(|i| i.check.as_ref().unwrap().done).collect();
         assert_eq!(done, [true, false]);
     }
 
@@ -2492,8 +2714,23 @@ mod tests {
         let mut brief = brief_for(&p);
         brief.agenda = vec!["Budget".into()];
         for phase in [CardPhase::Join, CardPhase::Countdown, CardPhase::Ask] {
-            assert_eq!(draw(phase, &p, Some(&brief)).sections.len(), 1, "{phase:?}");
+            let card = draw(phase, &p, Some(&brief));
+            assert_eq!(named(&shape(&card)), [("event", false), ("Agenda", false)], "{phase:?}");
         }
+    }
+
+    #[test]
+    fn a_card_goes_out_in_the_shape_the_page_reads() {
+        let p = payload();
+        let mut brief = brief_for(&p);
+        brief.agenda = vec!["Budget".into()];
+        let json = serde_json::to_value(draw(CardPhase::Join, &p, Some(&brief))).unwrap();
+        assert_eq!(json["kind"], "meeting");
+        assert_eq!(json["blocks"][0]["type"], "event");
+        assert_eq!(json["blocks"][0]["when"], "16:21\u{2013}17:21");
+        assert_eq!(json["blocks"][1]["type"], "list");
+        assert_eq!(json["actions"][0]["icon"], "join");
+        assert!(json.get("body").is_none(), "absent, not null");
     }
 
     // ---- what the card is made from ---------------------------------------------
@@ -2515,7 +2752,7 @@ mod tests {
         brief.key = key.clone();
         inner.keep_brief(brief, at(NOW));
         let panel = inner.panel(&key, at(NOW), &zone).unwrap();
-        assert_eq!(panel.sections[0].heading, "Agenda");
+        assert_eq!(list(&panel, "Agenda").items[0].text, "Budget");
 
         inner.book.remove(&key);
         assert!(inner.panel(&key, at(NOW), &zone).is_none(), "answered since");

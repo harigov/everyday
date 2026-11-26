@@ -37,6 +37,7 @@
 //! timeouts. The whole turn is wrapped in one here instead.
 
 use crate::agent::{AgentEvent, Asker, ConfirmAnswer, Reach, Turn, fenced_as_untrusted};
+use crate::asking::{DeskAsker, DeskOrChat};
 use crate::chat::{ChatOutlet, FromRun};
 use crate::ctx::Scope;
 use crate::events::{Change, Kind, Notification, Op};
@@ -1331,9 +1332,10 @@ async fn resume(
     // Who it can ask, and where its result goes -- only for a person's own
     // routine: a dream's work is proposals, decided in the app.
     let outlet = if drafting.is_none() { outlet_for(service, routine) } else { None };
+    let desk = if drafting.is_none() { desk_for(service, routine) } else { None };
     let clock = Arc::new(WaitClock::default());
     let reach =
-        reach_for(service, vault, routine, run.conversation_id, outlet.clone(), &clock).await;
+        reach_for(service, vault, routine, run.conversation_id, outlet.clone(), desk, &clock).await;
 
     tracing::info!(routine = %routine.name, "running a routine");
     // What the tray says while this is going on. Cleared below whatever
@@ -1579,17 +1581,36 @@ fn outlet_for(service: &Arc<Service>, routine: &Routine) -> Option<Arc<dyn ChatO
     routine.delivery.chat.and_then(|link| service.chat_outlet(link))
 }
 
+/// The person at this computer, for a run of `routine` to ask on the panel
+/// ([`crate::asking`]): whenever the app has handed a desk over, for every
+/// routine but a dream, whose work is proposals decided in the app.
+fn desk_for(service: &Arc<Service>, routine: &Routine) -> Option<Arc<dyn DeskAsker>> {
+    if routine.kind.is_dream() {
+        return None;
+    }
+    service.desk_asker()
+}
+
 /// Whether a run of `routine` may wait on somebody -- their answer to a
 /// question, or their picking up a call with its result -- and so must run
 /// beside the tick rather than in it, for the reason `RoutineRuntime::detach`
-/// gives in `runtime::routine`.
+/// gives in `runtime::routine`. A run with a desk to ask may wait on the
+/// person at this computer for as long as one with a chat may wait on them
+/// there.
 fn may_wait(service: &Arc<Service>, routine: &Routine) -> bool {
-    (routine.delivery.asks() || routine.delivery.calls()) && outlet_for(service, routine).is_some()
+    let chat = (routine.delivery.asks() || routine.delivery.calls())
+        && outlet_for(service, routine).is_some();
+    chat || desk_for(service, routine).is_some()
 }
 
-/// How a run of `routine` reaches its person: an asker over `outlet` when the
-/// routine asks in its chat, and the places its result will be sent, in
-/// words for the model.
+/// How a run of `routine` reaches its person: who it may ask, and the places
+/// its result will be sent, in words for the model.
+///
+/// Who it may ask is the person in its chat on `outlet` when the routine
+/// asks there, and the person at this computer when there is a `desk`: both
+/// at once, the first answer taken ([`DeskOrChat`]), every question pausing
+/// the run's clock. With no desk it is the chat alone, exactly as before
+/// there was one.
 ///
 /// Only the places it will actually reach: a chat whose link is not running
 /// here is left out, so the model is not told its reply is going somewhere
@@ -1600,6 +1621,7 @@ async fn reach_for(
     routine: &Routine,
     conversation: Option<ConversationId>,
     outlet: Option<Arc<dyn ChatOutlet>>,
+    desk: Option<Arc<dyn DeskAsker>>,
     clock: &Arc<WaitClock>,
 ) -> Reach {
     let mut sent_to = Vec::new();
@@ -1617,7 +1639,7 @@ async fn reach_for(
     if routine.delivery.email.is_some() {
         sent_to.push("email".to_string());
     }
-    let asker = match outlet {
+    let chat = match outlet {
         Some(outlet) if routine.delivery.asks() => Some(Arc::new(RunAsker {
             outlet,
             from: FromRun { routine: routine.name.clone(), conversation, job: None },
@@ -1625,6 +1647,25 @@ async fn reach_for(
             withdrawn: service.runs_withdrawn(),
         }) as Arc<dyn Asker>),
         _ => None,
+    };
+    let asker = match desk {
+        Some(desk) => {
+            // With the person's questions sent to notifications and no chat,
+            // nobody is asked, and the run parks or refuses as it did before
+            // there was a desk: as `park_unattended` says.
+            let park = blocking({
+                let vault = vault.clone();
+                move || Ok(vault.agent_settings()?.park_unattended)
+            })
+            .await
+            .unwrap_or(false);
+            let both = DeskOrChat::new(desk, chat, routine.name.clone())
+                .park_unasked(park)
+                .until(service.runs_withdrawn())
+                .budget(crate::asking::RUN_DESK_BUDGET);
+            Some(Arc::new(Paused { asker: Arc::new(both), clock: clock.clone() }) as Arc<dyn Asker>)
+        }
+        None => chat,
     };
     Reach { asker, sent_to, typist: None, desk: None }
 }
@@ -1779,6 +1820,49 @@ impl Asker for RunAsker {
                 () = withdrawn(stop) => None,
             }
         })
+    }
+}
+
+/// An asker whose questions pause a run's clock while they wait, as
+/// [`RunAsker`]'s do: the desk's, which knows nothing of the run. Its chat
+/// half is a [`RunAsker`], which pauses the clock too; the two waits overlap,
+/// and overlapping waits are counted once.
+struct Paused {
+    asker: Arc<dyn Asker>,
+    clock: Arc<WaitClock>,
+}
+
+impl Asker for Paused {
+    fn confirm(
+        &self,
+        kind: &str,
+        subject: &str,
+        can_park: bool,
+        site: Option<&str>,
+    ) -> futures::future::BoxFuture<'static, ConfirmAnswer> {
+        let asked = self.asker.confirm(kind, subject, can_park, site);
+        let clock = self.clock.clone();
+        Box::pin(async move {
+            let _waiting = clock.wait();
+            asked.await
+        })
+    }
+
+    fn ask(
+        &self,
+        question: String,
+        choices: Vec<String>,
+    ) -> futures::future::BoxFuture<'static, Option<String>> {
+        let asked = self.asker.ask(question, choices);
+        let clock = self.clock.clone();
+        Box::pin(async move {
+            let _waiting = clock.wait();
+            asked.await
+        })
+    }
+
+    fn asks_in_chat(&self) -> bool {
+        self.asker.asks_in_chat()
     }
 }
 
@@ -2233,5 +2317,109 @@ mod tests {
         let recordings = vec![not_done, no_note, too_old, different_people];
         let found = recent_note_for_attendees(&recordings, &strings(&["priya@x.com"]), now, 90);
         assert!(found.is_none(), "{found:?}");
+    }
+
+    // ---- the desk -----------------------------------------------------------
+
+    /// A desk that puts nothing: all these tests need is that there is one.
+    struct NoDesk;
+
+    impl DeskAsker for NoDesk {
+        fn confirm(
+            &self,
+            _question: crate::asking::DeskQuestion,
+        ) -> futures::future::BoxFuture<'static, Option<ConfirmAnswer>> {
+            Box::pin(async { None })
+        }
+
+        fn ask(
+            &self,
+            _ask: crate::asking::DeskAsk,
+        ) -> futures::future::BoxFuture<'static, Option<Option<String>>> {
+            Box::pin(async { None })
+        }
+
+        fn withdraw(&self, _id: &str) {}
+    }
+
+    fn every_day_at_seven(name: &str) -> Routine {
+        let at = jiff::civil::time(7, 0, 0, 0);
+        Routine::new(
+            name,
+            "Look at my day.",
+            Trigger::Schedule { at, days: Vec::new(), day_of_month: None },
+        )
+    }
+
+    #[test]
+    fn a_routine_may_ask_at_the_desk_and_so_runs_beside_the_tick_but_a_dream_does_not() {
+        let service = Arc::new(Service::new());
+        let routine = every_day_at_seven("Morning look");
+        let dream = Routine::dream(DreamScope::Day);
+        // No desk, no chat: nobody to wait on, as before.
+        assert!(desk_for(&service, &routine).is_none());
+        assert!(!may_wait(&service, &routine));
+
+        service.set_desk_asker(Arc::new(NoDesk));
+        assert!(desk_for(&service, &routine).is_some());
+        assert!(may_wait(&service, &routine), "it may wait on the person at the desk");
+        // A dream's work is proposals, decided in the app.
+        assert!(desk_for(&service, &dream).is_none());
+        assert!(!may_wait(&service, &dream));
+    }
+
+    /// Answers after `after`, of tokio's paused clock.
+    struct Slow {
+        after: Duration,
+    }
+
+    impl Asker for Slow {
+        fn confirm(
+            &self,
+            _kind: &str,
+            _subject: &str,
+            _can_park: bool,
+            _site: Option<&str>,
+        ) -> futures::future::BoxFuture<'static, ConfirmAnswer> {
+            let after = self.after;
+            Box::pin(async move {
+                tokio::time::sleep(after).await;
+                ConfirmAnswer::Confirm
+            })
+        }
+
+        fn ask(
+            &self,
+            _question: String,
+            _choices: Vec<String>,
+        ) -> futures::future::BoxFuture<'static, Option<String>> {
+            let after = self.after;
+            Box::pin(async move {
+                tokio::time::sleep(after).await;
+                Some("Friday".to_string())
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_question_at_the_desk_pauses_the_runs_clock_while_it_waits() {
+        let clock = Arc::new(WaitClock::default());
+        let asker = Paused {
+            asker: Arc::new(Slow { after: Duration::from_secs(600) }),
+            clock: clock.clone(),
+        };
+
+        assert_eq!(
+            asker.confirm("destructive", "the deck", true, None).await,
+            ConfirmAnswer::Confirm
+        );
+        assert!(!clock.is_waiting());
+        assert_eq!(clock.waited(), Duration::from_secs(600));
+        assert_eq!(asker.ask("Which day?".into(), Vec::new()).await.as_deref(), Some("Friday"));
+        assert_eq!(
+            clock.waited(),
+            Duration::from_secs(1_200),
+            "ten minutes more, not counted as work"
+        );
     }
 }

@@ -1401,9 +1401,17 @@ pub(super) fn calendar_guidance(vault: &Vault) -> Option<String> {
 /// them something -- a phone buzzing -- and may not be answered.
 pub(super) fn unattended_context(reach: &Reach) -> String {
     let mut text = String::from("This is a scheduled run of one of their routines. ");
-    if reach.asker.is_some() {
+    if let Some(asker) = &reach.asker {
+        // Where a question goes decides how likely an answer is: a chat
+        // reaches a phone; the panel alone reaches only somebody at this
+        // computer, which overnight is nobody.
+        text.push_str(if asker.asks_in_chat() {
+            "They are not at the screen, but you can reach them in their chat. "
+        } else {
+            "A question shows on their computer, though they may well not be at it. "
+        });
         text.push_str(
-            "They are not at the screen, but you can reach them in their chat. Call \
+            "Call \
              ask_owner when you genuinely need a fact or a decision only they have, and \
              anything that deletes or sends will be put to them for approval before it \
              runs. Ask little and ask plainly: a question nobody answers within half an \

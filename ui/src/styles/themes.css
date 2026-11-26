@@ -34,6 +34,10 @@
  *   theme and at full speed in a flat one. themes.test holds every outer
  *   shadow's reach under `--shell-gap`.
  *
+ * `--face` is the interface's typeface: Inter everywhere but where a theme is
+ * about a platform's look -- Mica's is Windows 11's Segoe UI Variable, where
+ * the machine has it, and Inter where it does not.
+ *
  * A new theme copies the nearest block, gives it a new id, and adds a row to
  * `THEMES`. Nothing in a component needs to know it exists.
  */
@@ -41,6 +45,7 @@
 /* ── Paper. Warm, paper-ish greys, flat and edge to edge. A pure-white journal feels like a spreadsheet. */
 [data-theme='light'] {
   color-scheme: light;
+  --face: 'Inter Variable';
 
   --backdrop: #efede8;
   --chrome: #efede8;
@@ -97,6 +102,7 @@
 /* ── Ink. Paper's counterpart: violet-tinged charcoal, flat and edge to edge. */
 [data-theme='dark'] {
   color-scheme: dark;
+  --face: 'Inter Variable';
 
   --backdrop: #100f13;
   --chrome: #100f13;
@@ -153,6 +159,7 @@
 /* ── Lagoon. Sky, mint and lavender behind frosted white panels, with Apple's own blue. */
 [data-theme='lagoon'] {
   color-scheme: light;
+  --face: 'Inter Variable';
 
   --backdrop:
     radial-gradient(60% 70% at 4% 0%, #9fd0ff 0%, transparent 72%),
@@ -215,6 +222,7 @@
 /* ── Blossom. Cherry blossom, peach and lilac, with a rose accent. */
 [data-theme='blossom'] {
   color-scheme: light;
+  --face: 'Inter Variable';
 
   --backdrop:
     radial-gradient(60% 70% at 4% 0%, #ffbfd4 0%, transparent 72%),
@@ -277,6 +285,7 @@
 /* ── Meadow. Spring greens, lime and sea glass, with a deep jade accent. */
 [data-theme='meadow'] {
   color-scheme: light;
+  --face: 'Inter Variable';
 
   --backdrop:
     radial-gradient(60% 70% at 4% 0%, #b4ecc4 0%, transparent 72%),
@@ -339,6 +348,7 @@
 /* ── Dune. Desert light: apricot, terracotta and sand, with Paper's own amber. */
 [data-theme='dune'] {
   color-scheme: light;
+  --face: 'Inter Variable';
 
   --backdrop:
     radial-gradient(60% 70% at 4% 0%, #ffd6a0 0%, transparent 72%),
@@ -398,9 +408,74 @@
   --shadow-lg: 0 24px 56px -16px rgb(90 55 20 / 0.32), 0 6px 14px -6px rgb(90 55 20 / 0.12);
 }
 
+/* ── Mica. Windows 11 in light mode: the soft grey Mica of a taskbar and Start
+ * menu with a faint wash of the wallpaper's blue through it, layers of white
+ * over it, a hairline stroke round every surface, 8px corners and the system
+ * blue. Quieter than the other glass themes on purpose -- Mica tints, it
+ * does not glow. */
+[data-theme='mica'] {
+  color-scheme: light;
+  --face: 'Segoe UI Variable Text', 'Segoe UI', 'Inter Variable';
+
+  --backdrop:
+    radial-gradient(70% 60% at 0% 0%, #d9e6f7 0%, transparent 70%),
+    radial-gradient(60% 55% at 100% 100%, #e6e1f3 0%, transparent 72%),
+    radial-gradient(50% 45% at 100% 0%, #e3eef3 0%, transparent 70%), #f3f3f3;
+  --chrome: rgb(243 243 243 / 0.35);
+  --sidebar: rgb(243 243 243 / 0.4);
+  --surface: rgb(255 255 255 / 0.74);
+  --shell-gap: 8px;
+  --shell-radius: 8px;
+  --shell-rule: none;
+  --shell-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), 0 2px 4px rgb(0 0 0 / 0.04);
+
+  --bg: rgb(255 255 255 / 0.5);
+  --bg-sunken: rgb(0 0 0 / 0.037);
+  --bg-raised: rgb(252 252 252 / 0.96);
+  --bg-panel: rgb(255 255 255 / 0.6);
+  --bg-hover: rgb(0 0 0 / 0.037);
+  --bg-active: rgb(0 0 0 / 0.065);
+  --bg-selected: color-mix(in oklab, var(--accent) 12%, transparent);
+  --card: #fbfbfb;
+
+  --float: rgb(250 250 250 / 0.985);
+  --glass-blur: blur(30px) saturate(1.25);
+  --edge: inset 0 0 0 1px rgb(0 0 0 / 0.055);
+  --scrim: rgb(0 0 0 / 0.3);
+
+  --fg: #1b1b1b;
+  --fg-muted: #5c5c5c;
+  --fg-subtle: #767676;
+  --fg-faint: #a0a0a0;
+  --fg-on-accent: #fff;
+  --fg-on-danger: #fff;
+  --border: rgb(0 0 0 / 0.08);
+  --border-strong: rgb(0 0 0 / 0.16);
+
+  --accent: #005fb8;
+  --accent-hover: #1a6fc2;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
+  --danger: #c42b1c;
+  --success: #0f7b0f;
+  --warning: #9d5d00;
+  --info: #0067c0;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #3f8f3f;
+  --aqi-2: #a68b17;
+  --aqi-5: #7a4a9c;
+  --aqi-6: #6b1f2e;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.08), 0 0 0 1px rgb(0 0 0 / 0.03);
+  --shadow: 0 4px 8px rgb(0 0 0 / 0.12), 0 0 2px rgb(0 0 0 / 0.06);
+  --shadow-lg: 0 16px 32px rgb(0 0 0 / 0.18), 0 2px 8px rgb(0 0 0 / 0.08);
+}
+
 /* ── Aurora. Northern lights -- violet, teal and magenta -- through tinted glass. */
 [data-theme='aurora'] {
   color-scheme: dark;
+  --face: 'Inter Variable';
 
   --backdrop:
     radial-gradient(65% 60% at 0% 0%, #6d2fe0 0%, transparent 70%),
@@ -464,6 +539,7 @@
 /* ── Ember. A fire burnt low: rust, amber and plum behind tinted glass. */
 [data-theme='ember'] {
   color-scheme: dark;
+  --face: 'Inter Variable';
 
   --backdrop:
     radial-gradient(65% 60% at 0% 0%, #c2410c 0%, transparent 70%),
@@ -527,6 +603,7 @@
 /* ── Dusk. Indigo sky going plum at the edge, blue glass, and an orange to stand out against it. */
 [data-theme='dusk'] {
   color-scheme: dark;
+  --face: 'Inter Variable';
 
   --backdrop:
     radial-gradient(70% 60% at 0% 78%, #9b2f6e 0%, transparent 70%),
@@ -590,6 +667,7 @@
 /* ── Tide. Deep ocean -- teal, cyan and sea green -- with a coral accent. */
 [data-theme='tide'] {
   color-scheme: dark;
+  --face: 'Inter Variable';
 
   --backdrop:
     radial-gradient(60% 55% at 100% 5%, #0aa2b8 0%, transparent 70%),
@@ -648,4 +726,67 @@
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.35);
   --shadow: 0 6px 18px -4px rgb(0 0 0 / 0.45);
   --shadow-lg: 0 24px 56px -14px rgb(0 0 0 / 0.6);
+}
+
+/* ── Mica Dark. Windows 11 in dark mode: the charcoal of a dark taskbar and
+ * Start menu, a breath of blue through the Mica, layers a shade lighter with
+ * a faint light rim along the top, 8px corners and the light system blue --
+ * which, as Windows does, carries black text when it is a button. */
+[data-theme='mica-dark'] {
+  color-scheme: dark;
+  --face: 'Segoe UI Variable Text', 'Segoe UI', 'Inter Variable';
+
+  --backdrop:
+    radial-gradient(70% 60% at 0% 0%, #1f2b3d 0%, transparent 70%),
+    radial-gradient(60% 55% at 100% 100%, #2a2333 0%, transparent 72%),
+    radial-gradient(50% 45% at 100% 0%, #1d2a2f 0%, transparent 70%), #202020;
+  --chrome: rgb(32 32 32 / 0.3);
+  --sidebar: rgb(32 32 32 / 0.3);
+  --surface: rgb(44 44 44 / 0.62);
+  --shell-gap: 8px;
+  --shell-radius: 8px;
+  --shell-rule: none;
+  --shell-shadow: 0 0 0 1px rgb(0 0 0 / 0.3), 0 2px 4px rgb(0 0 0 / 0.22);
+
+  --bg: rgb(255 255 255 / 0.02);
+  --bg-sunken: rgb(0 0 0 / 0.2);
+  --bg-raised: rgb(44 44 44 / 0.96);
+  --bg-panel: rgb(45 45 45 / 0.5);
+  --bg-hover: rgb(255 255 255 / 0.06);
+  --bg-active: rgb(255 255 255 / 0.1);
+  --bg-selected: color-mix(in oklab, var(--accent) 20%, transparent);
+  --card: #2b2b2b;
+
+  --float: rgb(44 44 44 / 0.985);
+  --glass-blur: blur(30px) saturate(1.2);
+  --edge: inset 0 1px 0 rgb(255 255 255 / 0.07), inset 0 0 0 1px rgb(255 255 255 / 0.06);
+  --scrim: rgb(0 0 0 / 0.42);
+
+  --fg: #ffffff;
+  --fg-muted: #c8c8c8;
+  --fg-subtle: #9d9d9d;
+  --fg-faint: #6f6f6f;
+  --fg-on-accent: #000;
+  --fg-on-danger: #000;
+  --border: rgb(255 255 255 / 0.08);
+  --border-strong: rgb(255 255 255 / 0.16);
+
+  --accent: #60cdff;
+  --accent-hover: #7ad6ff;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
+  --danger: #ff99a4;
+  --success: #6ccb5f;
+  --warning: #fce100;
+  --info: #4cc2ff;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #6fcf6f;
+  --aqi-2: #d4b84a;
+  --aqi-5: #b48ad6;
+  --aqi-6: #c2566b;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow: 0 8px 16px rgb(0 0 0 / 0.36), 0 0 2px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 16px 32px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.3);
 }

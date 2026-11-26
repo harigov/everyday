@@ -46,7 +46,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::audio::engine::{AudioEngine, EngineEvent, EngineOptions, EngineSink};
 use crate::hotkey::{self, Binding, Hotkeys, KeyStatus};
-use crate::panel::{self, Action, Line, Owner, Panel, Tone};
+use crate::panel::{self, Action, Block, Kind, Mode, Owner, Panel, Speaker, Tone, Turn};
 use crate::state::AppState;
 
 /// The id of voice typing's card in the panel. There is one microphone, so one
@@ -228,55 +228,63 @@ struct Typing {
 
 /// The card for a dictation, as a function of nothing but where it has got
 /// to, so that every phase can be tested.
+///
+/// From the top: what is happening (listening, with the meter in the head;
+/// working out the words; writing them up; typed; or not), then what was
+/// heard, as one turn that is still coming while the microphone is open --
+/// heard, not said to anyone: it is going into another application -- and,
+/// when nothing could be typed, the text, whole, to be copied.
 fn card(typing: &Typing) -> Panel {
-    let button = |id: &str, label: &str, primary: bool| Action {
-        id: id.into(),
-        label: label.into(),
-        primary,
-        copy: None,
-    };
+    let cancel = || Action::new("cancel", "Cancel").icon("x");
     let mut panel = Panel {
-        id: CARD.into(),
-        owner: Owner::VoiceTyping,
         tone: Tone::Working,
-        kicker: "Voice typing".into(),
-        title: String::new(),
-        count: None,
-        body: None,
-        lines: Vec::new(),
-        meter: false,
-        sections: Vec::new(),
-        actions: vec![button("cancel", "Cancel", false)],
+        actions: vec![cancel()],
         busy: true,
+        ..Panel::new(CARD, Owner::VoiceTyping, Kind::VoiceTyping, "Voice typing", "")
     };
-    // What was heard, as one running line, while there is anything. Still
-    // coming only while the microphone is open.
-    let said = |pending: bool| match typing.heard.trim() {
-        "" => Vec::new(),
-        words => vec![Line { who: None, text: words.into(), pending }],
+    let doing = |mode: Mode, label: Option<&str>| Block::Activity {
+        mode,
+        label: label.map(str::to_string),
+        tool: None,
+    };
+    // What is happening, then what was heard as one running turn while there
+    // is anything. Still coming only while the microphone is open.
+    let and_said = |first: Block, pending: bool| {
+        let mut blocks = vec![first];
+        let words = typing.heard.trim();
+        if !words.is_empty() {
+            blocks.push(Block::Conversation {
+                turns: vec![Turn { who: Speaker::Heard, name: None, text: words.into(), pending }],
+            });
+        }
+        blocks
     };
     match typing.phase {
-        Phase::Starting => panel.title = "Getting ready…".into(),
+        Phase::Starting => {
+            panel.title = "Getting ready…".into();
+            panel.blocks = vec![doing(Mode::Starting, None)];
+        }
         Phase::Listening => {
             panel.tone = Tone::Listening;
             panel.title = "Listening".into();
             panel.body = Some(hint(typing));
-            panel.lines = said(true);
+            panel.blocks = and_said(doing(Mode::Listening, None), true);
             panel.meter = true;
             panel.busy = false;
-            panel.actions = vec![button("stop", "Stop", true), button("cancel", "Cancel", false)];
+            panel.actions = vec![Action::new("stop", "Stop").primary().icon("stop"), cancel()];
         }
         Phase::Transcribing => {
             panel.title = "Working out the words…".into();
-            panel.lines = said(false);
+            panel.blocks = and_said(doing(Mode::Working, Some("Working out the words…")), false);
         }
         Phase::Writing => {
             panel.title = "Writing…".into();
-            panel.lines = said(false);
+            panel.blocks = and_said(doing(Mode::Thinking, Some("Writing it up…")), false);
         }
         Phase::Done => {
             panel.tone = Tone::Success;
             panel.title = "Typed".into();
+            panel.blocks = vec![doing(Mode::Done, None)];
             panel.busy = false;
             panel.actions.clear();
         }
@@ -285,16 +293,17 @@ fn card(typing: &Typing) -> Panel {
             let text = typing.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
             panel.tone = Tone::Trouble;
             panel.title = message.unwrap_or("Nothing was typed.").into();
+            panel.blocks = vec![doing(Mode::Failed, None)];
             panel.busy = false;
             panel.actions.clear();
             if let Some(text) = text {
-                panel.lines = vec![Line { who: None, text: text.into(), pending: false }];
-                let copy = Action { copy: Some(text.into()), ..button("copy", "Copy", true) };
-                panel.actions.push(copy);
+                panel.blocks.push(Block::Quote { label: None, text: text.into() });
+                let copy = Action { copy: Some(text.into()), ..Action::new("copy", "Copy") };
+                panel.actions.push(copy.primary().icon("copy"));
             } else if message.is_some_and(needs_the_window) {
-                panel.actions.push(button("open", "Open Karma Yoga", true));
+                panel.actions.push(Action::new("open", "Open Karma Yoga").primary().icon("open"));
             }
-            panel.actions.push(button("dismiss", "Dismiss", false));
+            panel.actions.push(Action::new("dismiss", "Dismiss").icon("close"));
         }
     }
     panel
@@ -1544,6 +1553,44 @@ mod tests {
         panel.actions.iter().map(|a| a.id.as_str()).collect()
     }
 
+    /// The marks on a card's buttons, left to right.
+    fn marks(panel: &Panel) -> Vec<Option<&str>> {
+        panel.actions.iter().map(|a| a.icon.as_deref()).collect()
+    }
+
+    /// What the card says is happening, and in what words: its first block.
+    fn activity(panel: &Panel) -> (Mode, Option<&str>) {
+        match panel.blocks.first() {
+            Some(Block::Activity { mode, label, tool: None }) => (*mode, label.as_deref()),
+            other => panic!("an activity first, with no tool, got {other:?}"),
+        }
+    }
+
+    /// The turns of the card's conversation, none if it has none.
+    fn turns(panel: &Panel) -> Vec<&Turn> {
+        panel
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Conversation { turns } => Some(turns.iter()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// What the card quotes, whole, if anything.
+    fn quoted(panel: &Panel) -> Option<&str> {
+        panel.blocks.iter().find_map(|b| match b {
+            Block::Quote { label: None, text } => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
+    fn heard_turn(text: &str, pending: bool) -> Turn {
+        Turn { who: Speaker::Heard, name: None, text: text.into(), pending }
+    }
+
     #[test]
     fn the_talk_key_has_its_shortcut_only_while_it_is_on_and_parses() {
         let talk = |enabled, shortcut: &str| crate::talk::Config {
@@ -1573,8 +1620,11 @@ mod tests {
             let panel = card(&typing(phase));
             assert_eq!(panel.id, "voice-typing");
             assert_eq!(panel.owner, Owner::VoiceTyping);
+            assert_eq!(panel.kind, Kind::VoiceTyping);
             assert_eq!(panel.kicker, "Voice typing");
-            assert!(panel.sections.is_empty() && panel.count.is_none());
+            assert!(panel.count.is_none());
+            // Every phase says what is happening, first.
+            activity(&panel);
         }
     }
 
@@ -1583,8 +1633,10 @@ mod tests {
         let panel = card(&typing(Phase::Starting));
         assert_eq!(panel.tone, Tone::Working);
         assert_eq!(panel.title, "Getting ready…");
+        assert_eq!(activity(&panel), (Mode::Starting, None));
         assert!(panel.busy && !panel.meter);
         assert_eq!(buttons(&panel), ["cancel"]);
+        assert_eq!(marks(&panel), [Some("x")]);
         assert!(panel.actions.iter().all(|a| !a.primary));
     }
 
@@ -1593,28 +1645,29 @@ mod tests {
         let panel = card(&typing(Phase::Listening));
         assert_eq!(panel.tone, Tone::Listening);
         assert_eq!(panel.title, "Listening");
+        assert_eq!(activity(&panel), (Mode::Listening, None));
         assert_eq!(panel.body.as_deref(), Some("Press Ctrl+Alt+M to finish"));
         assert!(panel.meter && !panel.busy);
         assert_eq!(buttons(&panel), ["stop", "cancel"]);
+        assert_eq!(marks(&panel), [Some("stop"), Some("x")]);
         let primary: Vec<_> = panel.actions.iter().filter(|a| a.primary).map(|a| &a.id).collect();
         assert_eq!(primary, ["stop"]);
     }
 
     #[test]
     fn listening_says_nothing_of_words_until_there_are_some() {
-        assert!(card(&typing(Phase::Listening)).lines.is_empty());
+        assert!(turns(&card(&typing(Phase::Listening))).is_empty());
         let heard = Typing { heard: "  ".into(), ..typing(Phase::Listening) };
-        assert!(card(&heard).lines.is_empty());
+        let panel = card(&heard);
+        assert!(turns(&panel).is_empty());
+        assert_eq!(panel.blocks.len(), 1, "only what is happening: {:?}", panel.blocks);
     }
 
     #[test]
     fn listening_shows_everything_heard_as_one_line_still_coming() {
         let heard = Typing { heard: "Dear Sam, thanks for".into(), ..typing(Phase::Listening) };
         let panel = card(&heard);
-        assert_eq!(
-            panel.lines,
-            [Line { who: None, text: "Dear Sam, thanks for".into(), pending: true }]
-        );
+        assert_eq!(turns(&panel), [&heard_turn("Dear Sam, thanks for", true)]);
     }
 
     #[test]
@@ -1633,15 +1686,21 @@ mod tests {
 
     #[test]
     fn working_out_and_writing_keep_the_words_and_stop_the_caret() {
-        for (phase, title) in
-            [(Phase::Transcribing, "Working out the words…"), (Phase::Writing, "Writing…")]
-        {
+        for (phase, title, doing) in [
+            (
+                Phase::Transcribing,
+                "Working out the words…",
+                (Mode::Working, Some("Working out the words…")),
+            ),
+            (Phase::Writing, "Writing…", (Mode::Thinking, Some("Writing it up…"))),
+        ] {
             let heard = Typing { heard: "Dear Sam".into(), ..typing(phase) };
             let panel = card(&heard);
             assert_eq!(panel.tone, Tone::Working);
             assert_eq!(panel.title, title);
+            assert_eq!(activity(&panel), doing, "{phase:?}");
             assert!(panel.busy && !panel.meter && panel.body.is_none());
-            assert_eq!(panel.lines, [Line { who: None, text: "Dear Sam".into(), pending: false }]);
+            assert_eq!(turns(&panel), [&heard_turn("Dear Sam", false)]);
             assert_eq!(buttons(&panel), ["cancel"]);
         }
     }
@@ -1652,8 +1711,9 @@ mod tests {
         let panel = card(&heard);
         assert_eq!(panel.tone, Tone::Success);
         assert_eq!(panel.title, "Typed");
+        assert_eq!(activity(&panel), (Mode::Done, None));
         assert!(!panel.busy && !panel.meter);
-        assert!(panel.actions.is_empty() && panel.lines.is_empty());
+        assert!(panel.actions.is_empty() && turns(&panel).is_empty());
     }
 
     #[test]
@@ -1662,9 +1722,12 @@ mod tests {
         let panel = card(&failed(Some(why), Some("Dear Sam,")));
         assert_eq!(panel.tone, Tone::Trouble);
         assert_eq!(panel.title, why);
+        assert_eq!(activity(&panel), (Mode::Failed, None));
         assert!(!panel.busy && !panel.meter);
-        assert_eq!(panel.lines, [Line { who: None, text: "Dear Sam,".into(), pending: false }]);
+        assert_eq!(quoted(&panel), Some("Dear Sam,"), "the text, whole, in a well");
+        assert!(turns(&panel).is_empty());
         assert_eq!(buttons(&panel), ["copy", "dismiss"]);
+        assert_eq!(marks(&panel), [Some("copy"), Some("close")]);
         let copy = &panel.actions[0];
         assert!(copy.primary);
         assert_eq!(copy.copy.as_deref(), Some("Dear Sam,"));
@@ -1675,8 +1738,9 @@ mod tests {
     fn a_failure_with_nothing_to_copy_can_only_be_dismissed() {
         let panel = card(&failed(Some("Nothing was heard."), None));
         assert_eq!(panel.title, "Nothing was heard.");
-        assert!(panel.lines.is_empty());
+        assert_eq!(quoted(&panel), None);
         assert_eq!(buttons(&panel), ["dismiss"]);
+        assert_eq!(marks(&panel), [Some("close")]);
         // Text that is only space is nothing.
         assert_eq!(buttons(&card(&failed(Some("Nothing to type."), Some("  \n")))), ["dismiss"]);
         // And a failure that said nothing still says something.
@@ -1694,6 +1758,7 @@ mod tests {
             let panel = card(&failed(Some(message), None));
             assert_eq!(buttons(&panel), ["open", "dismiss"], "{message}");
             assert!(panel.actions[0].primary);
+            assert_eq!(panel.actions[0].icon.as_deref(), Some("open"));
         }
         // Text to copy is the better offer; one primary button at most.
         let both = card(&failed(Some("The vault is locked."), Some("Dear Sam,")));

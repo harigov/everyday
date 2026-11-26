@@ -84,6 +84,13 @@ export const THEMES = [
     frame: { card: '#fbf5ec', page: '#fbf5ec', text: '#24190f', subtle: '#8e7e6c' },
   },
   {
+    id: 'mica',
+    name: 'Mica',
+    scheme: 'light',
+    glass: true,
+    frame: { card: '#fbfbfb', page: '#fbfbfb', text: '#1b1b1b', subtle: '#767676' },
+  },
+  {
     id: 'dark',
     name: 'Ink',
     scheme: 'dark',
@@ -118,6 +125,13 @@ export const THEMES = [
     glass: true,
     frame: { card: '#0f3552', page: '#0f3552', text: '#effaff', subtle: '#88afc0' },
   },
+  {
+    id: 'mica-dark',
+    name: 'Mica Dark',
+    scheme: 'dark',
+    glass: true,
+    frame: { card: '#2b2b2b', page: '#2b2b2b', text: '#ffffff', subtle: '#9d9d9d' },
+  },
 ] as const satisfies readonly ThemeInfo[]
 
 export type ThemeId = (typeof THEMES)[number]['id']
@@ -138,6 +152,8 @@ export const THEME_TOKENS = [
   '--shell-radius',
   '--shell-rule',
   '--shell-shadow',
+  // The typeface the interface is set in (`--font-ui` leads with it).
+  '--face',
   // The content.
   '--bg',
   '--bg-sunken',

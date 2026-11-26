@@ -556,7 +556,11 @@ pub(super) fn chat_context(service: &str) -> String {
 /// chat, so it costs a tap.
 ///
 /// `remote` is that: a turn from a chat, or a scheduled run that asks its
-/// person in one -- the same phone, the same tap.
+/// person in one -- the same phone, the same tap. See [`asks_remotely`]. A
+/// run that can ask only at the desk, on this computer's panel, is not
+/// remote: the person there has already said in the setting whether they
+/// want to be asked, and a card nobody answers would hold the run up for half
+/// an hour to refuse what they said could just be done.
 ///
 /// A background job's turn always "asks" too, which for a turn with nobody
 /// there means a destructive call is always refused. The setting is the
@@ -564,11 +568,20 @@ pub(super) fn chat_context(service: &str) -> String {
 /// up to an hour reading strangers' pages with nobody to catch a page
 /// that talked it into something, and a job -- which reads and writes a note
 /// -- has no call to delete anything. A project's turn is the one job with
-/// somebody to ask (`remote` is then set too, by its [`Reach::asker`]), so
-/// there the question is put in their chat and they decide, as they do for a
-/// routine that asks; the job flag still keeps it from deleting unasked.
+/// somebody to ask (its [`Reach::asker`]), so there the question is put to
+/// them -- in their chat, at the desk or both -- and they decide, as they do
+/// for a routine that asks; the job flag keeps it from deleting unasked
+/// whichever way it asks.
 pub(super) fn confirms_destructive(setting: bool, remote: bool, job: bool) -> bool {
     setting || remote || job
+}
+
+/// Whether a turn counts as remote for [`confirms_destructive`]: it came
+/// through a chat (`via_chat`), or its run's `asker` puts questions in the
+/// person's chat ([`Asker::asks_in_chat`]) -- not merely that it has an
+/// asker, which since the desk may be the panel alone.
+pub(super) fn asks_remotely(via_chat: bool, asker: Option<&Arc<dyn Asker>>) -> bool {
+    via_chat || asker.is_some_and(|asker| asker.asks_in_chat())
 }
 
 /// Whether a successful call to `name` leaves something for the background
@@ -1069,7 +1082,7 @@ pub(super) async fn run(turn: Turn, route: bool) -> CommandResult<Turned> {
         // stricter rules for.
         enabled: confirms_destructive(
             settings.confirm_destructive,
-            via.is_some() || reach.asker.is_some(),
+            asks_remotely(via.is_some(), reach.asker.as_ref()),
             job.is_some() || follow_up.is_some(),
         ),
         // The switch is "don't ask me while I am here". A scheduled run and

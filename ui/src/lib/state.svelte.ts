@@ -7,7 +7,7 @@
 // component may call `api` directly for what only it needs.
 
 import { tick } from 'svelte'
-import { api, isMock, isWeb, mobileShell, newRequestId } from './api'
+import { api, hasShell, isMock, isWeb, mobileShell, newRequestId } from './api'
 import { details, tellShellTheme } from './phone.svelte'
 import { signOut } from './web'
 import { APP_ORDER, APPS, type Section } from './apps'
@@ -770,6 +770,10 @@ class AppState {
     showTheme(this.shown)
     themePref.set(this.theme)
     tellShellTheme(this.dark)
+    // The panel in the corner of the screen draws its cards in this theme.
+    // The main window's to say, on a desktop: a window of one app follows
+    // this one's choice already, and a phone or a browser has no panel.
+    if (hasShell && !mobileShell && !pinned) void api.setPanelTheme(this.shown).catch(() => {})
   }
 
   setTheme(t: typeof this.theme) {

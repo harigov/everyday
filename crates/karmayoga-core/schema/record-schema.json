@@ -12282,6 +12282,25 @@
         ],
         "type": "object"
       },
+      "RecordingNote": {
+        "description": "A line the person wrote down during a recording.",
+        "properties": {
+          "atMs": {
+            "description": "How far into the recording it was written, in milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "atMs",
+          "text"
+        ],
+        "type": "object"
+      },
       "Stage": {
         "description": "Where a recording is in the pipeline.\n\n`stage` is also a plaintext column, spelled by [`Stage::as_str`], so\nrecovery can find the stuck ones without unsealing every row.",
         "oneOf": [
@@ -12473,6 +12492,13 @@
           "string",
           "null"
         ]
+      },
+      "notes": {
+        "description": "What the person wrote down themself while it was recorded (the\npanel's recording card), in the order written. The note is written\nwith them, and keeps them.",
+        "items": {
+          "$ref": "#/$defs/RecordingNote"
+        },
+        "type": "array"
       },
       "partial": {
         "default": [],

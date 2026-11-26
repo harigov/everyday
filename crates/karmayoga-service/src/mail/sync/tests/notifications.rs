@@ -93,6 +93,32 @@ async fn all_tells_you_about_everything_but_what_you_wrote_or_already_read() {
     assert_eq!(noted(&env), ["stranger", "wanted"]);
 }
 
+/// What a lone new message is noted with is enough for the desktop's panel to
+/// show it as a message and answer it there: who sent it, from which address,
+/// in which thread and account, and when.
+#[tokio::test]
+async fn a_noted_message_says_who_sent_it_where_and_when() {
+    let (env, server) = synced_with(MailNotify::All).await;
+    arrive(&server, "who", "ada@example.com");
+
+    let mut session = FakeMailSession::new(server);
+    env.sync(&mut session).await;
+
+    let (kept, _) = env.statuses.take_new_mail(env.account_id);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let stored = env.vault.message_by_message_id_header(env.account_id, "who").unwrap().unwrap();
+    let noted = &kept[0];
+    assert_eq!(noted.message_id, stored.id.to_string());
+    assert_eq!(noted.thread_id, stored.thread_id.to_string());
+    assert_eq!(noted.account_id, env.account_id.to_string());
+    assert_eq!(noted.from_address, "ada@example.com");
+    assert_eq!(noted.date, stored.date);
+    assert_eq!(noted.snippet, "hello", "the body was fetched before it was noted");
+    assert_eq!(noted.attachments, 0);
+    assert_eq!(noted.invite, None);
+    assert_eq!(noted.to_address, None, "an account with one address");
+}
+
 #[tokio::test]
 async fn off_tells_you_nothing() {
     let (env, server) = synced_with(MailNotify::Off).await;

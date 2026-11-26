@@ -843,6 +843,78 @@ async fn a_note_is_written_by_topic_and_a_missing_section_asked_for_once() {
     assert!(note.contains("## Next steps"), "{note}");
 }
 
+/// Keeps every notice it is given.
+#[derive(Default)]
+struct Notices(Mutex<Vec<crate::events::Notification>>);
+
+impl crate::events::EventSink for Notices {
+    fn notify(&self, notification: crate::events::Notification) {
+        self.0.lock().unwrap().push(notification);
+    }
+}
+
+/// What the person wrote down on the panel during the call: the model writing
+/// the notes is told it, the note keeps it word for word, last, and the notice
+/// that the notes are ready carries what the panel's card needs.
+#[tokio::test]
+async fn what_the_owner_wrote_down_reaches_the_summary_and_stays_in_the_note() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_recording(&vault, &audio, 1, 1);
+    let mut recording = vault.recording(id).unwrap();
+    recording.notes = vec![karmayoga_core::meeting::RecordingNote {
+        at_ms: 180_000,
+        text: "Budget is 40k".into(),
+    }];
+    vault.save_recording(&recording).unwrap();
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let transcriber = FakeTranscriber {
+        limits: Limits { max_bytes: 100_000_000, max_seconds: 3_600 },
+        diarises: false,
+        reply: "so we agreed the budget".into(),
+    };
+    do_transcribe_with(&vault, &source, id, &transcriber).await.unwrap();
+    do_identify(&vault, &source, id).await.unwrap();
+
+    let summariser = Recorder {
+        answer: "## Budget\n- Agreed at 40k\n\n## Next steps\n- **Unassigned:** book the room\n"
+            .into(),
+        asked: Mutex::new(Vec::new()),
+    };
+    let notices = Notices::default();
+    do_summarise_and_write(&vault, &source, id, &summariser, &notices).await.unwrap();
+
+    let asked = summariser.asked.lock().unwrap();
+    let summary =
+        asked.iter().find(|(system, _)| system.contains("writing meeting notes")).unwrap();
+    let told = "What the owner wrote down during the meeting:\n- 3 min: Budget is 40k";
+    assert!(summary.1.contains(told), "{}", summary.1);
+
+    let recording = vault.recording(id).unwrap();
+    assert_eq!(recording.notes.len(), 1, "the recording keeps them past Done");
+    let note = vault.note(recording.note_id.unwrap()).unwrap().body.to_markdown();
+    let yours = note.find("## Your notes").expect(&note);
+    assert!(note[yours..].contains("Budget is 40k"), "{note}");
+    assert!(note.find("## Next steps").expect(&note) < yours, "last: {note}");
+
+    let notices = notices.0.lock().unwrap();
+    let ready = notices.iter().find(|n| n.title.starts_with("Notes from")).expect("announced");
+    assert_eq!(ready.key.as_deref(), Some(format!("meeting:{id}").as_str()));
+    match &ready.card {
+        Some(crate::events::NoticeCard::MeetingNotes(card)) => {
+            assert_eq!(card.recording_id, id.to_string());
+            assert_eq!(Some(card.note_id.clone()), recording.note_id.map(|n| n.to_string()));
+            assert_eq!(
+                card.summary.as_deref(),
+                Some("Agreed at 40k\nUnassigned: book the room"),
+                "the first lines, without headings or marks"
+            );
+            assert!(card.proposals.is_empty(), "a step nobody took is nobody's to accept");
+        }
+        other => panic!("expected the notes' card, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn a_calendars_area_becomes_the_notes_purpose() {
     let (_dir, vault) = test_vault();

@@ -1,5 +1,6 @@
 // Where the page's cards come from: the shell, or -- in a development build in
-// an ordinary browser, where there is no shell -- a few sample cards.
+// an ordinary browser, where there is no shell -- sample cards that answer
+// presses the way the shell's owners would.
 //
 // Decided at build time, the way `lib/api.ts` decides its `MOCK`:
 // `import.meta.env.DEV` is a literal to Vite, so a release build evaluates
@@ -10,9 +11,15 @@ import { inShell } from '../lib/platform'
 import {
   onPanelLevel,
   onPanelState,
+  onPanelTheme,
   panelAction,
+  panelDrag,
+  panelFocus,
+  panelHold,
+  panelResetPlace,
   panelResize,
   panelState,
+  panelTheme,
   type Panel,
   type PanelLevel,
 } from './panel'
@@ -25,18 +32,36 @@ export interface PanelSource {
   onState(handler: (stack: Panel[]) => void): Promise<() => void>
   /** Called about twenty times a second per card with a meter. */
   onLevel(handler: (level: PanelLevel) => void): Promise<() => void>
-  /** A button pressed or a box ticked. */
-  action(id: string, action: string, copied: boolean): Promise<void>
+  /** The theme the main window shows, resolved, or null when it has not said. */
+  theme(): Promise<string | null>
+  /** Called whenever the main window's theme changes. */
+  onTheme(handler: (theme: string | null) => void): Promise<() => void>
+  /** A button pressed, a box ticked, or `text` submitted from a box. */
+  action(id: string, action: string, copied: boolean, text?: string | null): Promise<void>
   /** How tall the cards are, in CSS pixels. */
   resize(height: number): Promise<void>
+  /** The page wants the keyboard for a box (`true`), or is done with it. */
+  focus(want: boolean): Promise<void>
+  /** The card is being read -- the pointer on it, typing in it -- or no longer. */
+  hold(id: string, held: boolean): Promise<void>
+  /** A press on a card's head: move the window with the pointer. */
+  drag(): Promise<void>
+  /** Put the panel back in its corner. */
+  resetPlace(): Promise<void>
 }
 
 const shell: PanelSource = {
   state: panelState,
   onState: onPanelState,
   onLevel: onPanelLevel,
+  theme: panelTheme,
+  onTheme: onPanelTheme,
   action: panelAction,
   resize: panelResize,
+  focus: panelFocus,
+  hold: panelHold,
+  drag: panelDrag,
+  resetPlace: panelResetPlace,
 }
 
 /** In a development build with no shell to talk to: the sample cards in `mock.ts`. */

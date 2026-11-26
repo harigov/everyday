@@ -7,6 +7,7 @@
 //! ```text
 //!   watch        the offer: online calls starting now (and "Always")
 //!   spool        sealed chunk files; begin / append / finish / discard; recovery
+//!   live         while it is recorded: the person's own notes, questions about it
 //!   pipeline     one supervised task per recording:
 //!                  vad → transcribe → identify → merge → summarise → note
 //! ```
@@ -24,6 +25,7 @@
 //! on this computer.
 
 pub mod brief;
+pub mod live;
 pub mod pipeline;
 pub mod spool;
 pub mod watch;

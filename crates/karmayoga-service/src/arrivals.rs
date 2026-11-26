@@ -67,12 +67,12 @@ use karmayoga_core::calendar::{
     AccountCalendarSource, Calendar, CalendarOrigin, Event, EventStatus,
 };
 use karmayoga_core::id::{CalendarId, MailMessageId};
-use karmayoga_core::mail::{Category, MailboxRole};
+use karmayoga_core::mail::{Body, Category, Invite, InviteMethod, MailboxRole, Message};
 use karmayoga_core::store::calendars::EventQuery;
 use karmayoga_core::{Result as CoreResult, Vault};
 
 use crate::ctx::Scope;
-use crate::events::{Level, Notification};
+use crate::events::{InviteNotice, InviteeNotice, Level, MailNotice, NoticeCard, Notification};
 use crate::mail::ai::excerpt;
 use crate::service::Service;
 
@@ -109,19 +109,118 @@ const REMIND_LOOKBACK_SECS: i64 = 2 * 60;
 /// that gained a dozen meetings should not fill it.
 const FRESH_INDIVIDUAL_CAP: usize = 3;
 
-/// A message to tell somebody about, as much of it as a notification needs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A message to tell somebody about, as much of it as a notification needs --
+/// and, for one announced on its own, as much as the desktop's panel needs to
+/// draw it as a message and answer it there ([`MailNotice`]).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct NewMail {
     pub message_id: String,
+    pub thread_id: String,
+    pub account_id: String,
     /// Already a display label -- a name where the header had one, the
     /// address otherwise. See [`sender_label`].
     pub from: String,
+    pub from_address: String,
     pub subject: String,
     /// The first words of the message: what a notification shows under the
     /// subject. A headers pass stores no body, so it fetches the body of what
     /// it is about to announce first (`passes::fetch_announced`); empty when
     /// that could not be done, or the message is too big to wait for.
     pub snippet: String,
+    /// When the sender says they sent it.
+    pub date: Timestamp,
+    /// Which of the account's addresses it came to, where the account has
+    /// more than one -- see [`came_to`].
+    pub to_address: Option<String>,
+    /// How many files it carries. Known once its body is in, which for mail
+    /// announced as it is stored is only when `fetch_announced` fetched it;
+    /// zero until then.
+    pub attachments: u32,
+    /// The invitation it carries, where it asks for an answer. Known, like
+    /// `attachments`, once its body is in.
+    pub invite: Option<InviteNotice>,
+}
+
+impl NewMail {
+    /// `message` as an announcement says it. `own` is the account's addresses,
+    /// lower-cased (`crate::mail::address::own_addresses`). What only the body
+    /// says -- the first words, the files, an invitation -- is whatever
+    /// `message` already has; a headers pass fills them in once it has fetched
+    /// the body.
+    pub fn from_message(message: &Message, own: &HashSet<String>) -> NewMail {
+        NewMail {
+            message_id: message.id.to_string(),
+            thread_id: message.thread_id.to_string(),
+            account_id: message.account_id.to_string(),
+            from: sender_label(&message.from.name, &message.from.email),
+            from_address: message.from.email.trim().to_string(),
+            subject: message.subject.clone(),
+            snippet: message.snippet.clone(),
+            date: message.date,
+            to_address: came_to(message, own),
+            attachments: u32::from(message.has_attachments),
+            invite: message.invite.as_ref().and_then(invite_notice),
+        }
+    }
+}
+
+/// Which of the account's own addresses `message` was sent to, as the message
+/// wrote it -- `hari+shop@gmail.com` rather than the account's `hari@gmail.com`
+/// -- where the account answers to more than one mailbox and so the answer
+/// tells somebody something. `None` for an account with one, and for mail
+/// that names none of them (a Bcc, a list).
+pub fn came_to(message: &Message, own: &HashSet<String>) -> Option<String> {
+    let mailboxes: HashSet<String> = own.iter().map(|o| mailbox_key(o)).collect();
+    if mailboxes.len() < 2 {
+        return None;
+    }
+    message
+        .to
+        .iter()
+        .chain(&message.cc)
+        .map(|a| a.email.trim())
+        .find(|email| mailboxes.contains(&mailbox_key(email)))
+        .map(str::to_string)
+}
+
+/// An invitation as the panel shows it, for one that asks for an answer: a
+/// `REQUEST`. A reply, a counter or a cancellation has no Accept to press.
+pub fn invite_notice(invite: &Invite) -> Option<InviteNotice> {
+    if invite.method != InviteMethod::Request {
+        return None;
+    }
+    let location = invite.location.as_deref().map(str::trim).filter(|l| !l.is_empty());
+    Some(InviteNotice {
+        summary: invite.summary.trim().to_string(),
+        start: Some(invite.start),
+        end: Some(invite.end),
+        all_day: invite.all_day,
+        location: location.map(str::to_string),
+        organizer: sender_label(&invite.organizer.name, &invite.organizer.email),
+        attendees: invite
+            .attendees
+            .iter()
+            .map(|a| InviteeNotice {
+                name: sender_label(&a.address.name, &a.address.email),
+                email: a.address.email.trim().to_string(),
+                response: Some(a.response),
+            })
+            .collect(),
+        my_response: invite.my_response,
+    })
+}
+
+/// How many of a message's parts are files somebody attached, as the thread
+/// view counts them: not an image the HTML shows inline, not a signature.
+pub fn attachment_count(body: &Body) -> u32 {
+    let count = body
+        .parts
+        .iter()
+        .filter(|part| {
+            crate::mail::view::is_attachment(part, &body.html_sanitised, body.message_id)
+        })
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 /// What a headers pass knows about one message at the moment it is stored.
@@ -335,6 +434,10 @@ fn is_recent(sent_at: Timestamp, now: Timestamp) -> bool {
 /// batch's first message: a later batch, from the next pass or from a
 /// model's own, posts its own line rather than replacing this one and losing
 /// who wrote.
+///
+/// One message also carries itself, structured ([`NoticeCard::Mail`]), for
+/// the desktop's panel to show as a message with a box to reply in. Several
+/// stay a line: a card each would be a stack of them.
 pub fn new_mail_notice(account_id: &str, mail: &[NewMail], total: usize) -> Option<Notification> {
     let total = total.max(mail.len());
     match mail {
@@ -344,7 +447,8 @@ pub fn new_mail_notice(account_id: &str, mail: &[NewMail], total: usize) -> Opti
                 .body(subject_and_snippet(one))
                 .domain(Scope::Mail)
                 .for_user()
-                .key(format!("mail:{}", one.message_id)),
+                .key(format!("mail:{}", one.message_id))
+                .card(NoticeCard::Mail(Box::new(mail_notice(account_id, one)))),
         ),
         many => {
             let preview = many
@@ -361,6 +465,28 @@ pub fn new_mail_notice(account_id: &str, mail: &[NewMail], total: usize) -> Opti
                     .key(format!("mail-new:{account_id}:{}", many[0].message_id)),
             )
         }
+    }
+}
+
+/// One message, structured, for [`NoticeCard::Mail`]. The account is the one
+/// the caller announces for, where the message did not say.
+fn mail_notice(account_id: &str, mail: &NewMail) -> MailNotice {
+    let account_id = match mail.account_id.trim() {
+        "" => account_id.to_string(),
+        own => own.to_string(),
+    };
+    MailNotice {
+        account_id,
+        message_id: mail.message_id.clone(),
+        thread_id: mail.thread_id.clone(),
+        from_name: mail.from.trim().to_string(),
+        from_address: mail.from_address.trim().to_string(),
+        subject: mail.subject.trim().to_string(),
+        snippet: mail.snippet.trim().to_string(),
+        date: mail.date,
+        to_address: mail.to_address.clone(),
+        attachments: mail.attachments,
+        invite: mail.invite.clone(),
     }
 }
 
@@ -945,7 +1071,7 @@ mod tests {
             message_id: id.into(),
             from: from.into(),
             subject: subject.into(),
-            snippet: String::new(),
+            ..NewMail::default()
         }
     }
 
@@ -1068,6 +1194,193 @@ mod tests {
         let notice = new_mail_notice("acct", &[mail("m1", "  ", "")], 1).unwrap();
         assert_eq!(notice.title, "New email");
         assert_eq!(notice.body.as_deref(), Some("(no subject)"));
+    }
+
+    fn invite(method: InviteMethod) -> Invite {
+        use karmayoga_core::mail::{Address, AttendeeResponse, InviteAttendee};
+        Invite {
+            uid: "abc@example.com".into(),
+            method,
+            summary: " Design sync ".into(),
+            start: ts(1_800_000_000),
+            end: ts(1_800_001_800),
+            all_day: false,
+            location: Some("  ".into()),
+            organizer: Address::new("", "ada@example.com"),
+            attendees: vec![
+                InviteAttendee {
+                    address: Address::new("Grace Hopper", "grace@example.com"),
+                    response: AttendeeResponse::Accepted,
+                },
+                InviteAttendee {
+                    address: Address::new("", "me@example.com"),
+                    response: AttendeeResponse::NeedsAction,
+                },
+            ],
+            my_response: Some(AttendeeResponse::NeedsAction),
+            recurrence: None,
+        }
+    }
+
+    #[test]
+    fn one_email_carries_itself_for_the_panel_and_says_the_same_as_before() {
+        let mut one = mail("m1", "Ada Lovelace", " The proof ");
+        one.thread_id = "t1".into();
+        one.from_address = "ada@example.com".into();
+        one.snippet = "  Here is the lemma.  ".into();
+        one.date = ts(1_700_000_000);
+        one.to_address = Some("hari+maths@example.com".into());
+        one.attachments = 2;
+        one.invite = invite_notice(&invite(InviteMethod::Request));
+
+        let notice = new_mail_notice("acct", std::slice::from_ref(&one), 1).unwrap();
+        assert_eq!(notice.title, "Ada Lovelace", "the notification's own words are unchanged");
+        assert_eq!(notice.body.as_deref(), Some("The proof\nHere is the lemma."));
+        assert_eq!(notice.key.as_deref(), Some("mail:m1"));
+        let Some(NoticeCard::Mail(card)) = notice.card.clone() else {
+            panic!("no card: {notice:?}")
+        };
+        assert_eq!(
+            *card,
+            MailNotice {
+                account_id: "acct".into(),
+                message_id: "m1".into(),
+                thread_id: "t1".into(),
+                from_name: "Ada Lovelace".into(),
+                from_address: "ada@example.com".into(),
+                subject: "The proof".into(),
+                snippet: "Here is the lemma.".into(),
+                date: ts(1_700_000_000),
+                to_address: Some("hari+maths@example.com".into()),
+                attachments: 2,
+                invite: one.invite.clone(),
+            }
+        );
+
+        one.account_id = "own-account".into();
+        let notice = new_mail_notice("acct", &[one], 1).unwrap();
+        let Some(NoticeCard::Mail(card)) = notice.card else { panic!("no card") };
+        assert_eq!(card.account_id, "own-account", "the message's own account wins");
+    }
+
+    #[test]
+    fn several_emails_are_a_line_and_no_card() {
+        let many =
+            new_mail_notice("acct", &[mail("m1", "Ada", "One"), mail("m2", "Grace", "Two")], 2)
+                .unwrap();
+        assert!(many.card.is_none(), "{many:?}");
+        let counted = new_mail_notice("acct", &[mail("m1", "Ada", "One")], 5).unwrap();
+        assert!(counted.card.is_none(), "one kept of five is still a batch");
+    }
+
+    #[test]
+    fn only_an_invitation_that_asks_is_carried() {
+        use karmayoga_core::mail::AttendeeResponse;
+        let asked = invite_notice(&invite(InviteMethod::Request)).unwrap();
+        assert_eq!(asked.summary, "Design sync");
+        assert_eq!(asked.organizer, "ada@example.com", "the address, where there is no name");
+        assert_eq!(asked.location, None, "a blank place is no place");
+        assert_eq!(asked.start, Some(ts(1_800_000_000)));
+        assert_eq!(asked.attendees.len(), 2);
+        assert_eq!(asked.attendees[0].name, "Grace Hopper");
+        assert_eq!(asked.attendees[0].response, Some(AttendeeResponse::Accepted));
+        assert_eq!(asked.attendees[1].name, "me@example.com");
+        assert_eq!(asked.my_response, Some(AttendeeResponse::NeedsAction));
+        for method in [InviteMethod::Cancel, InviteMethod::Reply, InviteMethod::Counter] {
+            assert!(invite_notice(&invite(method)).is_none(), "{method:?}");
+        }
+    }
+
+    fn message(to: &[&str], cc: &[&str]) -> Message {
+        use karmayoga_core::id::{AccountId, PackId, ThreadId};
+        use karmayoga_core::mail::{Address, CategorySource, MessageFlags};
+        let account_id = AccountId::new();
+        Message {
+            id: MailMessageId::new(),
+            account_id,
+            thread_id: ThreadId::new(),
+            message_id_header: "<m@example.com>".into(),
+            date: ts(1_700_000_000),
+            from: Address::new("Ada Lovelace", " ada@example.com "),
+            to: to.iter().map(|a| Address::new("", *a)).collect(),
+            cc: cc.iter().map(|a| Address::new("", *a)).collect(),
+            bcc: Vec::new(),
+            reply_to: Vec::new(),
+            subject: "The proof".into(),
+            snippet: "Here it is".into(),
+            flags: MessageFlags::default(),
+            labels: Vec::new(),
+            has_attachments: true,
+            size: 0,
+            category: None,
+            category_source: CategorySource::Rules,
+            pack: karmayoga_core::packstore::PackRef {
+                account: account_id.to_string(),
+                pack: PackId::new(),
+                offset: 0,
+                len: 0,
+            },
+            gmail: None,
+            invite: Some(invite(InviteMethod::Request)),
+        }
+    }
+
+    #[test]
+    fn a_message_announced_says_who_where_and_when() {
+        let own = HashSet::from(["me@example.com".to_string()]);
+        let msg = message(&["me@example.com"], &[]);
+        let new = NewMail::from_message(&msg, &own);
+        assert_eq!(new.message_id, msg.id.to_string());
+        assert_eq!(new.thread_id, msg.thread_id.to_string());
+        assert_eq!(new.account_id, msg.account_id.to_string());
+        assert_eq!(new.from, "Ada Lovelace");
+        assert_eq!(new.from_address, "ada@example.com");
+        assert_eq!(new.snippet, "Here it is");
+        assert_eq!(new.date, ts(1_700_000_000));
+        assert_eq!(new.to_address, None, "one address: nothing to tell apart");
+        assert_eq!(new.attachments, 1, "at least one, until the body is counted");
+        assert_eq!(new.invite.map(|i| i.summary), Some("Design sync".to_string()));
+    }
+
+    #[test]
+    fn which_address_mail_came_to_is_said_only_where_there_are_several() {
+        let one = HashSet::from(["hari@gmail.com".to_string()]);
+        let several = HashSet::from(["hari@gmail.com".to_string(), "me@work.com".to_string()]);
+        let msg = message(&["team@work.com"], &["H.ari+shop@gmail.com"]);
+        assert_eq!(came_to(&msg, &one), None);
+        assert_eq!(came_to(&msg, &several).as_deref(), Some("H.ari+shop@gmail.com"));
+        assert_eq!(came_to(&message(&["list@example.com"], &[]), &several), None, "a Bcc");
+        let same_mailbox =
+            HashSet::from(["hari@gmail.com".to_string(), "h.ari@googlemail.com".to_string()]);
+        assert_eq!(came_to(&msg, &same_mailbox), None, "two spellings of one mailbox");
+    }
+
+    #[test]
+    fn only_attached_files_are_counted() {
+        use karmayoga_core::mail::PartRef;
+        let part = |filename: Option<&str>, mime: &str, attached: bool| PartRef {
+            cid: None,
+            filename: filename.map(str::to_string),
+            mime_type: mime.into(),
+            size: 10,
+            blob: None,
+            attached,
+        };
+        let body = Body {
+            message_id: MailMessageId::new(),
+            html_sanitised: String::new(),
+            text: String::new(),
+            quoted_ranges: Vec::new(),
+            signature_range: None,
+            parts: vec![
+                part(Some("plan.pdf"), "application/pdf", true),
+                part(Some("photo.jpg"), "image/jpeg", true),
+                part(None, "text/plain", false),
+                part(None, "application/pgp-signature", true),
+            ],
+            remote_images: Vec::new(),
+        };
+        assert_eq!(attachment_count(&body), 2);
     }
 
     fn fresh(uid: &str, start: i64, end: i64) -> FreshEvent {

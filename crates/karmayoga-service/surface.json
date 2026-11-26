@@ -247,6 +247,31 @@
         {
           "name": "id",
           "required": true,
+          "type": "RecordingId"
+        },
+        {
+          "name": "text",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "recording",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "add_recording_note",
+      "orScope": null,
+      "returns": "RecordingNote",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "StoryId"
         }
       ],
@@ -540,6 +565,28 @@
       "orScope": null,
       "returns": "Op[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "RecordingId"
+        },
+        {
+          "name": "question",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "ask_recording",
+      "orScope": null,
+      "returns": "RecordingAnswer",
+      "scope": "meetings",
       "sensitive": false,
       "streams": false
     },

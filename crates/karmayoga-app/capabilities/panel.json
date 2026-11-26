@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "panel",
-  "description": "Capabilities granted to the panel, the small always-on-top window in the corner of the screen that shows a meeting about to start, voice typing listening, or a conversation from the talk key. It listens for the shell's events and calls only the three shell commands its page names (ui/src/panel/panel.ts): the cards it should show, a button pressed on one, and how tall the cards are. Not `call`: nothing the panel does goes through a service command. No dialogs, no opener, no notifications.",
+  "description": "Capabilities granted to the panel, the small always-on-top window that shows cards -- a meeting about to start, new mail to answer, a meeting being recorded, action items to accept, the assistant asking, voice typing listening, a conversation from the talk key. It listens for the shell's events and calls only the shell commands its page names (ui/src/panel/panel.ts): the cards it should show, a press or a submit on one, how tall the cards are, the keyboard for a box on a card, holding a card while it is read, moving the window and putting it back, and the theme to draw in. Not `call`: nothing the panel does goes through a service command. No dialogs, no opener, no notifications.",
   "windows": [
     "panel"
   ],
@@ -9,6 +9,11 @@
     "core:default",
     "allow-panel-state",
     "allow-panel-action",
-    "allow-panel-resize"
+    "allow-panel-resize",
+    "allow-panel-focus",
+    "allow-panel-hold",
+    "allow-panel-drag",
+    "allow-panel-reset-place",
+    "allow-panel-theme"
   ]
 }

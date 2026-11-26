@@ -204,8 +204,9 @@ struct Live {
     conversation: ConversationId,
     posture: key::Posture,
     card: card::State,
-    /// The last time the person did anything, or the session did anything
-    /// that was not waiting on them. See [`conversation::idle_expired`].
+    /// The last time the person did anything (holding the card counts), or
+    /// the session did anything that was not waiting on them. See
+    /// [`Live::left_alone`].
     quiet_since: Instant,
     drawn_at: Option<Instant>,
     /// A redraw is on its way.
@@ -296,6 +297,19 @@ impl Live {
     /// [`conversation::idle_after`].
     fn idle_limit(&self) -> Duration {
         conversation::idle_after(self.card.phase, self.woke, self.card.dictating())
+    }
+
+    /// Whether it has been left alone long enough to end, at `now`. A card
+    /// that is `held` -- the pointer on it, or its box being typed in -- is
+    /// somebody there: typing sends the session nothing, so without this a
+    /// half-typed message would vanish with the card. The quiet starts again
+    /// from the moment the card is let go.
+    fn left_alone(&mut self, held: bool, now: Instant) -> bool {
+        if held {
+            self.quiet_since = now;
+            return false;
+        }
+        conversation::idle_expired(self.card.phase, self.quiet_since, now, self.idle_limit())
     }
 }
 
@@ -527,6 +541,9 @@ fn draw(app: &AppHandle, seq: u64) {
         let Some(live) = live_for(&mut inner, seq) else { return };
         live.draw_queued = false;
         live.drawn_at = Some(Instant::now());
+        // The card never reads the clock itself: "Tomorrow" on a task the
+        // assistant is adding is said from the day it is here, now.
+        live.card.today = Some(jiff::Zoned::now().date());
         card::build(&live.card)
     };
     panel::show(app, panel);
@@ -937,14 +954,17 @@ fn on_event(app: &AppHandle, seq: u64, event: VoiceEvent) -> bool {
 }
 
 /// End a conversation that has been left alone, once it has. Looks every
-/// [`IDLE_TICK`] until the conversation is over.
+/// [`IDLE_TICK`] until the conversation is over. A card held by the person
+/// (see [`Live::left_alone`]) is not left alone.
 async fn watch_idle(app: AppHandle, seq: u64) {
     loop {
         tokio::time::sleep(IDLE_TICK).await;
+        // Asked before the talk lock is taken, so that this look never holds
+        // the panel's lock inside it.
+        let held = panel::held(&app, PANEL_ID);
         let mut inner = lock();
         let Some(live) = live_for(&mut inner, seq).filter(|live| live.active()) else { return };
-        let after = live.idle_limit();
-        if conversation::idle_expired(live.card.phase, live.quiet_since, Instant::now(), after) {
+        if live.left_alone(held, Instant::now()) {
             // Woken by name, it was always going to end soon: no note. A
             // dictation that was waited on for the long time has one.
             let note = (!live.woke || live.card.dictating()).then_some(IDLE_NOTE);
@@ -955,9 +975,11 @@ async fn watch_idle(app: AppHandle, seq: u64) {
     }
 }
 
-/// A button on the talk card was pressed. See [`crate::panel::on_action`].
-pub fn on_panel_action(app: &AppHandle, action: &str) {
+/// A button on the talk card was pressed, or words typed in its box were
+/// sent (`say`, with `text`). See [`crate::panel::on_action`].
+pub fn on_panel_action(app: &AppHandle, action: &str, text: Option<String>) {
     match action {
+        "say" => say(app, text),
         "end" => {
             let mut inner = lock();
             if let Some(live) = active_mut(&mut inner) {
@@ -980,38 +1002,82 @@ pub fn on_panel_action(app: &AppHandle, action: &str) {
         "open" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                let shown =
-                    crate::windows::show_in_main(app, Some("assistant".to_string()), None, None)
-                        .await;
+                let assistant = Some("assistant".to_string());
+                let shown = crate::windows::show_in_main(app, assistant, None, None, None).await;
                 if let Err(e) = shown {
                     tracing::debug!(error = %e, "the assistant could not be shown from the talk card");
                 }
             });
         }
-        "allow" | "deny" | "always" => answer(app, action),
+        "allow" | "deny" | "always" | "later" => answer(app, action),
         other => tracing::debug!(action = other, "a press on the talk card that means nothing"),
     }
 }
 
+/// Words typed in the card's box, sent: taken into the conversation as if
+/// they had been said -- a turn on them, shown as the person's own when the
+/// session says it heard them -- unless the session is busy with a turn and
+/// would drop them, when the box is told why and gets them back.
+fn say(app: &AppHandle, text: Option<String>) {
+    let Some(text) = text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) else {
+        return;
+    };
+    {
+        let mut inner = lock();
+        let Some(live) = active_mut(&mut inner) else { return };
+        live.quiet_since = Instant::now();
+        let refused = live.card.typing_refusal();
+        let taken = refused.is_none();
+        match refused {
+            Some(why) => live.card.typed_refused(why),
+            None => live.card.typed_taken(),
+        }
+        queue_draw(app, live);
+        if !taken {
+            return;
+        }
+    }
+    // Outside the lock, as the first turn after the wake word is handed over.
+    if !voice::shell_heard(app, text) {
+        let mut inner = lock();
+        if let Some(live) = active_mut(&mut inner) {
+            live.card.typed_refused("The conversation isn't open any more.".to_string());
+            queue_draw(app, live);
+        }
+    }
+}
+
+/// What `confirm_tool_call` is asked for call `call` when the card's
+/// `action` button is pressed: allow, don't allow, always allow the site, or
+/// leave it for later as a proposal.
+fn confirm_args(call: &str, action: &str) -> serde_json::Value {
+    json!({
+        "callId": call,
+        "approved": matches!(action, "allow" | "always"),
+        "always": action == "always",
+        "later": action == "later",
+    })
+}
+
 /// Answer the question the card is asking, through the same command the
 /// window's buttons use, and take its buttons away at once. The session sees
-/// the call finish, as it does when the window answers.
+/// the call finish, as it does when the window answers. "Later" is only an
+/// answer to a question that offered it.
 fn answer(app: &AppHandle, action: &str) {
     let call = {
         let mut inner = lock();
         let Some(live) = active_mut(&mut inner) else { return };
-        let Some(call) = live.card.confirm().map(|c| c.call_id.clone()) else { return };
+        let Some(confirm) = live.card.confirm() else { return };
+        if action == "later" && !confirm.can_park {
+            return;
+        }
+        let call = confirm.call_id.clone();
         live.card.answered();
         live.quiet_since = Instant::now();
         queue_draw(app, live);
         call
     };
-    let args = json!({
-        "callId": call,
-        "approved": action != "deny",
-        "always": action == "always",
-        "later": false,
-    });
+    let args = confirm_args(&call, action);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let session = app.state::<AppState>().session().as_session();
@@ -1469,6 +1535,23 @@ mod tests {
     }
 
     #[test]
+    fn a_card_being_typed_in_is_not_left_alone() {
+        let start = Instant::now();
+        let mut live = live(Posture::Toggled, start);
+        live.woke = true;
+        live.sync_hint();
+        hear(&mut live, &state(VoiceState::Listening), start);
+        let long_after = start + conversation::IDLE_AFTER * 3;
+        assert!(!live.left_alone(true, long_after), "somebody is typing in its box");
+        assert_eq!(live.quiet_since, long_after, "the quiet starts again from there");
+
+        // Let go, it has its whole quiet again, counted from the last hold.
+        let soon = long_after + conversation::WOKEN_IDLE_AFTER - Duration::from_secs(1);
+        assert!(!live.left_alone(false, soon));
+        assert!(live.left_alone(false, long_after + conversation::WOKEN_IDLE_AFTER));
+    }
+
+    #[test]
     fn a_woken_conversation_that_is_dictating_is_not_ended_for_a_short_quiet() {
         let start = Instant::now();
         let mut live = live(Posture::Toggled, start);
@@ -1519,6 +1602,46 @@ mod tests {
         assert_eq!(toggle_mute(&mut live), Effects::default());
         let generation = live.release_gen;
         assert_eq!(release_due(&mut live, generation), Effects::default());
+    }
+
+    #[test]
+    fn each_answer_button_asks_confirm_tool_call_for_what_it_says() {
+        let asked = |action| confirm_args("c1", action);
+        assert_eq!(
+            asked("allow"),
+            json!({"callId": "c1", "approved": true, "always": false, "later": false})
+        );
+        assert_eq!(
+            asked("deny"),
+            json!({"callId": "c1", "approved": false, "always": false, "later": false})
+        );
+        assert_eq!(
+            asked("always"),
+            json!({"callId": "c1", "approved": true, "always": true, "later": false})
+        );
+        // Later is neither a yes nor a no: the call is left as a proposal.
+        assert_eq!(
+            asked("later"),
+            json!({"callId": "c1", "approved": false, "always": false, "later": true})
+        );
+    }
+
+    #[test]
+    fn the_talk_cards_box_is_there_while_the_conversation_is_and_gone_after() {
+        let now = Instant::now();
+        let mut live = live(Posture::Toggled, now);
+        hear(&mut live, &state(VoiceState::Listening), now);
+        let has_box = |live: &Live| {
+            card::build(&live.card)
+                .blocks
+                .iter()
+                .any(|b| matches!(b, crate::panel::Block::Input(input) if input.id == "say"))
+        };
+        assert!(has_box(&live));
+        assert_eq!(live.card.typing_refusal(), None, "typed words are taken");
+        finish(&mut live, None);
+        assert!(!has_box(&live), "ending");
+        assert!(live.card.typing_refusal().is_some());
     }
 
     #[test]

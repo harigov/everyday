@@ -764,16 +764,9 @@ async fn ingest_new<S: MailSession>(
                     message: resolved.message.id,
                     uid: header.uid,
                     wanted,
-                    mail: crate::arrivals::NewMail {
-                        message_id: resolved.message.id.to_string(),
-                        from: crate::arrivals::sender_label(
-                            &resolved.message.from.name,
-                            &resolved.message.from.email,
-                        ),
-                        subject: resolved.message.subject.clone(),
-                        // No body yet: `fetch_announced` fills it in, below.
-                        snippet: String::new(),
-                    },
+                    // No body yet -- no first words, files or invitation:
+                    // `fetch_announced` fills those in, below.
+                    mail: crate::arrivals::NewMail::from_message(&resolved.message, &own),
                 });
             }
             ingest_batch.push(IngestMessage {
@@ -927,7 +920,9 @@ const ANNOUNCED_BODY_MOST: u64 = 512 * 1024;
 
 /// Fetch, seal and index the bodies of the `arrivals` that are about to be
 /// `told` about, and put each one's first words on its [`NewMail`], so the
-/// notification says what the mail is about and not only who sent it. The
+/// notification says what the mail is about and not only who sent it -- and
+/// with them how many files it carries and the invitation it asks about, for
+/// the panel that shows a lone new message whole. The
 /// session must have `mailbox` selected, as it does throughout
 /// [`ingest_new`]. What it fetches, the bodies pass at the end of the sync,
 /// or a quick pass's own fetch after its headers, no longer finds pending.
@@ -958,10 +953,13 @@ async fn fetch_announced<S: MailSession>(
         return;
     }
     match store_bodies(ctx, session, mailbox, pending, false).await {
-        Ok(snippets) => {
+        Ok(read) => {
             for arrival in arrivals.iter_mut() {
-                if let Some(snippet) = snippets.get(&arrival.message) {
-                    arrival.mail.snippet = snippet.clone();
+                if let Some(facts) = read.get(&arrival.message) {
+                    arrival.mail.snippet = facts.snippet.clone();
+                    arrival.mail.attachments = facts.attachments;
+                    arrival.mail.invite =
+                        facts.invite.as_ref().and_then(crate::arrivals::invite_notice);
                 }
             }
         }
@@ -1385,20 +1383,31 @@ async fn fetch_bodies<S: MailSession>(
     store_bodies(ctx, session, mailbox, pending, true).await.map(|_| ())
 }
 
+/// What [`store_bodies`] read in one message's body that an announcement of
+/// it says: its first words, how many files it carries, and the invitation in
+/// it, if any.
+#[derive(Debug, Clone, Default)]
+struct BodyFacts {
+    snippet: String,
+    attachments: u32,
+    invite: Option<karmayoga_core::mail::Invite>,
+}
+
 /// [`fetch_bodies`], saying so in the account's progress only when `report`
 /// -- not for the few [`fetch_announced`] takes in the middle of the
 /// headers, which would make it jump to a finished bodies phase and back --
-/// and handing back the first words of each message it stored, by id.
+/// and handing back what an announcement says of each message it stored, by
+/// id ([`BodyFacts`]).
 async fn store_bodies<S: MailSession>(
     ctx: &SyncContext<'_>,
     session: &mut S,
     mailbox: &SyncedMailbox,
     pending: Vec<(Message, Uid)>,
     report: bool,
-) -> SessionResult<HashMap<MailMessageId, String>> {
+) -> SessionResult<HashMap<MailMessageId, BodyFacts>> {
     let total = pending.len() as u64;
     let mut done = 0u64;
-    let mut snippets = HashMap::new();
+    let mut read = HashMap::new();
     if report {
         ctx.statuses.set_phase(ctx.account_id, Phase::Bodies, done, total);
     }
@@ -1486,15 +1495,22 @@ async fn store_bodies<S: MailSession>(
             let _ = vault.ingest_mail(account_id, ingests);
             let bodies: Vec<Body> = processed.iter().map(|(_, _, body)| body.clone()).collect();
             let _ = vault.save_bodies(&bodies);
-            let stored: Vec<(MailMessageId, String)> = processed
+            let stored: Vec<(MailMessageId, BodyFacts)> = processed
                 .into_iter()
-                .map(|(message, _, _)| (message.id, message.snippet))
+                .map(|(message, _, body)| {
+                    let facts = BodyFacts {
+                        attachments: crate::arrivals::attachment_count(&body),
+                        snippet: message.snippet,
+                        invite: message.invite,
+                    };
+                    (message.id, facts)
+                })
                 .collect();
             (docs, stored)
         })
         .await
         .unwrap_or_default();
-        snippets.extend(stored);
+        read.extend(stored);
 
         let indexed = docs.len() as u64;
         if !docs.is_empty() {
@@ -1517,7 +1533,7 @@ async fn store_bodies<S: MailSession>(
         tokio::task::yield_now().await;
     }
 
-    Ok(snippets)
+    Ok(read)
 }
 
 /// Every message in `mailbox` whose pack is still

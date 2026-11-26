@@ -53,6 +53,9 @@ mod fanout;
 mod files;
 #[cfg(target_os = "linux")]
 mod gnome;
+// The assistant's questions on the panel. See `askcard`.
+#[cfg(desktop)]
+mod askcard;
 mod guard;
 #[cfg(desktop)]
 mod health;
@@ -66,6 +69,9 @@ mod listen;
 mod listener;
 #[cfg(desktop)]
 mod machine_config;
+// New mail and invitations on the panel. See `mailcard`.
+#[cfg(desktop)]
+mod mailcard;
 #[cfg(desktop)]
 mod mcp;
 #[cfg(desktop)]
@@ -82,6 +88,9 @@ mod micwatch;
 mod mobile;
 mod navigation;
 mod notice;
+// A meeting's notes and action items on the panel. See `notescard`.
+#[cfg(desktop)]
+mod notescard;
 #[cfg(desktop)]
 mod offers;
 // The windows over other applications, over full-screen ones too. See `overlay`.
@@ -94,6 +103,9 @@ mod player;
 #[cfg(target_os = "linux")]
 mod portal;
 mod protocol;
+// A meeting being recorded, on the panel. See `recordcard`.
+#[cfg(desktop)]
+mod recordcard;
 mod remote;
 mod remotes;
 #[cfg(desktop)]
@@ -231,6 +243,8 @@ fn desktop_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     // service and to no other: a window on a vault on another
     // computer, and a server, have none of it. See `desk`.
     desk::install(&handle, &service);
+    // The assistant's questions on the panel. See `askcard`.
+    askcard::install(&handle, &service);
     let (_stop, listen) = tokio::sync::watch::channel(false);
     // Held for the life of the process. The scheduler stops when the
     // process does, and nothing else should be able to stop it.
@@ -291,13 +305,26 @@ fn desktop_window_event(window: &tauri::Window, event: &WindowEvent) {
         listen::window_closing(window.app_handle(), window.label());
         dictation::window_closing(window.app_handle(), window.label());
     }
+    // The panel remembers where the person drags it: its moves are
+    // weighed there, and only a drag's are kept. See `panel::window`.
+    if let WindowEvent::Moved(at) = event
+        && window.label() == panel::window::LABEL
+    {
+        panel::window::moved(window.app_handle(), *at);
+    }
     // Writing help's popup is not the application: closing it is
     // dismissing it, and it goes when the main window does, or a
     // hidden popup would keep the process alive with no way back.
     if [writing::LABEL, voicetyping::pill::LABEL, panel::window::LABEL].contains(&window.label()) {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            let _ = window.hide();
+            // The panel is taken down through what keeps it in step with
+            // its cards, or the next card would never bring it back.
+            if window.label() == panel::window::LABEL {
+                panel::window::closed(window.app_handle());
+            } else {
+                let _ = window.hide();
+            }
         }
         return;
     }
@@ -427,15 +454,23 @@ fn desktop_window_event(window: &tauri::Window, event: &WindowEvent) {
     }
 }
 
+/// The app's configuration, capabilities and interface, built into the
+/// binary once and used by the app and by the panel's child process
+/// (`panel::child`), which is this binary run again.
+#[cfg(desktop)]
+pub(crate) fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 /// Entry point shared by the desktop binary and the mobile harnesses.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // This program run again to draw the panel under X11: before anything
     // else, logging included, since its stdout is how it talks to the app.
-    // See `panel::topcard`.
+    // See `panel::child`.
     #[cfg(target_os = "linux")]
-    if std::env::args_os().nth(1).is_some_and(|arg| arg == panel::topcard::CHILD_FLAG) {
-        panel::topcard::run_child();
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == panel::child::CHILD_FLAG) {
+        panel::child::run_child();
     }
 
     let log = tracing_subscriber::fmt()
@@ -592,6 +627,16 @@ pub fn run() {
             panel::panel_state,
             panel::panel_action,
             panel::panel_resize,
+            panel::panel_focus,
+            panel::panel_hold,
+            panel::panel_drag,
+            panel::panel_reset_place,
+            panel::panel_theme,
+            // The main window's half: the theme it shows, and the panel's
+            // settings.
+            panel::set_panel_theme,
+            panel::settings::panel_settings,
+            panel::settings::set_panel_settings,
             // The two that are not JSON in and JSON out: one takes a raw
             // body, the other answers with a stream. Reading bytes back is
             // neither -- that is the `karmayoga://` handler in `protocol.rs`.
@@ -662,7 +707,7 @@ pub fn run() {
             health::health_import_apple,
         ])
         .on_window_event(desktop_window_event)
-        .build(tauri::generate_context!())
+        .build(context())
         .expect("failed to start Karma Yoga")
         .run(|_app, _event| {
             // A click on the Dock icon, or opening the app again, while the

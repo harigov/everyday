@@ -13,7 +13,7 @@
 //! differently within a release. So the shell states the *facts* and
 //! `ui/src/lib/notify.svelte.ts` decides where they go, handing what should
 //! leave the window back to [`crate::notice::post_notification`]. This side
-//! never decides for itself -- with the one exception below.
+//! never decides for itself -- with the two exceptions below.
 //!
 //! # The fourth event
 //!
@@ -30,10 +30,34 @@
 //! whether to raise one at all is decided there from whether the window is
 //! already in front. The service therefore sends no `Notification` beside
 //! an offer. See [`crate::offers::on_calendar_offer`].
+//!
+//! # Notifications the panel answers
+//!
+//! The other exception is a notification that carries what it is about,
+//! structured (`Notification::card`): one new message, or a meeting's notes
+//! with the action items found in them. Those are offered to the panel first
+//! -- [`crate::mailcard`], [`crate::notescard`] -- which shows them as cards
+//! that can be answered where they are: a reply typed and sent, an
+//! invitation accepted, an action item taken. A notification the panel takes
+//! is not emitted here, so it does not become a banner as well; one it does
+//! not (the person routed that kind to the desktop's notifications in
+//! Settings → Panel) goes to the interface as any other does. The mail card
+//! hands its notification back to the window after all when the window
+//! turns out to be in front, where a toast in it is the right answer.
+//!
+//! Both cards also give way to the desktop's Do Not Disturb
+//! ([`desktop_quiet`]): a card floats over every window, a full-screen one
+//! or a shared screen included, where the notification it stands in for
+//! would have waited quietly in the desktop's list. So while the desktop is
+//! holding notifications back, the notification goes on to the interface
+//! as it would without the panel, and the desktop holds it. And a card that
+//! goes by itself before the person did anything with it hands its
+//! notification on then, so that what it announced is still in the list
+//! when they come back to the computer.
 
-#[cfg(desktop)]
-use karmayoga_service::events::Kind;
 use karmayoga_service::events::{Change, EventSink, MeetingOffer, Notification};
+#[cfg(desktop)]
+use karmayoga_service::events::{Kind, NoticeCard};
 #[cfg(desktop)]
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
@@ -47,6 +71,65 @@ pub const CHANGED_EVENT: &str = "karmayoga://changed";
 
 /// The vault locked or unlocked.
 pub const LOCK_EVENT: &str = "karmayoga://lock-state";
+
+/// Whether the desktop is holding notifications back just now -- its Do Not
+/// Disturb -- so that nothing should float over what the person is doing.
+/// Asked by the panel's mail and notes cards before one goes up; see the
+/// module docs' "notifications the panel answers".
+///
+/// On Linux this is GNOME's switch, read where `desk::linux::settings` reads
+/// it: `show-banners` in `org.gnome.desktop.notifications`, off meaning Do Not
+/// Disturb is on. Only under GNOME, and only where the key is installed --
+/// GSettings ends the process when asked for a schema that is not, see
+/// [`crate::gnome`] -- and no otherwise.
+///
+/// A Mac has no public way to ask whether a Focus is on, and Windows' own
+/// question (`SHQueryUserNotificationState`) needs a binding this crate does
+/// not build, so both answer no: there, the person who shares a screen
+/// routes mail and notes to the desktop's notifications in Settings → Panel.
+///
+/// Blocking: GSettings waits on the settings daemon, so this is asked from a
+/// thread that may wait, never from the service's event sink itself.
+#[cfg(desktop)]
+pub(crate) fn desktop_quiet() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::gio::prelude::SettingsExt;
+        const SCHEMA: &str = "org.gnome.desktop.notifications";
+        const KEY: &str = "show-banners";
+        crate::gnome::running()
+            && crate::gnome::settings(SCHEMA, &[KEY]).is_some_and(|s| !s.boolean(KEY))
+    }
+    // Windows: the shell's own answer to "may a notification be shown now",
+    // the one its toasts follow -- no in a presentation, under Focus assist's
+    // quiet hours, or with an app full screen. Asked through shell32 itself,
+    // so the crate needs no Windows binding for one call.
+    #[cfg(windows)]
+    {
+        windows_quiet()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        false
+    }
+}
+
+/// Whether Windows says notifications should wait: `SHQueryUserNotificationState`
+/// answering busy (an app full screen), a Direct3D game, presentation mode,
+/// or quiet time. Any other answer, or a failed call, is not quiet.
+#[cfg(windows)]
+fn windows_quiet() -> bool {
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SHQueryUserNotificationState(state: *mut i32) -> i32;
+    }
+    // QUERY_USER_NOTIFICATION_STATE: QUNS_BUSY 2, QUNS_RUNNING_D3D_FULL_SCREEN
+    // 3, QUNS_PRESENTATION_MODE 4, QUNS_QUIET_TIME 6.
+    let mut state = 0i32;
+    // SAFETY: one out-parameter, written by the call; an HRESULT back.
+    let result = unsafe { SHQueryUserNotificationState(&mut state) };
+    result >= 0 && matches!(state, 2 | 3 | 4 | 6)
+}
 
 pub struct WindowSink {
     app: AppHandle,
@@ -70,6 +153,11 @@ impl WindowSink {
 
 impl EventSink for WindowSink {
     fn notify(&self, notification: Notification) {
+        // A phone has no panel: what would be a card there is a notification.
+        #[cfg(desktop)]
+        if self.offer_to_panel(&notification) {
+            return;
+        }
         self.emit(NOTIFY_EVENT, notification);
     }
 
@@ -109,6 +197,19 @@ impl EventSink for WindowSink {
 
 #[cfg(desktop)]
 impl WindowSink {
+    /// Hand a notification that says what it is about to the panel's owner
+    /// for that kind. True if it took it: the notification then goes no
+    /// further. See the module docs' "notifications the panel answers".
+    /// Never waits -- the owners decide what they can without a window and
+    /// do the rest on threads of their own.
+    fn offer_to_panel(&self, notification: &Notification) -> bool {
+        match &notification.card {
+            Some(NoticeCard::Mail(_)) => crate::mailcard::offer(&self.app, notification),
+            Some(NoticeCard::MeetingNotes(_)) => crate::notescard::offer(&self.app, notification),
+            _ => false,
+        }
+    }
+
     fn refresh_furniture(&self, kind: Kind) {
         // A calendar sync can change what the tray's optional meeting line
         // should say -- a new event landed, one moved, one was cancelled --
@@ -160,8 +261,14 @@ impl WindowSink {
         }
         // Offers to take notes name meetings, so they go with the key too:
         // pending and held-back ones, the tray's item, the notifications.
+        // So do the panel's cards that show what the vault holds: a message
+        // and its first words, a meeting's notes and its action items, the
+        // assistant's questions (which go unanswered).
         if locked {
             crate::offers::on_locked(&self.app);
+            crate::mailcard::on_locked(&self.app);
+            crate::notescard::on_locked(&self.app);
+            crate::askcard::on_locked(&self.app);
         }
     }
 }

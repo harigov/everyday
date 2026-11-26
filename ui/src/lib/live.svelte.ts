@@ -17,8 +17,20 @@
 // every store learning about the event system; one router means adding an app
 // is adding a line here.
 
-import { onChange, onLockState, onPalette, onShowInMain, onTalk, type ShowInMain } from './api'
+import {
+  api,
+  onChange,
+  onLockState,
+  onPalette,
+  onShowInMain,
+  onTalk,
+  type OpenItem,
+  type ShowInMain,
+} from './api'
+import type { Section } from './apps'
 import { ownOrigin, pinned } from './appwindow'
+import { quietly } from './errors'
+import { isoDate } from './time'
 import { onWebStream } from './web'
 import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
@@ -251,6 +263,29 @@ const TARGET_FEEDING: ReadonlySet<ChangeKind> = new Set([
   'area',
   'healthSample',
 ])
+
+/**
+ * Which app each kind of record `ShowInMain.open` can name opens in.
+ *
+ * The shell's words for them (`windows::open_item`): a card on the panel asks
+ * the main window to open the thread it is about, the note its meeting
+ * produced, the task or event it made. A kind not here has no way to be
+ * opened by id in this window, and the section the shell sent with it is
+ * shown instead.
+ */
+export const OPENS_IN: Readonly<Record<string, Section>> = {
+  thread: 'mail',
+  note: 'notes',
+  task: 'todo',
+  event: 'calendar',
+}
+
+/** The app `open` is opened in, or `null` for a kind this window cannot open
+ *  by id. Own properties only, so `constructor` is not a kind. */
+export function appForItem(open: OpenItem | null | undefined): Section | null {
+  if (!open || !Object.hasOwn(OPENS_IN, open.kind)) return null
+  return OPENS_IN[open.kind] ?? null
+}
 
 /** Which of those a change of each kind asks for. */
 export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
@@ -540,9 +575,49 @@ class Live {
    *  its lock screen -- the latest only, which is the one still wanted. */
   #asked: ShowInMain | null = null
 
-  #show({ section, settings, part }: ShowInMain) {
-    if (section) app.setSection(section)
+  #show({ section, settings, part, open }: ShowInMain) {
+    if (open && appForItem(open)) void this.#open(open, section)
+    else if (section) app.setSection(section)
     else if (isSettingsTab(settings)) panels.openSettings(settings, part ?? null)
+  }
+
+  /**
+   * Open one record in its app -- the thread a mail card on the panel was
+   * about, the note a notes card was -- the way a link to it inside this
+   * window would: switch to the app, then that app's own way of opening one.
+   * Anything that goes wrong leaves the app on screen (or `section`, if it
+   * could not be shown), not an error about a card that has already gone.
+   */
+  async #open({ kind, id }: OpenItem, section: Section | null) {
+    try {
+      switch (kind) {
+        case 'thread':
+          await mail.openFromElsewhere(id)
+          return
+        case 'note':
+          if (await app.goTo('notes')) await notes.openNote(id)
+          return
+        case 'task':
+          // Every open task, since the card cannot say which list it is in;
+          // the detail pane opens beside it either way.
+          if (!(await app.goTo('todo'))) return
+          await todo.setScope({ kind: 'all' })
+          await todo.open(id)
+          return
+        case 'event': {
+          if (!(await app.goTo('calendar'))) return
+          // On the day it starts, picked out in the rail: an event the
+          // grid has not loaded is not one the rail can draw.
+          const event = await api.event(id)
+          calendar.goto(event.allDay ? event.localDate : isoDate(new Date(event.start)))
+          calendar.selection = { kind: 'event', id }
+          return
+        }
+      }
+    } catch (e) {
+      await quietly(e)
+      if (section && app.section !== section) app.setSection(section)
+    }
   }
 
   #note(change: ChangeEvent) {

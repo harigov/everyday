@@ -1826,6 +1826,18 @@
       "events": []
     },
     {
+      "command": "add_recording_note",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "recording",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "save_agent_settings",
       "events": [
         {

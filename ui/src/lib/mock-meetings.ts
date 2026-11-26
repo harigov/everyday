@@ -40,7 +40,9 @@ import type {
   ModelBenchmark,
   Note,
   Recording,
+  RecordingAnswer,
   RecordingId,
+  RecordingNote,
   RecordingQuery,
   Segment,
   Speaker,
@@ -742,6 +744,46 @@ export function mockRetryRecording(id: RecordingId): Recording {
 
 export function mockDiscardRecording(id: RecordingId): void {
   recordings = recordings.filter((r) => r.id !== id)
+}
+
+/** A line written on the panel's recording card: kept on the recording, at
+ *  how far into it it was written. Refused once it has stopped, as the real
+ *  one is. */
+export function mockAddRecordingNote(id: RecordingId, text: string): RecordingNote {
+  const r = recordings.find((x) => x.id === id)
+  if (!r) throw new VaultError('notFound', 'no such recording')
+  if (r.stage.type !== 'recording') {
+    throw new VaultError('invalid', 'That meeting is no longer being recorded.')
+  }
+  const line = text.trim()
+  if (!line) throw new VaultError('invalid', 'There is nothing to write down.')
+  const note: RecordingNote = {
+    atMs: Math.max(0, Date.now() - Date.parse(r.startedAt)),
+    text: line,
+  }
+  r.notes = [...(r.notes ?? []), note]
+  r.updatedAt = new Date().toISOString()
+  return note
+}
+
+/** A question about the meeting so far. Nothing is transcribed in a browser,
+ *  so the answer says so, as the real one does before anything is heard. */
+export async function mockAskRecording(
+  id: RecordingId,
+  question: string,
+): Promise<RecordingAnswer> {
+  const r = recordings.find((x) => x.id === id)
+  if (!r) throw new VaultError('notFound', 'no such recording')
+  if (!question.trim()) throw new VaultError('invalid', 'Ask something about the meeting.')
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  if (r.partial.length === 0) {
+    return {
+      answer: 'Nothing has been transcribed yet, so there is nothing to go on.',
+      heard: false,
+    }
+  }
+  const last = r.partial[r.partial.length - 1]!
+  return { answer: `So far the last thing said was: “${last.text}”`, heard: true }
 }
 
 export function mockGetTranscript(noteId: string): Transcript | null {
