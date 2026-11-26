@@ -68,6 +68,8 @@
 
 use crate::error::{Error, Result};
 use crate::library::{ExternalRating, FieldType, Item, Kind, Link};
+use crate::markup::strip_tags;
+use crate::text::one_line;
 use crate::timestamped::Timestamped;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -963,22 +965,11 @@ pub fn http_url(url: &str) -> Result<String> {
     }
 }
 
-/// Percent-encode for a query string. Unreserved characters survive;
-/// everything else, spaces and ampersands very much included, does not.
-pub fn encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 8);
-    for byte in s.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
+/// Percent-encode for a query string: re-exported here because other crates
+/// reach it by this path. See [`crate::urlenc::encode`].
+pub use crate::urlenc::encode;
 
-/// The inverse, tolerant of malformed input: a stray `%` is a `%`.
+/// The inverse of [`encode`], tolerant of malformed input: a stray `%` is a `%`.
 fn decode_percent(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -1104,48 +1095,18 @@ fn decode_entities(s: &str) -> String {
 /// the Unicode tag block, which can spell out a whole sentence in nothing at
 /// all. The set `webpage::tidy` keeps from a model, and kept out of the
 /// vault for the same reason: what the card cannot show, the assistant can
-/// still read. Joiners stay, because emoji are built from them.
+/// still read. The characters themselves are [`crate::hidden::is_hidden`]'s,
+/// so the two lists cannot drift apart. Joiners stay, because emoji are built
+/// from them.
 pub(crate) fn is_invisible(c: char) -> bool {
-    (c.is_control() && c != '\n' && c != '\t')
-        || matches!(
-            c,
-            '\u{00AD}'
-                | '\u{200B}'
-                | '\u{200E}'
-                | '\u{200F}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
-                | '\u{FEFF}'
-                | '\u{E0000}'..='\u{E007F}'
-        )
-}
-
-/// Remove any markup inside a run of text, leaving the words.
-fn strip_tags(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut inside = false;
-    for c in s.chars() {
-        match c {
-            '<' => inside = true,
-            '>' => inside = false,
-            c if !inside => out.push(c),
-            _ => {}
-        }
-    }
-    out
+    (c.is_control() && c != '\n' && c != '\t') || crate::hidden::is_hidden(c)
 }
 
 /// Markup in, words out: the tags dropped, the entities read, and every run
 /// of white space made one space. For a blurb a source or a file wrote in
 /// HTML and a card shows as a line of text.
 pub(crate) fn plain_text(markup: &str) -> String {
-    squash(&decode_entities(&strip_tags(markup)))
-}
-
-/// Every run of white space made one space, and the ends trimmed.
-pub(crate) fn squash(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    one_line(&decode_entities(&strip_tags(markup)))
 }
 
 /// Does this shelf keep DOIs -- is it Articles, or has somebody given theirs a
@@ -1211,12 +1172,26 @@ pub(crate) fn year_from_text(text: &str) -> Option<i16> {
     }
     None
 }
+
 #[cfg(test)]
 mod tests {
     use super::sources::duckduckgo::tests::DDG;
     use super::*;
     use crate::KindId;
     use crate::library::{ItemStatus, default_kinds};
+
+    #[test]
+    fn what_hidden_hides_is_invisible_here_too() {
+        // The two lists once drifted: the Arabic letter mark and the Mongolian
+        // vowel separator were stripped from a card's words but not from a
+        // search result's.
+        for c in ('\0'..=char::MAX).filter(|c| crate::hidden::is_hidden(*c)) {
+            assert!(is_invisible(c), "{c:?}");
+        }
+        assert!(is_invisible('\u{061C}') && is_invisible('\u{180E}'));
+        assert!(is_invisible('\u{0007}') && !is_invisible('\n') && !is_invisible('\t'));
+        assert!(!is_invisible('a') && !is_invisible('\u{200D}'), "joiners stay");
+    }
 
     pub(crate) fn kind(slug: &str) -> Kind {
         default_kinds().into_iter().find(|k| k.slug == slug).expect("a seeded kind")

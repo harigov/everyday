@@ -13,9 +13,10 @@
   // be added.
 
   import { health } from '../lib/health.svelte'
-  import { focusOnMount, trapFocus } from '../lib/focus'
+  import { focusOnMount } from '../lib/focus'
   import { toLocalInputValue } from '../lib/format'
-  import { closesOnBack, phone } from '../lib/phone.svelte'
+  import { phone } from '../lib/phone.svelte'
+  import Sheet from './Sheet.svelte'
   import type { Metric } from '../lib/types'
 
   interface Choice {
@@ -65,12 +66,6 @@
     if (!busy) health.readingOpen = false
   }
 
-  // Back, on a phone, closes the sheet as Cancel does.
-  closesOnBack(
-    () => phone.on,
-    () => close(),
-  )
-
   async function save() {
     if (!positive(value) || (pressure && !positive(second)) || !timeOk || busy) return
     if (pressure && second !== null && value < second) {
@@ -97,15 +92,8 @@
   }
 </script>
 
-<svelte:window
-  onkeydown={(e: KeyboardEvent) => {
-    if (e.key === 'Escape') close()
-  }}
-/>
-
-<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim" onclick={close}></div>
-<div class="sheet" role="dialog" aria-modal="true" aria-label="Add a reading" use:trapFocus>
+<!-- Back, on a phone, closes the sheet as Cancel does. -->
+<Sheet label="Add a reading" onclose={close} backWhen={() => phone.on}>
   <form
     onsubmit={(e) => {
       e.preventDefault()
@@ -205,7 +193,7 @@
       </button>
     </div>
   </form>
-</div>
+</Sheet>
 
 <style>
   h2 {

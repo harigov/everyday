@@ -40,7 +40,6 @@ use crate::money::{
 use crate::record::RecordKind;
 use crate::store::JournalStore;
 use crate::store::money::MoneyStore;
-use crate::store::secrets::SecretStore;
 use jiff::civil::Date;
 use jiff::{Span, Timestamp};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -93,7 +92,7 @@ impl Vault {
     /// forever on the lock it is holding.
     pub fn money_key(&self, identity: &str) -> Result<String> {
         let key = self.derive_subkey(MONEY_KEY_LABEL)?;
-        Ok(keyed(&key, identity))
+        Ok(key.keyed_id(identity))
     }
 
     // ---- credentials ----------------------------------------------------
@@ -133,16 +132,14 @@ impl Vault {
         }
         let bytes = serde_json::to_vec(&creds)
             .map_err(|e| Error::Invalid(format!("the Plaid keys could not be sealed: {e}")))?;
-        self.with_secrets_for_money(|s| {
-            s.put_secret(PLAID_KEYS_OWNER_KIND, PLAID_KEYS_OWNER_ID, &bytes)
-        })
+        self.with_secrets(|s| s.put_secret(PLAID_KEYS_OWNER_KIND, PLAID_KEYS_OWNER_ID, &bytes))
     }
 
     /// Forget the Plaid credentials. Links stay, and stop syncing until
     /// credentials are back.
     pub fn clear_plaid_credentials(&self) -> Result<()> {
         self.writable()?;
-        self.with_secrets_for_money(|s| s.delete_secret(PLAID_KEYS_OWNER_KIND, PLAID_KEYS_OWNER_ID))
+        self.with_secrets(|s| s.delete_secret(PLAID_KEYS_OWNER_KIND, PLAID_KEYS_OWNER_ID))
     }
 
     /// The Plaid credentials, whole. **One of the two doors** -- see the
@@ -156,21 +153,13 @@ impl Vault {
 
     /// A link's access token. **The other door.**
     pub fn bank_link_access(&self, id: BankLinkId) -> Result<AccessToken> {
-        let bytes = self.with_secrets_for_money(|s| {
-            s.get_secret(BANK_LINK_SECRET_OWNER_KIND, &id.to_string())
-        })?;
+        let bytes =
+            self.with_secrets(|s| s.get_secret(BANK_LINK_SECRET_OWNER_KIND, &id.to_string()))?;
         let bytes =
             bytes.ok_or_else(|| Error::Invalid("this bank needs to be connected again".into()))?;
         String::from_utf8(bytes)
             .map(AccessToken)
             .map_err(|_| Error::Invalid("a stored bank token could not be read".into()))
-    }
-
-    fn with_secrets_for_money<T>(
-        &self,
-        f: impl FnOnce(&dyn SecretStore) -> Result<T>,
-    ) -> Result<T> {
-        self.with_domain(Domain::Secrets, |s| s.secrets().map(f))
     }
 
     // ---- links ----------------------------------------------------------
@@ -262,7 +251,7 @@ impl Vault {
         self.writable()?;
         validate_link(link)?;
         self.write(|u| {
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let money = u.money()?;
             let mut stored = money.get_link(link.id)?;
             // Switched back on: due now, rather than whenever the refresher
             // last parked it while it was paused.
@@ -370,7 +359,7 @@ impl Vault {
         let name = name_text("an account's name", &account.name)?;
         let today = today();
         self.write(|u| {
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let money = u.money()?;
             let mut stored = money.get_account(account.id)?;
             let now = Timestamp::now();
             stored.name = name;
@@ -428,7 +417,7 @@ impl Vault {
     pub fn delete_bank_account(&self, id: BankAccountId) -> Result<()> {
         self.writable()?;
         self.write(|u| {
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let money = u.money()?;
             if !money.get_account(id)?.is_manual() {
                 return Err(Error::Invalid(
                     "an account from a connected bank cannot be deleted -- the next sync would \
@@ -543,7 +532,7 @@ impl Vault {
             .transpose()?;
         let note = patch.note.as_deref().map(|n| person_text("a note", n, MAX_NOTE)).transpose()?;
         let changed = self.write(|u| {
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let money = u.money()?;
             if let Some(Some(category)) = patch.category {
                 existing_category(money, category)?;
             }
@@ -598,8 +587,8 @@ impl Vault {
         let note = person_text("a note", &new.note, MAX_NOTE)?;
         sane_amount("that amount", new.amount)?;
         let txn = self.write(|u| {
-            let key = u.cipher.derive_subkey(MONEY_KEY_LABEL);
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let key = u.subkey(MONEY_KEY_LABEL);
+            let money = u.money()?;
             let account = money.get_account(new.account_id)?;
             if !account.is_manual() {
                 return Err(Error::Invalid(
@@ -614,7 +603,7 @@ impl Vault {
             let id = TxnId::new();
             let mut txn = Txn::new(
                 account.id,
-                keyed(&key, &format!("manual:{id}")),
+                key.keyed_id(&format!("manual:{id}")),
                 new.date,
                 new.amount,
                 account.currency.clone(),
@@ -654,7 +643,7 @@ impl Vault {
             return Ok(());
         }
         let deleted = self.write(|u| {
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let money = u.money()?;
             let linked: HashSet<BankAccountId> = money
                 .list_accounts()?
                 .into_iter()
@@ -705,8 +694,8 @@ impl Vault {
             )));
         }
         let (report, added) = self.write(|u| {
-            let key = u.cipher.derive_subkey(MONEY_KEY_LABEL);
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let key = u.subkey(MONEY_KEY_LABEL);
+            let money = u.money()?;
             let target = money.get_account(account)?;
             if !target.is_manual() {
                 return Err(Error::Invalid(
@@ -745,7 +734,7 @@ impl Vault {
                 } else {
                     format!("import:{provider_id}")
                 };
-                let dedupe = keyed(&key, &identity);
+                let dedupe = key.keyed_id(&identity);
                 // `held` takes this file's own keys too, so a FITID that a
                 // file repeats lands once.
                 if !held.insert(dedupe.clone()) {
@@ -811,8 +800,8 @@ impl Vault {
         let applied = self.write(|u| {
             // Derived here, not through `money_key`: that takes the state
             // lock this closure already holds.
-            let key = u.cipher.derive_subkey(MONEY_KEY_LABEL);
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let key = u.subkey(MONEY_KEY_LABEL);
+            let money = u.money()?;
             if money.get_link(link)?.paused {
                 // Paused while the delta was on its way: say so, so the cursor
                 // stays where it was and the delta arrives again on unpause.
@@ -849,7 +838,7 @@ impl Vault {
     pub fn ensure_money_defaults(&self) -> Result<()> {
         self.writable()?;
         let written = self.write(|u| {
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let money = u.money()?;
             if !money.list_categories()?.is_empty() {
                 return Ok(Vec::new());
             }
@@ -892,7 +881,7 @@ impl Vault {
             }
         }
         self.write(|u| {
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let money = u.money()?;
             if !category.archived {
                 let folded = category.name.to_lowercase();
                 if money.list_categories()?.iter().any(|other| {
@@ -925,7 +914,7 @@ impl Vault {
     pub fn delete_money_category(&self, id: MoneyCategoryId) -> Result<()> {
         self.writable()?;
         let (txns, rule_ids) = self.write(|u| {
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let money = u.money()?;
             let now = Timestamp::now();
             let mut txns: Vec<Txn> = money
                 .txns(&[], None, None)?
@@ -1009,7 +998,7 @@ impl Vault {
     pub fn apply_money_rules(&self, only: Option<MoneyRuleId>) -> Result<u32> {
         self.writable()?;
         let changed = self.write(|u| {
-            let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
+            let money = u.money()?;
             let rules = ordered_rules(money)?;
             if rules.is_empty() {
                 return Ok(Vec::new());
@@ -1176,13 +1165,6 @@ fn hint(client_id: &str) -> String {
         return String::new();
     }
     chars[chars.len() - 4..].iter().collect()
-}
-
-/// The dedupe key for `identity` under an already-derived money key: what
-/// [`Vault::money_key`] answers, for code that holds the state lock and so
-/// cannot call it.
-fn keyed(key: &SecretKey, identity: &str) -> String {
-    blake3::keyed_hash(key.expose(), identity.as_bytes()).to_hex()[..32].to_string()
 }
 
 /// Today, where this computer is: the day a balance snapshot is filed under.
@@ -1474,7 +1456,7 @@ fn apply_sync(
     }
     let account_of: HashMap<&str, (BankAccountId, &str)> =
         mine.iter().map(|(pid, a)| (pid.as_str(), (a.id, a.currency.as_str()))).collect();
-    let plaid_key = |provider_id: &str| keyed(key, &format!("plaid:{provider_id}"));
+    let plaid_key = |provider_id: &str| key.keyed_id(&format!("plaid:{provider_id}"));
     let usable = |id: &str| !id.is_empty() && id.chars().count() <= MAX_PROVIDER_ID;
 
     // ---- transactions: upserts, then removals ---------------------------

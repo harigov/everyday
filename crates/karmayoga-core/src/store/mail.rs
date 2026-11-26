@@ -200,7 +200,7 @@ pub trait MailStore: Send + Sync {
     /// mailbox (one Gmail label removed while another still holds the same
     /// physical message) is not dead and is not in the result. What the
     /// caller does with it is not this trait's business -- see
-    /// `karmayoga_service::mailsync::passes` for the sync engine's own
+    /// `karmayoga_service::mail::sync::passes` for the sync engine's own
     /// removal path, which is what actually tells the pack store to mark
     /// each one dead and the search index to forget it.
     fn remove_uids(
@@ -298,7 +298,7 @@ pub trait MailStore: Send + Sync {
     fn merge_threads(&self, keep: ThreadId, others: &[ThreadId]) -> Result<()>;
 
     /// One message by its own id, headers and flags only — never its body.
-    /// What `karmayoga-service::mailview` reads to find a message's sender
+    /// What `karmayoga-service::mail::view` reads to find a message's sender
     /// before it will answer a `remote_image` request for it: a permission
     /// check needs the `From` address, and a thread view already has a
     /// `Vec<Message>` in hand for everything else, so this exists only for
@@ -530,7 +530,7 @@ pub trait MailStore: Send + Sync {
     /// is never zero, even for an empty message, because the AEAD overhead
     /// alone is non-zero; `karmayoga-service`'s sync engine is the one place
     /// that writes and reads this sentinel by name, as
-    /// `mailsync::ingest::pending_pack_ref`/`is_pending`) -- so this is a
+    /// `mail::sync::ingest::pending_pack_ref`/`is_pending`) -- so this is a
     /// query over a clear column, the same terms [`MailStore::uid_set`] and
     /// [`MailStore::unread_counts`] already run on, not a decrypt of every
     /// row in the mailbox the way scanning [`MailStore::message_by_uid`]
@@ -687,7 +687,7 @@ pub trait MailStore: Send + Sync {
     /// is local-only, per the plan's phase 7 section.
     fn set_thread_snoozed_until(&self, thread: ThreadId, until: Option<Timestamp>) -> Result<()>;
 
-    /// Record that `karmayoga_service::mailai`'s categorisation pass has now
+    /// Record that `karmayoga_service::mail::ai`'s categorisation pass has now
     /// asked about `thread`, at `message_count` -- see
     /// [`crate::mail::Thread::ai_categorize_asked_at_count`]. A no-op if
     /// `thread` has since been deleted (its last message removed between
@@ -869,7 +869,7 @@ pub trait MailStore: Send + Sync {
     /// all -- the vault's single-writer invariant is what every caller
     /// today relies on to rule that out). Concretely: `compact`, then
     /// `remap_packs`, then `drop_packs` -- exactly the sequence
-    /// `karmayoga_service::mailsync::task` runs between an account's sync
+    /// `karmayoga_service::mail::sync::task` runs between an account's sync
     /// passes; see that module's own docs for where and when.
     fn remap_packs(&self, account: AccountId, remap: &[(PackRef, PackRef)]) -> Result<()>;
 

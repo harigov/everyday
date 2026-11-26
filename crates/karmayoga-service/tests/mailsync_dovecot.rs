@@ -2,7 +2,7 @@
 //! throwaway Dovecot container (see the `Makefile`), this file seeds it with
 //! about fifty messages -- an attachment and a three-deep reply chain among
 //! them -- syncs them into a real SQLite vault with
-//! [`karmayoga_service::mailsync::passes::sync_once`], and asserts on what
+//! [`karmayoga_service::mail::sync::passes::sync_once`], and asserts on what
 //! the vault, the pack store and the search index say afterwards.
 //!
 //! Gated exactly the way `karmayoga-mail`'s own `imap_dovecot.rs` is: without
@@ -20,9 +20,9 @@ use karmayoga_core::account::{Account, AccountSecret, AuthMethod, Provider};
 use karmayoga_core::store::mail::ThreadFilter;
 use karmayoga_mail::imap::{self, Security};
 use karmayoga_mail::session::{Credential, Flags, MailSession};
-use karmayoga_service::mailsync::discovery::LabelMailboxes;
-use karmayoga_service::mailsync::ingest::ThreadIndex;
-use karmayoga_service::mailsync::passes::{self, SyncContext};
+use karmayoga_service::mail::sync::discovery::LabelMailboxes;
+use karmayoga_service::mail::sync::ingest::ThreadIndex;
+use karmayoga_service::mail::sync::passes::{self, SyncContext};
 
 struct Config {
     host: String,
@@ -379,7 +379,7 @@ fn smtp_config() -> Option<SmtpConfig> {
 
 /// A minimal [`karmayoga_mail::outbox::Sender`] for this test only: connects
 /// to Mailpit in the clear, the same way `smtp_mailpit.rs` does, rather
-/// than through the production `mailsync::sender::LazySmtpSender`, which
+/// than through the production `mail::sync::sender::LazySmtpSender`, which
 /// only ever speaks TLS -- Mailpit's plaintext port has no certificate to
 /// offer it. Lazy and cached on the same terms the production sender is,
 /// for the same reason: most of this test's own drains never send anything.
@@ -596,9 +596,10 @@ async fn write_actions_sync_through_a_real_server() {
     // ---- mark read, then verify the flag on the server ----
     call(&svc, "mark_read", serde_json::json!({ "threads": [thread_id] })).await;
     let sender = TestSmtpSender::new(smtp.host.clone(), smtp.port);
-    let report = karmayoga_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
-        .await
-        .expect("draining the mark-read op");
+    let report =
+        karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+            .await
+            .expect("draining the mark-read op");
     assert_eq!(report.failed, 0, "{report:?}");
 
     let mut verify_session = connect(&cfg).await;
@@ -624,9 +625,10 @@ async fn write_actions_sync_through_a_real_server() {
         serde_json::json!({ "threads": [thread_id], "to": archive_mailbox.id }),
     )
     .await;
-    let report = karmayoga_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
-        .await
-        .expect("draining the move op");
+    let report =
+        karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+            .await
+            .expect("draining the move op");
     assert_eq!(report.failed, 0, "{report:?}");
 
     // Checked by searching for this test's own `Message-ID`, not a raw
@@ -675,7 +677,7 @@ async fn write_actions_sync_through_a_real_server() {
     let mut sent = false;
     for _ in 0..20 {
         let report =
-            karmayoga_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+            karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
                 .await
                 .expect("draining the outbox");
         assert_eq!(report.failed, 0, "{report:?}");
@@ -753,9 +755,10 @@ async fn emptying_trash_deletes_it_on_a_real_server_and_the_next_sync_agrees() {
     let emptied = call(&svc, "empty_mailbox", serde_json::json!({ "mailbox": trash.id })).await;
     assert!(emptied.as_u64().unwrap() >= 2, "both Trash conversations were queued: {emptied}");
     let sender = TestSmtpSender::new(String::new(), 0);
-    let report = karmayoga_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
-        .await
-        .expect("draining the deletes");
+    let report =
+        karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+            .await
+            .expect("draining the deletes");
     assert_eq!(report.failed, 0, "{report:?}");
     assert!(report.done >= 2, "{report:?}");
 
@@ -839,7 +842,7 @@ async fn archiving_while_the_task_is_idling_succeeds_and_the_server_reflects_it(
     let svc_task = svc.clone();
     let vault_task = vault.clone();
     let handle = tokio::spawn(async move {
-        karmayoga_service::mailsync::task::run_account_with(
+        karmayoga_service::mail::sync::task::run_account_with(
             svc_task,
             vault_task,
             account_id,
@@ -853,7 +856,7 @@ async fn archiving_while_the_task_is_idling_succeeds_and_the_server_reflects_it(
                 )
                 .await
             },
-            karmayoga_service::mailsync::sender::LazySmtpSender::new,
+            karmayoga_service::mail::sync::sender::LazySmtpSender::new,
         )
         .await
     });
@@ -864,7 +867,7 @@ async fn archiving_while_the_task_is_idling_succeeds_and_the_server_reflects_it(
     for _ in 0..40 {
         idling = svc.mail_statuses().unwrap().all().iter().any(|p| {
             p.account_id == account_id
-                && p.phase == karmayoga_service::mailsync::status::Phase::Idling
+                && p.phase == karmayoga_service::mail::sync::status::Phase::Idling
         });
         if idling {
             break;
@@ -1039,7 +1042,7 @@ async fn an_invitation_is_parsed_and_a_reply_is_delivered() {
     let mut delivered = false;
     for _ in 0..40 {
         let report =
-            karmayoga_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+            karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
                 .await
                 .expect("draining the outbox");
         assert_eq!(report.failed, 0, "{report:?}");

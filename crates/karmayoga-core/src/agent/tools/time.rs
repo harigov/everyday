@@ -18,6 +18,7 @@ use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::store::calendars::EventQuery;
 use crate::store::tasks::BlockQuery;
 use crate::task::{BlockKind, BlockSubject, TimeBlock};
+use crate::zone::zone_of;
 
 pub(super) static TOOLS: &[Tool] = &[
     tool!(
@@ -284,7 +285,7 @@ fn block_timestamps(
     start: jiff::civil::Time,
     end: jiff::civil::Time,
 ) -> Result<(jiff::Timestamp, jiff::Timestamp)> {
-    let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = zone_of(tz);
     let start_ts = date
         .at(start.hour(), start.minute(), 0, 0)
         .to_zoned(zone.clone())
@@ -391,7 +392,7 @@ fn build_create_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
     local_time_allowed(ctx)?;
     let (block, name) = block_from_args(ctx, args)?;
     let about = task_about(&block);
-    let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = ctx.zone();
     let start = block.start.to_zoned(zone.clone()).time();
     let end = block.end.to_zoned(zone).time();
     let caption = format!(
@@ -445,7 +446,7 @@ fn apply_update_block_args(
     // wall-clock times would be re-read in the person's zone today.
     let retimed = ["date", "start_time", "end_time"].iter().any(|k| args.opt_str(k).is_some());
     if retimed {
-        let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = ctx.zone();
         let date = args.opt_date("date")?.unwrap_or(block.local_date);
         let start = match args.opt_str("start_time") {
             Some(_) => clock(args, "start_time")?,
@@ -487,7 +488,7 @@ fn build_update_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
     let (block, name) = apply_update_block_args(ctx, args, block)?;
     let id = block.id;
     let about = task_about(&block).or(Some(About { kind: AboutKind::Block, id: id.to_string() }));
-    let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = ctx.zone();
     let start = block.start.to_zoned(zone.clone()).time();
     let end = block.end.to_zoned(zone).time();
     let caption = format!(

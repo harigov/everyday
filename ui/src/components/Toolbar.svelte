@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
+  import { macPlatform } from '../lib/platform'
   import type { Editor } from '@tiptap/core'
   import Icon from './Icon.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
@@ -81,7 +82,7 @@
   }
 
   // Tooltips should quote the key the reader actually presses.
-  const MAC = /mac/i.test(navigator.platform ?? '')
+  const MAC = macPlatform
   const MOD = MAC ? '⌘' : 'Ctrl+'
   const SHIFT = MAC ? '⇧' : 'Shift+'
 

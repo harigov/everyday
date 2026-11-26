@@ -141,7 +141,7 @@ pub const NO_ANSWER: &str = "the model did not answer";
 
 /// One request, no tools but `submit`, tool choice forced — the exchange
 /// every one-shot structured ask in this application makes, whichever model
-/// it is aimed at. Split out of [`run`] so that `karmayoga_service::mailai`
+/// it is aimed at. Split out of [`run`] so that `karmayoga_service::mail::ai`
 /// can post the same shape of request against a *different* model —
 /// [`karmayoga_core::mail`]'s model-assisted categorisation runs against the
 /// quick model exactly as a quick ask would, but is not itself a

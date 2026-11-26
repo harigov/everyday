@@ -445,609 +445,80 @@ pub trait RecordDescriptor {
     fn aad(id: Self::Id) -> Vec<u8>;
 }
 
-impl RecordDescriptor for crate::model::Journal {
-    const KIND: RecordKind = RecordKind::Journal;
-    type Id = JournalId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::journal_aad(id)
-    }
+/// Writes the [`RecordDescriptor`] impl for each record: the record type, its
+/// kind, its id type, and the function that builds the id's AAD. Every record
+/// reads its id from an `id` field, so that part is the same each time.
+macro_rules! record_descriptors {
+    ($($record:ty, $kind:ident, $id:ty, $aad:path;)*) => {$(
+        impl RecordDescriptor for $record {
+            const KIND: RecordKind = RecordKind::$kind;
+            type Id = $id;
+            fn id(&self) -> Self::Id {
+                self.id
+            }
+            fn aad(id: Self::Id) -> Vec<u8> {
+                $aad(id)
+            }
+        }
+    )*};
 }
 
-impl RecordDescriptor for crate::model::Entry {
-    const KIND: RecordKind = RecordKind::Entry;
-    type Id = EntryId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::entry_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::note::Note {
-    const KIND: RecordKind = RecordKind::Note;
-    type Id = NoteId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::notes::note_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::template::Template {
-    const KIND: RecordKind = RecordKind::Template;
-    type Id = TemplateId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::notes::template_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::task::Project {
-    const KIND: RecordKind = RecordKind::Project;
-    type Id = ProjectId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::tasks::project_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::task::Task {
-    const KIND: RecordKind = RecordKind::Task;
-    type Id = TaskId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::tasks::task_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::task::TimeBlock {
-    const KIND: RecordKind = RecordKind::Block;
-    type Id = BlockId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::tasks::block_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::calendar::Calendar {
-    const KIND: RecordKind = RecordKind::Calendar;
-    type Id = CalendarId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::calendars::calendar_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::calendar::Event {
-    const KIND: RecordKind = RecordKind::Event;
-    type Id = EventId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::calendars::event_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::library::Kind {
-    const KIND: RecordKind = RecordKind::Kind;
-    type Id = KindId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::library::kind_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::library::Item {
-    const KIND: RecordKind = RecordKind::Item;
-    type Id = ItemId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::library::item_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::library::LogEntry {
-    const KIND: RecordKind = RecordKind::Log;
-    type Id = LogId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::library::log_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::tracker::Tracker {
-    const KIND: RecordKind = RecordKind::Tracker;
-    type Id = TrackerId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::trackers::tracker_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::tracker::Reading {
-    const KIND: RecordKind = RecordKind::Reading;
-    type Id = ReadingId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::trackers::reading_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::purpose::Area {
-    const KIND: RecordKind = RecordKind::Area;
-    type Id = AreaId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::purpose::area_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::purpose::Goal {
-    const KIND: RecordKind = RecordKind::Goal;
-    type Id = GoalId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::purpose::goal_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::routine::Routine {
-    const KIND: RecordKind = RecordKind::Routine;
-    type Id = RoutineId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::routines::routine_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::routine::RoutineRun {
-    const KIND: RecordKind = RecordKind::RoutineRun;
-    type Id = RoutineRunId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::routines::run_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::job::Job {
-    const KIND: RecordKind = RecordKind::Job;
-    type Id = JobId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::jobs::job_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::proposal::Proposal {
-    const KIND: RecordKind = RecordKind::Proposal;
-    type Id = ProposalId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::proposals::proposal_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::agent::Conversation {
-    const KIND: RecordKind = RecordKind::Conversation;
-    type Id = ConversationId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::agent::conversation_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::agent::Message {
-    const KIND: RecordKind = RecordKind::Message;
-    type Id = MessageId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::agent::message_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::agent::Memory {
-    const KIND: RecordKind = RecordKind::Memory;
-    type Id = MemoryId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::agent::memory_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::agent::Skill {
-    const KIND: RecordKind = RecordKind::Skill;
-    type Id = SkillId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::agent::skill_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::account::Account {
-    const KIND: RecordKind = RecordKind::Account;
-    type Id = AccountId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::accounts::account_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::mail::Mailbox {
-    const KIND: RecordKind = RecordKind::Mailbox;
-    type Id = MailboxId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::mail::mailbox_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::mail::Message {
-    const KIND: RecordKind = RecordKind::MailMessage;
-    type Id = MailMessageId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::mail::message_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::mail::Thread {
-    const KIND: RecordKind = RecordKind::Thread;
-    type Id = ThreadId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::mail::thread_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::mail::Draft {
-    const KIND: RecordKind = RecordKind::Draft;
-    type Id = DraftId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::mail::draft_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::mail::Op {
-    const KIND: RecordKind = RecordKind::Op;
-    type Id = OpId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::mail::op_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::meeting::Recording {
-    const KIND: RecordKind = RecordKind::Recording;
-    type Id = RecordingId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::meeting::recording_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::meeting::Transcript {
-    const KIND: RecordKind = RecordKind::Transcript;
-    type Id = TranscriptId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::meeting::transcript_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::meeting::Voiceprint {
-    const KIND: RecordKind = RecordKind::Voiceprint;
-    type Id = VoiceprintId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::meeting::voiceprint_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::news::NewsSource {
-    const KIND: RecordKind = RecordKind::NewsSource;
-    type Id = NewsSourceId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::news::source_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::news::Story {
-    const KIND: RecordKind = RecordKind::Story;
-    type Id = StoryId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::news::story_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::writing::WritingAssist {
-    const KIND: RecordKind = RecordKind::WritingAssist;
-    type Id = WritingId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::writing::writing_assist_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::money::BankLink {
-    const KIND: RecordKind = RecordKind::BankLink;
-    type Id = crate::id::BankLinkId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::money::bank_link_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::money::BankAccount {
-    const KIND: RecordKind = RecordKind::BankAccount;
-    type Id = crate::id::BankAccountId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::money::bank_account_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::money::Txn {
-    const KIND: RecordKind = RecordKind::Txn;
-    type Id = crate::id::TxnId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::money::txn_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::money::MoneyCategory {
-    const KIND: RecordKind = RecordKind::MoneyCategory;
-    type Id = crate::id::MoneyCategoryId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::money::money_category_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::money::MoneyRule {
-    const KIND: RecordKind = RecordKind::MoneyRule;
-    type Id = crate::id::MoneyRuleId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::money::money_rule_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::screentime::ScreenApp {
-    const KIND: RecordKind = RecordKind::ScreenApp;
-    type Id = crate::id::ScreenAppId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::screentime::screen_app_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::screentime::ScreenCategory {
-    const KIND: RecordKind = RecordKind::ScreenCategory;
-    type Id = crate::id::ScreenCategoryId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::screentime::screen_category_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::files::FileEntry {
-    const KIND: RecordKind = RecordKind::File;
-    type Id = crate::id::FileId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::files::file_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::files::Album {
-    const KIND: RecordKind = RecordKind::Album;
-    type Id = crate::id::AlbumId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::files::album_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::HealthSource {
-    const KIND: RecordKind = RecordKind::HealthSource;
-    type Id = crate::id::HealthSourceId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::health_source_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::Workout {
-    const KIND: RecordKind = RecordKind::Workout;
-    type Id = crate::id::WorkoutId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::workout_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::Medication {
-    const KIND: RecordKind = RecordKind::Medication;
-    type Id = crate::id::MedicationId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::medication_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::Dose {
-    const KIND: RecordKind = RecordKind::Dose;
-    type Id = crate::id::DoseId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::dose_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::Condition {
-    const KIND: RecordKind = RecordKind::Condition;
-    type Id = crate::id::ConditionId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::condition_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::LabResult {
-    const KIND: RecordKind = RecordKind::LabResult;
-    type Id = crate::id::LabResultId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::lab_result_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::HealthDocument {
-    const KIND: RecordKind = RecordKind::HealthDocument;
-    type Id = crate::id::HealthDocumentId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::health_document_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::Allergy {
-    const KIND: RecordKind = RecordKind::Allergy;
-    type Id = crate::id::AllergyId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::allergy_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::Food {
-    const KIND: RecordKind = RecordKind::Food;
-    type Id = crate::id::FoodId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::food_aad(id)
-    }
-}
-
-impl RecordDescriptor for crate::health::Meal {
-    const KIND: RecordKind = RecordKind::Meal;
-    type Id = crate::id::MealId;
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-    fn aad(id: Self::Id) -> Vec<u8> {
-        crate::store::health::meal_aad(id)
-    }
+record_descriptors! {
+    crate::model::Journal, Journal, JournalId, crate::store::journal_aad;
+    crate::model::Entry, Entry, EntryId, crate::store::entry_aad;
+    crate::note::Note, Note, NoteId, crate::store::notes::note_aad;
+    crate::template::Template, Template, TemplateId, crate::store::notes::template_aad;
+    crate::task::Project, Project, ProjectId, crate::store::tasks::project_aad;
+    crate::task::Task, Task, TaskId, crate::store::tasks::task_aad;
+    crate::task::TimeBlock, Block, BlockId, crate::store::tasks::block_aad;
+    crate::calendar::Calendar, Calendar, CalendarId, crate::store::calendars::calendar_aad;
+    crate::calendar::Event, Event, EventId, crate::store::calendars::event_aad;
+    crate::library::Kind, Kind, KindId, crate::store::library::kind_aad;
+    crate::library::Item, Item, ItemId, crate::store::library::item_aad;
+    crate::library::LogEntry, Log, LogId, crate::store::library::log_aad;
+    crate::tracker::Tracker, Tracker, TrackerId, crate::store::trackers::tracker_aad;
+    crate::tracker::Reading, Reading, ReadingId, crate::store::trackers::reading_aad;
+    crate::purpose::Area, Area, AreaId, crate::store::purpose::area_aad;
+    crate::purpose::Goal, Goal, GoalId, crate::store::purpose::goal_aad;
+    crate::routine::Routine, Routine, RoutineId, crate::store::routines::routine_aad;
+    crate::routine::RoutineRun, RoutineRun, RoutineRunId, crate::store::routines::run_aad;
+    crate::job::Job, Job, JobId, crate::store::jobs::job_aad;
+    crate::proposal::Proposal, Proposal, ProposalId, crate::store::proposals::proposal_aad;
+    crate::agent::Conversation, Conversation, ConversationId, crate::store::agent::conversation_aad;
+    crate::agent::Message, Message, MessageId, crate::store::agent::message_aad;
+    crate::agent::Memory, Memory, MemoryId, crate::store::agent::memory_aad;
+    crate::agent::Skill, Skill, SkillId, crate::store::agent::skill_aad;
+    crate::account::Account, Account, AccountId, crate::store::accounts::account_aad;
+    crate::mail::Mailbox, Mailbox, MailboxId, crate::store::mail::mailbox_aad;
+    crate::mail::Message, MailMessage, MailMessageId, crate::store::mail::message_aad;
+    crate::mail::Thread, Thread, ThreadId, crate::store::mail::thread_aad;
+    crate::mail::Draft, Draft, DraftId, crate::store::mail::draft_aad;
+    crate::mail::Op, Op, OpId, crate::store::mail::op_aad;
+    crate::meeting::Recording, Recording, RecordingId, crate::meeting::recording_aad;
+    crate::meeting::Transcript, Transcript, TranscriptId, crate::meeting::transcript_aad;
+    crate::meeting::Voiceprint, Voiceprint, VoiceprintId, crate::meeting::voiceprint_aad;
+    crate::news::NewsSource, NewsSource, NewsSourceId, crate::store::news::source_aad;
+    crate::news::Story, Story, StoryId, crate::store::news::story_aad;
+    crate::writing::WritingAssist, WritingAssist, WritingId, crate::store::writing::writing_assist_aad;
+    crate::money::BankLink, BankLink, crate::id::BankLinkId, crate::store::money::bank_link_aad;
+    crate::money::BankAccount, BankAccount, crate::id::BankAccountId, crate::store::money::bank_account_aad;
+    crate::money::Txn, Txn, crate::id::TxnId, crate::store::money::txn_aad;
+    crate::money::MoneyCategory, MoneyCategory, crate::id::MoneyCategoryId, crate::store::money::money_category_aad;
+    crate::money::MoneyRule, MoneyRule, crate::id::MoneyRuleId, crate::store::money::money_rule_aad;
+    crate::screentime::ScreenApp, ScreenApp, crate::id::ScreenAppId, crate::store::screentime::screen_app_aad;
+    crate::screentime::ScreenCategory, ScreenCategory, crate::id::ScreenCategoryId, crate::store::screentime::screen_category_aad;
+    crate::files::FileEntry, File, crate::id::FileId, crate::store::files::file_aad;
+    crate::files::Album, Album, crate::id::AlbumId, crate::store::files::album_aad;
+    crate::health::HealthSource, HealthSource, crate::id::HealthSourceId, crate::store::health::health_source_aad;
+    crate::health::Workout, Workout, crate::id::WorkoutId, crate::store::health::workout_aad;
+    crate::health::Medication, Medication, crate::id::MedicationId, crate::store::health::medication_aad;
+    crate::health::Dose, Dose, crate::id::DoseId, crate::store::health::dose_aad;
+    crate::health::Condition, Condition, crate::id::ConditionId, crate::store::health::condition_aad;
+    crate::health::LabResult, LabResult, crate::id::LabResultId, crate::store::health::lab_result_aad;
+    crate::health::HealthDocument, HealthDocument, crate::id::HealthDocumentId, crate::store::health::health_document_aad;
+    crate::health::Allergy, Allergy, crate::id::AllergyId, crate::store::health::allergy_aad;
+    crate::health::Food, Food, crate::id::FoodId, crate::store::health::food_aad;
+    crate::health::Meal, Meal, crate::id::MealId, crate::store::health::meal_aad;
 }
 
 #[cfg(test)]

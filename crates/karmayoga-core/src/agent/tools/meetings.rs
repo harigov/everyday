@@ -28,6 +28,7 @@ use crate::error::Result;
 use crate::id::NoteId;
 use crate::meeting::{Attribution, Speaker, Stage};
 use crate::store::meetings::RecordingQuery;
+use crate::zone::zone_of;
 
 /// How far back [`list_meeting_notes`] looks when `from` is not given. The
 /// same span `karmayoga_service::scheduler`'s own "last time with these
@@ -138,7 +139,7 @@ fn attendee_matches(attendees: &[String], needle: &str) -> bool {
 /// calendars); [`RecordingQuery`] reads an absent bound as "no limit" on
 /// that side, which is the safe direction to fail in.
 fn day_window_timestamps(from: Date, to: Date, tz: &str) -> (Option<Timestamp>, Option<Timestamp>) {
-    let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = zone_of(tz);
     let from_ts = from.at(0, 0, 0, 0).to_zoned(zone.clone()).ok().map(|z| z.timestamp());
     let to_ts = to
         .tomorrow()

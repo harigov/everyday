@@ -111,7 +111,7 @@ async fn serve(mut stream: UnixStream, app: AppHandle, waiting: Waiting, next: A
             Some((label, script)) => (label.trim().to_owned(), script.to_owned()),
             None => (rest.trim().to_owned(), String::new()),
         },
-        None => ("main".to_owned(), request),
+        None => (crate::MAIN_WINDOW.to_owned(), request),
     };
     let answer = run(&app, &waiting, &next, &label, &script).await;
     let _ = stream.write_all(answer.to_string().as_bytes()).await;

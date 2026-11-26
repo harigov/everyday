@@ -32,6 +32,7 @@
   // grammars (`parseQuickAdd`, `parseQuickTrack`), not a third copy.
 
   import { untrack } from 'svelte'
+  import { appleKeyboard } from '../lib/platform'
   import { agent } from '../lib/agent.svelte'
   import { APPS } from '../lib/apps'
   import { calendar } from '../lib/calendar.svelte'
@@ -53,7 +54,7 @@
   import { tracking } from '../lib/tracking.svelte'
   import Icon from './Icon.svelte'
 
-  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform ?? '')
+  const mac = appleKeyboard
 
   /** `null` while the bar is not in use. See the header for the two modes. */
   let mode = $state<'search' | 'command' | null>(null)

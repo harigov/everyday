@@ -481,7 +481,7 @@ fn apply_update_routine_args(
     // 08:00 with `at` alone used to reset it to every day, because
     // `schedule_from` reads an absent `days` as "no days named, so all of
     // them". Only a `days` the caller actually sent replaces the days.
-    if args.get("at").is_some() {
+    if args.has_key("at") {
         let named = schedule_from(args)?;
         routine.trigger = match (named, &routine.trigger) {
             (
@@ -494,7 +494,7 @@ fn apply_update_routine_args(
             },
             (next, _) => next,
         };
-    } else if args.get("days").is_some() {
+    } else if args.has_key("days") {
         if let Trigger::Schedule { at, day_of_month, .. } = routine.trigger {
             routine.trigger = Trigger::Schedule { at, days: parse_days(args)?, day_of_month };
         } else {
@@ -539,7 +539,7 @@ fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // -- that would hand the next run whatever the stranger asked for, with
     // nobody having seen it. Nor what it runs on and for how long, which is
     // the person's money. Moving it, pausing it or renaming it is still fine.
-    if ctx.unattended && WHAT_AND_WHERE.iter().any(|field| args.get(field).is_some()) {
+    if ctx.unattended && WHAT_AND_WHERE.iter().any(|field| args.has_key(field)) {
         return Err(Error::Invalid(
             "a scheduled run may not change a routine's instructions, where its results go, or \
              the model and steps it runs with. If it should change, say so in your reply and \

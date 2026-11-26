@@ -58,8 +58,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::text::one_line;
+use crate::urlenc::encode;
 use crate::weather::Units;
-use crate::websearch::encode;
 
 /// Largest answer any of the three is trusted to send. A journey plan with
 /// its line geometry is a quarter of a megabyte; four is somebody else's
@@ -161,7 +162,7 @@ pub struct Located {
 /// so a chain's name finds the branch in town and a city's still finds the
 /// city.
 pub fn geocode_url(place: &str, near: Option<Point>) -> Result<String> {
-    let place = collapse(place);
+    let place = one_line(place);
     if place.is_empty() {
         return Err(Error::Invalid("no place was given to look up".into()));
     }
@@ -238,7 +239,7 @@ pub enum Area {
 /// it ranks by how well a name matches rather than by distance, and the
 /// nearest are what [`parse_places`] keeps.
 pub fn places_url(query: &str, around: Point, area: Area, limit: u32) -> Result<String> {
-    let query = collapse(query);
+    let query = one_line(query);
     if query.is_empty() {
         return Err(Error::Invalid("a search for places needs something to search for".into()));
     }
@@ -489,7 +490,7 @@ pub fn parse_route(
         legs.iter().filter_map(|l| l.get("maneuvers")).filter_map(Value::as_array).flatten()
     {
         let instruction =
-            collapse(maneuver.get("instruction").and_then(Value::as_str).unwrap_or_default());
+            one_line(maneuver.get("instruction").and_then(Value::as_str).unwrap_or_default());
         if instruction.is_empty() {
             continue;
         }
@@ -851,12 +852,12 @@ pub struct PlacesArgs {
 /// Read `search_places`' arguments, with the profile's location as the
 /// `near` nobody named. The error is a sentence for the model.
 pub fn places_args(arguments: &Value, home: &str) -> std::result::Result<PlacesArgs, String> {
-    let query = collapse(arguments.get("query").and_then(Value::as_str).unwrap_or_default());
+    let query = one_line(arguments.get("query").and_then(Value::as_str).unwrap_or_default());
     if query.is_empty() {
         return Err("`query` is required: a kind of place, a name or an address".into());
     }
-    let named = collapse(arguments.get("near").and_then(Value::as_str).unwrap_or_default());
-    let near = if named.is_empty() { collapse(home) } else { named };
+    let named = one_line(arguments.get("near").and_then(Value::as_str).unwrap_or_default());
+    let near = if named.is_empty() { one_line(home) } else { named };
     if near.is_empty() {
         return Err(no_home("No `near` was given", "where to look"));
     }
@@ -885,12 +886,12 @@ pub fn directions_args(
     zone: &TimeZone,
     now: Timestamp,
 ) -> std::result::Result<DirectionsArgs, String> {
-    let to = collapse(arguments.get("to").and_then(Value::as_str).unwrap_or_default());
+    let to = one_line(arguments.get("to").and_then(Value::as_str).unwrap_or_default());
     if to.is_empty() {
         return Err("`to` is required: where they are going, by name or address".into());
     }
-    let named = collapse(arguments.get("from").and_then(Value::as_str).unwrap_or_default());
-    let from = if named.is_empty() { collapse(home) } else { named };
+    let named = one_line(arguments.get("from").and_then(Value::as_str).unwrap_or_default());
+    let from = if named.is_empty() { one_line(home) } else { named };
     if from.is_empty() {
         return Err(no_home("No `from` was given", "where they are starting from"));
     }
@@ -996,7 +997,7 @@ pub fn error_reason(body: &str) -> Option<String> {
 fn error_of(root: &Value) -> Option<String> {
     let error = root.get("error")?;
     let said =
-        error.as_str().or_else(|| error.get("message").and_then(Value::as_str)).map(collapse)?;
+        error.as_str().or_else(|| error.get("message").and_then(Value::as_str)).map(one_line)?;
     (!said.is_empty()).then_some(said)
 }
 
@@ -1035,7 +1036,7 @@ fn place_name(row: &Value) -> String {
         return street;
     }
     let display = text(row, "display_name");
-    collapse(display.split(',').next().unwrap_or_default())
+    one_line(display.split(',').next().unwrap_or_default())
 }
 
 /// "407 Cedar Street": the number and the street, whichever there are.
@@ -1128,7 +1129,7 @@ fn web_address(tagged: &str) -> String {
 // ── Small readers ────────────────────────────────────────────────────────
 
 fn text(value: &Value, key: &str) -> String {
-    collapse(value.get(key).and_then(Value::as_str).unwrap_or_default())
+    one_line(value.get(key).and_then(Value::as_str).unwrap_or_default())
 }
 
 /// A number, whether it arrived as one or -- as Nominatim's coordinates do
@@ -1148,10 +1149,6 @@ fn whole(value: Option<&Value>) -> Option<u32> {
 
 fn timestamp(value: Option<&Value>) -> Option<Timestamp> {
     value?.as_str()?.trim().parse().ok()
-}
-
-fn collapse(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

@@ -86,7 +86,7 @@
 //! [`MailIndex::rebuild_empty`] already does, before trying once more
 //! against a schema that now matches trivially, because there is nothing
 //! left on disk to disagree with it. `open_index` in
-//! `karmayoga_service::mailsync::wiring` reads [`MailIndex::healed_on_open`]
+//! `karmayoga_service::mail::sync::wiring` reads [`MailIndex::healed_on_open`]
 //! right after constructing the result and, when it is `true`, queues one
 //! full `rebuild_account` walk per account so the wipe's own emptiness does
 //! not simply become the new permanent outage.
@@ -153,11 +153,11 @@ pub struct MailIndex {
     /// `dir` to get a usable index -- see the module docs' "self-healing on
     /// open". Set once, at construction, and never touched again: a
     /// `MailIndex` is opened exactly once per process per vault unlock (see
-    /// `karmayoga_service::mailsync::wiring::open`), so there is no later
+    /// `karmayoga_service::mail::sync::wiring::open`), so there is no later
     /// moment this would need to change for, and no reason to pay for
     /// interior mutability over a plain `bool`.
     ///
-    /// `karmayoga_service::mailsync::wiring::open` reads this immediately
+    /// `karmayoga_service::mail::sync::wiring::open` reads this immediately
     /// after construction to decide whether to queue a one-time
     /// `rebuild_account` walk for every account: a wipe leaves `self`
     /// genuinely empty, and nothing else in that crate ever re-populates an

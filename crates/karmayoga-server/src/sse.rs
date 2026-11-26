@@ -40,7 +40,6 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::Stream;
 use karmayoga_service::ctx::Scope;
 use karmayoga_service::events::{Change, EventSink, MeetingOffer, Notification};
-use serde::Serialize;
 use std::time::Duration;
 use tokio::sync::broadcast;
 
@@ -55,15 +54,9 @@ const BACKLOG: usize = 256;
 /// from "this connection is gone".
 const KEEPALIVE: Duration = Duration::from_secs(15);
 
-/// One thing the server has to say, in the shape a client reads.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum Outgoing {
-    Notify(Notification),
-    Changed(Change),
-    LockState { locked: bool },
-    MeetingOffer(MeetingOffer),
-}
+/// One thing the server has to say, in the shape a client reads -- the one type
+/// both ends share, in [`crate::wire`].
+pub use crate::wire::ServerEvent as Outgoing;
 
 impl Outgoing {
     fn name(&self) -> &'static str {

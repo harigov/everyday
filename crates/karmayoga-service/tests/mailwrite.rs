@@ -22,7 +22,7 @@ use karmayoga_core::mail::{
 use karmayoga_core::packstore::PackRef;
 use karmayoga_core::store::mail::IngestMessage;
 use karmayoga_core::task::{BlockSubject, TimeBlock};
-use karmayoga_service::mailfollowup::REPLY_OPTIONS;
+use karmayoga_service::mail::followup::REPLY_OPTIONS;
 use karmayoga_service::{Ctx, Service};
 use serde_json::{Value, json};
 
@@ -1169,7 +1169,7 @@ async fn an_auto_draft_with_nothing_left_in_it_is_not_saved() {
     account.mail_ai = MailAi { auto_draft: true, ..Default::default() };
     vault.save_account(&account).unwrap();
 
-    karmayoga_service::mailai::auto_draft_tick(&e.svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&e.svc).await;
 
     assert!(fake.asked() > 0, "the model was asked");
     assert_eq!(vault.drafts(e.account.id).unwrap().len(), 0);
@@ -1193,7 +1193,7 @@ async fn an_auto_draft_is_signed_and_follows_what_they_said() {
         .unwrap();
     seed_week(&e);
 
-    karmayoga_service::mailai::auto_draft_tick(&e.svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&e.svc).await;
 
     let drafts = vault.drafts(e.account.id).unwrap();
     assert_eq!(drafts.len(), 1);

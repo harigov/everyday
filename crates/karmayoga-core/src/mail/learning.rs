@@ -11,7 +11,7 @@
 //! drafting prompt carries, under what the person has said themselves in
 //! Settings → Mail writing, which wins.
 //!
-//! Learning runs in `karmayoga_service::mailvoicelearn`, on the medium model,
+//! Learning runs in `karmayoga_service::mail::voicelearn`, on the medium model,
 //! behind the same writing-help switch and acknowledgement as everything else
 //! that writes mail for them, and only while [`crate::mail::MailWriting::learn`]
 //! is on. The notes are shown in Settings → Mail writing, where they can be

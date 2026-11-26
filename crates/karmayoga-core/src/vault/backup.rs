@@ -6,13 +6,11 @@
 //! store that knows how to copy a database that is being written to.
 
 use super::Vault;
-use super::session::Domain;
 use crate::backup::{
     BACKUP_SECRET_OWNER_ID, BACKUP_SECRET_OWNER_KIND, BackupKeys, BackupSettings, BackupStatus,
     S3Keys, StagedFile, list_files,
 };
 use crate::error::{Error, Result};
-use crate::store::secrets::SecretStore;
 use std::path::Path;
 
 /// The folder under the vault directory a backup's database copies are made
@@ -26,10 +24,6 @@ pub const BACKUP_STAGING_DIRNAME: &str = ".backup-staging";
 const SPOOL_DIRNAME: &str = "spool";
 
 impl Vault {
-    fn with_backup_secrets<T>(&self, f: impl FnOnce(&dyn SecretStore) -> Result<T>) -> Result<T> {
-        self.with_domain(Domain::Secrets, |s| s.secrets().map(f))
-    }
-
     /// Where backups go and how often. The defaults -- off, nowhere chosen,
     /// daily, seven copies -- until somebody saves something.
     pub fn backup_settings(&self) -> Result<BackupSettings> {
@@ -78,11 +72,11 @@ impl Vault {
                     secret_access_key: keys.secret_access_key.trim().to_string(),
                 };
                 let bytes = serde_json::to_vec(&trimmed)?;
-                self.with_backup_secrets(|s| {
+                self.with_secrets(|s| {
                     s.put_secret(BACKUP_SECRET_OWNER_KIND, BACKUP_SECRET_OWNER_ID, &bytes)
                 })
             }
-            None => self.with_backup_secrets(|s| {
+            None => self.with_secrets(|s| {
                 s.delete_secret(BACKUP_SECRET_OWNER_KIND, BACKUP_SECRET_OWNER_ID)
             }),
         }
@@ -91,9 +85,8 @@ impl Vault {
     /// The pasted S3 access key, if there is one. For the one layer that
     /// signs a request; never sent to the interface.
     pub fn backup_s3_keys(&self) -> Result<Option<S3Keys>> {
-        let bytes = self.with_backup_secrets(|s| {
-            s.get_secret(BACKUP_SECRET_OWNER_KIND, BACKUP_SECRET_OWNER_ID)
-        })?;
+        let bytes =
+            self.with_secrets(|s| s.get_secret(BACKUP_SECRET_OWNER_KIND, BACKUP_SECRET_OWNER_ID))?;
         bytes.map(|b| serde_json::from_slice(&b).map_err(Error::from)).transpose()
     }
 

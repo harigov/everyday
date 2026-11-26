@@ -16,6 +16,7 @@
 //! from already is.
 
 use super::Address;
+use crate::markup::escape_html;
 use jiff::Timestamp;
 
 /// `"Re: "` in front of `subject`, once -- a second reply to the same thread
@@ -324,18 +325,6 @@ pub fn find_signature(body: &str) -> Option<&str> {
         }
     }
     None
-}
-
-/// Escapes the five characters that matter inside an HTML text node or a
-/// double-quoted attribute -- enough for the header line [`quote_reply`]
-/// builds from a sender's own name, which is exactly the kind of string
-/// that arrives with an `&` or a `<` in it uninvited.
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]

@@ -742,8 +742,8 @@ mod run {
 pub mod samples {
     use crate::decision::ChoiceOption;
 
-    /// [`crate::mailsort`]'s own question.
-    pub const INSTRUCTIONS: &str = crate::mailsort::INSTRUCTIONS;
+    /// [`crate::mail::sort`]'s own question.
+    pub const INSTRUCTIONS: &str = crate::mail::sort::INSTRUCTIONS;
 
     /// The starting categories, as mail sorting asks with them.
     pub fn categories() -> Vec<ChoiceOption> {
@@ -764,9 +764,9 @@ pub mod samples {
         let to_you = match to_you {
             "to" => "directly",
             "cc" => "cc",
-            _ => crate::mailfollowup::NOT_BY_NAME,
+            _ => crate::mail::followup::NOT_BY_NAME,
         };
-        crate::mailsort::content(from, to_you, subject, "", body, 1, known, false).text
+        crate::mail::sort::content(from, to_you, subject, "", body, 1, known, false).text
     }
 
     /// Six messages, one for each of the starting categories but Other,

@@ -19,6 +19,30 @@
 //! Elsewhere this does nothing: GTK's and Windows' always-on-top windows
 //! already show over a full-screen app.
 
+/// The builder every floating window starts from: a frameless, transparent,
+/// shadowless window of a fixed size that stays out of the taskbar, loads one
+/// page of the interface and never navigates away from it (see `navigation`).
+/// What differs between them -- whether it stays on top, is shown, takes the
+/// keyboard -- is the caller's to add; and each calls [`float_over_full_screen`]
+/// on what it builds.
+pub fn popup_builder<'a>(
+    app: &'a tauri::AppHandle,
+    label: &str,
+    page: &str,
+    title: &str,
+    (width, height): (f64, f64),
+) -> tauri::WebviewWindowBuilder<'a, tauri::Wry, tauri::AppHandle> {
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(page.into()))
+        .title(title)
+        .inner_size(width, height)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .on_navigation(crate::navigation::guard(crate::navigation::dev_url(app)))
+}
+
 /// Make `window` float over every space, full-screen apps' included. Call
 /// once, right after building it; it is done on the main thread.
 #[cfg(target_os = "macos")]

@@ -105,7 +105,7 @@ const SMALL_PER_MINUTE: u32 = 10;
 const DECISION_PER_PASS: usize = 120;
 const SMALL_PER_PASS: usize = 30;
 /// As the above on this computer: a model there is paced by how long it takes
-/// ([`crate::mailsort::share_of`]), so this is what one pass may take.
+/// ([`crate::mail::sort::share_of`]), so this is what one pass may take.
 const LOCAL_PASS: Duration = Duration::from_secs(60);
 const SMALL_LOCAL_PER_PASS: usize = 8;
 /// Requests in flight at once to a model at a provider. One at a time on this
@@ -359,7 +359,7 @@ impl Judge {
     /// Only a decision model on this computer can be unready.
     fn not_ready(&self) -> Option<String> {
         let Judge::Decision(decision) = self else { return None };
-        crate::mailfollowup::decision_not_ready(decision)
+        crate::mail::followup::decision_not_ready(decision)
     }
 
     fn is_local(&self) -> bool {
@@ -377,7 +377,7 @@ impl Judge {
     fn pass_requests(&self) -> usize {
         match self {
             Judge::Decision(decision) => {
-                crate::mailsort::share_of(decision, DECISION_PER_PASS, LOCAL_PASS, 1)
+                crate::mail::sort::share_of(decision, DECISION_PER_PASS, LOCAL_PASS, 1)
             }
             Judge::Small(_) if self.is_local() => SMALL_LOCAL_PER_PASS,
             Judge::Small(_) => SMALL_PER_PASS,

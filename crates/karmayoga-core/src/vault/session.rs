@@ -14,10 +14,20 @@
 use crate::error::{Error, Result};
 use crate::search::SearchIndex;
 use crate::store::JournalStore;
+use crate::store::accounts::AccountStore;
+use crate::store::agent::AgentStore;
+use crate::store::files::FilesStore;
+use crate::store::health::HealthStore;
+use crate::store::mail::MailStore;
+use crate::store::meetings::MeetingStore;
+use crate::store::money::MoneyStore;
+use crate::store::notes::NoteStore;
+use crate::store::screentime::ScreenTimeStore;
+use crate::store::secrets::SecretStore;
 use std::sync::{Arc, RwLockReadGuard, RwLockWriteGuard};
 
 use super::Vault;
-use crate::crypto::Cipher;
+use crate::crypto::{Cipher, SecretKey};
 
 /// Live state that exists only while unlocked.
 pub(super) struct Unlocked {
@@ -33,6 +43,53 @@ pub(super) struct Unlocked {
     /// Held here so the check costs nothing after the first read of a
     /// session, and set under the write lock the move itself runs under.
     pub(super) templates_moved: bool,
+}
+
+impl Unlocked {
+    /// The store for one optional domain, or `Unsupported` naming it when this
+    /// backend does not carry it: [`pick_domain`] with the domain and its
+    /// accessor written once, for the sections that already hold the lock.
+    pub(super) fn notes(&self) -> Result<&dyn NoteStore> {
+        pick_domain(self.store.as_ref(), Domain::Notes, |s| s.notes())
+    }
+
+    pub(super) fn health(&self) -> Result<&dyn HealthStore> {
+        pick_domain(self.store.as_ref(), Domain::Health, |s| s.health())
+    }
+
+    pub(super) fn money(&self) -> Result<&dyn MoneyStore> {
+        pick_domain(self.store.as_ref(), Domain::Money, |s| s.money())
+    }
+
+    pub(super) fn accounts(&self) -> Result<&dyn AccountStore> {
+        pick_domain(self.store.as_ref(), Domain::Accounts, |s| s.accounts())
+    }
+
+    pub(super) fn mail(&self) -> Result<&dyn MailStore> {
+        pick_domain(self.store.as_ref(), Domain::Mail, |s| s.mail())
+    }
+
+    pub(super) fn meetings(&self) -> Result<&dyn MeetingStore> {
+        pick_domain(self.store.as_ref(), Domain::Meetings, |s| s.meetings())
+    }
+
+    pub(super) fn screentime(&self) -> Result<&dyn ScreenTimeStore> {
+        pick_domain(self.store.as_ref(), Domain::ScreenTime, |s| s.screentime())
+    }
+
+    pub(super) fn files(&self) -> Result<&dyn FilesStore> {
+        pick_domain(self.store.as_ref(), Domain::Files, |s| s.files())
+    }
+
+    pub(super) fn agent(&self) -> Result<&dyn AgentStore> {
+        pick_domain(self.store.as_ref(), Domain::Agent, |s| s.agent())
+    }
+
+    /// A subkey of the vault key for `label`, for the sections that already
+    /// hold the lock ([`Vault::derive_subkey`] would take it a second time).
+    pub(super) fn subkey(&self, label: &str) -> SecretKey {
+        self.cipher.derive_subkey(label)
+    }
 }
 
 /// Which optional facade a call wants from the backend.
@@ -248,6 +305,25 @@ impl Vault {
         pick: impl FnOnce(&dyn JournalStore) -> Option<Result<T>>,
     ) -> Result<T> {
         self.read(|u| pick(u.store.as_ref()).unwrap_or(Err(Error::Unsupported(domain.message()))))
+    }
+
+    /// [`Vault::with_domain`] for the per-record secrets a vault keeps beside
+    /// its records: account passwords, chat tokens, backup and bank keys.
+    ///
+    /// One copy for every file that seals something there. It used to be
+    /// written once per file under a different name each time, because item
+    /// privacy is per module; `pub(super)` here reaches all of them.
+    pub(super) fn with_secrets<T>(
+        &self,
+        f: impl FnOnce(&dyn SecretStore) -> Result<T>,
+    ) -> Result<T> {
+        self.with_domain(Domain::Secrets, |s| s.secrets().map(f))
+    }
+
+    /// [`Vault::with_domain`] for the assistant's conversations, memories
+    /// and skills; shared by the agent and chat modules.
+    pub(super) fn with_agent<T>(&self, f: impl FnOnce(&dyn AgentStore) -> Result<T>) -> Result<T> {
+        self.with_domain(Domain::Agent, |s| s.agent().map(f))
     }
 
     /// Record that a write just landed for `kind`'s row `id` -- see

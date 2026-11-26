@@ -13,6 +13,7 @@ import { api } from './api'
 import { KIND_INFO, briefRoutineOf } from './brief'
 import { listening } from './listen.svelte'
 import { app, handle, isLocked } from './state.svelte'
+import { latest } from './store/latest'
 import type { BriefKind, Routine, RoutineInfo, RoutineRun, RoutineRunId } from './types'
 
 /** How many briefs are kept loaded: a fortnight of mornings, evenings and podcasts. */
@@ -42,7 +43,7 @@ class BriefState {
   /** Why the last thing asked of a brief did not happen. */
   error = $state<string | null>(null)
 
-  #generation = 0
+  #generation = latest()
   #starting: Promise<void> | null = null
   #polls = new Map<BriefKind, ReturnType<typeof setTimeout>>()
 
@@ -99,10 +100,10 @@ class BriefState {
   /** Reload the routines and the briefs. What a routine change asks for. */
   async refresh(): Promise<void> {
     if (!this.enabled) return
-    const token = ++this.#generation
+    const token = this.#generation.next()
     try {
       const [routines, briefs] = await Promise.all([api.routines(), api.briefs(null, HISTORY)])
-      if (token !== this.#generation) return
+      if (!this.#generation.isCurrent(token)) return
       this.routines = routines
       this.briefs = briefs
       this.loaded = true
@@ -237,7 +238,7 @@ class BriefState {
   }
 
   reset() {
-    this.#generation += 1
+    this.#generation.next()
     for (const timer of this.#polls.values()) clearTimeout(timer)
     this.#polls.clear()
     this.briefs = []

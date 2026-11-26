@@ -11,7 +11,6 @@
 
 pub mod autounlock;
 pub mod legacy;
-pub mod media;
 
 use karmayoga_core::store::{BackendInfo, BackendRegistry, BackendSettings, SettingSpec};
 use karmayoga_core::{Error, Result, Vault, VaultConfig};

@@ -2,7 +2,7 @@
 //!
 //! [`crate::speech::listen`] is the reading -- text into audio, in order,
 //! with the controls a player needs. This is what decides the text: a spoken
-//! briefing of an email thread ([`crate::mailai::listen_pieces`]), or an
+//! briefing of an email thread ([`crate::mail::ai::listen_pieces`]), or an
 //! article made fit to hear ([`crate::news::listen::open`]).
 //!
 //! See `docs/plans/listen.md`.
@@ -80,7 +80,7 @@ impl Service {
         let synthesiser = self.speech_synthesiser_at(speed).await?;
         let (title, pieces, notice) = match source {
             ListenSource::MailThread { thread_id } => {
-                let (title, pieces) = crate::mailai::listen_pieces(self, thread_id).await?;
+                let (title, pieces) = crate::mail::ai::listen_pieces(self, thread_id).await?;
                 (title, pieces, None)
             }
             ListenSource::Story { story_id, as_written } => {

@@ -199,7 +199,7 @@ mod tasks;
 mod trackers;
 mod writing;
 
-use conn::{Connection, Sql, Value};
+use conn::{Connection, Sql, SqlExt, Value};
 use dialect::Dialect;
 use karmayoga_core::blobstore::FileBlobStore;
 use karmayoga_core::crypto::Cipher;
@@ -439,6 +439,36 @@ impl SqlStore {
         sealed: &[u8],
     ) -> Result<T> {
         Ok(serde_json::from_slice(&self.cipher.open(aad, sealed)?)?)
+    }
+
+    /// The sealed record in `table`'s one row (`id = 1`), or `None` if it was
+    /// never written. The caller says what "never written" means: a default
+    /// where that is a real answer, `None` where it is not.
+    pub(crate) fn get_singleton<T: serde::de::DeserializeOwned>(
+        &self,
+        table: &str,
+        aad: &[u8],
+    ) -> Result<Option<T>> {
+        let sealed = self.read().sealed(&format!("SELECT data FROM {table} WHERE id = 1"), &[])?;
+        sealed.map(|sealed| self.unseal(aad, &sealed)).transpose()
+    }
+
+    /// Seal `value` and write it as `table`'s one row, replacing what was there.
+    pub(crate) fn put_singleton<T: serde::Serialize>(
+        &self,
+        table: &str,
+        aad: &[u8],
+        value: &T,
+    ) -> Result<()> {
+        let data = self.seal(aad, value)?;
+        self.write().execute(
+            &format!(
+                "INSERT INTO {table} (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1"
+            ),
+            &vals![data],
+        )?;
+        Ok(())
     }
 
     /// Decrypt an `(id, data)` result set into whole records.

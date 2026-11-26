@@ -103,7 +103,7 @@ pub(crate) fn background() -> &'static tokio::runtime::Handle {
 
 /// Whether this computer has a browser this can drive.
 pub fn available() -> bool {
-    cfg!(unix) && launch::executable().is_some()
+    launch::supported() && launch::executable().is_some()
 }
 
 /// The browser `conversation` already has open, if any.

@@ -17,13 +17,14 @@
 // `api.isMock` takes the browser path too, which is what makes the whole of
 // this pane usable in `KARMAYOGA_MOCK=1 npm run dev`.
 
-import { api, isMock } from './api'
+import { api } from './api'
+import { inShell } from './platform'
 import type { ArchiveManifest, ImportMode, ImportResult, PartInfo } from './types'
 import { VaultError } from './types'
 
 /** Is the desktop shell here to own the file dialogs? */
 function shellPresent(): boolean {
-  return !isMock && '__TAURI_INTERNALS__' in window
+  return inShell
 }
 
 /** What a running transfer looks like to the pane drawing it. */

@@ -10,10 +10,11 @@
   // no shell to ask, and the anchor's own default does the job.
 
   import { openExternal } from '../lib/open-external'
+  import { inShell } from '../lib/platform'
 
   let { url }: { url: string } = $props()
 
-  const shell = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+  const shell = inShell
 
   let copied = $state(false)
 

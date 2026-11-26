@@ -102,24 +102,8 @@ pub struct Connection {
     pub paired: jiff::Timestamp,
 }
 
-/// What a server says about itself before anybody has paired.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Hello {
-    pub name: String,
-    pub protocol: u32,
-    pub fingerprint: String,
-    pub locked: bool,
-    #[serde(default)]
-    pub pairing: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Paired {
-    token: String,
-    device_id: String,
-}
+pub use crate::wire::{Hello, ServerEvent};
+use crate::wire::{PairRequest, Paired, headers as wire_headers, path, protocol_headers};
 
 pub struct RemoteClient {
     http: reqwest::Client,
@@ -130,7 +114,7 @@ pub struct RemoteClient {
 }
 
 /// What [`RemoteClient::mail_body`] answers with -- see
-/// [`karmayoga_service::mailview::BodyDocument`], which this mirrors across
+/// [`karmayoga_service::mail::view::BodyDocument`], which this mirrors across
 /// the wire.
 pub struct MailBody {
     pub html: String,
@@ -138,7 +122,7 @@ pub struct MailBody {
 }
 
 /// What [`RemoteClient::mail_part`] and [`RemoteClient::mail_image`] answer
-/// with -- see [`karmayoga_service::mailview::PartResponse`], which this
+/// with -- see [`karmayoga_service::mail::view::PartResponse`], which this
 /// mirrors across the wire.
 pub struct MailBytes {
     pub content_type: String,
@@ -219,15 +203,13 @@ impl RemoteClient {
         })?;
         check_protocol(hello.protocol)?;
 
-        let paired: Paired = http
-            .post(format!("{base}/v1/pair"))
-            .header("x-karmayoga-protocol", PROTOCOL.to_string())
-            .header(karmayoga_core::legacy::PROTOCOL_HEADER, PROTOCOL.to_string())
-            .json(&serde_json::json!({
-                "code": invite.code,
-                "deviceName": device_name,
-                "scopes": [],
-            }))
+        let request = PairRequest {
+            code: invite.code.clone(),
+            device_name: device_name.to_string(),
+            scopes: Vec::new(),
+        };
+        let paired: Paired = protocol_headers(http.post(format!("{base}{}", path::PAIR)))
+            .json(&request)
             .send()
             .await
             .map_err(transport)?
@@ -269,23 +251,19 @@ impl RemoteClient {
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        self.http
-            .request(method, format!("{}{path}", self.base))
-            .header("x-karmayoga-protocol", PROTOCOL.to_string())
-            // Said under the old name as well, so a server from before the
-            // rename answers with which side to update.
-            .header(karmayoga_core::legacy::PROTOCOL_HEADER, PROTOCOL.to_string())
+        // The protocol is said under the old name as well, so a server from
+        // before the rename answers with which side to update.
+        protocol_headers(self.http.request(method, format!("{}{path}", self.base)))
             .header("authorization", format!("Bearer {}", self.token))
-            .header("x-karmayoga-client", &self.connection.id)
+            .header(wire_headers::CLIENT, &self.connection.id)
     }
 
     /// Run a command on the machine holding the vault.
     pub async fn call(&self, ctx: &Ctx, name: &str, args: Value) -> CommandResult<Value> {
-        let mut request = self
-            .request(reqwest::Method::POST, &format!("/v1/call/{name}"))
-            .timeout(call_timeout(name));
+        let mut request =
+            self.request(reqwest::Method::POST, &path::call(name)).timeout(call_timeout(name));
         if let Some(id) = &ctx.request_id {
-            request = request.header("x-karmayoga-request", id);
+            request = request.header(wire_headers::REQUEST, id);
         }
         let response = request.json(&args).send().await.map_err(transport)?;
         response.error_for_body().await?.json().await.map_err(transport)
@@ -293,7 +271,7 @@ impl RemoteClient {
 
     pub async fn put_blob(&self, bytes: Vec<u8>) -> CommandResult<String> {
         let response = self
-            .request(reqwest::Method::POST, "/v1/blob")
+            .request(reqwest::Method::POST, path::BLOB)
             .body(bytes)
             .send()
             .await
@@ -311,7 +289,7 @@ impl RemoteClient {
             return Ok(len);
         }
         let response = self
-            .request(reqwest::Method::GET, &format!("/v1/blob/{id}"))
+            .request(reqwest::Method::GET, &path::blob(id))
             .header("range", "bytes=0-0")
             .send()
             .await
@@ -340,7 +318,7 @@ impl RemoteClient {
         }
         let end = offset + len.saturating_sub(1);
         let bytes = self
-            .request(reqwest::Method::GET, &format!("/v1/blob/{id}"))
+            .request(reqwest::Method::GET, &path::blob(id))
             .header("range", format!("bytes={offset}-{end}"))
             .send()
             .await
@@ -367,7 +345,7 @@ impl RemoteClient {
     /// over them would need exactly the invalidation this client has no way to
     /// hear about.
     pub async fn file_range(&self, id: &str, range: Option<&str>) -> CommandResult<FileBytes> {
-        let mut request = self.request(reqwest::Method::GET, &format!("/v1/files/file/{id}"));
+        let mut request = self.request(reqwest::Method::GET, &path::file(id));
         if let Some(range) = range {
             request = request.header("range", range);
         }
@@ -410,7 +388,7 @@ impl RemoteClient {
         let response = self
             .request(
                 reqwest::Method::POST,
-                &format!("/v1/files/upload/{}?offset={offset}", encode_segment(upload)),
+                &format!("{}?offset={offset}", path::upload(encode_segment(upload))),
             )
             .header("content-type", "application/octet-stream")
             .body(bytes)
@@ -421,13 +399,13 @@ impl RemoteClient {
     }
 
     /// A rendered message body, and whether it hid remote images -- the
-    /// remote counterpart of [`karmayoga_service::mailview::BodyDocument`],
+    /// remote counterpart of [`karmayoga_service::mail::view::BodyDocument`],
     /// fetched from `/v1/mail/body/{id}` rather than built locally. Read by
     /// `karmayoga-app/src/protocol.rs`'s `mail/body` route when this window
     /// is looking at a vault on another machine.
     pub async fn mail_body(&self, id: &str) -> CommandResult<MailBody> {
         let response = self
-            .request(reqwest::Method::GET, &format!("/v1/mail/body/{id}"))
+            .request(reqwest::Method::GET, &path::mail_body(id))
             .send()
             .await
             .map_err(transport)?
@@ -448,10 +426,10 @@ impl RemoteClient {
 
     /// One part of a message -- an attachment, or an inline image a `cid:`
     /// reference points at. The remote counterpart of
-    /// [`karmayoga_service::mailview::part`].
+    /// [`karmayoga_service::mail::view::part`].
     pub async fn mail_part(&self, message_id: &str, identifier: &str) -> CommandResult<MailBytes> {
         let response = self
-            .request(reqwest::Method::GET, &format!("/v1/mail/part/{message_id}/{identifier}"))
+            .request(reqwest::Method::GET, &path::mail_part(message_id, identifier))
             .send()
             .await
             .map_err(transport)?
@@ -462,7 +440,7 @@ impl RemoteClient {
 
     /// A remote image, fetched (or refused, or served from the cache) on
     /// the machine holding the vault -- never by this process, which is the
-    /// whole point: see `karmayoga_service::mailview::remote_image`'s docs.
+    /// whole point: see `karmayoga_service::mail::view::remote_image`'s docs.
     ///
     /// Requests `/v1/mail/img/{message_id}/{token}`, matching the path
     /// shape `karmayoga-mail::sanitize::sanitize` writes today (message id
@@ -476,7 +454,7 @@ impl RemoteClient {
     /// server still keeps the older route at all.
     pub async fn mail_image(&self, token: &str, message_id: &str) -> CommandResult<MailBytes> {
         let response = self
-            .request(reqwest::Method::GET, &format!("/v1/mail/img/{message_id}/{token}"))
+            .request(reqwest::Method::GET, &path::mail_image(message_id, token))
             .send()
             .await
             .map_err(transport)?
@@ -492,8 +470,8 @@ impl RemoteClient {
     /// back as one.
     pub async fn news_body(&self, story: &str, part: BodyPart) -> CommandResult<MailBody> {
         let path = match part.query() {
-            Some(part) => format!("/v1/news/body/{story}?part={part}"),
-            None => format!("/v1/news/body/{story}"),
+            Some(part) => format!("{}?part={part}", path::news_body(story)),
+            None => path::news_body(story),
         };
         let response = self
             .request(reqwest::Method::GET, &path)
@@ -514,7 +492,7 @@ impl RemoteClient {
     /// One picture from a story's body, from `/v1/news/img/{story}/{token}`.
     pub async fn news_image(&self, story: &str, token: &str) -> CommandResult<MailBytes> {
         let response = self
-            .request(reqwest::Method::GET, &format!("/v1/news/img/{story}/{token}"))
+            .request(reqwest::Method::GET, &path::news_image(story, token))
             .send()
             .await
             .map_err(transport)?
@@ -555,7 +533,7 @@ impl RemoteClient {
     /// can find out whether it is worth resetting its backoff without waiting
     /// on a stream that stays open all day either way.
     pub async fn reachable(&self) -> bool {
-        self.request(reqwest::Method::GET, "/v1/hello")
+        self.request(reqwest::Method::GET, path::HELLO)
             .timeout(Duration::from_secs(10))
             .send()
             .await
@@ -567,7 +545,7 @@ impl RemoteClient {
         use futures::StreamExt;
 
         let response = self
-            .request(reqwest::Method::POST, "/v1/stream/send_message")
+            .request(reqwest::Method::POST, &path::stream("send_message"))
             // Not the client's 120-second command timeout. A turn runs tools
             // and can genuinely take minutes, and the timeout applies to the
             // *whole* response -- so inheriting it truncated a long turn
@@ -626,10 +604,7 @@ impl RemoteClient {
         // may load its voice models first.
         let opening = async {
             let key = base64::engine::general_purpose::STANDARD.encode(rand::random::<[u8; 16]>());
-            let response = http
-                .get(format!("{}{}", self.base, crate::voice::ROUTE))
-                .header("x-karmayoga-protocol", PROTOCOL.to_string())
-                .header(karmayoga_core::legacy::PROTOCOL_HEADER, PROTOCOL.to_string())
+            let response = protocol_headers(http.get(format!("{}{}", self.base, path::VOICE)))
                 .bearer_auth(&self.token)
                 .header(reqwest::header::CONNECTION, "Upgrade")
                 .header(reqwest::header::UPGRADE, "websocket")
@@ -684,7 +659,7 @@ impl RemoteClient {
         use futures::StreamExt;
 
         let response = self
-            .request(reqwest::Method::GET, "/v1/events")
+            .request(reqwest::Method::GET, path::EVENTS)
             .timeout(Duration::from_secs(60 * 60 * 24))
             .send()
             .await
@@ -720,16 +695,6 @@ impl RemoteClient {
         }
         Ok(())
     }
-}
-
-/// One thing a server said, unprompted.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum ServerEvent {
-    Notify(karmayoga_service::events::Notification),
-    Changed(karmayoga_service::events::Change),
-    LockState { locked: bool },
-    MeetingOffer(karmayoga_service::events::MeetingOffer),
 }
 
 // ---- the cache -----------------------------------------------------------
@@ -890,16 +855,23 @@ impl rustls::client::danger::ServerCertVerifier for CollectCertificate {
 /// every device that pinned it. So the names are stable and ignored, and the
 /// identity is the pin. See `tls::local_names`.
 pub fn pinned_client(cert_pem: &str) -> CommandResult<reqwest::Client> {
-    let certificate = reqwest::Certificate::from_pem(cert_pem.as_bytes())
-        .map_err(|e| CommandError::new("invalid", format!("that certificate is unusable: {e}")))?;
-    reqwest::Client::builder()
-        .tls_certs_only([certificate])
-        .tls_danger_accept_invalid_hostnames(true)
+    pinned_builder(reqwest::Client::builder(), cert_pem)?
         .timeout(CALL_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .user_agent(concat!("KarmaYoga/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| CommandError::new("network", format!("could not start the client: {e}")))
+}
+
+/// `builder`, trusting `cert_pem` and nothing else, and not checking the host
+/// name -- see [`pinned_client`] for why that is the right model here.
+fn pinned_builder(
+    builder: reqwest::ClientBuilder,
+    cert_pem: &str,
+) -> CommandResult<reqwest::ClientBuilder> {
+    let certificate = reqwest::Certificate::from_pem(cert_pem.as_bytes())
+        .map_err(|e| CommandError::new("invalid", format!("that certificate is unusable: {e}")))?;
+    Ok(builder.tls_certs_only([certificate]).tls_danger_accept_invalid_hostnames(true))
 }
 
 /// [`client_for`], for a voice session: HTTP/1.1 only, because a WebSocket is
@@ -913,10 +885,7 @@ fn voice_client(cert_pem: &str) -> CommandResult<reqwest::Client> {
     let builder = if cert_pem.is_empty() {
         builder.https_only(true)
     } else {
-        let certificate = reqwest::Certificate::from_pem(cert_pem.as_bytes()).map_err(|e| {
-            CommandError::new("invalid", format!("that certificate is unusable: {e}"))
-        })?;
-        builder.tls_certs_only([certificate]).tls_danger_accept_invalid_hostnames(true)
+        pinned_builder(builder, cert_pem)?
     };
     builder
         .build()
@@ -954,7 +923,7 @@ pub async fn hello(host: &str, cert_pem: &str) -> CommandResult<Hello> {
 }
 
 async fn hello_with(http: &reqwest::Client, base: &str) -> CommandResult<Hello> {
-    http.get(format!("{base}/v1/hello"))
+    http.get(format!("{base}{}", path::HELLO))
         .send()
         .await
         .map_err(transport)?

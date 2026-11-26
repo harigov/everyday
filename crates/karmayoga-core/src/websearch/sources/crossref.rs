@@ -11,9 +11,9 @@
 //! list of them. [`parse_crossref`] reads either.
 
 use crate::error::Result;
+use crate::text::one_line;
 use crate::websearch::{
-    SearchResult, Source, decode_entities, http_url, plain_text, squash, string_at, to_year,
-    trim_summary,
+    SearchResult, Source, decode_entities, http_url, plain_text, string_at, to_year, trim_summary,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -299,7 +299,7 @@ fn abstract_text(jats: &str) -> String {
         .replace("</p>", " ");
     // The second reading is of entities only: tags have been dealt with, and
     // a `<` it turns up is somebody's "p < 0.05", not markup.
-    let mut text = squash(&decode_entities(&plain_text(&marked)));
+    let mut text = one_line(&decode_entities(&plain_text(&marked)));
     for label in ["abstract:", "summary:"] {
         if text.get(..label.len()).is_some_and(|head| head.eq_ignore_ascii_case(label)) {
             text = text[label.len()..].trim_start().to_string();

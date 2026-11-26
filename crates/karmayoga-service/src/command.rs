@@ -772,7 +772,7 @@ mod tests {
             "begin_oauth_sign_in",
             "cancel_oauth_sign_in",
             // Mail sync. `sync_account` only starts or nudges a background
-            // task -- see `crate::mailsync::wiring` -- and `rebuild_mail_index`
+            // task -- see `crate::mail::sync::wiring` -- and `rebuild_mail_index`
             // rewrites the search index, a derived structure no list is
             // drawn from; neither touches a vault record a `Kind` names.
             "sync_account",
@@ -831,7 +831,7 @@ mod tests {
             // Starting or stopping a sort of older mail writes session state
             // (`Service::set_mail_older_sort`), not a record; the pane that
             // asked has the answer, and the threads it later files raise
-            // `Thread` from the pass that files them. See `crate::mailsort`.
+            // `Thread` from the pass that files them. See `crate::mail::sort`.
             "sort_older_mail",
             "stop_sorting_older_mail",
             // Starting or stopping a backup writes session state (the one run

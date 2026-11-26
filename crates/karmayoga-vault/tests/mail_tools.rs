@@ -8,7 +8,7 @@
 //! # Ingesting the hostile corpus without the sync engine
 //!
 //! [`ingest_eml`] rebuilds just enough of `karmayoga-service`'s own
-//! `mailsync::passes::process_body` -- parse, sanitise, cut quoted text and
+//! `mail::sync::passes::process_body` -- parse, sanitise, cut quoted text and
 //! a signature out of the plain body -- to produce a [`Body`] a real sync
 //! would have written. It is not a shortcut around that pipeline so much as
 //! a second, smaller copy of its shape, built from the same public

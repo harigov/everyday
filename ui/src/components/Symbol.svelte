@@ -47,7 +47,9 @@
       </mask>
     {/if}
     {#if art.back}<g class="back">{@html art.back}</g>{/if}
-    <g class="front" mask={art.cut ? `url(#${uid}-cut)` : undefined}>{@html art.front}</g>
+    {#if art.front}
+      <g class="front" mask={art.cut ? `url(#${uid}-cut)` : undefined}>{@html art.front}</g>
+    {/if}
     {#if mark}<g class="mark">{@html mark}</g>{/if}
     <!-- eslint-enable svelte/no-at-html-tags -->
   </svg>

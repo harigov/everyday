@@ -46,7 +46,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 /// Where a client opens a session.
-pub const ROUTE: &str = "/v1/voice";
+pub const ROUTE: &str = crate::wire::path::VOICE;
 
 /// One WebSocket message, whichever library carried it.
 #[derive(Debug, Clone, PartialEq)]

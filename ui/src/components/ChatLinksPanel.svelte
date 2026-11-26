@@ -38,6 +38,7 @@
   // the chat itself: that is the channel the comparison is there to check.
 
   import { chat } from '../lib/chat.svelte'
+  import { userAgentMac } from '../lib/platform'
   import {
     HOURS_INVALID,
     PASSWORD_NEEDED,
@@ -95,7 +96,7 @@
 
   // The same sentence `SettingsView`'s lock hints point at: spelled out from
   // the one place that knows the platform's own glyph for the key.
-  const LOCK_SHORTCUT = keysLabel('mod+l', navigator.userAgent.includes('Mac'))
+  const LOCK_SHORTCUT = keysLabel('mod+l', userAgentMac)
 
   const writable = $derived(app.status?.writable !== false)
 

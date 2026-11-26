@@ -316,6 +316,13 @@ pub fn end(child: &mut std::process::Child, profile: &Path) {
     }
 }
 
+/// Whether this platform can start a browser at all. [`launch`] is the one
+/// place that knows: it is the unix one or the stub below, so the answer
+/// lives beside them and nothing else spells out the platform.
+pub fn supported() -> bool {
+    cfg!(unix)
+}
+
 #[cfg(not(unix))]
 pub fn launch(_executable: &Path, _proxy: std::net::SocketAddr) -> Result<Launched, String> {
     Err("controlling a browser is not available on this platform yet".into())

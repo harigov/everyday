@@ -8,16 +8,10 @@
   // this is a text field rather than a list -- worth revisiting once real
   // accounts have real label lists to offer.
 
-  import { focusOnMount, trapFocus } from '../lib/focus'
-  import { closesOnBack } from '../lib/phone.svelte'
+  import { focusOnMount } from '../lib/focus'
+  import Sheet from './Sheet.svelte'
 
   let { onchoose, oncancel }: { onchoose: (label: string) => void; oncancel: () => void } = $props()
-
-  // A phone's back button puts the picker away, as Cancel does.
-  closesOnBack(
-    () => true,
-    () => oncancel(),
-  )
 
   let text = $state('')
 
@@ -27,17 +21,8 @@
   }
 </script>
 
-<svelte:window onkeydown={(e: KeyboardEvent) => e.key === 'Escape' && oncancel()} />
-
-<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim" onclick={oncancel}></div>
-<div
-  class="sheet small"
-  role="dialog"
-  aria-modal="true"
-  aria-label="Label this thread"
-  use:trapFocus
->
+<!-- `Sheet` puts the picker away on Escape and a phone's back button, as Cancel does. -->
+<Sheet label="Label this thread" sheetClass="small" onclose={oncancel}>
   <h2>Label this thread as…</h2>
   <form
     class="row"
@@ -60,7 +45,7 @@
     <span class="spacer"></span>
     <button class="btn" onclick={oncancel}>Cancel</button>
   </div>
-</div>
+</Sheet>
 
 <style>
   h2 {

@@ -20,7 +20,7 @@
 //! `karmayoga://mail/img/{msg}/{token}` -- exactly the addresses
 //! `karmayoga_mail::sanitize::sanitize` already wrote into a message's HTML
 //! at sync time, and exactly the three functions
-//! [`karmayoga_service::mailview`] exists to answer, so this file stays the
+//! [`karmayoga_service::mail::view`] exists to answer, so this file stays the
 //! adapter it is for attachments: no rendering logic of its own, only
 //! routing, headers, and the choice between a local vault and a remote one.
 //! See that module's docs for what each answers and why; see
@@ -62,7 +62,7 @@
 //! and no `part` (or one this does not know) is the whole body.
 //!
 //! A newsletter story's body is mail's own, drawn by
-//! [`karmayoga_service::mailview`] on this route's behalf; its pictures are
+//! [`karmayoga_service::mail::view`] on this route's behalf; its pictures are
 //! addressed to `mail/img/…` and never reach `news/img/…`.
 //!
 //! ## Why `frame-src` had to change for this, and to exactly this
@@ -99,7 +99,7 @@
 //! decided twice over, independently: the `sandbox` attribute on the
 //! `<iframe>` tag itself (never `allow-scripts`, so there is no script
 //! engine to appeal to no matter what a CSP says), and the `<meta
-//! http-equiv="Content-Security-Policy">` [`karmayoga_service::mailview`]
+//! http-equiv="Content-Security-Policy">` [`karmayoga_service::mail::view`]
 //! writes into the document's own `<head>`. CSPs compose rather than
 //! replace one another for a framed document -- the child is bound by the
 //! *intersection* of its own policy and whatever it inherits from the
@@ -415,8 +415,8 @@ async fn serve_mail_local(
             let result = karmayoga_service::blocking(move || {
                 let one_off = svc.remote_images_allowed_once(id);
                 let allow_remote =
-                    karmayoga_service::mailview::remote_images_allowed(&v, id, one_off)?;
-                karmayoga_service::mailview::body_document(&v, id, allow_remote)
+                    karmayoga_service::mail::view::remote_images_allowed(&v, id, one_off)?;
+                karmayoga_service::mail::view::body_document(&v, id, allow_remote)
             })
             .await;
             match result {
@@ -427,7 +427,7 @@ async fn serve_mail_local(
         MailRoute::Part(msg, identifier) => {
             let v = vault.clone();
             let result = karmayoga_service::blocking(move || {
-                karmayoga_service::mailview::part(&v, msg, &identifier)
+                karmayoga_service::mail::view::part(&v, msg, &identifier)
             })
             .await;
             match result {
@@ -447,7 +447,7 @@ async fn serve_mail_local(
                 Ok(c) => c,
                 Err(e) => return error_from(&e),
             };
-            match karmayoga_service::mailview::remote_image(&vault, client, msg, &token, one_off)
+            match karmayoga_service::mail::view::remote_image(&vault, client, msg, &token, one_off)
                 .await
             {
                 // Never cached -- see the server route's identical choice:
@@ -484,7 +484,7 @@ pub(crate) async fn mail_part_bytes(
             let vault = service.require_unlocked()?;
             let identifier = identifier.to_string();
             let part = karmayoga_service::blocking(move || {
-                karmayoga_service::mailview::part(&vault, id, &identifier)
+                karmayoga_service::mail::view::part(&vault, id, &identifier)
             })
             .await?;
             Ok(part.bytes)
@@ -501,7 +501,7 @@ async fn serve_mail_remote(
 ) -> Response<Vec<u8>> {
     match route {
         MailRoute::Body(id) => match remote.client.mail_body(&id.to_string()).await {
-            Ok(body) => respond_body(karmayoga_service::mailview::BodyDocument {
+            Ok(body) => respond_body(karmayoga_service::mail::view::BodyDocument {
                 html: body.html,
                 images_hidden: body.images_hidden,
             }),
@@ -561,7 +561,7 @@ async fn serve_mail_remote(
 /// without this line `res.headers.get('x-mail-images-hidden')` in
 /// `mailview.ts` would read `null` and the "Images hidden — Show" bar would
 /// never appear even once the fetch itself was unblocked.
-fn respond_body(doc: karmayoga_service::mailview::BodyDocument) -> Response<Vec<u8>> {
+fn respond_body(doc: karmayoga_service::mail::view::BodyDocument) -> Response<Vec<u8>> {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -730,7 +730,7 @@ async fn serve_news_remote(
 ) -> Response<Vec<u8>> {
     match route {
         NewsRoute::Body(id, part) => match remote.client.news_body(&id.to_string(), part).await {
-            Ok(body) => respond_news_body(karmayoga_service::mailview::BodyDocument {
+            Ok(body) => respond_news_body(karmayoga_service::mail::view::BodyDocument {
                 html: body.html,
                 images_hidden: body.images_hidden,
             }),
@@ -762,7 +762,7 @@ async fn serve_news_remote(
 /// address is a cross-origin request, and without
 /// `Access-Control-Expose-Headers` it could not read `X-News-Images-Hidden`
 /// to know whether to offer to show the pictures.
-fn respond_news_body(doc: karmayoga_service::mailview::BodyDocument) -> Response<Vec<u8>> {
+fn respond_news_body(doc: karmayoga_service::mail::view::BodyDocument) -> Response<Vec<u8>> {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -1109,7 +1109,7 @@ mod mail_route_tests {
     /// The bug this guards against: a `cid:` reference containing `=`, `$`,
     /// `/` and a space, percent-encoded by `sanitize::sanitize`'s own
     /// `path_segment`, has to decode back to exactly what the message's own
-    /// MIME part carries -- `find_part` in `karmayoga-service::mailview`
+    /// MIME part carries -- `find_part` in `karmayoga-service::mail::view`
     /// compares it against the raw, undecoded content id, so a route that
     /// decoded it wrongly (or not at all) would never find the part a
     /// message actually has.
@@ -1262,7 +1262,7 @@ mod news_route_tests {
     #[test]
     fn the_body_response_says_whether_pictures_are_hidden() {
         for (hidden, header_value) in [(true, "1"), (false, "0")] {
-            let response = respond_news_body(karmayoga_service::mailview::BodyDocument {
+            let response = respond_news_body(karmayoga_service::mail::view::BodyDocument {
                 html: "<p>hi</p>".into(),
                 images_hidden: hidden,
             });

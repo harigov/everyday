@@ -617,7 +617,7 @@ fn view_of(
             level: block.level,
             page: block.page,
             html: if block.html.is_empty() {
-                crate::mailview::escape_html(&block.text)
+                crate::mail::view::escape_html(&block.text)
             } else {
                 block.html.clone()
             },

@@ -175,7 +175,7 @@ impl Badge {
     /// and nothing about the vault depends on it.
     fn apply(&self, app: &AppHandle, count: u64) {
         #[cfg(target_os = "macos")]
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) {
             let n = (count > 0).then(|| i64::try_from(count).unwrap_or(i64::MAX));
             if let Err(e) = window.set_badge_count(n) {
                 tracing::warn!(error = %e, "could not set the Dock badge");
@@ -183,7 +183,7 @@ impl Badge {
         }
 
         #[cfg(target_os = "windows")]
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) {
             let icon = label(count).map(|text| {
                 tauri::image::Image::new_owned(overlay_rgba(&text), OVERLAY_SIZE, OVERLAY_SIZE)
             });
@@ -298,7 +298,7 @@ const SNOOZED_PAGE: u32 = 200;
 ///
 /// Two reads per inbox rather than one list of its unread threads: the
 /// service's unread total (a clear-column `SUM`, cached until the next mail
-/// write -- see `mailsync::unread_cache`), less what the inbox's snoozed
+/// write -- see `mail::sync::unread_cache`), less what the inbox's snoozed
 /// threads hold. The first is exact and costs nothing between writes; the
 /// second decrypts only the snoozed threads, which are a handful, where
 /// listing every unread thread would decrypt all of them once a minute.

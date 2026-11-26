@@ -25,7 +25,7 @@ impl Vault {
     /// key that seals a journal entry. `Err(Error::Locked)` when the vault
     /// has no key to derive from.
     pub fn derive_subkey(&self, label: &str) -> Result<SecretKey> {
-        self.read(|u| Ok(u.cipher.derive_subkey(label)))
+        self.read(|u| Ok(u.subkey(label)))
     }
 
     /// Where this vault's backend keeps its own files, for a local backend --

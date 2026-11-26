@@ -50,6 +50,7 @@ pub mod sse;
 pub mod tls;
 pub mod voice;
 pub mod web;
+pub mod wire;
 
 use axum_server::tls_rustls::RustlsConfig;
 use karmayoga_service::error::{CommandError, CommandResult};

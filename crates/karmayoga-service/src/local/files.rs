@@ -1316,11 +1316,7 @@ fn download_client() -> Result<&'static reqwest::Client, String> {
             reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
                 .read_timeout(STALL_TIMEOUT)
-                .user_agent(concat!(
-                    "KarmaYoga/",
-                    env!("CARGO_PKG_VERSION"),
-                    " (+https://github.com/karmayoga-app)"
-                ))
+                .user_agent(crate::http::USER_AGENT)
                 .build()
                 .map_err(|e| e.to_string())
         })
@@ -1394,20 +1390,12 @@ async fn stream_download(
             "download failed: expected {expected_bytes} bytes, got {got}"
         )));
     }
-    let digest = to_hex(&hasher.finalize());
+    let digest = karmayoga_core::hex::encode(&hasher.finalize());
     if !digest.eq_ignore_ascii_case(expected_sha256) {
         let _ = tokio::fs::remove_file(dest).await;
         return Err(Outcome::Failed("download failed: the checksum did not match".into()));
     }
     Ok(())
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
 }
 
 /// Extract `members` from the `.tar.bz2` at `archive`, each checked against
@@ -1501,7 +1489,7 @@ fn extract_members_blocking(
             .map_err(|e| Outcome::Failed(format!("could not extract {}: {e}", model_file.dest)))?;
         drop(out);
 
-        let digest = to_hex(&hasher.finalize());
+        let digest = karmayoga_core::hex::encode(&hasher.finalize());
         if !digest.eq_ignore_ascii_case(model_file.sha256) {
             let _ = std::fs::remove_file(&partial);
             return Err(Outcome::Failed(format!(
@@ -2044,7 +2032,7 @@ mod tests {
     /// which a real [`ModelSpec`] gets for free from being a `const`, and a
     /// test-only one has to fake by leaking -- fine for a test process.
     fn sha256_hex(bytes: &[u8]) -> &'static str {
-        Box::leak(to_hex(&Sha256::digest(bytes)).into_boxed_str())
+        Box::leak(karmayoga_core::hex::encode(&Sha256::digest(bytes)).into_boxed_str())
     }
 
     /// Leaked the same way: `members` is `&'static [(&'static str,
@@ -2082,7 +2070,7 @@ mod tests {
     fn to_hex_matches_a_known_vector() {
         // SHA-256("") -- the standard empty-string test vector.
         assert_eq!(
-            to_hex(&Sha256::digest(b"")),
+            karmayoga_core::hex::encode(&Sha256::digest(b"")),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
     }

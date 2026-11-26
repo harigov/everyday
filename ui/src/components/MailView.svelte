@@ -5,6 +5,7 @@
   // folded into one component the way the library and the todo app do.
 
   import { onMount, untrack } from 'svelte'
+  import { userAgentMac } from '../lib/platform'
   import { accounts } from '../lib/accounts.svelte'
   import { accountColor } from '../lib/avatar'
   import {
@@ -207,7 +208,7 @@
   let cleaning = $state(false)
 
   /** What the platform calls the key Ctrl+click is held with. */
-  const modKey = navigator.userAgent.includes('Mac') ? '⌘' : 'Ctrl'
+  const modKey = userAgentMac ? '⌘' : 'Ctrl'
 
   /** Is the list column currently the Snoozed view -- the one place a row's
    *  own date column means "comes back" rather than "last arrived", and the

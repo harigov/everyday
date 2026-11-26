@@ -5,10 +5,10 @@
 //! summaries and auto-drafts one rule each, in the same words: "only when
 //! `mail_ai.<feature>` is on **and** the assistant provider is acknowledged
 //! for the account." Three call sites repeating that check is three places
-//! for it to drift — one already has, in `karmayoga-service::mailsync`, when
+//! for it to drift — one already has, in `karmayoga-service::mail::sync`, when
 //! a feature ships a refusal that checks the flag but forgets the
 //! acknowledgement, or the other way round. [`mail_ai_allowed`] is the
-//! answer: every one of `karmayoga-service::mailai`'s three features calls
+//! answer: every one of `karmayoga-service::mail::ai`'s three features calls
 //! this, and nothing else decides whether a mail feature may reach a model.
 //!
 //! # Why this is not [`super::rate_limit`]
@@ -28,7 +28,7 @@ pub enum MailAiFeature {
     Categorize,
     Summaries,
     AutoDraft,
-    /// `karmayoga_service::mailwrite`'s three: suggested replies, a draft
+    /// `karmayoga_service::mail::write`'s three: suggested replies, a draft
     /// from a few words, and improving what was written.
     Writing,
 }

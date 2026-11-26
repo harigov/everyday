@@ -25,8 +25,8 @@
 //!
 //! "Dentist" with no location is a plan by these rules, and its title gives it
 //! away, which is why the model still sees titles and is told what to do about
-//! one -- see `karmayoga_service::mailwrite`'s `CALENDAR_RULES`. Everything here
-//! is pure: `karmayoga_service::mailwrite` reads the vault.
+//! one -- see `karmayoga_service::mail::write`'s `CALENDAR_RULES`. Everything here
+//! is pure: `karmayoga_service::mail::write` reads the vault.
 
 use std::collections::HashSet;
 
@@ -64,7 +64,7 @@ pub enum Hold {
 
 /// What goes in place of a title the model is not to be shown: an event on an
 /// account that has not agreed to its calendar being read closely, whose time
-/// still has to be kept clear -- see `karmayoga_service::mailwrite`.
+/// still has to be kept clear -- see `karmayoga_service::mail::write`.
 const WITHHELD_TITLE: &str = "(private)";
 
 /// Can "open" be worked out while this calendar is in the picture? Not if what

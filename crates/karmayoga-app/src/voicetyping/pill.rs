@@ -30,7 +30,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 /// The window's label. The dictation slot is claimed under it
 /// (`crate::dictation::claim_for`), and the application's window handling
@@ -99,18 +99,10 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(window) = existing(app) {
         return Ok(window);
     }
-    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("voice-typing.html".into()))
-        .title("Voice typing")
-        .inner_size(SIZE, SIZE)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .resizable(false)
-        .skip_taskbar(true)
+    crate::overlay::popup_builder(app, LABEL, "voice-typing.html", "Voice typing", (SIZE, SIZE))
         .visible(false)
         .focused(false)
         .focusable(false)
-        .on_navigation(crate::navigation::guard(crate::navigation::dev_url(app)))
         .build()
         // Over the app being typed into, full-screen or not. See `overlay`.
         .inspect(crate::overlay::float_over_full_screen)

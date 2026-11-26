@@ -28,7 +28,7 @@
 //!
 //! # Whose mail it reads for the voice
 //!
-//! Their voice is in their sent mail ([`crate::mailvoice`]), and reading it is
+//! Their voice is in their sent mail ([`crate::mail::voice`]), and reading it is
 //! what an account has agreed to, or not, with its "writing help" switch and
 //! the acknowledgement of the model's endpoints. [`compose`] reads the first
 //! account, in the order they were added, that has agreed, checked against the
@@ -73,7 +73,7 @@ use crate::domains::writing::{
     WRITING_CLOCK, clean_app, keep_and_ask, rewrite_text, said_as_it_is,
 };
 use crate::error::{CommandError, CommandResult, codes};
-use crate::mailvoice::{self, VoiceContext};
+use crate::mail::voice::{self as mailvoice, VoiceContext};
 use crate::service::{Service, blocking};
 
 /// Longest a recipient's name may be, in characters. A name, not a sentence:
@@ -398,7 +398,7 @@ fn compose_user(
 
 /// The first of `accounts` whose mail may be read for writing, against the
 /// `acknowledgement` of the model that will be asked -- the same two switches
-/// as [`crate::mailai::mail_model`] checks, taken from the model's own
+/// as [`crate::mail::ai::mail_model`] checks, taken from the model's own
 /// snapshot rather than an earlier read of the settings. In the order the
 /// accounts were added: there is no account that is the person's own, above
 /// the others, to prefer.

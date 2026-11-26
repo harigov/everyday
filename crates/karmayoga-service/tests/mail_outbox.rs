@@ -3,7 +3,7 @@
 //!
 //! `karmayoga-core`'s conformance suite already checks the storage layer in
 //! isolation; what is worth checking here, once, through the command layer
-//! and `crates/karmayoga-service/src/outbox.rs` together, is the handful of
+//! and `crates/karmayoga-service/src/mail/outbox.rs` together, is the handful of
 //! behaviours `docs/plans/mail.md`'s phase 3 section is explicit about and
 //! that only show up when several pieces move in the same call: an
 //! optimistic local write that a permanent failure actually reverts, undo
@@ -31,7 +31,7 @@ use karmayoga_mail::session::{
 };
 use karmayoga_service::ctx::Ctx;
 use karmayoga_service::events::{Change, EventSink, Notification};
-use karmayoga_service::outbox::{drain_outbox, release_due_snoozes};
+use karmayoga_service::mail::outbox::{drain_outbox, release_due_snoozes};
 use karmayoga_service::{Service, error::CommandError};
 use serde_json::{Value, json};
 
@@ -874,14 +874,16 @@ async fn an_inflight_op_left_by_a_crash_is_recovered_and_drains() {
     let vault = svc.get().unwrap();
     // What a crash between `drain_outbox` claiming this op and recording
     // how it went leaves behind -- nothing else ever moves an op out of
-    // `InFlight` again, per `crate::outbox`'s own module docs.
+    // `InFlight` again, per `crate::mail::outbox`'s own module docs.
     let mut stranded = vault.op(op_id).unwrap();
     stranded.transition_to(OpState::InFlight).unwrap();
     vault.update_op(&stranded).unwrap();
     let attempts_before = stranded.attempts;
 
     let mut session = FakeSession::default();
-    karmayoga_service::outbox::recover_inflight_ops(&svc, account, &mut session).await.unwrap();
+    karmayoga_service::mail::outbox::recover_inflight_ops(&svc, account, &mut session)
+        .await
+        .unwrap();
 
     let recovered = vault.op(op_id).unwrap();
     assert_eq!(recovered.state, OpState::Pending, "a stranded op must go back to work");
@@ -1414,7 +1416,9 @@ async fn recovering_a_crashed_send_finds_it_via_a_widened_search() {
 
     let mut session = FakeSession::default();
     session.found_message_ids.insert("crashed@example.com".into(), 5);
-    karmayoga_service::outbox::recover_inflight_ops(&svc, account, &mut session).await.unwrap();
+    karmayoga_service::mail::outbox::recover_inflight_ops(&svc, account, &mut session)
+        .await
+        .unwrap();
 
     let recovered = vault.op(op.id).unwrap();
     assert_eq!(
@@ -1717,7 +1721,9 @@ async fn a_crash_between_an_ops_terminal_state_and_its_draft_write_is_reconciled
     vault.update_op(&failed).unwrap();
 
     let mut session = FakeSession::default();
-    karmayoga_service::outbox::recover_inflight_ops(&svc, account, &mut session).await.unwrap();
+    karmayoga_service::mail::outbox::recover_inflight_ops(&svc, account, &mut session)
+        .await
+        .unwrap();
 
     assert_eq!(
         vault.draft(sent_draft_id).unwrap().state,

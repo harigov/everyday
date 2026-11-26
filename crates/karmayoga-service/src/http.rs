@@ -7,7 +7,7 @@
 //! rather than CalDAV ([`crate::accountcal::google`],
 //! [`crate::accountcal::graph`]); looking up what a book is called
 //! ([`crate::websearch`]); fetching a remote image a message asked to load
-//! ([`crate::mailview::remote_image`]); and, once a call ends, sending a
+//! ([`crate::mail::view::remote_image`]); and, once a call ends, sending a
 //! chunk of speech to whichever remote transcriber the person configured
 //! ([`crate::speech::transcribe::openai`],
 //! [`crate::speech::transcribe::gemini`]). Sharing the client is not about
@@ -34,12 +34,12 @@
 //! 404 means "that subscription link has been revoked" to a calendar and
 //! "nothing was found" to a lookup, so each caller maps status codes itself.
 //! A remote image is the one address among them that a *stranger* chose
-//! rather than the person using this application, so [`crate::mailview`]
+//! rather than the person using this application, so [`crate::mail::view`]
 //! layers its own SSRF check and a generic `User-Agent` on top of this
 //! client's shared settings rather than trusting the far end the way a
 //! calendar subscription, an account sync or a transcription request is. See
 //! [`crate::feeds::fetch`], [`crate::websearch::get`] and
-//! [`crate::mailview::remote_image`].
+//! [`crate::mail::view::remote_image`].
 //!
 //! # What this is allowed to talk to
 //!
@@ -47,7 +47,7 @@
 //! account they signed into; the search endpoint behind a button they
 //! pressed; an image address a message named -- fetched only once its
 //! sender is trusted or the person asks, and only after
-//! [`crate::mailview`]'s own checks -- and, if they chose a remote
+//! [`crate::mail::view`]'s own checks -- and, if they chose a remote
 //! transcriber over a local one, that transcriber's endpoint: OpenAI's,
 //! Google's, or a base URL the person typed in for a compatible server of
 //! their own. What travels there is speech only -- VAD cuts silence out
@@ -77,6 +77,26 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// bounces at least once.
 const MAX_REDIRECTS: usize = 5;
 
+/// Who this application says it is, on every request that names itself:
+/// the shared clients here, a model download, a bank's API, a feed. One
+/// spelling, so a publisher's logs see one product rather than five.
+///
+/// Not every request sends this. A page fetched to be read sends
+/// [`BROWSER_USER_AGENT`]; a backup target, an MCP server's OAuth endpoints
+/// and a stranger's remote image each send their own, on purpose -- see
+/// those call sites.
+pub const USER_AGENT: &str =
+    concat!("KarmaYoga/", env!("CARGO_PKG_VERSION"), " (+https://github.com/karmayoga-app)");
+
+/// The browser-shaped agent a page is fetched under to be read: many sites
+/// refuse a bare product name before they serve anything at all. Still says
+/// who is asking, inside the parentheses.
+pub const BROWSER_USER_AGENT: &str = concat!(
+    "Mozilla/5.0 (compatible; KarmaYoga/",
+    env!("CARGO_PKG_VERSION"),
+    "; +https://github.com/karmayoga-app)"
+);
+
 /// The code for a request that failed in transport: [`codes::UNREACHABLE`]
 /// when it never reached the server -- no connection, or no answer in time --
 /// and [`codes::NETWORK`] for anything else that went wrong on the way.
@@ -100,11 +120,7 @@ pub fn client() -> CommandResult<&'static reqwest::Client> {
                 // Saying who we are is the polite thing to appear in
                 // somebody's logs, and several publishers vary the document
                 // by user agent more often than you would hope.
-                .user_agent(concat!(
-                    "KarmaYoga/",
-                    env!("CARGO_PKG_VERSION"),
-                    " (+https://github.com/karmayoga-app)"
-                ))
+                .user_agent(USER_AGENT)
                 .build()
                 .map_err(|e| e.to_string())
         })
@@ -135,7 +151,7 @@ pub fn public_client() -> CommandResult<&'static reqwest::Client> {
                 .connect_timeout(CONNECT_TIMEOUT)
                 .no_proxy()
                 .dns_resolver(Arc::new(PublicOnly))
-                .redirect(public_client_redirect_policy())
+                .redirect(public_redirect_policy(MAX_REDIRECTS, RedirectSchemes::HttpOrHttps))
                 .build()
                 .map_err(|e| e.to_string())
         })
@@ -143,26 +159,58 @@ pub fn public_client() -> CommandResult<&'static reqwest::Client> {
         .map_err(|e| CommandError::new(codes::NETWORK, format!("could not start the fetcher: {e}")))
 }
 
-/// Follow at most [`MAX_REDIRECTS`] hops, only over http(s), and never to a
-/// literal private address -- the hop a resolver never sees.
-fn public_client_redirect_policy() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= MAX_REDIRECTS {
+/// Which schemes a redirect hop may move to, for [`public_redirect_policy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RedirectSchemes {
+    /// `http` or `https` -- [`public_client`]'s rule.
+    HttpOrHttps,
+    /// `https` only -- an OAuth exchange with a server on the internet.
+    HttpsOnly,
+}
+
+/// Follow at most `max` hops, only over the schemes `schemes` allows, and
+/// never to a literal private address -- the hop a resolver never sees.
+///
+/// The one redirect rule for every client that must stay on the open
+/// internet: [`public_client`]'s, and the MCP connections' OAuth client.
+/// The refusals' wording is what `reqwest` reports as the error's source.
+pub(crate) fn public_redirect_policy(
+    max: usize,
+    schemes: RedirectSchemes,
+) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= max {
             return attempt.error("too many redirects");
         }
         let url = attempt.url();
-        if url.scheme() != "http" && url.scheme() != "https" {
-            return attempt.error("a redirect left http");
+        match schemes {
+            RedirectSchemes::HttpOrHttps if url.scheme() != "http" && url.scheme() != "https" => {
+                return attempt.error("a redirect left http");
+            }
+            RedirectSchemes::HttpsOnly if url.scheme() != "https" => {
+                return attempt.error("a redirect left https");
+            }
+            _ => {}
         }
-        let literal = url
-            .host_str()
-            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-            .and_then(|h| h.parse::<IpAddr>().ok());
-        if literal.is_some_and(|ip| is_forbidden_address(ip, false)) {
+        if names_forbidden_literal(url) {
             return attempt.error("a redirect pointed at a private network");
         }
         attempt.follow()
     })
+}
+
+/// The address `host` names by itself, when it is a numeric one: `127.0.0.1`,
+/// `::1` and `[::1]` (as `Url::host_str` spells an IPv6 host) parse; a name
+/// does not, and is left to [`PublicOnly`] to resolve.
+pub(crate) fn literal_ip(host: &str) -> Option<IpAddr> {
+    host.trim_start_matches('[').trim_end_matches(']').parse().ok()
+}
+
+/// Whether `url`'s host is a numeric address on this computer or a private
+/// network ([`is_forbidden_address`], loopback included) -- the one case a
+/// resolver never sees, because nothing is resolved.
+pub(crate) fn names_forbidden_literal(url: &reqwest::Url) -> bool {
+    url.host_str().and_then(literal_ip).is_some_and(|ip| is_forbidden_address(ip, false))
 }
 
 /// A resolver that answers only with addresses on the open internet.
@@ -170,7 +218,10 @@ fn public_client_redirect_policy() -> reqwest::redirect::Policy {
 /// A name whose every answer is private resolves to an error; a name with a
 /// mix has its private answers removed, so the connection cannot fall back
 /// to one of them.
-struct PublicOnly;
+///
+/// The one such resolver: every client that must stay on the open internet
+/// installs this one, with no proxy (a proxy resolves names itself).
+pub(crate) struct PublicOnly;
 
 impl reqwest::dns::Resolve for PublicOnly {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
@@ -501,7 +552,7 @@ mod tests {
         let port = local_server("http://10.0.0.1/secret").await;
         let client = reqwest::Client::builder()
             .no_proxy()
-            .redirect(public_client_redirect_policy())
+            .redirect(public_redirect_policy(MAX_REDIRECTS, RedirectSchemes::HttpOrHttps))
             .build()
             .unwrap();
         let err = client.get(format!("http://127.0.0.1:{port}/")).send().await.unwrap_err();

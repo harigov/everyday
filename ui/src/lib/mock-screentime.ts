@@ -1279,6 +1279,34 @@ export function mockScreenMinutes(
 
 // ── The one entry point ──────────────────────────────────────────────────
 
+/** Every vault command this file answers; each wants the vault open. */
+export const MOCK_SCREENTIME_COMMANDS: ReadonlySet<string> = new Set([
+  'record_screen_time',
+  'screen_time_collector',
+  'screen_time_report',
+  'screen_time_timeline',
+  'list_screen_apps',
+  'save_screen_app',
+  'delete_screen_app',
+  'list_screen_categories',
+  'save_screen_category',
+  'delete_screen_category',
+  'list_screen_devices',
+  'screen_time_settings',
+  'save_screen_time_settings',
+  'forget_screen_item',
+  'delete_screen_time',
+])
+
+/** The shell's `screentime_*` commands: this computer's, answered locked or not. */
+export const MOCK_SCREENTIME_SHELL_COMMANDS: ReadonlySet<string> = new Set([
+  'screentime_status',
+  'screentime_set_tracking',
+  'screentime_set_device',
+  'screentime_install_gnome_extension',
+  'screentime_connect_browser',
+])
+
 export function mockScreenTime(cmd: string, args: Record<string, unknown>): unknown {
   switch (cmd) {
     case 'record_screen_time':

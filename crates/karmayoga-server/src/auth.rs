@@ -33,6 +33,7 @@
 //! is guessable at a few thousand attempts a second and is not at five a
 //! minute.
 
+use axum::http::{HeaderMap, header};
 use karmayoga_service::ctx::{Caller, Ctx, Scope};
 use karmayoga_service::error::{CommandError, CommandResult};
 use rand::TryRngCore;
@@ -756,6 +757,70 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// How strictly a request's `Authorization` header is read for its token.
+///
+/// The routes were written at different times for different callers, and each
+/// accepts what its own callers send. They are named here so that making one
+/// stricter or looser is a choice made where it can be seen, not a drift
+/// between four copies of a `strip_prefix`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Leniency {
+    /// `Bearer ` exactly as spelled, and the rest taken as the token, spaces
+    /// and all: what our own client sends to `/v1` and what MCP clients send
+    /// to `/mcp`. A token that does not match is refused by the registry.
+    Exact,
+    /// `Bearer ` exactly as spelled, then the token trimmed and required to be
+    /// non-empty: the screen-time collectors, which are not built from this
+    /// workspace.
+    Trimmed,
+    /// The scheme in any case, the token trimmed and non-empty: a phone's
+    /// automation, whose header field was typed by hand.
+    AnyCase,
+}
+
+/// The token in `Authorization: Bearer <token>`, read as `how` says.
+pub(crate) fn bearer(headers: &HeaderMap, how: Leniency) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    match how {
+        Leniency::Exact => value.strip_prefix("Bearer "),
+        Leniency::Trimmed => {
+            Some(value.strip_prefix("Bearer ")?.trim()).filter(|token| !token.is_empty())
+        }
+        Leniency::AnyCase => {
+            let (scheme, token) = value.split_once(' ')?;
+            let token = token.trim();
+            (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+        }
+    }
+}
+
+impl Registry {
+    /// [`Self::authenticate`] for a route that only a token named for one
+    /// scope may use: the device's token if it holds `scope`, and, for a
+    /// token minted for an MCP client, only if it names `scope` itself.
+    ///
+    /// An MCP token is issued [`Scope::All`] when its owner did not narrow it,
+    /// and `All` is not consent to be a collector or a health push. Refused
+    /// with `forbidden` and `refusal` as the message.
+    pub(crate) fn authenticate_for(
+        self: &Arc<Self>,
+        token: &str,
+        scope: Scope,
+        refusal: &str,
+    ) -> CommandResult<Ctx> {
+        let ctx = self.authenticate(token)?;
+        let minted_for_mcp = matches!(
+            &ctx.caller,
+            Caller::Device(id) if karmayoga_core::agent::tools::is_mcp_device_id(id)
+        );
+        let allowed = if minted_for_mcp { ctx.names(scope) } else { ctx.holds(scope) };
+        if !allowed {
+            return Err(CommandError::new(karmayoga_service::error::codes::FORBIDDEN, refusal));
+        }
+        Ok(ctx)
+    }
 }
 
 #[cfg(test)]

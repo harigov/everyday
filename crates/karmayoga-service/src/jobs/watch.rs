@@ -1724,7 +1724,7 @@ fn before_the_last_turn(messages: &[Message]) -> Vec<MessageId> {
 /// every look does. Lower-case hex SHA-256 of [`steady`].
 fn fingerprint(observation: &str) -> String {
     let digest = Sha256::digest(steady(observation).as_bytes());
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    karmayoga_core::hex::encode(&digest)
 }
 
 /// `observation` with the obviously volatile parts taken out, so that a look

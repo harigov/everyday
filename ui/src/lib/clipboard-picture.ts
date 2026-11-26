@@ -16,6 +16,8 @@
 // to be shy, because a paste that is taken for one is a paste that is not
 // handed to the editor -- is pinned by a test.
 
+import { isoDate, pad2 } from './time'
+
 /**
  * What `mayBePicture` reads of a paste: its data, and whether the person
  * made it. A `ClipboardEvent` is this, and so is a test's stand-in for one.
@@ -171,8 +173,6 @@ async function say(why: unknown): Promise<void> {
  * every system a vault's files are copied out to.
  */
 function pastedName(at: Date, extension: string): string {
-  const two = (n: number) => String(n).padStart(2, '0')
-  const date = `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`
-  const time = `${two(at.getHours())}.${two(at.getMinutes())}.${two(at.getSeconds())}`
-  return `Pasted image ${date} ${time}.${extension}`
+  const time = `${pad2(at.getHours())}.${pad2(at.getMinutes())}.${pad2(at.getSeconds())}`
+  return `Pasted image ${isoDate(at)} ${time}.${extension}`
 }

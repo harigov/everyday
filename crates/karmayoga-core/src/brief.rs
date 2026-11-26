@@ -70,6 +70,7 @@ use crate::store::purpose::{GoalQuery, PurposeWindow};
 use crate::store::tasks::{BlockQuery, TaskQuery, TaskSort};
 use crate::task::{Priority, TaskStatus};
 use crate::vault::Vault;
+use crate::zone::zone_of;
 
 // ---- caps -----------------------------------------------------------------
 
@@ -1957,13 +1958,6 @@ fn weekday_of(date: &str) -> String {
 
 fn long_day(day: Date) -> String {
     day.strftime("%A %-d %B %Y").to_string()
-}
-
-fn zone_of(name: &str) -> TimeZone {
-    if name.is_empty() {
-        return TimeZone::UTC;
-    }
-    TimeZone::get(name).unwrap_or(TimeZone::UTC)
 }
 
 fn capitalise(s: &str) -> String {

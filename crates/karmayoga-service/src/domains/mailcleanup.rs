@@ -242,7 +242,7 @@ async fn inbox_senders(
 
 /// The mailbox that is an account's Inbox: the one synced with
 /// [`MailboxRole::Inbox`] -- on Gmail, the `\Inbox` label's row, see
-/// `crate::mailsync::discovery` -- or, on a server that never said which of
+/// `crate::mail::sync::discovery` -- or, on a server that never said which of
 /// its folders was which, the one named `INBOX`, the name IMAP reserves for
 /// it (and spells without regard to case). The leading backslashes are
 /// ignored so a Gmail account synced before `\Inbox` was resolved to its

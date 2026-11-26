@@ -11,7 +11,7 @@
 // of "the local calendar day" is four places for the same off-by-a-timezone
 // bug to be fixed in three of.
 
-import { daysApart, isoDate, locale, startOfDay } from './time'
+import { daysApart, isoDate, locale, pad2, startOfDay } from './time'
 
 // ── the formatters ─────────────────────────────────────────────────────
 //
@@ -307,11 +307,6 @@ export function hourLabel(hour: number): string {
   return dateFormat({ hour: 'numeric' }).format(at)
 }
 
-/** Two digits, padded -- what both `<input>` values below are built from. */
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
-}
-
 /**
  * `YYYY-MM-DDTHH:MM` for an `<input type="datetime-local">`.
  *
@@ -319,7 +314,7 @@ function pad(n: number): string {
  * is UTC, so the field would open an hour or ten off wherever the user is.
  */
 export function toLocalInputValue(at: Date): string {
-  return `${isoDate(at)}T${pad(at.getHours())}:${pad(at.getMinutes())}`
+  return `${isoDate(at)}T${pad2(at.getHours())}:${pad2(at.getMinutes())}`
 }
 
 /**
@@ -328,5 +323,5 @@ export function toLocalInputValue(at: Date): string {
  * reading logged at a particular minute of a day already on screen.
  */
 export function toLocalTimeValue(at: Date): string {
-  return `${pad(at.getHours())}:${pad(at.getMinutes())}`
+  return `${pad2(at.getHours())}:${pad2(at.getMinutes())}`
 }

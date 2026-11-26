@@ -78,6 +78,7 @@ use crate::health::{
     TargetStanding, Workout, nutrition, report, rules, schedule, units,
 };
 use crate::id::{DoseId, FoodId, LabResultId, MealId, MedicationId};
+use crate::text::one_line_ellipsized;
 
 /// How many characters of a stranger's name, title or line one row carries.
 /// A real one is a line; a hostile one can be as long as an import let it be,
@@ -634,7 +635,7 @@ struct Frame {
 
 impl Frame {
     fn read(ctx: &ToolContext<'_>) -> Result<Frame> {
-        Ok(Frame { settings: ctx.vault.health_settings()?, zone: zone_of(ctx) })
+        Ok(Frame { settings: ctx.vault.health_settings()?, zone: ctx.zone() })
     }
 
     /// The unit `metric` is shown in.
@@ -1144,10 +1145,6 @@ impl Frame {
 
 // ---- small helpers --------------------------------------------------------------
 
-fn zone_of(ctx: &ToolContext<'_>) -> TimeZone {
-    TimeZone::get(ctx.tz).unwrap_or(TimeZone::UTC)
-}
-
 /// `value` to `places` decimal places, so a model never reads 0.1 + 0.2.
 fn round(value: f64, places: i32) -> f64 {
     let scale = 10f64.powi(places);
@@ -1174,24 +1171,13 @@ fn put_text(m: &mut Map<String, Value>, key: &str, words: &str) {
     }
 }
 
-/// At most `max` characters of `words`, flattened onto one line, with an
-/// ellipsis when anything was cut. Characters, never bytes: a multi-byte
-/// character sliced in half is not a shorter string but a corrupt one.
-fn cap(words: &str, max: usize) -> String {
-    let flat = one_line(words);
-    match flat.char_indices().nth(max) {
-        Some((end, _)) => format!("{}\u{2026}", &flat[..end]),
-        None => flat,
-    }
-}
-
 /// A row's `untrusted_text`: each of these that says anything, capped and on
 /// one line. `None` when none does.
 fn strangers(words: &[(&str, &str)]) -> Option<Value> {
     let mut m = Map::new();
     for (key, text) in words {
         if !text.trim().is_empty() {
-            m.insert((*key).to_string(), json!(cap(text, WORDS_CAP)));
+            m.insert((*key).to_string(), json!(one_line_ellipsized(text, WORDS_CAP)));
         }
     }
     (!m.is_empty()).then_some(Value::Object(m))
@@ -1659,7 +1645,7 @@ fn run_health_series(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 
 fn run_health_readings(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let metric = metric_arg(args, "metric")?;
-    let zone = zone_of(ctx);
+    let zone = ctx.zone();
     let to = opt_moment(args, "to", &zone)?.unwrap_or_else(Timestamp::now);
     let from = match opt_moment(args, "from", &zone)? {
         Some(from) => from,
@@ -1712,7 +1698,8 @@ fn run_health_readings(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> 
         "readings": rows,
     });
     if !sources.is_empty() {
-        let names: Vec<String> = sources.iter().map(|s| cap(s, WORDS_CAP)).collect();
+        let names: Vec<String> =
+            sources.iter().map(|s| one_line_ellipsized(s, WORDS_CAP)).collect();
         out["untrusted_text"] = json!({ "sources": names });
     }
     if let Some(next) = samples.get(limit) {
@@ -2084,7 +2071,7 @@ fn run_read_health_document(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Va
         ("extraction_error", &doc.extraction_error),
     ] {
         if !value.trim().is_empty() {
-            words.insert(key.to_string(), json!(cap(value, WORDS_CAP)));
+            words.insert(key.to_string(), json!(one_line_ellipsized(value, WORDS_CAP)));
         }
     }
     let chars = doc.text.chars().count();
@@ -2542,7 +2529,7 @@ fn run_log_dose(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
             );
         }
     };
-    let zone = zone_of(ctx);
+    let zone = ctx.zone();
     let now = Timestamp::now();
     let at = opt_moment(args, "at", &zone)?.unwrap_or(now);
     within(args, at, now, 30, 300)?;
@@ -2811,8 +2798,6 @@ mod tests {
 
     #[test]
     fn words_from_a_stranger_are_cut_on_a_character_and_kept_on_one_line() {
-        assert_eq!(cap("caf\u{e9}\n  au lait", 6), "caf\u{e9} a\u{2026}");
-        assert_eq!(cap("short", 10), "short");
         let marked = strangers(&[("name", " TSH \n panel"), ("code", "  "), ("unit", "")]).unwrap();
         assert_eq!(marked, json!({ "name": "TSH panel" }), "blank words are not there at all");
         assert!(strangers(&[("name", " ")]).is_none());

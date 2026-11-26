@@ -9,13 +9,12 @@
 //! [`crate::account`] for why the two are kept apart.
 
 use super::Vault;
-use super::session::{Domain, pick_domain};
+use super::session::Domain;
 use crate::account::{ACCOUNT_SECRET_OWNER_KIND, Account, AccountSecret};
 use crate::error::{Error, Result};
 use crate::id::AccountId;
 use crate::record::RecordKind;
 use crate::store::accounts::AccountStore;
-use crate::store::secrets::SecretStore;
 
 impl Vault {
     /// Does this vault's backend store accounts?
@@ -25,10 +24,6 @@ impl Vault {
 
     fn with_accounts<T>(&self, f: impl FnOnce(&dyn AccountStore) -> Result<T>) -> Result<T> {
         self.with_domain(Domain::Accounts, |s| s.accounts().map(f))
-    }
-
-    fn with_secrets<T>(&self, f: impl FnOnce(&dyn SecretStore) -> Result<T>) -> Result<T> {
-        self.with_domain(Domain::Secrets, |s| s.secrets().map(f))
     }
 
     /// Every account, in the order they were added.
@@ -63,7 +58,7 @@ impl Vault {
         self.writable()?;
         let mut wrote = false;
         let account = self.write(|u| {
-            let accounts = pick_domain(u.store.as_ref(), Domain::Accounts, |s| s.accounts())?;
+            let accounts = u.accounts()?;
             let mut account = accounts.get_account(id)?;
             if f(&mut account) {
                 accounts.put_account(&account)?;

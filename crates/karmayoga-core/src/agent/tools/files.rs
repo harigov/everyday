@@ -53,8 +53,8 @@ use crate::files::{
     FileUpdate, ImportOptions, PropValue, disk,
 };
 use crate::id::{AlbumId, FileId};
+use crate::zone::start_of_day;
 use jiff::Timestamp;
-use jiff::civil::Date;
 
 /// The most of a text file one `read_file` returns, in bytes: about eight
 /// thousand tokens, which is a screenful of a log or a long page of prose.
@@ -428,12 +428,6 @@ fn file_ids(args: &Args<'_>, key: &str) -> Result<Vec<FileId>> {
 /// the top of the files folder.
 fn folder_arg(args: &Args<'_>, key: &str) -> Result<Option<String>> {
     args.opt_str(key).map(|raw| disk::validate_rel(raw.trim())).transpose()
-}
-
-/// The first instant of `date` in the person's zone.
-fn start_of_day(date: Date, tz: &str) -> Option<Timestamp> {
-    let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
-    date.at(0, 0, 0, 0).to_zoned(zone).ok().map(|z| z.timestamp())
 }
 
 /// An album named by id or by name -- case and spacing aside, the way a

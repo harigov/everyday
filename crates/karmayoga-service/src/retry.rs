@@ -265,14 +265,14 @@ mod tests {
                 "{code} must be transient to the pipeline"
             );
             assert!(
-                !crate::outbox::is_transient_local_failure(code),
+                !crate::mail::outbox::is_transient_local_failure(code),
                 "{code} must NOT be a transient local failure to the outbox -- \
                  that is the disagreement that keeps these two separate"
             );
         }
         for code in outbox_transient_codes {
             assert!(
-                crate::outbox::is_transient_local_failure(code),
+                crate::mail::outbox::is_transient_local_failure(code),
                 "{code} must be a transient local failure to the outbox"
             );
             assert!(

@@ -54,7 +54,7 @@
 //! `refresh_fn` was *handed* -- that one is the caller's business, going in
 //! and out, and never touches this type. [`Self::set_pending_refresh_token`]
 //! is a narrow exception for the refresh token a provider just *rotated to*,
-//! when `crate::mailsync::credential::resolve` could not save it to the
+//! when `crate::mail::sync::credential::resolve` could not save it to the
 //! vault (a locked disk, a write that raced something else): losing that
 //! value outright would stand a real chance of stranding the account, since
 //! the provider may already have retired the token the vault still has on
@@ -175,7 +175,7 @@ impl TokenCache {
     }
 
     /// A rotated refresh token an earlier
-    /// `crate::mailsync::credential::resolve` minted but could not save to
+    /// `crate::mail::sync::credential::resolve` minted but could not save to
     /// the vault, if one is still owed -- see the module doc.
     pub fn pending_refresh_token(&self, account_key: &str) -> Option<String> {
         self.pending_refresh.lock().unwrap().get(account_key).cloned()
@@ -192,6 +192,18 @@ impl TokenCache {
     /// `token` reached the vault -- nothing left owed.
     pub fn clear_pending_refresh_token(&self, account_key: &str) {
         self.pending_refresh.lock().unwrap().remove(account_key);
+    }
+
+    /// [`Self::clear_pending_refresh_token`], but only while what is owed is
+    /// still `token`. Mail's refresh and the calendar's Graph refresh run
+    /// under different cache keys, so one can record a newer rotation while
+    /// the other is still saving an older token; clearing unconditionally
+    /// would drop the newer one, which is the token the provider now holds.
+    pub fn clear_pending_refresh_token_if(&self, account_key: &str, token: &str) {
+        let mut pending = self.pending_refresh.lock().unwrap();
+        if pending.get(account_key).is_some_and(|owed| owed == token) {
+            pending.remove(account_key);
+        }
     }
 
     /// Drop every cached access token. Called when the vault locks: every

@@ -28,6 +28,25 @@ const ENGINE_DIR: &str = "engine-";
 /// a failure is explained.
 const STDERR_KEPT: usize = 64 * 1024;
 
+/// Make the scratch directory readable by this user alone. The picture is
+/// written inside it, and the temp directory is shared with every other user
+/// of the computer, so the default permissions would let one of them read it.
+///
+/// Created fresh, never adopted: a directory that already exists under this
+/// name -- which another user could have made, with any mode -- is an error
+/// rather than a place to write. The name is unique to this run.
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
 /// Run `bin` on `weights` and return the PNG it wrote, `size` pixels wide
 /// and tall -- see [`super::Shape::local_size`].
 pub fn paint(
@@ -38,7 +57,7 @@ pub fn paint(
     (width, height): (u32, u32),
 ) -> CommandResult<Vec<u8>> {
     let scratch = std::env::temp_dir().join(format!("karmayoga-image-{}", unique()));
-    std::fs::create_dir_all(&scratch).map_err(|e| {
+    create_private_dir(&scratch).map_err(|e| {
         CommandError::new(codes::IO, format!("could not start the image model: {e}"))
     })?;
     let _guard = Scratch(scratch.clone());

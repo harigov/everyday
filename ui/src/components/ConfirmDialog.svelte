@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { focusOnMount, trapFocus } from '../lib/focus'
-  import { closesOnBack } from '../lib/phone.svelte'
+  import { focusOnMount } from '../lib/focus'
+  import Sheet from './Sheet.svelte'
 
   let {
     title,
@@ -19,22 +19,11 @@
     oncancel: () => void
   } = $props()
 
-  // Shown for as long as it exists, so a phone's back button is a "no".
-  closesOnBack(
-    () => true,
-    () => oncancel(),
-  )
+  // Shown for as long as it exists, so a phone's back button is a "no"
+  // (`Sheet` does that, and Escape).
 </script>
 
-<svelte:window
-  onkeydown={(e: KeyboardEvent) => {
-    if (e.key === 'Escape') oncancel()
-  }}
-/>
-
-<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim phone-fit" onclick={oncancel}></div>
-<div class="sheet phone-fit" role="alertdialog" aria-modal="true" aria-label={title} use:trapFocus>
+<Sheet label={title} role="alertdialog" fit onclose={oncancel}>
   <h2>{title}</h2>
   {#if detail}<p class="hint">{detail}</p>{/if}
   <div class="sheet-row">
@@ -48,7 +37,7 @@
       >{confirmLabel}</button
     >
   </div>
-</div>
+</Sheet>
 
 <style>
   h2 {

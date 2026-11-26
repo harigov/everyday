@@ -53,9 +53,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use tauri::{
-    AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
 
 /// Whether the window is wanted up, and whether it is: what [`present`] and
 /// [`dismiss`] say, and what the one task that acts on it has done.
@@ -193,14 +191,7 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(LABEL) {
         return Ok(window);
     }
-    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("panel.html".into()))
-        .title("Karma Yoga")
-        .inner_size(WIDTH, asked())
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .resizable(false)
-        .skip_taskbar(true)
+    crate::overlay::popup_builder(app, LABEL, "panel.html", "Karma Yoga", (WIDTH, asked()))
         .always_on_top(true)
         // A card that is not seen is no use on another desktop or Space.
         .visible_on_all_workspaces(true)
@@ -209,7 +200,6 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
         // Where the platform has a way to say so, this also keeps a click on
         // a card's buttons from activating the window.
         .focusable(false)
-        .on_navigation(crate::navigation::guard(crate::navigation::dev_url(app)))
         .build()
         // A call is often full-screen, and the offer to take notes on it has
         // to show over it. See `overlay`.

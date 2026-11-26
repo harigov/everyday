@@ -558,7 +558,7 @@ fn activate(
 fn raise_main(app: &AppHandle, token: Option<String>) {
     #[cfg(target_os = "linux")]
     if let Some(token) = token
-        && let Some(window) = app.get_webview_window("main")
+        && let Some(window) = app.get_webview_window(crate::MAIN_WINDOW)
     {
         let _ = app.run_on_main_thread(move || {
             use gtk::prelude::GtkWindowExt;
@@ -595,7 +595,8 @@ pub fn install(app: &AppHandle) {
     if crate::writing::wayland_session(app) {
         let handle = app.clone();
         // Read here, on the main thread, where `setup` runs.
-        let parent = app.get_webview_window("main").and_then(|w| crate::portal::parent_of(&w));
+        let parent =
+            app.get_webview_window(crate::MAIN_WINDOW).and_then(|w| crate::portal::parent_of(&w));
         tauri::async_runtime::spawn(async move {
             // The export's future holds the raw surface across its awaits,
             // so it is run to completion on a thread of its own.

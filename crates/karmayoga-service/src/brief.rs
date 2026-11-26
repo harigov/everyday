@@ -97,7 +97,7 @@ pub(crate) async fn extras(
     if podcast || extras.mail_accounts.is_empty() {
         return extras;
     }
-    let threads = crate::mailfollowup::follow_ups(service, None).await.unwrap_or_default();
+    let threads = crate::mail::followup::follow_ups(service, None).await.unwrap_or_default();
     extras.follow_ups = threads
         .into_iter()
         .filter(|t| extras.mail_accounts.contains(&t.account_id))

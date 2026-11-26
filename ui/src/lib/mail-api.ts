@@ -18,7 +18,8 @@
 // a typed home in `api.ts` and the two functions below become one-line
 // forwards to it, same as everything above them already is.
 
-import { api, callCommand, isMock } from './api'
+import { api, callCommand } from './api'
+import { inShell } from './platform'
 import type {
   AccountId,
   AttachmentPreview,
@@ -101,7 +102,7 @@ export const previewAttachment = (
 ): Promise<AttachmentPreview> => api.previewAttachment(messageId, index)
 
 function shellPresent(): boolean {
-  return !isMock && '__TAURI_INTERNALS__' in window
+  return inShell
 }
 
 /**

@@ -4,7 +4,7 @@
 //! The same two walls mail's own body has: the HTML was sanitised once, when
 //! it arrived, and the document carries its own content-security-policy
 //! `<meta>` in case the first wall missed something. A mail-backed story is
-//! served by mail's own [`crate::mailview::body_document`].
+//! served by mail's own [`crate::mail::view::body_document`].
 //!
 //! A story's pane has more than one document in it -- an episode's notes, its
 //! transcript, its summary -- and each is asked for by name, as
@@ -36,8 +36,8 @@ use crate::error::{CommandError, CommandResult, codes};
 // document is drawn by the same frame and a picture is fetched by the same
 // rules -- public addresses only, raster only, capped -- whichever app's
 // body named it.
-use crate::mailview::{
-    self, BodyDocument, CSP, PartResponse, fetch_remote_image, placeholder_pixel,
+use crate::mail::view::{
+    self as mailview, BodyDocument, CSP, PartResponse, fetch_remote_image, placeholder_pixel,
 };
 use crate::service::blocking;
 use karmayoga_core::Vault;

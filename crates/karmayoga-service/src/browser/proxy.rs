@@ -29,7 +29,7 @@
 //! this machine could use it too, and what it would get is a way to the
 //! public internet, which it already had.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -215,9 +215,9 @@ fn split_host_port(target: &str) -> Option<(String, u16)> {
 /// A connection to `host:port`, if any address it names is on the open
 /// internet. Private answers are dropped before any socket is opened.
 async fn connect_public(host: &str, port: u16, allow_loopback: bool) -> Option<TcpStream> {
-    let addresses: Vec<SocketAddr> = match host.parse::<IpAddr>() {
-        Ok(ip) => vec![SocketAddr::new(ip, port)],
-        Err(_) => tokio::net::lookup_host((host, port)).await.ok()?.collect(),
+    let addresses: Vec<SocketAddr> = match crate::http::literal_ip(host) {
+        Some(ip) => vec![SocketAddr::new(ip, port)],
+        None => tokio::net::lookup_host((host, port)).await.ok()?.collect(),
     };
     for address in addresses.into_iter().filter(|a| !is_forbidden_address(a.ip(), allow_loopback)) {
         if let Ok(Ok(stream)) =

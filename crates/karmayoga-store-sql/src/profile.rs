@@ -9,25 +9,15 @@
 use karmayoga_core::error::Result;
 use karmayoga_core::profile::{Profile, profile_aad};
 
-use crate::conn::SqlExt;
-use crate::{SqlStore, vals};
+use crate::SqlStore;
 
 impl SqlStore {
     pub(crate) fn read_profile(&self) -> Result<Profile> {
-        match self.read().sealed("SELECT data FROM profile WHERE id = 1", &[])? {
-            Some(sealed) => self.unseal(&profile_aad(), &sealed),
-            // Nothing written yet is not an error. It is the answer.
-            None => Ok(Profile::default()),
-        }
+        // Nothing written yet is not an error. It is the answer.
+        Ok(self.get_singleton("profile", &profile_aad())?.unwrap_or_default())
     }
 
     pub(crate) fn write_profile(&self, profile: &Profile) -> Result<()> {
-        let data = self.seal(&profile_aad(), profile)?;
-        self.write().execute(
-            "INSERT INTO profile (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("profile", &profile_aad(), profile)
     }
 }

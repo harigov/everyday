@@ -228,14 +228,7 @@ export function htmlToPlainText(html: string): string {
  *  `editor.state.doc.textBetween`, or an AI answer's `bodyText`) made safe
  *  to hand back to TipTap as content, which otherwise reads a stray `&` or
  *  `<` in what somebody wrote as the start of a tag. */
-export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
+export { escapeHtml } from './markdown'
 
 // ── Send later ───────────────────────────────────────────────────────────
 

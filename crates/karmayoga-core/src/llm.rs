@@ -125,13 +125,31 @@ impl Provider {
 
 /// Whether a URL points at this machine.
 ///
-/// Textual rather than resolved on purpose: this decides whether to *insist*
+/// Parsed rather than resolved on purpose: this decides whether to *insist*
 /// on a credential, and a DNS lookup that says "localhost" resolves
 /// somewhere else is not a reason to refuse to save a setting. The check
 /// that actually protects anything is the one at request time, in the shell.
+///
+/// A URL with a scheme is parsed the way the HTTP client will parse it, and
+/// the host judged is the one it will connect to. Reading the host out by hand
+/// does not agree with that parser: `http://evil.example\@127.0.0.1/` looks
+/// like a user name and a local host to a person splitting on `@`, but the
+/// client takes `\` for `/` and connects to `evil.example`, with the key in
+/// the clear. A URL that does not parse is not this machine. Only an address
+/// with no scheme at all (`localhost:11434`) is read by hand.
 pub fn is_loopback(url: &str) -> bool {
-    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    if url.contains("://") {
+        let Ok(parsed) = url::Url::parse(url) else {
+            return false;
+        };
+        return match parsed.host() {
+            Some(url::Host::Domain(name)) => loopback_host(name),
+            Some(url::Host::Ipv4(ip)) => loopback_host(&ip.to_string()),
+            Some(url::Host::Ipv6(ip)) => loopback_host(&ip.to_string()),
+            None => false,
+        };
+    }
+    let authority = url.split(['/', '?', '#']).next().unwrap_or("");
     // Credentials in the URL are rare but legal, and `user@host` must not be
     // read as a host called `user@host`.
     let host = authority.rsplit('@').next().unwrap_or("");
@@ -142,6 +160,11 @@ pub fn is_loopback(url: &str) -> bool {
     } else {
         host.split(':').next().unwrap_or("")
     };
+    loopback_host(host)
+}
+
+/// Whether a bare host name or address (no brackets, no port) is this machine.
+fn loopback_host(host: &str) -> bool {
     // Host names are case-insensitive, and `LocalHost` is a thing people
     // type. Getting this wrong does not merely fail to recognise a local
     // model -- it refuses to save the setting at all, because an http://
@@ -1087,6 +1110,71 @@ pub fn model_settings_aad() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loopback_address_is_this_machine_however_it_is_written() {
+        for url in [
+            "http://localhost:11434/v1",
+            "http://LocalHost/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://127.0.0.2:1234",
+            "http://0.0.0.0:8080",
+            "http://[::1]:8080",
+            "http://[::1]/",
+            "https://localhost",
+            "localhost:11434/v1",
+            "127.0.0.1",
+            "[::1]:8080",
+            "http://user@127.0.0.1:8080/v1",
+            "http://user:pass@localhost/v1",
+        ] {
+            assert!(is_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn an_address_that_is_not_this_machine_is_not_loopback() {
+        for url in [
+            "https://api.openai.com/v1",
+            "http://192.168.1.5:11434",
+            "http://localhost.evil.example/",
+            "http://127.0.0.1.evil.example/",
+            "http://[::2]/",
+            "localhost.evil.example:80",
+            "",
+            "http://",
+        ] {
+            assert!(!is_loopback(url), "{url}");
+        }
+    }
+
+    /// `\` is a path separator to the client, so what follows it is not the
+    /// host, and what is read as a user name by splitting on `@` is the host.
+    #[test]
+    fn a_backslash_does_not_hide_the_real_host_behind_a_local_one() {
+        for url in [
+            "http://evil.example\\@127.0.0.1/",
+            "http://evil.example\\@localhost:11434/v1",
+            "https://evil.example\\@[::1]/",
+            "http://evil.example/@127.0.0.1/",
+            "http://evil.example?@127.0.0.1/",
+            "http://evil.example#@127.0.0.1/",
+            "http://127.0.0.1@evil.example/",
+            "http://127.0.0.1:80@evil.example/",
+            "http://localhost@evil.example:8080/v1",
+            "evil.example/?next=http://127.0.0.1",
+        ] {
+            assert!(!is_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn user_info_before_a_local_host_does_not_change_the_host() {
+        assert!(is_loopback("http://user@127.0.0.1:8080/"));
+        assert!(is_loopback("http://user:p%40ss@127.0.0.1/"));
+        assert!(is_loopback("http://a@b@127.0.0.1/"));
+        assert!(!is_loopback("http://user@192.168.1.5/"));
+    }
 
     #[test]
     fn an_untouched_speech_card_does_not_hold_up_a_save() {

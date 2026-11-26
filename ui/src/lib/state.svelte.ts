@@ -1,8 +1,10 @@
 // Application state.
 //
-// One store, using Svelte 5 runes. It owns every piece of vault state the
-// interface reads, and it is the only place that calls `api`, so components
-// stay declarative and the save/lock logic lives in one auditable spot.
+// One store, using Svelte 5 runes. It owns the vault's lock, the open vault's
+// settings and the other state every app shares, and the save/lock logic
+// lives here in one auditable spot. Each app's own state sits in a store of
+// its own beside it (`journal.svelte.ts`, `mail.svelte.ts`, ...), and a
+// component may call `api` directly for what only it needs.
 
 import { tick } from 'svelte'
 import { api, isMock, isWeb, mobileShell, newRequestId } from './api'

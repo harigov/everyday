@@ -14,6 +14,7 @@
 
 import { isMock, isWeb } from './api'
 import { mediaBase } from './web'
+import { schemeOrigin } from './platform'
 import { adaptToPage, looksDesigned, readBody } from './mailbody'
 import type { MailAttachment } from './types'
 import type { Frame } from './themes'
@@ -76,9 +77,7 @@ export function mailOrigin(): string {
   // A browser on web access reads mail from the server it was served by,
   // through the session's media token -- see `web.ts`.
   if (isWeb) return `${mediaBase()}/v1/mail`
-  return navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
-    ? 'http://karmayoga.localhost/mail'
-    : 'karmayoga://mail'
+  return schemeOrigin('mail')
 }
 
 /**

@@ -151,8 +151,8 @@ impl Vault {
             if u.templates_moved {
                 return Ok(Vec::new());
             }
-            let meetings = pick_domain(u.store.as_ref(), Domain::Meetings, |s| s.meetings())?;
-            let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
+            let meetings = u.meetings()?;
+            let notes = u.notes()?;
             let mut settings = meetings.meeting_settings()?;
             let mut moved = Vec::new();
             if !settings.templates_moved {
@@ -201,8 +201,7 @@ impl Vault {
     ) -> Result<()> {
         self.write(|u| {
             u.templates_moved = false;
-            pick_domain(u.store.as_ref(), Domain::Meetings, |s| s.meetings())?
-                .put_meeting_settings(settings)
+            u.meetings()?.put_meeting_settings(settings)
         })
     }
 
@@ -320,7 +319,7 @@ impl Vault {
         self.writable()?;
         let note_id = transcript.note_id;
         self.write(|u| {
-            let meetings = pick_domain(u.store.as_ref(), Domain::Meetings, |s| s.meetings())?;
+            let meetings = u.meetings()?;
             meetings.put_transcript(transcript)?;
             reindex_note(u, note_id);
             Ok(())
@@ -333,7 +332,7 @@ impl Vault {
     pub fn delete_transcript(&self, id: TranscriptId) -> Result<()> {
         self.writable()?;
         self.write(|u| {
-            let meetings = pick_domain(u.store.as_ref(), Domain::Meetings, |s| s.meetings())?;
+            let meetings = u.meetings()?;
             // Read first: once the row is gone there is no way to ask which
             // note it belonged to.
             let note_id = meetings.get_transcript(id)?.note_id;

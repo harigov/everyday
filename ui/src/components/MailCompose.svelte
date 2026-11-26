@@ -18,6 +18,7 @@
   // `RichText.svelte` does internally, and reads `getHTML()` instead.
 
   import { onDestroy, untrack } from 'svelte'
+  import { userAgentMac } from '../lib/platform'
   import { Editor } from '@tiptap/core'
   import StarterKit from '@tiptap/starter-kit'
   import Link from '@tiptap/extension-link'
@@ -220,7 +221,7 @@
 
   /** A chord as this machine spells it, for the words on screen. */
   function keyName(keys: string): string {
-    return keysLabel(keys, navigator.userAgent.includes('Mac'))
+    return keysLabel(keys, userAgentMac)
   }
 
   let toText = $state('')

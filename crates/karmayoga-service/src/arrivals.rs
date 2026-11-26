@@ -20,10 +20,10 @@
 //! change after it arrives: the rules file it as it is stored, and a model
 //! files it again a minute later. So both moments ask. A message wanted at
 //! either is announced then, and
-//! [`StatusRegistry::first_announcement`](crate::mailsync::status::StatusRegistry::first_announcement)
+//! [`StatusRegistry::first_announcement`](crate::mail::sync::status::StatusRegistry::first_announcement)
 //! stops the second moment announcing it again. A model only speaks for what a
 //! pass just stored -- see
-//! [`StatusRegistry::note_arrival`](crate::mailsync::status::StatusRegistry::note_arrival)
+//! [`StatusRegistry::note_arrival`](crate::mail::sync::status::StatusRegistry::note_arrival)
 //! -- since the rest of what it files was delivered long ago.
 //!
 //! # People, and strangers who write like people
@@ -48,7 +48,7 @@
 //!   as a machine's -- to you by name or not, since the model has read who
 //!   it was to. A stranger only when it is to you by name and a model says
 //!   they are waiting on your reply and not reaching out cold -- see
-//!   [`after_filing`] and `crate::mailfollowup::stranger_waits`.
+//!   [`after_filing`] and `crate::mail::followup::stranger_waits`.
 //!
 //! Mail held back as it is stored waits for a model, and with no model that
 //! may read the account's mail it is not announced at all: somebody new, a
@@ -73,7 +73,7 @@ use karmayoga_core::{Result as CoreResult, Vault};
 
 use crate::ctx::Scope;
 use crate::events::{Level, Notification};
-use crate::mailai::excerpt;
+use crate::mail::ai::excerpt;
 use crate::service::Service;
 
 /// How old a message may be and still be news the first time this process

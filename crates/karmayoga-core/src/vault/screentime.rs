@@ -24,7 +24,7 @@
 //! then joined one after the other rather than both onto the same last span.
 
 use super::Vault;
-use super::session::{Domain, pick_domain};
+use super::session::Domain;
 use crate::crypto::SecretKey;
 use crate::error::{Error, Result};
 use crate::id::{ScreenAppId, ScreenCategoryId, ScreenSpanId};
@@ -92,8 +92,8 @@ impl Vault {
         self.writable()?;
         let now = Timestamp::now();
         self.write(|u| {
-            let key = u.cipher.derive_subkey(SCREEN_KEY_LABEL);
-            let screen = pick_domain(u.store.as_ref(), Domain::ScreenTime, |s| s.screentime())?;
+            let key = u.subkey(SCREEN_KEY_LABEL);
+            let screen = u.screentime()?;
             let settings = screen.screen_settings()?;
             let cleaned = merge::clean(batch, now, settings.keep_titles)?;
             let mut report = IngestReport {
@@ -275,7 +275,7 @@ impl Vault {
             }
         }
         let id = self.write(|u| {
-            let screen = pick_domain(u.store.as_ref(), Domain::ScreenTime, |s| s.screentime())?;
+            let screen = u.screentime()?;
             if let Some(category) = app.category {
                 existing_category(screen, category)?;
             }
@@ -326,7 +326,7 @@ impl Vault {
     pub fn ensure_screen_defaults(&self) -> Result<()> {
         self.writable()?;
         let written = self.write(|u| {
-            let screen = pick_domain(u.store.as_ref(), Domain::ScreenTime, |s| s.screentime())?;
+            let screen = u.screentime()?;
             if !screen.list_categories()?.is_empty() {
                 return Ok(Vec::new());
             }
@@ -359,7 +359,7 @@ impl Vault {
             return Err(Error::Invalid("a category's colour must be like #2563eb".into()));
         }
         self.write(|u| {
-            let screen = pick_domain(u.store.as_ref(), Domain::ScreenTime, |s| s.screentime())?;
+            let screen = u.screentime()?;
             let all = screen.list_categories()?;
             let folded = category.name.to_lowercase();
             if all
@@ -413,7 +413,7 @@ impl Vault {
             }
         }
         let cleared = self.write(|u| {
-            let screen = pick_domain(u.store.as_ref(), Domain::ScreenTime, |s| s.screentime())?;
+            let screen = u.screentime()?;
             let now = Timestamp::now();
             let mut cleared = Vec::new();
             for mut app in screen.list_apps()?.into_iter().filter(|a| a.category == Some(id)) {
@@ -474,7 +474,7 @@ impl Vault {
             return Err(Error::Invalid(format!("at most {MAX_BROWSERS} browsers can be named")));
         }
         self.write(|u| {
-            let screen = pick_domain(u.store.as_ref(), Domain::ScreenTime, |s| s.screentime())?;
+            let screen = u.screentime()?;
             // The sweep's own bookmark is the vault's, not the caller's: the
             // interface never sees it, so whatever it sent is ignored.
             let cleared_to = screen.screen_settings()?.titles_cleared_to;
@@ -497,7 +497,7 @@ impl Vault {
         self.writable()?;
         let (key, kind) = parse_key(key)?;
         self.write(|u| {
-            let screen = pick_domain(u.store.as_ref(), Domain::ScreenTime, |s| s.screentime())?;
+            let screen = u.screentime()?;
             let Some(earliest) = screen.earliest_span()? else { return Ok(0) };
             let split: HashSet<String> = screen
                 .list_apps()?
@@ -531,7 +531,7 @@ impl Vault {
             return Err(Error::Invalid("the end of the range must be after its start".into()));
         }
         self.write(|u| {
-            let screen = pick_domain(u.store.as_ref(), Domain::ScreenTime, |s| s.screentime())?;
+            let screen = u.screentime()?;
             let ids: Vec<ScreenSpanId> =
                 screen.spans(from, to)?.into_iter().map(|span| span.id).collect();
             if ids.is_empty() {
@@ -546,7 +546,7 @@ impl Vault {
     pub fn prune_screen_time(&self, now: Timestamp) -> Result<u64> {
         self.writable()?;
         self.write(|u| {
-            let screen = pick_domain(u.store.as_ref(), Domain::ScreenTime, |s| s.screentime())?;
+            let screen = u.screentime()?;
             let settings = screen.screen_settings()?;
             if settings.title_days == 0 {
                 return Ok(0);
@@ -579,7 +579,7 @@ fn clear_old_titles(
 /// characters. The `\0` keeps `("ab", "c")` and `("a", "bc")` apart.
 fn stream_key(key: &SecretKey, device: &str, collector: &str) -> String {
     let identity = format!("{device}\0{collector}");
-    blake3::keyed_hash(key.expose(), identity.as_bytes()).to_hex()[..32].to_string()
+    key.keyed_id(&identity)
 }
 
 /// Has an hour passed since the last sweep? Claims the next one if so, so

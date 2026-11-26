@@ -1,7 +1,7 @@
 //! Notes: writing that is not filed under a day.
 
 use super::Vault;
-use super::session::{Domain, pick_domain};
+use super::session::Domain;
 use crate::error::Result;
 use crate::files::{RefKind, RefOwner};
 use crate::id::NoteId;
@@ -51,7 +51,7 @@ impl Vault {
         note.validate()?;
         note.body.validate()?;
         self.write(|u| {
-            let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
+            let notes = u.notes()?;
             notes.put_note_if(note, expect)?;
             // Not `u.index.insert_note(note)`: a note that is a meeting note
             // has a transcript whose words belong in the same search entry,
@@ -73,7 +73,7 @@ impl Vault {
         note.validate()?;
         note.body.validate()?;
         self.write(|u| {
-            let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
+            let notes = u.notes()?;
             notes.put_note(note)?;
             super::meetings::reindex_note(u, note.id);
             Ok(())
@@ -93,7 +93,7 @@ impl Vault {
     pub fn delete_note(&self, id: NoteId) -> Result<()> {
         self.writable()?;
         self.write(|u| {
-            let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
+            let notes = u.notes()?;
             notes.delete_note(id)?;
             u.index.remove_note(id);
             super::meetings::detach_note_from_meetings(u, id)?;

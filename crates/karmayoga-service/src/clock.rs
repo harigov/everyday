@@ -49,7 +49,7 @@
 //!   `Recording::updated_at`, stamped by `meeting::pipeline::failure::fail`
 //!   and friends. A fake clock ahead of real time makes a recording that
 //!   failed seconds ago look days old, and the expiry *deletes* its audio.
-//! - `mailsync::task::next_pending_wake` sleeps until an op's `not_before`,
+//! - `mail::sync::task::next_pending_wake` sleeps until an op's `not_before`,
 //!   which `outbox` writes from this clock. A fake clock behind real time
 //!   means the sleep returns at once while `due_ops` still says "not due",
 //!   which is a hot loop running a real sync pass each time round.

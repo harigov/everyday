@@ -144,7 +144,7 @@ pub async fn tick(service: &Arc<Service>) {
     // logged rather than propagated: a mail-less vault answers `Ok(0)`
     // immediately (`Service::get`/`is_writable` are the only reads it does),
     // and a real failure here should not also cost this tick its routines.
-    if let Err(e) = crate::outbox::release_due_snoozes(service).await {
+    if let Err(e) = crate::mail::outbox::release_due_snoozes(service).await {
         tracing::warn!(error = %e, "could not release due snoozes");
     }
 
@@ -241,7 +241,7 @@ pub async fn tick(service: &Arc<Service>) {
     crate::meeting::brief::tick(service, &vault).await;
 
     // The two model-assisted mail features that run unasked, on their own
-    // schedule rather than a tool call's -- see `crate::mailai`'s module
+    // schedule rather than a tool call's -- see `crate::mail::ai`'s module
     // docs for why neither is a tool, and why each keeps its own per-minute
     // budget rather than sharing `check_mail_rate_limit`'s. Both are no-ops,
     // cheaply, on every account that has not turned them on.

@@ -143,7 +143,7 @@ pub struct Service {
     /// because the whole point of the one-off case is that it does not
     /// outlive the session that granted it -- reopening the app should ask
     /// again, exactly as it would for a sender nobody has trusted for good.
-    /// See `mailview::remote_images_allowed`, which reads this before the
+    /// See `mail::view::remote_images_allowed`, which reads this before the
     /// standing allow-list.
     remote_image_once: RwLock<HashSet<karmayoga_core::id::MailMessageId>>,
     /// Mail's session state: the open pack store and search index, the
@@ -260,7 +260,7 @@ impl Service {
         }
     }
 
-    /// How many threads `karmayoga_service::mailai`'s categorisation pass may
+    /// How many threads `karmayoga_service::mail::ai`'s categorisation pass may
     /// send to the quick model per rolling minute, across every account.
     pub const MAIL_CATEGORIZE_PER_MINUTE: u32 = 20;
     /// As above, for the auto-draft pass -- lower, because a draft is a
@@ -287,12 +287,12 @@ impl Service {
     }
 
     /// `account`'s asked-for sort of older mail, while one runs.
-    pub fn mail_older_sort(&self, account: AccountId) -> Option<crate::mailsort::OlderSort> {
+    pub fn mail_older_sort(&self, account: AccountId) -> Option<crate::mail::sort::OlderSort> {
         self.mail.older_sort(account)
     }
 
     /// Every sort of older mail still running.
-    pub fn mail_older_sorts(&self) -> Vec<(AccountId, crate::mailsort::OlderSort)> {
+    pub fn mail_older_sorts(&self) -> Vec<(AccountId, crate::mail::sort::OlderSort)> {
         self.mail.older_sorts()
     }
 
@@ -302,7 +302,7 @@ impl Service {
         &self,
         account: AccountId,
         run: u64,
-        f: impl FnOnce(&mut crate::mailsort::OlderSort) -> bool,
+        f: impl FnOnce(&mut crate::mail::sort::OlderSort) -> bool,
     ) {
         self.mail.update_older_sort(account, run, f);
     }
@@ -319,7 +319,7 @@ impl Service {
     }
 
     /// When `account`'s Inbox and Sent were last read back to the follow-up
-    /// window -- see `crate::mailfollowup`.
+    /// window -- see `crate::mail::followup`.
     pub fn mail_follow_up_full_look(&self, account: AccountId) -> Option<jiff::Timestamp> {
         self.mail.follow_up_full_look(account)
     }
@@ -331,38 +331,38 @@ impl Service {
     }
 
     /// The threads the follow-up pass left for later in `account`'s mail --
-    /// see `crate::mailfollowup::SkipNote`.
+    /// see `crate::mail::followup::SkipNote`.
     pub(crate) fn mail_follow_up_skips(
         &self,
         account: AccountId,
-    ) -> std::collections::HashMap<ThreadId, crate::mailfollowup::SkipNote> {
+    ) -> std::collections::HashMap<ThreadId, crate::mail::followup::SkipNote> {
         self.mail.follow_up_skips(account)
     }
 
     pub(crate) fn set_mail_follow_up_skips(
         &self,
         account: AccountId,
-        skips: std::collections::HashMap<ThreadId, crate::mailfollowup::SkipNote>,
+        skips: std::collections::HashMap<ThreadId, crate::mail::followup::SkipNote>,
     ) {
         self.mail.set_follow_up_skips(account, skips);
     }
 
     /// What the follow-up pass has done for `account` since the app started
-    /// -- see `crate::mailfollowup::Tally`. Nothing, until its first look.
-    pub(crate) fn mail_follow_up_tally(&self, account: AccountId) -> crate::mailfollowup::Tally {
+    /// -- see `crate::mail::followup::Tally`. Nothing, until its first look.
+    pub(crate) fn mail_follow_up_tally(&self, account: AccountId) -> crate::mail::followup::Tally {
         self.mail.follow_up_tally(account)
     }
 
     pub(crate) fn set_mail_follow_up_tally(
         &self,
         account: AccountId,
-        tally: crate::mailfollowup::Tally,
+        tally: crate::mail::followup::Tally,
     ) {
         self.mail.set_follow_up_tally(account, tally);
     }
 
     /// When the unattended learning pass last looked -- see
-    /// `crate::mailvoicelearn`.
+    /// `crate::mail::voicelearn`.
     pub(crate) fn mail_voice_learn_looked(&self) -> Option<Timestamp> {
         self.mail.voice_learn_looked()
     }
@@ -372,7 +372,7 @@ impl Service {
     }
 
     /// Hold this across a read, change and write of the learned voice -- see
-    /// `crate::mailvoicelearn`. A plain lock, never held over an `.await`.
+    /// `crate::mail::voicelearn`. A plain lock, never held over an `.await`.
     pub(crate) fn voice_learning_lock(&self) -> std::sync::MutexGuard<'_, ()> {
         self.mail.voice_learning_lock()
     }
@@ -381,7 +381,7 @@ impl Service {
     pub fn set_mail_older_sort(
         &self,
         account: AccountId,
-        sort: Option<crate::mailsort::OlderSort>,
+        sort: Option<crate::mail::sort::OlderSort>,
     ) {
         self.mail.set_older_sort(account, sort);
     }
@@ -421,7 +421,7 @@ impl Service {
 
     /// `account`'s cached [`VoiceProfile`](karmayoga_core::mail::voice::VoiceProfile),
     /// if one was read no longer than `max_age` ago -- see
-    /// `karmayoga_service::mailvoice`.
+    /// `karmayoga_service::mail::voice`.
     pub fn mail_voice_cached(
         &self,
         account: AccountId,
@@ -445,7 +445,7 @@ impl Service {
         &self,
         thread: ThreadId,
         message_count: u32,
-    ) -> Option<Vec<crate::mailwrite::ReplySuggestion>> {
+    ) -> Option<Vec<crate::mail::write::ReplySuggestion>> {
         let oldest = self.now() - jiff::SignedDuration::from_hours(1);
         self.mail.replies_cached(thread, message_count, oldest)
     }
@@ -454,14 +454,14 @@ impl Service {
         &self,
         thread: ThreadId,
         message_count: u32,
-        replies: Vec<crate::mailwrite::ReplySuggestion>,
+        replies: Vec<crate::mail::write::ReplySuggestion>,
     ) {
         self.mail.replies_cache_put(thread, message_count, self.now(), replies);
     }
 
     /// Whether `thread`'s newest message, `message`, waits on the person's
     /// reply, if the decision model was asked this session -- see
-    /// [`crate::mailfollowup::waits_on_reply`].
+    /// [`crate::mail::followup::waits_on_reply`].
     pub fn mail_reply_wanted(&self, thread: ThreadId, message: MailMessageId) -> Option<bool> {
         self.mail.reply_wanted(thread, message)
     }
@@ -541,7 +541,7 @@ impl Service {
 
     /// Mail's pack store, if the vault is unlocked and it opened cleanly.
     /// What `karmayoga-app`'s protocol routes and the outbox's attachment
-    /// paths reach raw messages through -- see `mailsync::wiring`.
+    /// paths reach raw messages through -- see `mail::sync::wiring`.
     pub fn packs(&self) -> Option<Arc<dyn karmayoga_core::packstore::PackStore>> {
         self.mail.packs()
     }
@@ -556,21 +556,21 @@ impl Service {
     /// Every account's sync progress, if the vault is unlocked. `None` only
     /// when no vault has ever been unlocked this session; once opened, the
     /// registry itself answers an account nobody has synced yet with
-    /// [`crate::mailsync::status::Phase::Idle`] rather than being absent.
-    pub fn mail_statuses(&self) -> Option<crate::mailsync::status::StatusRegistry> {
+    /// [`crate::mail::sync::status::Phase::Idle`] rather than being absent.
+    pub fn mail_statuses(&self) -> Option<crate::mail::sync::status::StatusRegistry> {
         self.mail.statuses()
     }
 
     /// The cached answer to `unread_counts`, if the vault is unlocked --
-    /// see `mailsync::unread_cache`'s module docs for what it caches and
+    /// see `mail::sync::unread_cache`'s module docs for what it caches and
     /// the two writes that invalidate it.
-    pub fn mail_unread_cache(&self) -> Option<Arc<crate::mailsync::unread_cache::UnreadCache>> {
+    pub fn mail_unread_cache(&self) -> Option<Arc<crate::mail::sync::unread_cache::UnreadCache>> {
         self.mail.unread_cache()
     }
 
     /// The contact index `suggest_addresses` reads, if the vault is
-    /// unlocked -- see `mailsync::contacts`'s module docs.
-    pub fn mail_contacts(&self) -> Option<Arc<crate::mailsync::contacts::ContactIndex>> {
+    /// unlocked -- see `mail::sync::contacts`'s module docs.
+    pub fn mail_contacts(&self) -> Option<Arc<crate::mail::sync::contacts::ContactIndex>> {
         self.mail.contacts()
     }
 
@@ -590,16 +590,16 @@ impl Service {
     }
 
     /// Replace what [`Service::packs`], [`Service::mail_index`] and
-    /// [`Service::mail_statuses`] answer. `mailsync::wiring`'s own door into
+    /// [`Service::mail_statuses`] answer. `mail::sync::wiring`'s own door into
     /// this session state -- see it for why the field itself stays private.
-    pub(crate) fn set_mail_state(&self, state: Option<crate::mailsync::wiring::MailState>) {
+    pub(crate) fn set_mail_state(&self, state: Option<crate::mail::sync::wiring::MailState>) {
         self.mail.set_state(state);
     }
 
     /// Open mail's pack store and search index against `vault`, and -- if
     /// this process holds the vault's write claim -- register a supervised
     /// sync task for every account with `services.mail` on. See
-    /// `mailsync::wiring::open`.
+    /// `mail::sync::wiring::open`.
     ///
     /// Idempotent: opening what is already open (an unlock racing a second
     /// call, or `Service::set` catching a vault that was already unlocked)
@@ -611,12 +611,12 @@ impl Service {
         // it queues after a self-healing wipe -- see that function's own
         // docs. Dropped here deliberately: it is meant to run detached, and
         // is returned at all only so a test can await it directly.
-        let _ = crate::mailsync::wiring::open(self, vault);
+        let _ = crate::mail::sync::wiring::open(self, vault);
     }
 
-    /// Drop mail's pack store and search index. See `mailsync::wiring::close`.
+    /// Drop mail's pack store and search index. See `mail::sync::wiring::close`.
     pub(crate) fn close_mail(&self) {
-        crate::mailsync::wiring::close(self);
+        crate::mail::sync::wiring::close(self);
     }
 
     /// Send what this service has to say somewhere.
@@ -851,7 +851,7 @@ impl Service {
     //
     // Three small pieces of session state `karmayoga_service::domains::mail`'s
     // write commands and the sync agent's per-account task both reach for --
-    // see `crates/karmayoga-service/src/outbox.rs`'s module docs for exactly
+    // see `crates/karmayoga-service/src/mail/outbox.rs`'s module docs for exactly
     // how the sync agent is meant to call `drain_outbox` alongside these.
 
     /// The [`tokio::sync::Notify`] `account`'s sync task should
@@ -1316,7 +1316,7 @@ impl Service {
     /// Sort the threads of `messages`, new inbox mail that just arrived,
     /// ahead of everything else the model's passes have to do, and announce
     /// each one the moment its answer is in -- see
-    /// `crate::mailai::sort_new_mail`. Its own lane beside
+    /// `crate::mail::ai::sort_new_mail`. Its own lane beside
     /// [`Service::run_mail_passes`], which may be half way through follow-ups,
     /// drafts or an older sort; those passes run once more when this lane is
     /// done, for what they make of the new mail.
@@ -1353,7 +1353,7 @@ impl Service {
         self.routines.detach(None, async move {
             let svc = lane.0.clone();
             while let Some((account, messages)) = svc.mail.next_new_mail() {
-                crate::mailai::sort_new_mail(&svc, account, messages).await;
+                crate::mail::ai::sort_new_mail(&svc, account, messages).await;
             }
             lane.finish();
             svc.run_mail_passes(true);
@@ -1405,15 +1405,15 @@ impl Service {
         self.routines.detach_mail_passes(after_new_mail, move || {
             let svc = svc.clone();
             async move {
-                crate::mailai::categorize_tick(&svc).await;
-                crate::mailai::auto_draft_tick(&svc).await;
+                crate::mail::ai::categorize_tick(&svc).await;
+                crate::mail::ai::auto_draft_tick(&svc).await;
             }
         });
         // Learning from sent replies asks the medium model for up to a minute,
         // once a day: beside the passes rather than in them, so new mail is
         // never announced late for it. It returns at once when not due.
         let learner = self.clone();
-        self.detach_run(None, async move { crate::mailvoicelearn::learn_tick(&learner).await });
+        self.detach_run(None, async move { crate::mail::voicelearn::learn_tick(&learner).await });
     }
 
     /// Whether a run of `routine` is going on beside the tick.

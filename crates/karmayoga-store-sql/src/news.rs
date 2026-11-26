@@ -904,18 +904,11 @@ impl NewsStore for SqlStore {
     // ---- the Feed's settings ----------------------------------------------
 
     fn feed_settings(&self) -> Result<Option<FeedSettings>> {
-        let sealed = self.read().sealed("SELECT data FROM feed_settings WHERE id = 1", &[])?;
-        sealed.map(|sealed| self.unseal(&feed_settings_aad(), &sealed)).transpose()
+        self.get_singleton("feed_settings", &feed_settings_aad())
     }
 
     fn put_feed_settings(&self, settings: &FeedSettings) -> Result<()> {
-        let data = self.seal(&feed_settings_aad(), settings)?;
-        self.write().execute(
-            "INSERT INTO feed_settings (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("feed_settings", &feed_settings_aad(), settings)
     }
 
     // ---- Up Next ----------------------------------------------------------

@@ -13,27 +13,11 @@
 //! handed to the interface whole, and nothing in it can sign in as anybody.
 
 use super::Vault;
-use super::session::Domain;
 use crate::chat::{CHAT_SECRET_OWNER_KIND, ChatSecret, ChatSettings};
 use crate::error::{Error, Result};
 use crate::id::ChatLinkId;
-use crate::store::agent::AgentStore;
-use crate::store::secrets::SecretStore;
 
 impl Vault {
-    /// Named apart from `agent.rs`'s own `with_agent`: item privacy in Rust is
-    /// per *module*, and each file under this one is its own module, so a
-    /// name declared there is not reachable from here even though both are
-    /// `impl Vault` for the same type.
-    fn with_chat_agent<T>(&self, f: impl FnOnce(&dyn AgentStore) -> Result<T>) -> Result<T> {
-        self.with_domain(Domain::Agent, |s| s.agent().map(f))
-    }
-
-    /// Named apart from `accounts.rs`'s `with_secrets` for the same reason.
-    fn with_chat_secrets<T>(&self, f: impl FnOnce(&dyn SecretStore) -> Result<T>) -> Result<T> {
-        self.with_domain(Domain::Secrets, |s| s.secrets().map(f))
-    }
-
     // ---- the links ----------------------------------------------------------
 
     /// Every chat link, or none if none was ever saved.
@@ -42,7 +26,7 @@ impl Vault {
     /// cannot hold the assistant, rather than answering "no links" and letting
     /// a save quietly vanish.
     pub fn chat_settings(&self) -> Result<ChatSettings> {
-        self.with_chat_agent(|a| a.chat_settings())
+        self.with_agent(|a| a.chat_settings())
     }
 
     /// Replace every chat link at once.
@@ -61,7 +45,7 @@ impl Vault {
     pub fn save_chat_settings(&self, settings: &ChatSettings) -> Result<()> {
         self.writable()?;
         settings.validate()?;
-        self.with_chat_agent(|a| a.put_chat_settings(settings))
+        self.with_agent(|a| a.put_chat_settings(settings))
     }
 
     // ---- what a link signs in with -------------------------------------------
@@ -81,13 +65,10 @@ impl Vault {
     /// commands that edit it; the interface is only ever told whether each
     /// part is there. See `karmayoga_service::chat`.
     pub fn chat_secret(&self, link: ChatLinkId) -> Result<ChatSecret> {
-        self.with_chat_secrets(|s| {
-            match s.get_secret(CHAT_SECRET_OWNER_KIND, &link.to_string())? {
-                Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                    Error::Invalid(format!("a stored chat secret would not parse: {e}"))
-                }),
-                None => Ok(ChatSecret::default()),
-            }
+        self.with_secrets(|s| match s.get_secret(CHAT_SECRET_OWNER_KIND, &link.to_string())? {
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| Error::Invalid(format!("a stored chat secret would not parse: {e}"))),
+            None => Ok(ChatSecret::default()),
         })
     }
 
@@ -101,7 +82,7 @@ impl Vault {
         self.writable()?;
         let bytes = serde_json::to_vec(secret)
             .map_err(|e| Error::Invalid(format!("could not encode a chat secret: {e}")))?;
-        self.with_chat_secrets(|s| s.put_secret(CHAT_SECRET_OWNER_KIND, &link.to_string(), &bytes))
+        self.with_secrets(|s| s.put_secret(CHAT_SECRET_OWNER_KIND, &link.to_string(), &bytes))
     }
 
     /// Forget what `link` signs in with. A no-op if there was nothing, so
@@ -113,6 +94,6 @@ impl Vault {
     /// save the rest back with [`Vault::save_chat_secret`].
     pub fn delete_chat_secret(&self, link: ChatLinkId) -> Result<()> {
         self.writable()?;
-        self.with_chat_secrets(|s| s.delete_secret(CHAT_SECRET_OWNER_KIND, &link.to_string()))
+        self.with_secrets(|s| s.delete_secret(CHAT_SECRET_OWNER_KIND, &link.to_string()))
     }
 }

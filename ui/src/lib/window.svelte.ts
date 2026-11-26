@@ -15,9 +15,10 @@
 // nothing, so the preview still shows the window the desktop build does.
 
 import { mobileShell } from './api'
+import { appleKeyboard, inShell } from './platform'
 
-const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform ?? '')
-const shell = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+const mac = appleKeyboard
+const shell = inShell
 
 type TauriWindow = import('@tauri-apps/api/window').Window
 

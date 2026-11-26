@@ -32,12 +32,9 @@ import type {
   TranscribePolicy,
   WorkItem,
 } from './types'
+import { pad2 } from './time'
 
 // ── Time ─────────────────────────────────────────────────────────────────
-
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
-}
 
 /** `1:02:03` past an hour, `12:03` under one. */
 export function formatDuration(ms: number): string {
@@ -47,7 +44,7 @@ export function formatDuration(ms: number): string {
   const h = Math.floor(total / 3600)
   const m = Math.floor((total % 3600) / 60)
   const s = total % 60
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+  return h > 0 ? `${h}:${pad2(m)}:${pad2(s)}` : `${m}:${pad2(s)}`
 }
 
 /**

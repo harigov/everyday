@@ -16,18 +16,18 @@ use karmayoga_core::mail::rate_limit::RateLimitRefusal;
 use karmayoga_core::mail::voice::VoiceProfile;
 use karmayoga_core::mail::{RateLimitState, TokenBucket};
 
-use crate::mailsync::wiring::MailState;
+use crate::mail::sync::wiring::MailState;
 
 /// A thread's suggestions: how many messages it had, when they were written, and
 /// the suggestions.
-type CachedReplies = (u32, Timestamp, Vec<crate::mailwrite::ReplySuggestion>);
+type CachedReplies = (u32, Timestamp, Vec<crate::mail::write::ReplySuggestion>);
 
 pub(crate) struct MailRuntime {
     /// Mail's pack store and search index, and each account's sync
     /// progress -- open and populated for exactly as long as the vault they
-    /// belong to is unlocked. See `mailsync::wiring` for how it is opened
+    /// belong to is unlocked. See `mail::sync::wiring` for how it is opened
     /// (with a key derived from the vault's own, never reused) and
-    /// [`MailRuntime::set_state`] for the door `mailsync::wiring` reaches it
+    /// [`MailRuntime::set_state`] for the door `mail::sync::wiring` reaches it
     /// through.
     state: RwLock<Option<MailState>>,
     /// One [`tokio::sync::Notify`] per account, woken by
@@ -51,7 +51,7 @@ pub(crate) struct MailRuntime {
     /// says so, and [`MailRuntime::check_rate_limit`] returns before ever
     /// touching this map for either.
     rate_limits: Mutex<HashMap<String, RateLimitState>>,
-    /// Paces `karmayoga_service::mailai`'s background model-assisted
+    /// Paces `karmayoga_service::mail::ai`'s background model-assisted
     /// categorisation pass: at most a handful of threads sent to the quick
     /// model per rolling minute, across every account, per the plan's own
     /// words ("at most N threads per minute"). Session state, on the same
@@ -63,41 +63,41 @@ pub(crate) struct MailRuntime {
     /// pass.
     autodraft_budget: Mutex<TokenBucket>,
     /// As [`MailRuntime::categorize_budget`], for sorting on a decision
-    /// model (`crate::mailsort`) -- larger, because one of those answers is
+    /// model (`crate::mail::sort`) -- larger, because one of those answers is
     /// a fraction of a second and a few hundred tokens of input, and an
     /// asked-for sort of older mail would otherwise take all day.
     sort_budget: Mutex<TokenBucket>,
     /// Each account's asked-for sort of older mail, while it runs -- see
-    /// [`crate::mailsort::OlderSort`]. Session state: a restart forgets one
+    /// [`crate::mail::sort::OlderSort`]. Session state: a restart forgets one
     /// half done, and asking again picks up where it stopped, since what is
     /// already sorted is skipped.
-    older_sorts: Mutex<HashMap<AccountId, crate::mailsort::OlderSort>>,
+    older_sorts: Mutex<HashMap<AccountId, crate::mail::sort::OlderSort>>,
     /// When each account's recent mail was last read all the way back to
-    /// the window -- see `crate::mailsort::FULL_LOOK_EVERY` for why the
+    /// the window -- see `crate::mail::sort::FULL_LOOK_EVERY` for why the
     /// ticks in between read only the top of the Inbox.
     sort_full_looks: Mutex<HashMap<AccountId, Timestamp>>,
     /// As [`MailRuntime::sort_full_looks`], for the follow-up pass
-    /// (`crate::mailfollowup`), which reads the Inbox and Sent back to its own
+    /// (`crate::mail::followup`), which reads the Inbox and Sent back to its own
     /// window.
     follow_up_full_looks: Mutex<HashMap<AccountId, Timestamp>>,
     /// Threads the follow-up pass read and had to leave for later, per
-    /// account -- see [`crate::mailfollowup::SkipNote`]. Replaced on every
+    /// account -- see [`crate::mail::followup::SkipNote`]. Replaced on every
     /// full look, so it never holds more than the window.
-    follow_up_skips: Mutex<HashMap<AccountId, HashMap<ThreadId, crate::mailfollowup::SkipNote>>>,
+    follow_up_skips: Mutex<HashMap<AccountId, HashMap<ThreadId, crate::mail::followup::SkipNote>>>,
     /// What the follow-up pass has done for each account since the app
-    /// started -- see [`crate::mailfollowup::Tally`] -- for Settings → Mail
+    /// started -- see [`crate::mail::followup::Tally`] -- for Settings → Mail
     /// sorting to say whether it ever looked, and what it found. Session
     /// state, on the terms of the other follow-up state here; unlike the
     /// skip notes, cleared by [`MailRuntime::on_lock`], since its counts are
     /// about one vault's accounts.
-    follow_up_tallies: Mutex<HashMap<AccountId, crate::mailfollowup::Tally>>,
+    follow_up_tallies: Mutex<HashMap<AccountId, crate::mail::followup::Tally>>,
     /// Held across every read-change-write of the learned voice
     /// (`karmayoga_core::mail::VoiceLearning`): `suggest_replies` adds what it
     /// offered while a learning pass may be replacing the notes, and neither
     /// may put back a copy read before the other wrote.
     voice_learning: Mutex<()>,
     /// When the unattended learning pass last looked for replies to learn
-    /// from -- see `crate::mailvoicelearn`'s `LOOK_AGAIN`.
+    /// from -- see `crate::mail::voicelearn`'s `LOOK_AGAIN`.
     voice_learn_looked: Mutex<Option<Timestamp>>,
     /// `summarize_thread`'s cache: a thread's summary, keyed by how many
     /// messages it had when it was written. A thread that has grown since
@@ -107,7 +107,7 @@ pub(crate) struct MailRuntime {
     /// else remembers, the same trade `notify` and the rest of this session
     /// state already make.
     summary_cache: Mutex<HashMap<ThreadId, (u32, String)>>,
-    /// Where [`karmayoga_service::mailai::categorize_tick`]'s next pass over
+    /// Where [`karmayoga_service::mail::ai::categorize_tick`]'s next pass over
     /// an account's `Other` threads should start -- see the field this
     /// replaces, `Service::mail_categorize_cursor`, for the full account of
     /// why this has to advance every tick and wrap on an empty page.
@@ -116,11 +116,11 @@ pub(crate) struct MailRuntime {
     /// `Important` threads.
     autodraft_cursor: Mutex<HashMap<AccountId, String>>,
     /// As [`MailRuntime::categorize_cursor`], for the priority pass over
-    /// `Important` threads -- `karmayoga_service::mailai`'s question of
+    /// `Important` threads -- `karmayoga_service::mail::ai`'s question of
     /// which of them need the person soon.
     priority_cursor: Mutex<HashMap<AccountId, String>>,
     /// Each account's [`VoiceProfile`], and when it was read -- reading one
-    /// decrypts dozens of sent messages, so `karmayoga_service::mailvoice`
+    /// decrypts dozens of sent messages, so `karmayoga_service::mail::voice`
     /// keeps it for a while rather than paying that on every suggestion.
     voice_cache: Mutex<HashMap<AccountId, (Timestamp, Arc<VoiceProfile>)>>,
     /// `suggest_replies`' cache: a thread's three suggestions, keyed by how
@@ -129,7 +129,7 @@ pub(crate) struct MailRuntime {
     /// offer a time, and a time goes stale without the thread changing at all.
     reply_cache: Mutex<HashMap<ThreadId, CachedReplies>>,
     /// Whether a thread's newest message waits on the person's reply, as the
-    /// decision model answered `crate::mailfollowup::waits_on_reply`, with
+    /// decision model answered `crate::mail::followup::waits_on_reply`, with
     /// the message it answered about -- for while follow-ups are off and the
     /// answer is not kept on the thread, so that reopening it does not ask
     /// again.
@@ -286,20 +286,20 @@ impl MailRuntime {
         self.state.read().unwrap().as_ref().map(|m| m.index.clone())
     }
 
-    pub(crate) fn statuses(&self) -> Option<crate::mailsync::status::StatusRegistry> {
+    pub(crate) fn statuses(&self) -> Option<crate::mail::sync::status::StatusRegistry> {
         self.state.read().unwrap().as_ref().map(|m| m.statuses.clone())
     }
 
-    pub(crate) fn unread_cache(&self) -> Option<Arc<crate::mailsync::unread_cache::UnreadCache>> {
+    pub(crate) fn unread_cache(&self) -> Option<Arc<crate::mail::sync::unread_cache::UnreadCache>> {
         self.state.read().unwrap().as_ref().map(|m| m.unread_cache.clone())
     }
 
-    pub(crate) fn contacts(&self) -> Option<Arc<crate::mailsync::contacts::ContactIndex>> {
+    pub(crate) fn contacts(&self) -> Option<Arc<crate::mail::sync::contacts::ContactIndex>> {
         self.state.read().unwrap().as_ref().map(|m| m.contacts.clone())
     }
 
     /// Replace what [`MailRuntime::packs`], [`MailRuntime::index`] and
-    /// [`MailRuntime::statuses`] answer -- `mailsync::wiring`'s own door
+    /// [`MailRuntime::statuses`] answer -- `mail::sync::wiring`'s own door
     /// into this state.
     pub(crate) fn set_state(&self, state: Option<MailState>) {
         *self.state.write().unwrap() = state;
@@ -370,11 +370,11 @@ impl MailRuntime {
         take_tokens(&self.sort_budget, now, want)
     }
 
-    pub(crate) fn older_sort(&self, account: AccountId) -> Option<crate::mailsort::OlderSort> {
+    pub(crate) fn older_sort(&self, account: AccountId) -> Option<crate::mail::sort::OlderSort> {
         self.older_sorts.lock().unwrap().get(&account).cloned()
     }
 
-    pub(crate) fn older_sorts(&self) -> Vec<(AccountId, crate::mailsort::OlderSort)> {
+    pub(crate) fn older_sorts(&self) -> Vec<(AccountId, crate::mail::sort::OlderSort)> {
         self.older_sorts.lock().unwrap().iter().map(|(a, s)| (*a, s.clone())).collect()
     }
 
@@ -385,7 +385,7 @@ impl MailRuntime {
         &self,
         account: AccountId,
         run: u64,
-        f: impl FnOnce(&mut crate::mailsort::OlderSort) -> bool,
+        f: impl FnOnce(&mut crate::mail::sort::OlderSort) -> bool,
     ) {
         let mut sorts = self.older_sorts.lock().unwrap();
         let Some(sort) = sorts.get_mut(&account).filter(|s| s.run == run) else { return };
@@ -413,7 +413,7 @@ impl MailRuntime {
     pub(crate) fn set_older_sort(
         &self,
         account: AccountId,
-        sort: Option<crate::mailsort::OlderSort>,
+        sort: Option<crate::mail::sort::OlderSort>,
     ) {
         let mut sorts = self.older_sorts.lock().unwrap();
         match sort {
@@ -479,7 +479,7 @@ impl MailRuntime {
         thread: ThreadId,
         message_count: u32,
         oldest: Timestamp,
-    ) -> Option<Vec<crate::mailwrite::ReplySuggestion>> {
+    ) -> Option<Vec<crate::mail::write::ReplySuggestion>> {
         let cache = self.reply_cache.lock().unwrap();
         cache
             .get(&thread)
@@ -492,7 +492,7 @@ impl MailRuntime {
         thread: ThreadId,
         message_count: u32,
         now: Timestamp,
-        replies: Vec<crate::mailwrite::ReplySuggestion>,
+        replies: Vec<crate::mail::write::ReplySuggestion>,
     ) {
         self.reply_cache.lock().unwrap().insert(thread, (message_count, now, replies));
     }
@@ -537,28 +537,28 @@ impl MailRuntime {
     pub(crate) fn follow_up_skips(
         &self,
         account: AccountId,
-    ) -> HashMap<ThreadId, crate::mailfollowup::SkipNote> {
+    ) -> HashMap<ThreadId, crate::mail::followup::SkipNote> {
         self.follow_up_skips.lock().unwrap().get(&account).cloned().unwrap_or_default()
     }
 
     pub(crate) fn set_follow_up_skips(
         &self,
         account: AccountId,
-        skips: HashMap<ThreadId, crate::mailfollowup::SkipNote>,
+        skips: HashMap<ThreadId, crate::mail::followup::SkipNote>,
     ) {
         self.follow_up_skips.lock().unwrap().insert(account, skips);
     }
 
     /// What the follow-up pass has done for `account` this session; nothing
     /// yet is the default tally.
-    pub(crate) fn follow_up_tally(&self, account: AccountId) -> crate::mailfollowup::Tally {
+    pub(crate) fn follow_up_tally(&self, account: AccountId) -> crate::mail::followup::Tally {
         self.follow_up_tallies.lock().unwrap().get(&account).cloned().unwrap_or_default()
     }
 
     pub(crate) fn set_follow_up_tally(
         &self,
         account: AccountId,
-        tally: crate::mailfollowup::Tally,
+        tally: crate::mail::followup::Tally,
     ) {
         self.follow_up_tallies.lock().unwrap().insert(account, tally);
     }

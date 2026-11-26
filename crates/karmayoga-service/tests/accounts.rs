@@ -12,7 +12,7 @@ use std::sync::Arc;
 use karmayoga_core::account::{Account, AccountSecret, AuthMethod, Provider};
 use karmayoga_service::Service;
 use karmayoga_service::ctx::Ctx;
-use karmayoga_service::mailsync::wiring::task_key;
+use karmayoga_service::mail::sync::wiring::task_key;
 use karmayoga_service::supervisor::TaskState;
 use serde_json::{Value, json};
 
@@ -29,7 +29,7 @@ async fn call(svc: &Arc<Service>, name: &str, args: Value) -> Value {
 
 /// A password-authenticated account, `services.mail` as given -- never
 /// signed in, so its task ends almost immediately with `NeedsSignIn`
-/// (`crate::mailsync::credential::resolve` needs no network to know that),
+/// (`crate::mail::sync::credential::resolve` needs no network to know that),
 /// which is exactly what makes it safe to drive through the real command
 /// layer in a test with no server anywhere: the property under test is
 /// *that* `ensure_account_task`/`stop_account_task` were called, which is

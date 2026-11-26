@@ -55,23 +55,13 @@ impl MeetingStore for SqlStore {
     // ---- settings ---------------------------------------------------------
 
     fn meeting_settings(&self) -> Result<MeetingSettings> {
-        let sealed = self.read().sealed("SELECT data FROM meeting_settings WHERE id = 1", &[])?;
-        match sealed {
-            Some(sealed) => self.unseal(SETTINGS_AAD, &sealed),
-            // Never configured. The default -- the feature is off -- is a
-            // real answer, the same argument `AgentStore::settings` makes.
-            None => Ok(MeetingSettings::default()),
-        }
+        // Never configured. The default -- the feature is off -- is a real
+        // answer, the same argument `AgentStore::settings` makes.
+        Ok(self.get_singleton("meeting_settings", SETTINGS_AAD)?.unwrap_or_default())
     }
 
     fn put_meeting_settings(&self, settings: &MeetingSettings) -> Result<()> {
-        let data = self.seal(SETTINGS_AAD, settings)?;
-        self.write().execute(
-            "INSERT INTO meeting_settings (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("meeting_settings", SETTINGS_AAD, settings)
     }
 
     // ---- recordings ---------------------------------------------------------

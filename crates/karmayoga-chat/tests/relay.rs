@@ -1,6 +1,6 @@
 //! The relay, end to end, against a fake chat service and a fake model.
 //!
-//! What the pure functions in `relay.rs` cannot say: that the pieces are wired
+//! What the pure functions in `relay/` cannot say: that the pieces are wired
 //! together the way the design describes. A message becomes one reply; a
 //! destructive call stops to ask, and the answer -- a tap, or typed words --
 //! decides what happens to the thing it was about; `!new`, `!stop` and a

@@ -9,12 +9,13 @@
   // statement about the window it is over.
 
   import { keysLabel } from '../lib/keys'
+  import { userAgentMac } from '../lib/platform'
   import { panels } from '../lib/panels.svelte'
   import { applicableBindings, spellings } from '../lib/shortcuts.svelte'
   import { trapFocus } from '../lib/focus'
   import Icon from './Icon.svelte'
 
-  const mac = navigator.userAgent.includes('Mac')
+  const mac = userAgentMac
   // Read once, when the sheet opens: the bindings' `when` closures read the
   // stores, and nothing behind a modal is moving.
   const groups = applicableBindings()

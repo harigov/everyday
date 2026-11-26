@@ -9,18 +9,14 @@
 use karmayoga_core::error::Result;
 use karmayoga_core::llm::{ModelSettings, model_settings_aad};
 
-use crate::conn::SqlExt;
-use crate::{SqlStore, vals};
+use crate::SqlStore;
 
 impl SqlStore {
     pub(crate) fn read_model_settings(&self) -> Result<Option<ModelSettings>> {
-        match self.read().sealed("SELECT data FROM model_settings WHERE id = 1", &[])? {
-            Some(sealed) => Ok(Some(self.unseal(&model_settings_aad(), &sealed)?)),
-            // Never saved -- which is not the same answer as the defaults:
-            // it is what tells the vault to look for the models where they
-            // used to be kept. See `JournalStore::model_settings`.
-            None => Ok(None),
-        }
+        // Never saved -- which is not the same answer as the defaults: it is
+        // what tells the vault to look for the models where they used to be
+        // kept. See `JournalStore::model_settings`.
+        self.get_singleton("model_settings", &model_settings_aad())
     }
 
     pub(crate) fn write_model_settings(&self, settings: &ModelSettings) -> Result<()> {
@@ -30,12 +26,6 @@ impl SqlStore {
         // would fix it could never open. `Vault::save_model_settings`
         // validates everything a person saves, and `Vault::model_access`
         // everything a request is made with.
-        let data = self.seal(&model_settings_aad(), settings)?;
-        self.write().execute(
-            "INSERT INTO model_settings (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("model_settings", &model_settings_aad(), settings)
     }
 }
