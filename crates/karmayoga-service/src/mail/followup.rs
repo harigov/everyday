@@ -119,7 +119,7 @@ use jiff::{SignedDuration, Timestamp};
 use karmayoga_core::Vault;
 use karmayoga_core::account::Account;
 use karmayoga_core::id::{AccountId, MailMessageId, MailboxId, ThreadId};
-use karmayoga_core::llm::{DecisionAccess, ModelAccess, ModelTier};
+use karmayoga_core::llm::{DecisionAccess, ModelTier};
 use karmayoga_core::mail::categorize::looks_like_notification_sender;
 use karmayoga_core::mail::{
     Category, ContactBook, FollowUp, FollowUpKind, FollowUpMark, MailAiFeature, MailAiRefusal,
@@ -132,7 +132,10 @@ use serde_json::{Map, Value, json};
 use crate::decision::{self, Choice, ChoiceOption, Content};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Op};
-use crate::mail::ai::{display_address, excerpt, one_line, own_addresses};
+use crate::mail::address::{display_address, is_own, own_mailboxes};
+use crate::mail::ai::one_line;
+use crate::mail::judge::{Judge, why_of};
+use crate::mail::text::excerpt;
 use crate::service::{Service, blocking};
 
 /// Threads read per page -- a local read.
@@ -301,15 +304,6 @@ pub fn options(table: &[(&str, &str)]) -> Vec<ChoiceOption> {
             description: (*description).to_string(),
         })
         .collect()
-}
-
-/// Who answers the follow-up questions -- see the module docs.
-#[derive(Debug, Clone)]
-pub(crate) enum Judge {
-    /// The decision model, switched on in Settings → Models.
-    Decision(DecisionAccess),
-    /// The Small model, when no decision model is switched on.
-    Small(ModelAccess),
 }
 
 /// Which model answers, as Settings → Mail sorting is told: the same two
@@ -624,10 +618,6 @@ fn small_choice(
 /// [`Judge::not_ready`]'s question, not this: the reader of what was decided
 /// ([`follow_ups`]) needs only to know whose consent applies.
 fn pick_judge(vault: &Vault) -> Result<Judge, String> {
-    let why_of = |e: karmayoga_core::Error| match e {
-        karmayoga_core::Error::Invalid(why) => why,
-        other => other.to_string(),
-    };
     match vault.decision_access() {
         Ok(decision) => Ok(Judge::Decision(decision)),
         Err(e) if vault.model_settings().is_ok_and(|m| m.decision.is_some()) => {
@@ -1584,19 +1574,6 @@ fn whole_days(since: Timestamp, now: Timestamp) -> i64 {
     now.duration_since(since).as_hours().max(0) / 24
 }
 
-/// The account's addresses as [`mailbox_key`](crate::arrivals::mailbox_key)s
-/// -- what `own`, everywhere below, is a set of. Built once for a pass, so that
-/// no message has the whole set read again to be compared with.
-pub(crate) fn own_mailboxes(account: &Account) -> HashSet<String> {
-    own_addresses(account).iter().map(|a| crate::arrivals::mailbox_key(a)).collect()
-}
-
-/// Whether `email` is one of `own` ([`own_mailboxes`]) as the mail provider
-/// delivers it: `h.ari+lists@googlemail.com` is `hari@gmail.com`.
-pub(crate) fn is_own(email: &str, own: &HashSet<String>) -> bool {
-    own.contains(&crate::arrivals::mailbox_key(email))
-}
-
 fn mine(message: &Message, own: &HashSet<String>) -> bool {
     is_own(&message.from.email, own)
 }
@@ -1961,7 +1938,7 @@ mod tests {
     use super::*;
     use karmayoga_core::account::Provider;
     use karmayoga_core::id::PackId;
-    use karmayoga_core::llm::{DecisionApi, DecisionConfig, ModelSettings};
+    use karmayoga_core::llm::{DecisionApi, DecisionConfig, ModelAccess, ModelSettings};
     use karmayoga_core::mail::{Address, CategorySource, MessageFlags, SortMark};
     use karmayoga_core::packstore::PackRef;
 

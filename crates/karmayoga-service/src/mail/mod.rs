@@ -22,17 +22,23 @@
 //! | [`write`]     | writing help on request: replies, rewrites                             |
 //! | [`voice`]     | the person's own voice, gathered from the vault for a prompt           |
 //! | [`voicelearn`]| learning how the person replies, from the replies they sent            |
+//! | [`judge`]     | which model answers a decision question, shared by checks and follow-ups |
+//! | `address`     | showing an address to a model, and which addresses are the person's own |
+//! | `text`        | small text helpers the others share                                    |
 //!
 //! `outbox` here is the vault's half of sending; `karmayoga_mail::outbox` is
 //! the protocol half it calls. Same word, two layers.
 
 pub mod ai;
+pub(crate) mod address;
 pub mod check;
 pub mod followup;
+pub(crate) mod judge;
 pub mod outbox;
 pub mod preview;
 pub mod sort;
 pub mod sync;
+pub(crate) mod text;
 pub mod view;
 pub mod voice;
 pub mod voicelearn;

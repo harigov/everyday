@@ -45,7 +45,8 @@ use serde_json::{Value, json};
 
 use crate::domains::writing::WRITING_CLOCK;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::mail::ai::own_addresses;
+use crate::mail::address::own_addresses;
+use crate::mail::text::excerpt;
 use crate::mail::voice::{self as mailvoice, VoiceContext};
 use crate::service::{Service, blocking};
 
@@ -103,10 +104,6 @@ pub struct WrittenText {
 
 fn refused(account: &Account, feature: MailAiFeature, refusal: MailAiRefusal) -> CommandError {
     CommandError::new(codes::FORBIDDEN, refusal.message(account, feature))
-}
-
-fn excerpt(s: &str, cap: usize) -> String {
-    if s.chars().count() <= cap { s.to_string() } else { s.chars().take(cap).collect() }
 }
 
 /// The first word of an address's display name, if it has one -- "Dana"

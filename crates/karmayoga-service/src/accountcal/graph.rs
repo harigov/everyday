@@ -618,11 +618,11 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// This source's [`super::CalendarProvider`] -- see `caldav.rs`'s own
+/// This source's [`super::CalendarProtocol`] -- see `caldav.rs`'s own
 /// `CalDavProvider` for why this thin wrapper exists.
 pub(crate) struct GraphProvider;
 
-impl super::CalendarProvider for GraphProvider {
+impl super::CalendarProtocol for GraphProvider {
     fn discover<'a>(
         &'a self,
         svc: &'a Arc<Service>,

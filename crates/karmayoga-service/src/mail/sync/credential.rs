@@ -71,19 +71,13 @@ pub async fn resolve(svc: &Arc<Service>, vault: &Arc<Vault>, account: &Account) 
             None => Resolved::NeedsSignIn("no password is stored for this account".into()),
         },
         AuthMethod::OAuth { client_id, auth_url, token_url, scopes } => {
-            let Some(mut refresh_token) = secret.refresh_token.clone() else {
+            let Some(stored_refresh_token) = secret.refresh_token.clone() else {
                 return Resolved::NeedsSignIn("this account has never signed in with OAuth".into());
             };
             let account_id = account.id;
             let account_key = account_id.to_string();
-            // A rotation from an earlier refresh that could not be saved to
-            // the vault takes precedence over whatever the vault still
-            // says: the provider may already have retired that one, and
-            // this is what lets this call succeed with the one it actually
-            // accepted last time -- see `TokenCache`'s own module doc.
-            if let Some(pending) = svc.token_cache().pending_refresh_token(&account_key) {
-                refresh_token = pending;
-            }
+            let refresh_token =
+                refresh_token_to_present(&svc.token_cache(), &account_key, stored_refresh_token);
             let client = OAuthClient {
                 client_id: client_id.clone(),
                 client_secret: secret.client_secret.clone(),
@@ -123,11 +117,12 @@ pub async fn resolve(svc: &Arc<Service>, vault: &Arc<Vault>, account: &Account) 
                         // was called with, only ever one it is about to
                         // persist.
                         let key = account_id.to_string();
-                        let owed = tokens.refresh_token.clone().or_else(|| {
-                            svc.token_cache()
-                                .pending_refresh_token(&key)
-                                .map(|_| refresh_token.clone())
-                        });
+                        let owed = rotation_owed(
+                            &svc.token_cache(),
+                            &key,
+                            tokens.refresh_token.clone(),
+                            &refresh_token,
+                        );
                         if let Some(new_refresh_token) = owed {
                             persist_rotated_refresh_token_resilient(
                                 &svc,
@@ -159,6 +154,38 @@ pub async fn resolve(svc: &Arc<Service>, vault: &Arc<Vault>, account: &Account) 
             }
         }
     }
+}
+
+/// The refresh token a refresh should present: a rotation from an earlier
+/// refresh that could not be saved to the vault takes precedence over
+/// whatever the vault still says, because the provider may already have
+/// retired that one, and this is what lets the call succeed with the one it
+/// actually accepted last time -- see [`crate::token_cache::TokenCache`]'s own
+/// module doc. `account_key` is the account's plain id, whichever resource
+/// the refresh is for: there is one refresh token per account.
+///
+/// Shared with the calendar's refresh ([`crate::accountcal::tokens`]), which
+/// has to agree with mail on what the account's current token is.
+pub(crate) fn refresh_token_to_present(
+    cache: &crate::token_cache::TokenCache,
+    account_key: &str,
+    stored: String,
+) -> String {
+    cache.pending_refresh_token(account_key).unwrap_or(stored)
+}
+
+/// What a refresh that has just answered owes the vault: the token the
+/// provider rotated to (`rotated`), when it did -- or, when it did not, the
+/// one the call authenticated with (`presented`), *if* an earlier attempt at
+/// saving that same value never landed. `None` when nothing is owed. See
+/// [`refresh_token_to_present`] for who else asks.
+pub(crate) fn rotation_owed(
+    cache: &crate::token_cache::TokenCache,
+    account_key: &str,
+    rotated: Option<String>,
+    presented: &str,
+) -> Option<String> {
+    rotated.or_else(|| cache.pending_refresh_token(account_key).map(|_| presented.to_string()))
 }
 
 /// Save a rotated refresh token, tolerating the vault write failing --
@@ -216,7 +243,7 @@ async fn persist_rotated_refresh_token_resilient(
 /// fires again before this settles still sees the freshest token), and
 /// clears it again only once `persist` has actually succeeded. Returns
 /// whether it did.
-async fn persist_with_retry_and_pending_cache<F, Fut>(
+pub(crate) async fn persist_with_retry_and_pending_cache<F, Fut>(
     cache: &crate::token_cache::TokenCache,
     key: &str,
     value: String,
@@ -394,6 +421,35 @@ mod tests {
             cache.pending_refresh_token("acct-1"),
             Some("rt-second".to_string()),
             "the provider has moved on to the newer token regardless of what this process saved"
+        );
+    }
+
+    #[test]
+    fn a_pending_rotation_is_presented_instead_of_the_stored_token() {
+        let cache = TokenCache::new();
+        assert_eq!(refresh_token_to_present(&cache, "acct-1", "rt-stored".into()), "rt-stored");
+        cache.set_pending_refresh_token("acct-1", "rt-rotated".into());
+        assert_eq!(refresh_token_to_present(&cache, "acct-1", "rt-stored".into()), "rt-rotated");
+        assert_eq!(
+            refresh_token_to_present(&cache, "acct-2", "rt-other".into()),
+            "rt-other",
+            "another account's rotation is not this one's"
+        );
+    }
+
+    #[test]
+    fn a_refresh_owes_the_vault_its_rotation_or_the_pending_token_it_used() {
+        let cache = TokenCache::new();
+        assert_eq!(rotation_owed(&cache, "acct-1", None, "rt-used"), None);
+        assert_eq!(
+            rotation_owed(&cache, "acct-1", Some("rt-new".into()), "rt-used"),
+            Some("rt-new".to_string())
+        );
+        cache.set_pending_refresh_token("acct-1", "rt-used".into());
+        assert_eq!(
+            rotation_owed(&cache, "acct-1", None, "rt-used"),
+            Some("rt-used".to_string()),
+            "the token that worked is still unsaved, so it is still owed"
         );
     }
 }

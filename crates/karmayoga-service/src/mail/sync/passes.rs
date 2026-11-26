@@ -44,6 +44,7 @@ use karmayoga_mail::session::{
     MailError, MailSession, Result as SessionResult, SyncCursor, Uid, UidSet,
 };
 
+use crate::mail::address::display_address;
 use crate::mail::sync::discovery::{self, LabelMailboxes, SyncedMailbox};
 use crate::mail::sync::ingest::{self, ThreadIndex};
 use crate::mail::sync::status::{Phase, StatusRegistry};
@@ -342,7 +343,7 @@ fn settle_reply_candidates(ctx: &SyncContext<'_>) {
     let own = ctx
         .vault
         .account(ctx.account_id)
-        .map(|account| crate::mail::ai::own_addresses(&account))
+        .map(|account| crate::mail::address::own_addresses(&account))
         .unwrap_or_default();
     for (message, arrival) in candidates {
         if crate::arrivals::thread_has_own_message(ctx.vault, message, &own) {
@@ -704,7 +705,7 @@ async fn ingest_new<S: MailSession>(
         // next mail in, and only when there is mail to ask it about.
         let account = ctx.vault.account(ctx.account_id).ok();
         let notify = account.as_ref().map(|a| a.mail_notify.clone()).unwrap_or_default();
-        let own = account.as_ref().map(crate::mail::ai::own_addresses).unwrap_or_default();
+        let own = account.as_ref().map(crate::mail::address::own_addresses).unwrap_or_default();
         let mut ingest_batch = Vec::with_capacity(headers.len());
         let mut arrivals = Vec::new();
         for header in &headers {
@@ -1777,10 +1778,6 @@ pub(crate) fn mail_doc(
         unread: message.flags.unread(),
         starred: message.flags.flagged,
     }
-}
-
-fn display_address(a: &karmayoga_core::mail::Address) -> String {
-    if a.name.is_empty() { a.email.clone() } else { format!("{} <{}>", a.name, a.email) }
 }
 
 #[cfg(test)]

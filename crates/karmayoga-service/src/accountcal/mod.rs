@@ -136,8 +136,10 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// used to `match` on [`Provider`] and [`AccountCalendarSource`] directly
 /// and call straight into `caldav`, `google` or `graph`; this trait is that
 /// match, given a name, so [`provider_for`] is the one place the three
-/// sources are chosen between.
-pub trait CalendarProvider: Send + Sync {
+/// sources are chosen between. A protocol -- CalDAV, Google's API, Graph --
+/// and not `karmayoga_core::calendar::CalendarProvider`, the company a person
+/// sees a calendar listed under.
+pub trait CalendarProtocol: Send + Sync {
     fn discover<'a>(
         &'a self,
         svc: &'a Arc<Service>,
@@ -206,10 +208,10 @@ pub trait CalendarProvider: Send + Sync {
     ) -> BoxFuture<'a, CommandResult<()>>;
 }
 
-/// The [`CalendarProvider`] for one of the three sources -- the single
+/// The [`CalendarProtocol`] for one of the three sources -- the single
 /// factory [`discover`] and [`sync`] both go through, in place of the
 /// `match` each used to have of its own.
-fn provider_for(source: AccountCalendarSource) -> Box<dyn CalendarProvider> {
+fn provider_for(source: AccountCalendarSource) -> Box<dyn CalendarProtocol> {
     match source {
         AccountCalendarSource::CalDav => Box::new(caldav::CalDavProvider),
         AccountCalendarSource::Google => Box::new(google::GoogleProvider),

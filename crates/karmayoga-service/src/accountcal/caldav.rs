@@ -1221,14 +1221,14 @@ fn attendees_of(comp: &calcard::icalendar::ICalendarComponent) -> Vec<String> {
         .collect()
 }
 
-/// This source's [`super::CalendarProvider`] -- a thin wrapper so
+/// This source's [`super::CalendarProtocol`] -- a thin wrapper so
 /// [`super::provider_for`] can hand back CalDAV's [`discover`] and [`sync`]
 /// without a caller matching on [`AccountCalendarSource`] itself. See
 /// `crate::speech::transcribe::openai::OpenAiTranscriber` for the same
 /// shape elsewhere.
 pub(crate) struct CalDavProvider;
 
-impl super::CalendarProvider for CalDavProvider {
+impl super::CalendarProtocol for CalDavProvider {
     fn discover<'a>(
         &'a self,
         svc: &'a Arc<Service>,

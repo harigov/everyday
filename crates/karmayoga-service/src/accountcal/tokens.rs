@@ -58,6 +58,9 @@ use karmayoga_core::id::AccountId;
 use karmayoga_mail::oauth::{OAuthClient, OAuthError};
 
 use crate::error::{CommandError, CommandResult, codes};
+use crate::mail::sync::credential::{
+    persist_with_retry_and_pending_cache, refresh_token_to_present, rotation_owed,
+};
 use crate::service::{Service, blocking};
 
 /// Which resource an OAuth access token is good for. See the module doc's
@@ -188,12 +191,21 @@ async fn access_token(
             "this account has never signed in; sign in first to read its calendars",
         ));
     };
-    let Some(refresh_token) = stored.refresh_token.clone() else {
+    let Some(stored_refresh_token) = stored.refresh_token.clone() else {
         return Err(CommandError::new(
             codes::FORBIDDEN,
             "this account has no refresh token saved; sign in again",
         ));
     };
+
+    // Mail's own refresh keeps a rotation the vault refused in the cache,
+    // keyed by the plain account id whichever resource asks, and presents it
+    // in place of the stored token: the provider may already have retired
+    // that one. Doing the same here keeps the two from disagreeing about the
+    // account's one refresh token, which would end in `invalid_grant` for
+    // both.
+    let pending_key = account_id.to_string();
+    let refresh_token = refresh_token_to_present(&cache, &pending_key, stored_refresh_token);
 
     let oauth = OAuthClient {
         client_id,
@@ -213,6 +225,7 @@ async fn access_token(
     };
     let graph_scopes = Resource::graph_scopes();
     let vault_for_save = vault.clone();
+    let cache_for_save = cache.clone();
 
     let result = cache
         .access_token(&key, move || async move {
@@ -229,27 +242,52 @@ async fn access_token(
             // native resource, mirroring what `attach_oauth_sign_in`
             // already stores there; a Graph token is short-lived, per
             // account, per process, and not worth a second column.
-            if tokens.refresh_token.is_some() || matches!(resource, Resource::Native) {
-                let tokens_for_save = tokens.clone();
-                let outcome = blocking(move || {
-                    let mut secret =
-                        vault_for_save.account_secret(account_id)?.unwrap_or_default();
-                    if let Some(rt) = tokens_for_save.refresh_token {
-                        secret.refresh_token = Some(rt);
+            let owed = rotation_owed(
+                &cache_for_save,
+                &pending_key,
+                tokens.refresh_token.clone(),
+                &refresh_token,
+            );
+            if owed.is_some() || matches!(resource, Resource::Native) {
+                let access = matches!(resource, Resource::Native)
+                    .then(|| (tokens.access_token.clone(), tokens.expires_at));
+                let write = {
+                    let owed = owed.clone();
+                    move || {
+                        let vault = vault_for_save.clone();
+                        let owed = owed.clone();
+                        let access = access.clone();
+                        blocking(move || {
+                            let mut secret = vault.account_secret(account_id)?.unwrap_or_default();
+                            if let Some(rt) = owed {
+                                secret.refresh_token = Some(rt);
+                            }
+                            if let Some(access) = access {
+                                secret.access_token = Some(access);
+                            }
+                            Ok(vault.save_account_secret(account_id, &secret)?)
+                        })
                     }
-                    if matches!(resource, Resource::Native) {
-                        secret.access_token =
-                            Some((tokens_for_save.access_token.clone(), tokens_for_save.expires_at));
-                    }
-                    Ok(vault_for_save.save_account_secret(account_id, &secret)?)
-                })
-                .await;
+                };
                 // A failure to *persist* the rotation must not fail the
-                // sync that is already holding a good token in hand -- it
-                // is logged and the token is used anyway; the next refresh
-                // tries the save again.
-                if let Err(e) = outcome {
-                    tracing::warn!(%account_id, error = %e, "could not save a refreshed calendar token");
+                // sync that is already holding a good token in hand. A
+                // rotation is kept in the cache until a save lands, as
+                // mail's own refresh does, so that the next refresh --
+                // this one's or mail's -- presents it and tries again.
+                let saved = match owed {
+                    Some(rotated) => {
+                        persist_with_retry_and_pending_cache(
+                            &cache_for_save,
+                            &pending_key,
+                            rotated,
+                            write,
+                        )
+                        .await
+                    }
+                    None => write().await.is_ok(),
+                };
+                if !saved {
+                    tracing::warn!(%account_id, "could not save a refreshed calendar token");
                 }
             }
             Ok(tokens)

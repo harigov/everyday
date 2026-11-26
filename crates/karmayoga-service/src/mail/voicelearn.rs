@@ -360,7 +360,7 @@ pub(crate) fn case_from(
         .unwrap_or_default();
     Some(Case {
         answered: theirs.id,
-        from: crate::mail::ai::display_address(&theirs.from),
+        from: crate::mail::address::display_address(&theirs.from),
         subject: theirs.subject.trim().to_string(),
         theirs: mailvoice::clamp_chars(&mailvoice::their_words(their_text), THEIRS_CHARS),
         offered,
@@ -408,7 +408,7 @@ fn read_cases(
     after: Timestamp,
     learning: &VoiceLearning,
 ) -> CommandResult<Vec<Case>> {
-    let own = crate::mail::ai::own_addresses(account);
+    let own = crate::mail::address::own_addresses(account);
     let mailboxes = vault.mailboxes(account.id)?;
     let Some(sent) = mailboxes.into_iter().find(|m| m.role == MailboxRole::Sent) else {
         return Ok(Vec::new());

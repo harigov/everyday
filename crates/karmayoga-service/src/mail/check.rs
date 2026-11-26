@@ -68,8 +68,11 @@ use serde_json::{Map, Value, json};
 
 use crate::decision::{self, ChoiceOption, Content};
 use crate::error::{CommandError, CommandResult, codes};
-use crate::mail::ai::{Today, display_address, excerpt, one_line};
+use crate::mail::address::display_address;
+use crate::mail::ai::{Today, one_line};
+use crate::mail::text::excerpt;
 use crate::mail::followup::decision_not_ready;
+use crate::mail::judge::{Judge, why_of};
 use crate::service::{Service, blocking};
 
 /// How long the whole of a call may take, whichever model it is asked of. A
@@ -187,7 +190,7 @@ pub async fn check_draft(service: &Arc<Service>, id: DraftId) -> CommandResult<D
     }
 
     let email = Email::of(&draft, words, signature, today);
-    let model = judge.model();
+    let model = judge.check_model();
     let report = match tokio::time::timeout(CHECK_TIMEOUT, judge.ask(&checks, &email)).await {
         Ok(Ok(results)) => {
             DraftCheckReport { results, skipped: None, model: Some(model), off: None }
@@ -261,16 +264,8 @@ fn timed_out() -> String {
 
 // ---- who answers --------------------------------------------------------------
 
-/// Who answers the checks -- see the module docs.
-enum Judge {
-    /// The decision model, switched on in Settings → Models.
-    Decision(DecisionAccess),
-    /// The Small model, when no decision model is switched on or usable.
-    Small(ModelAccess),
-}
-
 impl Judge {
-    fn model(&self) -> CheckModel {
+    fn check_model(&self) -> CheckModel {
         match self {
             Judge::Decision(_) => CheckModel::Decision,
             Judge::Small(_) => CheckModel::Small,
@@ -297,10 +292,6 @@ impl Judge {
 /// asked against the same read of the settings the model came from
 /// (`acknowledgement`), as [`crate::mail::ai::mail_model`] does.
 fn pick_judge(vault: &Vault, account: &Account) -> Result<Judge, String> {
-    let why_of = |e: karmayoga_core::Error| match e {
-        karmayoga_core::Error::Invalid(why) => why,
-        other => other.to_string(),
-    };
     let refused = |r: MailAiRefusal| r.message(account, MailAiFeature::Writing);
     let models = vault.model_settings().map_err(why_of)?;
 

@@ -288,7 +288,7 @@ where
         }
     };
 
-    let identities: Vec<String> = crate::mail::ai::own_addresses(&account).into_iter().collect();
+    let identities: Vec<String> = crate::mail::address::own_addresses(&account).into_iter().collect();
     let ctx = passes::SyncContext {
         vault: &vault,
         account_id,

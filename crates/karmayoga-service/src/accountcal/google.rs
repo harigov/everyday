@@ -782,11 +782,11 @@ pub(super) fn urlencoding_light(s: &str) -> String {
     out
 }
 
-/// This source's [`super::CalendarProvider`] -- see `caldav.rs`'s own
+/// This source's [`super::CalendarProtocol`] -- see `caldav.rs`'s own
 /// `CalDavProvider` for why this thin wrapper exists.
 pub(crate) struct GoogleProvider;
 
-impl super::CalendarProvider for GoogleProvider {
+impl super::CalendarProtocol for GoogleProvider {
     fn discover<'a>(
         &'a self,
         svc: &'a Arc<Service>,

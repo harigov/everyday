@@ -66,8 +66,10 @@ use serde_json::{Map, Value};
 
 use crate::decision::{self, ChoiceOption, Content};
 use crate::error::{CommandError, CommandResult, codes};
-use crate::mail::ai::{Filed, display_address, excerpt, one_line};
-use crate::mail::followup::{addressed_words, is_own, newest, own_mailboxes};
+use crate::mail::address::{display_address, is_own, own_mailboxes};
+use crate::mail::ai::{Filed, one_line};
+use crate::mail::followup::{addressed_words, newest};
+use crate::mail::text::excerpt;
 use crate::service::{Service, blocking};
 
 /// Threads read per page while looking for ones to sort -- a local read.

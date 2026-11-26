@@ -353,7 +353,7 @@ fn subject_thread(
     }
 
     let account = vault.account(account_id).ok()?;
-    let own = crate::mail::ai::own_addresses(&account);
+    let own = crate::mail::address::own_addresses(&account);
     let people: std::collections::HashSet<String> = parsed
         .from
         .iter()

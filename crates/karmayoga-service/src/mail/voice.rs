@@ -31,7 +31,7 @@ use karmayoga_core::mail::{Address, Authorship, MailboxRole, Message};
 use karmayoga_core::store::mail::ThreadFilter;
 
 use crate::error::CommandResult;
-use crate::mail::ai::own_addresses;
+use crate::mail::address::own_addresses;
 use crate::service::{Service, blocking};
 
 /// The heading of the one block every prompt that writes as the person
