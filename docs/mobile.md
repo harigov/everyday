@@ -213,9 +213,13 @@ something placed `absolute` inside a scrolling strip whose own box is not its
 containing block (a hidden live region at the end of a toolbar was one).
 
 On a busy machine the dev server cannot keep up with a page load per screen;
-serve a development build instead -- `npx vite build --mode development
---outDir /tmp/ky-dist && npx vite preview --outDir /tmp/ky-dist --port 5491`
--- and pass `--url http://localhost:5491`.
+serve a development build instead -- `NODE_ENV=development npx vite build
+--mode development --outDir /tmp/ky-dist && npx vite preview --outDir
+/tmp/ky-dist --port 5491` -- and pass `--url http://localhost:5491`. Without
+`NODE_ENV` the build is a production one and has no mock (it fails every
+screen with "could not start"). The scenarios that reach into a store
+(`import('/src/lib/...')`: Files, Money and a few of the shell's) need the
+dev server, which serves the sources.
 
 Smoothness is for the emulator (below), but a list's scrolling can be
 compared in Chromium first: the mock takes `?longjournal[=N]` for a journal
@@ -232,6 +236,44 @@ test vault, and `node scripts/phone/android-sweep.mjs` goes through every app
 with real touches -- each app's home, its first item opened and back, a fling
 of its list timed frame by frame, the drawer, the keyboard, turning the phone
 and leaving the app for 15 seconds -- and reports startup time and memory.
+
+## Where it stands
+
+Checked on the emulator (Android 16, x86_64) with a debug build, paired over
+TLS with a test vault served from this machine:
+
+- every app opens from the bar or More, renders inside the screen's edges,
+  and an item opened from a list closes again on back (the sweep);
+- the typed assistant streams its reply (1.4 s with a stand-in model), and a
+  spoken turn goes the whole way round -- heard, answered, spoken back;
+- the keyboard keeps the field in sight and the bar out of the way; turning
+  the phone; leaving the app and coming back reconnects;
+- scrolling at 48-60 fps on the emulator's software renderer, the journal
+  included (it was 10 before its list stopped being virtualised on a phone);
+  first frame about 1.3-2 s, interface ready about 9-10 s, 200 MB.
+
+And in the browser check: all 579 scenarios at three phone sizes in Chromium
+and WebKit, with the desktop's screens compared before and after.
+
+Not yet known, or not done:
+
+- **A real phone.** Nothing has run on hardware: the microphone and speaker
+  (the emulator's do not reach this machine; voice was tested with a clip as
+  the microphone), real performance, the gesture bar and notches. Android 8.0
+  is the minimum: a Nexus 5X or 6P (8.1) qualifies, a Nexus 5 (6.0) does not.
+- **iOS** -- see below.
+- **No push notifications.** The phone hears of new mail, briefs and the
+  assistant's questions only while the app is open; a closed app is told
+  nothing.
+- **Adding files from the phone** (Files' Add, a picture in the composer)
+  uses the webview's own file chooser, which has not been tried on Android.
+- **Size.** The release library is 87 MB, the APK 89 MB: the whole service
+  crate is linked in for its types and the remote client, though the phone
+  runs none of it. Trimming that to what a remote client needs is a job of
+  its own.
+- **Landscape** was checked app by app on each app's first screen; a few
+  deeper screens on their side are untested (the journal with its month
+  unfolded leaves little room for the list).
 
 ## Voice
 
