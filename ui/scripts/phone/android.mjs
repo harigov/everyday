@@ -63,6 +63,9 @@ export async function dismissNotResponding() {
 export async function touch(page, selector) {
   const target = page.locator(selector).first()
   await target.waitFor({ state: 'visible', timeout: 15000 })
+  // Visible to Playwright includes scrolled out of sight inside a list: a
+  // tap at its centre would land on whatever is on screen there instead.
+  await target.scrollIntoViewIfNeeded()
   const box = await target.boundingBox()
   const scale = await page.evaluate(() => window.devicePixelRatio)
   const x = Math.round((box.x + box.width / 2) * scale)

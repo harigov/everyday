@@ -47,11 +47,11 @@ const only = arg('apps')?.split(',')
 
 // What opening "the first thing" in an app's list means, tried in order.
 const FIRST_ITEM = {
-  journal: ['.entries [role=option]', '[role=option]'],
-  notes: ['[data-note]', '.notes-home [role=option]', '.note-row', '[role=option]'],
-  todo: ['.task-row .title', '[data-task]', '.task-row'],
-  calendar: ['.agenda button.row.event', '.agenda button.row', '.block'],
-  assistant: ['.thread-row', '.conversations button.row', '[data-conversation]'],
+  journal: ['.rows button.row.list-row >> visible=true'],
+  notes: ['.noterow button.rowbody >> visible=true'],
+  todo: ['.row.list-row button.body >> visible=true'],
+  calendar: ['.chip.event', '.agenda button.row.event', '.agenda button.row'],
+  assistant: ['button.side-row[title] >> visible=true'],
 }
 
 const report = { started: new Date().toISOString(), screens: [], checks: [] }
