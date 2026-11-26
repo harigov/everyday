@@ -1,6 +1,6 @@
 //! Phase 4's two read commands: `search_mail`, over the sealed tantivy
-//! index `crate::mailsync::wiring` opens, and `suggest_addresses`, over the
-//! in-memory contact index `crate::mailsync::contacts` keeps.
+//! index `crate::mail::sync::wiring` opens, and `suggest_addresses`, over the
+//! in-memory contact index `crate::mail::sync::contacts` keeps.
 //!
 //! Kept apart from `domains::mail` -- which owns `list_threads` and
 //! `get_thread`, the two read commands phase 2 shipped with -- because both
@@ -84,7 +84,7 @@ fn decode_cursor(raw: &str) -> Option<SearchCursor> {
 ///
 /// `karmayoga-mailindex`'s query translation matches `Op::In` against the
 /// indexed `mailboxes` field as a raw term, and what gets indexed there
-/// (`crate::mailsync::passes::mail_doc`, in the sync passes) is a bare
+/// (`crate::mail::sync::passes::mail_doc`, in the sync passes) is a bare
 /// mailbox UUID -- never the folder name or role a person types. Left
 /// unresolved, `in:inbox` builds a query for the literal term `"inbox"`,
 /// which nothing was ever indexed as, and silently matches nothing.
@@ -116,7 +116,7 @@ fn decode_cursor(raw: &str) -> Option<SearchCursor> {
 /// `in:<label>` can still miss a message truly filed there if the copy the
 /// index kept happened to be indexed under a different one of its labels.
 /// Closing that needs the indexer itself to merge rather than replace on
-/// re-index, which is `crate::mailsync::passes`' own file, not this one's.
+/// re-index, which is `crate::mail::sync::passes`' own file, not this one's.
 fn resolve_mailbox_names(vault: &Vault, query: MailQuery) -> MailQuery {
     let accounts: Vec<AccountId> = if query.accounts.is_empty() {
         vault.accounts().map(|a| a.into_iter().map(|acc| acc.id).collect()).unwrap_or_default()
@@ -299,7 +299,7 @@ fn default_suggest_limit() -> u32 {
 }
 
 /// Fuzzy-match `args.prefix` against the in-memory contact index -- see
-/// `crate::mailsync::contacts`'s module docs for how it is built and kept
+/// `crate::mail::sync::contacts`'s module docs for how it is built and kept
 /// current. Synchronous and in-memory: unlike `search_mail`, there is no
 /// index to touch on the blocking pool.
 async fn suggest_addresses(

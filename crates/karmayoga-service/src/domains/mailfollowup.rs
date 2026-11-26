@@ -1,4 +1,4 @@
-//! Follow-ups' commands -- thin doors onto [`crate::mailfollowup`]: the
+//! Follow-ups' commands -- thin doors onto [`crate::mail::followup`]: the
 //! threads waiting at the top of the Inbox, and dismissing one.
 
 use std::sync::Arc;
@@ -32,7 +32,7 @@ async fn mail_follow_ups(
     _ctx: Ctx,
     args: MailFollowUpsArgs,
 ) -> CommandResult<FollowUpList> {
-    let threads = crate::mailfollowup::follow_ups(&svc, args.account).await?;
+    let threads = crate::mail::followup::follow_ups(&svc, args.account).await?;
     Ok(FollowUpList { threads })
 }
 
@@ -47,7 +47,7 @@ async fn dismiss_follow_up(
     _ctx: Ctx,
     args: DismissFollowUp,
 ) -> CommandResult<()> {
-    crate::mailfollowup::dismiss_follow_up(&svc, args.id).await
+    crate::mail::followup::dismiss_follow_up(&svc, args.id).await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

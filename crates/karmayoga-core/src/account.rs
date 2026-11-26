@@ -412,7 +412,7 @@ pub struct MailAi {
     pub categorize: bool,
     /// A background pass that drafts a reply, in this account's own voice,
     /// for an inbound thread in Important that looks like it wants one.
-    /// Never sends — see `karmayoga_service::mailai::AUTO_DRAFT_CONVERSATION`,
+    /// Never sends — see `karmayoga_service::mail::ai::AUTO_DRAFT_CONVERSATION`,
     /// the fixed [`crate::mail::Origin::Assistant`] conversation name every
     /// draft it writes is stamped with.
     pub auto_draft: bool,
@@ -422,7 +422,7 @@ pub struct MailAi {
     /// open thread (`suggest_replies`), a draft written from a few words
     /// (`draft_with_ai`), and a pass over what the person wrote
     /// (`improve_writing`) -- all in this account's own voice, read from its
-    /// sent mail. See `karmayoga_service::mailwrite`.
+    /// sent mail. See `karmayoga_service::mail::write`.
     ///
     /// `#[serde(default)]` so an account sealed before this switch existed
     /// still decodes, with it off.

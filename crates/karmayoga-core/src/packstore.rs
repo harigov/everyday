@@ -143,7 +143,7 @@
 //! # The write claim
 //!
 //! Every caller in this codebase reaches [`PackStore::compact`] through
-//! exactly one place: `karmayoga_service::mailsync::task`, between an
+//! exactly one place: `karmayoga_service::mail::sync::task`, between an
 //! account's sync passes, only once that pass's own `append_batch` calls
 //! have all returned and the outbox has drained -- see that module's own
 //! docs for the sequencing. [`FilePackStore`] backs this with its own

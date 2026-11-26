@@ -105,14 +105,14 @@ pub struct ThreadRef {
     pub id: ThreadId,
 }
 
-/// One part of a message, named the way `mailview::part` addresses it --
+/// One part of a message, named the way `mail::view::part` addresses it --
 /// see [`attachments_for`] for how `index`/`content_id` line up with what
 /// `partUrl(messageId, identifier)` on the interface side actually fetches.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MailAttachment {
     /// This part's position in [`karmayoga_core::mail::Body::parts`] -- the
-    /// identifier `mailview::part`'s `find_part` falls back to when a part
+    /// identifier `mail::view::part`'s `find_part` falls back to when a part
     /// carries no `Content-ID`, and so what a plain attachment's chip links
     /// to via `partUrl`.
     pub index: usize,
@@ -121,24 +121,24 @@ pub struct MailAttachment {
     pub mime_type: String,
     pub size: u64,
     /// This part's `Content-ID`, when it has one -- the identifier
-    /// `mailview::part`'s `find_part` prefers, and what an inline `cid:`
+    /// `mail::view::part`'s `find_part` prefers, and what an inline `cid:`
     /// image's `<img src>` addresses by instead of its index.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_id: Option<String>,
     /// Whether this part has a `Content-ID`, which is what a part meant for
     /// the body carries. Not a reason to leave it off the list: a part the
     /// body really does draw is not listed at all -- see
-    /// [`crate::mailview::is_attachment`].
+    /// [`crate::mail::view::is_attachment`].
     pub inline: bool,
     /// `false` when this part is over the account's attachment cap and has
     /// not been fetched yet -- what `fetch_attachment` exists to turn `true`.
     pub available: bool,
     /// How the part can be looked at without saving it, when it can -- see
-    /// [`crate::mailpreview::kind_of`]. Absent for one that can only be saved.
+    /// [`crate::mail::preview::kind_of`]. Absent for one that can only be saved.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub preview: Option<crate::mailpreview::PreviewKind>,
+    pub preview: Option<crate::mail::preview::PreviewKind>,
     /// For a film or a recording, the type its bytes are played as -- see
-    /// [`crate::mailpreview::media_type`].
+    /// [`crate::mail::preview::media_type`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_type: Option<String>,
 }
@@ -153,8 +153,8 @@ impl MailAttachment {
             inline: part.cid.is_some(),
             content_id: part.cid.clone(),
             available: part.blob.is_some(),
-            preview: crate::mailpreview::kind_of(part),
-            preview_type: crate::mailpreview::media_type(part),
+            preview: crate::mail::preview::kind_of(part),
+            preview_type: crate::mail::preview::media_type(part),
         }
     }
 }
@@ -249,8 +249,8 @@ pub struct ThreadDraft {
 }
 
 /// The parts of `body` a person would call attachments
-/// ([`crate::mailview::is_attachment`]), for the chips under a message --
-/// `mailview::part`'s own addressing rules, named rather than
+/// ([`crate::mail::view::is_attachment`]), for the chips under a message --
+/// `mail::view::part`'s own addressing rules, named rather than
 /// re-derived: a part with a `Content-ID` is fetched by it, everything else by
 /// its position in [`Body::parts`], which is why `index` is that position and
 /// not a count of what is listed here.
@@ -270,7 +270,7 @@ fn attachments_of(body: &Body) -> Vec<MailAttachment> {
         .iter()
         .enumerate()
         .filter(|(_, part)| {
-            crate::mailview::is_attachment(part, &body.html_sanitised, body.message_id)
+            crate::mail::view::is_attachment(part, &body.html_sanitised, body.message_id)
         })
         .map(|(index, part)| MailAttachment::of(index, part))
         .collect()
@@ -768,7 +768,7 @@ async fn edit_thread_draft(
         let still_syncing = || {
             CommandError::new(codes::CONFLICT, "this draft is still syncing: try again in a moment")
         };
-        if crate::mailsync::ingest::is_pending(&newest.pack) {
+        if crate::mail::sync::ingest::is_pending(&newest.pack) {
             return Err(still_syncing());
         }
         let body = vault.body(newest.id).map_err(|_| still_syncing())?;
@@ -776,7 +776,7 @@ async fn edit_thread_draft(
         let mut pasted_pictures = Vec::new();
         for (index, part) in body.parts.iter().enumerate() {
             let attached =
-                crate::mailview::is_attachment(part, &body.html_sanitised, body.message_id);
+                crate::mail::view::is_attachment(part, &body.html_sanitised, body.message_id);
             let pasted = part.cid.is_some() && part.mime_type.starts_with("image/");
             if !attached && !pasted {
                 continue;
@@ -1767,7 +1767,7 @@ pub struct ThreadSummary {
     pub summary: String,
 }
 
-/// `summarize_thread`'s whole body is `karmayoga_service::mailai::summarize_thread`
+/// `summarize_thread`'s whole body is `karmayoga_service::mail::ai::summarize_thread`
 /// — the gate, the cache and the model call all live there, beside the other
 /// two model-assisted features, rather than here with the plain reads and
 /// writes this file is otherwise made of.
@@ -1776,7 +1776,7 @@ async fn summarize_thread(
     _ctx: Ctx,
     args: SummarizeThreadArgs,
 ) -> CommandResult<ThreadSummary> {
-    let summary = crate::mailai::summarize_thread(&svc, args.id).await?;
+    let summary = crate::mail::ai::summarize_thread(&svc, args.id).await?;
     Ok(ThreadSummary { summary })
 }
 
@@ -1873,7 +1873,7 @@ pub struct FetchAttachment {
 
 /// Fetch one part of `args.message_id` that [`attachments_for`] answered
 /// `available: false` for -- a part over the account's attachment cap, which
-/// `process_body` (`karmayoga_service::mailsync::passes`) left with no blob at
+/// `process_body` (`karmayoga_service::mail::sync::passes`) left with no blob at
 /// sync time.
 ///
 /// Re-reads the message's raw bytes from the pack store, the same door
@@ -1888,7 +1888,7 @@ pub struct FetchAttachment {
 ///
 /// Refused, honestly, when there is nothing to fetch from: a message whose
 /// raw bytes have not synced yet (`Message::pack` is still
-/// [`crate::mailsync::ingest::pending_pack_ref`]'s sentinel) has no raw
+/// [`crate::mail::sync::ingest::pending_pack_ref`]'s sentinel) has no raw
 /// message this command could read a part out of at all -- the gap the
 /// module docs above ask to be named rather than silently retried forever.
 async fn fetch_attachment(
@@ -1902,7 +1902,7 @@ async fn fetch_attachment(
     };
     blocking(move || {
         let message = vault.mail_message(args.message_id)?;
-        if crate::mailsync::ingest::is_pending(&message.pack) {
+        if crate::mail::sync::ingest::is_pending(&message.pack) {
             return Err(CommandError::new(
                 codes::NOT_FOUND,
                 "this message has not finished syncing yet, so its raw bytes are not stored",
@@ -1953,7 +1953,7 @@ pub struct AttachmentPreview {
 
 /// Part `args.index` of `args.message_id` as a page -- a web page, Markdown, a
 /// CSV, a forwarded message, text -- for one whose `preview` says
-/// [`crate::mailpreview::PreviewKind::Page`]. A picture, a film or a PDF is
+/// [`crate::mail::preview::PreviewKind::Page`]. A picture, a film or a PDF is
 /// never asked for here: the window draws those from the part's own bytes.
 async fn preview_attachment(
     svc: Arc<Service>,
@@ -1962,7 +1962,7 @@ async fn preview_attachment(
 ) -> CommandResult<AttachmentPreview> {
     let vault = svc.require()?;
     blocking(move || {
-        let html = crate::mailpreview::page(&vault, args.message_id, args.index)?;
+        let html = crate::mail::preview::page(&vault, args.message_id, args.index)?;
         Ok(AttachmentPreview { html })
     })
     .await
@@ -2636,7 +2636,7 @@ mod tests {
         assert_eq!(listed("<p>Hi</p>", parts), vec![]);
     }
 
-    /// Their positions, not a count of what is listed: `mailview::part` and
+    /// Their positions, not a count of what is listed: `mail::view::part` and
     /// `fetch_attachment` both look a part up by where it is in `Body::parts`.
     #[test]
     fn real_attachments_keep_their_place_in_the_parts() {

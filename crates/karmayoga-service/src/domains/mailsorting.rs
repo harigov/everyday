@@ -2,13 +2,13 @@
 //! into, and asking it to sort mail older than it reaches unasked.
 //!
 //! See [`karmayoga_core::mail::sorting`] for the categories and
-//! [`crate::mailsort`] for the pass that uses them.
+//! [`crate::mail::sort`] for the pass that uses them.
 
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::mailfollowup::FollowUpStatus;
-use crate::mailsort::OlderSortView;
+use crate::mail::followup::FollowUpStatus;
+use crate::mail::sort::OlderSortView;
 use crate::service::{Service, blocking};
 use jiff::SignedDuration;
 use karmayoga_core::Vault;
@@ -53,7 +53,7 @@ fn view(svc: &Service, vault: &Vault) -> karmayoga_core::Result<MailSortingView>
     let mut older: Vec<OlderSortView> =
         svc.mail_older_sorts().iter().map(|(a, s)| OlderSortView::of(*a, s)).collect();
     older.sort_by_key(|o| o.account_id.to_string());
-    let follow_ups = crate::mailfollowup::status(svc, vault, &sorting)?;
+    let follow_ups = crate::mail::followup::status(svc, vault, &sorting)?;
     Ok(MailSortingView { sorting, decision_model, older, follow_ups })
 }
 
@@ -157,7 +157,7 @@ async fn sort_older_mail(
             .transpose()
             .map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
         for account in &allowed {
-            crate::mailsort::start_older_sort(&s, account.id, since, args.again);
+            crate::mail::sort::start_older_sort(&s, account.id, since, args.again);
         }
         Ok(view(&s, &vault)?)
     })

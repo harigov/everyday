@@ -5680,7 +5680,7 @@ fn summarize_thread_tool(
                 let summary = if meta.spoken {
                     briefing(&meta.service, found.id).await
                 } else {
-                    crate::mailai::summarize_thread(&meta.service, found.id).await
+                    crate::mail::ai::summarize_thread(&meta.service, found.id).await
                 }
                 .map_err(|e| ToolExecutionError::other(e.message))?;
                 // Written from somebody else's mail, so held to what any of
@@ -5820,7 +5820,7 @@ fn brief_mail_shared(service: &Service, read_for: &str, provider: &str) -> bool 
 /// The spoken briefing of a thread the Listen button reads, whole.
 async fn briefing(service: &Arc<Service>, thread: ThreadId) -> CommandResult<String> {
     use futures::StreamExt;
-    let (_title, mut pieces) = crate::mailai::listen_pieces(service, thread).await?;
+    let (_title, mut pieces) = crate::mail::ai::listen_pieces(service, thread).await?;
     let mut said = String::new();
     while let Some(piece) = pieces.next().await {
         said.push_str(&piece?.text);

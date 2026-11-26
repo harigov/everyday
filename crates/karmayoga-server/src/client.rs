@@ -130,7 +130,7 @@ pub struct RemoteClient {
 }
 
 /// What [`RemoteClient::mail_body`] answers with -- see
-/// [`karmayoga_service::mailview::BodyDocument`], which this mirrors across
+/// [`karmayoga_service::mail::view::BodyDocument`], which this mirrors across
 /// the wire.
 pub struct MailBody {
     pub html: String,
@@ -138,7 +138,7 @@ pub struct MailBody {
 }
 
 /// What [`RemoteClient::mail_part`] and [`RemoteClient::mail_image`] answer
-/// with -- see [`karmayoga_service::mailview::PartResponse`], which this
+/// with -- see [`karmayoga_service::mail::view::PartResponse`], which this
 /// mirrors across the wire.
 pub struct MailBytes {
     pub content_type: String,
@@ -421,7 +421,7 @@ impl RemoteClient {
     }
 
     /// A rendered message body, and whether it hid remote images -- the
-    /// remote counterpart of [`karmayoga_service::mailview::BodyDocument`],
+    /// remote counterpart of [`karmayoga_service::mail::view::BodyDocument`],
     /// fetched from `/v1/mail/body/{id}` rather than built locally. Read by
     /// `karmayoga-app/src/protocol.rs`'s `mail/body` route when this window
     /// is looking at a vault on another machine.
@@ -448,7 +448,7 @@ impl RemoteClient {
 
     /// One part of a message -- an attachment, or an inline image a `cid:`
     /// reference points at. The remote counterpart of
-    /// [`karmayoga_service::mailview::part`].
+    /// [`karmayoga_service::mail::view::part`].
     pub async fn mail_part(&self, message_id: &str, identifier: &str) -> CommandResult<MailBytes> {
         let response = self
             .request(reqwest::Method::GET, &format!("/v1/mail/part/{message_id}/{identifier}"))
@@ -462,7 +462,7 @@ impl RemoteClient {
 
     /// A remote image, fetched (or refused, or served from the cache) on
     /// the machine holding the vault -- never by this process, which is the
-    /// whole point: see `karmayoga_service::mailview::remote_image`'s docs.
+    /// whole point: see `karmayoga_service::mail::view::remote_image`'s docs.
     ///
     /// Requests `/v1/mail/img/{message_id}/{token}`, matching the path
     /// shape `karmayoga-mail::sanitize::sanitize` writes today (message id

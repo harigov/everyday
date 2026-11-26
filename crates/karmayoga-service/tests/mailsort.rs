@@ -1,4 +1,4 @@
-//! Sorting mail on a decision model (`karmayoga_service::mailsort`), end to
+//! Sorting mail on a decision model (`karmayoga_service::mail::sort`), end to
 //! end against a fake decision server on loopback that speaks either
 //! TypeSafe's or OpenAI's shape.
 
@@ -268,7 +268,7 @@ async fn recent_mail_is_sorted_into_the_persons_own_categories_over_typesafe() {
     let order = seed(&svc, account.id, inbox, 1, "Your order has shipped", DAY);
     let lunch = seed(&svc, account.id, inbox, 2, "Lunch on Friday?", DAY * 2);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let vault = svc.get().unwrap();
     let (thread, _) = vault.thread(order.thread_id).unwrap();
@@ -292,7 +292,7 @@ async fn recent_mail_is_sorted_into_the_persons_own_categories_over_typesafe() {
     assert!(seen[0].body["state"]["excerpt"].as_str().unwrap().starts_with("Body of"));
 
     // Asked once; a second tick has nothing new to ask about.
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     assert_eq!(fake.seen().len(), 2, "a sorted thread is not asked about again");
 }
 
@@ -350,7 +350,7 @@ async fn sorting_tells_you_about_what_it_files_where_you_asked_to_hear() {
     arrived(&svc, &order);
     arrived(&svc, &lunch);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let changes = told.1.lock().unwrap().clone();
     let told = told.0.lock().unwrap();
@@ -375,7 +375,7 @@ async fn sorting_does_not_announce_mail_that_arrived_a_while_ago() {
     svc.set_events(told.clone());
     seed(&svc, account.id, inbox, 1, "Lunch on Friday?", SignedDuration::from_mins(5));
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     assert_eq!(fake.seen().len(), 1, "it was sorted");
     assert!(told.0.lock().unwrap().is_empty(), "and nobody was told");
@@ -396,7 +396,7 @@ async fn a_category_of_your_own_can_be_what_you_asked_to_hear_about() {
     arrived(&svc, &order);
     arrived(&svc, &lunch);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let told = told.0.lock().unwrap();
     assert_eq!(told.len(), 1);
@@ -506,7 +506,7 @@ async fn the_openai_shape_sorts_the_same_way() {
     let (svc, _dir, account, inbox) = env(DecisionApi::OpenAi, &fake.url);
     let order = seed(&svc, account.id, inbox, 1, "Order 1234 receipt", DAY);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let (thread, _) = svc.get().unwrap().thread(order.thread_id).unwrap();
     assert_eq!(thread.category, Some(Category::Notification));
@@ -525,7 +525,7 @@ async fn older_mail_waits_until_somebody_asks() {
     let recent = seed(&svc, account.id, inbox, 1, "Recent order", DAY * 3);
     let old = seed(&svc, account.id, inbox, 2, "Old order", DAY * 200);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     let vault = svc.get().unwrap();
     assert!(vault.thread(recent.thread_id).unwrap().0.sorted_as.is_some());
     assert!(
@@ -540,13 +540,13 @@ async fn older_mail_waits_until_somebody_asks() {
         .expect("sort_older_mail");
     assert_eq!(view["older"].as_array().unwrap().len(), 1, "{view}");
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     let (thread, _) = vault.thread(old.thread_id).unwrap();
     assert_eq!(thread.sorted_as.map(|s| s.category), Some("receipts".to_string()));
     assert_eq!(fake.seen().len(), 2, "the recent thread was not asked again");
 
     // The sort reached the end of the year and finished.
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     let view = svc.call(Ctx::local(), "mail_sorting", json!({})).await.unwrap();
     assert!(view["older"].as_array().unwrap().is_empty(), "{view}");
 }
@@ -559,7 +559,7 @@ async fn a_persons_own_filing_is_left_alone_and_costs_no_request() {
     let vault = svc.get().unwrap();
     vault.set_thread_priority(msg.thread_id, true).unwrap();
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     assert_eq!(vault.thread(msg.thread_id).unwrap().0.category, Some(Category::Priority));
     assert!(fake.seen().is_empty(), "nothing to ask: the answer could not be used");
@@ -594,7 +594,7 @@ async fn a_decision_model_with_no_key_sorts_nothing_rather_than_falling_back() {
     assert!(vault.model_access(ModelTier::Small).is_ok(), "the small model could be asked");
     let msg = seed(&svc, account.id, inbox, 1, "Your order", DAY);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     assert!(fake.seen().is_empty(), "the small model was not asked instead");
     let (thread, _) = vault.thread(msg.thread_id).unwrap();
@@ -638,7 +638,7 @@ async fn a_message_the_model_will_not_take_is_passed_not_retried_forever() {
     let bad = seed(&svc, account.id, inbox, 1, "Please refuse me", DAY);
     let good = seed(&svc, account.id, inbox, 2, "Your order", DAY * 2);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     let vault = svc.get().unwrap();
     assert!(vault.thread(good.thread_id).unwrap().0.sorted_as.is_some());
     let (thread, _) = vault.thread(bad.thread_id).unwrap();
@@ -646,13 +646,13 @@ async fn a_message_the_model_will_not_take_is_passed_not_retried_forever() {
     assert!(thread.ai_sorted.is_some(), "marked asked, so it is not asked again");
     assert_eq!(fake.seen().len(), 2);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     assert_eq!(fake.seen().len(), 2, "the refused message costs no second request");
 
     // Nor does it stop an older sort getting past it.
     svc.call(Ctx::local(), "sort_older_mail", json!({ "days": 365, "again": true })).await.unwrap();
-    karmayoga_service::mailai::categorize_tick(&svc).await;
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     let view = svc.call(Ctx::local(), "mail_sorting", json!({})).await.unwrap();
     assert!(view["older"].as_array().unwrap().is_empty(), "the re-sort finished: {view}");
     assert_eq!(fake.seen().len(), 4, "each asked once more by the re-sort, then done");
@@ -667,7 +667,7 @@ async fn a_thread_the_small_model_already_looked_at_is_still_sorted() {
     // What months of sorting on Small leave behind.
     vault.set_thread_ai_categorize_asked(msg.thread_id, 1).unwrap();
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     assert_eq!(fake.seen().len(), 1);
     assert!(vault.thread(msg.thread_id).unwrap().0.sorted_as.is_some());
@@ -706,7 +706,7 @@ async fn switching_the_decision_model_off_ends_a_sort_of_older_mail() {
     let mut models = vault.model_settings().unwrap();
     models.decision = None;
     vault.save_model_settings(&models).unwrap();
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     assert!(svc.mail_older_sort(account.id).is_none(), "not shown as running any more");
 }
@@ -744,7 +744,7 @@ async fn a_stranger_is_announced_only_when_the_model_says_they_are_waiting_on_yo
     arrived(&svc, &pitch);
     arrived(&svc, &question);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let bodies = subjects(&told);
     assert_eq!(bodies, ["Could you review the draft?"]);
@@ -768,7 +768,7 @@ async fn a_reply_in_your_own_thread_needs_no_second_question() {
     seed_own_reply_before(&svc, inbox, &reply);
     arrived(&svc, &reply);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let bodies = subjects(&told);
     assert_eq!(bodies, ["A quick pitch, as you asked"]);
@@ -795,7 +795,7 @@ async fn new_mail_is_sorted_on_its_own_ahead_of_the_backlog() {
         MailNotify::Categories { tabs: vec![Category::Notification], sorted: Vec::new() };
     svc.get().unwrap().save_account(&account).unwrap();
 
-    karmayoga_service::mailai::sort_new_mail(&svc, account.id, vec![new.id]).await;
+    karmayoga_service::mail::ai::sort_new_mail(&svc, account.id, vec![new.id]).await;
 
     assert_eq!(fake.seen().len(), 1, "only the new thread was asked about");
     assert_eq!(subject_of(DecisionApi::TypeSafe, &fake.seen()[0].body), "Your order has shipped");
@@ -803,7 +803,7 @@ async fn new_mail_is_sorted_on_its_own_ahead_of_the_backlog() {
     assert_eq!(bodies, ["Your order has shipped"]);
 
     // Asked once: the minute's sorting finds it done and takes the backlog.
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     let subjects: Vec<String> =
         fake.seen().iter().map(|s| subject_of(DecisionApi::TypeSafe, &s.body)).collect();
     assert_eq!(subjects.iter().filter(|s| s.as_str() == "Your order has shipped").count(), 1);
@@ -827,7 +827,7 @@ async fn a_strangers_answer_is_their_follow_up_and_is_not_asked_twice() {
     let question = seed(&svc, account.id, inbox, 1, "Could you review the draft?", DAY);
     arrived(&svc, &question);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     assert_eq!(told.0.lock().unwrap().len(), 1);
     let (thread, _) = vault.thread(question.thread_id).unwrap();
@@ -855,7 +855,7 @@ async fn a_category_you_ticked_is_announced_for_strangers_too() {
     let pitch = seed(&svc, account.id, inbox, 1, "A quick pitch for your team", DAY);
     arrived(&svc, &pitch);
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let bodies = subjects(&told);
     assert_eq!(bodies, ["A quick pitch for your team"]);

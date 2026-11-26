@@ -1750,7 +1750,7 @@ fn deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_li
 /// write ends in from rebuilding the row it just deleted. `message_mailboxes`
 /// itself must *not* be touched: the outbox executor still needs the
 /// durable `(mailbox, uid)` to resolve the op against once it actually runs
-/// (see `karmayoga_service::outbox::VaultLookups` and
+/// (see `karmayoga_service::mail::outbox::VaultLookups` and
 /// `karmayoga_mail::outbox::archive`), which is why this is a marker
 /// suppressing a rebuild, not a second deletion.
 fn archiving_survives_a_later_flag_change(store: &dyn JournalStore) {

@@ -63,7 +63,7 @@
 //! it before anything downstream ever sees it. Safe to run unconditionally
 //! over a flag-form label too: a bare `\Inbox` carries one backslash,
 //! never a doubled one, so the function has nothing to collapse there and
-//! hands it back unchanged. `karmayoga_service::mailsync::discovery` repairs
+//! hands it back unchanged. `karmayoga_service::mail::sync::discovery` repairs
 //! the mailbox rows this bug already minted under the wrong, doubled name
 //! -- see that module's own docs for how.
 //!
@@ -184,7 +184,7 @@ fn plan_raw_batches(sizes: &[(Uid, u32)]) -> Vec<UidSet> {
 /// flag refetch -- see that branch's own docs for why one `UID FETCH`
 /// naming every known uid at once is not safe. A `FLAGS`-only fetch is far
 /// smaller per uid than a header, so this could go higher than
-/// `karmayoga_service::mailsync::passes::HEADER_BATCH_SIZE`'s own five
+/// `karmayoga_service::mail::sync::passes::HEADER_BATCH_SIZE`'s own five
 /// hundred, but there is no benefit to doing so and a shared order of
 /// magnitude is easier to reason about than a bespoke one.
 const FLAG_REFETCH_BATCH_SIZE: usize = 500;

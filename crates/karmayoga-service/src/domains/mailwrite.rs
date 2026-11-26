@@ -1,4 +1,4 @@
-//! Writing help's commands -- thin doors onto [`crate::mailwrite`], where
+//! Writing help's commands -- thin doors onto [`crate::mail::write`], where
 //! the gate, the voice and the model calls all live.
 //!
 //! The ones that ask a model are `effect: Read`, on `summarize_thread`'s own
@@ -7,7 +7,7 @@
 //! suggestion is only ever written into a draft once a person has picked it,
 //! through `save_draft`, which announces its own `change:`. Two write what is
 //! derived, not what anybody did. `suggest_replies` keeps what it offered in
-//! the learning record (`crate::mailvoicelearn::remember_offered`), which
+//! the learning record (`crate::mail::voicelearn::remember_offered`), which
 //! nothing draws. `needs_reply`, and `suggest_replies` when it asks the same,
 //! may keep the decision model's answer as the thread's follow-up -- the very
 //! record the follow-up pass writes on its own about the same message, so
@@ -27,9 +27,9 @@ use serde::{Deserialize, Serialize};
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::CommandResult;
-use crate::mailcheck::DraftCheckReport;
-use crate::mailvoicelearn::VoiceLearningView;
-use crate::mailwrite::{ImproveMode, ReplySuggestion, WrittenText};
+use crate::mail::check::DraftCheckReport;
+use crate::mail::voicelearn::VoiceLearningView;
+use crate::mail::write::{ImproveMode, ReplySuggestion, WrittenText};
 use crate::service::{Service, blocking};
 
 use super::Nothing;
@@ -54,7 +54,7 @@ pub struct NeedsReply {
     pub needed: bool,
 }
 
-/// Whether a thread waits on the person's reply -- `crate::mailwrite::needs_reply`,
+/// Whether a thread waits on the person's reply -- `crate::mail::write::needs_reply`,
 /// which may ask the decision model and keep its answer as the thread's
 /// follow-up, announcing that itself as the follow-up pass does.
 async fn needs_reply(
@@ -62,11 +62,11 @@ async fn needs_reply(
     _ctx: Ctx,
     args: SuggestRepliesArgs,
 ) -> CommandResult<NeedsReply> {
-    let needed = crate::mailwrite::needs_reply(&svc, args.id).await?;
+    let needed = crate::mail::write::needs_reply(&svc, args.id).await?;
     Ok(NeedsReply { needed })
 }
 
-/// `suggest_replies`'s whole body is `crate::mailwrite::suggest_replies` --
+/// `suggest_replies`'s whole body is `crate::mail::write::suggest_replies` --
 /// the eligibility check, the gate, the cache and the model call all live
 /// there.
 async fn suggest_replies(
@@ -74,7 +74,7 @@ async fn suggest_replies(
     _ctx: Ctx,
     args: SuggestRepliesArgs,
 ) -> CommandResult<ReplySuggestions> {
-    let suggestions = crate::mailwrite::suggest_replies(&svc, args.id).await?;
+    let suggestions = crate::mail::write::suggest_replies(&svc, args.id).await?;
     Ok(ReplySuggestions { suggestions })
 }
 
@@ -103,7 +103,7 @@ async fn draft_with_ai(
     _ctx: Ctx,
     args: DraftWithAiArgs,
 ) -> CommandResult<WrittenText> {
-    crate::mailwrite::draft_with_ai(
+    crate::mail::write::draft_with_ai(
         &svc,
         args.account,
         args.in_reply_to,
@@ -132,7 +132,7 @@ async fn improve_writing(
     _ctx: Ctx,
     args: ImproveWritingArgs,
 ) -> CommandResult<WrittenText> {
-    crate::mailwrite::improve_writing(&svc, args.account, args.text, args.mode, args.instruction)
+    crate::mail::write::improve_writing(&svc, args.account, args.text, args.mode, args.instruction)
         .await
 }
 
@@ -221,7 +221,7 @@ async fn learn_from_replies(
     _ctx: Ctx,
     _args: Nothing,
 ) -> CommandResult<VoiceLearningView> {
-    let learning = crate::mailvoicelearn::learn_now(&svc).await?;
+    let learning = crate::mail::voicelearn::learn_now(&svc).await?;
     Ok(VoiceLearningView::from(&learning))
 }
 
@@ -234,14 +234,14 @@ pub struct CheckDraftArgs {
 }
 
 /// The checks Settings → Mail writing lists, put to a model about a draft as
-/// stored -- `crate::mailcheck::check_draft`. Asked by compose when Send is
+/// stored -- `crate::mail::check::check_draft`. Asked by compose when Send is
 /// pressed; what it says only ever warns.
 async fn check_draft(
     svc: Arc<Service>,
     _ctx: Ctx,
     args: CheckDraftArgs,
 ) -> CommandResult<DraftCheckReport> {
-    crate::mailcheck::check_draft(&svc, args.id).await
+    crate::mail::check::check_draft(&svc, args.id).await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[

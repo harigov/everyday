@@ -4,7 +4,7 @@
 //! how often you write to them" without ever decrypting every message on
 //! unlock to find out. [`ContactBook`] is the answer: one sealed row,
 //! updated incrementally as mail is ingested and sent (see
-//! `karmayoga-service::mailsync::contacts`, which is the only thing that
+//! `karmayoga-service::mail::sync::contacts`, which is the only thing that
 //! ever mutates one), rather than a full scan of `bodies` and
 //! `mail_messages` every time somebody opens the "To" field. It is a
 //! derived index, on the same terms the search index and the pack store's
@@ -46,7 +46,7 @@ pub struct ContactBook {
     #[serde(default)]
     pub contacts: Vec<MailContact>,
     /// Set once every message already stored has been counted in, by
-    /// `karmayoga-service::mailsync::contacts`' backfill. Until then the book
+    /// `karmayoga-service::mail::sync::contacts`' backfill. Until then the book
     /// only knows what arrived while a sync pass happened to persist it --
     /// and a first sync interrupted before its pass finished (a crash, a
     /// quit, a laptop lid) used to leave it empty for good, since the

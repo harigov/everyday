@@ -516,7 +516,7 @@ pub struct PartRef {
 pub struct RemoteImage {
     /// The address the message actually pointed at. Never shown to the
     /// person without them asking, and never reached until
-    /// `karmayoga-service::mailview` clears it against the per-sender
+    /// `karmayoga-service::mail::view` clears it against the per-sender
     /// allow-list and the SSRF check — see the plan's "Rendering a message".
     pub original_url: String,
     /// `blake3(original_url)`, hex-encoded — what the sanitised HTML's
@@ -529,7 +529,7 @@ pub struct RemoteImage {
     /// `None` until the first time someone allows it, which is what lets a
     /// reopened message skip the network entirely once it has been shown
     /// once — see [`crate::store::mail::MailStore::put_body`]'s caller in
-    /// `mailview::remote_image`.
+    /// `mail::view::remote_image`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_blob: Option<BlobId>,
 }
@@ -559,7 +559,7 @@ pub struct Body {
     #[serde(default)]
     pub parts: Vec<PartRef>,
     /// Every remote image `karmayoga_mail::sanitize::sanitize` found and
-    /// proxied in `html_sanitised`, for `karmayoga-service::mailview` to
+    /// proxied in `html_sanitised`, for `karmayoga-service::mail::view` to
     /// answer an `karmayoga://mail/img/{token}` request against — see
     /// `docs/plans/mail.md`'s "Rendering a message".
     ///
@@ -667,7 +667,7 @@ pub struct Thread {
     /// True when any message in the thread has at least one attachment.
     #[serde(default)]
     pub has_attachments: bool,
-    /// `message_count` the last time `karmayoga_service::mailai`'s
+    /// `message_count` the last time `karmayoga_service::mail::ai`'s
     /// categorisation pass sent this thread's newest message to the model,
     /// whatever label came back -- including "still other". `None` means
     /// never asked.
@@ -678,14 +678,14 @@ pub struct Thread {
     /// past the newest page is asked again, forever, for no new
     /// information. Comparing this to the thread's *current*
     /// `message_count` is the whole rule -- equal means "asked, and nothing
-    /// has arrived since", so `karmayoga_service::mailai::categorize_account`
+    /// has arrived since", so `karmayoga_service::mail::ai::categorize_account`
     /// skips it; a new message moves `message_count` past this value, which
     /// is what makes the thread eligible again without this field ever
     /// needing to be cleared.
     ///
     /// Sealed, not a clear column: it is read only after
     /// `MailStore::threads_in_category` has already fetched the page (the
-    /// filter is applied in `karmayoga_service::mailai`, not in SQL), so it
+    /// filter is applied in `karmayoga_service::mail::ai`, not in SQL), so it
     /// costs nothing to keep beside `participants` and `snippet` rather
     /// than in a column of its own. `#[serde(default)]` so a `Thread` sealed
     /// before this field existed still decodes, as `None` -- exactly what
@@ -699,7 +699,7 @@ pub struct Thread {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_categorize_asked_at_count: Option<u32>,
     /// As [`Thread::ai_categorize_asked_at_count`], for
-    /// `karmayoga_service::mailai`'s auto-draft pass -- "reply: false" is
+    /// `karmayoga_service::mail::ai`'s auto-draft pass -- "reply: false" is
     /// its own answer, on the same terms "still other" is categorisation's,
     /// and gets the same treatment: recorded once asked, re-asked only once
     /// a new message moves `message_count` past it.
@@ -1079,7 +1079,7 @@ pub enum OpKind {
     /// server's Drafts mailbox -- [`Vault::discard_draft`] enqueues this
     /// only when [`Draft::server_copy`] is `Some`, since a draft discarded
     /// before its first autosave ever reached the server has nothing to
-    /// delete. See `karmayoga_service::outbox`'s "a draft's server copy"
+    /// delete. See `karmayoga_service::mail::outbox`'s "a draft's server copy"
     /// module docs for why this is its own op rather than folded into the
     /// local-only write [`Vault::discard_draft`] already makes.
     ///
@@ -1232,7 +1232,7 @@ impl Timestamped for Op {
 /// The standing allow-list a remote image is checked against: senders and
 /// domains someone has said yes to for good, kept sealed in the vault
 /// exactly the way `AgentSettings` is (`crate::store::agent`) — see
-/// `karmayoga-service::mailview` for the per-message *one-off* allowance,
+/// `karmayoga-service::mail::view` for the per-message *one-off* allowance,
 /// which is deliberately not part of this record at all, because it does
 /// not outlive the session that granted it.
 ///
@@ -1294,7 +1294,7 @@ impl RemoteImageSettings {
     }
 
     /// Remove a sender or a domain, whichever was passed. A no-op if neither
-    /// was on the list, which `mailview::revoke_remote_image_allowance`
+    /// was on the list, which `mail::view::revoke_remote_image_allowance`
     /// relies on rather than treating as an error — revoking something
     /// already gone is not a mistake worth failing a command over.
     pub fn revoke(&mut self, sender: Option<&str>, domain: Option<&str>) {

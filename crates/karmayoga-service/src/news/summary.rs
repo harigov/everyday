@@ -15,7 +15,7 @@
 //! The Medium model, as the Feed's article writer is ([`super::article`]). A
 //! newsletter issue is somebody's mail, though, and goes where mail goes: to
 //! the model Mail's own summaries use, and only for an account that has
-//! switched those on ([`crate::mailai::mail_model`]), the way Listen reads a
+//! switched those on ([`crate::mail::ai::mail_model`]), the way Listen reads a
 //! newsletter out. A refusal is a sentence on the list, and a story that is
 //! not mail is not subject to it.
 //!
@@ -312,7 +312,7 @@ fn clipped(text: &str) -> &str {
 fn writer_for(vault: &Vault, subject: &Subject) -> CommandResult<ModelWriter> {
     let access = match &subject.account {
         Some(account) => {
-            crate::mailai::mail_model(vault, account, MailAiFeature::Summaries, ModelTier::Medium)?
+            crate::mail::ai::mail_model(vault, account, MailAiFeature::Summaries, ModelTier::Medium)?
         }
         None => vault.model_access(ModelTier::Medium).map_err(|e| {
             CommandError::new(codes::INVALID, format!("The summary could not be written: {e}."))

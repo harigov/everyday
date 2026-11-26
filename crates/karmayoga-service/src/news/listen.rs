@@ -216,7 +216,7 @@ async fn prepare(
         Source::Newsletter(account) | Source::Email(account) => {
             let vault = vault.clone();
             blocking(move || {
-                crate::mailai::mail_model(
+                crate::mail::ai::mail_model(
                     &vault,
                     &account,
                     MailAiFeature::Summaries,

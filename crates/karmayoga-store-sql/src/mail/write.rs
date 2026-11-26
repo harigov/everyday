@@ -370,7 +370,7 @@ pub(super) fn set_message_category_with_source(
 /// deliberately left untouched: it is what the outbox executor's own
 /// `Lookups` resolves an `Archive`, `Trash` or `Move` op against to find
 /// which `(mailbox, uid)` to actually tell the server about (see
-/// `karmayoga_service::outbox::VaultLookups` and
+/// `karmayoga_service::mail::outbox::VaultLookups` and
 /// `karmayoga_mail::outbox::archive`), so deleting it here -- before the op
 /// has even reached a connection -- would leave the op with nothing to act
 /// on. The marker is what [`recompute_thread_mailboxes`] now consults

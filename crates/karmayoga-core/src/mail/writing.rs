@@ -24,7 +24,7 @@ pub const MAX_SEND_CHECK_CHARS: usize = 200;
 
 /// One thing to check a message for before it goes, in the person's words:
 /// "The tone is friendly", "The grammar is correct". See
-/// `karmayoga_service::mailcheck`.
+/// `karmayoga_service::mail::check`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -63,7 +63,7 @@ pub struct MailWriting {
     /// decision model or, with none switched on, the Small model -- under the
     /// sending account's writing help switch, since it reads what was
     /// written. A check that fails warns; it never stops the message going.
-    /// See `karmayoga_service::mailcheck`.
+    /// See `karmayoga_service::mail::check`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub send_checks: Vec<SendCheck>,
 }

@@ -1,4 +1,4 @@
-//! The command surface over `crate::mailview`'s remote-image permissions.
+//! The command surface over `crate::mail::view`'s remote-image permissions.
 //!
 //! Three commands only. Rendering a body, reading a part and fetching a
 //! remote image are *not* here -- they are bytes served over a
@@ -13,7 +13,7 @@
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::mailview;
+use crate::mail::view as mailview;
 use crate::service::{Service, blocking};
 use karmayoga_core::id::MailMessageId;
 use karmayoga_core::mail::RemoteImageSettings;

@@ -16,7 +16,7 @@
 //! glue both directions need -- plain text to the `<p>`/`<br>` HTML a
 //! draft body holds.
 //!
-//! `karmayoga_service::mailvoice` is what calls all of this against a real
+//! `karmayoga_service::mail::voice` is what calls all of this against a real
 //! vault; everything below is tested without one.
 
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,4 @@
-//! `karmayoga_service::mailai`'s three model-assisted features, end to end
+//! `karmayoga_service::mail::ai`'s three model-assisted features, end to end
 //! against a fake model on loopback.
 //!
 //! The fake here always answers the one `submit` tool call it is scripted
@@ -319,7 +319,7 @@ async fn categorize_tick_applies_the_models_label_to_an_other_bucket_thread() {
     let changes = Arc::new(ThreadChanges::default());
     svc.set_events(changes.clone());
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let updated = svc.get().unwrap().mail_message(msg.id).unwrap();
     assert_eq!(updated.category, Some(Category::Important));
@@ -346,7 +346,7 @@ async fn categorize_tick_is_a_no_op_when_the_account_has_not_turned_it_on() {
         Some(Category::Other),
     );
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let unchanged = svc.get().unwrap().mail_message(msg.id).unwrap();
     assert_eq!(unchanged.category, Some(Category::Other), "the switch was off");
@@ -403,7 +403,7 @@ async fn categorize_tick_does_not_reask_a_thread_it_already_labelled_other() {
 
     let changes = Arc::new(ThreadChanges::default());
     svc.set_events(changes.clone());
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     let (thread, _) = svc.get().unwrap().thread(thread_id).unwrap();
     assert_eq!(thread.ai_categorize_asked_at_count, Some(1), "asked once, and recorded as such");
     assert_eq!(svc.get().unwrap().mail_message(msg.id).unwrap().category, Some(Category::Other));
@@ -415,7 +415,7 @@ async fn categorize_tick_does_not_reask_a_thread_it_already_labelled_other() {
     repoint_model(&svc, &mut account, &would_promote.endpoint);
     wait_for_categorize_budget().await;
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     assert_eq!(
         svc.get().unwrap().mail_message(msg.id).unwrap().category,
         Some(Category::Other),
@@ -461,7 +461,7 @@ async fn categorize_tick_reasks_a_thread_once_a_new_message_arrives() {
         "Just checking in.",
         Some(Category::Other),
     );
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let would_promote =
         fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
@@ -480,7 +480,7 @@ async fn categorize_tick_reasks_a_thread_once_a_new_message_arrives() {
         Some(Category::Other),
     );
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     assert_eq!(
         svc.get().unwrap().mail_message(msg2.id).unwrap().category,
         Some(Category::Important),
@@ -510,7 +510,7 @@ fn labelling(fake: &FakeModel) -> Vec<String> {
 /// just spent, and refilling it for real would mean this test sleeping for
 /// however long that takes.)
 ///
-/// Seeded to [`mailai::CATEGORIZE_PAGE`]: since the fix for finding 5 (one
+/// Seeded to [`mail::ai::CATEGORIZE_PAGE`]: since the fix for finding 5 (one
 /// account's tick could spend the whole per-minute budget on a guess at its page
 /// size, starving every account after it), `categorize_account` reads a
 /// fixed-size page independent of the budget and only spends the budget on
@@ -525,7 +525,7 @@ async fn categorize_tick_walks_past_an_already_asked_page_to_reach_older_threads
 
     // Two pages' worth of threads, all already marked asked at their current
     // message count, plus one older thread left unasked.
-    let page = karmayoga_service::mailai::CATEGORIZE_PAGE;
+    let page = karmayoga_service::mail::ai::CATEGORIZE_PAGE;
     let mut oldest = None;
     for i in 0..=(2 * page) {
         let thread_id = ThreadId::new();
@@ -552,7 +552,7 @@ async fn categorize_tick_walks_past_an_already_asked_page_to_reach_older_threads
     }
     let (oldest_id, _) = oldest.unwrap();
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     let cursor = svc.mail_categorize_cursor(account.id);
     assert!(cursor.is_some(), "an exhausted page still advances the cursor, not just a hit page");
     assert!(
@@ -578,7 +578,7 @@ async fn categorize_tick_reaches_a_thread_behind_the_newest_page_on_the_same_tic
     let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
     let vault = svc.get().unwrap();
 
-    let page = karmayoga_service::mailai::CATEGORIZE_PAGE;
+    let page = karmayoga_service::mail::ai::CATEGORIZE_PAGE;
     let mut oldest = None;
     for i in 0..=page {
         let thread_id = ThreadId::new();
@@ -602,7 +602,7 @@ async fn categorize_tick_reaches_a_thread_behind_the_newest_page_on_the_same_tic
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     assert_eq!(
         vault.mail_message(oldest.unwrap()).unwrap().category,
@@ -644,7 +644,7 @@ async fn categorize_tick_asks_about_the_newest_mail_first() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     assert_eq!(
         vault.mail_message(*ids.last().unwrap()).unwrap().category,
@@ -691,7 +691,7 @@ async fn categorize_tick_marks_every_thread_it_asked_about_even_one_the_model_le
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     // Newest first: `second` was number 1 and was left out, `first` number 2.
     let vault = svc.get().unwrap();
@@ -759,7 +759,7 @@ async fn categorize_tick_tells_the_model_how_it_was_addressed_and_leaves_old_mai
         Some(Category::Other),
     );
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let requests = labelling(&fake);
     assert_eq!(requests.len(), 1, "one request, about one thread: {requests:?}");
@@ -803,7 +803,7 @@ async fn categorize_tick_marks_a_direct_ask_as_priority() {
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let updated = svc.get().unwrap().mail_message(msg.id).unwrap();
     assert_eq!(updated.category, Some(Category::Priority));
@@ -830,7 +830,7 @@ async fn categorize_tick_leaves_an_important_thread_alone_when_priority_says_no(
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let updated = svc.get().unwrap().mail_message(msg.id).unwrap();
     assert_eq!(updated.category, Some(Category::Important), "the model said no priority");
@@ -861,7 +861,7 @@ async fn categorize_tick_does_not_reask_a_thread_it_already_answered_for_priorit
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     let (thread, _) = svc.get().unwrap().thread(thread_id).unwrap();
     assert_eq!(thread.ai_priority_asked_at_count, Some(1), "asked once, and recorded as such");
     assert_eq!(
@@ -874,7 +874,7 @@ async fn categorize_tick_does_not_reask_a_thread_it_already_answered_for_priorit
     repoint_model(&svc, &mut account, &would_mark.endpoint);
     wait_for_categorize_budget().await;
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
     assert_eq!(
         svc.get().unwrap().mail_message(msg.id).unwrap().category,
         Some(Category::Important),
@@ -918,7 +918,7 @@ async fn the_priority_model_is_told_the_date_and_what_the_app_knows_of_each_thre
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     let asked: Vec<String> = fake
         .requests()
@@ -967,7 +967,7 @@ async fn summarize_thread_asks_the_configured_model_and_caches_the_answer() {
         Some(Category::Important),
     );
 
-    let summary = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
+    let summary = karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.unwrap();
     assert_eq!(summary, "They are asking about dinner on Friday.");
 
     // What the model was told: today's date, the subject (which often carries the
@@ -980,7 +980,7 @@ async fn summarize_thread_asks_the_configured_model_and_caches_the_answer() {
 
     // The model is gone; a cached answer must not need it.
     drop(fake);
-    let cached = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
+    let cached = karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.unwrap();
     assert_eq!(cached, summary);
 }
 
@@ -1006,11 +1006,11 @@ async fn an_empty_summary_is_an_error_and_is_not_cached() {
         Some(Category::Important),
     );
 
-    let error = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap_err();
+    let error = karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.unwrap_err();
     assert!(error.message.contains("wrote no summary"), "{}", error.message);
     let asked = fake.call_count();
     assert!(asked > 0);
-    assert!(karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.is_err());
+    assert!(karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.is_err());
     assert!(fake.call_count() > asked, "asked again, since nothing was kept");
 }
 
@@ -1035,7 +1035,7 @@ async fn a_thread_with_nothing_in_it_is_summarised_as_a_sentence() {
         Some(Category::Important),
     );
 
-    let summary = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
+    let summary = karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.unwrap();
     assert_eq!(summary, "There is nothing written in this thread to summarise.");
     assert_eq!(fake.call_count(), 0);
 }
@@ -1072,7 +1072,7 @@ async fn summarize_thread_survives_more_than_twenty_uncached_calls_on_one_thread
 
     for i in 2..=25u32 {
         let summary =
-            karmayoga_service::mailai::summarize_thread(&svc, thread_id).await.unwrap_or_else(
+            karmayoga_service::mail::ai::summarize_thread(&svc, thread_id).await.unwrap_or_else(
                 |e| panic!("call {i} (message_count now {i}) was refused: {}", e.message),
             );
         assert_eq!(summary, "They are asking about dinner on Friday.");
@@ -1119,7 +1119,7 @@ async fn a_cached_summary_never_touches_the_rate_limiter() {
         Some(Category::Important),
     );
 
-    let summary = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
+    let summary = karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.unwrap();
 
     // Exhaust this thread's own per-turn budget directly, the way the old,
     // buggy code would have on its own -- twenty calls on the same turn
@@ -1132,7 +1132,7 @@ async fn a_cached_summary_never_touches_the_rate_limiter() {
 
     // The model is gone, too, so a call that reached it would fail outright.
     drop(fake);
-    let cached = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap();
+    let cached = karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.unwrap();
     assert_eq!(cached, summary, "a cache hit needs neither the limiter nor the model");
 }
 
@@ -1155,7 +1155,7 @@ async fn summarize_thread_refuses_when_summaries_are_not_switched_on() {
         Some(Category::Important),
     );
 
-    let err = karmayoga_service::mailai::summarize_thread(&svc, msg.thread_id).await.unwrap_err();
+    let err = karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.unwrap_err();
     assert!(err.message.contains("AI summaries"), "{}", err.message);
 }
 
@@ -1180,7 +1180,7 @@ async fn auto_draft_writes_at_most_one_draft_per_thread_and_never_a_send_op() {
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
     let vault = svc.get().unwrap();
     let drafts = vault.drafts(account.id).unwrap();
     assert_eq!(drafts.len(), 1, "one auto-draft for the one eligible thread");
@@ -1192,7 +1192,7 @@ async fn auto_draft_writes_at_most_one_draft_per_thread_and_never_a_send_op() {
     );
 
     // A second tick must not write a second draft for the same thread.
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
     assert_eq!(vault.drafts(account.id).unwrap().len(), 1);
 
     // Never a Send op, from either tick.
@@ -1223,7 +1223,7 @@ async fn auto_draft_skips_a_thread_the_person_has_already_started_a_draft_on() {
     own_draft.in_reply_to = Some(msg.id);
     vault.save_draft(&own_draft).unwrap();
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
 
     let drafts = vault.drafts(account.id).unwrap();
     assert_eq!(drafts.len(), 1, "only the person's own draft; none added");
@@ -1249,7 +1249,7 @@ async fn auto_draft_is_a_no_op_when_the_account_has_not_turned_it_on() {
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
 
     assert!(svc.get().unwrap().drafts(account.id).unwrap().is_empty());
 }
@@ -1286,7 +1286,7 @@ async fn auto_draft_does_not_reask_a_thread_it_already_answered_reply_false() {
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
     let (thread, _) = svc.get().unwrap().thread(thread_id).unwrap();
     assert_eq!(thread.ai_auto_draft_asked_at_count, Some(1), "asked once, and recorded as such");
     assert!(svc.get().unwrap().drafts(account.id).unwrap().is_empty());
@@ -1297,7 +1297,7 @@ async fn auto_draft_does_not_reask_a_thread_it_already_answered_reply_false() {
     repoint_model(&svc, &mut account, &would_draft.endpoint);
     wait_for_autodraft_budget().await;
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
     assert!(
         svc.get().unwrap().drafts(account.id).unwrap().is_empty(),
         "unasked, since nothing about this thread changed"
@@ -1325,7 +1325,7 @@ async fn auto_draft_reasks_a_thread_once_a_new_message_arrives() {
         "Are you free Friday for dinner?",
         Some(Category::Important),
     );
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
 
     let would_draft =
         fake_model(r#"{"reply":true,"body_text":"Sure, Friday works."}"#.to_string()).await;
@@ -1344,7 +1344,7 @@ async fn auto_draft_reasks_a_thread_once_a_new_message_arrives() {
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
     let drafts = svc.get().unwrap().drafts(account.id).unwrap();
     assert_eq!(drafts.len(), 1, "a new message makes the thread eligible again");
 }
@@ -1383,7 +1383,7 @@ async fn auto_draft_never_calls_the_model_more_than_the_per_minute_budget_allows
         );
     }
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
 
     // `quick::run_prompt` costs up to `QUICK_MAX_TURNS_PER_CALL` raw
     // connections per logical call -- one per turn the underlying agent
@@ -1452,7 +1452,7 @@ async fn categorize_tick_does_not_let_one_accounts_small_backlog_starve_another_
         accounts.push(account);
     }
 
-    karmayoga_service::mailai::categorize_tick(&svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&svc).await;
 
     for account in &accounts {
         let (_thread, messages) = {
@@ -1501,7 +1501,7 @@ async fn auto_draft_never_lets_the_models_own_markup_through_as_html() {
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
 
     let vault = svc.get().unwrap();
     let drafts = vault.drafts(account.id).unwrap();
@@ -1538,7 +1538,7 @@ async fn auto_draft_tells_the_model_the_date_and_what_the_app_knows_of_the_sende
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
 
     let request = &fake.requests()[0];
     let today = jiff::Zoned::now().strftime("Today is %A %-d %B %Y.").to_string();
@@ -1584,7 +1584,7 @@ async fn auto_draft_follows_the_follow_up_passes_no_reply_needed() {
     // Asked, and nothing is waiting.
     vault.set_thread_follow_up(thread_id, mark, None).unwrap();
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
 
     assert!(vault.drafts(account.id).unwrap().is_empty(), "no draft");
     assert_eq!(fake.call_count(), 0, "and the model was not asked");
@@ -1631,7 +1631,7 @@ async fn auto_draft_writes_the_draft_the_follow_up_pass_asked_for() {
     };
     vault.set_thread_follow_up(thread_id, mark, Some(waiting)).unwrap();
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
 
     assert_eq!(vault.drafts(account.id).unwrap().len(), 1);
 }
@@ -1672,7 +1672,7 @@ async fn auto_draft_leaves_old_threads_alone() {
         Some(Category::Important),
     );
 
-    karmayoga_service::mailai::auto_draft_tick(&svc).await;
+    karmayoga_service::mail::ai::auto_draft_tick(&svc).await;
 
     let vault = svc.get().unwrap();
     let drafts = vault.drafts(account.id).unwrap();

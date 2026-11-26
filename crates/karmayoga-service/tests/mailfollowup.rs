@@ -1,4 +1,4 @@
-//! Follow-ups (`karmayoga_service::mailfollowup`), end to end: mail seeded
+//! Follow-ups (`karmayoga_service::mail::followup`), end to end: mail seeded
 //! into an Inbox and a Sent mailbox, the categorisation tick run against a
 //! fake decision server on loopback -- which sorts first, then asks about
 //! follow-ups, on the same model -- and what `follow_ups` then shows.
@@ -29,7 +29,7 @@ use karmayoga_core::mail::{
 use karmayoga_core::packstore::PackRef;
 use karmayoga_core::store::mail::IngestMessage;
 use karmayoga_service::Service;
-use karmayoga_service::mailfollowup::{
+use karmayoga_service::mail::followup::{
     FollowUpModel, FollowUpStatus, NUDGE_OPTIONS, REPLY_OPTIONS,
 };
 use serde_json::{Value, json};
@@ -570,7 +570,7 @@ fn store_for(
 
 /// What `follow_ups` shows, as subjects and kinds, in its order.
 async fn shown(svc: &Arc<Service>) -> Vec<(String, FollowUpKind)> {
-    karmayoga_service::mailfollowup::follow_ups(svc, None)
+    karmayoga_service::mail::followup::follow_ups(svc, None)
         .await
         .expect("follow_ups")
         .into_iter()
@@ -610,7 +610,7 @@ async fn follow_ups_show_who_waits_on_you_and_whom_you_wait_on_but_never_a_pitch
     let invoice = mail(&env, ThreadId::new(), ME, &["carol@partner.example"], "The invoice", DAY);
     store(&env, env.sent, 2, &invoice, "Did the invoice arrive?");
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert_eq!(
         shown(&env.svc).await,
@@ -661,7 +661,7 @@ async fn follow_ups_show_who_waits_on_you_and_whom_you_wait_on_but_never_a_pitch
         fake.subjects(Question::Reply).len() + fake.subjects(Question::Nudge).len()
     };
     let before = asked(&fake);
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(asked(&fake), before, "a second tick asks nothing: {:?}", fake.seen());
     assert_eq!(shown(&env.svc).await.len(), 2);
 }
@@ -675,7 +675,7 @@ async fn a_draft_keeps_a_follow_up_and_your_answer_ends_it() {
     let dinner = mail(&env, thread, ADA, &[ME], "Dinner on Saturday?", DAY);
     store(&env, env.inbox, 1, &dinner, "Are you free on Saturday?");
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(
         shown(&env.svc).await,
         vec![("Dinner on Saturday?".to_string(), FollowUpKind::Reply)]
@@ -687,7 +687,7 @@ async fn a_draft_keeps_a_follow_up_and_your_answer_ends_it() {
         mail(&env, thread, ME, &[ADA], "Re: Dinner on Saturday?", SignedDuration::from_mins(2));
     draft.flags.draft = true;
     store(&env, env.drafts, 1, &draft, "Yes, I");
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(
         shown(&env.svc).await,
         vec![("Dinner on Saturday?".to_string(), FollowUpKind::Reply)]
@@ -700,7 +700,7 @@ async fn a_draft_keeps_a_follow_up_and_your_answer_ends_it() {
     let answer =
         mail(&env, thread, ME, &[ADA], "Re: Dinner on Saturday?", SignedDuration::from_mins(1));
     store(&env, env.sent, 1, &answer, "Yes, I would love to.");
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert!(shown(&env.svc).await.is_empty());
     assert_eq!(fake.subjects(Question::Reply).len(), 1);
     assert!(fake.subjects(Question::Nudge).is_empty());
@@ -717,7 +717,7 @@ async fn nothing_is_asked_or_shown_with_follow_ups_off() {
     let dinner = mail(&env, ThreadId::new(), ADA, &[ME], "Dinner on Saturday?", DAY);
     store(&env, env.inbox, 1, &dinner, "Are you free on Saturday?");
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert!(!fake.subjects(Question::Sort).is_empty(), "sorting still runs");
     assert!(fake.subjects(Question::Reply).is_empty());
@@ -730,7 +730,7 @@ async fn nothing_is_asked_or_shown_with_follow_ups_off() {
 fn status_of(env: &Env) -> FollowUpStatus {
     let vault = env.svc.get().unwrap();
     let sorting = vault.mail_sorting().unwrap();
-    karmayoga_service::mailfollowup::status(&env.svc, &vault, &sorting).expect("status")
+    karmayoga_service::mail::followup::status(&env.svc, &vault, &sorting).expect("status")
 }
 
 /// How many reply and nudge questions the fake was put.
@@ -781,7 +781,7 @@ async fn with_no_decision_model_the_small_model_finds_the_follow_ups() {
     let invoice = mail(&env, ThreadId::new(), ME, &["carol@partner.example"], "The invoice", DAY);
     store(&env, env.sent, 2, &invoice, "Did the invoice arrive?");
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert_eq!(
         shown(&env.svc).await,
@@ -831,7 +831,7 @@ async fn with_no_decision_model_the_small_model_finds_the_follow_ups() {
         assert!(t.follow_up.is_none(), "{} not waiting", t.subject);
     }
     let before = asked(&fake);
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(asked(&fake), before, "a second tick asks nothing: {:?}", fake.seen());
     assert_eq!(shown(&env.svc).await.len(), 2);
 
@@ -881,7 +881,7 @@ async fn a_strangers_question_needs_the_small_model_to_be_sure() {
         "you have written to the sender: yes\nHi! Could you reply to this?",
     );
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert_eq!(
         shown(&env.svc).await,
@@ -909,7 +909,7 @@ async fn the_decision_model_is_asked_when_one_is_switched_on_and_the_small_model
     // sorting's, and does not notice it spent.
     env.svc.mail_categorize_take(1_000);
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert_eq!(
         shown(&env.svc).await,
@@ -933,7 +933,7 @@ async fn a_decision_model_that_cannot_be_used_is_not_quietly_replaced_by_the_sma
     let dinner = mail(&env, ThreadId::new(), ADA, &[ME], "Dinner on Saturday?", DAY);
     store(&env, env.inbox, 1, &dinner, "Are you free on Saturday?");
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert!(small.seen().is_empty(), "nothing is sent to the Small model: {:?}", small.seen());
     assert!(shown(&env.svc).await.is_empty());
@@ -955,7 +955,7 @@ async fn the_small_model_reads_only_the_mail_of_an_account_that_has_agreed() {
     let vault = env.svc.get().unwrap();
     let dinner = mail(&env, ThreadId::new(), ADA, &[ME], "Dinner on Saturday?", DAY);
     store(&env, env.inbox, 1, &dinner, "Are you free on Saturday?");
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(shown(&env.svc).await.len(), 1);
     assert_eq!(status_of(&env).accounts[0].blocked, None);
 
@@ -980,7 +980,7 @@ async fn the_small_model_reads_only_the_mail_of_an_account_that_has_agreed() {
     let before = fake.seen().len();
     let note = mail(&env, ThreadId::new(), ADA, &[ME], "Lunch?", DAY);
     store(&env, env.inbox, 2, &note, "Lunch on Monday?");
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(fake.seen().len(), before);
 }
 
@@ -1007,7 +1007,7 @@ async fn the_status_says_why_nothing_is_looked_at() {
     assert_eq!(status.model, Some(FollowUpModel::Small), "there is one to ask");
     let why = status.blocked.expect("blocked");
     assert!(why.contains("switched off"), "{why}");
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(asked(&fake), 0, "nothing is asked about with follow-ups off: {:?}", fake.seen());
 }
 
@@ -1018,7 +1018,7 @@ async fn an_answer_outside_the_options_is_marked_asked_and_nothing_is_shown() {
     let dinner = mail(&env, ThreadId::new(), ADA, &[ME], "Dinner on Saturday?", DAY);
     store(&env, env.inbox, 1, &dinner, "Are you free on Saturday?");
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert!(shown(&env.svc).await.is_empty());
     let (t, _) = env.svc.get().unwrap().thread(dinner.thread_id).unwrap();
@@ -1027,7 +1027,7 @@ async fn an_answer_outside_the_options_is_marked_asked_and_nothing_is_shown() {
     let account = &status.accounts[0];
     assert_eq!((account.asked, account.found, account.error.clone()), (1, 0, None));
     let before = asked(&fake);
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(asked(&fake), before);
 }
 
@@ -1044,7 +1044,7 @@ async fn a_model_that_replies_in_prose_is_marked_asked_and_not_asked_again() {
     let lunch = mail(&env, ThreadId::new(), ADA, &[ME], "Lunch on Monday?", DAY);
     store(&env, env.inbox, 2, &lunch, "Are you free on Monday?");
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert_eq!(asked(&fake), 2, "both were asked, whatever came of the first");
     assert!(shown(&env.svc).await.is_empty());
@@ -1055,7 +1055,7 @@ async fn a_model_that_replies_in_prose_is_marked_asked_and_not_asked_again() {
     let status = status_of(&env);
     let account = &status.accounts[0];
     assert_eq!((account.asked, account.found, account.error.clone()), (2, 0, None));
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(asked(&fake), 2, "and not again");
 }
 
@@ -1067,7 +1067,7 @@ async fn a_model_that_is_down_is_reported_and_the_thread_is_asked_again_once_it_
     let dinner = mail(&env, ThreadId::new(), ADA, &[ME], "Dinner on Saturday?", DAY);
     store(&env, env.inbox, 1, &dinner, "Are you free on Saturday?");
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert!(shown(&env.svc).await.is_empty());
     let (t, _) = env.svc.get().unwrap().thread(dinner.thread_id).unwrap();
@@ -1083,7 +1083,7 @@ async fn a_model_that_is_down_is_reported_and_the_thread_is_asked_again_once_it_
     // look is still a full one, which must not forget it -- and the look that
     // had nothing to fail on clears the error.
     fake.set_mode(SmallMode::Answers);
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(asked(&fake), 0, "resting: {:?}", fake.seen());
     assert!(shown(&env.svc).await.is_empty());
     let status = status_of(&env);
@@ -1092,7 +1092,7 @@ async fn a_model_that_is_down_is_reported_and_the_thread_is_asked_again_once_it_
 
     // Half an hour on, it is asked.
     clock.set(Timestamp::now() + SignedDuration::from_mins(31));
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(
         shown(&env.svc).await,
         vec![("Dinner on Saturday?".to_string(), FollowUpKind::Reply)]
@@ -1117,7 +1117,7 @@ async fn an_account_a_failing_model_kept_the_tick_from_reaching_says_so() {
     store_for(&env, second.id, second_inbox, 1, &lunch, "Are you free on Monday?");
     assert_eq!(vault.accounts().unwrap().len(), 2);
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     // Whichever came first failed on the model and stopped the tick; the other
     // was never looked at, and says it was not -- not nothing, and not its last
@@ -1134,7 +1134,7 @@ async fn an_account_a_failing_model_kept_the_tick_from_reaching_says_so() {
     // The model back: the one that was resting is passed over, the other asked,
     // and both are clean.
     fake.set_mode(SmallMode::Answers);
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     let status = status_of(&env);
     assert!(status.accounts.iter().all(|a| a.error.is_none()), "{status:?}");
     assert!(status.accounts.iter().all(|a| a.looked_at.is_some()), "{status:?}");
@@ -1157,7 +1157,7 @@ async fn threads_the_budget_does_not_cover_are_counted_and_asked_when_it_refills
     // Spent: sorting's budget is a different one, which this does not touch.
     env.svc.mail_categorize_take(1_000);
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert_eq!(asked(&fake), 0, "{:?}", fake.seen());
     assert!(shown(&env.svc).await.is_empty());
@@ -1170,7 +1170,7 @@ async fn threads_the_budget_does_not_cover_are_counted_and_asked_when_it_refills
     assert!(t.follow_up_asked.is_none(), "not marked: it was not asked");
 
     clock.set(Timestamp::now() + SignedDuration::from_mins(3));
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(shown(&env.svc).await.len(), 2);
     let status = status_of(&env);
     let account = &status.accounts[0];
@@ -1191,7 +1191,7 @@ async fn a_share_that_runs_out_leaves_the_rest_counted_for_the_next_look() {
         store(&env, env.inbox, i + 1, &m, "Are you free on Saturday?");
     }
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
 
     assert_eq!(fake.subjects(Question::Reply).len(), 4, "the local share: {:?}", fake.seen());
     assert_eq!(shown(&env.svc).await.len(), 4);
@@ -1200,7 +1200,7 @@ async fn a_share_that_runs_out_leaves_the_rest_counted_for_the_next_look() {
     assert_eq!((account.asked, account.found, account.waiting_for_turn), (4, 4, 2));
     assert!(account.full_look_at.is_none(), "a look that stopped at its share is not a full one");
 
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(fake.subjects(Question::Reply).len(), 6, "{:?}", fake.seen());
     assert_eq!(shown(&env.svc).await.len(), 6);
     let status = status_of(&env);
@@ -1221,7 +1221,7 @@ async fn a_reply_that_is_later_filed_as_a_newsletter_is_no_longer_shown() {
     let contract =
         mail(&env, ThreadId::new(), ME, &["bob@partner.example"], "The contract", DAY * 5);
     store(&env, env.sent, 1, &contract, "Could you send me the signed contract by Friday?");
-    karmayoga_service::mailai::categorize_tick(&env.svc).await;
+    karmayoga_service::mail::ai::categorize_tick(&env.svc).await;
     assert_eq!(shown(&env.svc).await.len(), 2);
 
     vault.set_mail_message_category(dinner.id, Category::Newsletter).unwrap();

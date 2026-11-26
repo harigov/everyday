@@ -216,18 +216,18 @@ async fn save_account(svc: Arc<Service>, ctx: Ctx, args: SaveAccount) -> Command
         // A running task holds the settings it started with -- and its
         // sender the old outgoing server -- so new ones mean a new task.
         if reconnect {
-            crate::mailsync::wiring::stop_account_task(&svc, account_id).await;
+            crate::mail::sync::wiring::stop_account_task(&svc, account_id).await;
             // With no task left to be mid-send, sends waiting out a retry's
             // backoff go at once: what they failed with is gone.
             let vault = vault.clone();
             blocking(move || Ok(vault.retry_sends_now(account_id, now)?)).await?;
         }
-        crate::mailsync::wiring::ensure_account_task(&svc, &vault, account_id);
+        crate::mail::sync::wiring::ensure_account_task(&svc, &vault, account_id);
         if let Some(statuses) = svc.mail_statuses() {
             statuses.nudge(account_id);
         }
     } else {
-        crate::mailsync::wiring::stop_account_task(&svc, account_id).await;
+        crate::mail::sync::wiring::stop_account_task(&svc, account_id).await;
     }
     Ok(())
 }
@@ -307,7 +307,7 @@ async fn check_sending(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> Comman
         move || Ok(vault.account(args.id)?)
     })
     .await?;
-    let sender = crate::mailsync::sender::LazySmtpSender::new(account, svc.clone(), vault);
+    let sender = crate::mail::sync::sender::LazySmtpSender::new(account, svc.clone(), vault);
     sender.check().await.map_err(|e| CommandError::new(codes::INVALID, e.to_string()))
 }
 
@@ -356,7 +356,7 @@ fn check_acknowledgement(
 /// exactly the ordering `Service::close`'s own docs rule out), delete its
 /// local pack files and search index documents, then the vault's own rows.
 async fn delete_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandResult<()> {
-    crate::mailsync::wiring::stop_account_task(&svc, args.id).await;
+    crate::mail::sync::wiring::stop_account_task(&svc, args.id).await;
     if let Some(packs) = svc.packs() {
         // Best-effort: a pack store that fails to delete leaves orphaned
         // files behind, not a wrong answer to any command -- the vault's
@@ -429,7 +429,7 @@ async fn save_account_password(
     // switching `services.mail` on. Idempotent either way: a task already
     // running is left alone.
     if account.services.mail {
-        crate::mailsync::wiring::ensure_account_task(&svc, &vault, account.id);
+        crate::mail::sync::wiring::ensure_account_task(&svc, &vault, account.id);
     }
     Ok(())
 }
@@ -482,7 +482,7 @@ async fn attach_oauth_sign_in(
     // landed, so this is the other moment a task should start immediately
     // rather than wait for the next unlock.
     if account.services.mail {
-        crate::mailsync::wiring::ensure_account_task(&svc, &vault, account.id);
+        crate::mail::sync::wiring::ensure_account_task(&svc, &vault, account.id);
     }
     Ok(())
 }

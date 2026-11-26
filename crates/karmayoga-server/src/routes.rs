@@ -763,7 +763,7 @@ async fn get_blob(
 //
 // The same three things `karmayoga-app/src/protocol.rs`'s `karmayoga://mail/…`
 // routes answer, over HTTP instead -- both transports call straight into
-// `karmayoga_service::mailview`, which is where the actual logic (and its
+// `karmayoga_service::mail::view`, which is where the actual logic (and its
 // tests) live. See that module's docs for why none of this is a JSON
 // command: a rendered body is bytes, not a result `Service::call` returns.
 //
@@ -784,8 +784,8 @@ async fn get_mail_body(
 
     let vault = server.service.require()?;
     let one_off = server.service.remote_images_allowed_once(id);
-    let allow_remote = karmayoga_service::mailview::remote_images_allowed(&vault, id, one_off)?;
-    let doc = karmayoga_service::mailview::body_document(&vault, id, allow_remote)?;
+    let allow_remote = karmayoga_service::mail::view::remote_images_allowed(&vault, id, one_off)?;
+    let doc = karmayoga_service::mail::view::body_document(&vault, id, allow_remote)?;
 
     Response::builder()
         .status(StatusCode::OK)
@@ -816,7 +816,7 @@ async fn get_mail_part(
         .map_err(|_| CommandError::new("invalid", "not a message id"))?;
 
     let vault = server.service.require()?;
-    let served = karmayoga_service::mailview::part(&vault, message_id, &identifier)?;
+    let served = karmayoga_service::mail::view::part(&vault, message_id, &identifier)?;
     mail_bytes_response(
         served,
         vault_cache_control(transport, "private, max-age=31536000, immutable"),
@@ -878,7 +878,7 @@ async fn mail_image_response(
     let one_off = server.service.remote_images_allowed_once(message_id);
     let client = karmayoga_service::http::public_client()?;
     let served =
-        karmayoga_service::mailview::remote_image(&vault, client, message_id, token, one_off)
+        karmayoga_service::mail::view::remote_image(&vault, client, message_id, token, one_off)
             .await?;
     // Never cached: a placeholder answered before permission was granted
     // must not shadow the real picture once it is.
@@ -886,7 +886,7 @@ async fn mail_image_response(
 }
 
 fn mail_bytes_response(
-    served: karmayoga_service::mailview::PartResponse,
+    served: karmayoga_service::mail::view::PartResponse,
     cache_control: &str,
 ) -> Answer<Response> {
     let mut response = Response::builder()

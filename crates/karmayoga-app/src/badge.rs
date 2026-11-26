@@ -298,7 +298,7 @@ const SNOOZED_PAGE: u32 = 200;
 ///
 /// Two reads per inbox rather than one list of its unread threads: the
 /// service's unread total (a clear-column `SUM`, cached until the next mail
-/// write -- see `mailsync::unread_cache`), less what the inbox's snoozed
+/// write -- see `mail::sync::unread_cache`), less what the inbox's snoozed
 /// threads hold. The first is exact and costs nothing between writes; the
 /// second decrypts only the snoozed threads, which are a handful, where
 /// listing every unread thread would decrypt all of them once a minute.

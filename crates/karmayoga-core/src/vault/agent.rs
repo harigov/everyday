@@ -168,7 +168,7 @@ impl Vault {
     /// A model for one of mail's own features -- categorising, summarising,
     /// drafting -- with no policy check of its own.
     ///
-    /// The third door. `karmayoga_service::mailai`'s features are gated by
+    /// The third door. `karmayoga_service::mail::ai`'s features are gated by
     /// [`crate::mail::mail_ai_allowed`] against the *account* they are about
     /// to touch, not by [`AgentSettings::enabled`] or
     /// [`crate::quick::QuickPolicy`] — mail's own switch, per

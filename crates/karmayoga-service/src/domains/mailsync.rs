@@ -3,16 +3,16 @@
 //!
 //! Everything else about how mail arrives -- the account task itself, the
 //! three-pass first sync, the steady state -- lives in
-//! `crate::mailsync`, out of the command surface entirely: nothing here
+//! `crate::mail::sync`, out of the command surface entirely: nothing here
 //! syncs anything directly, these three commands only reach into what
-//! `crate::mailsync::wiring` already keeps running.
+//! `crate::mail::sync::wiring` already keeps running.
 
 use std::sync::Arc;
 
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::mailsync::status::Progress;
+use crate::mail::sync::status::Progress;
 use crate::service::{Service, blocking};
 use karmayoga_core::id::{AccountId, MailboxId, ThreadId};
 use karmayoga_core::mail::Category;
@@ -40,7 +40,7 @@ pub struct RebuildMailIndex {
 /// its poll sleep.
 async fn sync_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandResult<()> {
     let vault = svc.require()?;
-    crate::mailsync::wiring::ensure_account_task(&svc, &vault, args.id);
+    crate::mail::sync::wiring::ensure_account_task(&svc, &vault, args.id);
     if let Some(statuses) = svc.mail_statuses() {
         statuses.nudge(args.id);
     }
@@ -127,7 +127,7 @@ const REBUILD_BATCH: usize = 500;
 /// `seen` deduplicates between the two passes -- a thread visible in some
 /// mailbox's list is never re-walked just because it also has a category.
 ///
-/// `pub(crate)` rather than private: `crate::mailsync::wiring::open` calls
+/// `pub(crate)` rather than private: `crate::mail::sync::wiring::open` calls
 /// this too, once per account, the one time a self-healing wipe leaves
 /// [`karmayoga_core::MailSearch::rebuild_needed`] having just gone from
 /// `true` back to `false` on its own -- see that module's own docs for why
@@ -233,7 +233,7 @@ fn index_thread(
             },
         };
         if let Ok(body) = vault.body(message.id) {
-            let doc = crate::mailsync::passes::mail_doc(
+            let doc = crate::mail::sync::passes::mail_doc(
                 account_id,
                 mailbox_id,
                 message,
@@ -442,8 +442,8 @@ mod tests {
 #[cfg(test)]
 mod rebuild_tests {
     use super::*;
-    use crate::mailsync::wiring::tests::{hold_index, seed_message, test_vault};
-    use crate::mailsync::wiring::{close, open};
+    use crate::mail::sync::wiring::tests::{hold_index, seed_message, test_vault};
+    use crate::mail::sync::wiring::{close, open};
     use karmayoga_core::MailQuery;
     use karmayoga_core::account::{Account, Provider};
     use karmayoga_core::mail::{Mailbox, MailboxRole};

@@ -12,7 +12,7 @@
 //!   somebody with a public address gets far more of those than mail that
 //!   wants them. It is its own answer to the question, not a "no", so that
 //!   the model has somewhere to put it -- see
-//!   `karmayoga_service::mailfollowup`.
+//!   `karmayoga_service::mail::followup`.
 //! - [`FollowUpKind::Nudge`]: the newest message is your own, at least
 //!   [`FollowUpSettings::nudge_after_days`] old, nobody has answered, and it
 //!   asked for something.

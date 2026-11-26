@@ -1358,7 +1358,7 @@ fn run_find_address(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 /// stored them.
 ///
 /// A plainer, dependency-free cousin of
-/// `karmayoga_service::mailsync::contacts::ContactIndex::suggest`'s own
+/// `karmayoga_service::mail::sync::contacts::ContactIndex::suggest`'s own
 /// fuzzy, typo-tolerant match: `frizbee` is a dependency of
 /// `karmayoga-service`, not of this crate (see [`run_find_address`]'s own
 /// tool description and this module's docs for why a core tool's reach

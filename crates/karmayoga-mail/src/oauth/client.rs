@@ -222,7 +222,7 @@ impl OAuthClient {
     /// [`Self::refresh`]: RFC 6749 §6 does not carry a `redirect_uri` on a
     /// refresh-token grant at all, so a caller resolving credentials to
     /// refresh an access token -- see
-    /// `karmayoga-service::mailsync::credential::resolve`, which never has a
+    /// `karmayoga-service::mail::sync::credential::resolve`, which never has a
     /// loopback port to hand back -- has nothing correct to put there. Only
     /// [`Self::begin`] and [`Self::exchange`] carry a `redirect_uri` on the
     /// wire ([RFC 6749 §4.1.1](https://www.rfc-editor.org/rfc/rfc6749#section-4.1.1),
@@ -785,7 +785,7 @@ mod tests {
     }
 
     /// The regression for the bug this module's `configured` doc describes:
-    /// `karmayoga-service::mailsync::credential::resolve` builds an
+    /// `karmayoga-service::mail::sync::credential::resolve` builds an
     /// `OAuthClient` with `redirect: String::new()` for every refresh,
     /// because a refresh has no loopback port to hand back. Before this fix,
     /// `configured()` called `RedirectUrl::new("")` unconditionally, which

@@ -94,6 +94,7 @@ pub mod error;
 pub mod files;
 pub mod fsutil;
 pub mod health;
+pub mod hex;
 pub mod hidden;
 pub mod ics;
 pub mod id;
@@ -109,6 +110,7 @@ pub mod lockfile;
 pub mod mail;
 pub mod mailsearch;
 pub mod maps;
+pub mod markup;
 pub mod media;
 pub mod meeting;
 pub mod model;
@@ -133,14 +135,17 @@ pub mod speech;
 pub mod store;
 pub mod task;
 pub mod template;
+pub mod text;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod timestamped;
 pub mod tracker;
+pub mod urlenc;
 pub mod vault;
 pub mod weather;
 pub mod websearch;
 pub mod writing;
+pub mod zone;
 
 pub use account::{
     Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, AuthMethod, Endpoint,

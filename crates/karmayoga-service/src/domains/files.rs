@@ -48,7 +48,7 @@ use crate::ctx::{Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::Notification;
 use crate::files;
-use crate::mailview;
+use crate::mail::view as mailview;
 use crate::service::{Service, blocking};
 
 use super::Nothing;

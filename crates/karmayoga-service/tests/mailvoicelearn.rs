@@ -475,7 +475,7 @@ async fn the_unattended_pass_waits_for_enough_replies_and_then_for_a_day() {
     let fake = fake_model(answer()).await;
     let e = env(&fake.endpoint);
     let vault = e.svc.get().unwrap();
-    let tick = || karmayoga_service::mailvoicelearn::learn_tick(&e.svc);
+    let tick = || karmayoga_service::mail::voicelearn::learn_tick(&e.svc);
     let at = |minutes: i64| e.clock.set(now() + SignedDuration::from_mins(minutes));
 
     answered(&e, Address::bare("a@example.com"), "Around Monday?", "Yes, all day.", 30);
@@ -530,7 +530,7 @@ async fn the_unattended_pass_does_nothing_while_learning_is_off() {
     }
     vault.save_mail_writing(&MailWriting { learn: false, ..Default::default() }).unwrap();
 
-    karmayoga_service::mailvoicelearn::learn_tick(&e.svc).await;
+    karmayoga_service::mail::voicelearn::learn_tick(&e.svc).await;
 
     assert_eq!(fake.asked(), 0);
     assert_eq!(vault.voice_learning().unwrap(), VoiceLearning::default());

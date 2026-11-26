@@ -113,7 +113,7 @@
 //!
 //! - The meeting-notes pipeline past `finish_recording` -- skipped above.
 //! - `save_account_password` on a mail-enabled account starts a real sync
-//!   task (`crate::mailsync::wiring::ensure_account_task`). Starting one is
+//!   task (`crate::mail::sync::wiring::ensure_account_task`). Starting one is
 //!   synchronous and harmless -- `Supervisor::start` raises its own
 //!   `backgroundTask` change inline, before the task is even spawned -- but
 //!   that task's eventual *completion* runs on a separately spawned future

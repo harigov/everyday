@@ -52,7 +52,7 @@ impl Vault {
     /// A [`crate::packstore::ReferencedSnapshot`] safe to hand
     /// [`PackStore::compact`] for `account` -- see
     /// [`MailStore::referenced_snapshot`] for how it is built. What
-    /// `karmayoga_service::mailsync::task` calls before every compaction
+    /// `karmayoga_service::mail::sync::task` calls before every compaction
     /// attempt.
     pub fn mail_referenced_snapshot(
         &self,
@@ -90,7 +90,7 @@ impl Vault {
     /// See [`crate::store::mail::MailStore::delete_mailbox`] for what the
     /// returned pairs are and why: whoever calls this is expected to tell
     /// the pack store and the search index to forget each one, the same way
-    /// `karmayoga_service::mailsync::passes` already does for
+    /// `karmayoga_service::mail::sync::passes` already does for
     /// [`Vault::remove_mail_uids`]'s own pairs.
     pub fn delete_mailbox(&self, id: MailboxId) -> Result<Vec<(MailMessageId, PackRef)>> {
         self.writable()?;
@@ -224,7 +224,7 @@ impl Vault {
     /// returned pairs are: every message this removal made genuinely dead,
     /// paired with the pack address it was stored under. The caller is
     /// expected to mark each one dead in the pack store and drop it from
-    /// the search index -- see `karmayoga_service::mailsync::passes`'s own
+    /// the search index -- see `karmayoga_service::mail::sync::passes`'s own
     /// callers of this method for where that actually happens.
     pub fn remove_mail_uids(
         &self,
@@ -415,7 +415,7 @@ impl Vault {
     /// accompany it) entirely, which is what lets a caller check a
     /// condition -- "is this draft still queued under the op I think it
     /// is" -- and walk away cleanly when it no longer holds, exactly the
-    /// way the bare read-then-save each of `karmayoga_service::outbox`'s
+    /// way the bare read-then-save each of `karmayoga_service::mail::outbox`'s
     /// `set_draft_message_id`, `on_success`'s `Appended` arm and
     /// `mark_draft_sent` used to before this existed, and the very race
     /// [`Vault::apply_thread_ops`], [`Vault::queue_draft_send`] and
@@ -1262,7 +1262,7 @@ impl Vault {
     ///
     /// "Never actually been attempted" is its own check, separate from the
     /// window: the drain loop's retry arm
-    /// (`karmayoga_service::outbox::drain_outbox`) returns a `Send` op that
+    /// (`karmayoga_service::mail::outbox::drain_outbox`) returns a `Send` op that
     /// failed with a *retryable* error to exactly `Pending`, with
     /// `not_before` pushed out by the backoff schedule (thirty seconds up
     /// to an hour) -- so `state == Pending && now < not_before` alone would
