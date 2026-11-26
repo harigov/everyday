@@ -175,7 +175,7 @@ impl Badge {
     /// and nothing about the vault depends on it.
     fn apply(&self, app: &AppHandle, count: u64) {
         #[cfg(target_os = "macos")]
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) {
             let n = (count > 0).then(|| i64::try_from(count).unwrap_or(i64::MAX));
             if let Err(e) = window.set_badge_count(n) {
                 tracing::warn!(error = %e, "could not set the Dock badge");
@@ -183,7 +183,7 @@ impl Badge {
         }
 
         #[cfg(target_os = "windows")]
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) {
             let icon = label(count).map(|text| {
                 tauri::image::Image::new_owned(overlay_rgba(&text), OVERLAY_SIZE, OVERLAY_SIZE)
             });

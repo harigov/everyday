@@ -1306,7 +1306,7 @@ fn raise_notice(app: &AppHandle, key: &str, text: &NoticeText) {
 }
 
 fn window_in_front(app: &AppHandle) -> bool {
-    app.get_webview_window("main")
+    app.get_webview_window(crate::MAIN_WINDOW)
         .is_some_and(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false))
 }
 

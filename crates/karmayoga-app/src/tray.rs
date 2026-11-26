@@ -835,7 +835,7 @@ fn build(
 /// three different causes and only doing one of them fixes one of them. Also
 /// what a second launch does -- see the single-instance plugin in `lib.rs`.
 pub fn raise_window(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) else {
         return;
     };
     let _ = window.unminimize();
@@ -890,7 +890,7 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             if let Some(state) = app.try_state::<crate::state::AppState>() {
                 state.quit();
             }
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) {
                 let _ = window.close();
             }
         }

@@ -44,7 +44,7 @@ use karmayoga_service::ctx::Ctx;
 use karmayoga_service::error::{CommandError, CommandResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_global_shortcut::Shortcut;
 
 use crate::hotkey::{self, Binding, Hotkeys, KeyStatus};
@@ -251,18 +251,10 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(LABEL) {
         return Ok(window);
     }
-    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("writing.html".into()))
-        .title("Writing help")
-        .inner_size(desktop_size().0, desktop_size().1)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .resizable(false)
-        .skip_taskbar(true)
+    crate::overlay::popup_builder(app, LABEL, "writing.html", "Writing help", desktop_size())
         .always_on_top(true)
         .visible(false)
         .focused(true)
-        .on_navigation(crate::navigation::guard(crate::navigation::dev_url(app)))
         .build()
         // Over the app whose text it is helping with. See `overlay`.
         .inspect(crate::overlay::float_over_full_screen)

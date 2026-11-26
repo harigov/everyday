@@ -52,7 +52,7 @@ use crate::SAVE_AND_CLOSE;
 const PREFIX: &str = "app-";
 
 /// The main window's label, from `tauri.conf.json`.
-pub const MAIN: &str = "main";
+pub(crate) use crate::MAIN_WINDOW as MAIN;
 
 /// Asks the main window to show an app, or Settings. Its other half is
 /// `onShowInMain` in `ui/src/lib/api.ts`.
