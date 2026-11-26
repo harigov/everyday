@@ -66,6 +66,7 @@ use crate::id::{AreaId, ConversationId, GoalId};
 use crate::purpose::Purpose;
 use crate::record::RecordKind;
 use crate::vault::Vault;
+use crate::zone::zone_of;
 use jiff::civil::Date;
 
 /// Declare one entry in a domain's `TOOLS` slice.
@@ -1090,8 +1091,12 @@ impl<'a> ToolContext<'a> {
     /// that says when something will next happen agrees with the one that
     /// says what is due today.
     pub fn now(&self) -> jiff::Zoned {
-        jiff::Timestamp::now()
-            .to_zoned(jiff::tz::TimeZone::get(self.tz).unwrap_or(jiff::tz::TimeZone::UTC))
+        jiff::Timestamp::now().to_zoned(self.zone())
+    }
+
+    /// The person's own zone, which every time the model is told is shown in.
+    pub fn zone(&self) -> jiff::tz::TimeZone {
+        zone_of(self.tz)
     }
 }
 
@@ -1625,9 +1630,7 @@ pub fn find(name: &str) -> Option<&'static Tool> {
 /// subject or a location on a confirmation card's first line, which is what
 /// the chat panel and the Matrix question both treat as the card's own line,
 /// everything after it being the long text below.
-pub(crate) fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
+pub(crate) use crate::text::one_line;
 
 /// Whether a `body` argument would throw away words that are already there:
 /// what the record holds is not empty, and what it is to be given is not the

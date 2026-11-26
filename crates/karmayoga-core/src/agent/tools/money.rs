@@ -80,6 +80,7 @@ use crate::money::{
     Txn, TxnPatch, TxnQuery, format_minor, parse_decimal,
 };
 use crate::timestamped::Timestamped;
+use crate::text::one_line_ellipsized;
 
 /// How far back `find_transactions` looks when nobody says.
 const DEFAULT_DAYS: u32 = 30;
@@ -438,17 +439,6 @@ fn means_none(raw: &str) -> bool {
     )
 }
 
-/// At most `max` characters of `words`, flattened onto one line, with an
-/// ellipsis when anything was cut. Characters, never bytes: a multi-byte
-/// character sliced in half is not a shorter string but a corrupt one.
-fn cap(words: &str, max: usize) -> String {
-    let flat = one_line(words);
-    match flat.char_indices().nth(max) {
-        Some((end, _)) => format!("{}\u{2026}", &flat[..end]),
-        None => flat,
-    }
-}
-
 fn count_txns(n: usize) -> String {
     if n == 1 { "1 transaction".to_string() } else { format!("{n} transactions") }
 }
@@ -666,7 +656,7 @@ fn account_json(account: &BankAccount, link: Option<&LinkSummary>) -> Value {
                 m.insert("last_synced".into(), json!(ok.to_string()));
             }
             if let Some(error) = &summary.last_error {
-                m.insert("sync_error".into(), json!(cap(error, ERROR_CAP)));
+                m.insert("sync_error".into(), json!(one_line_ellipsized(error, ERROR_CAP)));
             }
         }
         None if account.is_manual() => {
@@ -715,11 +705,11 @@ fn txn_json(txn: &Txn, names: &Names) -> Value {
     let mut words = Map::new();
     let payee = txn.payee.trim();
     if !payee.is_empty() {
-        words.insert("payee".into(), json!(cap(payee, BANK_PAYEE_CAP)));
+        words.insert("payee".into(), json!(one_line_ellipsized(payee, BANK_PAYEE_CAP)));
     }
     let description = txn.description.trim();
     if !description.is_empty() && description != payee {
-        words.insert("description".into(), json!(cap(description, DESCRIPTION_CAP)));
+        words.insert("description".into(), json!(one_line_ellipsized(description, DESCRIPTION_CAP)));
     }
     if !words.is_empty() {
         m.insert("untrusted_text".into(), Value::Object(words));
@@ -939,7 +929,7 @@ fn recurring_json(series: &Recurring, names: &Names) -> Value {
     // The payee as shown: the person's name for it or the bank's, and this
     // cannot tell which -- so it is the bank's, as far as a model knows.
     let mut words = Map::new();
-    words.insert("payee".into(), json!(cap(&series.payee, BANK_PAYEE_CAP)));
+    words.insert("payee".into(), json!(one_line_ellipsized(&series.payee, BANK_PAYEE_CAP)));
     m.insert("untrusted_text".into(), Value::Object(words));
     Value::Object(m)
 }
@@ -1198,13 +1188,6 @@ mod tests {
         }
         assert!(!means_none(&MoneyCategoryId::new().to_string()));
         assert!(!means_none(""));
-    }
-
-    #[test]
-    fn a_long_bank_line_is_cut_on_a_character_and_kept_on_one_line() {
-        assert_eq!(cap("caf\u{e9}\n  au lait", 6), "caf\u{e9} a\u{2026}");
-        assert_eq!(cap("short", 10), "short");
-        assert_eq!(cap("exact", 5), "exact", "exactly the cap is whole");
     }
 
     /// The catalogue's half of the module docs' promises: every money tool

@@ -67,6 +67,7 @@ use crate::mail::{Address, Message};
 use crate::news::{ContentRef, EnclosureKind};
 use crate::record::RecordKind;
 use crate::task::{BlockKind, BlockSubject, TaskStatus};
+use crate::zone::zone_of;
 
 /// The most of each list [`describe`] reads. The interface sends one or two
 /// of each; a client that sent a thousand would otherwise be a way to make
@@ -382,7 +383,7 @@ pub struct Described {
 /// second behind a delete, and saying "something you cannot see" about a
 /// task list the vault does not have would only invite a question.
 pub fn describe(ctx: &ToolContext<'_>, screen: &OnScreen) -> Described {
-    let tz = TimeZone::get(ctx.tz).unwrap_or(TimeZone::UTC);
+    let tz = zone_of(ctx.tz);
     let mut lines = vec![format!("- App: {}.", screen.app.phrase())];
     if let Some(view) = screen.view.as_deref().and_then(quote) {
         lines.push(format!("- View: {view}."));

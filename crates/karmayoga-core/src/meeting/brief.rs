@@ -37,6 +37,7 @@ use crate::keepintouch::{
 use crate::library::{Item, LogEntry, Via};
 use crate::mail::FollowUpKind;
 use crate::task::{Task, TaskPerson, TaskStatus};
+use crate::zone::zone_of;
 
 /// The most agenda lines a brief keeps.
 pub const MAX_AGENDA: usize = 8;
@@ -1624,7 +1625,7 @@ impl Facts {
     /// somebody else.
     pub fn prompt(&self) -> String {
         use std::fmt::Write as _;
-        let zone = jiff::tz::TimeZone::get(&self.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = zone_of(&self.tz);
         let (start, end) = (self.start.to_zoned(zone.clone()), self.end.to_zoned(zone));
         let mut out = String::new();
         let _ = writeln!(out, "Meeting: {}", self.title);
@@ -2015,7 +2016,7 @@ pub fn brief_for_model(brief: &MeetingBrief) -> Value {
 /// the zone the brief was made in -- UTC for a brief that names none.
 fn when_in_words(brief: &MeetingBrief) -> String {
     let zone_name = if brief.tz.trim().is_empty() { "UTC" } else { brief.tz.trim() };
-    let zone = jiff::tz::TimeZone::get(zone_name).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = zone_of(zone_name);
     let (start, end) = (brief.start.to_zoned(zone.clone()), brief.end.to_zoned(zone));
     let mut out = start.strftime("%a %-d %b, %H:%M").to_string();
     if brief.end > brief.start {

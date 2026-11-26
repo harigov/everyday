@@ -88,6 +88,7 @@ use crate::store::tasks::{TaskQuery, TaskSort};
 use crate::store::trackers::ReadingQuery;
 use crate::task::TaskStatus;
 use crate::vault::Vault;
+use crate::zone::zone_of;
 
 // ---- caps -------------------------------------------------------------
 
@@ -650,7 +651,7 @@ fn local_date_ts(ts: jiff::Timestamp, vault: &Vault) -> Date {
         .ok()
         .and_then(|s| s.timezone)
         .unwrap_or_else(crate::model::system_tz);
-    let zone = jiff::tz::TimeZone::get(&tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = zone_of(&tz);
     ts.to_zoned(zone).date()
 }
 

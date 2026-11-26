@@ -19,6 +19,7 @@
 //! `karmayoga_service::mail::voice` is what calls all of this against a real
 //! vault; everything below is tested without one.
 
+use crate::markup::escape_html;
 use serde::{Deserialize, Serialize};
 
 /// What a person's own sent mail says about how they write. Every field is
@@ -871,21 +872,6 @@ fn push_run(out: &mut String, run: &[Line<'_>]) {
             out.push_str(if first.ordered { "</ol>" } else { "</ul>" });
         }
     }
-}
-
-fn escape_html(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 // ---- greeting / sign-off candidates ---------------------------------------

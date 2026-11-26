@@ -463,7 +463,7 @@ fn run_update_project(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(d) = args.opt_date("start_date")? {
         p.start_date = Some(d);
     }
-    if args.get("tags").is_some() {
+    if args.has_key("tags") {
         p.tags = args.strings("tags");
     }
     p.touch();
@@ -655,7 +655,7 @@ fn apply_update_task_args(ctx: &ToolContext<'_>, args: &Args<'_>, mut t: Task) -
     if let Some(e) = args.opt_u32("estimate_minutes") {
         t.estimate_minutes = Some(e);
     }
-    if args.get("tags").is_some() {
+    if args.has_key("tags") {
         t.tags = args.strings("tags");
     }
     if args.bool_or("clear_purpose", false) {
@@ -708,7 +708,7 @@ fn reminder_from_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Option<j
         return Ok(None);
     };
     let date = date.unwrap_or(ctx.today);
-    let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = ctx.zone();
     let at = zone
         .to_ambiguous_zoned(date.to_datetime(time))
         .later()
@@ -784,7 +784,7 @@ fn say_when(ctx: &ToolContext<'_>, t: &Task, out: &mut Value) {
 
 /// `at` as a wall-clock moment where they are: "2026-10-27 17:00".
 fn local(ctx: &ToolContext<'_>, at: jiff::Timestamp) -> String {
-    let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = ctx.zone();
     at.to_zoned(zone).strftime("%Y-%m-%d %H:%M").to_string()
 }
 

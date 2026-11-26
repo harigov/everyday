@@ -340,7 +340,7 @@ fn apply_update_note_args(args: &Args<'_>, mut note: Note) -> Result<Note> {
     if let Some(title) = args.opt_str("title") {
         note.title = title.to_string();
     }
-    if args.get("tags").is_some() {
+    if args.has_key("tags") {
         note.tags = args.strings("tags");
     }
     if let Some(pinned) = args.opt_bool("pinned") {

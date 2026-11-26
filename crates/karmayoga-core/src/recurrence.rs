@@ -28,6 +28,7 @@
 //! and another on yours.
 
 use crate::error::{Error, Result};
+use crate::zone::zone_of;
 use jiff::civil::{Date, DateTime};
 use serde::{Deserialize, Serialize};
 
@@ -342,7 +343,7 @@ impl Recurrence {
             if all_day {
                 parts.push(format!("UNTIL={}", until.strftime("%Y%m%d")));
             } else {
-                let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
+                let zone = zone_of(tz);
                 let last = until.to_datetime(jiff::civil::time(23, 59, 59, 0));
                 let instant = zone
                     .to_ambiguous_zoned(last)

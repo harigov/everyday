@@ -36,6 +36,7 @@ use crate::error::{Error, Result};
 use crate::id::{CalendarId, EventId};
 use crate::recurrence::{Frequency, Recurrence, Weekday};
 use crate::task::{BlockSubject, TimeBlock};
+use crate::zone::zone_of;
 
 /// What `calendar_id` is called when it means this computer rather than an
 /// account's calendar.
@@ -479,7 +480,7 @@ fn clock(args: &Args<'_>, key: &str) -> Result<Option<jiff::civil::Time>> {
 /// change of clocks resolves to the later side of the gap, the way every
 /// calendar app does.
 fn at(tz: &str, date: jiff::civil::Date, time: jiff::civil::Time) -> Result<jiff::Timestamp> {
-    let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = zone_of(tz);
     zone.to_ambiguous_zoned(date.to_datetime(time))
         .later()
         .map(|z| z.timestamp())
@@ -758,7 +759,7 @@ fn apply_update(
     let new_start = clock(args, "start_time")?;
     let new_end = clock(args, "end_time")?;
     if new_date.is_some() || new_start.is_some() || new_end.is_some() {
-        let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = ctx.zone();
         let old_start = draft.start.to_zoned(zone.clone());
         let old_end = draft.end.to_zoned(zone);
         let length = draft.end.duration_since(draft.start);

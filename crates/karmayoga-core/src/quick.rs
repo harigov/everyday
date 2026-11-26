@@ -209,7 +209,7 @@ impl QuickContext {
     /// is not one this machine knows. For a record's own date, which is
     /// stored as an instant.
     pub fn date_of(&self, at: jiff::Timestamp) -> jiff::civil::Date {
-        let zone = jiff::tz::TimeZone::get(&self.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zone = zone_of(&self.tz);
         at.to_zoned(zone).date()
     }
 }
@@ -1520,6 +1520,7 @@ use crate::library::{Item, Kind};
 use crate::purpose::{Area, Goal};
 use crate::tracker::Tracker;
 use crate::websearch::SearchResult;
+use crate::zone::zone_of;
 
 /// Number a list the way every prompt in this file numbers one.
 fn numbered(items: impl IntoIterator<Item = String>) -> String {

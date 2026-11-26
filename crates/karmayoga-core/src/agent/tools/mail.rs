@@ -94,8 +94,10 @@ use crate::mail::{
     Thread, compose,
 };
 use crate::mailsearch::MailQuery;
+use crate::markup::strip_tags;
 use crate::proposal::{Payload, ProposalKind};
 use crate::timestamped::Timestamped;
+use crate::zone::zone_of;
 
 /// [`search_mail`]'s hard cap, per the plan's table -- "Capped at 25."
 const SEARCH_CAP: u32 = 25;
@@ -771,25 +773,8 @@ fn find_mailbox(ctx: &ToolContext<'_>, account: &Account, role: MailboxRole) -> 
     )
 }
 
-/// Strip HTML tags out with no parser at all -- this is a preview for a
-/// confirmation card and a tool result, not something rendered, so a
-/// malformed fragment degrading gracefully matters far more than fidelity.
-fn strip_html(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
-    }
-    out
-}
-
 fn first_lines(html: &str, max_lines: usize, max_chars: usize) -> String {
-    let text = strip_html(html);
+    let text = strip_tags(html);
     let mut lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     lines.truncate(max_lines);
     lines.join(" ").chars().take(max_chars).collect()
@@ -836,7 +821,7 @@ pub(super) fn card_text(text: &str, what: &str) -> String {
 /// and any other attribute that carries an address (`style`'s `url()`, a
 /// `srcset`, a `background`) or words of its own (`title`, `data-*`,
 /// `aria-*`) -- a recipient's mail client fetches the first kind by itself,
-/// and the second is simply sent. Unlike [`strip_html`], which a comment or
+/// and the second is simply sent. Unlike [`strip_tags`], which a comment or
 /// a `>` inside an attribute could hide text from.
 ///
 /// Not a renderer, and not meant to be one: no parser, a malformed
@@ -2036,7 +2021,7 @@ fn parse_response(args: &Args<'_>) -> Result<AttendeeResponse> {
 /// service.
 fn format_invite_when(invite: &Invite, tz: &str) -> String {
     let zoned =
-        invite.start.to_zoned(jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC));
+        invite.start.to_zoned(zone_of(tz));
     let fmt = if invite.all_day { "%a, %-d %b" } else { "%a %H:%M" };
     jiff::fmt::strtime::format(fmt, &zoned).unwrap_or_else(|_| invite.start.to_string())
 }

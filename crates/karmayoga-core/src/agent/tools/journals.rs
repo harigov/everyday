@@ -825,7 +825,7 @@ fn run_update_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(d) = args.opt_date("date")? {
         entry.local_date = d;
     }
-    if args.get("tags").is_some() {
+    if args.has_key("tags") {
         entry.tags = args.strings("tags");
     }
     if let Some(starred) = args.opt_bool("starred") {

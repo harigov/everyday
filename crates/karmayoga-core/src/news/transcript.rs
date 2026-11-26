@@ -35,6 +35,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::text::one_line;
+
 /// The property a recording in Files carries naming its transcript's file
 /// (a [`crate::files::PropValue::Text`] holding the id).
 pub const TRANSCRIPT_PROPERTY: &str = "feed.transcript";
@@ -181,11 +183,6 @@ fn tidy(text: &str) -> String {
         }
     }
     blocks.join("\n\n")
-}
-
-/// `text` on one line.
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ── The file ─────────────────────────────────────────────────────────────

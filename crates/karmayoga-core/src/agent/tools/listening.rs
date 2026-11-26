@@ -36,8 +36,7 @@
 
 use std::collections::HashSet;
 
-use jiff::tz::TimeZone;
-use jiff::{Span, Timestamp};
+use jiff::Span;
 use serde_json::{Map, Value, json};
 
 use super::files::{check_access, check_may_read, healths};
@@ -52,6 +51,7 @@ use crate::news::transcript::{self, TRANSCRIPT_PROPERTY};
 use crate::news::{ConsumeMode, ConsumedQuery, Consumption, ContentRef};
 use crate::vault::Vault;
 use crate::vault::upnext_entry::file_title;
+use crate::zone::start_of_day;
 
 /// The most things whose words one `recall` searches: the newest of those in
 /// the range. The index is asked about their files at once, and a question
@@ -241,12 +241,6 @@ fn mode_word(mode: ConsumeMode) -> &'static str {
     }
 }
 
-/// The first instant of `date` in the person's zone.
-fn start_of_day(date: jiff::civil::Date, tz: &str) -> Option<Timestamp> {
-    let zone = TimeZone::get(tz).unwrap_or(TimeZone::UTC);
-    date.at(0, 0, 0, 0).to_zoned(zone).ok().map(|z| z.timestamp())
-}
-
 /// Whether `file` is there to be read: in the folder, and not one of Health's.
 fn readable_file(file: &FileEntry) -> bool {
     file.origin != FileOrigin::Health && matches!(file.status, FileStatus::Present)
@@ -372,7 +366,7 @@ fn search_passages(ctx: &ToolContext<'_>, query: &str, things: &[Consumption]) -
 
 /// One thing read, heard or watched, as the model is shown it.
 fn thing_json(ctx: &ToolContext<'_>, c: &Consumption, passages: &[&DocSearchHit]) -> Value {
-    let zone = TimeZone::get(ctx.tz).unwrap_or(TimeZone::UTC);
+    let zone = ctx.zone();
     let (kind, id) = what_word(&c.what);
     let mut m = Map::new();
     m.insert("id".into(), json!(c.id.to_string()));

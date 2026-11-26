@@ -503,11 +503,6 @@ fn title_key(kind: &JobKind) -> &'static str {
     }
 }
 
-/// The person's own zone, which every time the model is told is shown in.
-fn zone_of(ctx: &ToolContext<'_>) -> TimeZone {
-    TimeZone::get(ctx.tz).unwrap_or(TimeZone::UTC)
-}
-
 /// `at` as a local date and time the model can say back: `2026-11-20 18:40`.
 fn stamp(at: Timestamp, zone: &TimeZone) -> String {
     at.to_zoned(zone.clone()).strftime("%Y-%m-%d %H:%M").to_string()
@@ -701,7 +696,7 @@ fn run_start_watch(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     ctx.vault.save_job(&job)?;
 
     let mut out = watch_json("started", ctx, &job)?;
-    let zone = zone_of(ctx);
+    let zone = ctx.zone();
     let until = job.rules.until.map(|u| stamp(u, &zone)).unwrap_or_default();
     let ring = if job.rules.call_me {
         ", and it will ring them if they are not already talking to you"
@@ -957,7 +952,7 @@ fn run_update_job(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     out["status"] = json!(job.status.as_str());
     out[title_key(&job.kind)] = json!(title);
     out["changed"] = json!(changed);
-    let zone = zone_of(ctx);
+    let zone = ctx.zone();
     if !withheld {
         out["rules"] = json!(job.rules.in_words(job.kind.probe(), &zone));
     }
@@ -1042,7 +1037,7 @@ fn job_started(action: &str, job: &Job) -> Result<Value> {
 /// to tell the person.
 fn watch_json(action: &str, ctx: &ToolContext<'_>, job: &Job) -> Result<Value> {
     let mut out = job_started(action, job)?;
-    let (now, zone) = (Timestamp::now(), zone_of(ctx));
+    let (now, zone) = (Timestamp::now(), ctx.zone());
     if let Some(probe) = job.kind.probe() {
         out["looks"] = json!(probe.in_words());
         out["rules"] = json!(job.rules.in_words(Some(probe), &zone));
@@ -1118,7 +1113,7 @@ fn job_json(ctx: &ToolContext<'_>, job: &Job, detail: bool) -> Value {
             JobKind::Watch { probe, .. } => {
                 map.insert("looks".into(), json!(probe.in_words()));
                 map.insert("probe".into(), probe_json(probe));
-                map.insert("rules".into(), json!(job.rules.in_words(Some(probe), &zone_of(ctx))));
+                map.insert("rules".into(), json!(job.rules.in_words(Some(probe), &ctx.zone())));
             }
         }
         // What the job's own model wrote at the end, and what a watch saw and
@@ -1142,7 +1137,7 @@ fn stepped_facts(
     withheld: bool,
     map: &mut Map<String, Value>,
 ) {
-    let (now, zone) = (Timestamp::now(), zone_of(ctx));
+    let (now, zone) = (Timestamp::now(), ctx.zone());
     if job.kind.has_rules() {
         if let Some(until) = job.rules.until {
             map.insert("until".into(), json!(stamp_and_distance(until, now, &zone)));
@@ -1209,7 +1204,7 @@ fn untrusted_text(ctx: &ToolContext<'_>, job: &Job, withheld: bool) -> Map<Strin
         }
     }
     if !job.updates.is_empty() {
-        let zone = zone_of(ctx);
+        let zone = ctx.zone();
         let first = job.updates.len().saturating_sub(UPDATES_SHOWN);
         let recent: Vec<Value> = job.updates[first..]
             .iter()

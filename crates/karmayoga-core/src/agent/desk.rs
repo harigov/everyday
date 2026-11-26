@@ -10,6 +10,7 @@
 //! twenty minutes" or "an alarm at seven" rings. See `docs/plans/desk.md`.
 
 use crate::error::{Error, Result};
+use crate::urlenc::encode;
 use jiff::{SignedDuration, Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
 
@@ -165,21 +166,6 @@ pub fn validate_sites(own: &[SearchSite]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Every character but the unreserved ones as `%XX` of its UTF-8 bytes --
-/// a space included, as `%20` rather than `+`, which is right in a path as
-/// well as in a query.
-fn encode(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
 }
 
 /// A name as compared: lower-case, single-spaced, without a leading "the"

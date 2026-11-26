@@ -19,6 +19,7 @@ use super::EventRef;
 use super::identify::parse_attendee;
 use crate::id::TemplateId;
 use crate::template::{MEETING_PLACEHOLDERS, Template, TemplateUse, parse_placeholder};
+use crate::zone::zone_of;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use std::collections::HashSet;
@@ -241,7 +242,7 @@ fn resolved_tz(tz: &str) -> TimeZone {
     if tz.is_empty() {
         return TimeZone::UTC;
     }
-    TimeZone::get(tz).unwrap_or(TimeZone::UTC)
+    zone_of(tz)
 }
 
 /// "Wednesday 16 September 2026".

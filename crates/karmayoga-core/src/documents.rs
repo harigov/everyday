@@ -55,6 +55,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::files::FileEntry;
 use crate::id::FileId;
+use crate::text::one_line;
 
 /// What a [`DocText`] was parsed under. Raised whenever a parser changes
 /// what it produces, so every cached copy is parsed again rather than read in
@@ -744,11 +745,6 @@ impl DocText {
 }
 
 // ---- reading a block, searching and matching --------------------------------
-
-/// `text` with every run of white space made one space.
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
 
 /// One block as the assistant reads it: its words, with the little Markdown
 /// that says what kind of block it is. Empty for a block with nothing to say.

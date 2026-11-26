@@ -48,7 +48,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::websearch::encode;
+use crate::text::one_line;
+use crate::urlenc::encode;
 
 /// The furthest ahead Open-Meteo forecasts.
 pub const MAX_DAYS: u8 = 16;
@@ -173,7 +174,7 @@ impl Lookup {
 ///
 /// Empty when there is nothing to ask about at all.
 pub fn lookups(place: &str) -> Vec<Lookup> {
-    let whole = collapse(place);
+    let whole = one_line(place);
     if whole.is_empty() {
         return Vec::new();
     }
@@ -580,12 +581,6 @@ pub fn compass(degrees: f64) -> &'static str {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
-
-/// Whitespace collapsed to single spaces and trimmed, so "  Seattle ,  WA "
-/// is asked about as "Seattle , WA" and cut at its comma cleanly.
-fn collapse(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
 
 /// A US state's (or DC's) full name from its postal abbreviation.
 fn us_state(abbreviation: &str) -> Option<&'static str> {

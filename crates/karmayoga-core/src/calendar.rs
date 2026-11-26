@@ -62,6 +62,7 @@
 use crate::id::{AccountId, AreaId, CalendarId, EventId};
 use crate::recurrence::Recurrence;
 use crate::timestamped::Timestamped;
+use crate::zone::zone_of;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -943,7 +944,7 @@ pub const MAX_GUESTS: usize = 100;
 
 impl EventDraft {
     fn zone(&self) -> jiff::tz::TimeZone {
-        jiff::tz::TimeZone::get(&self.tz).unwrap_or(jiff::tz::TimeZone::UTC)
+        zone_of(&self.tz)
     }
 
     /// The wall-clock start, in `tz`.

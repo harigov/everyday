@@ -703,10 +703,10 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(d) = args.opt_date("finished_on")? {
         item.finished_on = Some(d);
     }
-    if args.get("tags").is_some() {
+    if args.has_key("tags") {
         item.tags = args.strings("tags");
     }
-    if args.get("fields").is_some() {
+    if args.has_key("fields") {
         let kind = ctx.vault.kind(item.kind_id)?;
         set_fields(&kind, args, &mut item)?;
     }

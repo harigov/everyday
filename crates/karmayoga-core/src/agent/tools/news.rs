@@ -55,6 +55,7 @@ use crate::news::{
 use crate::store::news::StoryQuery;
 use crate::vault::QueuePlace;
 use crate::vault::upnext_entry::ContentFacts;
+use crate::zone::{start_of_day, zone_of};
 
 /// Wire spellings for [`HnList`], in the order its variants are declared.
 const HN_LISTS: &[&str] = &["front", "show", "ask", "top"];
@@ -914,14 +915,8 @@ fn parse_up_to(raw: &str, tz: &str) -> Option<Timestamp> {
     } else {
         raw.parse::<DateTime>().ok()?
     };
-    let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let zone = zone_of(tz);
     local.to_zoned(zone).ok().map(|z| z.timestamp())
-}
-
-/// The first instant of `date` in the person's zone.
-fn start_of_day(date: Date, tz: &str) -> Option<Timestamp> {
-    let zone = jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC);
-    date.at(0, 0, 0, 0).to_zoned(zone).ok().map(|z| z.timestamp())
 }
 
 fn run_save_story(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
