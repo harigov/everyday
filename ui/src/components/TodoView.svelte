@@ -525,4 +525,20 @@
     flex: 1 0 100%;
     justify-content: space-between;
   }
+
+  /* A phone on its side: the heading, the line to add a task and the
+     filters fill the whole of a short screen, so they scroll away with the
+     tasks rather than standing over them. */
+  @media (max-height: 500px) {
+    :global([data-phone]) .pane {
+      overflow-y: auto;
+    }
+    :global([data-phone]) .pane > :global(*) {
+      flex: none;
+    }
+    :global([data-phone]) .pane :global(.scroll.list) {
+      overflow: visible;
+      min-height: auto;
+    }
+  }
 </style>
