@@ -74,7 +74,6 @@ use karmayoga_core::chat::{ChatLink, Via};
 use karmayoga_core::{ChatLinkId, ConversationId, FileId, Vault};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
@@ -1050,11 +1049,7 @@ fn vault_dir_name(vault: &Vault) -> String {
 /// store behind a locked vault.
 pub fn store_passphrase(vault: &Vault, link: ChatLinkId) -> karmayoga_core::Result<String> {
     let key = vault.derive_subkey(&store_key_label(link))?;
-    let mut hex = String::with_capacity(key.expose().len() * 2);
-    for byte in key.expose() {
-        write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    Ok(hex)
+    Ok(karmayoga_core::hex::encode(key.expose()))
 }
 
 /// The label a link's store key is derived under. An input to the cipher,

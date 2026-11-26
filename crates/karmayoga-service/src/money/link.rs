@@ -49,7 +49,6 @@ use karmayoga_core::money::{BankLink, LinkProvider, LinkState, PlaidEnvironment}
 use rand::RngCore;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::sync::{Arc, MutexGuard};
 
 /// How long a session lives. Plaid's own link tokens last longer; a person
@@ -394,10 +393,7 @@ fn too_many() -> CommandError {
 fn session_id() -> String {
     let mut bytes = [0u8; SESSION_BYTES];
     rand::rng().fill_bytes(&mut bytes);
-    bytes.iter().fold(String::with_capacity(SESSION_BYTES * 2), |mut hex, byte| {
-        let _ = write!(hex, "{byte:02x}");
-        hex
-    })
+    karmayoga_core::hex::encode(&bytes)
 }
 
 /// What a new link is called: the institution's name as Plaid gave it,
