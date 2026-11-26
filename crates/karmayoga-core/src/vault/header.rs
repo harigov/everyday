@@ -353,7 +353,7 @@ pub(super) fn seal_settings(
         return Ok(None);
     }
     let sealed = cipher.seal(SETTINGS_AAD, &serde_json::to_vec(settings)?)?;
-    Ok(Some(to_hex(&sealed)))
+    Ok(Some(crate::hex::encode(&sealed)))
 }
 
 /// Recover what [`seal_settings`] wrote.
@@ -377,7 +377,7 @@ const KEY_CHECK_PLAINTEXT: &[u8] = b"everyday.key-check.v1";
 const KEY_CHECK_AAD: &[u8] = b"everyday.key-check.v1";
 
 pub(super) fn seal_key_check(dek: &SecretKey) -> Result<String> {
-    Ok(to_hex(&AeadCipher::new(dek).seal(KEY_CHECK_AAD, KEY_CHECK_PLAINTEXT)?))
+    Ok(crate::hex::encode(&AeadCipher::new(dek).seal(KEY_CHECK_AAD, KEY_CHECK_PLAINTEXT)?))
 }
 
 /// Does this key open the check value in the header?
@@ -388,15 +388,6 @@ pub(super) fn seal_key_check(dek: &SecretKey) -> Result<String> {
 pub(super) fn key_check_passes(dek: &SecretKey, sealed_hex: &str) -> bool {
     let Ok(sealed) = from_hex(sealed_hex) else { return false };
     AeadCipher::new(dek).open(KEY_CHECK_AAD, &sealed).is_ok_and(|p| p == KEY_CHECK_PLAINTEXT)
-}
-
-pub(super) fn to_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
 }
 
 pub(super) fn from_hex(s: &str) -> Result<Vec<u8>> {
@@ -420,6 +411,15 @@ mod tests {
     use super::super::{Vault, VaultConfig};
     use super::*;
     use crate::testing::registry;
+
+    /// The strings the header's sealed settings and key check are bound to;
+    /// a vault written under one cannot be opened under another.
+    #[test]
+    fn header_seal_labels_are_pinned() {
+        assert_eq!(SETTINGS_AAD, b"everyday.backend-settings.v1");
+        assert_eq!(KEY_CHECK_AAD, b"everyday.key-check.v1");
+        assert_eq!(KEY_CHECK_PLAINTEXT, b"everyday.key-check.v1");
+    }
 
     fn config(password: Option<&str>) -> VaultConfig {
         VaultConfig {

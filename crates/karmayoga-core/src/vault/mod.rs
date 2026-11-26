@@ -106,8 +106,7 @@ use crate::crypto::{
 use crate::error::{Error, Result};
 use crate::store::{BackendRegistry, BackendSettings, Capabilities, StoreStats};
 use header::{
-    cipher_for, read_header, remove_partial_vault, seal_key_check, seal_settings, to_hex,
-    write_header,
+    cipher_for, read_header, remove_partial_vault, seal_key_check, seal_settings, write_header,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -131,7 +130,7 @@ pub const HEADER_BACKUP_FILENAME: &str = "vault.json.bak";
 const STORE_DIRNAME: &str = "store";
 
 /// Options for [`Vault::create`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VaultConfig {
     pub name: String,
     pub backend: String,
@@ -146,6 +145,22 @@ pub struct VaultConfig {
     /// See [`VaultHeader::forget_key_seconds`]. 0, meaning never, is right
     /// for a vault that is going to be served.
     pub forget_key_seconds: u64,
+}
+
+/// Without the password, and without the backend's settings' values -- see
+/// [`BackendSettings`]'s own `Debug`: this holds both while a vault is made.
+impl std::fmt::Debug for VaultConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultConfig")
+            .field("name", &self.name)
+            .field("backend", &self.backend)
+            .field("settings", &self.settings)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("kdf", &self.kdf)
+            .field("auto_lock_seconds", &self.auto_lock_seconds)
+            .field("forget_key_seconds", &self.forget_key_seconds)
+            .finish()
+    }
 }
 
 impl Default for VaultConfig {
@@ -268,8 +283,8 @@ impl Vault {
                         backend: cfg.backend.clone(),
                         cipher: SUITE_XCHACHA20_POLY1305.into(),
                         kdf: Some(cfg.kdf),
-                        salt: Some(to_hex(&salt)),
-                        wrapped_key: Some(to_hex(&wrapped)),
+                        salt: Some(crate::hex::encode(&salt)),
+                        wrapped_key: Some(crate::hex::encode(&wrapped)),
                         backend_settings: None,
                         // Made by a build that has both timers, so there is
                         // nothing to carry across.

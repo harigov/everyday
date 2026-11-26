@@ -282,24 +282,13 @@ impl ScreenTimeStore for SqlStore {
     // ---- settings -------------------------------------------------------
 
     fn screen_settings(&self) -> Result<ScreenTimeSettings> {
-        let sealed = self.read().sealed("SELECT data FROM screen_settings WHERE id = 1", &[])?;
-        match sealed {
-            Some(sealed) => self.unseal(&screen_settings_aad(), &sealed),
-            // Never saved. The defaults -- three idle minutes, titles kept,
-            // nothing pruned -- are a real answer, as `meeting_settings`'
-            // are.
-            None => Ok(ScreenTimeSettings::default()),
-        }
+        // Never saved. The defaults -- three idle minutes, titles kept,
+        // nothing pruned -- are a real answer, as `meeting_settings`' are.
+        Ok(self.get_singleton("screen_settings", &screen_settings_aad())?.unwrap_or_default())
     }
 
     fn put_screen_settings(&self, settings: &ScreenTimeSettings) -> Result<()> {
-        let data = self.seal(&screen_settings_aad(), settings)?;
-        self.write().execute(
-            "INSERT INTO screen_settings (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("screen_settings", &screen_settings_aad(), settings)
     }
 }
 

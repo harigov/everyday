@@ -40,8 +40,7 @@ impl Vault {
     /// for one vault, which is all a dedupe key needs to be.
     pub fn news_key(&self, identity: &str) -> Result<String> {
         let key = self.derive_subkey(NEWS_KEY_LABEL)?;
-        let hash = blake3::keyed_hash(key.expose(), identity.as_bytes());
-        Ok(hash.to_hex()[..32].to_string())
+        Ok(key.keyed_id(identity))
     }
 
     // ---- sources --------------------------------------------------------

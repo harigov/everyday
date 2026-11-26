@@ -1023,7 +1023,7 @@ fn a_locked_vault_refuses_task_reads_before_it_refuses_the_backend() {
 #[test]
 fn hex_helpers_round_trip_and_reject_junk() {
     let bytes = [0u8, 1, 15, 16, 255];
-    assert_eq!(from_hex(&to_hex(&bytes)).unwrap(), bytes);
+    assert_eq!(from_hex(&crate::hex::encode(&bytes)).unwrap(), bytes);
     assert!(from_hex("abc").is_err(), "odd length");
     assert!(from_hex("zz").is_err(), "non-hex digits");
 }

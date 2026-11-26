@@ -95,21 +95,11 @@ impl LibraryStore for SqlStore {
     // ---- keeping in touch -------------------------------------------------
 
     fn keep_in_touch(&self) -> Result<KeepInTouch> {
-        let sealed = self.read().sealed("SELECT data FROM keep_in_touch WHERE id = 1", &[])?;
-        match sealed {
-            Some(sealed) => self.unseal(&keep_in_touch_aad(), &sealed),
-            None => Ok(KeepInTouch::default()),
-        }
+        Ok(self.get_singleton("keep_in_touch", &keep_in_touch_aad())?.unwrap_or_default())
     }
 
     fn put_keep_in_touch(&self, record: &KeepInTouch) -> Result<()> {
-        let data = self.seal(&keep_in_touch_aad(), record)?;
-        self.write().execute(
-            "INSERT INTO keep_in_touch (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("keep_in_touch", &keep_in_touch_aad(), record)
     }
 
     // ---- kinds ----------------------------------------------------------

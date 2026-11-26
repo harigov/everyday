@@ -6,7 +6,7 @@
 //! does and why the header's `key_check` exists.
 
 use super::header::{
-    cipher_for, from_hex, key_check_passes, open_settings, seal_key_check, seal_settings, to_hex,
+    cipher_for, from_hex, key_check_passes, open_settings, seal_key_check, seal_settings,
     write_header, write_rekeyed_header,
 };
 use super::session::Unlocked;
@@ -84,7 +84,7 @@ impl Vault {
     /// value to pass around, it is the thing the whole envelope protects.
     pub fn export_data_key(&self, password: Option<&str>) -> Result<crate::crypto::KeyText> {
         match self.data_key(password)? {
-            Some(key) => Ok(crate::crypto::KeyText::new(to_hex(key.expose()))),
+            Some(key) => Ok(crate::crypto::KeyText::new(crate::hex::encode(key.expose()))),
             // A vault with no password has no key to keep, and opens by
             // itself already. Saying so is better than handing back an empty
             // string that would look like a key.
@@ -291,8 +291,8 @@ impl Vault {
                 let kek = derive_key(password, &salt, kdf)?;
                 next.cipher = SUITE_XCHACHA20_POLY1305.into();
                 next.kdf = Some(kdf);
-                next.salt = Some(to_hex(&salt));
-                next.wrapped_key = Some(to_hex(&wrap_key(&kek, &dek)?));
+                next.salt = Some(crate::hex::encode(&salt));
+                next.wrapped_key = Some(crate::hex::encode(&wrap_key(&kek, &dek)?));
                 // The data key survives a password change, so the existing
                 // check value stays true. A vault old enough to have none
                 // gets one now.

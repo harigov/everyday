@@ -85,44 +85,30 @@ impl AgentStore for SqlStore {
     // ---- settings -------------------------------------------------------
 
     fn settings(&self) -> Result<AgentSettings> {
-        let sealed = self.read().sealed("SELECT data FROM agent_settings WHERE id = 1", &[])?;
-
         // Returned as decoded, `legacy_*` fields and all: a record from
         // before the models were application settings still names them, and
         // `Vault::model_settings` carries them over from here. A sealed
         // payload cannot be migrated in SQL -- a migration step is handed a
         // connection, not the cipher.
-        match sealed {
-            Some(sealed) => self.unseal(&settings_aad(), &sealed),
-            // Never configured. The default is a real answer -- the
-            // assistant is off -- so it is returned rather than an `Option`
-            // every caller would have to unwrap the same way.
-            None => Ok(AgentSettings::default()),
-        }
+        //
+        // Never configured is the default, a real answer -- the assistant is
+        // off -- so it is returned rather than an `Option` every caller would
+        // have to unwrap the same way.
+        Ok(self.get_singleton("agent_settings", &settings_aad())?.unwrap_or_default())
     }
 
     fn put_settings(&self, settings: &AgentSettings) -> Result<()> {
         settings.validate()?;
-        let data = self.seal(&settings_aad(), settings)?;
-        self.write().execute(
-            "INSERT INTO agent_settings (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("agent_settings", &settings_aad(), settings)
     }
 
     // ---- chat links -----------------------------------------------------
 
     fn chat_settings(&self) -> Result<ChatSettings> {
-        let sealed = self.read().sealed("SELECT data FROM chat_settings WHERE id = 1", &[])?;
-        match sealed {
-            Some(sealed) => self.unseal(&chat_settings_aad(), &sealed),
-            // Never configured. No links is a real answer -- the assistant
-            // answers nobody -- the same argument `settings` makes for
-            // returning the default rather than an `Option`.
-            None => Ok(ChatSettings::default()),
-        }
+        // Never configured. No links is a real answer -- the assistant
+        // answers nobody -- the same argument `settings` makes for returning
+        // the default rather than an `Option`.
+        Ok(self.get_singleton("chat_settings", &chat_settings_aad())?.unwrap_or_default())
     }
 
     fn put_chat_settings(&self, settings: &ChatSettings) -> Result<()> {
@@ -131,13 +117,7 @@ impl AgentStore for SqlStore {
         // for the next unlock to trip over, in a row nothing else can read
         // around.
         settings.validate()?;
-        let data = self.seal(&chat_settings_aad(), settings)?;
-        self.write().execute(
-            "INSERT INTO chat_settings (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("chat_settings", &chat_settings_aad(), settings)
     }
 
     // ---- the credential -------------------------------------------------
@@ -149,21 +129,11 @@ impl AgentStore for SqlStore {
         // Sealed as a bare JSON string under its own associated data, so it
         // cannot be swapped with the settings row by anyone editing the
         // database.
-        let data = self.seal(&secret_aad(), &key.trim())?;
-        self.write().execute(
-            "INSERT INTO agent_secret (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("agent_secret", &secret_aad(), &key.trim())
     }
 
     fn secret(&self) -> Result<Option<String>> {
-        let sealed = self.read().sealed("SELECT data FROM agent_secret WHERE id = 1", &[])?;
-        match sealed {
-            Some(sealed) => Ok(Some(self.unseal(&secret_aad(), &sealed)?)),
-            None => Ok(None),
-        }
+        self.get_singleton("agent_secret", &secret_aad())
     }
 
     fn delete_secret(&self) -> Result<()> {

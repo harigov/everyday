@@ -10,7 +10,6 @@
 //! through.
 
 use super::Vault;
-use super::session::Domain;
 use crate::agent::{
     AgentSettings, Conversation, MAX_INFERRED, MAX_MEMORIES, MAX_REJECTED, Memory, MemoryOrigin,
     Message, Skill,
@@ -20,17 +19,13 @@ use crate::files::{RefKind, RefOwner};
 use crate::id::{ConversationId, MemoryId, MessageId, SkillId};
 use crate::llm::{ModelAccess, ModelTier};
 use crate::record::RecordKind;
-use crate::store::agent::{AgentStore, ConversationQuery};
+use crate::store::agent::ConversationQuery;
 use crate::timestamped::Timestamped;
 
 impl Vault {
     /// Does this vault's backend hold conversations at all?
     pub fn supports_agent(&self) -> bool {
         self.with_agent(|_| Ok(())).is_ok()
-    }
-
-    fn with_agent<T>(&self, f: impl FnOnce(&dyn AgentStore) -> Result<T>) -> Result<T> {
-        self.with_domain(Domain::Agent, |s| s.agent().map(f))
     }
 
     pub fn agent_settings(&self) -> Result<AgentSettings> {

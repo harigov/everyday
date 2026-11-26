@@ -272,9 +272,18 @@ pub struct BackendCapabilities {
 /// [`VaultHeader::backend_settings`](crate::vault::VaultHeader). On an
 /// unencrypted vault that sealing is a no-op, which is one more thing "no
 /// password" costs.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BackendSettings(std::collections::BTreeMap<String, String>);
+
+/// Keys only, as [`StoreContext`]'s is: a connection URL carries a password,
+/// and a settings value reaches a log line the moment something holding one
+/// is `Debug`-printed.
+impl std::fmt::Debug for BackendSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.keys()).finish()
+    }
+}
 
 impl BackendSettings {
     /// The one key with a meaning across backends: where to connect.

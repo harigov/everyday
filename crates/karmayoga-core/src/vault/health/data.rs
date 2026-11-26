@@ -44,11 +44,9 @@ use crate::record::RecordKind;
 use crate::store::JournalStore;
 use crate::store::health::{HealthStore, SeriesRow};
 use crate::store::purpose::PurposeWindow;
-use crate::store::secrets::SecretStore;
 use crate::store::trackers::TrackerDay;
 use crate::tracker::{Tracker, TrackerSource};
 use crate::vault::Vault;
-use crate::vault::session::{Domain, pick_domain};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Span, Timestamp};
@@ -148,7 +146,7 @@ impl Vault {
         let name = name_text("a connection's name", &source.name)?;
         let now = Timestamp::now();
         let saved = self.write(|u| {
-            let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+            let health = u.health()?;
             let held = health.list_sources()?.into_iter().find(|s| s.id == source.id);
             let saved = match held {
                 Some(held) => HealthSource { name, paused: source.paused, updated_at: now, ..held },
@@ -177,7 +175,7 @@ impl Vault {
         self.writable()?;
         let token_id = capped(token_id, MAX_NAME);
         self.write(|u| {
-            let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+            let health = u.health()?;
             let mut held = health.get_source(id)?;
             held.token_id = token_id;
             health.put_source(&held)
@@ -232,8 +230,8 @@ impl Vault {
         }
         let now = Timestamp::now();
         let (tally, workouts) = self.write(|u| {
-            let key = u.cipher.derive_subkey(HEALTH_KEY_LABEL);
-            let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+            let key = u.subkey(HEALTH_KEY_LABEL);
+            let health = u.health()?;
             let mut connection = health.get_source(source)?;
             if connection.paused {
                 return Err(Error::Invalid("paused".into()));
@@ -306,7 +304,7 @@ impl Vault {
         self.writable()?;
         let error = capped(error, MAX_ERROR);
         self.write(|u| {
-            let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+            let health = u.health()?;
             let mut held = health.get_source(source)?;
             held.status.last_error = error;
             health.put_source(&held)
@@ -434,8 +432,8 @@ impl Vault {
             ));
         }
         self.write(|u| {
-            let key = u.cipher.derive_subkey(HEALTH_KEY_LABEL);
-            let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+            let key = u.subkey(HEALTH_KEY_LABEL);
+            let health = u.health()?;
             let settings = health.health_settings()?;
             file_samples(health, &key, &settings, intake.by_metric)?;
             Ok(())
@@ -463,8 +461,8 @@ impl Vault {
         }
         let source = source.map(str::trim);
         self.write(|u| {
-            let key = u.cipher.derive_subkey(HEALTH_KEY_LABEL);
-            let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+            let key = u.subkey(HEALTH_KEY_LABEL);
+            let health = u.health()?;
             let settings = health.health_settings()?;
             let rank = ranker(&settings, metric);
             let series = series_hash(&key, metric);
@@ -667,8 +665,8 @@ impl Vault {
     /// the map empty rather than failing the screen.
     pub fn workout_detail(&self, id: WorkoutId) -> Result<WorkoutDetail> {
         self.read(|u| {
-            let key = u.cipher.derive_subkey(HEALTH_KEY_LABEL);
-            let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+            let key = u.subkey(HEALTH_KEY_LABEL);
+            let health = u.health()?;
             let workout = health.get_workout(id)?;
             let series = series_hash(&key, Metric::HeartRate);
             let heart_rate = samples_between(health, &series, workout.start, workout.end)?;
@@ -707,8 +705,8 @@ impl Vault {
         }
         let now = Timestamp::now();
         let saved = self.write(|u| {
-            let key = u.cipher.derive_subkey(HEALTH_KEY_LABEL);
-            let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+            let key = u.subkey(HEALTH_KEY_LABEL);
+            let health = u.health()?;
             let held = match health.get_workout(workout.id) {
                 Ok(held) => Some(held),
                 Err(Error::NotFound { .. }) => None,
@@ -771,7 +769,7 @@ impl Vault {
         self.writable()?;
         let now = Timestamp::now();
         self.write(|u| {
-            let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+            let health = u.health()?;
             let held = health.get_workout(id)?;
             if held.source_id.is_none() && held.external_id.is_empty() {
                 return health.delete_workout(id);
@@ -811,12 +809,12 @@ impl Vault {
         }
         let bytes = serde_json::to_vec(&HealthKeys { fdc_key: fdc_key.to_string() })
             .map_err(|_| Error::Invalid("the key could not be sealed".into()))?;
-        secrets_for_health(self, |s| s.put_secret(HEALTH_KEYS_OWNER_KIND, KEYS_OWNER_ID, &bytes))
+        self.with_secrets(|s| s.put_secret(HEALTH_KEYS_OWNER_KIND, KEYS_OWNER_ID, &bytes))
     }
 
     pub fn clear_health_keys(&self) -> Result<()> {
         self.writable()?;
-        secrets_for_health(self, |s| s.delete_secret(HEALTH_KEYS_OWNER_KIND, KEYS_OWNER_ID))
+        self.with_secrets(|s| s.delete_secret(HEALTH_KEYS_OWNER_KIND, KEYS_OWNER_ID))
     }
 
     /// The keys themselves -- only for code about to call a food lookup.
@@ -889,17 +887,10 @@ fn in_series<T>(
     f: impl FnOnce(&dyn HealthStore, &SecretKey) -> Result<T>,
 ) -> Result<T> {
     vault.read(|u| {
-        let key = u.cipher.derive_subkey(HEALTH_KEY_LABEL);
-        let health = pick_domain(u.store.as_ref(), Domain::Health, |s| s.health())?;
+        let key = u.subkey(HEALTH_KEY_LABEL);
+        let health = u.health()?;
         f(health, &key)
     })
-}
-
-fn secrets_for_health<T>(
-    vault: &Vault,
-    f: impl FnOnce(&dyn SecretStore) -> Result<T>,
-) -> Result<T> {
-    vault.with_domain(Domain::Secrets, |s| s.secrets().map(f))
 }
 
 /// Activity days `from..=to` from each activity metric's day and the
@@ -1157,16 +1148,10 @@ fn plus_days(date: Date, days: i64) -> Date {
 
 // ---- keyed hashes -----------------------------------------------------------
 
-/// The keyed hash of `identity` under an already-derived health key: 32
-/// lowercase hex characters, the same shape as Money's dedupe keys.
-fn keyed(key: &SecretKey, identity: &str) -> String {
-    blake3::keyed_hash(key.expose(), identity.as_bytes()).to_hex()[..32].to_string()
-}
-
 /// What a series is called in the clear. Never the metric's name: "this
 /// vault measures glucose" is itself a diagnosis.
 fn series_hash(key: &SecretKey, metric: Metric) -> String {
-    keyed(key, metric.key())
+    key.keyed_id(metric.key())
 }
 
 /// A workout's dedupe key: what makes it that workout whoever reports it.
@@ -1177,7 +1162,7 @@ fn workout_key(key: &SecretKey, activity: Activity, start: Timestamp, end: Times
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_else(|| "other".to_string());
-    keyed(key, &format!("{word}|{}|{}", start.as_second(), end.as_second()))
+    key.keyed_id(&format!("{word}|{}|{}", start.as_second(), end.as_second()))
 }
 
 // ---- filing samples ---------------------------------------------------------

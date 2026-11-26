@@ -918,23 +918,13 @@ impl FilesStore for SqlStore {
     // ---- settings -------------------------------------------------------
 
     fn files_settings(&self) -> Result<FilesSettings> {
-        let sealed = self.read().sealed("SELECT data FROM files_settings WHERE id = 1", &[])?;
-        match sealed {
-            Some(sealed) => self.unseal(&files_settings_aad(), &sealed),
-            // Never saved. The defaults -- no folder yet, nothing sealed, a
-            // month in the trash -- are a real answer, as screen time's are.
-            None => Ok(FilesSettings::default()),
-        }
+        // Never saved. The defaults -- no folder yet, nothing sealed, a month
+        // in the trash -- are a real answer, as screen time's are.
+        Ok(self.get_singleton("files_settings", &files_settings_aad())?.unwrap_or_default())
     }
 
     fn put_files_settings(&self, settings: &FilesSettings) -> Result<()> {
-        let data = self.seal(&files_settings_aad(), settings)?;
-        self.write().execute(
-            "INSERT INTO files_settings (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("files_settings", &files_settings_aad(), settings)
     }
 }
 
@@ -945,6 +935,13 @@ mod tests {
     use crate::schema::steps;
     use jiff::Timestamp;
     use karmayoga_core::files::{FileOrigin, FileStatus, MediaInfo, PropValue};
+
+    /// Keyed tokens in the catalog's clear columns are derived under this
+    /// label; changing it would orphan every one already stored.
+    #[test]
+    fn token_label_is_pinned() {
+        assert_eq!(TOKEN_LABEL, "karmayoga.files.token.v1");
+    }
 
     /// The columns the schema declares for `table`, in order, `id` and
     /// `data` left out -- the list [`Record::columns`] has to match.

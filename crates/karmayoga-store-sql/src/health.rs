@@ -467,23 +467,13 @@ impl HealthStore for SqlStore {
     // ---- settings -------------------------------------------------------
 
     fn health_settings(&self) -> Result<HealthSettings> {
-        let sealed = self.read().sealed("SELECT data FROM health_settings WHERE id = 1", &[])?;
-        match sealed {
-            Some(sealed) => self.unseal(&health_settings_aad(), &sealed),
-            // Never saved. The defaults are a real answer, as screen time's
-            // and the meeting settings' are.
-            None => Ok(HealthSettings::default()),
-        }
+        // Never saved. The defaults are a real answer, as screen time's and
+        // the meeting settings' are.
+        Ok(self.get_singleton("health_settings", &health_settings_aad())?.unwrap_or_default())
     }
 
     fn put_health_settings(&self, settings: &HealthSettings) -> Result<()> {
-        let data = self.seal(&health_settings_aad(), settings)?;
-        self.write().execute(
-            "INSERT INTO health_settings (id, data) VALUES (1, ?1)
-             ON CONFLICT (id) DO UPDATE SET data = ?1",
-            &vals![data],
-        )?;
-        Ok(())
+        self.put_singleton("health_settings", &health_settings_aad(), settings)
     }
 
     // ---- sources --------------------------------------------------------

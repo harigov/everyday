@@ -157,7 +157,7 @@ pub(crate) fn file_source_doses(
             Some(code) => format!("{}:{}", code.system.trim(), code.code.trim()),
             None => name.to_lowercase(),
         };
-        let dedupe = keyed(key, &format!("source|{identity}|{}", raw.at.as_second()));
+        let dedupe = key.keyed_id(&format!("source|{identity}|{}", raw.at.as_second()));
         if !seen.insert(dedupe.clone()) {
             continue;
         }
@@ -1462,13 +1462,6 @@ fn existing_conditions(health: &dyn HealthStore, ids: &[ConditionId]) -> Result<
     Ok(())
 }
 
-/// The keyed hash of `identity`, hex, 32 characters: what the clear dedupe
-/// column of a dose may hold. The same construction as Money's, under the
-/// health subkey.
-fn keyed(key: &SecretKey, identity: &str) -> String {
-    blake3::keyed_hash(key.expose(), identity.as_bytes()).to_hex()[..32].to_string()
-}
-
 // ---- matching a source's doses ---------------------------------------------
 
 /// The medication a source's dose event is about, by any code equal (system
@@ -2091,12 +2084,12 @@ mod tests {
 
     #[test]
     fn a_dose_key_is_thirty_two_hex_characters_and_depends_on_the_key() {
-        let a = keyed(&SecretKey::from_bytes([1; 32]), "source|m|1|taken");
-        let b = keyed(&SecretKey::from_bytes([2; 32]), "source|m|1|taken");
+        let a = SecretKey::from_bytes([1; 32]).keyed_id("source|m|1|taken");
+        let b = SecretKey::from_bytes([2; 32]).keyed_id("source|m|1|taken");
         assert_eq!(a.len(), 32);
         assert!(a.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
         assert_ne!(a, b);
-        assert_eq!(a, keyed(&SecretKey::from_bytes([1; 32]), "source|m|1|taken"));
+        assert_eq!(a, SecretKey::from_bytes([1; 32]).keyed_id("source|m|1|taken"));
     }
 
     #[test]

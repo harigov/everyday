@@ -15,7 +15,7 @@
 //! it.
 
 use super::Vault;
-use super::session::{Domain, pick_domain};
+use super::session::Domain;
 use crate::error::{Error, Result};
 use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
@@ -354,7 +354,7 @@ impl Vault {
     pub fn claim_ops(&self, ops: &[Op]) -> Result<Vec<Op>> {
         self.writable()?;
         self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let mut claimed = Vec::with_capacity(ops.len());
             for op in ops {
                 let mut stored = match mail.get_op(op.id) {
@@ -380,7 +380,7 @@ impl Vault {
     pub fn retry_sends_now(&self, account: AccountId, now: Timestamp) -> Result<usize> {
         self.writable()?;
         self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let horizon = now + jiff::SignedDuration::from_hours(24 * 366);
             let mut moved = 0;
             for mut op in mail.due_ops(account, horizon, 1_000)? {
@@ -427,7 +427,7 @@ impl Vault {
         self.writable()?;
         let mut wrote = false;
         let draft = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let mut draft = mail.get_draft(id)?;
             if f(&mut draft) {
                 draft.touch();
@@ -852,9 +852,9 @@ impl Vault {
     pub fn set_thread_priority(&self, thread: ThreadId, priority: bool) -> Result<()> {
         self.writable()?;
         let target = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let (thread_row, messages) = mail.thread(thread)?;
-            let accounts = pick_domain(u.store.as_ref(), Domain::Accounts, |s| s.accounts())?;
+            let accounts = u.accounts()?;
             let account = accounts.get_account(thread_row.account_id)?;
             let own: std::collections::HashSet<String> =
                 std::iter::once(account.address.trim().to_lowercase())
@@ -1024,7 +1024,7 @@ impl Vault {
         }
         self.writable()?;
         let ops = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let mut ops = Vec::with_capacity(threads.len());
             for &thread_id in threads {
                 let (thread, messages) = mail.thread(thread_id)?;
@@ -1075,7 +1075,7 @@ impl Vault {
     ) -> Result<Vec<Op>> {
         self.writable()?;
         let ops = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let boxes = from.iter().map(|&id| emptiable(mail, id)).collect::<Result<Vec<_>>>()?;
             let mut ops = Vec::new();
             for from in &boxes {
@@ -1109,7 +1109,7 @@ impl Vault {
     ) -> Result<Vec<Op>> {
         self.writable()?;
         let ops = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let mut by_place: std::collections::BTreeMap<
                 (AccountId, ThreadId, MailboxId),
                 Vec<MailMessageId>,
@@ -1170,7 +1170,7 @@ impl Vault {
     pub fn empty_mailbox(&self, mailbox: MailboxId, origin: Origin) -> Result<Vec<Op>> {
         self.writable()?;
         let ops = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let from = emptiable(mail, mailbox)?;
             delete_forever_from(mail, &from, None, &origin)
         })?;
@@ -1193,7 +1193,7 @@ impl Vault {
     pub fn revert_thread_op(&self, thread: ThreadId, kind: &OpKind) -> Result<()> {
         self.writable()?;
         self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             match inverse_of(kind) {
                 Inverse::Flag(inverse) => {
                     let (_, messages) = mail.thread(thread)?;
@@ -1235,7 +1235,7 @@ impl Vault {
     ) -> Result<(Draft, Op)> {
         self.writable()?;
         let result = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let mut draft = mail.get_draft(draft_id)?;
             if !matches!(draft.state, DraftState::Editing) {
                 return Err(Error::Invalid(format!(
@@ -1295,7 +1295,7 @@ impl Vault {
     pub fn undo_send(&self, draft_id: DraftId, now: Timestamp) -> Result<Draft> {
         self.writable()?;
         let draft = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let mut draft = mail.get_draft(draft_id)?;
             let DraftState::Queued { op: op_id } = draft.state else {
                 return Err(Error::Invalid("this draft is not queued to send".into()));
@@ -1361,7 +1361,7 @@ impl Vault {
     pub fn stop_send(&self, draft_id: DraftId) -> Result<Draft> {
         self.writable()?;
         let draft = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let mut draft = mail.get_draft(draft_id)?;
             let DraftState::Queued { op: op_id } = draft.state else {
                 return Err(Error::Invalid("this draft is not queued to send".into()));
@@ -1398,7 +1398,7 @@ impl Vault {
     ) -> Result<Option<Op>> {
         self.writable()?;
         let op = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             mail.put_draft(draft)?;
             if !append {
                 return Ok(None);
@@ -1427,7 +1427,7 @@ impl Vault {
     pub fn discard_draft(&self, draft_id: DraftId) -> Result<(Draft, Option<Op>)> {
         self.writable()?;
         let result = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             let mut draft = mail.get_draft(draft_id)?;
             // A discard racing a still-pending `Send` must win: otherwise
             // the op the person just asked to cancel by discarding drains
@@ -1502,7 +1502,7 @@ impl Vault {
             })?;
         let old_id = edited.id;
         let result = self.write(|u| {
-            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mail = u.mail()?;
             // A draft never saved yet has no row: only what was written moves.
             let mut old = match mail.get_draft(old_id) {
                 Ok(old) => old,
@@ -1610,7 +1610,7 @@ fn keyable(message_id_header: &str) -> bool {
 }
 
 fn message_key(key: &crate::crypto::SecretKey, message_id_header: &str) -> String {
-    blake3::keyed_hash(key.expose(), message_id_header.as_bytes()).to_hex()[..32].to_string()
+    key.keyed_id(message_id_header)
 }
 
 fn inverse_of(kind: &OpKind) -> Inverse {
@@ -1836,5 +1836,15 @@ mod priority_target_tests {
     #[test]
     fn an_empty_thread_has_nothing_to_mark() {
         assert_eq!(thread_priority_target(&[], &own_addresses(&[])), None);
+    }
+}
+
+#[cfg(test)]
+mod key_label_tests {
+    /// The subkey a message's `Message-ID` is hashed under; changing it would
+    /// make every stored message key unfindable.
+    #[test]
+    fn mail_message_key_label_is_pinned() {
+        assert_eq!(super::MAIL_MESSAGE_KEY_LABEL, "everyday.mail.message-id.v1");
     }
 }

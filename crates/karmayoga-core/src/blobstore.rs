@@ -607,6 +607,13 @@ mod tests {
     use crate::crypto::{AeadCipher, NullCipher, SecretKey};
     use std::path::Path;
 
+    /// A blob's address is derived under this label; changing it would give
+    /// every stored blob a new address.
+    #[test]
+    fn blob_address_label_is_pinned() {
+        assert_eq!(BLOB_ADDRESS_LABEL, "everyday 2026-10 blob address v1");
+    }
+
     fn store(dir: &Path, encrypted: bool) -> FileBlobStore {
         let cipher: Arc<dyn Cipher> = if encrypted {
             Arc::new(AeadCipher::new(&SecretKey::from_bytes([3u8; 32])))

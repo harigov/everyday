@@ -53,6 +53,14 @@ impl SecretKey {
     pub fn expose(&self) -> &[u8; KEY_LEN] {
         &self.0
     }
+
+    /// The BLAKE3 keyed hash of `identity` under this key, as the first 32
+    /// lowercase hex characters: what a clear dedupe column may hold so that
+    /// it cannot be checked against a list of known names. Deterministic for
+    /// one key, which is all a dedupe key needs to be.
+    pub fn keyed_id(&self, identity: &str) -> String {
+        blake3::keyed_hash(&self.0, identity.as_bytes()).to_hex()[..32].to_string()
+    }
 }
 
 /// A key on its way to or from somewhere that is not this process.
@@ -355,6 +363,11 @@ mod tests {
     }
 
     #[test]
+    fn wrap_aad_is_pinned() {
+        assert_eq!(WRAP_AAD, b"everyday.vault.dek.v1");
+    }
+
+    #[test]
     fn seal_open_round_trips() {
         let c = AeadCipher::new(&key());
         let sealed = c.seal(b"entry:1", b"dear diary").unwrap();
@@ -413,6 +426,16 @@ mod tests {
         assert!(!c.is_encrypting());
         assert_eq!(c.seal(b"a", b"plain").unwrap(), b"plain");
         assert_eq!(c.open(b"a", b"plain").unwrap(), b"plain");
+    }
+
+    /// Pins the dedupe-key construction: it is written to vaults' clear
+    /// columns, so the same key and identity must always give these strings.
+    #[test]
+    fn keyed_id_is_the_first_32_hex_characters_of_the_keyed_hash() {
+        let key = SecretKey::from_bytes([7; KEY_LEN]);
+        assert_eq!(key.keyed_id("identity"), "f3c6bf504b0c4385695cb11bb93c2232");
+        let key = SecretKey::from_bytes([1; KEY_LEN]);
+        assert_eq!(key.keyed_id("source|m|1|taken"), "f2bbb81c05889d15e4891a6949981dc8");
     }
 
     #[test]

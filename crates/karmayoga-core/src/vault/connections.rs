@@ -3,14 +3,12 @@
 //! [`crate::connection`].
 
 use super::Vault;
-use super::session::Domain;
 use crate::connection::{
     CONNECTION_SECRET_KIND, Connection, ConnectionSecret, ConnectionSettings, ConnectionState,
     ConnectionStates, MAX_CONNECTIONS,
 };
 use crate::error::{Error, Result};
 use crate::id::ConnectionId;
-use crate::store::secrets::SecretStore;
 
 /// Held across every read-change-write of the connections row. Both halves
 /// are whole values read and written back, and the runtime lists several
@@ -23,13 +21,6 @@ fn rewriting() -> std::sync::MutexGuard<'static, ()> {
 }
 
 impl Vault {
-    fn with_connection_secrets<T>(
-        &self,
-        f: impl FnOnce(&dyn SecretStore) -> Result<T>,
-    ) -> Result<T> {
-        self.with_domain(Domain::Secrets, |s| s.secrets().map(f))
-    }
-
     /// Every connection, in the panel's order. Empty until one is added.
     pub fn connection_settings(&self) -> Result<ConnectionSettings> {
         self.read(|u| Ok(u.store.connection_settings()?.unwrap_or_default()))
@@ -92,7 +83,7 @@ impl Vault {
         if states.states.remove(&id).is_some() {
             self.read(|u| u.store.put_connection_states(&states))?;
         }
-        self.with_connection_secrets(|s| s.delete_secret(CONNECTION_SECRET_KIND, &id.to_string()))
+        self.with_secrets(|s| s.delete_secret(CONNECTION_SECRET_KIND, &id.to_string()))
     }
 
     /// What the runtime learned about every connection.
@@ -140,7 +131,7 @@ impl Vault {
     /// see [`ConnectionSecret::summary`] for what is.
     pub fn connection_secret(&self, id: ConnectionId) -> Result<ConnectionSecret> {
         let bytes = self
-            .with_connection_secrets(|s| s.get_secret(CONNECTION_SECRET_KIND, &id.to_string()))?;
+            .with_secrets(|s| s.get_secret(CONNECTION_SECRET_KIND, &id.to_string()))?;
         match bytes {
             Some(b) => Ok(serde_json::from_slice(&b)?),
             None => Ok(ConnectionSecret::default()),
@@ -155,12 +146,12 @@ impl Vault {
             return Err(Error::not_found("connection", id));
         }
         if *secret == ConnectionSecret::default() {
-            return self.with_connection_secrets(|s| {
+            return self.with_secrets(|s| {
                 s.delete_secret(CONNECTION_SECRET_KIND, &id.to_string())
             });
         }
         let bytes = serde_json::to_vec(secret)?;
-        self.with_connection_secrets(|s| {
+        self.with_secrets(|s| {
             s.put_secret(CONNECTION_SECRET_KIND, &id.to_string(), &bytes)
         })
     }
