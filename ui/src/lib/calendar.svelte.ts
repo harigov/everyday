@@ -176,6 +176,14 @@ export interface Mark {
   label: string
 }
 
+/** One thing on a day, as a list of the day shows it (`dayItems`). */
+export type DayItem =
+  | { kind: 'allDay'; event: CalendarEvent }
+  | { kind: 'note'; mark: Mark }
+  | { kind: 'task'; task: Task }
+  | { kind: 'slot'; slot: Slot; at: number }
+  | { kind: 'mark'; mark: Mark; at: number }
+
 /**
  * What is being tracked at this moment.
  *
@@ -307,6 +315,9 @@ class CalendarState {
   view = $state<View>('week')
   /** The day the view is anchored on, `YYYY-MM-DD`. */
   anchor = $state<string>(todayIso())
+  /** The day picked in a phone's month: its list shows under the grid, and
+   *  a new event starts on it. Let go when the month moves (`MonthGrid`). */
+  picked = $state<string | null>(null)
   weekStart = $state<number>(localeWeekStart())
 
   // ── what has been loaded for it ──────────────────────────────────────
@@ -1027,6 +1038,29 @@ class CalendarState {
   }
 
   /** All-day events and multi-day ones, for the band above the grid. */
+  /**
+   * Everything on one day, in the order a list of it runs: the undated
+   * things first -- all-day events, readings with no time of day, tasks due
+   * -- then what the clock places, blocks, events and tracked spans
+   * (`slotsOn`) with tracked moments (`marksOn`), merged on their start
+   * minute rather than listed in separate groups. The month's cells and a
+   * phone's list of days both draw from this, so they list the same things
+   * in the same order.
+   */
+  dayItems(iso: string): DayItem[] {
+    const timed: DayItem[] = [
+      ...this.slotsOn(iso).map((slot) => ({ kind: 'slot' as const, slot, at: slot.start })),
+      ...this.marksOn(iso).map((mark) => ({ kind: 'mark' as const, mark, at: mark.minute ?? 0 })),
+    ]
+    const at = (item: DayItem) => ('at' in item ? item.at : 0)
+    return [
+      ...this.allDayOn(iso).map((event) => ({ kind: 'allDay' as const, event })),
+      ...this.untimedMarksOn(iso).map((mark) => ({ kind: 'note' as const, mark })),
+      ...this.tasksOn(iso).map((task) => ({ kind: 'task' as const, task })),
+      ...timed.sort((a, b) => at(a) - at(b)),
+    ]
+  }
+
   allDayOn(iso: string): CalendarEvent[] {
     return this.shownEvents.filter(
       (e) => (e.allDay || e.localDate !== e.endDate) && e.localDate <= iso && e.endDate >= iso,

@@ -620,43 +620,59 @@ impl RemoteClient {
         use base64::Engine;
 
         let http = voice_client(&self.connection.cert_pem)?;
-        let key = base64::engine::general_purpose::STANDARD.encode(rand::random::<[u8; 16]>());
-        let response = http
-            .get(format!("{}{}", self.base, crate::voice::ROUTE))
-            .header("x-karmayoga-protocol", PROTOCOL.to_string())
-            .header(karmayoga_core::legacy::PROTOCOL_HEADER, PROTOCOL.to_string())
-            .bearer_auth(&self.token)
-            .header(reqwest::header::CONNECTION, "Upgrade")
-            .header(reqwest::header::UPGRADE, "websocket")
-            .header(reqwest::header::SEC_WEBSOCKET_VERSION, "13")
-            .header(reqwest::header::SEC_WEBSOCKET_KEY, key)
-            .send()
-            .await
-            .map_err(transport)?;
-        if response.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS {
-            // The server's own `{ code, message }`, when it refused.
-            response.error_for_body().await?;
-            return Err(CommandError::new("network", "that computer did not open a voice session"));
-        }
-        let upgraded = response.upgrade().await.map_err(transport)?;
-        let socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
-            upgraded,
-            tokio_tungstenite::tungstenite::protocol::Role::Client,
-            None,
-        )
-        .await;
-        let (mut frames, out) = crate::voice::tungstenite_socket(socket);
+        // The whole of opening, bounded: a computer that took the request and
+        // then went quiet -- asleep, the network gone mid-way -- would leave
+        // the voice slot starting for ever. A minute, because the other end
+        // may load its voice models first.
+        let opening = async {
+            let key = base64::engine::general_purpose::STANDARD.encode(rand::random::<[u8; 16]>());
+            let response = http
+                .get(format!("{}{}", self.base, crate::voice::ROUTE))
+                .header("x-karmayoga-protocol", PROTOCOL.to_string())
+                .header(karmayoga_core::legacy::PROTOCOL_HEADER, PROTOCOL.to_string())
+                .bearer_auth(&self.token)
+                .header(reqwest::header::CONNECTION, "Upgrade")
+                .header(reqwest::header::UPGRADE, "websocket")
+                .header(reqwest::header::SEC_WEBSOCKET_VERSION, "13")
+                .header(reqwest::header::SEC_WEBSOCKET_KEY, key)
+                .send()
+                .await
+                .map_err(transport)?;
+            if response.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS {
+                // The server's own `{ code, message }`, when it refused.
+                response.error_for_body().await?;
+                return Err(CommandError::new(
+                    "network",
+                    "that computer did not open a voice session",
+                ));
+            }
+            let upgraded = response.upgrade().await.map_err(transport)?;
+            let socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                upgraded,
+                tokio_tungstenite::tungstenite::protocol::Role::Client,
+                None,
+            )
+            .await;
+            let (mut frames, out) = crate::voice::tungstenite_socket(socket);
 
-        let open = ClientMessage::Open { conversation_id: conversation, on_screen };
-        let _ = out.send(Frame::Text(serde_json::to_string(&open).unwrap_or_default()));
-        match frames.recv().await {
-            Some(Frame::Text(raw)) => match serde_json::from_str::<ServerMessage>(&raw) {
-                Ok(ServerMessage::Opened) => Ok(crate::voice::link_over(frames, out)),
-                Ok(ServerMessage::Failed { code, message }) => Err(CommandError { code, message }),
-                _ => Err(CommandError::new("network", "that computer said something unexpected")),
-            },
-            _ => Err(CommandError::new("network", crate::voice::LOST)),
-        }
+            let open = ClientMessage::Open { conversation_id: conversation, on_screen };
+            let _ = out.send(Frame::Text(serde_json::to_string(&open).unwrap_or_default()));
+            match frames.recv().await {
+                Some(Frame::Text(raw)) => match serde_json::from_str::<ServerMessage>(&raw) {
+                    Ok(ServerMessage::Opened) => Ok(crate::voice::link_over(frames, out)),
+                    Ok(ServerMessage::Failed { code, message }) => {
+                        Err(CommandError { code, message })
+                    }
+                    _ => {
+                        Err(CommandError::new("network", "that computer said something unexpected"))
+                    }
+                },
+                _ => Err(CommandError::new("network", crate::voice::LOST)),
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(60), opening).await.unwrap_or_else(|_| {
+            Err(CommandError::new("network", "your computer did not start talking in time"))
+        })
     }
 
     /// Subscribe to what the server says, calling `on_event` for each.

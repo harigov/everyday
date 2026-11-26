@@ -686,7 +686,7 @@
             <Icon name="play" size={14} />
             I'm in it now
           </button>
-          {#if meetings.supported && !meetings.capture && takeNotesWindow(event)}
+          {#if meetings.canRecord && !meetings.capture && takeNotesWindow(event)}
             {@const join = joinLink(event)}
             <button class="btn" disabled={meetings.starting} onclick={() => void takeNotes(event)}>
               <Icon name="mic" size={14} />

@@ -31,7 +31,9 @@
 //! channels of [`Frame`]s rather than on a WebSocket library's own types, so
 //! they can be run against each other in a test without either.
 
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use karmayoga_core::ConversationId;
 use karmayoga_core::agent::onscreen::OnScreen;
@@ -100,6 +102,14 @@ pub enum ServerMessage {
         event: VoiceEvent,
     },
 }
+
+/// How often each end pings the other, so a connection that died without a
+/// word -- Wi-Fi gone, a computer asleep -- is noticed.
+const PING_EVERY: Duration = Duration::from_secs(15);
+
+/// How long without anything from the other end, not even an answer to a
+/// ping, before its connection is taken for gone.
+const SILENT_FOR: Duration = Duration::from_secs(45);
 
 /// The fixed part of a binary frame of audio to play.
 const PLAY_HEADER: usize = 12;
@@ -257,7 +267,8 @@ pub fn axum_socket(
     let (frames, frames_rx) = unbounded_channel();
     let (out, mut out_rx) = unbounded_channel::<Frame>();
     tokio::spawn(async move {
-        while let Some(message) = stream.next().await {
+        // Nothing for `SILENT_FOR`, or the end of the stream: the client is gone.
+        while let Ok(Some(message)) = tokio::time::timeout(SILENT_FOR, stream.next()).await {
             let frame = match message {
                 Ok(Message::Text(text)) => Frame::Text(text.to_string()),
                 Ok(Message::Binary(bytes)) => Frame::Binary(bytes.to_vec()),
@@ -271,11 +282,16 @@ pub fn axum_socket(
         }
     });
     tokio::spawn(async move {
-        while let Some(frame) = out_rx.recv().await {
-            let (message, last) = match frame {
-                Frame::Text(text) => (Message::Text(text.into()), false),
-                Frame::Binary(bytes) => (Message::Binary(bytes.into()), false),
-                Frame::Close => (Message::Close(None), true),
+        let mut ping = tokio::time::interval(PING_EVERY);
+        loop {
+            let (message, last) = tokio::select! {
+                frame = out_rx.recv() => match frame {
+                    None => break,
+                    Some(Frame::Text(text)) => (Message::Text(text.into()), false),
+                    Some(Frame::Binary(bytes)) => (Message::Binary(bytes.into()), false),
+                    Some(Frame::Close) => (Message::Close(None), true),
+                },
+                _ = ping.tick() => (Message::Ping(Default::default()), false),
             };
             if sink.send(message).await.is_err() || last {
                 break;
@@ -300,7 +316,9 @@ where
     let (frames, frames_rx) = unbounded_channel();
     let (out, mut out_rx) = unbounded_channel::<Frame>();
     tokio::spawn(async move {
-        while let Some(message) = stream.next().await {
+        // Nothing for `SILENT_FOR`, or the end of the stream: the computer is
+        // gone.
+        while let Ok(Some(message)) = tokio::time::timeout(SILENT_FOR, stream.next()).await {
             let frame = match message {
                 Ok(Message::Text(text)) => Frame::Text(text.to_string()),
                 Ok(Message::Binary(bytes)) => Frame::Binary(bytes.to_vec()),
@@ -314,11 +332,16 @@ where
         }
     });
     tokio::spawn(async move {
-        while let Some(frame) = out_rx.recv().await {
-            let (message, last) = match frame {
-                Frame::Text(text) => (Message::Text(text.into()), false),
-                Frame::Binary(bytes) => (Message::Binary(bytes.into()), false),
-                Frame::Close => (Message::Close(None), true),
+        let mut ping = tokio::time::interval(PING_EVERY);
+        loop {
+            let (message, last) = tokio::select! {
+                frame = out_rx.recv() => match frame {
+                    None => break,
+                    Some(Frame::Text(text)) => (Message::Text(text.into()), false),
+                    Some(Frame::Binary(bytes)) => (Message::Binary(bytes.into()), false),
+                    Some(Frame::Close) => (Message::Close(None), true),
+                },
+                _ = ping.tick() => (Message::Ping(Default::default()), false),
             };
             if sink.send(message).await.is_err() || last {
                 break;
@@ -327,6 +350,34 @@ where
         let _ = sink.close().await;
     });
     (frames_rx, out)
+}
+
+/// `frames`, closed when `end` finishes first: how a session is ended from
+/// outside -- its device revoked, sharing switched off -- the same way as
+/// when the client hangs up.
+pub fn until(
+    mut frames: UnboundedReceiver<Frame>,
+    end: impl Future<Output = ()> + Send + 'static,
+) -> UnboundedReceiver<Frame> {
+    let (tx, rx) = unbounded_channel();
+    tokio::spawn(async move {
+        tokio::pin!(end);
+        loop {
+            tokio::select! {
+                frame = frames.recv() => {
+                    let Some(frame) = frame else { break };
+                    if tx.send(frame).is_err() {
+                        break;
+                    }
+                }
+                () = &mut end => {
+                    let _ = tx.send(Frame::Close);
+                    break;
+                }
+            }
+        }
+    });
+    rx
 }
 
 /// What a client tells its session when the connection goes without the
@@ -519,5 +570,21 @@ mod tests {
         assert!(input_frame(VoiceInput::Chime).is_none());
         assert!(input_frame(VoiceInput::Spoken("hello".into())).is_none());
         assert!(matches!(input_frame(VoiceInput::Stop), Some(Frame::Text(_))));
+    }
+
+    /// A session ended from outside -- its device revoked -- hears the same
+    /// close as when the client hangs up, after what was already said.
+    #[tokio::test]
+    async fn a_session_ended_from_outside_reads_as_the_client_going() {
+        let (client, frames) = unbounded_channel();
+        let (end, ended) = tokio::sync::oneshot::channel::<()>();
+        let mut frames = until(frames, async {
+            let _ = ended.await;
+        });
+        client.send(Frame::Text("said".into())).unwrap();
+        assert_eq!(frames.recv().await, Some(Frame::Text("said".into())));
+        end.send(()).unwrap();
+        assert_eq!(frames.recv().await, Some(Frame::Close));
+        assert_eq!(frames.recv().await, None);
     }
 }

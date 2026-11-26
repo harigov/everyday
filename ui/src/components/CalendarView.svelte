@@ -9,7 +9,7 @@
   import { dateFormat, dayHeading, formatMinutes, monthYear } from '../lib/format'
   import { closesOnBack, details, phone } from '../lib/phone.svelte'
   import { proposals } from '../lib/proposals.svelte'
-  import { instantAt, todayIso } from '../lib/time'
+  import { addDays, instantAt, todayIso } from '../lib/time'
   import Icon from './Icon.svelte'
   import CalendarAgenda from './CalendarAgenda.svelte'
   import TimeGrid from './TimeGrid.svelte'
@@ -117,16 +117,27 @@
   )
 
   /**
-   * A new event at the next whole hour of today, or at nine on any other
+   * A new event on the day picked in the month, or today if it is on screen,
+   * or the day the view is on: at the next whole hour of today -- nine
+   * tomorrow when that is past eleven at night -- or at nine on any other
    * day, written to the calendar new events go to. Opened as a draft, so
    * nothing exists until Save and Cancel leaves nothing behind -- a tap on
    * an empty hour is how this would be made on a desktop, and on a phone a
    * tap is too often a scroll.
    */
   function startEvent() {
-    const day = calendar.days.includes(todayIso()) ? todayIso() : calendar.anchor
-    const now = new Date()
-    const startMinutes = day === todayIso() ? Math.min(22 * 60, (now.getHours() + 1) * 60) : 9 * 60
+    const today = todayIso()
+    const picked =
+      calendar.view === 'month' && calendar.picked && calendar.days.includes(calendar.picked)
+        ? calendar.picked
+        : null
+    let day = picked ?? (calendar.days.includes(today) ? today : calendar.anchor)
+    let startMinutes = 9 * 60
+    if (day === today) {
+      const next = (new Date().getHours() + 1) * 60
+      if (next <= 23 * 60) startMinutes = next
+      else day = addDays(today, 1)
+    }
     const target = calendar.defaultCalendar
     // Nowhere for it to go: `newEvent` says so, once.
     if (!target && !calendar.thisComputerOn) {

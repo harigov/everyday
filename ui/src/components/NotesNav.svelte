@@ -247,7 +247,7 @@
       ...(noteTemplates.length
         ? [{ label: 'New note from template', icon: 'layers' as const, items: templateItems() }]
         : []),
-      ...(meetings.supported
+      ...(meetings.canRecord
         ? [{ label: 'Record a call', icon: 'mic' as const, run: () => (recordSheet = true) }]
         : []),
       SEP,
@@ -293,7 +293,7 @@
           {/if}
         </span>
       </div>
-      {#if meetings.supported}
+      {#if meetings.canRecord}
         <button
           class="side-add"
           title="Record a call"
@@ -363,7 +363,7 @@
         {/if}
       </span>
       {#if !phoneDrawer}
-        {#if meetings.supported}
+        {#if meetings.canRecord}
           <button
             class="side-add"
             title="Record a call"

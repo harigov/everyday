@@ -619,6 +619,12 @@ impl Registry {
         self.write_locked(devices, false)
     }
 
+    /// Is this device still on the list? For a connection that outlives the
+    /// request that proved it -- a voice session -- to notice a revocation.
+    pub fn holds(&self, id: &str) -> bool {
+        lock(&self.devices).iter().any(|d| d.id == id)
+    }
+
     pub fn revoke(&self, id: &str) -> CommandResult<bool> {
         let mut devices = lock(&self.devices);
         let before = devices.len();
@@ -791,7 +797,9 @@ mod tests {
         let (registry, _dir) = registry();
         let code = registry.new_pairing_code();
         let (token, id) = registry.pair(&code, "Phone", vec![Scope::All]).unwrap();
+        assert!(registry.holds(&id));
         assert!(registry.revoke(&id).unwrap());
+        assert!(!registry.holds(&id), "a session it opened would still be running");
         assert_eq!(registry.authenticate(&token).unwrap_err().code, "unauthorized");
         assert!(!registry.revoke(&id).unwrap(), "revoking twice is not an error");
     }

@@ -426,16 +426,17 @@
   // Assistant settings re-ran it and pulled focus out of the dialog into the
   // composer behind it, and the next thing typed went to the wrong box.
   //
-  // Not as a conversation appears on a phone: the caret raises the keyboard,
-  // which covers the thread that was opened to be read. It still goes there
-  // when something asks -- a New conversation.
-  let firstFocus = true
+  // On a phone only when something asks -- a New conversation -- and never
+  // because the box appeared, with the panel or back after a voice
+  // conversation: the caret raises the keyboard, which covers the thread
+  // that was opened to be read, or the reply just spoken.
+  let askedFor = untrack(() => agent.focusTick)
   $effect(() => {
-    void agent.focusTick
-    const first = firstFocus
-    firstFocus = false
-    if (first && untrack(() => phone.on)) return
-    box?.focus()
+    const tick = agent.focusTick
+    const target = box
+    if (untrack(() => phone.on) && tick === askedFor) return
+    askedFor = tick
+    target?.focus()
   })
 
   /** Grow with what is typed, up to a limit, rather than scroll a slit. */

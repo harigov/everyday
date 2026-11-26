@@ -223,6 +223,7 @@ import { VaultError } from './types'
 import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
 import type { Commands } from './generated/commands'
 import type { Section } from './apps'
+import { isIOS } from './longpress'
 import type { MockDictationControls } from './mock-dictation'
 import type { MockListenControls } from './mock-listen'
 import {
@@ -264,7 +265,7 @@ const WEB = !SHELL && !MOCK
  * browser (`scripts/phone/check.mjs` opens every app that way).
  */
 const MOBILE_SHELL =
-  (SHELL && /Android|iPhone|iPad|iPod/.test(navigator.userAgent)) ||
+  (SHELL && (/Android/.test(navigator.userAgent) || isIOS())) ||
   (MOCK && new URLSearchParams(location.search).has('mobile'))
 
 /**

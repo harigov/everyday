@@ -90,6 +90,10 @@ pub struct Server {
     /// The browsers signed in, for a server answering `Transport::Web`.
     /// `None` everywhere else, where nothing could be signed in.
     sessions: Option<Arc<crate::web::session::Sessions>>,
+    /// Set when the listener answering for this server stops (`start`): what
+    /// a connection that outlives its request -- a voice session -- watches,
+    /// since the listener's graceful shutdown does not reach an upgraded one.
+    pub(crate) closing: tokio::sync::watch::Sender<bool>,
 }
 
 impl Server {
@@ -110,6 +114,7 @@ impl Server {
             allow_remote_unlock: std::sync::atomic::AtomicBool::new(allow_remote_unlock),
             in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT * 4)),
             sessions: None,
+            closing: tokio::sync::watch::channel(false).0,
         })
     }
 
@@ -133,6 +138,7 @@ impl Server {
             allow_remote_unlock: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT * 4)),
             sessions: Some(sessions),
+            closing: tokio::sync::watch::channel(false).0,
         })
     }
 
@@ -548,10 +554,36 @@ async fn voice(
     let ctx = authenticate(&server, transport, &headers)?;
     ctx.require(Scope::Agent)?;
     let service = server.service.clone();
+    let device = match &ctx.caller {
+        Caller::Device(id) => Some(id.clone()),
+        _ => None,
+    };
     Ok(upgrade.on_upgrade(move |socket| async move {
         let (frames, out) = crate::voice::axum_socket(socket);
+        let frames = crate::voice::until(frames, disallowed(server, device));
         crate::voice::serve(service, ctx, frames, out).await;
     }))
+}
+
+/// Finishes when a voice session stops being allowed: its device revoked, or
+/// sharing switched off. The token was looked at once, before the upgrade,
+/// and a session lasts as long as somebody keeps talking -- so the device is
+/// looked for again every few seconds.
+async fn disallowed(server: Arc<Server>, device: Option<String>) {
+    let mut closing = server.closing.subscribe();
+    let mut every = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        tokio::select! {
+            _ = closing.wait_for(|closing| *closing) => return,
+            _ = every.tick() => {
+                if let Some(id) = &device
+                    && !server.registry.holds(id)
+                {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// The one command that answers with a stream.

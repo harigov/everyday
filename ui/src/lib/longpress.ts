@@ -16,8 +16,11 @@ const HOLD_MS = 500
 /** How far a finger may drift and still be holding, not scrolling. */
 const SLOP_PX = 10
 
+/** An iPhone or an iPad. An iPad's webview calls itself a Mac; a Mac has no
+ *  touch screen. */
 export function isIOS(): boolean {
-  return /iPhone|iPad|iPod/.test(navigator.userAgent)
+  const agent = navigator.userAgent
+  return /iPhone|iPad|iPod/.test(agent) || (/Macintosh/.test(agent) && navigator.maxTouchPoints > 1)
 }
 
 export function installLongPress(target: Document = document) {

@@ -268,9 +268,11 @@ fn abandon(voice: &Mutex<Option<VoiceHandle>>) {
 /// Start talking in a conversation: the microphone and speakers go on, and
 /// `channel` hears everything the session says until it ends.
 ///
-/// Refuses when the window is looking at a vault on another computer, when a
-/// meeting is being recorded, when someone is dictating, and when there is a
-/// conversation already. Anything being listened to is stopped.
+/// A window looking at a vault on another computer -- a phone always is --
+/// talks to that computer's session over its voice socket, with this
+/// machine's microphone and speakers. Refuses when a meeting is being
+/// recorded, when someone is dictating, and when there is a conversation
+/// already. Anything being listened to is stopped.
 #[tauri::command]
 pub async fn voice_start(
     app: AppHandle,

@@ -778,17 +778,7 @@
   }
 </script>
 
-<svelte:window
-  onfocus={() => mail.seeOpenThread()}
-  onerror={(e) => {
-    // WebKit raises "ResizeObserver loop completed with undelivered
-    // notifications" as an uncaught error when the list's row measuring
-    // (`virtua`, in `VirtualList`) settles over two frames rather than one.
-    // Nothing is wrong and nothing is lost; it is the one message of the
-    // kind that is let go by, so a real error still shows.
-    if (e instanceof ErrorEvent && e.message.startsWith('ResizeObserver loop')) e.preventDefault()
-  }}
-/>
+<svelte:window onfocus={() => mail.seeOpenThread()} />
 <svelte:document onvisibilitychange={() => mail.seeOpenThread()} />
 
 <!-- The list and the reading pane, as one positioned box: the pane stands

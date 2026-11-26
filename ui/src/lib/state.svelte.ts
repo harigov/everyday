@@ -6,7 +6,7 @@
 
 import { tick } from 'svelte'
 import { api, isMock, isWeb, mobileShell, newRequestId } from './api'
-import { tellShellTheme } from './phone.svelte'
+import { details, tellShellTheme } from './phone.svelte'
 import { signOut } from './web'
 import { APP_ORDER, APPS, type Section } from './apps'
 import { pinned } from './appwindow'
@@ -73,6 +73,9 @@ const TOUCH_MS = 15_000
  * defers nothing here.
  */
 const ACTIVE_AT = 'karmayoga.activeAt'
+
+/** The computer a phone was last looking at, by its connection's id. */
+const LAST_REMOTE = 'karmayoga.lastRemote'
 
 function activeElsewhere(): number {
   try {
@@ -167,6 +170,8 @@ class AppState {
   opensItself = $state(false)
   /** Servers this copy has paired with, for the picker. */
   remotes = $state<Connection[]>([])
+  /** Disconnected on purpose: a phone does not go straight back. */
+  private stayAway = false
 
   journals = $state<Journal[]>([])
 
@@ -338,11 +343,13 @@ class AppState {
       this.opensItself = boot.opensItself
       this.error = null
       // A phone is always looking at a computer's vault (`mobile.rs`), and
-      // goes back to the one it last paired with, as a desktop window opens
-      // the vault it last had open. Not reached: the error screen, which
-      // offers to try again or to pair with another.
-      const last = boot.remotes.at(-1)
-      if (mobileShell && !boot.remote && last) {
+      // goes back to the one it last looked at, as a desktop window opens
+      // the vault it last had open -- unless it was just told to stop, when
+      // it shows the computers it knows instead. Not reached: the error
+      // screen, which offers to try again or to pair with another.
+      const lastId = localStorage.getItem(LAST_REMOTE)
+      const last = boot.remotes.find((r) => r.id === lastId) ?? boot.remotes.at(-1)
+      if (mobileShell && !boot.remote && last && !this.stayAway) {
         await this.reconnectRemote(last.id)
         return
       }
@@ -395,6 +402,8 @@ class AppState {
     // machines each holding a vault called "Journal", which is the default.
     this.remote = connection
     this.remotes = await api.remotes()
+    this.stayAway = false
+    localStorage.setItem(LAST_REMOTE, connection.id)
     this.error = null
     if (status.unlocked) await this.enterMain()
     else this.screen = 'locked'
@@ -404,6 +413,7 @@ class AppState {
   async disconnectRemote() {
     await api.disconnectRemote()
     this.remote = null
+    this.stayAway = true
     await this.start()
   }
 
@@ -413,6 +423,7 @@ class AppState {
     this.remotes = await api.remotes()
     if (this.remote?.id === id) {
       this.remote = null
+      this.stayAway = true
       await this.start()
     }
   }
@@ -1162,6 +1173,13 @@ class AppState {
     )
   }
 
+  /** Open an entry to be read -- from a link in another app, say -- which on
+   *  a phone means its page over the list (`details`), not the list. */
+  async showEntry(id: EntryId) {
+    details.open('journal')
+    await this.openEntry(id)
+  }
+
   async openEntry(id: EntryId) {
     // Never let a pending autosave land after we have switched documents,
     // and do not leave the row we are switching away from showing the title
@@ -1217,6 +1235,9 @@ class AppState {
     // takes an entry only when somebody picks it to leave it a note.
     const journalId = this.selectedJournal ?? this.ownJournals[0]?.id
     if (!journalId) return
+    // Today's page is what was asked for, wherever from: on a phone, over
+    // the list.
+    details.open('journal')
     await this.flush()
 
     const today = todayIso()

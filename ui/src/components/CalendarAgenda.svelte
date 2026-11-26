@@ -16,7 +16,7 @@
   // a row has no panel of its own, a tap -- raises the same menus the grids
   // do. Dragging to another time is the desktop's; the editor moves things.
 
-  import { calendar } from '../lib/calendar.svelte'
+  import { calendar, type DayItem } from '../lib/calendar.svelte'
   import { dateFormat, formatMinutes, friendlyDate, timeOfDay } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import type { MenuItem } from '../lib/menu'
@@ -64,90 +64,93 @@
     return timeOfDay(at)
   }
 
-  /** Everything on one day, in the order the day runs. */
+  /** Everything on one day, in the order the day runs (`dayItems`). */
   function rowsOn(iso: string): Row[] {
-    const out: Row[] = []
+    return calendar.dayItems(iso).map(rowOf)
+  }
 
-    for (const event of calendar.allDayOn(iso)) {
-      const cal = calendar.calendarOf(event.calendarId)
-      out.push({
-        key: `ad:${event.id}`,
-        when: ['All day'],
-        label: event.title,
-        sub: cal?.name ?? '',
-        color: cal?.color ?? 'var(--fg-subtle)',
-        kind: 'event',
-        muted: event.status === 'cancelled',
-        onopen: () => (calendar.selection = { kind: 'event', id: event.id }),
-        menu: () => eventMenu(event),
-      })
+  function rowOf(item: DayItem): Row {
+    switch (item.kind) {
+      case 'allDay': {
+        const { event } = item
+        const cal = calendar.calendarOf(event.calendarId)
+        return {
+          key: `ad:${event.id}`,
+          when: ['All day'],
+          label: event.title,
+          sub: cal?.name ?? '',
+          color: cal?.color ?? 'var(--fg-subtle)',
+          kind: 'event',
+          muted: event.status === 'cancelled',
+          onopen: () => (calendar.selection = { kind: 'event', id: event.id }),
+          menu: () => eventMenu(event),
+        }
+      }
+      case 'note': {
+        const { mark } = item
+        return {
+          key: mark.key,
+          when: ['Noted'],
+          label: mark.label,
+          sub: '',
+          color: mark.tracker.color,
+          kind: 'reading',
+          onopen: (e) => menu.show(e, readingMenu(mark.reading, mark.tracker)),
+          menu: () => readingMenu(mark.reading, mark.tracker),
+        }
+      }
+      case 'task': {
+        const { task } = item
+        const project = calendar.projectOf(task.projectId)
+        return {
+          key: `task:${task.id}`,
+          when: ['Due'],
+          label: task.title,
+          sub: project?.name ?? '',
+          color: project?.color ?? 'var(--accent)',
+          kind: 'task',
+          muted: task.status === 'done',
+          onopen: (e) => menu.show(e, calendarTaskMenu(task)),
+          menu: () => calendarTaskMenu(task),
+        }
+      }
+      case 'slot': {
+        const { slot } = item
+        const proposal = slot.proposal
+        return {
+          key: slot.key,
+          when: slot.live ? ['Now'] : [clockOf(slot.start), clockOf(slot.end)],
+          label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
+          sub: slot.reading ? '' : proposal ? 'Proposed' : slot.subtitle,
+          color: slot.color,
+          kind: slot.kind,
+          muted: slot.cancelled,
+          ghost: !!proposal,
+          live: slot.live,
+          // A reading and the running timer have no panel -- `select` would
+          // only deselect -- so a tap on one shows what can be done with it.
+          onopen: proposal
+            ? () => calendar.selectProposal(proposal)
+            : slot.reading || slot.live
+              ? (e) => menu.show(e, slotMenu(slot))
+              : () => calendar.select(slot),
+          menu: proposal ? () => [] : () => slotMenu(slot),
+        }
+      }
+      case 'mark': {
+        const { mark } = item
+        return {
+          key: mark.key,
+          when: [clockOf(mark.minute ?? 0)],
+          label: mark.label,
+          sub: '',
+          color: mark.tracker.color,
+          kind: 'reading',
+          onopen: (e) => menu.show(e, readingMenu(mark.reading, mark.tracker)),
+          menu: () => readingMenu(mark.reading, mark.tracker),
+        }
+      }
     }
-    for (const mark of calendar.untimedMarksOn(iso)) {
-      out.push({
-        key: mark.key,
-        when: ['Noted'],
-        label: mark.label,
-        sub: '',
-        color: mark.tracker.color,
-        kind: 'reading',
-        onopen: (e) => menu.show(e, readingMenu(mark.reading, mark.tracker)),
-        menu: () => readingMenu(mark.reading, mark.tracker),
-      })
-    }
-    for (const task of calendar.tasksOn(iso)) {
-      const project = calendar.projectOf(task.projectId)
-      out.push({
-        key: `task:${task.id}`,
-        when: ['Due'],
-        label: task.title,
-        sub: project?.name ?? '',
-        color: project?.color ?? 'var(--accent)',
-        kind: 'task',
-        muted: task.status === 'done',
-        onopen: (e) => menu.show(e, calendarTaskMenu(task)),
-        menu: () => calendarTaskMenu(task),
-      })
-    }
-
-    const timed: (Row & { at: number })[] = []
-    for (const slot of calendar.slotsOn(iso)) {
-      const proposal = slot.proposal
-      timed.push({
-        key: slot.key,
-        when: slot.live ? ['Now'] : [clockOf(slot.start), clockOf(slot.end)],
-        label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
-        sub: slot.reading ? '' : proposal ? 'Proposed' : slot.subtitle,
-        color: slot.color,
-        kind: slot.kind,
-        muted: slot.cancelled,
-        ghost: !!proposal,
-        live: slot.live,
-        // A reading and the running timer have no panel -- `select` would
-        // only deselect -- so a tap on one shows what can be done with it.
-        onopen: proposal
-          ? () => calendar.selectProposal(proposal)
-          : slot.reading || slot.live
-            ? (e) => menu.show(e, slotMenu(slot))
-            : () => calendar.select(slot),
-        menu: proposal ? () => [] : () => slotMenu(slot),
-        at: slot.start,
-      })
-    }
-    for (const mark of calendar.marksOn(iso)) {
-      timed.push({
-        key: mark.key,
-        when: [clockOf(mark.minute ?? 0)],
-        label: mark.label,
-        sub: '',
-        color: mark.tracker.color,
-        kind: 'reading',
-        onopen: (e) => menu.show(e, readingMenu(mark.reading, mark.tracker)),
-        menu: () => readingMenu(mark.reading, mark.tracker),
-        at: mark.minute ?? 0,
-      })
-    }
-    out.push(...timed.sort((a, b) => a.at - b.at))
-    return out
   }
 
   const currentDay = $derived(todayIso())

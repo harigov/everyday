@@ -570,11 +570,6 @@ async fn attach(
     Ok(Connected { status, connection })
 }
 
-/// What to call this machine in the other one's device list.
-///
-/// The host name, because that is what somebody looking at a list of paired
-/// devices at two in the morning will recognise. Not an identifier of any kind:
-/// it is shown to the person who owns both machines and to nobody else.
 /// Where the request came from, for the service: an app window of its own or
 /// the main one. See `windows::ctx_for`.
 #[cfg(desktop)]
@@ -608,6 +603,11 @@ fn device_name() -> String {
     }
 }
 
+/// What to call this machine in the other one's device list.
+///
+/// The host name, because that is what somebody looking at a list of paired
+/// devices at two in the morning will recognise. Not an identifier of any kind:
+/// it is shown to the person who owns both machines and to nobody else.
 #[cfg(not(target_os = "android"))]
 fn device_name() -> String {
     std::env::var("HOSTNAME")

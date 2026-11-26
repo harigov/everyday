@@ -71,10 +71,12 @@
      up and the bar away, to the room the page has left. This is what
      app.css's own phone rule for `.sheet` should say, for every dialog. */
   :global([data-phone] .scrim.phone-fit) {
-    z-index: 64;
+    z-index: 67;
   }
+  /* Over app.css's sheets and pickers (66) as well: a question is asked
+     over the sheet it is about -- Quick Cleanup's -- and under a menu (71). */
   :global([data-phone] .sheet.phone-fit) {
-    z-index: 65;
+    z-index: 68;
     max-height: calc(100dvh - 12% - var(--bottombar-h) - var(--safe-bottom) - var(--sp-3));
   }
   :global([data-phone] .sheet.wide.phone-fit) {

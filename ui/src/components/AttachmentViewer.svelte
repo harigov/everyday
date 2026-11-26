@@ -17,6 +17,7 @@
   import { humanBytes } from '../lib/format'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
+  import { mobileShell } from '../lib/api'
   import { closesOnBack } from '../lib/phone.svelte'
   import {
     applyBodyTheme,
@@ -285,10 +286,13 @@
           {isFiled ? 'In Files' : 'Save to Files'}
         </button>
       {/if}
-      <button class="tool labelled" disabled={isSaving} onclick={() => void save()}>
-        <Icon name="download" size={16} />
-        {isSaved ? 'Saved' : 'Save'}
-      </button>
+      <!-- A copy saved to disk is a computer's; the phone keeps it in Files. -->
+      {#if !mobileShell}
+        <button class="tool labelled" disabled={isSaving} onclick={() => void save()}>
+          <Icon name="download" size={16} />
+          {isSaved ? 'Saved' : 'Save'}
+        </button>
+      {/if}
     </div>
     <button class="tool" aria-label="Close" title="Close" onclick={onclose}>
       <Icon name="close" size={17} />
@@ -302,9 +306,15 @@
     {:else if shown.state === 'failed'}
       <div class="failed">
         <p>{shown.reason}</p>
-        <button class="btn btn-primary" disabled={isSaving} onclick={() => void save()}>
-          {isSaved ? 'Saved' : 'Save'}
-        </button>
+        {#if !mobileShell}
+          <button class="btn btn-primary" disabled={isSaving} onclick={() => void save()}>
+            {isSaved ? 'Saved' : 'Save'}
+          </button>
+        {:else if onfiles}
+          <button class="btn btn-primary" disabled={isFiling} onclick={() => void keep()}>
+            {isFiled ? 'In Files' : 'Save to Files'}
+          </button>
+        {/if}
       </div>
     {:else if shown.state === 'image'}
       <img

@@ -16,7 +16,7 @@
   // them through `filesUi` and this is where they appear.
 
   import { untrack } from 'svelte'
-  import { api } from '../lib/api'
+  import { api, mobileShell } from '../lib/api'
   import { isReadable } from '../lib/documents'
   import { formatSize } from '../lib/files'
   import { files, type FilesView } from '../lib/files.svelte'
@@ -266,7 +266,12 @@
             { label: 'New album…', run: () => filesUi.askName(newAlbumAsk(ids)) },
           ]),
         },
-        phone.on && { label: 'Export…', icon: 'download', run: () => void files.exportFiles(ids) },
+        phone.on &&
+          !mobileShell && {
+            label: 'Export…',
+            icon: 'download',
+            run: () => void files.exportFiles(ids),
+          },
         phone.on && SEP,
         one && { label: 'Open', icon: 'eye', run: () => files.open(one.id) },
         // A document is also read, in the reader with its contents beside it.
@@ -590,9 +595,11 @@
       <button class="btn btn-sm" onclick={() => filesUi.pickFolder([...ids])}>
         <Icon name="folder" size={14} /> Move
       </button>
-      <button class="btn btn-sm" onclick={() => void files.exportFiles(ids)}>
-        <Icon name="download" size={14} /> Export
-      </button>
+      {#if !mobileShell}
+        <button class="btn btn-sm" onclick={() => void files.exportFiles(ids)}>
+          <Icon name="download" size={14} /> Export
+        </button>
+      {/if}
       <button class="btn btn-sm" aria-label="More" title="More" onclick={moreMenu}>
         <Icon name="more" size={14} />
       </button>

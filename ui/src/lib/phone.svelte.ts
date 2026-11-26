@@ -36,6 +36,10 @@ class Phone {
     }
     apply()
     query.addEventListener('change', apply)
+    // The phone shell's own clause is a width the query does not ask about:
+    // a tablet or an unfolded phone turned across 960 px changes it without
+    // the query's answer changing.
+    if (mobileShell) window.addEventListener('resize', apply)
   }
 }
 
@@ -132,7 +136,15 @@ class Back {
         if (this.#quiet === 0) this.#landed()
         return
       }
-      this.#layers.pop()?.close()
+      // The entry gone is the topmost layer's that has one: a layer still
+      // waiting for its entry to be pushed is not what back took away.
+      for (let at = this.#layers.length - 1; at >= 0; at--) {
+        const layer = this.#layers[at]
+        if (!layer?.pushed) continue
+        this.#layers.splice(at, 1)
+        layer.close()
+        return
+      }
     })
   }
 

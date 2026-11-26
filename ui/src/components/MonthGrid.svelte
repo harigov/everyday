@@ -13,7 +13,7 @@
   // Six rows always, even when a month fits in five. A grid whose height
   // changes as you page through the year makes everything below it jump.
 
-  import { calendar } from '../lib/calendar.svelte'
+  import { calendar, type DayItem } from '../lib/calendar.svelte'
   import { dayDropTarget, startDayMove, type DayMove } from '../lib/day-move'
   import { daysFrom, startOfWeek, todayIso } from '../lib/time'
   import { dateFormat, dayHeading, timeOfDay } from '../lib/format'
@@ -59,99 +59,100 @@
     menu: () => MenuItem[]
   }
 
-  /** Everything on one day, in the order the day runs. */
+  /** Everything on one day, in the order the day runs (`dayItems`). */
   function rowsOn(iso: string): Row[] {
-    const out: Row[] = []
+    return calendar.dayItems(iso).map((item) => rowOf(item, iso))
+  }
 
-    for (const event of calendar.allDayOn(iso)) {
-      const cal = calendar.calendarOf(event.calendarId)
-      out.push({
-        key: `ad:${event.id}`,
-        label: event.title,
-        time: '',
-        color: cal?.color ?? 'var(--fg-subtle)',
-        kind: 'event',
-        muted: event.status === 'cancelled',
-        move: calendar.canMove(event) ? { kind: 'event', id: event.id, from: iso } : undefined,
-        saving: calendar.moves.has(event.id),
-        onopen: () => (calendar.selection = { kind: 'event', id: event.id }),
-        menu: () => eventMenu(event),
-      })
+  function rowOf(item: DayItem, iso: string): Row {
+    switch (item.kind) {
+      case 'allDay': {
+        const { event } = item
+        const cal = calendar.calendarOf(event.calendarId)
+        return {
+          key: `ad:${event.id}`,
+          label: event.title,
+          time: '',
+          color: cal?.color ?? 'var(--fg-subtle)',
+          kind: 'event',
+          muted: event.status === 'cancelled',
+          move: calendar.canMove(event) ? { kind: 'event', id: event.id, from: iso } : undefined,
+          saving: calendar.moves.has(event.id),
+          onopen: () => (calendar.selection = { kind: 'event', id: event.id }),
+          menu: () => eventMenu(event),
+        }
+      }
+      // Readings with no time of day sit with the other undated things,
+      // above everything the clock can order.
+      case 'note': {
+        const { mark } = item
+        return {
+          key: mark.key,
+          label: mark.label,
+          time: '',
+          color: mark.tracker.color,
+          kind: 'reading',
+          onopen: () => calendar.goto(iso),
+          menu: () => readingMenu(mark.reading, mark.tracker),
+        }
+      }
+      case 'task': {
+        const { task } = item
+        return {
+          key: `task:${task.id}`,
+          label: task.title,
+          time: '',
+          color: calendar.projectOf(task.projectId)?.color ?? 'var(--accent)',
+          kind: 'task',
+          muted: task.status === 'done',
+          onopen: () => calendar.goto(iso),
+          menu: () => calendarTaskMenu(task),
+        }
+      }
+      case 'slot': {
+        const { slot } = item
+        const start = slot.block?.start ?? slot.event?.start ?? slot.reading?.at
+        const proposal = slot.proposal
+        // What dragging it onto another day moves: a block of your own, or an
+        // event `canMove` allows -- whole or not, since a night that runs into
+        // the next day still moves by its day. Never a ghost.
+        const move: DayMove | undefined = proposal
+          ? undefined
+          : slot.event && calendar.canMove(slot.event)
+            ? { kind: 'event', id: slot.event.id, from: iso }
+            : slot.block && slot.movable
+              ? { kind: 'block', id: slot.block.id, from: iso }
+              : undefined
+        return {
+          key: slot.key,
+          label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
+          time: start ? timeOfDay(new Date(start)) : '',
+          color: slot.color,
+          kind: slot.kind,
+          muted: slot.cancelled,
+          ghost: !!proposal,
+          move,
+          saving: slot.saving,
+          // A ghost opens its own proposal pane; a right-click on it does the
+          // same, rather than raising the ordinary block menu -- there is no
+          // row on disk yet for "delete" or "rename" to act on.
+          onopen: proposal ? () => calendar.selectProposal(proposal) : () => calendar.select(slot),
+          menu: proposal ? () => [] : () => slotMenu(slot),
+        }
+      }
+      case 'mark': {
+        const { mark } = item
+        return {
+          key: mark.key,
+          label: mark.label,
+          time: mark.reading.at ? timeOfDay(new Date(mark.reading.at)) : '',
+          color: mark.tracker.color,
+          kind: 'reading',
+          onopen: () => calendar.goto(iso),
+          menu: () => readingMenu(mark.reading, mark.tracker),
+        }
+      }
     }
-    // Readings with no time of day sit with the other undated things, above
-    // everything the clock can order.
-    for (const mark of calendar.untimedMarksOn(iso)) {
-      out.push({
-        key: mark.key,
-        label: mark.label,
-        time: '',
-        color: mark.tracker.color,
-        kind: 'reading',
-        onopen: () => calendar.goto(iso),
-        menu: () => readingMenu(mark.reading, mark.tracker),
-      })
-    }
-    for (const task of calendar.tasksOn(iso)) {
-      out.push({
-        key: `task:${task.id}`,
-        label: task.title,
-        time: '',
-        color: calendar.projectOf(task.projectId)?.color ?? 'var(--accent)',
-        kind: 'task',
-        muted: task.status === 'done',
-        onopen: () => calendar.goto(iso),
-        menu: () => calendarTaskMenu(task),
-      })
-    }
-    // Everything the clock can place, in the order the day ran: blocks,
-    // events, tracked spans (`slotsOn`) and tracked moments (`marksOn`),
-    // merged on their start minute rather than listed in separate groups.
-    const timed: (Row & { at: number })[] = []
-    for (const slot of calendar.slotsOn(iso)) {
-      const start = slot.block?.start ?? slot.event?.start ?? slot.reading?.at
-      const proposal = slot.proposal
-      // What dragging it onto another day moves: a block of your own, or an
-      // event `canMove` allows -- whole or not, since a night that runs into
-      // the next day still moves by its day. Never a ghost.
-      const move: DayMove | undefined = proposal
-        ? undefined
-        : slot.event && calendar.canMove(slot.event)
-          ? { kind: 'event', id: slot.event.id, from: iso }
-          : slot.block && slot.movable
-            ? { kind: 'block', id: slot.block.id, from: iso }
-            : undefined
-      timed.push({
-        key: slot.key,
-        label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
-        time: start ? timeOfDay(new Date(start)) : '',
-        color: slot.color,
-        kind: slot.kind,
-        muted: slot.cancelled,
-        ghost: !!proposal,
-        move,
-        saving: slot.saving,
-        // A ghost opens its own proposal pane; a right-click on it does the
-        // same, rather than raising the ordinary block menu -- there is no
-        // row on disk yet for "delete" or "rename" to act on.
-        onopen: proposal ? () => calendar.selectProposal(proposal) : () => calendar.select(slot),
-        menu: proposal ? () => [] : () => slotMenu(slot),
-        at: slot.start,
-      })
-    }
-    for (const mark of calendar.marksOn(iso)) {
-      timed.push({
-        key: mark.key,
-        label: mark.label,
-        time: mark.reading.at ? timeOfDay(new Date(mark.reading.at)) : '',
-        color: mark.tracker.color,
-        kind: 'reading',
-        onopen: () => calendar.goto(iso),
-        menu: () => readingMenu(mark.reading, mark.tracker),
-        at: mark.minute ?? 0,
-      })
-    }
-    out.push(...timed.sort((a, b) => a.at - b.at))
-    return out
   }
 
   const currentDay = $derived(todayIso())
@@ -160,11 +161,12 @@
   // dots and no more. The cell picks the day, and what is on it is listed
   // under the grid -- the same rows the week's list has -- until another is
   // picked or the month moves.
-  let picked = $state<string | null>(null)
-  const pick = $derived(picked && days.includes(picked) ? picked : calendar.anchor)
+  const pick = $derived(
+    calendar.picked && days.includes(calendar.picked) ? calendar.picked : calendar.anchor,
+  )
   $effect(() => {
     void calendar.anchor
-    picked = null
+    calendar.picked = null
   })
 
   /** "Thursday, November 26" for the dots' own label. */
@@ -216,7 +218,7 @@
               ? `, ${rows.length} ${rows.length === 1 ? 'item' : 'items'}`
               : ''}"
             aria-pressed={iso === pick}
-            onclick={() => (picked = iso)}
+            onclick={() => (calendar.picked = iso)}
           >
             <span class="pnum">{Number(iso.slice(8, 10))}</span>
             <span class="pdots" aria-hidden="true">

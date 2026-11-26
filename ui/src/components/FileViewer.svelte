@@ -32,7 +32,7 @@
   // drawn here at all, so for one it is the only way on.
 
   import { untrack } from 'svelte'
-  import { fileUrl, fileVersion, thumbnailUrl } from '../lib/api'
+  import { fileUrl, fileVersion, mobileShell, thumbnailUrl } from '../lib/api'
   import { isReadable } from '../lib/documents'
   import { formatSize, kindIcon, previewOf } from '../lib/files'
   import { files as store } from '../lib/files.svelte'
@@ -465,7 +465,8 @@
       <Icon name="share" size={16} />
     </button>
   {/if}
-  {#if current}
+  <!-- Saving a copy is a computer's: the phone shell has nowhere to put one. -->
+  {#if current && !mobileShell}
     <button
       class="tool labelled"
       aria-label="Save"
@@ -534,7 +535,7 @@
                 Open in another program
               </button>
             {/if}
-            {#if current && current.status.state === 'present'}
+            {#if current && current.status.state === 'present' && !mobileShell}
               <button
                 class="btn"
                 class:btn-primary={!readable}

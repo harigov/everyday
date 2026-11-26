@@ -265,6 +265,16 @@ pub async fn start(
         .transpose()?;
 
     let running = spawn_server(listener, router, tls, server)?;
+    // When the listener stops, so do the connections it upgraded, which its
+    // graceful shutdown does not reach: a voice session (`routes::voice`).
+    {
+        let mut stopping = running.shutdown.subscribe();
+        let server = running.server.clone();
+        tokio::spawn(async move {
+            let _ = stopping.wait_for(|stop| *stop).await;
+            server.closing.send_replace(true);
+        });
+    }
     tracing::info!(address = %running.address, "serving the vault");
     Ok(running)
 }
