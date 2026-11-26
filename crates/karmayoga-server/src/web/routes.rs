@@ -470,6 +470,5 @@ async fn asset(State(state): State<Arc<WebState>>, method: Method, uri: Uri) -> 
 /// who-is: [`Gate::skip_whois`] admits any address in Tailscale's range
 /// without asking a tailscaled this machine may not run. The range check
 /// itself still applies -- that is what the first test is about.
-
 #[cfg(test)]
 mod tests;
