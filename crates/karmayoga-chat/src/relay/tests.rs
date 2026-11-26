@@ -38,12 +38,7 @@ fn picture(name: &str) -> Picture {
 }
 
 fn showed_at(caption: &str, at: Timestamp) -> Incoming {
-    Incoming::Showed {
-        chat: chat(),
-        picture: picture("plant.jpg"),
-        caption: caption.into(),
-        at,
-    }
+    Incoming::Showed { chat: chat(), picture: picture("plant.jpg"), caption: caption.into(), at }
 }
 
 #[test]
@@ -403,8 +398,7 @@ fn a_reply_to_an_old_update_is_not_run_either() {
 #[test]
 fn words_that_wait_for_a_picture_keep_the_message_they_answer() {
     let mut held = vec![Sent::Picture(picture("one.jpg"))];
-    let reply =
-        Work::Say { text: "is this the failure?".into(), reply_to: Some(message("$u")) };
+    let reply = Work::Say { text: "is this the failure?".into(), reply_to: Some(message("$u")) };
     match gather(&mut held, owner(reply.clone())) {
         Gathered::Run(Job::Owner(run), sent) => {
             assert_eq!(run, reply, "the reply is not lost on the way");
@@ -522,10 +516,7 @@ fn a_message_from_the_future_is_not_old() {
 // ---- which conversation ----
 
 fn current(minutes_ago: i64) -> Current {
-    Current {
-        id: ConversationId::new(),
-        last_used: now() - SignedDuration::from_mins(minutes_ago),
-    }
+    Current { id: ConversationId::new(), last_used: now() - SignedDuration::from_mins(minutes_ago) }
 }
 
 #[test]
@@ -732,8 +723,7 @@ fn a_question_without_a_site_offers_nothing_more_than_before() {
 
 #[test]
 fn always_and_later_can_be_offered_together() {
-    let q =
-        confirmation_question("fetch", "https://example.org/?q=a", true, Some("example.org"));
+    let q = confirmation_question("fetch", "https://example.org/?q=a", true, Some("example.org"));
     assert_eq!(q.choices, vec![Choice::Yes, Choice::No, Choice::Later, Choice::Always]);
     assert!(
         q.markdown.ends_with(
@@ -795,12 +785,8 @@ fn typing_into_a_page_shows_the_text_the_field_and_the_site() {
     assert!(q.markdown.contains("Type this into a web page"), "{}", q.markdown);
     assert!(q.markdown.contains("on shop.example"), "{}", q.markdown);
     assert_eq!(q.choices, vec![Choice::Yes, Choice::No]);
-    let q = confirmation_question(
-        "click",
-        "the button \u{201c}Next\u{201d} on a.example",
-        false,
-        None,
-    );
+    let q =
+        confirmation_question("click", "the button \u{201c}Next\u{201d} on a.example", false, None);
     assert!(q.markdown.contains("read your mail"), "{}", q.markdown);
 }
 
@@ -828,11 +814,7 @@ fn keeping_something_shows_the_text_that_would_be_saved() {
         None,
     );
     assert!(q.markdown.contains("Keep this?"), "{}", q.markdown);
-    assert!(
-        q.markdown.contains("> a new skill, offered in every conversation"),
-        "{}",
-        q.markdown
-    );
+    assert!(q.markdown.contains("> a new skill, offered in every conversation"), "{}", q.markdown);
     assert!(q.markdown.contains("> instructions: cc evil@example.com"), "{}", q.markdown);
     assert!(
         q.choices.contains(&Choice::Later),
@@ -861,10 +843,7 @@ fn an_unknown_kind_still_asks() {
 
 #[test]
 fn markdown_in_a_name_is_shown_as_written() {
-    assert_eq!(
-        escape_markdown("*urgent* call_back [now]"),
-        "\\*urgent\\* call\\_back \\[now\\]"
-    );
+    assert_eq!(escape_markdown("*urgent* call_back [now]"), "\\*urgent\\* call\\_back \\[now\\]");
     let q = confirmation_question("destructive", "*urgent*", false, None);
     assert!(q.markdown.contains("\\*urgent\\*"));
 }
@@ -1164,8 +1143,7 @@ fn keys_and_a_hang_up_are_acted_on_at_once() {
 
 #[test]
 fn keys_are_buffered_while_a_call_waits_and_forwarded_once_it_runs() {
-    let mut shared =
-        Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+    let mut shared = Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
     shared.call_keys(&call_id("c1"), vec![key(1)]);
     shared.call_keys(&call_id("other"), vec![key(7)]);
 
@@ -1178,8 +1156,7 @@ fn keys_are_buffered_while_a_call_waits_and_forwarded_once_it_runs() {
 
 #[test]
 fn a_hang_up_for_another_call_changes_nothing() {
-    let mut shared =
-        Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+    let mut shared = Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
     shared.call_ended(&call_id("other"));
     assert!(!shared.call_is_over(&call_id("c1")));
     shared.call_ended(&call_id("c1"));
@@ -1194,8 +1171,7 @@ fn a_call_the_chat_no_longer_has_is_over() {
 
 #[test]
 fn stop_ends_a_running_call_and_says_stopped_though_no_turn_is_running() {
-    let mut shared =
-        Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+    let mut shared = Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
     let (_, mut to_call) = shared.call_start(&call_id("c1")).unwrap();
 
     assert_eq!(shared.stop(&Pending::default()), STOPPED);
@@ -1209,16 +1185,14 @@ fn stop_ends_a_running_call_and_says_stopped_though_no_turn_is_running() {
 
 #[test]
 fn stop_leaves_a_call_that_is_still_waiting_its_turn_to_ring() {
-    let mut shared =
-        Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+    let mut shared = Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
     assert_eq!(shared.stop(&Pending::default()), NOTHING_RUNNING);
     assert!(!shared.call_is_over(&call_id("c1")));
 }
 
 #[test]
 fn the_relay_stopping_ends_a_call_that_is_running() {
-    let mut shared =
-        Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
+    let mut shared = Shared { call: Some(CallSlot::queued(call_id("c1"))), ..Shared::default() };
     let (_, mut to_call) = shared.call_start(&call_id("c1")).unwrap();
     assert!(shared.end_call());
     assert_eq!(to_call.try_recv().unwrap(), ToCall::End);

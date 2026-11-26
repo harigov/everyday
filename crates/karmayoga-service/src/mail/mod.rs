@@ -29,8 +29,8 @@
 //! `outbox` here is the vault's half of sending; `karmayoga_mail::outbox` is
 //! the protocol half it calls. Same word, two layers.
 
-pub mod ai;
 pub(crate) mod address;
+pub mod ai;
 pub mod check;
 pub mod followup;
 pub(crate) mod judge;

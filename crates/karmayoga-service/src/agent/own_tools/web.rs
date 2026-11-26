@@ -360,7 +360,10 @@ pub(in crate::agent) fn look_up_item_tool(vault: Arc<Vault>) -> PortableDynamicT
 /// either. Omits whatever the hit did not have, the same reasoning
 /// `agent::tools::library::item_json` gives for doing the same with an
 /// `Item`, rather than sending the model an empty string to puzzle over.
-pub(in crate::agent) fn look_up_item_result(hit: &SearchResult, kind: &karmayoga_core::Kind) -> Value {
+pub(in crate::agent) fn look_up_item_result(
+    hit: &SearchResult,
+    kind: &karmayoga_core::Kind,
+) -> Value {
     let mut v = serde_json::json!({ "title": hit.title, "url": hit.url });
     let m = v.as_object_mut().expect("built as an object");
     // The cover, by address, for create_item's own `image_url`: a model never
@@ -463,7 +466,9 @@ pub(in crate::agent) fn search_images_tool() -> PortableDynamicTool {
 /// One picture as `search_images` hands it to the model, with nothing it
 /// would only have to read past: no empty strings, and the size only when
 /// the search knew it.
-pub(in crate::agent) fn image_result(found: &karmayoga_core::websearch::images::ImageResult) -> Value {
+pub(in crate::agent) fn image_result(
+    found: &karmayoga_core::websearch::images::ImageResult,
+) -> Value {
     let mut v = serde_json::json!({ "title": found.title, "image_url": found.image_url });
     let m = v.as_object_mut().expect("built as an object");
     for (key, value) in [

@@ -509,7 +509,6 @@ mod tests {
     use crate::mail::ai::fixtures::{account, at, message, today};
     use karmayoga_core::id::MailMessageId;
 
-
     #[test]
     fn a_briefing_is_asked_to_run_longer_for_a_longer_thread() {
         let one_short = listen_target_words(1, 300);

@@ -58,13 +58,13 @@
 use super::article;
 use super::downloads::safe_name;
 use super::route::{Refusals, Route};
-use crate::http::BROWSER_USER_AGENT;
 use super::work::{self, Measured, Queue, Task, Worker};
 use super::{WorkItem, WorkKind, announce};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Kind, Op};
 use crate::files;
 use crate::http;
+use crate::http::BROWSER_USER_AGENT;
 use crate::service::{Service, blocking};
 use crate::speech::decode;
 use crate::speech::detect::{Detected, SpeechDetector, Tuning, build_detector};

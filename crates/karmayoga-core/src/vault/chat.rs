@@ -65,13 +65,10 @@ impl Vault {
     /// commands that edit it; the interface is only ever told whether each
     /// part is there. See `karmayoga_service::chat`.
     pub fn chat_secret(&self, link: ChatLinkId) -> Result<ChatSecret> {
-        self.with_secrets(|s| {
-            match s.get_secret(CHAT_SECRET_OWNER_KIND, &link.to_string())? {
-                Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                    Error::Invalid(format!("a stored chat secret would not parse: {e}"))
-                }),
-                None => Ok(ChatSecret::default()),
-            }
+        self.with_secrets(|s| match s.get_secret(CHAT_SECRET_OWNER_KIND, &link.to_string())? {
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| Error::Invalid(format!("a stored chat secret would not parse: {e}"))),
+            None => Ok(ChatSecret::default()),
         })
     }
 

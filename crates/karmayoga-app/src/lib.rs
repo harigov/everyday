@@ -192,8 +192,7 @@ fn desktop_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     // The service exists before Tauri does -- `AppState` builds it --
     // but it cannot emit anywhere until there is an app to emit
     // through. This is the earliest moment that handle exists.
-    app.state::<AppState>()
-        .set_sink(std::sync::Arc::new(events::WindowSink::new(handle.clone())));
+    app.state::<AppState>().set_sink(std::sync::Arc::new(events::WindowSink::new(handle.clone())));
     #[cfg(feature = "drive")]
     drive::start(&handle);
     // The OS-wide key to the palette. A desktop that refuses it is the
@@ -236,10 +235,7 @@ fn desktop_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     // Held for the life of the process. The scheduler stops when the
     // process does, and nothing else should be able to stop it.
     std::mem::forget(_stop);
-    tauri::async_runtime::spawn(karmayoga_service::scheduler::run(
-        service.clone(),
-        listen.clone(),
-    ));
+    tauri::async_runtime::spawn(karmayoga_service::scheduler::run(service.clone(), listen.clone()));
     // Background jobs, beside the scheduler rather than inside it --
     // see `karmayoga_service::jobs` -- on the same stop signal.
     tauri::async_runtime::spawn(karmayoga_service::jobs::run(service.clone(), listen));
@@ -248,9 +244,9 @@ fn desktop_setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     // `karmayoga_service::supervisor`'s module doc. Constructed here,
     // after `set_sink` above, so its announcements reach the window
     // from its very first task; nothing has registered one yet.
-    service.set_supervisor(std::sync::Arc::new(
-        karmayoga_service::supervisor::Supervisor::new(service.events()),
-    ));
+    service.set_supervisor(std::sync::Arc::new(karmayoga_service::supervisor::Supervisor::new(
+        service.events(),
+    )));
     // Chat links -- the assistant as a bot on the person's own Matrix
     // server -- run as supervised tasks too, so they are installed
     // after the supervisor they will be registered on. Nothing starts
@@ -298,9 +294,7 @@ fn desktop_window_event(window: &tauri::Window, event: &WindowEvent) {
     // Writing help's popup is not the application: closing it is
     // dismissing it, and it goes when the main window does, or a
     // hidden popup would keep the process alive with no way back.
-    if [writing::LABEL, voicetyping::pill::LABEL, panel::window::LABEL]
-        .contains(&window.label())
-    {
+    if [writing::LABEL, voicetyping::pill::LABEL, panel::window::LABEL].contains(&window.label()) {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             let _ = window.hide();

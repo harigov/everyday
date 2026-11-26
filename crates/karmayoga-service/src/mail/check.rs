@@ -70,9 +70,9 @@ use crate::decision::{self, ChoiceOption, Content};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::mail::address::display_address;
 use crate::mail::ai::{Today, one_line};
-use crate::mail::text::excerpt;
 use crate::mail::followup::decision_not_ready;
 use crate::mail::judge::{Judge, why_of};
+use crate::mail::text::excerpt;
 use crate::service::{Service, blocking};
 
 /// How long the whole of a call may take, whichever model it is asked of. A

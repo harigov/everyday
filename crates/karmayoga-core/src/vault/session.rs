@@ -322,10 +322,7 @@ impl Vault {
 
     /// [`Vault::with_domain`] for the assistant's conversations, memories
     /// and skills; shared by the agent and chat modules.
-    pub(super) fn with_agent<T>(
-        &self,
-        f: impl FnOnce(&dyn AgentStore) -> Result<T>,
-    ) -> Result<T> {
+    pub(super) fn with_agent<T>(&self, f: impl FnOnce(&dyn AgentStore) -> Result<T>) -> Result<T> {
         self.with_domain(Domain::Agent, |s| s.agent().map(f))
     }
 

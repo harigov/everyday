@@ -449,8 +449,7 @@ impl SqlStore {
         table: &str,
         aad: &[u8],
     ) -> Result<Option<T>> {
-        let sealed =
-            self.read().sealed(&format!("SELECT data FROM {table} WHERE id = 1"), &[])?;
+        let sealed = self.read().sealed(&format!("SELECT data FROM {table} WHERE id = 1"), &[])?;
         sealed.map(|sealed| self.unseal(aad, &sealed)).transpose()
     }
 

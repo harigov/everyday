@@ -881,7 +881,9 @@ async fn an_inflight_op_left_by_a_crash_is_recovered_and_drains() {
     let attempts_before = stranded.attempts;
 
     let mut session = FakeSession::default();
-    karmayoga_service::mail::outbox::recover_inflight_ops(&svc, account, &mut session).await.unwrap();
+    karmayoga_service::mail::outbox::recover_inflight_ops(&svc, account, &mut session)
+        .await
+        .unwrap();
 
     let recovered = vault.op(op_id).unwrap();
     assert_eq!(recovered.state, OpState::Pending, "a stranded op must go back to work");
@@ -1414,7 +1416,9 @@ async fn recovering_a_crashed_send_finds_it_via_a_widened_search() {
 
     let mut session = FakeSession::default();
     session.found_message_ids.insert("crashed@example.com".into(), 5);
-    karmayoga_service::mail::outbox::recover_inflight_ops(&svc, account, &mut session).await.unwrap();
+    karmayoga_service::mail::outbox::recover_inflight_ops(&svc, account, &mut session)
+        .await
+        .unwrap();
 
     let recovered = vault.op(op.id).unwrap();
     assert_eq!(
@@ -1717,7 +1721,9 @@ async fn a_crash_between_an_ops_terminal_state_and_its_draft_write_is_reconciled
     vault.update_op(&failed).unwrap();
 
     let mut session = FakeSession::default();
-    karmayoga_service::mail::outbox::recover_inflight_ops(&svc, account, &mut session).await.unwrap();
+    karmayoga_service::mail::outbox::recover_inflight_ops(&svc, account, &mut session)
+        .await
+        .unwrap();
 
     assert_eq!(
         vault.draft(sent_draft_id).unwrap().state,

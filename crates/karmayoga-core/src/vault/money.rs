@@ -132,9 +132,7 @@ impl Vault {
         }
         let bytes = serde_json::to_vec(&creds)
             .map_err(|e| Error::Invalid(format!("the Plaid keys could not be sealed: {e}")))?;
-        self.with_secrets(|s| {
-            s.put_secret(PLAID_KEYS_OWNER_KIND, PLAID_KEYS_OWNER_ID, &bytes)
-        })
+        self.with_secrets(|s| s.put_secret(PLAID_KEYS_OWNER_KIND, PLAID_KEYS_OWNER_ID, &bytes))
     }
 
     /// Forget the Plaid credentials. Links stay, and stop syncing until
@@ -155,9 +153,8 @@ impl Vault {
 
     /// A link's access token. **The other door.**
     pub fn bank_link_access(&self, id: BankLinkId) -> Result<AccessToken> {
-        let bytes = self.with_secrets(|s| {
-            s.get_secret(BANK_LINK_SECRET_OWNER_KIND, &id.to_string())
-        })?;
+        let bytes =
+            self.with_secrets(|s| s.get_secret(BANK_LINK_SECRET_OWNER_KIND, &id.to_string()))?;
         let bytes =
             bytes.ok_or_else(|| Error::Invalid("this bank needs to be connected again".into()))?;
         String::from_utf8(bytes)

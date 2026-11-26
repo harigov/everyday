@@ -195,7 +195,6 @@ pub(super) enum Source<'a> {
     Upload(&'a str),
 }
 
-
 impl Vault {
     /// Does this vault's backend keep a files catalog?
     pub fn supports_files(&self) -> bool {

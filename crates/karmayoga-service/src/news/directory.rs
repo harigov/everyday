@@ -274,7 +274,8 @@ fn clean_query(query: &str) -> CommandResult<String> {
 
 /// Ask, and read the answer as JSON, within the cap and the time.
 async fn ask(request: reqwest::RequestBuilder, service: &str) -> CommandResult<Value> {
-    let request = request.header(ACCEPT, "application/json").header(USER_AGENT, crate::http::USER_AGENT);
+    let request =
+        request.header(ACCEPT, "application/json").header(USER_AGENT, crate::http::USER_AGENT);
     let sent = tokio::time::timeout(ASK_TIMEOUT, async {
         let response = request.send().await.map_err(|e| trouble(service, &e))?;
         if !response.status().is_success() {

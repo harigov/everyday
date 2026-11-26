@@ -188,7 +188,9 @@ pub(in crate::agent) fn type_text_tool(typist: Arc<dyn Typist>) -> PortableDynam
 
 /// What is selected where the person was typing, read through `typist` --
 /// and an error that tells the model what to say when nothing is.
-pub(in crate::agent) async fn selection_of(typist: &dyn Typist) -> Result<String, ToolExecutionError> {
+pub(in crate::agent) async fn selection_of(
+    typist: &dyn Typist,
+) -> Result<String, ToolExecutionError> {
     let selected = typist.selected_text().await.map_err(ToolExecutionError::other)?;
     if selected.trim().is_empty() {
         return Err(ToolExecutionError::other(
@@ -255,7 +257,9 @@ pub(in crate::agent) async fn settle_quietly(
 /// before the selection is read, and not after the person's clipboard has been
 /// used for nothing. One given with a fixed action is not used: it would be
 /// the model's words in a rewrite that is otherwise the person's alone.
-pub(in crate::agent) fn rewriting(arguments: &Value) -> Result<(WritingAction, Option<String>), ToolExecutionError> {
+pub(in crate::agent) fn rewriting(
+    arguments: &Value,
+) -> Result<(WritingAction, Option<String>), ToolExecutionError> {
     let how = arguments.get("how").and_then(Value::as_str).unwrap_or_default().trim();
     let action = match how {
         "improve" => WritingAction::Improve,

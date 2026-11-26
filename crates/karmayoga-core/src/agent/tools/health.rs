@@ -1698,7 +1698,8 @@ fn run_health_readings(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> 
         "readings": rows,
     });
     if !sources.is_empty() {
-        let names: Vec<String> = sources.iter().map(|s| one_line_ellipsized(s, WORDS_CAP)).collect();
+        let names: Vec<String> =
+            sources.iter().map(|s| one_line_ellipsized(s, WORDS_CAP)).collect();
         out["untrusted_text"] = json!({ "sources": names });
     }
     if let Some(next) = samples.get(limit) {

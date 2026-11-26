@@ -201,8 +201,7 @@ impl Vault {
     ) -> Result<()> {
         self.write(|u| {
             u.templates_moved = false;
-            u.meetings()?
-                .put_meeting_settings(settings)
+            u.meetings()?.put_meeting_settings(settings)
         })
     }
 

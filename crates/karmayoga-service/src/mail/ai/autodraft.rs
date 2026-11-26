@@ -359,14 +359,10 @@ async fn draft_for_thread(
     let recipient_first_name = first_name(&eligible.from.name);
     let facts = {
         let (vault, service) = (vault.clone(), service.clone());
-        let (own, from, date) = (
-            own_mailboxes(account),
-            eligible.from.email.clone(),
-            eligible.date,
-        );
-        let wrote_in_thread = messages
-            .iter()
-            .any(|m| !m.flags.draft && is_own(&m.from.email, &own));
+        let (own, from, date) =
+            (own_mailboxes(account), eligible.from.email.clone(), eligible.date);
+        let wrote_in_thread =
+            messages.iter().any(|m| !m.flags.draft && is_own(&m.from.email, &own));
         blocking(move || {
             Ok(DraftFacts {
                 today: Today::read(&vault, service.now()),
@@ -659,7 +655,6 @@ fn draft_body_text_to_html(body_text: &str, voice_ctx: &VoiceContext) -> String 
 mod tests {
     use super::*;
     use crate::mail::ai::fixtures::{account, at, env, message, thread, today};
-
 
     #[test]
     fn a_thread_whose_last_word_is_the_persons_own_is_not_eligible() {

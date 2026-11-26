@@ -176,8 +176,7 @@ async fn a_request_passed_on_by_a_proxy_is_refused() {
     let rig = rig(Some(PASSWORD), Config::default());
     for proxy in ["x-forwarded-for", "forwarded", "x-real-ip", "via"] {
         let response =
-            send(&rig, get("/").header(proxy, "1.2.3.4").body(Body::empty()).unwrap(), PEER)
-                .await;
+            send(&rig, get("/").header(proxy, "1.2.3.4").body(Body::empty()).unwrap(), PEER).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "{proxy}");
     }
 }
@@ -220,12 +219,8 @@ async fn the_password_opens_a_session_and_a_wrong_one_does_not() {
     assert_eq!(status_with(&rig, &cookie, PEER).await, StatusCode::OK);
 
     let hello = json_of(
-        send(
-            &rig,
-            get("/web/hello").header("cookie", &cookie).body(Body::empty()).unwrap(),
-            PEER,
-        )
-        .await,
+        send(&rig, get("/web/hello").header("cookie", &cookie).body(Body::empty()).unwrap(), PEER)
+            .await,
     )
     .await;
     assert_eq!(hello["signedIn"], true);
@@ -289,12 +284,9 @@ async fn the_media_token_reads_media_and_nothing_else() {
 
     // An `<img>` sends no protocol header and, in a sandboxed frame, no
     // cookie: the token in the address is all it has.
-    let picture = send(
-        &rig,
-        get(&format!("/m/{media}/v1/blob/{blob}")).body(Body::empty()).unwrap(),
-        PEER,
-    )
-    .await;
+    let picture =
+        send(&rig, get(&format!("/m/{media}/v1/blob/{blob}")).body(Body::empty()).unwrap(), PEER)
+            .await;
     assert_eq!(picture.status(), StatusCode::OK);
     // Sandboxed as a document, so a blob that sniffs as an SVG and is
     // opened by its address runs nothing on this origin.
@@ -316,12 +308,9 @@ async fn the_media_token_reads_media_and_nothing_else() {
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
     }
-    let wrong = send(
-        &rig,
-        get(&format!("/m/not-it/v1/blob/{blob}")).body(Body::empty()).unwrap(),
-        PEER,
-    )
-    .await;
+    let wrong =
+        send(&rig, get(&format!("/m/not-it/v1/blob/{blob}")).body(Body::empty()).unwrap(), PEER)
+            .await;
     assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
     let elsewhere = send(
         &rig,
@@ -416,8 +405,7 @@ async fn locking_the_vault_signs_every_browser_out() {
     assert_eq!(status_with(&rig, &cookie, PEER).await, StatusCode::UNAUTHORIZED);
     assert_eq!(status_with(&rig, &other, OTHER_DEVICE).await, StatusCode::UNAUTHORIZED);
     let picture =
-        send(&rig, get(&format!("/m/{media}/v1/blob/x")).body(Body::empty()).unwrap(), PEER)
-            .await;
+        send(&rig, get(&format!("/m/{media}/v1/blob/x")).body(Body::empty()).unwrap(), PEER).await;
     assert_eq!(picture.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(rig.state.sessions.count(), 0);
 
@@ -439,27 +427,18 @@ async fn opening_another_vault_signs_the_browsers_of_the_first_out() {
     let other = tempfile::tempdir().unwrap();
     let vault = karmayoga_vault::create(
         other.path(),
-        karmayoga_core::VaultConfig {
-            name: "Other".into(),
-            password: None,
-            ..Default::default()
-        },
+        karmayoga_core::VaultConfig { name: "Other".into(), password: None, ..Default::default() },
     )
     .unwrap();
     rig.service.set(vault);
 
     assert_eq!(status_with(&rig, &cookie, PEER).await, StatusCode::UNAUTHORIZED);
     let picture =
-        send(&rig, get(&format!("/m/{media}/v1/blob/x")).body(Body::empty()).unwrap(), PEER)
-            .await;
+        send(&rig, get(&format!("/m/{media}/v1/blob/x")).body(Body::empty()).unwrap(), PEER).await;
     assert_eq!(picture.status(), StatusCode::UNAUTHORIZED);
     let hello = json_of(
-        send(
-            &rig,
-            get("/web/hello").header("cookie", &cookie).body(Body::empty()).unwrap(),
-            PEER,
-        )
-        .await,
+        send(&rig, get("/web/hello").header("cookie", &cookie).body(Body::empty()).unwrap(), PEER)
+            .await,
     )
     .await;
     assert_eq!(hello["signedIn"], false);
@@ -542,9 +521,6 @@ async fn too_many_wrong_passwords_lock_that_device_out() {
         assert_eq!(send(&rig, attempt("wrong"), PEER).await.status(), StatusCode::UNAUTHORIZED);
     }
     // Even the right one is turned away now -- from this device.
-    assert_eq!(
-        send(&rig, attempt(PASSWORD), PEER).await.status(),
-        StatusCode::TOO_MANY_REQUESTS
-    );
+    assert_eq!(send(&rig, attempt(PASSWORD), PEER).await.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(send(&rig, attempt(PASSWORD), OTHER_DEVICE).await.status(), StatusCode::OK);
 }

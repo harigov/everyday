@@ -157,7 +157,10 @@ impl ConfirmGate {
     /// Not with nobody to ask: those are refused or parked one by one, as
     /// before. "Later" is not offered, because parking several calls as one
     /// proposal is not something a proposal can be.
-    pub(super) async fn ask_together(&self, content: &[rig_agent::core::message::AssistantContent]) {
+    pub(super) async fn ask_together(
+        &self,
+        content: &[rig_agent::core::message::AssistantContent],
+    ) {
         use rig_agent::core::message::AssistantContent;
         let mut asked: Vec<(String, Value, String)> = Vec::new();
         let mut kinds = Vec::new();
@@ -678,7 +681,11 @@ impl ConfirmGate {
     /// The links the quick model offers are only those this turn may open
     /// ([`Provenance::check`]), so that a link it misread, or made up, is not
     /// a step the job spends being refused.
-    pub(super) async fn research_view(&self, research: &ResearchReading, page: &Value) -> ToolOutput {
+    pub(super) async fn research_view(
+        &self,
+        research: &ResearchReading,
+        page: &Value,
+    ) -> ToolOutput {
         let text_of = |key: &str| page.get(key).and_then(Value::as_str).unwrap_or_default();
         let (address, title, text) = (text_of("url"), text_of("title"), text_of("text"));
         if research.extract && !text.trim().is_empty() {
@@ -1111,7 +1118,11 @@ impl ConfirmGate {
     /// is the safeguard already. Everything else here is asked of a run too,
     /// which with nobody to ask means refused, or parked for the person to
     /// decide where the tool has a form to park in.
-    pub(super) fn keeps_what_strangers_may_have_written(&self, name: &str, arguments: &Value) -> bool {
+    pub(super) fn keeps_what_strangers_may_have_written(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> bool {
         if !self.strangers_heard() {
             return false;
         }
@@ -1247,7 +1258,11 @@ impl ConfirmGate {
     /// routine's instructions at all, and the tool says so itself, so a
     /// question here would only be asked of somebody -- or parked for them --
     /// about a call that is refused whatever they answer.
-    pub(super) fn unvouched_routine_addresses(&self, name: &str, arguments: &Value) -> Option<Vec<String>> {
+    pub(super) fn unvouched_routine_addresses(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Option<Vec<String>> {
         if self.unattended || (name != CREATE_ROUTINE && name != UPDATE_ROUTINE) {
             return None;
         }

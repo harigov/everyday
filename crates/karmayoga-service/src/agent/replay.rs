@@ -362,7 +362,12 @@ pub(super) fn window(
 
 /// The first message at or after `start` that begins on or past a step --
 /// see [`window`] -- and never past the newest.
-pub(super) fn on_the_step(said: &[(Role, &str, usize)], start: usize, least: usize, step: usize) -> usize {
+pub(super) fn on_the_step(
+    said: &[(Role, &str, usize)],
+    start: usize,
+    least: usize,
+    step: usize,
+) -> usize {
     let weights: Vec<usize> = said
         .iter()
         .map(|(_, text, pictures)| (text.chars().count() + pictures).max(least))

@@ -105,9 +105,7 @@ pub mod headers {
 /// before the rename answers with which side to update.
 pub fn protocol_headers(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     let protocol = karmayoga_service::PROTOCOL.to_string();
-    request
-        .header(headers::PROTOCOL, protocol.clone())
-        .header(headers::LEGACY_PROTOCOL, protocol)
+    request.header(headers::PROTOCOL, protocol.clone()).header(headers::LEGACY_PROTOCOL, protocol)
 }
 
 /// What a server says about itself before anybody has paired.
@@ -170,7 +168,8 @@ mod tests {
             locked: true,
             pairing: true,
         };
-        let wire = json!({"name":"desk","protocol":7,"fingerprint":"ab","locked":true,"pairing":true});
+        let wire =
+            json!({"name":"desk","protocol":7,"fingerprint":"ab","locked":true,"pairing":true});
         assert_eq!(serde_json::to_value(&hello).unwrap(), wire);
         let back: Hello = serde_json::from_value(wire).unwrap();
         assert!(back.pairing && back.locked && back.protocol == 7);

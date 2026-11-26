@@ -99,10 +99,8 @@ async fn run(app: AppHandle, mut rx: mpsc::UnboundedReceiver<Cmd>) {
         std::env::var("GIO_LAUNCHED_DESKTOP_FILE").ok().as_deref(),
         app.package_info().crate_name,
     );
-    serve(proxy, rx, entry, move |key, action| {
-        crate::offers::on_notice_action(&app, key, action)
-    })
-    .await;
+    serve(proxy, rx, entry, move |key, action| crate::offers::on_notice_action(&app, key, action))
+        .await;
 }
 
 /// [`run`]'s loop, given the connection: everything but where a press
@@ -120,11 +118,10 @@ async fn serve(
             stream::empty().boxed()
         }
     };
-    let closed: BoxStream<'static, Wake> =
-        match proxy.receive_signal("NotificationClosed").await {
-            Ok(s) => s.map(Wake::Closed).boxed(),
-            Err(_) => stream::empty().boxed(),
-        };
+    let closed: BoxStream<'static, Wake> = match proxy.receive_signal("NotificationClosed").await {
+        Ok(s) => s.map(Wake::Closed).boxed(),
+        Err(_) => stream::empty().boxed(),
+    };
     let cmds: BoxStream<'static, Wake> =
         stream::poll_fn(move |cx| rx.poll_recv(cx)).map(Wake::Cmd).boxed();
     let mut wakes = stream::select(cmds, stream::select(actions, closed));

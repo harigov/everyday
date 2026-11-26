@@ -288,7 +288,8 @@ where
         }
     };
 
-    let identities: Vec<String> = crate::mail::address::own_addresses(&account).into_iter().collect();
+    let identities: Vec<String> =
+        crate::mail::address::own_addresses(&account).into_iter().collect();
     let ctx = passes::SyncContext {
         vault: &vault,
         account_id,
@@ -316,7 +317,8 @@ where
     // it and recording how it went -- goes back to work now, rather than
     // sitting forever waiting for a drain that already happened. See
     // `crate::mail::outbox`'s own module docs for why nothing else ever notices.
-    if let Err(e) = crate::mail::outbox::recover_inflight_ops(&svc, account_id, &mut session).await {
+    if let Err(e) = crate::mail::outbox::recover_inflight_ops(&svc, account_id, &mut session).await
+    {
         statuses.set_error(account_id, e.to_string());
         return Err(e.to_string().into());
     }
@@ -657,7 +659,8 @@ impl<S: MailSession, T: karmayoga_mail::outbox::Sender> passes::BetweenMailboxes
             return;
         }
         let drained =
-            crate::mail::outbox::drain_due_sends(self.svc, self.account_id, session, self.sender).await;
+            crate::mail::outbox::drain_due_sends(self.svc, self.account_id, session, self.sender)
+                .await;
         if let Err(e) = drained {
             self.failed = Some(e);
         }

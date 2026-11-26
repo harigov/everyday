@@ -48,7 +48,10 @@ mod tests {
 
     #[test]
     fn the_five_characters_are_escaped_and_ampersand_only_once() {
-        assert_eq!(escape_html(r#"Tom & "Jerry" <b>'x'</b>"#), "Tom &amp; &quot;Jerry&quot; &lt;b&gt;&#39;x&#39;&lt;/b&gt;");
+        assert_eq!(
+            escape_html(r#"Tom & "Jerry" <b>'x'</b>"#),
+            "Tom &amp; &quot;Jerry&quot; &lt;b&gt;&#39;x&#39;&lt;/b&gt;"
+        );
         assert_eq!(escape_html("caf\u{e9}"), "caf\u{e9}");
     }
 

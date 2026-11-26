@@ -135,9 +135,9 @@ pub mod speech;
 pub mod store;
 pub mod task;
 pub mod template;
-pub mod text;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod text;
 pub mod timestamped;
 pub mod tracker;
 pub mod urlenc;

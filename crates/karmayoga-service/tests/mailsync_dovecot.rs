@@ -596,9 +596,10 @@ async fn write_actions_sync_through_a_real_server() {
     // ---- mark read, then verify the flag on the server ----
     call(&svc, "mark_read", serde_json::json!({ "threads": [thread_id] })).await;
     let sender = TestSmtpSender::new(smtp.host.clone(), smtp.port);
-    let report = karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
-        .await
-        .expect("draining the mark-read op");
+    let report =
+        karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+            .await
+            .expect("draining the mark-read op");
     assert_eq!(report.failed, 0, "{report:?}");
 
     let mut verify_session = connect(&cfg).await;
@@ -624,9 +625,10 @@ async fn write_actions_sync_through_a_real_server() {
         serde_json::json!({ "threads": [thread_id], "to": archive_mailbox.id }),
     )
     .await;
-    let report = karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
-        .await
-        .expect("draining the move op");
+    let report =
+        karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+            .await
+            .expect("draining the move op");
     assert_eq!(report.failed, 0, "{report:?}");
 
     // Checked by searching for this test's own `Message-ID`, not a raw
@@ -753,9 +755,10 @@ async fn emptying_trash_deletes_it_on_a_real_server_and_the_next_sync_agrees() {
     let emptied = call(&svc, "empty_mailbox", serde_json::json!({ "mailbox": trash.id })).await;
     assert!(emptied.as_u64().unwrap() >= 2, "both Trash conversations were queued: {emptied}");
     let sender = TestSmtpSender::new(String::new(), 0);
-    let report = karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
-        .await
-        .expect("draining the deletes");
+    let report =
+        karmayoga_service::mail::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+            .await
+            .expect("draining the deletes");
     assert_eq!(report.failed, 0, "{report:?}");
     assert!(report.done >= 2, "{report:?}");
 

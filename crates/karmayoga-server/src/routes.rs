@@ -44,7 +44,7 @@ use std::sync::Arc;
 
 use crate::auth::{Leniency, Registry, bearer};
 use crate::sse::Broadcaster;
-use crate::wire::{Hello, Paired, PairRequest, headers as wire_headers, path};
+use crate::wire::{Hello, PairRequest, Paired, headers as wire_headers, path};
 
 /// Largest JSON body a command may arrive in.
 ///

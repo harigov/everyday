@@ -311,9 +311,12 @@ fn clipped(text: &str) -> &str {
 /// newsletter issue only as Mail's own summaries use it.
 fn writer_for(vault: &Vault, subject: &Subject) -> CommandResult<ModelWriter> {
     let access = match &subject.account {
-        Some(account) => {
-            crate::mail::ai::mail_model(vault, account, MailAiFeature::Summaries, ModelTier::Medium)?
-        }
+        Some(account) => crate::mail::ai::mail_model(
+            vault,
+            account,
+            MailAiFeature::Summaries,
+            ModelTier::Medium,
+        )?,
         None => vault.model_access(ModelTier::Medium).map_err(|e| {
             CommandError::new(codes::INVALID, format!("The summary could not be written: {e}."))
         })?,

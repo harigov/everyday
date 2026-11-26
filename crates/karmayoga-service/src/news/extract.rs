@@ -8,10 +8,10 @@
 //! sanitised exactly as a feed's own content is, because a Readability port
 //! decides what is the article, not what is safe.
 
-use crate::http::BROWSER_USER_AGENT;
 use super::sanitize;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
+use crate::http::BROWSER_USER_AGENT;
 use crate::webpage::{self, Kind, literal_ip};
 use dom_smoothie::{Config, Readability};
 use karmayoga_core::Vault;

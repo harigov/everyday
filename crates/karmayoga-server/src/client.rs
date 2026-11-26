@@ -260,9 +260,8 @@ impl RemoteClient {
 
     /// Run a command on the machine holding the vault.
     pub async fn call(&self, ctx: &Ctx, name: &str, args: Value) -> CommandResult<Value> {
-        let mut request = self
-            .request(reqwest::Method::POST, &path::call(name))
-            .timeout(call_timeout(name));
+        let mut request =
+            self.request(reqwest::Method::POST, &path::call(name)).timeout(call_timeout(name));
         if let Some(id) = &ctx.request_id {
             request = request.header(wire_headers::REQUEST, id);
         }

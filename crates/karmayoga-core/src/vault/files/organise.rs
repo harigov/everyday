@@ -2,8 +2,8 @@
 
 use super::Vault;
 use super::helpers::{
-    check_batch, files_under, folder_path, found_entry, from_micros, not_there, once_each, put_back,
-    restore_place, set_plain_path, stamp_mtime, unique, validate_file_name,
+    check_batch, files_under, folder_path, found_entry, from_micros, not_there, once_each,
+    put_back, restore_place, set_plain_path, stamp_mtime, unique, validate_file_name,
 };
 use super::prepare::Prepared;
 use super::{ENCRYPTED_DIR, HEAD_LEN, MAX_BATCH, PROP_WAS_AT, placing};

@@ -6,9 +6,9 @@
 //! a model is in the sibling `prompt` module. `agent` re-exports all of it, so
 //! callers say `agent::Memory`, not `agent::records::Memory`.
 
+use super::{desk, sites};
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, MemoryId, MessageId, SkillId};
-use super::{desk, sites};
 use crate::llm::{LLMConfig, LLMModelConfig, LLMProviderConfig, ModelSettings, Provider};
 use crate::quick::QuickPolicy;
 use crate::timestamped::Timestamped;

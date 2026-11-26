@@ -13,8 +13,7 @@
 use crate::error::Result;
 use crate::text::one_line;
 use crate::websearch::{
-    SearchResult, Source, decode_entities, http_url, plain_text, string_at, to_year,
-    trim_summary,
+    SearchResult, Source, decode_entities, http_url, plain_text, string_at, to_year, trim_summary,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;

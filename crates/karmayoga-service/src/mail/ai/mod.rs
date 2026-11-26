@@ -58,7 +58,6 @@
 //! about as though it were news. A pitch from a stranger is excluded in the
 //! same words everywhere ([`pitch_kinds!`]).
 
-
 /// The kinds of unsolicited mail that are never what the person needs to read
 /// first, in the same words wherever a prompt here excludes them -- the
 /// categoriser, the priority list and auto-draft -- so that one of them never
@@ -304,7 +303,6 @@ async fn pick_threads(
     Ok(Picked { threads: in_asking_order(newest, walked.threads, unasked), cursor: walked.next })
 }
 
-
 /// "yes" or "no", for a record said in a prompt line.
 fn yes_no(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
@@ -316,10 +314,9 @@ mod fixtures;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mail::ai::fixtures::{at, listed, today};
     use crate::mail::ai::autodraft::AUTO_DRAFT_SYSTEM;
     use crate::mail::ai::categorize::{CATEGORIZE_SYSTEM, PRIORITIZE_SYSTEM};
-
+    use crate::mail::ai::fixtures::{at, listed, today};
 
     #[test]
     fn today_is_said_in_the_persons_own_zone_and_days_are_counted_from_it() {

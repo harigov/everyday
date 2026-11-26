@@ -25,7 +25,11 @@ pub(in crate::agent) enum Named {
 
 /// The thread or story a call names, read from the vault. Exactly one of
 /// `thread_id` and `story_id`.
-pub(in crate::agent) fn named(vault: &Vault, tool: &str, arguments: &Value) -> Result<Named, ToolExecutionError> {
+pub(in crate::agent) fn named(
+    vault: &Vault,
+    tool: &str,
+    arguments: &Value,
+) -> Result<Named, ToolExecutionError> {
     let given = |key: &str| {
         arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
     };
@@ -173,7 +177,10 @@ pub(in crate::agent) fn summarize_thread_tool(
 /// no mail, or every account it may have read is acknowledged for this turn's
 /// provider too (`provider`, `None` for a turn that may not read mail at all),
 /// what a model wrote from it is left out.
-pub(in crate::agent) fn meeting_brief_tool(service: Arc<Service>, provider: Option<String>) -> PortableDynamicTool {
+pub(in crate::agent) fn meeting_brief_tool(
+    service: Arc<Service>,
+    provider: Option<String>,
+) -> PortableDynamicTool {
     PortableDynamicTool::new(
         MEETING_BRIEF,
         "The brief for a meeting, as the card before it shows it: where things stand, what \
@@ -268,7 +275,11 @@ pub(in crate::agent) fn meeting_brief_tool(service: Arc<Service>, provider: Opti
 /// account whose mail could have been read under `read_for` is acknowledged
 /// for `provider` too. The gate the brief was gathered under
 /// (`crate::meeting::brief`), asked the other way round.
-pub(in crate::agent) fn brief_mail_shared(service: &Service, read_for: &str, provider: &str) -> bool {
+pub(in crate::agent) fn brief_mail_shared(
+    service: &Service,
+    read_for: &str,
+    provider: &str,
+) -> bool {
     if read_for == provider {
         return true;
     }
@@ -284,7 +295,10 @@ pub(in crate::agent) fn brief_mail_shared(service: &Service, read_for: &str, pro
 }
 
 /// The spoken briefing of a thread the Listen button reads, whole.
-pub(in crate::agent) async fn briefing(service: &Arc<Service>, thread: ThreadId) -> CommandResult<String> {
+pub(in crate::agent) async fn briefing(
+    service: &Arc<Service>,
+    thread: ThreadId,
+) -> CommandResult<String> {
     use futures::StreamExt;
     let (_title, mut pieces) = crate::mail::ai::listen_pieces(service, thread).await?;
     let mut said = String::new();

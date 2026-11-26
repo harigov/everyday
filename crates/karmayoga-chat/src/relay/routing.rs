@@ -281,7 +281,11 @@ impl Memory {
         self.looked = true;
     }
 
-    pub(super) async fn conversation(&mut self, context: &Context, chat: &ChatId) -> ConversationId {
+    pub(super) async fn conversation(
+        &mut self,
+        context: &Context,
+        chat: &ChatId,
+    ) -> ConversationId {
         if !self.looked {
             self.looked = true;
             self.current = context.find_conversation(chat).await;

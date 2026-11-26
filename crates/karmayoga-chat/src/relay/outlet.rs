@@ -11,7 +11,11 @@ pub(super) struct OpenOutlet {
 }
 
 impl OpenOutlet {
-    pub(super) fn new(service: Arc<Service>, link: ChatLinkId, outlet: Arc<dyn ChatOutlet>) -> Self {
+    pub(super) fn new(
+        service: Arc<Service>,
+        link: ChatLinkId,
+        outlet: Arc<dyn ChatOutlet>,
+    ) -> Self {
         service.open_chat_outlet(link, outlet.clone());
         Self { service, link, outlet }
     }

@@ -1006,7 +1006,8 @@ async fn an_empty_summary_is_an_error_and_is_not_cached() {
         Some(Category::Important),
     );
 
-    let error = karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.unwrap_err();
+    let error =
+        karmayoga_service::mail::ai::summarize_thread(&svc, msg.thread_id).await.unwrap_err();
     assert!(error.message.contains("wrote no summary"), "{}", error.message);
     let asked = fake.call_count();
     assert!(asked > 0);

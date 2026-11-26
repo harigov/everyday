@@ -255,7 +255,10 @@ async fn a_flag_change_during_the_bodies_pass_survives_it() {
     let inbox = mailboxes.iter().find(|m| m.row.role == MailboxRole::Inbox).unwrap();
     let uid = env.vault.mail_uid_set(inbox.row.id).unwrap()[0];
     let pending = env.vault.message_by_uid(inbox.row.id, uid).unwrap().unwrap();
-    assert!(crate::mail::sync::ingest::is_pending(&pending.pack), "the body must not be fetched yet");
+    assert!(
+        crate::mail::sync::ingest::is_pending(&pending.pack),
+        "the body must not be fetched yet"
+    );
 
     // The write this test's own regression is about has to land genuinely
     // *during* the pass -- after `pending_messages`'s own snapshot at the

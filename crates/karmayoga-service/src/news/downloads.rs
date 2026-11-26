@@ -36,13 +36,13 @@
 //! What lasts is what is linked to the story, which is the file.
 
 use super::announce;
-use super::route::{Refusals, Route};
-use crate::http::BROWSER_USER_AGENT;
 use super::queue;
+use super::route::{Refusals, Route};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Kind, Op};
 use crate::files;
 use crate::http;
+use crate::http::BROWSER_USER_AGENT;
 use crate::service::{Service, blocking};
 use crate::supervisor::{Outcome, TaskResult};
 use futures::StreamExt;

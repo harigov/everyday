@@ -440,7 +440,11 @@ impl Finished {
     /// results over together, once every call in it has settled -- the step
     /// is finished, and this says so. `text_len` is how long the turn's prose
     /// is now.
-    pub(super) fn result(&mut self, result: rig_agent::core::message::ToolResult, text_len: usize) -> bool {
+    pub(super) fn result(
+        &mut self,
+        result: rig_agent::core::message::ToolResult,
+        text_len: usize,
+    ) -> bool {
         use rig_agent::core::message::{AssistantContent, UserContent};
         self.results.push(UserContent::ToolResult(result));
         if self.results.len() < self.calls.len() {

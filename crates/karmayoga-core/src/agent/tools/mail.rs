@@ -2020,8 +2020,7 @@ fn parse_response(args: &Args<'_>) -> Result<AttendeeResponse> {
 /// the person sitting at `ctx.tz`, not by whichever machine is running the
 /// service.
 fn format_invite_when(invite: &Invite, tz: &str) -> String {
-    let zoned =
-        invite.start.to_zoned(zone_of(tz));
+    let zoned = invite.start.to_zoned(zone_of(tz));
     let fmt = if invite.all_day { "%a, %-d %b" } else { "%a %H:%M" };
     jiff::fmt::strtime::format(fmt, &zoned).unwrap_or_else(|_| invite.start.to_string())
 }

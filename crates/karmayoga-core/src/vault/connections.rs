@@ -130,8 +130,7 @@ impl Vault {
     /// For the runtime that signs requests; never sent to the interface --
     /// see [`ConnectionSecret::summary`] for what is.
     pub fn connection_secret(&self, id: ConnectionId) -> Result<ConnectionSecret> {
-        let bytes = self
-            .with_secrets(|s| s.get_secret(CONNECTION_SECRET_KIND, &id.to_string()))?;
+        let bytes = self.with_secrets(|s| s.get_secret(CONNECTION_SECRET_KIND, &id.to_string()))?;
         match bytes {
             Some(b) => Ok(serde_json::from_slice(&b)?),
             None => Ok(ConnectionSecret::default()),
@@ -146,13 +145,9 @@ impl Vault {
             return Err(Error::not_found("connection", id));
         }
         if *secret == ConnectionSecret::default() {
-            return self.with_secrets(|s| {
-                s.delete_secret(CONNECTION_SECRET_KIND, &id.to_string())
-            });
+            return self.with_secrets(|s| s.delete_secret(CONNECTION_SECRET_KIND, &id.to_string()));
         }
         let bytes = serde_json::to_vec(secret)?;
-        self.with_secrets(|s| {
-            s.put_secret(CONNECTION_SECRET_KIND, &id.to_string(), &bytes)
-        })
+        self.with_secrets(|s| s.put_secret(CONNECTION_SECRET_KIND, &id.to_string(), &bytes))
     }
 }

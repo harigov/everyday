@@ -249,7 +249,6 @@ impl Vault {
     }
 }
 
-
 /// What is known about a blob from the record that held it.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Meta {

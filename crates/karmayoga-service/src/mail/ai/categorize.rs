@@ -839,7 +839,8 @@ pub(crate) async fn announce_filed(
                 // Priority: the small model's own judgement of what needs you
                 // soon, which is already a higher bar than Important.
                 crate::arrivals::AfterFiling::AskIfWaiting => {
-                    match crate::mail::followup::stranger_waits(service, vault, account, msg.id).await
+                    match crate::mail::followup::stranger_waits(service, vault, account, msg.id)
+                        .await
                     {
                         Some(waits) => waits,
                         None => msg.category == Some(Category::Priority),
@@ -949,7 +950,6 @@ mod tests {
     use super::*;
     use crate::mail::ai::fixtures::{account, at, env, message, thread, today};
     use karmayoga_core::mail::CategorySource;
-
 
     fn priority_facts() -> PriorityFacts {
         PriorityFacts {

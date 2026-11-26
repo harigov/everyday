@@ -85,9 +85,8 @@ impl Vault {
     /// The pasted S3 access key, if there is one. For the one layer that
     /// signs a request; never sent to the interface.
     pub fn backup_s3_keys(&self) -> Result<Option<S3Keys>> {
-        let bytes = self.with_secrets(|s| {
-            s.get_secret(BACKUP_SECRET_OWNER_KIND, BACKUP_SECRET_OWNER_ID)
-        })?;
+        let bytes =
+            self.with_secrets(|s| s.get_secret(BACKUP_SECRET_OWNER_KIND, BACKUP_SECRET_OWNER_ID))?;
         bytes.map(|b| serde_json::from_slice(&b).map_err(Error::from)).transpose()
     }
 

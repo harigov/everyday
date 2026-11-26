@@ -79,8 +79,8 @@ use crate::money::{
     AccountKind, BankAccount, CategorizedBy, CategoryKind, LinkSummary, MoneyCategory, MoneyRule,
     Txn, TxnPatch, TxnQuery, format_minor, parse_decimal,
 };
-use crate::timestamped::Timestamped;
 use crate::text::one_line_ellipsized;
+use crate::timestamped::Timestamped;
 
 /// How far back `find_transactions` looks when nobody says.
 const DEFAULT_DAYS: u32 = 30;
@@ -709,7 +709,8 @@ fn txn_json(txn: &Txn, names: &Names) -> Value {
     }
     let description = txn.description.trim();
     if !description.is_empty() && description != payee {
-        words.insert("description".into(), json!(one_line_ellipsized(description, DESCRIPTION_CAP)));
+        words
+            .insert("description".into(), json!(one_line_ellipsized(description, DESCRIPTION_CAP)));
     }
     if !words.is_empty() {
         m.insert("untrusted_text".into(), Value::Object(words));

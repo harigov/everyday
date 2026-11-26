@@ -45,7 +45,10 @@ pub(in crate::agent) fn end_voice_tool() -> PortableDynamicTool {
 /// `book` is what every voice reads them from, a voice already speaking
 /// included: changed here too, so the conversation in which the person said
 /// how a name is said says it their way from then on.
-pub(in crate::agent) fn pronunciation_tool(vault: Arc<Vault>, book: crate::speech::script::Book) -> PortableDynamicTool {
+pub(in crate::agent) fn pronunciation_tool(
+    vault: Arc<Vault>,
+    book: crate::speech::script::Book,
+) -> PortableDynamicTool {
     PortableDynamicTool::new(
         REMEMBER_PRONUNCIATION,
         "Remember how a word or name is said, so that every voice in the app says it that way \
