@@ -44,6 +44,7 @@
   import { renderMarkdown } from '../lib/markdown'
   import { notes } from '../lib/notes.svelte'
   import { panels } from '../lib/panels.svelte'
+  import { details } from '../lib/phone.svelte'
   import { app } from '../lib/state.svelte'
   import type { Job, JobKind } from '../lib/types'
 
@@ -211,6 +212,8 @@
       panels.closeSettings()
       await agent.load()
       if (!(await app.goTo('assistant'))) return
+      // On a phone, the conversation rather than the list of them.
+      details.open('assistant')
     }
     await agent.openThread(thread)
   }

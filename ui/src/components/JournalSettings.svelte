@@ -24,6 +24,7 @@
   import { KIND_COPY, TRACKER_PRESETS, fromPreset } from '../lib/tracker-presets'
   import { TRACKER_ICON_GROUPS } from '../lib/tracker-icons'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import type {
     Journal,
@@ -417,6 +418,17 @@
       'To stop recording it but keep the history, archive it instead.'
     )
   }
+
+  // A phone's back button is its Escape: the icon picker, then an open rule,
+  // then the sheet.
+  closesOnBack(
+    () => true,
+    () => {
+      if (pickingIcon) pickingIcon = false
+      else if (editing) editing = null
+      else if (!pendingDelete && !pendingJournalDelete) onclose()
+    },
+  )
 </script>
 
 {#snippet dayPicker(days: number[], allowNone: boolean, set: (days: number[]) => void)}
@@ -447,8 +459,14 @@
 />
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim" onclick={onclose}></div>
-<div class="sheet wide" role="dialog" aria-modal="true" aria-label="Journal settings" use:trapFocus>
+<div class="scrim phone-fit" onclick={onclose}></div>
+<div
+  class="sheet wide phone-fit"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Journal settings"
+  use:trapFocus
+>
   <header class="head">
     <span class="glyph" style="--c: {draft.color}">{draft.icon}</span>
     <h2>{draft.name || 'Journal settings'}</h2>
@@ -1561,5 +1579,57 @@
   }
   .preset:disabled {
     opacity: 0.4;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     The sheet itself is placed by `phone-fit` (ConfirmDialog.svelte). What
+     is inside is fingers' work: the way out, the fields (sixteen pixels or
+     more, which a field's own size here would undercut), the days of the
+     week, the buttons that order and remove a rule, the colours, and a tick
+     to hit. */
+  :global([data-phone]) .head {
+    padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  }
+  :global([data-phone]) .x {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .body {
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  }
+  :global([data-phone]) .text {
+    height: 44px;
+    font-size: max(16px, 1em);
+  }
+  :global([data-phone]) .row {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .days {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  :global([data-phone]) .day {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .mini,
+  :global([data-phone]) .ghost {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .ghost.tiny {
+    width: 44px;
+    height: 22px;
+  }
+  :global([data-phone]) .swatches {
+    gap: 10px;
+  }
+  :global([data-phone]) .swatch {
+    width: 32px;
+    height: 32px;
+  }
+  :global([data-phone]) input[type='checkbox'] {
+    width: 24px;
+    height: 24px;
   }
 </style>

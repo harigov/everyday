@@ -196,6 +196,31 @@
     }
   }
 
+  /* A phone: the width of the screen between its edges, standing on the bar
+     of apps along the bottom (or on the gesture bar where there is none, and
+     on the keyboard while it is up) rather than under them. */
+  :global([data-phone]) .stack {
+    left: calc(var(--safe-left) + var(--sp-3));
+    right: calc(var(--safe-right) + var(--sp-3));
+    bottom: calc(var(--safe-bottom) + var(--sp-3));
+    width: auto;
+  }
+  :global(:root[data-phone]:has([data-bottom-bar])) .stack {
+    bottom: calc(var(--bottombar-h) + var(--safe-bottom) + var(--sp-3));
+  }
+  :global(:root[data-phone][data-keyboard]) .stack {
+    bottom: var(--sp-3);
+  }
+  /* A finger's reach to put one away, drawn as small as before. */
+  :global([data-phone]) .dismiss {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 44px;
+    height: 44px;
+    margin: calc(var(--sp-3) * -1) calc(var(--sp-3) * -1) calc(var(--sp-3) * -1) 0;
+  }
+
   /* A message that slides in from the corner of the eye is the last thing
      someone who asked for less motion needs. */
   @media (prefers-reduced-motion: reduce) {

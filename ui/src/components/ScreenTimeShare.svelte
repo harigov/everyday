@@ -115,6 +115,9 @@
           <span class="name">{row.name}</span>
           <span class="pct">{share(row.secs)}%</span>
           <span class="amount">{formatDuration(row.secs)}</span>
+          <!-- The title is all a pointer gets of what is grouped here, and a
+               finger gets no title. -->
+          {#if row.detail}<span class="detail phone-only">{row.detail}</span>{/if}
         </svelte:element>
       </li>
     {/each}
@@ -196,5 +199,17 @@
     margin: 0;
     color: var(--fg-faint);
     font-size: var(--text-sm);
+  }
+
+  /* A phone: a row is a finger tall, and says which categories it groups. */
+  :global([data-phone]) .entry {
+    align-items: center;
+    min-height: 40px;
+  }
+  :global([data-phone]) .detail {
+    grid-column: 2 / -1;
+    margin-top: -4px;
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
   }
 </style>

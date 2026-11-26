@@ -133,6 +133,7 @@
               aria-label={inRange ? title(iso) : undefined}
               tabindex={inRange ? 0 : -1}
               disabled={!inRange}
+              onclick={() => (picked = iso)}
               onpointerenter={() => (picked = iso)}
               onfocus={() => (picked = iso)}
               onpointerleave={() => (picked = null)}
@@ -344,5 +345,13 @@
     flex: none;
     color: var(--fg-faint);
     font-size: var(--text-xs);
+  }
+
+  /* A phone: squares a fingertip can land on -- 24 px, with a little gap --
+     so the year is the strip it scrolls along rather than a grid of
+     specks, opened on the newest weeks (see `scroller`). */
+  :global([data-phone]) .grid {
+    grid-template-columns: max-content repeat(var(--weeks), 24px);
+    gap: 4px;
   }
 </style>

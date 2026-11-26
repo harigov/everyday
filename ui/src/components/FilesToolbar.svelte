@@ -16,7 +16,7 @@
   // them through `filesUi` and this is where they appear.
 
   import { untrack } from 'svelte'
-  import { api } from '../lib/api'
+  import { api, mobileShell } from '../lib/api'
   import { isReadable } from '../lib/documents'
   import { formatSize } from '../lib/files'
   import { files, type FilesView } from '../lib/files.svelte'
@@ -33,8 +33,10 @@
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { plural } from '../lib/format'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { closesOnBack, details, phone } from '../lib/phone.svelte'
   import type { FileSort, FolderInfo } from '../lib/types'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
 
   const view = $derived(files.view)
   const browsing = $derived(view === 'browse')
@@ -123,6 +125,55 @@
   const laidOut = $derived(view !== 'photos' && view !== 'albums')
   const canAdd = $derived(view !== 'trash' && view !== 'missing' && view !== 'albums')
 
+  /** Where the way back goes on a phone: the folder above this one. */
+  const parentName = $derived(trail.length > 1 ? trail[trail.length - 2]!.name : TITLES.browse)
+
+  /** What a phone keeps behind one button: the sort, the layout, hidden
+   *  files and a new folder -- a desktop has each in the bar itself. */
+  function optionsMenu(e: MouseEvent) {
+    menuUnder(
+      e.currentTarget as HTMLElement,
+      tidyMenu([
+        ordered && { kind: 'heading', label: 'Sort by' },
+        ...(ordered
+          ? SORTS.map((s): MenuItem => ({
+              label: s.label,
+              checked: files.sort === s.id,
+              run: () => files.setSort(s.id, files.descending),
+            }))
+          : []),
+        ordered && {
+          label: order,
+          icon: 'refresh',
+          hint: 'Reverse',
+          run: () => files.setSort(files.sort, !files.descending),
+        },
+        ordered && SEP,
+        laidOut && {
+          label: 'Grid',
+          icon: 'grid',
+          checked: files.layout === 'grid',
+          run: () => files.setLayout('grid'),
+        },
+        laidOut && {
+          label: 'List',
+          icon: 'list',
+          checked: files.layout === 'list',
+          run: () => files.setLayout('list'),
+        },
+        laidOut && SEP,
+        {
+          label: 'Show hidden files',
+          icon: files.showHidden ? 'eye' : 'hidden',
+          checked: files.showHidden,
+          run: () => files.setShowHidden(!files.showHidden),
+        },
+        browsing && SEP,
+        browsing && { label: 'New folder', icon: 'plus', run: newFolder },
+      ]),
+    )
+  }
+
   function newFolder() {
     filesUi.askName({
       title: 'New folder',
@@ -181,10 +232,47 @@
     )
   }
 
-  function moreMenu(e: MouseEvent) {
+  async function moreMenu(e: MouseEvent) {
+    const button = e.currentTarget as HTMLElement
+    // A phone's bar has room for the few that are asked for most; the rest
+    // are here.
+    if (phone.on) await filesUi.ensureAlbums()
     menuUnder(
-      e.currentTarget as HTMLElement,
+      button,
       tidyMenu([
+        phone.on && {
+          label: 'Rate',
+          icon: 'star',
+          items: [
+            ...[1, 2, 3, 4, 5].map((n): MenuItem => ({
+              label: n === 1 ? '1 star' : `${n} stars`,
+              checked: (one?.rating ?? 0) === n,
+              run: () => files.setRating(ids, n),
+            })),
+            SEP,
+            { label: 'No rating', run: () => files.setRating(ids, 0) },
+          ],
+        },
+        phone.on && { label: 'Tag…', icon: 'tag', run: tag },
+        phone.on && {
+          label: 'Add to album',
+          icon: 'image',
+          items: tidyMenu([
+            ...files.albums.map((a): MenuItem => ({
+              label: a.album.name,
+              run: () => files.addToAlbum(a.album.id, ids),
+            })),
+            files.albums.length > 0 && SEP,
+            { label: 'New album…', run: () => filesUi.askName(newAlbumAsk(ids)) },
+          ]),
+        },
+        phone.on &&
+          !mobileShell && {
+            label: 'Export…',
+            icon: 'download',
+            run: () => void files.exportFiles(ids),
+          },
+        phone.on && SEP,
         one && { label: 'Open', icon: 'eye', run: () => files.open(one.id) },
         // A document is also read, in the reader with its contents beside it.
         // For a PDF or an EPUB "Open" goes there too, and this is the same.
@@ -280,6 +368,21 @@
     if (filesUi.name) filesUi.name = null
     else if (filesUi.moving) filesUi.moving = null
   }
+
+  // On a phone, back puts a question away.
+  closesOnBack(
+    () => filesUi.name !== null,
+    () => (filesUi.name = null),
+  )
+  closesOnBack(
+    () => filesUi.moving !== null,
+    () => (filesUi.moving = null),
+  )
+
+  /** The selection's details, as a page over the list. */
+  function showDetails() {
+    details.open('files')
+  }
 </script>
 
 <svelte:window
@@ -292,6 +395,9 @@
 />
 
 <header class="top">
+  {#if browsing && trail.length > 0}
+    <PhoneBack onclick={() => files.up()} label={parentName} />
+  {/if}
   <div class="pane-titles">
     {#if browsing}
       <nav class="crumbs" aria-label="Folder">
@@ -342,7 +448,7 @@
   <div class="tools">
     {#if ordered}
       <select
-        class="sort"
+        class="sort desktop-only"
         aria-label="Sort by"
         value={files.sort}
         onchange={(e) => files.setSort(e.currentTarget.value as FileSort, files.descending)}
@@ -352,7 +458,7 @@
         {/each}
       </select>
       <button
-        class="round"
+        class="round desktop-only"
         title={order}
         aria-label="{order}. Reverse the order"
         onclick={() => files.setSort(files.sort, !files.descending)}
@@ -362,7 +468,7 @@
     {/if}
 
     {#if laidOut}
-      <div class="layout" role="group" aria-label="Layout">
+      <div class="layout desktop-only" role="group" aria-label="Layout">
         <button
           class:on={files.layout === 'grid'}
           aria-pressed={files.layout === 'grid'}
@@ -385,7 +491,7 @@
     {/if}
 
     <button
-      class="round"
+      class="round desktop-only"
       class:on={files.showHidden}
       aria-pressed={files.showHidden}
       title={files.showHidden ? 'Hide the files marked hidden' : 'Show the files marked hidden'}
@@ -396,7 +502,9 @@
     </button>
 
     {#if browsing}
-      <button class="btn" onclick={newFolder}><Icon name="plus" size={14} /> New folder</button>
+      <button class="btn desktop-only" onclick={newFolder}>
+        <Icon name="plus" size={14} /> New folder
+      </button>
     {/if}
     {#if view === 'trash' && (files.status?.usage.trashedFiles ?? 0) > 0}
       <button class="btn btn-outline btn-ghost-danger" onclick={() => files.emptyTrash()}>
@@ -410,6 +518,14 @@
         <Icon name="upload" size={15} /> Add
       </button>
     {/if}
+    <button
+      class="round options phone-only"
+      aria-label="Options"
+      title="Sort, layout and more"
+      onclick={optionsMenu}
+    >
+      <Icon name="more" size={18} />
+    </button>
   </div>
 </header>
 
@@ -437,6 +553,31 @@
       <button class="btn btn-sm btn-ghost-danger" onclick={() => files.forgetMissing(ids)}>
         <Icon name="trash" size={14} /> Forget…
       </button>
+    {:else if phone.on}
+      <!-- A bar of icons: the few asked for most, and More for the rest. -->
+      <button
+        class="tool"
+        class:on={allFavourite}
+        aria-label={allFavourite ? 'Unfavourite' : 'Favourite'}
+        aria-pressed={allFavourite}
+        onclick={() => void files.update(ids, { favourite: !allFavourite })}
+      >
+        <Icon name="star" size={19} filled={allFavourite} />
+      </button>
+      <button class="tool" aria-label="Move" onclick={() => filesUi.pickFolder([...ids])}>
+        <Icon name="folder" size={19} />
+      </button>
+      {#if ids.length === 1}
+        <button class="tool" aria-label="Details" onclick={showDetails}>
+          <Icon name="info" size={19} />
+        </button>
+      {/if}
+      <button class="tool" aria-label="More" onclick={(e) => void moreMenu(e)}>
+        <Icon name="more" size={19} />
+      </button>
+      <button class="tool danger" aria-label="Trash" onclick={() => void files.trash(ids)}>
+        <Icon name="trash" size={19} />
+      </button>
     {:else}
       <button
         class="btn btn-sm"
@@ -454,9 +595,11 @@
       <button class="btn btn-sm" onclick={() => filesUi.pickFolder([...ids])}>
         <Icon name="folder" size={14} /> Move
       </button>
-      <button class="btn btn-sm" onclick={() => void files.exportFiles(ids)}>
-        <Icon name="download" size={14} /> Export
-      </button>
+      {#if !mobileShell}
+        <button class="btn btn-sm" onclick={() => void files.exportFiles(ids)}>
+          <Icon name="download" size={14} /> Export
+        </button>
+      {/if}
       <button class="btn btn-sm" aria-label="More" title="More" onclick={moreMenu}>
         <Icon name="more" size={14} />
       </button>
@@ -728,5 +871,84 @@
   }
   .error {
     color: var(--danger);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────────
+     The title takes what is left of one row, with the way up in front of it
+     when a folder is open; the sort, the layout and hidden files are behind
+     the options button, and what a selection can be given is a bar of
+     icons. */
+  .tool {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius);
+    color: var(--fg-muted);
+  }
+  .tool:active {
+    background: var(--bg-hover);
+  }
+  .tool.on {
+    color: var(--star);
+  }
+  .tool.danger {
+    color: var(--danger);
+  }
+
+  :global([data-phone]) .top {
+    height: auto;
+    min-height: 56px;
+    padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+    gap: var(--sp-1);
+  }
+  /* The way up is its chevron; the folder above is named to a screen reader. */
+  :global([data-phone]) .top > :global(.phone-back) {
+    margin-left: calc(var(--sp-2) * -1);
+  }
+  :global([data-phone]) .top > :global(.phone-back .label) {
+    display: none;
+  }
+  :global([data-phone]) .crumbs .crumb,
+  :global([data-phone]) .crumbs .crumb-sep {
+    display: none;
+  }
+  :global([data-phone]) .tools {
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .where .crumb {
+    min-height: 36px;
+    padding: 0 var(--sp-2);
+  }
+  :global([data-phone]) .round {
+    width: 44px;
+    height: 44px;
+  }
+
+  :global([data-phone]) .selbar {
+    margin: 0 var(--sp-3) var(--sp-2);
+    padding: 0 var(--sp-1) 0 var(--sp-3);
+    row-gap: 0;
+  }
+  :global([data-phone]) .selbar .count {
+    padding: var(--sp-2) 0;
+  }
+  :global([data-phone]) .selbar .clear {
+    min-height: 44px;
+    margin-left: auto;
+    padding: 0 var(--sp-3);
+  }
+  /* The line the icons go on. */
+  :global([data-phone]) .selbar .grow {
+    flex: 1 0 100%;
+    height: 0;
+  }
+  :global([data-phone]) .selbar .tool {
+    flex: 1 1 0;
+  }
+  :global([data-phone]) .selbar .btn {
+    flex: 1 1 auto;
+    justify-content: center;
   }
 </style>

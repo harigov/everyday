@@ -16,6 +16,7 @@
   import { formatName, isReadable, placeOf } from '../lib/documents'
   import { formatSize } from '../lib/files'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { quietly } from '../lib/state.svelte'
   import { debounce } from '../lib/store/debounce'
   import { latest } from '../lib/store/latest'
@@ -129,6 +130,12 @@
     await tick()
     list?.querySelector(`[data-at="${cursor}"]`)?.scrollIntoView({ block: 'nearest' })
   }
+
+  // Back puts it away, on a phone.
+  closesOnBack(
+    () => true,
+    () => onclose(),
+  )
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -336,5 +343,26 @@
   .count {
     font-size: var(--text-sm);
     color: var(--fg-subtle);
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     The sheet's own width and place (app.css), and rows a finger can aim at,
+     with what sizes them left for the inspector to say. */
+  :global([data-phone]) .picker {
+    top: calc(var(--safe-top) + max(8dvh, var(--sp-4)));
+    width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
+  }
+  :global([data-phone]) .list {
+    max-height: min(46dvh, 380px);
+  }
+  :global([data-phone]) .row {
+    min-height: 52px;
+  }
+  :global([data-phone]) .facts {
+    display: none;
+  }
+  :global([data-phone]) .tick {
+    width: 22px;
+    height: 22px;
   }
 </style>

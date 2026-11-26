@@ -24,6 +24,7 @@
   } from '../lib/health.svelte'
   import { app } from '../lib/state.svelte'
   import { panels } from '../lib/panels.svelte'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { longDate } from '../lib/format'
   import { todayIso } from '../lib/time'
   import EmptyState from './EmptyState.svelte'
@@ -89,10 +90,34 @@
   function openSettings() {
     panels.openSettings('health')
   }
+
+  // ── On a phone ───────────────────────────────────────────────────────
+  //
+  // A workout, a condition or a document opened from its pane is a page of
+  // its own with a way back in its header (`PhoneBack`), so this view's
+  // heading and window step aside for it, and Android's back button closes
+  // it as the button does. Which of the three is open is the store's -- a
+  // link from another app opens one too -- so back is keyed off that, as
+  // the Calendar's is, rather than off a flag of its own.
+
+  /** Something opened from this pane's list is showing in its place. */
+  const opened = $derived(
+    (view === 'activity' && health.workoutId !== null) ||
+      (view === 'conditions' && health.conditionId !== null) ||
+      (view === 'records' && health.documentId !== null),
+  )
+  closesOnBack(
+    () => phone.on && opened,
+    () => {
+      if (view === 'activity') health.openWorkout(null)
+      else if (view === 'conditions') health.openCondition(null)
+      else if (view === 'records') health.openDocument(null)
+    },
+  )
 </script>
 
-<main class="health">
-  <header class="top">
+<main class="health" class:opened>
+  <header class="top" class:ranged>
     <div class="pane-titles">
       <h1 class="pane-title">{TITLES[view]}</h1>
       {#if sub && !blank}<span class="pane-sub">{sub}</span>{/if}
@@ -299,5 +324,78 @@
     flex-wrap: wrap;
     justify-content: center;
     gap: var(--sp-2);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The heading and its tools in two short rows rather than one long one,
+     which ran off the screen: the title with the stretch of time and its
+     two arrows, then the window's chips (and the way back to today, when
+     it is not today that is shown). The tools are the grid's own cells so
+     each can be put in its place. */
+  :global([data-phone]) .top {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
+    height: auto;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .top .pane-titles {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  /* The day's long date beside the stepper has two lines to say itself in. */
+  :global([data-phone]) .top :global(.pane-sub) {
+    white-space: normal;
+  }
+  :global([data-phone]) .tools {
+    display: contents;
+  }
+  :global([data-phone]) .stepper {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 0;
+  }
+  :global([data-phone]) .step {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .stretch {
+    min-width: 6.5em;
+    padding: 0 var(--sp-1);
+  }
+  :global([data-phone]) .filters {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex-wrap: nowrap;
+  }
+  :global([data-phone]) .filters .filter {
+    flex: 1;
+    justify-content: center;
+    min-height: 36px;
+    padding: 0 var(--sp-2);
+  }
+  /* On a row of its own under the chips, or under the heading where there are none. */
+  :global([data-phone]) .today {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: end;
+    height: 36px;
+  }
+  :global([data-phone]) .ranged .today {
+    grid-row: 3;
+  }
+  /* What was opened has its own heading with the way back in it. */
+  :global([data-phone]) .opened > .top {
+    display: none;
+  }
+
+  /* Every pane's page is a column as wide as the screen, with a thumb's
+     width less margin than a desktop's. */
+  :global([data-phone] .health .scroll > .page) {
+    padding-inline: var(--sp-3);
+  }
+  :global([data-phone]) .problem {
+    margin-inline: var(--sp-3);
   }
 </style>

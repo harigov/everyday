@@ -52,6 +52,7 @@
 //! address only, which nothing off this machine can reach; and anything the
 //! assistant or a routine does, which does not come through here at all.
 
+#[cfg(desktop)]
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -59,6 +60,7 @@ use std::time::Duration;
 use karmayoga_core::chat::{ChatService, tidy_device_ids};
 use karmayoga_core::connection::{Connection, Transport};
 use karmayoga_core::{ChatLinkId, Error};
+#[cfg(desktop)]
 use karmayoga_service::Scope;
 use karmayoga_service::chat::ChatDevice;
 use karmayoga_service::command::parse;
@@ -90,11 +92,16 @@ use crate::state::AppState;
 ///
 /// `acl::` tests read those pages and fail if this table and what they
 /// name come apart.
+#[cfg(desktop)]
 const NARROW_WINDOWS: &[(&str, &[&str])] = &[
     (crate::writing::LABEL, &["rewrite_selection", "settle_writing_assist"]),
     (crate::voicetyping::pill::LABEL, &[]),
     (crate::panel::window::LABEL, &[]),
 ];
+
+/// A phone has none of those windows: its one window is the interface.
+#[cfg(mobile)]
+const NARROW_WINDOWS: &[(&str, &[&str])] = &[];
 
 /// The service commands the narrow window called `label` may run through
 /// `call`: the table above, or nothing for a window that is not in it.
@@ -111,7 +118,12 @@ pub fn narrow_window_calls(label: &str) -> &'static [&'static str] {
 /// The main window and the windows opened on a single app run everything: they
 /// are the interface. Any other window runs only what [`NARROW_WINDOWS`] lists.
 pub fn window_may_call(label: &str, name: &str) -> bool {
+    #[cfg(desktop)]
     if label == crate::windows::MAIN || crate::windows::is_app_window(label) {
+        return true;
+    }
+    #[cfg(mobile)]
+    if label == crate::mobile::MAIN {
         return true;
     }
     narrow_window_calls(label).contains(&name)
@@ -295,6 +307,7 @@ pub fn edited_connection_prompt(before: &Connection, after: Connection) -> Optio
     })
 }
 
+#[cfg(desktop)]
 /// A server this application can start on the person's say-so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Served {
@@ -306,6 +319,7 @@ pub enum Served {
     Mcp,
 }
 
+#[cfg(desktop)]
 /// The question to ask before a server starts answering on `address`, unless
 /// that is this computer's own loopback address, which nothing off the machine
 /// can reach.
@@ -350,6 +364,7 @@ pub fn listening_prompt(what: Served, address: SocketAddr) -> Option<Prompt> {
     })
 }
 
+#[cfg(desktop)]
 /// The question to ask before an access token is made.
 pub fn token_prompt(scopes: &[Scope]) -> Prompt {
     let reach = if scopes.contains(&Scope::All) {
@@ -371,6 +386,7 @@ pub fn token_prompt(scopes: &[Scope]) -> Prompt {
     }
 }
 
+#[cfg(desktop)]
 /// The question to ask before web access is switched on: the interface served
 /// to browsers on the person's tailnet, signed in to with the vault password.
 pub fn web_access_prompt(port: u16) -> Prompt {
@@ -387,6 +403,7 @@ pub fn web_access_prompt(port: u16) -> Prompt {
     }
 }
 
+#[cfg(desktop)]
 /// The question to ask before a pairing code is made: a code that lets
 /// another computer become a device of this vault.
 pub fn pairing_prompt() -> Prompt {
@@ -400,6 +417,7 @@ pub fn pairing_prompt() -> Prompt {
     }
 }
 
+#[cfg(desktop)]
 /// The question to ask before a connected computer is allowed to unlock the
 /// vault.
 pub fn remote_unlock_prompt() -> Prompt {
@@ -413,6 +431,7 @@ pub fn remote_unlock_prompt() -> Prompt {
     }
 }
 
+#[cfg(desktop)]
 /// The question to ask before MCP starts offering tools that delete or
 /// overwrite.
 pub fn destructive_tools_prompt() -> Prompt {

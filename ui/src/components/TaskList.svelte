@@ -281,4 +281,13 @@
     border-radius: var(--radius-sm);
     background: var(--bg-sunken);
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  :global([data-phone]) .list {
+    padding: 0 var(--sp-2) var(--fab-clear);
+  }
+  :global([data-phone]) .grouphead {
+    padding: var(--sp-4) var(--sp-2) var(--sp-1);
+  }
 </style>

@@ -120,7 +120,7 @@
       {@const st = statusLabel(account.status)}
       <li>
         <div
-          class="row"
+          class="row account"
           role="button"
           tabindex="0"
           onclick={() => (detailId = account.id)}
@@ -132,15 +132,20 @@
             <span class="provider">{providerLabel(account)}</span>
           </div>
 
-          <div class="services">
-            {#if account.services.mail}<span class="tag">Mail</span>{/if}
-            {#if account.services.calendar}<span class="tag">Calendar</span>{/if}
-          </div>
+          <!-- One box so a phone can put what the account does and how it is
+               doing on a line of their own under its name; on a desktop it
+               is not a box at all. -->
+          <div class="meta">
+            <div class="services">
+              {#if account.services.mail}<span class="tag">Mail</span>{/if}
+              {#if account.services.calendar}<span class="tag">Calendar</span>{/if}
+            </div>
 
-          <span class="status tone-{st.tone}" title={st.detail ?? undefined}>
-            <span class="dot"></span>
-            {st.label}{#if st.detail}<span class="detail">— {st.detail}</span>{/if}
-          </span>
+            <span class="status tone-{st.tone}" title={st.detail ?? undefined}>
+              <span class="dot"></span>
+              {st.label}{#if st.detail}<span class="detail">— {st.detail}</span>{/if}
+            </span>
+          </div>
 
           <button
             class="more"
@@ -287,6 +292,9 @@
     color: var(--fg-faint);
   }
 
+  .meta {
+    display: contents;
+  }
   .services {
     display: flex;
     gap: var(--sp-1);
@@ -343,5 +351,40 @@
     color: var(--fg-subtle);
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
+  }
+
+  /* A phone: the address gets the line, with what the account does and how it
+     is doing under it, and a finger-sized button for its menu at the end. */
+  :global([data-phone]) .account {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    grid-template-areas:
+      'main more'
+      'meta more';
+    row-gap: var(--sp-1);
+    padding: var(--sp-2) 0 var(--sp-2) var(--sp-2);
+  }
+  :global([data-phone]) .account .main {
+    grid-area: main;
+  }
+  :global([data-phone]) .account .meta {
+    grid-area: meta;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-3);
+    min-width: 0;
+  }
+  :global([data-phone]) .account .status {
+    max-width: 100%;
+    min-width: 0;
+  }
+  :global([data-phone]) .account .more {
+    grid-area: more;
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .remoteimg-row .btn {
+    flex: none;
   }
 </style>

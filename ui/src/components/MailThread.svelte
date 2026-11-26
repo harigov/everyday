@@ -52,6 +52,8 @@
   import { isoDate } from '../lib/time'
   import { accounts } from '../lib/accounts.svelte'
   import { files } from '../lib/files.svelte'
+  import { menu } from '../lib/menu.svelte'
+  import type { MenuItem } from '../lib/menu'
   import { notify } from '../lib/notify.svelte'
   import { app, handle } from '../lib/state.svelte'
   import { splitQuoted } from '../lib/mailwrite'
@@ -309,6 +311,16 @@
     mail.toggleExpanded(id)
   }
 
+  /** What answering one message offers on a phone, where its three buttons
+   *  are a menu of their own rather than a row of icons beside the date. */
+  function answerMenu(message: MailMessageDetail): MenuItem[] {
+    return [
+      { label: 'Reply', icon: 'reply', run: () => void mail.reply(message.id, false) },
+      { label: 'Reply all', icon: 'reply-all', run: () => void mail.reply(message.id, true) },
+      { label: 'Forward', icon: 'forward', run: () => void mail.forward(message.id) },
+    ]
+  }
+
   async function showOnce(message: MailMessageDetail) {
     oneOff = new Set([...oneOff, message.id])
     try {
@@ -444,7 +456,7 @@
           <!-- This message's own answers: the thread's toolbar answers the
                newest, and a reply to something said further up is written
                to that, quoting it. -->
-          <div class="answer" role="group" aria-label="Answer this message">
+          <div class="answer desktop-only" role="group" aria-label="Answer this message">
             <button
               class="act"
               title="Reply to this message"
@@ -470,6 +482,14 @@
               <Icon name="forward" size={15} />
             </button>
           </div>
+          <button
+            class="act answer-menu phone-only"
+            aria-label="Answer this message"
+            aria-haspopup="menu"
+            onclick={(e) => menu.show(e, answerMenu(message))}
+          >
+            <Icon name="more" size={18} />
+          </button>
           <button
             class="more"
             class:shown={detailsOpen.has(message.id)}
@@ -1203,5 +1223,120 @@
   }
   .actions[hidden] {
     display: none;
+  }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     Messages a finger can read and press: a folded one a row to tap; the
+     open one a card whose header is who and when over where it came from,
+     instead of five things in one line; every control forty pixels. */
+  :global([data-phone]) .thread {
+    gap: 4px;
+    padding: var(--sp-1) var(--sp-3) var(--sp-4);
+  }
+  :global([data-phone]) .toggle {
+    min-height: 48px;
+    padding: 12px var(--sp-2);
+  }
+  :global([data-phone]) .from {
+    width: 6.5em;
+  }
+  :global([data-phone]) .message.open .head {
+    align-items: flex-start;
+  }
+  :global([data-phone]) .message.open .toggle {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'from clip date'
+      'addr addr addr'
+      'to to to';
+    gap: 0 var(--sp-2);
+    align-items: baseline;
+    padding: 12px 0 6px calc(var(--sp-3) + 3px);
+  }
+  :global([data-phone]) .message.open .from {
+    grid-area: from;
+  }
+  :global([data-phone]) .message.open .clip {
+    grid-area: clip;
+  }
+  :global([data-phone]) .message.open .date {
+    grid-area: date;
+  }
+  :global([data-phone]) .message.open .addr {
+    grid-area: addr;
+    margin-top: 2px;
+  }
+  :global([data-phone]) .message.open .to {
+    grid-area: to;
+  }
+  :global([data-phone]) .act,
+  :global([data-phone]) .more {
+    width: 40px;
+    height: 40px;
+    margin: 0;
+    border-radius: 50%;
+  }
+  :global([data-phone]) .message.open .act {
+    margin-top: 2px;
+  }
+  :global([data-phone]) .more {
+    margin: 2px var(--sp-1) 0 0;
+  }
+  :global([data-phone]) .message.open .body {
+    padding: 2px var(--sp-3) var(--sp-3) calc(var(--sp-3) + 3px);
+  }
+  :global([data-phone]) .chips {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .chip {
+    min-height: 40px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .chip.split {
+    padding: 0;
+  }
+  :global([data-phone]) .chip-open {
+    min-height: 40px;
+    padding: 0 var(--sp-1) 0 var(--sp-3);
+  }
+  :global([data-phone]) .chip-save,
+  :global([data-phone]) .chip-files {
+    min-width: 40px;
+    min-height: 40px;
+    justify-content: center;
+    padding: 0;
+  }
+  :global([data-phone]) .chip-name {
+    max-width: 38vw;
+  }
+  :global([data-phone]) .chip-download {
+    min-height: 40px;
+  }
+  :global([data-phone]) .history {
+    min-height: 32px;
+    padding: 0 var(--sp-3);
+    line-height: 28px;
+  }
+  :global([data-phone]) .images-bar {
+    gap: 0 var(--sp-1);
+  }
+  :global([data-phone]) .images-bar .link {
+    min-height: 40px;
+    padding: 0 var(--sp-1);
+  }
+  :global([data-phone]) .images-bar .sep {
+    display: none;
+  }
+  :global([data-phone]) .invite-btn {
+    min-height: 40px;
+    padding: 0 var(--sp-4);
+  }
+  :global([data-phone]) .invite-actions {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .actions {
+    gap: var(--sp-2);
+    padding: var(--sp-3) 0 0;
   }
 </style>

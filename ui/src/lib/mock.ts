@@ -4923,6 +4923,46 @@ function summarize(e: Entry): EntrySummary {
   }
 }
 
+// `?longjournal` (or `?longjournal=N`): sixty-four more entries -- N, if given --
+// all older than the rest, so a list
+// long enough to need scrolling for a good while can be measured -- the
+// phone check's scroll timing (docs/mobile.md). Off by default, so nothing
+// else in the demo vault, or any other screen's picture of it, changes.
+const longJournal = new URLSearchParams(location.search).get('longjournal')
+if (longJournal !== null) {
+  const places = ['Lisbon', 'Porto', 'Sintra', 'Hackney', undefined, undefined]
+  const tagSets = [['walking'], ['rest', 'family'], [], ['work'], ['books', 'rain', 'train'], []]
+  const count = Number(longJournal) || 64
+  for (let i = 0; i < count; i++) {
+    const place = places[i % places.length]
+    entries.push({
+      id: `e-long-${i}`,
+      journalId: 'j-daily',
+      title:
+        i % 5 === 4
+          ? ''
+          : `Day ${i + 1}: ${['the market', 'a long walk', 'rain', 'the ferry', 'bread'][i % 5]}`,
+      body: {
+        type: 'doc',
+        content: [
+          ...para(
+            `Entry ${i + 1}. The morning was slow and the afternoon was not. I wrote some of it down at the kitchen table before the light went, and kept the rest for later.`,
+          ),
+          ...para('A second paragraph, so the excerpt has something to cut off at two lines.'),
+        ],
+      },
+      localDate: day(30 + (i % 300) * 3 + Math.floor(i / 300)),
+      tz: 'Europe/London',
+      createdAt: iso(30 + i * 3),
+      updatedAt: iso(30 + i * 3),
+      tags: tagSets[i % tagSets.length]!,
+      starred: i % 9 === 0,
+      attachments: [],
+      ...(place ? { location: { placeName: place, locality: place } } : {}),
+    } as Entry)
+  }
+}
+
 /**
  * Who the demo vault belongs to.
  *

@@ -419,4 +419,20 @@
     color: var(--fg-subtle);
     font-variant-numeric: tabular-nums;
   }
+
+  /* A phone: the two disclosures are a finger tall, and the button that
+     chooses the export (with Cancel beside it while it runs) takes the
+     width. */
+  :global([data-phone]) .how summary,
+  :global([data-phone]) .skipped summary {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  :global([data-phone]) .row .btn {
+    flex: 1 1 10em;
+  }
+  :global([data-phone]) .skipped li {
+    padding-block: var(--sp-2);
+  }
 </style>

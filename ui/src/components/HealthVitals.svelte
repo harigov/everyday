@@ -24,9 +24,11 @@
   import { health } from '../lib/health.svelte'
   import { dayInstants } from '../lib/health'
   import { plural, relativeTime } from '../lib/format'
+  import { details, phone } from '../lib/phone.svelte'
   import type { Latest, Metric, MetricEntry, MetricGroup, SeriesResult } from '../lib/types'
   import HealthLine from './HealthLine.svelte'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import StatTile from './StatTile.svelte'
 
   /** The Health app's own colour: every line here is a reading of the body. */
@@ -205,6 +207,24 @@
   }
 
   const hasReadings = $derived((series?.points.length ?? 0) > 0)
+
+  // ── On a phone ───────────────────────────────────────────────────────
+  //
+  // The list and what it opens do not fit side by side, and one under the
+  // other leaves a choice made at the top answered out of sight at the
+  // bottom. So the list is a page, and the measurement chosen from it is a
+  // page of its own over it, with a way back (`details`, as the journal's
+  // entry has: back closes it, and so does choosing Vitals again in the
+  // drawer). It is the list again whenever this pane is left and come back to.
+  const showList = $derived(!phone.on || !details.isOpen('health'))
+  const showDetail = $derived(!phone.on || details.isOpen('health'))
+
+  $effect(() => () => details.close('health'))
+
+  function choose(m: Metric) {
+    health.setVitalsMetric(m)
+    details.open('health')
+  }
 </script>
 
 <div class="vitals scroll">
@@ -223,129 +243,142 @@
       </section>
     {:else}
       <div class="cols">
-        <nav class="metrics" aria-label="Measurements">
-          {#each groups as g (g.group)}
-            <h2 class="eyebrow group">{g.title}</h2>
-            {#each g.rows as r (r.metric)}
-              <button
-                class="list-row metric"
-                class:sel={r.metric === metric}
-                aria-current={r.metric === metric ? 'true' : undefined}
-                onclick={() => health.setVitalsMetric(r.metric)}
-              >
-                <span class="mname">{r.name}</span>
-                <span class="mval">
-                  {r.value}
-                  {#if r.mark}<span class="mark" title={r.words}>{r.mark}</span>{/if}
-                </span>
-                <span class="mwhen">{r.when}</span>
-              </button>
+        {#if showList}
+          <nav class="metrics" aria-label="Measurements">
+            {#each groups as g (g.group)}
+              <h2 class="eyebrow group">{g.title}</h2>
+              {#each g.rows as r (r.metric)}
+                <button
+                  class="list-row metric"
+                  class:sel={r.metric === metric}
+                  aria-current={r.metric === metric ? 'true' : undefined}
+                  onclick={() => choose(r.metric)}
+                >
+                  <span class="mname">{r.name}</span>
+                  <span class="mval">
+                    {r.value}
+                    {#if r.mark}<span class="mark" title={r.words}>{r.mark}</span>{/if}
+                  </span>
+                  <span class="mwhen">{r.when}</span>
+                </button>
+              {/each}
             {/each}
-          {/each}
-        </nav>
+          </nav>
+        {/if}
 
-        <section class="detail" aria-label={name}>
-          <div class="head">
-            <h2 class="title">{name}</h2>
-            <div class="acts">
-              <button class="btn btn-sm btn-primary" onclick={() => (health.readingOpen = true)}>
-                <Icon name="plus" size={13} />
-                Add reading
-              </button>
-              <button
-                class="btn btn-sm btn-outline"
-                disabled={tracked[metric] || tracking}
-                onclick={() => void track()}
-              >
-                {tracked[metric] ? 'On the Overview' : 'Show on Overview'}
-              </button>
+        {#if showDetail}
+          <section class="detail" aria-label={name}>
+            <div class="head">
+              <PhoneBack onclick={() => details.close('health')} label="Measurements" />
+              <h2 class="title">{name}</h2>
+              <div class="acts">
+                <button class="btn btn-sm btn-primary" onclick={() => (health.readingOpen = true)}>
+                  <Icon name="plus" size={13} />
+                  Add reading
+                </button>
+                <button
+                  class="btn btn-sm btn-outline"
+                  disabled={tracked[metric] || tracking}
+                  onclick={() => void track()}
+                >
+                  {tracked[metric] ? 'On the Overview' : 'Show on Overview'}
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div class="tiles">
-            <StatTile label="Latest" value={latest ? valueText(latest) : '—'} note={latestNote} />
-            {#if stats}
-              {#if isPressure && statsSecond}
+            <div class="tiles">
+              <StatTile label="Latest" value={latest ? valueText(latest) : '—'} note={latestNote} />
+              {#if stats}
+                {#if isPressure && statsSecond}
+                  <StatTile
+                    label="Average"
+                    value={pressure(stats.mean, statsSecond.mean)}
+                    note="Of the daily values"
+                  />
+                {:else if !isPressure}
+                  <StatTile
+                    label="Average"
+                    value={health.display(metric, stats.mean)}
+                    note="Of the daily values"
+                  />
+                {/if}
+                {#if !isPressure}
+                  <StatTile label="Lowest" value={health.display(metric, stats.lo)} />
+                  <StatTile label="Highest" value={health.display(metric, stats.hi)} />
+                {/if}
                 <StatTile
-                  label="Average"
-                  value={pressure(stats.mean, statsSecond.mean)}
-                  note="Of the daily values"
-                />
-              {:else if !isPressure}
-                <StatTile
-                  label="Average"
-                  value={health.display(metric, stats.mean)}
-                  note="Of the daily values"
+                  label="Readings"
+                  value={String(stats.readings)}
+                  note={health.rangeLabel}
                 />
               {/if}
-              {#if !isPressure}
-                <StatTile label="Lowest" value={health.display(metric, stats.lo)} />
-                <StatTile label="Highest" value={health.display(metric, stats.hi)} />
-              {/if}
-              <StatTile label="Readings" value={String(stats.readings)} note={health.rangeLabel} />
+            </div>
+
+            {#if isPressure}
+              <section class="card" aria-labelledby="hv-top">
+                <h2 class="eyebrow" id="hv-top">Top number (systolic), {health.rangeLabel}</h2>
+                <HealthLine series={line} {unit} color={HEALTH} from={health.from} to={health.to} />
+              </section>
+              <section class="card" aria-labelledby="hv-bottom">
+                <h2 class="eyebrow" id="hv-bottom">
+                  Bottom number (diastolic), {health.rangeLabel}
+                </h2>
+                <HealthLine
+                  series={lineSecond}
+                  {unit}
+                  color="var(--fg-muted)"
+                  from={health.from}
+                  to={health.to}
+                />
+              </section>
+            {:else}
+              <section class="card" aria-labelledby="hv-line">
+                <h2 class="eyebrow" id="hv-line">{name}, {health.rangeLabel}</h2>
+                <HealthLine
+                  series={line}
+                  {band}
+                  {unit}
+                  color={HEALTH}
+                  from={health.from}
+                  to={health.to}
+                />
+                {#if band}
+                  <p class="foot">The shaded band is your glucose range.</p>
+                {:else if stats && line.some((p) => p.min !== p.value || p.max !== p.value)}
+                  <p class="foot">
+                    The faint band behind the line is each day's lowest to highest.
+                  </p>
+                {/if}
+              </section>
             {/if}
-          </div>
 
-          {#if isPressure}
-            <section class="card" aria-labelledby="hv-top">
-              <h2 class="eyebrow" id="hv-top">Top number (systolic), {health.rangeLabel}</h2>
-              <HealthLine series={line} {unit} color={HEALTH} from={health.from} to={health.to} />
-            </section>
-            <section class="card" aria-labelledby="hv-bottom">
-              <h2 class="eyebrow" id="hv-bottom">Bottom number (diastolic), {health.rangeLabel}</h2>
-              <HealthLine
-                series={lineSecond}
-                {unit}
-                color="var(--fg-muted)"
-                from={health.from}
-                to={health.to}
-              />
-            </section>
-          {:else}
-            <section class="card" aria-labelledby="hv-line">
-              <h2 class="eyebrow" id="hv-line">{name}, {health.rangeLabel}</h2>
-              <HealthLine
-                series={line}
-                {band}
-                {unit}
-                color={HEALTH}
-                from={health.from}
-                to={health.to}
-              />
-              {#if band}
-                <p class="foot">The shaded band is your glucose range.</p>
-              {:else if stats && line.some((p) => p.min !== p.value || p.max !== p.value)}
-                <p class="foot">The faint band behind the line is each day's lowest to highest.</p>
-              {/if}
-            </section>
-          {/if}
-
-          {#if hasReadings}
-            <div class="removal">
-              {#if isPressure}
-                <button
-                  class="btn btn-sm btn-ghost-danger"
-                  onclick={() => removeRange(SYS, 'top-number blood pressure')}
-                >
-                  Delete top numbers in {health.rangeLabel}…
-                </button>
-                <button
-                  class="btn btn-sm btn-ghost-danger"
-                  onclick={() => removeRange(DIA, 'bottom-number blood pressure')}
-                >
-                  Delete bottom numbers in {health.rangeLabel}…
-                </button>
-              {:else}
-                <button
-                  class="btn btn-sm btn-ghost-danger"
-                  onclick={() => removeRange(metric, name.toLowerCase())}
-                >
-                  Delete {plural(stats?.readings ?? 0, 'reading')} in {health.rangeLabel}…
-                </button>
-              {/if}
-            </div>
-          {/if}
-        </section>
+            {#if hasReadings}
+              <div class="removal">
+                {#if isPressure}
+                  <button
+                    class="btn btn-sm btn-ghost-danger"
+                    onclick={() => removeRange(SYS, 'top-number blood pressure')}
+                  >
+                    Delete top numbers in {health.rangeLabel}…
+                  </button>
+                  <button
+                    class="btn btn-sm btn-ghost-danger"
+                    onclick={() => removeRange(DIA, 'bottom-number blood pressure')}
+                  >
+                    Delete bottom numbers in {health.rangeLabel}…
+                  </button>
+                {:else}
+                  <button
+                    class="btn btn-sm btn-ghost-danger"
+                    onclick={() => removeRange(metric, name.toLowerCase())}
+                  >
+                    Delete {plural(stats?.readings ?? 0, 'reading')} in {health.rangeLabel}…
+                  </button>
+                {/if}
+              </div>
+            {/if}
+          </section>
+        {/if}
       </div>
     {/if}
   </div>
@@ -487,5 +520,30 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--sp-2);
+  }
+
+  /* A phone: the list is a page (see `details`), each measurement a row
+     a finger can hit, and the one chosen a page with its way back at the
+     head. */
+  :global([data-phone]) .cols {
+    display: block;
+  }
+  :global([data-phone]) .metrics {
+    width: 100%;
+  }
+  :global([data-phone]) .metric {
+    min-height: 56px;
+  }
+  :global([data-phone]) .head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
+  }
+  :global([data-phone]) .head .acts {
+    grid-column: 1 / -1;
+  }
+  :global([data-phone]) .title {
+    font-size: var(--text-lg);
   }
 </style>

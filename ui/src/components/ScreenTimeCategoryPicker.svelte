@@ -18,6 +18,7 @@
   import { CATEGORY_COLORS } from '../lib/screentime'
   import { dismissable } from '../lib/dismiss'
   import { focusOnMount } from '../lib/focus'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import type { ScreenCategory, ScreenCategoryId } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -97,6 +98,12 @@
     open = false
     text = ''
   }
+
+  // On a phone the list is a sheet over the screen, and back puts it away.
+  closesOnBack(
+    () => phone.on && open,
+    () => close(),
+  )
 
   function send(patch: LabelPatch) {
     close()
@@ -181,6 +188,7 @@
   </button>
 
   {#if open}
+    {#if phone.on}<div class="scrim" aria-hidden="true"></div>{/if}
     <div class="pop" use:dismissable={{ onaway: close, within: `.${uid}` }}>
       <input
         class="search"
@@ -360,5 +368,45 @@
     padding: var(--sp-3) var(--sp-2);
     font-size: var(--text-sm);
     color: var(--fg-faint);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The chip is a finger tall, and the list is a sheet under the status
+     bar over a scrim -- a popover hung from a chip in the middle of a
+     scrolling list was cut off by it and too small to choose from. */
+  :global([data-phone]) .chip {
+    height: 34px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .pop,
+  :global([data-phone]) .right .pop {
+    position: fixed;
+    z-index: 66;
+    top: calc(var(--safe-top) + var(--sp-3));
+    right: calc(var(--sp-3) + var(--safe-right));
+    left: calc(var(--sp-3) + var(--safe-left));
+    width: auto;
+    max-height: calc(
+      100dvh - var(--safe-top) - var(--sp-3) - var(--bottombar-h) - var(--safe-bottom) - var(--sp-3)
+    );
+  }
+  :global(:root[data-phone][data-keyboard]) .pop {
+    max-height: calc(100dvh - var(--safe-top) - var(--sp-6));
+  }
+  :global([data-phone]) .search {
+    height: 44px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .rows {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+  }
+  :global([data-phone]) .row {
+    min-height: 48px;
+    gap: var(--sp-3);
+    padding: 0 var(--sp-3);
+    font-size: var(--text-base);
   }
 </style>

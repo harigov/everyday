@@ -30,6 +30,7 @@
   import { isTyping } from '../lib/keys'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { closesOnBack, details, phone } from '../lib/phone.svelte'
   import type { MoneyCategory, MoneyCategoryId, NewTxn, Txn } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
@@ -97,7 +98,13 @@
   function clickRow(e: MouseEvent, t: Txn) {
     if (e.shiftKey) money.toggleSelect(t.id, true)
     else if (e.ctrlKey || e.metaKey) money.toggleSelect(t.id)
-    else money.open(money.openId === t.id ? null : t.id)
+    // Once anything is ticked a tap ticks another, as in any list of things
+    // to choose; with nothing ticked it opens the row over the list.
+    else if (phone.on && money.selected.length > 0) money.toggleSelect(t.id)
+    else {
+      money.open(money.openId === t.id ? null : t.id)
+      if (money.openId !== null) details.open('money')
+    }
   }
 
   /** Shift+click would otherwise also select the text of every row between. */
@@ -172,6 +179,12 @@
       money.clearSelection()
     }
   }
+
+  // On a phone, back puts the typing-in sheet away.
+  closesOnBack(
+    () => money.adding,
+    () => money.closeAdd(),
+  )
 
   // ── A transaction typed in ──────────────────────────────────────────
 
@@ -258,29 +271,34 @@
       </button>
       <span class="count">{money.selected.length} ticked</span>
       <span class="spacer"></span>
-      <MoneyCategoryPicker
-        value={null}
-        onchange={categorizePicked}
-        buttonLabel="Categorise"
-        pill
-        align="right"
-        allowNone
-      />
-      <button class="btn" onclick={() => void money.setExcluded([...money.selected], !allExcluded)}>
-        <Icon name={allExcluded ? 'eye' : 'hidden'} size={14} />
-        {allExcluded ? 'Count again' : 'Leave out'}
-      </button>
-      {#if deletable}
-        <button class="btn btn-ghost-danger" onclick={deletePicked}>
-          <Icon name="trash" size={14} /> Delete…
+      <div class="bulk-actions">
+        <MoneyCategoryPicker
+          value={null}
+          onchange={categorizePicked}
+          buttonLabel="Categorise"
+          pill
+          align="right"
+          allowNone
+        />
+        <button
+          class="btn"
+          onclick={() => void money.setExcluded([...money.selected], !allExcluded)}
+        >
+          <Icon name={allExcluded ? 'eye' : 'hidden'} size={14} />
+          {allExcluded ? 'Count again' : 'Leave out'}
         </button>
-      {/if}
-      <button class="btn" onclick={() => money.clearSelection()} title="Untick all (Escape)">
+        {#if deletable}
+          <button class="btn btn-ghost-danger" onclick={deletePicked}>
+            <Icon name="trash" size={14} /> Delete…
+          </button>
+        {/if}
+      </div>
+      <button class="btn done" onclick={() => money.clearSelection()} title="Untick all (Escape)">
         Done
       </button>
     </div>
   {:else}
-    <div class="toolbar">
+    <div class="toolbar filterbar" class:narrowed>
       <div class="toolbar-end">
         <select
           class="select"
@@ -308,7 +326,7 @@
           {/each}
         </select>
       </div>
-      <div class="toolbar-end right">
+      <div class="toolbar-end right extras">
         {#if money.query.trim()}
           <span class="query" title="Searching payee, description and note">
             <Icon name="search" size={12} />
@@ -800,5 +818,172 @@
   }
   .error {
     margin-top: var(--sp-3);
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     A row is two lines: who it was, with the amount at the far end, and
+     under that the day, the category and the account. The box that ticks it
+     is a finger's size, always shown; the filters are pills across the top,
+     the bar over the ticked rows wraps its actions onto a line of their
+     own. */
+  :global([data-phone]) .filterbar {
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-2);
+    padding: 0 var(--sp-3) var(--sp-2);
+  }
+  /* The two selects and Add share the first row; what narrows the list, and
+     the way to undo it, the second -- when there is any. */
+  :global([data-phone]) .filterbar .toolbar-end {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  :global([data-phone]) .filterbar .toolbar-end.extras {
+    flex: none;
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  /* Narrowed, there are more words than a row has room for: the pills have
+     the first row to themselves, and what narrowed the list, the way to undo
+     it and Add the second. */
+  :global([data-phone]) .filterbar.narrowed .toolbar-end:not(.extras) {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .filterbar.narrowed .toolbar-end.extras {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .select {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: none;
+    height: 44px;
+    padding: 0 var(--sp-3);
+    border-radius: 999px;
+    background: var(--bg-sunken);
+    color: var(--fg-muted);
+    text-overflow: ellipsis;
+  }
+  :global([data-phone]) .add {
+    height: 44px;
+  }
+  :global([data-phone]) .clear {
+    height: 44px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .query {
+    height: 32px;
+    max-width: 200px;
+  }
+
+  :global([data-phone]) .bulk {
+    flex-wrap: wrap;
+    gap: 0 var(--sp-2);
+    padding: 0 var(--sp-3) var(--sp-2) 0;
+  }
+  :global([data-phone]) .bulk .done {
+    order: 1;
+    height: 44px;
+  }
+  :global([data-phone]) .bulk-actions {
+    order: 2;
+    flex: 1 1 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .bulk .btn {
+    height: 44px;
+  }
+  .bulk-actions {
+    display: contents;
+  }
+
+  :global([data-phone]) .txn-rows {
+    padding-bottom: calc(var(--fab-size) + var(--sp-6));
+  }
+  :global([data-phone]) .row {
+    min-height: 64px;
+  }
+  :global([data-phone]) .tickbox {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    margin: 0 0 0 var(--sp-1);
+    border: 0;
+    background: none;
+    opacity: 1;
+  }
+  :global([data-phone]) .tickbox::before {
+    content: '';
+    position: absolute;
+    inset: 12px;
+    border: 1.5px solid var(--border-strong);
+    border-radius: 6px;
+    transition: background var(--fast) var(--ease);
+  }
+  /* The box is the ::before's; the button's own fill (a ticked row's, the bar's
+     own) is not drawn, or a finger-sized square would be filled. */
+  :global([data-phone]) .row.picked .tickbox,
+  :global([data-phone]) .bulk .tickbox {
+    background: none;
+    border-color: transparent;
+  }
+  :global([data-phone]) .row.picked .tickbox::before,
+  :global([data-phone]) .bulk .tickbox::before {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  :global([data-phone]) .tickbox :global(svg) {
+    position: relative;
+  }
+  :global([data-phone]) .bulk .tickbox {
+    margin-left: var(--sp-2);
+  }
+
+  :global([data-phone]) .main {
+    display: grid;
+    grid-template-columns: auto minmax(0, auto) minmax(0, 1fr) auto;
+    grid-template-areas:
+      'who  who  who  amt'
+      'date chip acct amt';
+    align-items: center;
+    gap: 2px var(--sp-2);
+    padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-1);
+  }
+  :global([data-phone]) .who {
+    grid-area: who;
+    font-weight: 560;
+  }
+  :global([data-phone]) .date {
+    grid-area: date;
+    width: auto;
+    font-size: var(--text-xs);
+  }
+  :global([data-phone]) .chip {
+    grid-area: chip;
+    max-width: 100%;
+    height: 22px;
+    min-width: 0;
+  }
+  :global([data-phone]) .acct {
+    display: block;
+    grid-area: acct;
+    max-width: none;
+    min-width: 0;
+  }
+  :global([data-phone]) .amt {
+    grid-area: amt;
+    min-width: 0;
+    align-self: center;
+    font-weight: 560;
+  }
+  :global([data-phone]) .load-more {
+    min-height: 48px;
+  }
+
+  /* The typing-in sheet: a column, the pair of fields kept side by side. */
+  :global([data-phone]) .direction label {
+    min-height: 44px;
   }
 </style>

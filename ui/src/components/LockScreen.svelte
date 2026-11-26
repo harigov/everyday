@@ -140,6 +140,29 @@
     border-radius: 4px;
   }
 
+  /* A phone: the card in the middle of what is left above the keyboard --
+     the page shrinks to that on Android -- and the page scrolls to it when
+     there is no room to be in the middle of, rather than the card's top
+     going off the screen. `margin: auto` centres when it fits and is
+     top-aligned when it does not, which `place-items: center` is not. */
+  :global([data-phone]) .lock {
+    display: flex;
+    overflow-y: auto;
+    padding: calc(var(--safe-top) + var(--sp-4)) calc(var(--safe-right) + var(--sp-4))
+      calc(var(--safe-bottom) + var(--sp-4)) calc(var(--safe-left) + var(--sp-4));
+  }
+  :global([data-phone]) .card {
+    width: min(320px, 100%);
+    margin: auto;
+    padding: var(--sp-6) var(--sp-5) var(--sp-5);
+  }
+  :global([data-phone]) .wide {
+    height: 48px;
+  }
+  :global([data-phone]) .pw {
+    height: 48px;
+  }
+
   .shake {
     animation: shake 0.4s var(--ease);
   }

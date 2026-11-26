@@ -511,4 +511,25 @@
       grid-column: span 2;
     }
   }
+
+  /* A phone: every field a finger tall (the text is 16 px already), the
+     button that leaves a result out a finger wide, and the foot's two
+     buttons side by side. */
+  :global([data-phone]) input,
+  :global([data-phone]) select {
+    min-height: 40px;
+  }
+  :global([data-phone]) .remove {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .row-head {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .row-head .name {
+    flex: 1 1 10em;
+  }
+  :global([data-phone]) .foot .btn {
+    flex: 1;
+  }
 </style>

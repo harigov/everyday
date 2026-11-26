@@ -220,4 +220,11 @@
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     Narrower columns: the label and the bar share what the hours leave. */
+  :global([data-phone]) .row {
+    grid-template-columns: minmax(70px, 120px) minmax(60px, 1fr) auto;
+    gap: var(--sp-2);
+  }
 </style>

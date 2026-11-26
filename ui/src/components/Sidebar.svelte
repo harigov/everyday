@@ -2,6 +2,7 @@
   import { untrack } from 'svelte'
   import { app } from '../lib/state.svelte'
   import { sidebar } from '../lib/sidebar.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import { focusOnMount } from '../lib/focus'
   import { menu } from '../lib/menu.svelte'
@@ -133,11 +134,16 @@
   class:peeking
   inert={folded && !peeking}
   aria-hidden={folded && !peeking ? 'true' : undefined}
-  onpointerenter={() => {
-    if (folded) sidebar.reach()
+  onpointerenter={(e) => {
+    if (folded && e.pointerType === 'mouse') sidebar.reach()
   }}
-  onpointerleave={() => {
-    if (folded) sidebar.release()
+  onpointerleave={(e) => {
+    if (folded && e.pointerType === 'mouse') sidebar.release()
+  }}
+  onclick={(e) => {
+    // A phone's drawer goes once somewhere is chosen in it. See
+    // `sidebar.open`.
+    if (phone.on && e.target instanceof Element && e.target.closest('.side-row')) sidebar.hide()
   }}
   onfocusin={(e) => {
     // The keyboard gets it at once -- the hover delay is there for a pointer
@@ -361,6 +367,35 @@
     transition:
       opacity var(--fast) var(--ease),
       translate var(--fast) var(--ease),
+      visibility 0s;
+  }
+  /* A phone's drawer: the whole height of the screen, from its left edge,
+     over the top bar and the bottom bar, sliding in rather than fading.
+     `App.svelte` draws the scrim behind it. */
+  :global([data-phone]) .sidebar.folded {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 64;
+    width: var(--sidebar-w);
+    padding-top: calc(var(--sp-2) + var(--safe-top));
+    padding-bottom: var(--safe-bottom);
+    padding-left: var(--safe-left);
+    border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+    opacity: 1;
+    translate: -100% 0;
+    transition:
+      translate var(--normal, 0.2s) var(--ease),
+      visibility 0s linear var(--normal, 0.2s);
+  }
+  /* `none`, not `0 0`, once out: any translate makes the drawer the box a
+     `position: fixed` dialog inside it -- Add a calendar, Unfollow -- is
+     placed in, and the dialog then sits in the drawer, not on the screen. */
+  :global([data-phone]) .sidebar.folded.peeking {
+    translate: none;
+    transition:
+      translate var(--normal, 0.2s) var(--ease),
       visibility 0s;
   }
   @media (prefers-reduced-motion: reduce) {

@@ -47,6 +47,7 @@ export type PrefKey =
   | 'karmayoga.tray.meeting'
   | 'karmayoga.badge'
   | 'karmayoga.sidebar.folded'
+  | 'karmayoga.phone.bar'
   | 'karmayoga.mail.accounts.open'
   | 'karmayoga.mail.list.only'
   | 'karmayoga.mail.category'

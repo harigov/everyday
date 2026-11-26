@@ -15,6 +15,7 @@
   import { health } from '../lib/health.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { toLocalInputValue } from '../lib/format'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import type { Metric } from '../lib/types'
 
   interface Choice {
@@ -63,6 +64,12 @@
   function close() {
     if (!busy) health.readingOpen = false
   }
+
+  // Back, on a phone, closes the sheet as Cancel does.
+  closesOnBack(
+    () => phone.on,
+    () => close(),
+  )
 
   async function save() {
     if (!positive(value) || (pressure && !positive(second)) || !timeOk || busy) return
@@ -228,5 +235,16 @@
   }
   .error {
     margin: 0 0 var(--sp-3);
+  }
+
+  /* A phone: the two blood-pressure numbers one above the other, each with
+     room for its label, and the buttons wrapping rather than running off. */
+  :global([data-phone]) .pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  :global([data-phone]) .sheet-row {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 </style>

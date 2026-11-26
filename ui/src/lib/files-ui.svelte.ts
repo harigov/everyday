@@ -638,7 +638,7 @@ export function emptyProp(type: PropValue['type']): PropValue {
 export async function openUse(use: FileUse): Promise<void> {
   switch (use.owner.kind) {
     case 'entry':
-      if (await app.goTo('journal')) await app.openEntry(use.owner.id)
+      if (await app.goTo('journal')) await app.showEntry(use.owner.id)
       return
     case 'note':
       if (await app.goTo('notes')) await notes.openNote(use.owner.id)

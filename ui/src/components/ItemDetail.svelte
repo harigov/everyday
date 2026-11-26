@@ -23,6 +23,7 @@
   import { ask, quick, slot } from '../lib/quick.svelte'
   import { focusOnMount } from '../lib/focus'
   import { coverRatio, library } from '../lib/library.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { ratingLabel } from '../lib/rating'
   import { reader } from '../lib/reader.svelte'
   import { app } from '../lib/state.svelte'
@@ -54,6 +55,7 @@
   import CoverSearch from './CoverSearch.svelte'
   import FilePicker from './FilePicker.svelte'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import Rating from './Rating.svelte'
   import Suggestions from './Suggestions.svelte'
 
@@ -75,6 +77,11 @@
 
   let confirming = $state(false)
   let tagDraft = $state('')
+
+  /** Where the way back on a phone goes: the shelf the item was opened from. */
+  const shelfName = $derived(
+    library.favouritesOnly ? 'Favourites' : (library.kind?.name ?? 'Library'),
+  )
 
   // ── choosing a cover by hand ─────────────────────────────────────────
   //
@@ -481,6 +488,7 @@
 
 <aside class="detail" style="--tint: {color}">
   <header class="top">
+    <PhoneBack onclick={() => library.close()} label={shelfName} />
     <span class="where">{kind?.icon ?? ''} {kind?.singular ?? 'Item'}</span>
     <span class="spacer"></span>
     <button
@@ -500,7 +508,12 @@
     >
       <Icon name="trash" size={15} />
     </button>
-    <button class="icon-btn" title="Close" aria-label="Close" onclick={() => library.close()}>
+    <button
+      class="icon-btn desktop-only"
+      title="Close"
+      aria-label="Close"
+      onclick={() => library.close()}
+    >
       <Icon name="close" size={15} />
     </button>
   </header>
@@ -613,7 +626,7 @@
         <div class="mine">
           <Rating
             value={item.rating}
-            size={19}
+            size={phone.on ? 28 : 19}
             showNumber
             label="Your rating"
             onchange={(v: number | null) => void library.rate(item.id, v)}
@@ -1890,5 +1903,118 @@
   .m-sub {
     font-size: var(--text-sm);
     color: var(--fg-subtle);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A page over the shelf (see `.layered` in `LibraryView`), not a column
+     beside it. */
+  :global([data-phone]) .detail {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    width: auto;
+    border-left: 0;
+  }
+  :global([data-phone]) .top {
+    gap: 0;
+    padding: 0 var(--sp-1);
+  }
+  /* The way back says where it goes; the shelf's name stands for the rest. */
+  :global([data-phone]) .where {
+    display: none;
+  }
+  :global([data-phone]) .top .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .body {
+    padding: var(--sp-4) var(--sp-4) var(--fab-clear);
+  }
+
+  /* Under the cover: two across, a finger's height, where a desktop has a
+     row of small buttons that say what they are on hover. */
+  :global([data-phone]) .cover-actions {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  :global([data-phone]) .cover-act,
+  :global([data-phone]) .cover-act + .cover-act {
+    flex: 1 1 calc(50% - 2px);
+    width: auto;
+    height: 40px;
+  }
+  :global([data-phone]) .cover-actions:not(.crowded) .cover-act:first-child {
+    flex-basis: 100%;
+  }
+  :global([data-phone]) .cover-fetch {
+    height: 40px;
+  }
+  :global([data-phone]) .cover-url input,
+  :global([data-phone]) .cover-url .mini {
+    height: 40px;
+  }
+
+  :global([data-phone]) .statuses {
+    gap: 4px;
+  }
+  :global([data-phone]) .status {
+    flex: 1 1 28%;
+    height: 40px;
+  }
+
+  :global([data-phone]) .mini,
+  :global([data-phone]) .tag,
+  :global([data-phone]) .tag-add {
+    height: 36px;
+  }
+  :global([data-phone]) .mini {
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .tag {
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .num {
+    height: 40px;
+  }
+
+  /* Actions that wait for a pointer to come near are shown. */
+  :global([data-phone]) .held-acts {
+    opacity: 1;
+  }
+  :global([data-phone]) .held-act {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .icon-btn.small {
+    width: 40px;
+    height: 40px;
+    margin: -6px -8px -6px 0;
+    opacity: 0.6;
+  }
+  :global([data-phone]) .links a {
+    min-height: 36px;
+  }
+  :global([data-phone]) .when {
+    padding-top: 10px;
+  }
+  :global([data-phone]) .log-note {
+    min-height: 36px;
+  }
+  :global([data-phone]) .event {
+    padding-top: 6px;
+  }
+  :global([data-phone]) .via {
+    min-height: 36px;
+  }
+  :global([data-phone]) .facts {
+    grid-template-columns: 88px 1fr;
+  }
+  :global([data-phone]) .match {
+    padding: var(--sp-3);
+  }
+
+  :global([data-phone]) button.held-name {
+    padding: 8px 0;
   }
 </style>

@@ -349,8 +349,13 @@
             role="group"
             tabindex="0"
             aria-label="{n} nights, arrow keys move between them and Enter shows one"
+            onpointerdown={(e) => (active = indexAt(e))}
             onpointermove={(e) => (active = indexAt(e))}
-            onpointerleave={() => (active = null)}
+            onpointerleave={(e) => {
+              // A finger lifting is not a pointer leaving: the night it
+              // touched stays read out.
+              if (e.pointerType !== 'touch') active = null
+            }}
             onclick={(e) => choose(indexAt(e))}
             onkeydown={key}
             onfocus={focused}
@@ -752,5 +757,11 @@
     font-size: var(--text-sm);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* A phone: the name's column leaves the score's bar room to be seen. */
+  :global([data-phone]) .parts li {
+    grid-template-columns: 7em minmax(0, 1fr) 2.5em;
+    gap: var(--sp-2);
   }
 </style>

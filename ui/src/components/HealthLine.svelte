@@ -347,8 +347,13 @@
       role="group"
       tabindex="0"
       aria-label={ariaLabel}
+      onpointerdown={(e) => (active = nearest(e))}
       onpointermove={(e) => (active = nearest(e))}
-      onpointerleave={() => (active = null)}
+      onpointerleave={(e) => {
+        // A finger lifting is not a pointer leaving: the reading it touched
+        // stays on show until it touches elsewhere.
+        if (e.pointerType !== 'touch') active = null
+      }}
       onkeydown={key}
       onfocus={focused}
       onblur={() => (active = null)}

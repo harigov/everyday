@@ -19,6 +19,7 @@
   import { feed } from '../lib/feed.svelte'
   import { HN_LIST_LABELS, HN_LIST_NOTES, clampPoints, folderNames, hostOf } from '../lib/feed'
   import { plural } from '../lib/format'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import {
     HN_LISTS,
@@ -28,6 +29,12 @@
     type NewsletterSender,
   } from '../lib/types'
   import Icon from './Icon.svelte'
+
+  // A phone's back button puts the sheet away rather than leaving the app.
+  closesOnBack(
+    () => true,
+    () => feed.closeAdd(),
+  )
 
   type Tab = 'address' | 'hackerNews' | 'mail' | 'opml'
 
@@ -761,5 +768,55 @@
     height: 1px;
     overflow: hidden;
     clip-path: inset(50%);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* Hung from the top like every sheet on a phone, and clear of the bar of
+     apps: the longest tab scrolls inside it. */
+  :global([data-phone]) .sheet.wide {
+    top: calc(var(--safe-top) + max(8dvh, var(--sp-4)));
+    translate: -50% 0;
+    width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
+    max-height: calc(
+      100dvh - var(--safe-top) - max(8dvh, var(--sp-4)) - var(--bottombar-h) - var(--safe-bottom) -
+        var(--sp-3)
+    );
+  }
+  :global([data-phone]) .tab {
+    height: 40px;
+  }
+  :global([data-phone]) .choice {
+    min-height: 52px;
+    align-items: center;
+  }
+  :global([data-phone]) .choice input {
+    width: 20px;
+    height: 20px;
+    margin-top: 0;
+  }
+  :global([data-phone]) .sender {
+    min-height: 52px;
+  }
+  :global([data-phone]) .find {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .find .field {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .find .btn {
+    flex: 1 1 auto;
+  }
+
+  /* A link in a line of text is a button a finger can hit: tall by its
+     padding, which does not move the lines. */
+  :global([data-phone]) .link {
+    padding: 7px 2px;
+  }
+  :global([data-phone]) .tabs {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .tab {
+    flex: 1 1 auto;
   }
 </style>

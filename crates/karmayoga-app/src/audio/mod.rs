@@ -22,6 +22,8 @@ use karmayoga_service::error::CommandError;
 pub mod echo;
 pub mod engine;
 pub mod input;
+#[cfg(mobile)]
+mod no_models;
 pub mod playback;
 pub mod resample;
 

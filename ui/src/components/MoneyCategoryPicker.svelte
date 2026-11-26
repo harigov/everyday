@@ -20,6 +20,7 @@
   import { money } from '../lib/money.svelte'
   import { dismissable } from '../lib/dismiss'
   import { focusOnMount } from '../lib/focus'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import type { MoneyCategory, MoneyCategoryId } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -140,6 +141,12 @@
     if (made) choose(made.id)
   }
 
+  // Back puts it away, on a phone.
+  closesOnBack(
+    () => open,
+    () => close(),
+  )
+
   function pick(option: Option | undefined) {
     if (!option) return
     if (option.kind === 'none') choose(null)
@@ -178,6 +185,7 @@
 
 <div class="picker-host" class:right={align === 'right'}>
   <button
+    type="button"
     class="{uid} trigger"
     class:btn={pill}
     class:field-like={!pill}
@@ -202,6 +210,11 @@
   </button>
 
   {#if open}
+    <!-- A phone's is a sheet over a scrim, not a popover under the button. -->
+    {#if phone.on}
+      <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+      <div class="scrim" onclick={close}></div>
+    {/if}
     <div class="pop" use:dismissable={{ onaway: close, within: `.${uid}` }}>
       <input
         class="search"
@@ -223,6 +236,7 @@
           {/if}
           {#if option.kind === 'none'}
             <button
+              type="button"
               class="row"
               class:on={active === i}
               data-active={active === i}
@@ -238,6 +252,7 @@
           {:else if option.kind === 'category'}
             {@const c = option.category}
             <button
+              type="button"
               class="row"
               class:on={active === i}
               data-active={active === i}
@@ -252,6 +267,7 @@
             </button>
           {:else if option.kind === 'new'}
             <button
+              type="button"
               class="row new"
               class:on={active === i}
               data-active={active === i}
@@ -416,5 +432,29 @@
     padding: var(--sp-3) var(--sp-2);
     font-size: var(--text-sm);
     color: var(--fg-faint);
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     Hung from the top of the screen like every sheet, as wide as it allows,
+     over its scrim; everything in it at a finger's size. */
+  :global([data-phone]) .pop {
+    position: fixed;
+    z-index: 66;
+    top: calc(var(--safe-top) + max(8dvh, var(--sp-4)));
+    left: calc(var(--safe-left) + var(--sp-3));
+    right: calc(var(--safe-right) + var(--sp-3));
+    width: auto;
+  }
+  :global([data-phone]) .search {
+    height: 44px;
+  }
+  :global([data-phone]) .rows {
+    max-height: min(40dvh, 320px);
+  }
+  :global([data-phone]) .row {
+    min-height: 44px;
+  }
+  :global([data-phone]) .field-like {
+    min-height: 44px;
   }
 </style>

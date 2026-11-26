@@ -390,4 +390,34 @@
     font-size: var(--text-xs);
     color: var(--danger);
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A guest is a chip a finger can take away, the field is one it can type
+     in (at a size iOS will not zoom into), and a suggestion is a row. */
+  :global([data-phone]) .guest {
+    height: 36px;
+    padding-left: var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .x {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+  }
+  :global([data-phone]) .guestin {
+    min-width: 160px;
+    height: 44px;
+    font-size: 16px;
+  }
+  :global([data-phone]) .suggestion {
+    min-height: 48px;
+    justify-content: center;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .s-name {
+    font-size: var(--text-base);
+  }
 </style>

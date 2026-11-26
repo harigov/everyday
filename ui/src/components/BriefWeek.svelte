@@ -200,36 +200,38 @@
     </div>
 
     <!-- The picture as a table, read instead of it. -->
-    <table class="sr-only">
-      <caption>The week ahead, day by day</caption>
-      <thead>
-        <tr>
-          <th scope="col">Day</th>
-          <th scope="col">Meetings</th>
-          <th scope="col">All day</th>
-          <th scope="col">Due</th>
-          {#if hasWeather}<th scope="col">Weather</th>{/if}
-        </tr>
-      </thead>
-      <tbody>
-        {#each days as d, i (d.date)}
-          {@const wx = forecast.get(d.date)}
+    <div class="sr-only">
+      <table>
+        <caption>The week ahead, day by day</caption>
+        <thead>
           <tr>
-            <th scope="row">{longDay(d.date)}{i === busiest ? ' (the busiest)' : ''}</th>
-            <td
-              >{d.meetings > 0
-                ? `${plural(d.meetings, 'meeting')}, ${formatMinutes(d.minutes)}`
-                : 'none'}</td
-            >
-            <td>{d.allDay.join(', ') || 'nothing'}</td>
-            <td>{d.due.join(', ') || 'nothing'}</td>
-            {#if hasWeather}
-              <td>{wx ? `${wx.condition}, ${deg(wx.high)} / ${deg(wx.low)}` : '—'}</td>
-            {/if}
+            <th scope="col">Day</th>
+            <th scope="col">Meetings</th>
+            <th scope="col">All day</th>
+            <th scope="col">Due</th>
+            {#if hasWeather}<th scope="col">Weather</th>{/if}
           </tr>
-        {/each}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {#each days as d, i (d.date)}
+            {@const wx = forecast.get(d.date)}
+            <tr>
+              <th scope="row">{longDay(d.date)}{i === busiest ? ' (the busiest)' : ''}</th>
+              <td
+                >{d.meetings > 0
+                  ? `${plural(d.meetings, 'meeting')}, ${formatMinutes(d.minutes)}`
+                  : 'none'}</td
+              >
+              <td>{d.allDay.join(', ') || 'nothing'}</td>
+              <td>{d.due.join(', ') || 'nothing'}</td>
+              {#if hasWeather}
+                <td>{wx ? `${wx.condition}, ${deg(wx.high)} / ${deg(wx.low)}` : '—'}</td>
+              {/if}
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   </figure>
 {/if}
 
@@ -410,5 +412,17 @@
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+
+  /* A phone's card is under 300 px inside, and seven days do not fit in it
+     with their weather and their counts: the week is the strip it scrolls
+     along, a day to a thumb's swipe, with columns wide enough that the
+     forecast does not run into the next day's. */
+  :global([data-phone]) .grid {
+    min-width: calc(var(--n) * 64px);
+  }
+  :global([data-phone]) .scroller {
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
   }
 </style>

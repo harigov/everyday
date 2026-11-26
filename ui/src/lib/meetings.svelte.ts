@@ -21,6 +21,7 @@ import {
   api,
   callCommand,
   isMock,
+  mobileShell,
   onMeetingCountdown,
   onMeetingOffer,
   onMeetingOfferFailed,
@@ -131,6 +132,13 @@ class MeetingsState {
    *  "Purpose" -- so this rides the same capability rather than a new one. */
   get supported(): boolean {
     return app.status?.capabilities?.notes === true
+  }
+
+  /** Can a call be recorded from here? Not on a phone: the recording is made
+   *  by the computer's own microphone and audio (`meeting_start`), which the
+   *  phone shell has none of. What was recorded is still listed. */
+  get canRecord(): boolean {
+    return this.supported && !mobileShell
   }
 
   /**

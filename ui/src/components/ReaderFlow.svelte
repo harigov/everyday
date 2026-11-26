@@ -796,4 +796,21 @@
       background: transparent;
     }
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The page is the screen's width: the measure is already short, and the
+     margins of a desktop's reading column would take a fifth of it. */
+  :global([data-phone]) .flow {
+    padding: var(--sp-4) var(--sp-4) var(--sp-12);
+  }
+  :global([data-phone]) h1 {
+    font-size: var(--text-xl);
+  }
+  :global([data-phone]) h2 {
+    font-size: var(--text-lg);
+  }
+  :global([data-phone]) .column :global(a) {
+    padding: 2px 0;
+  }
 </style>

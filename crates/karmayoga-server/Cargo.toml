@@ -7,17 +7,25 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+# Local VAD, recognition, diarisation and speaker embeddings through
+# sherpa-onnx -- a paired server still runs the pipeline. See
+# docs/plans/meeting-notes.md and `karmayoga-service`'s own feature doc. On
+# by default; only the phone shell turns it off, because it is always the
+# client of this crate and never the server, and sherpa-onnx is a native
+# library it has no use for.
+default = ["speech"]
+speech = ["karmayoga-service/speech"]
+
 [dependencies]
 karmayoga-core.workspace = true
 karmayoga-mcp.workspace = true
-# `speech`: local VAD, recognition, diarisation and speaker embeddings
-# through sherpa-onnx -- a paired server still runs the pipeline. See
-# docs/plans/meeting-notes.md and `karmayoga-service`'s own feature doc.
+# `speech` is this crate's own default feature, below.
 # Not `decisions`: this crate is a default workspace member, and the feature
 # would build llama.cpp -- CMake, a C++ compiler -- on a plain `cargo test`.
 # A vault served from here sorts mail at a provider; the desktop app runs a
 # local decision model itself. See docs/plans/mail-sorting.md.
-karmayoga-service = { workspace = true, features = ["speech"] }
+karmayoga-service.workspace = true
 karmayoga-vault.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -27,7 +35,13 @@ blake3.workspace = true
 uuid.workspace = true
 rand.workspace = true
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "io-util"] }
-axum = { version = "0.8", features = ["macros"] }
+# `ws`: a voice session for another device, carried over a WebSocket -- see
+# `src/voice.rs`.
+axum = { version = "0.8", features = ["macros", "ws"] }
+# The client's end of that WebSocket, over the connection `reqwest` already
+# pinned and upgraded: no TLS or handshake of its own. The version axum's
+# server end builds.
+tokio-tungstenite = { version = "0.29", default-features = false }
 tower = "0.5"
 futures = "0.3.34"
 # The TLS terminator. `axum-server` rather than a hand-rolled acceptor because

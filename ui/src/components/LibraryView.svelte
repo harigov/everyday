@@ -12,6 +12,7 @@
   import { FILTERS, coverRatio, library, type Filter } from '../lib/library.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { itemMenu } from '../lib/menus'
   import { isContactShelf, lateness } from '../lib/keepintouch'
   import type { Item, ItemSort } from '../lib/types'
@@ -42,6 +43,20 @@
   const shelf = $derived(library.kind)
   const target = $derived(library.defaultShelf)
   const item = $derived(library.item)
+
+  // ── On a phone ───────────────────────────────────────────────────────
+  //
+  // An item opened from the shelf is a page over it, with a way back
+  // (`PhoneBack`, in the item's own header) and Android's back button to the
+  // same end. Judged by the item rather than by a flag set where a card is
+  // pressed, since a shelf also opens an item that was just made from a file,
+  // or found by the search bar, or asked for by the assistant. The shelf stays
+  // where it is underneath, scrolled to the same place.
+  const layered = $derived(phone.on && item !== null)
+  closesOnBack(
+    () => layered,
+    () => library.close(),
+  )
 
   /** What a filter tab says, in the open shelf's own language. */
   function filterLabel(filter: Filter): string {
@@ -118,7 +133,7 @@
   const ratio = $derived(coverRatio(library.favouritesOnly ? null : shelf))
 </script>
 
-<div class="library" style="--tint: {library.accent}">
+<div class="library" class:layered style="--tint: {library.accent}">
   <div class="main">
     <header class="bar">
       <div class="pane-titles">
@@ -129,23 +144,30 @@
         </span>
       </div>
 
-      <select
-        class="sort"
-        aria-label="Sort"
-        value={library.dueFirst && isContactShelf(shelf) ? 'due' : library.sort}
-        onchange={(e) => {
-          const value = e.currentTarget.value
-          if (value === 'due') library.setDueFirst()
-          else library.setSort(value as ItemSort)
-        }}
-      >
-        {#if isContactShelf(shelf)}
-          <option value="due">Due to get in touch</option>
-        {/if}
-        {#each SORTS as s (s.id)}
-          <option value={s.id}>{s.label}</option>
-        {/each}
-      </select>
+      <!-- On a phone a button of its own: the select lies over it, unseen,
+           and is what opens. The word it would say is a third of the screen. -->
+      <span class="sort-wrap">
+        <select
+          class="sort"
+          aria-label="Sort"
+          value={library.dueFirst && isContactShelf(shelf) ? 'due' : library.sort}
+          onchange={(e) => {
+            const value = e.currentTarget.value
+            if (value === 'due') library.setDueFirst()
+            else library.setSort(value as ItemSort)
+          }}
+        >
+          {#if isContactShelf(shelf)}
+            <option value="due">Due to get in touch</option>
+          {/if}
+          {#each SORTS as s (s.id)}
+            <option value={s.id}>{s.label}</option>
+          {/each}
+        </select>
+        <span class="sort-icon phone-only" aria-hidden="true">
+          <Icon name="layers" size={18} />
+        </span>
+      </span>
 
       <div class="views" role="group" aria-label="View">
         <button
@@ -178,11 +200,12 @@
           class="star"
           class:on={library.favouritesOnly}
           aria-pressed={library.favouritesOnly}
+          aria-label="Favourites"
           title={library.favouritesOnly ? 'Show everything again' : 'Favourites only'}
           onclick={() => library.setFavouritesOnly(!library.favouritesOnly)}
         >
           <Icon name="star" size={14} filled={library.favouritesOnly} />
-          Favourites
+          <span class="star-word">Favourites</span>
         </button>
         {#if library.narrowed}
           <button class="clear" onclick={() => library.clearFilters()}>Clear</button>
@@ -337,15 +360,20 @@
                 </span>
                 {#if due && due.daysOver >= -7}
                   <span class="c">{lateness(due)}</span>
-                {:else if row.creator}<span class="c">{row.creator}</span>{/if}
+                {:else if row.creator}<span class="c">{row.creator}</span>
+                {:else if kind}<span class="c phone-only">{kind.name}</span>{/if}
               </span>
               <span class="cell shelf">{kind?.name ?? ''}</span>
-              <span class="cell state">{library.label(kind, row.status)}</span>
-              <span class="cell year">{row.year ?? ''}</span>
-              <span class="cell score">
-                {#if row.rating !== null && row.rating !== undefined}
-                  <Rating value={row.rating} size={12} readonly />
-                {/if}
+              <!-- Side by side as columns; on a phone the state over the
+                   stars, in the one column there is room for. -->
+              <span class="aside">
+                <span class="cell state">{library.label(kind, row.status)}</span>
+                <span class="cell year">{row.year ?? ''}</span>
+                <span class="cell score">
+                  {#if row.rating !== null && row.rating !== undefined}
+                    <Rating value={row.rating} size={12} readonly />
+                  {/if}
+                </span>
               </span>
             </button>
           {/each}
@@ -401,6 +429,12 @@
     flex: none;
     padding: 0 var(--sp-4);
     border-bottom: 1px solid var(--border);
+  }
+
+  /* Nothing but a holder on a desktop, where the select is its own pill. */
+  .sort-wrap,
+  .aside {
+    display: contents;
   }
 
   /* A pill, like the view switch beside it and the chips under it, and as
@@ -681,5 +715,179 @@
   .score {
     width: 82px;
     flex: none;
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The item is a page over the shelf, not a column beside it. The shelf is
+     hidden, not taken away, so it is as it was -- scrolled to the same cover --
+     when the page is put away. */
+  :global([data-phone]) .library {
+    position: relative;
+  }
+  :global([data-phone]) .library.layered .main {
+    visibility: hidden;
+  }
+
+  :global([data-phone]) .bar {
+    gap: var(--sp-2);
+    padding: 0 var(--sp-3) 0 var(--sp-4);
+  }
+  /* The sort is an icon, 40 px like the view buttons; the select itself lies
+     over it, unseen, and is what opens when it is pressed. */
+  :global([data-phone]) .sort-wrap {
+    position: relative;
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--bg-active);
+    color: var(--fg-muted);
+  }
+  :global([data-phone]) .sort {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    opacity: 0;
+  }
+  :global([data-phone]) .sort-icon {
+    display: grid;
+    pointer-events: none;
+  }
+  :global([data-phone]) .views {
+    flex: none;
+  }
+  :global([data-phone]) .view {
+    width: 40px;
+    height: 40px;
+  }
+
+  /* Three rows where a desktop has one: the line to add a thing, across the
+     screen, then Favourites and the status tabs, which scroll. */
+  :global([data-phone]) .toolbar {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  }
+  :global([data-phone]) .toolbar-end.right {
+    order: 1;
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  :global([data-phone]) .capture {
+    max-width: none;
+    margin-left: 0;
+  }
+  :global([data-phone]) .toolbar-end:not(.right) {
+    order: 2;
+    flex: none;
+    min-width: 0;
+  }
+  :global([data-phone]) .filters {
+    order: 3;
+    flex: 1 1 0;
+  }
+  :global([data-phone]) .star,
+  :global([data-phone]) .clear {
+    height: 40px;
+    min-width: 40px;
+    justify-content: center;
+  }
+  :global([data-phone]) .star-word {
+    display: none;
+  }
+
+  :global([data-phone]) .shelves {
+    padding: 0 var(--sp-3) var(--sp-2);
+  }
+  :global([data-phone]) .shelfchip {
+    height: 34px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .note {
+    margin: 0 var(--sp-3) var(--sp-2);
+  }
+
+  :global([data-phone]) .body {
+    padding: var(--sp-1) var(--sp-3) var(--fab-clear);
+  }
+  /* Two covers across every phone held upright (the least a column can be is
+     140 px), more on its side: a third across a portrait screen is too small
+     to tell apart, one is a column of posters. */
+  :global([data-phone]) .grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: var(--sp-4) var(--sp-3);
+  }
+
+  /* A row: the cover, the title over who made it, and how far along over the
+     stars. The shelf and the year are the cover's and the byline's to say. */
+  :global([data-phone]) .row {
+    min-height: 60px;
+    gap: var(--sp-3);
+    padding: var(--sp-2);
+  }
+  :global([data-phone]) .row::after {
+    left: calc(var(--sp-2) + 40px + var(--sp-3));
+  }
+  :global([data-phone]) .thumb {
+    width: 40px;
+  }
+  :global([data-phone]) .shelf,
+  :global([data-phone]) .year {
+    display: none;
+  }
+  :global([data-phone]) .aside {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+    max-width: 38%;
+  }
+  :global([data-phone]) .state {
+    width: auto;
+    max-width: 100%;
+    font-size: var(--text-xs);
+  }
+  :global([data-phone]) .score {
+    width: auto;
+    min-height: 12px;
+  }
+
+  /* A phone on its side has a couple of hundred pixels of screen between its
+     two bars: the heading, the line to add a thing and the tabs are part of
+     what scrolls there, and the covers get the whole of it once they are
+     scrolled past. */
+  @media (max-height: 500px) {
+    :global([data-phone]) .main {
+      overflow-y: auto;
+    }
+    :global([data-phone]) .main > * {
+      flex: none;
+    }
+    :global([data-phone]) .body {
+      overflow: visible;
+      min-height: auto;
+    }
+  }
+
+  /* A finger leaves nothing under it: no highlight stuck to the row last
+     pressed or last opened, only the press itself. */
+  :global([data-phone]) .row:hover,
+  :global([data-phone]) .row.sel {
+    background: transparent;
+  }
+  :global([data-phone]) .row:active {
+    background: var(--bg-hover);
+  }
+  :global([data-phone]) .row.sel::after,
+  :global([data-phone]) .row:hover::after {
+    opacity: 1;
   }
 </style>

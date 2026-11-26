@@ -100,4 +100,17 @@
     border-color: var(--border-strong);
     color: var(--fg);
   }
+
+  /* A phone: less air round it -- the pane is the width of the screen, so the
+     desktop's side padding would leave the sentence a column -- and the one
+     action a finger tall. */
+  :global([data-phone]) .empty {
+    padding: var(--sp-8) var(--sp-4);
+  }
+  :global([data-phone]) .empty.centred {
+    padding-bottom: var(--sp-10);
+  }
+  :global([data-phone]) .act :global(.btn) {
+    min-height: 44px;
+  }
 </style>

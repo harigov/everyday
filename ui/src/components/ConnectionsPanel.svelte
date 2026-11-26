@@ -18,6 +18,7 @@
 
   import { onMount } from 'svelte'
   import { connections } from '../lib/connections.svelte'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { statusLabel, transportSummary } from '../lib/connections'
   import type { ConnectionId, ConnectionView } from '../lib/types'
   import ConnectionAdd from './ConnectionAdd.svelte'
@@ -30,6 +31,12 @@
   type Screen =
     { kind: 'list' } | { kind: 'add' } | { kind: 'detail'; id: ConnectionId; fresh: boolean }
   let screen = $state<Screen>({ kind: 'list' })
+
+  // On a phone, back goes from the form or one connection to the list.
+  closesOnBack(
+    () => screen.kind !== 'list',
+    () => (screen = { kind: 'list' }),
+  )
 
   function added(v: ConnectionView) {
     screen = { kind: 'detail', id: v.connection.id, fresh: true }

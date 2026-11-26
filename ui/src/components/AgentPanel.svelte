@@ -1399,4 +1399,27 @@
     font-size: var(--text-sm);
     color: var(--fg-muted);
   }
+
+  /* A phone: a label over its field rather than squeezed beside it, and the
+     chips and colour swatches a finger wide. */
+  :global([data-phone]) .pairs {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .pairs > :global(:nth-child(even)) {
+    margin-bottom: var(--sp-2);
+  }
+  :global([data-phone]) .chip {
+    height: 40px;
+  }
+  :global([data-phone]) .swatches {
+    gap: var(--sp-3);
+  }
+  :global([data-phone]) .swatch {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .stage {
+    width: 100%;
+  }
 </style>

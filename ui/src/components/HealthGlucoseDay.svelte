@@ -281,8 +281,13 @@
       role="img"
       aria-label="{summary} The list below the chart has everything that happened that day."
       bind:clientWidth={width}
+      onpointerdown={track}
       onpointermove={track}
-      onpointerleave={() => (hoverX = null)}
+      onpointerleave={(e) => {
+        // A finger lifting is not a pointer leaving: the reading it touched
+        // stays on show.
+        if (e.pointerType !== 'touch') hoverX = null
+      }}
     >
       <svg {width} {height} viewBox="0 0 {width} {height}" aria-hidden="true">
         <!-- The range aimed for -->
@@ -676,5 +681,32 @@
     color: var(--fg-muted);
     white-space: pre-wrap;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The day's stepper takes the card's width (with the reading under it
+     when one is touched), its arrows and the list's summary a finger's
+     size. */
+  :global([data-phone]) .bar {
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-4);
+  }
+  :global([data-phone]) .days {
+    flex: 1 1 100%;
+    justify-content: space-between;
+  }
+  :global([data-phone]) .step {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .when {
+    flex: 1;
+    min-width: 0;
+    height: 40px;
+  }
+  :global([data-phone]) .twin summary {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
   }
 </style>

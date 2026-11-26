@@ -462,4 +462,9 @@
     font-size: var(--text-sm);
     color: var(--fg-faint);
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+  :global([data-phone]) .side-new {
+    height: 44px;
+  }
 </style>

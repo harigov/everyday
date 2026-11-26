@@ -104,6 +104,22 @@
     background: var(--bg-sunken);
   }
 
+  /* A phone: the words across the whole width, and the answers under them. */
+  :global([data-phone]) .notice {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-3);
+    padding: var(--sp-3) calc(var(--sp-4) + var(--safe-right)) var(--sp-3)
+      calc(var(--sp-4) + var(--safe-left));
+  }
+  :global([data-phone]) .text {
+    display: block;
+    line-height: var(--leading-normal);
+  }
+  :global([data-phone]) .actions {
+    justify-content: flex-end;
+  }
+
   code {
     font-family: var(--font-mono);
     font-size: var(--text-xs);

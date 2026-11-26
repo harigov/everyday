@@ -13,12 +13,14 @@
   // Six rows always, even when a month fits in five. A grid whose height
   // changes as you page through the year makes everything below it jump.
 
-  import { calendar } from '../lib/calendar.svelte'
+  import { calendar, type DayItem } from '../lib/calendar.svelte'
   import { dayDropTarget, startDayMove, type DayMove } from '../lib/day-move'
   import { daysFrom, startOfWeek, todayIso } from '../lib/time'
-  import { dateFormat, timeOfDay } from '../lib/format'
+  import { dateFormat, dayHeading, timeOfDay } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { calendarTaskMenu, dayMenu, eventMenu, readingMenu, slotMenu } from '../lib/menus'
+  import { phone } from '../lib/phone.svelte'
+  import CalendarAgenda from './CalendarAgenda.svelte'
   import Icon from './Icon.svelte'
   import type { MenuItem } from '../lib/menu'
 
@@ -57,102 +59,128 @@
     menu: () => MenuItem[]
   }
 
-  /** Everything on one day, in the order the day runs. */
+  /** Everything on one day, in the order the day runs (`dayItems`). */
   function rowsOn(iso: string): Row[] {
-    const out: Row[] = []
+    return calendar.dayItems(iso).map((item) => rowOf(item, iso))
+  }
 
-    for (const event of calendar.allDayOn(iso)) {
-      const cal = calendar.calendarOf(event.calendarId)
-      out.push({
-        key: `ad:${event.id}`,
-        label: event.title,
-        time: '',
-        color: cal?.color ?? 'var(--fg-subtle)',
-        kind: 'event',
-        muted: event.status === 'cancelled',
-        move: calendar.canMove(event) ? { kind: 'event', id: event.id, from: iso } : undefined,
-        saving: calendar.moves.has(event.id),
-        onopen: () => (calendar.selection = { kind: 'event', id: event.id }),
-        menu: () => eventMenu(event),
-      })
+  function rowOf(item: DayItem, iso: string): Row {
+    switch (item.kind) {
+      case 'allDay': {
+        const { event } = item
+        const cal = calendar.calendarOf(event.calendarId)
+        return {
+          key: `ad:${event.id}`,
+          label: event.title,
+          time: '',
+          color: cal?.color ?? 'var(--fg-subtle)',
+          kind: 'event',
+          muted: event.status === 'cancelled',
+          move: calendar.canMove(event) ? { kind: 'event', id: event.id, from: iso } : undefined,
+          saving: calendar.moves.has(event.id),
+          onopen: () => (calendar.selection = { kind: 'event', id: event.id }),
+          menu: () => eventMenu(event),
+        }
+      }
+      // Readings with no time of day sit with the other undated things,
+      // above everything the clock can order.
+      case 'note': {
+        const { mark } = item
+        return {
+          key: mark.key,
+          label: mark.label,
+          time: '',
+          color: mark.tracker.color,
+          kind: 'reading',
+          onopen: () => calendar.goto(iso),
+          menu: () => readingMenu(mark.reading, mark.tracker),
+        }
+      }
+      case 'task': {
+        const { task } = item
+        return {
+          key: `task:${task.id}`,
+          label: task.title,
+          time: '',
+          color: calendar.projectOf(task.projectId)?.color ?? 'var(--accent)',
+          kind: 'task',
+          muted: task.status === 'done',
+          onopen: () => calendar.goto(iso),
+          menu: () => calendarTaskMenu(task),
+        }
+      }
+      case 'slot': {
+        const { slot } = item
+        const start = slot.block?.start ?? slot.event?.start ?? slot.reading?.at
+        const proposal = slot.proposal
+        // What dragging it onto another day moves: a block of your own, or an
+        // event `canMove` allows -- whole or not, since a night that runs into
+        // the next day still moves by its day. Never a ghost.
+        const move: DayMove | undefined = proposal
+          ? undefined
+          : slot.event && calendar.canMove(slot.event)
+            ? { kind: 'event', id: slot.event.id, from: iso }
+            : slot.block && slot.movable
+              ? { kind: 'block', id: slot.block.id, from: iso }
+              : undefined
+        return {
+          key: slot.key,
+          label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
+          time: start ? timeOfDay(new Date(start)) : '',
+          color: slot.color,
+          kind: slot.kind,
+          muted: slot.cancelled,
+          ghost: !!proposal,
+          move,
+          saving: slot.saving,
+          // A ghost opens its own proposal pane; a right-click on it does the
+          // same, rather than raising the ordinary block menu -- there is no
+          // row on disk yet for "delete" or "rename" to act on.
+          onopen: proposal ? () => calendar.selectProposal(proposal) : () => calendar.select(slot),
+          menu: proposal ? () => [] : () => slotMenu(slot),
+        }
+      }
+      case 'mark': {
+        const { mark } = item
+        return {
+          key: mark.key,
+          label: mark.label,
+          time: mark.reading.at ? timeOfDay(new Date(mark.reading.at)) : '',
+          color: mark.tracker.color,
+          kind: 'reading',
+          onopen: () => calendar.goto(iso),
+          menu: () => readingMenu(mark.reading, mark.tracker),
+        }
+      }
     }
-    // Readings with no time of day sit with the other undated things, above
-    // everything the clock can order.
-    for (const mark of calendar.untimedMarksOn(iso)) {
-      out.push({
-        key: mark.key,
-        label: mark.label,
-        time: '',
-        color: mark.tracker.color,
-        kind: 'reading',
-        onopen: () => calendar.goto(iso),
-        menu: () => readingMenu(mark.reading, mark.tracker),
-      })
-    }
-    for (const task of calendar.tasksOn(iso)) {
-      out.push({
-        key: `task:${task.id}`,
-        label: task.title,
-        time: '',
-        color: calendar.projectOf(task.projectId)?.color ?? 'var(--accent)',
-        kind: 'task',
-        muted: task.status === 'done',
-        onopen: () => calendar.goto(iso),
-        menu: () => calendarTaskMenu(task),
-      })
-    }
-    // Everything the clock can place, in the order the day ran: blocks,
-    // events, tracked spans (`slotsOn`) and tracked moments (`marksOn`),
-    // merged on their start minute rather than listed in separate groups.
-    const timed: (Row & { at: number })[] = []
-    for (const slot of calendar.slotsOn(iso)) {
-      const start = slot.block?.start ?? slot.event?.start ?? slot.reading?.at
-      const proposal = slot.proposal
-      // What dragging it onto another day moves: a block of your own, or an
-      // event `canMove` allows -- whole or not, since a night that runs into
-      // the next day still moves by its day. Never a ghost.
-      const move: DayMove | undefined = proposal
-        ? undefined
-        : slot.event && calendar.canMove(slot.event)
-          ? { kind: 'event', id: slot.event.id, from: iso }
-          : slot.block && slot.movable
-            ? { kind: 'block', id: slot.block.id, from: iso }
-            : undefined
-      timed.push({
-        key: slot.key,
-        label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
-        time: start ? timeOfDay(new Date(start)) : '',
-        color: slot.color,
-        kind: slot.kind,
-        muted: slot.cancelled,
-        ghost: !!proposal,
-        move,
-        saving: slot.saving,
-        // A ghost opens its own proposal pane; a right-click on it does the
-        // same, rather than raising the ordinary block menu -- there is no
-        // row on disk yet for "delete" or "rename" to act on.
-        onopen: proposal ? () => calendar.selectProposal(proposal) : () => calendar.select(slot),
-        menu: proposal ? () => [] : () => slotMenu(slot),
-        at: slot.start,
-      })
-    }
-    for (const mark of calendar.marksOn(iso)) {
-      timed.push({
-        key: mark.key,
-        label: mark.label,
-        time: mark.reading.at ? timeOfDay(new Date(mark.reading.at)) : '',
-        color: mark.tracker.color,
-        kind: 'reading',
-        onopen: () => calendar.goto(iso),
-        menu: () => readingMenu(mark.reading, mark.tracker),
-        at: mark.minute ?? 0,
-      })
-    }
-    out.push(...timed.sort((a, b) => a.at - b.at))
-    return out
   }
 
   const currentDay = $derived(todayIso())
+
+  // On a phone a day is fifty pixels wide, which holds a number and a few
+  // dots and no more. The cell picks the day, and what is on it is listed
+  // under the grid -- the same rows the week's list has -- until another is
+  // picked or the month moves.
+  const pick = $derived(
+    calendar.picked && days.includes(calendar.picked) ? calendar.picked : calendar.anchor,
+  )
+  $effect(() => {
+    void calendar.anchor
+    calendar.picked = null
+  })
+
+  /** "Thursday, November 26" for the dots' own label. */
+  function dateOf(iso: string): string {
+    return dateFormat({ weekday: 'long', month: 'long', day: 'numeric' }).format(
+      new Date(iso + 'T00:00'),
+    )
+  }
+
+  /** The day itself, hour by hour. */
+  function openDay(iso: string) {
+    calendar.view = 'day'
+    calendar.goto(iso)
+  }
 
   /** The day something is being dragged over. */
   let dropOn = $state<string | null>(null)
@@ -182,63 +210,96 @@
         ondragleave={cells.leave}
         ondrop={(e) => cells.drop(e, iso)}
       >
-        <div class="cellhead">
+        {#if phone.on}
           <button
-            class="num"
-            title="Open this day"
-            onclick={() => {
-              calendar.view = 'day'
-              calendar.goto(iso)
-            }}
+            class="pday"
+            class:picked={iso === pick}
+            aria-label="{dateOf(iso)}{rows.length > 0
+              ? `, ${rows.length} ${rows.length === 1 ? 'item' : 'items'}`
+              : ''}"
+            aria-pressed={iso === pick}
+            onclick={() => (calendar.picked = iso)}
           >
-            <!-- The first of a month names itself, so the boundary between
-                 two months is legible without counting back to a heading. -->
-            {#if first}<span class="mon"
-                >{dateFormat({ month: 'short' }).format(new Date(iso + 'T00:00'))}</span
-              >{/if}
-            {Number(iso.slice(8, 10))}
-          </button>
-          {#if calendar.hasEntry(iso)}
-            <span class="wrote" title="You wrote something on this day">
-              <Icon name="quote" size={10} weight={2} />
+            <span class="pnum">{Number(iso.slice(8, 10))}</span>
+            <span class="pdots" aria-hidden="true">
+              {#each rows.slice(0, 4) as row (row.key)}
+                <span class="pdot {row.kind}" class:ghost={row.ghost} style="--c: {row.color}"
+                ></span>
+              {/each}
             </span>
-          {/if}
-        </div>
-
-        <div class="rows">
-          {#each rows.slice(0, MAX_ROWS) as row (row.key)}
+          </button>
+        {:else}
+          <div class="cellhead">
             <button
-              class="row {row.kind}"
-              class:muted={row.muted}
-              class:ghost={row.ghost}
-              class:movable={!!row.move}
-              class:saving={row.saving}
-              style="--c: {row.color}"
-              title={row.ghost ? `Proposed: ${row.label}` : row.label}
-              draggable={!!row.move}
-              ondragstart={(e) => row.move && startDayMove(e, row.move)}
-              ondragend={() => (dropOn = null)}
-              onclick={row.onopen}
-              oncontextmenu={(e) => menu.show(e, row.menu())}
-            >
-              <span class="dot" aria-hidden="true"></span>
-              {#if row.time}<span class="at">{row.time}</span>{/if}
-              <span class="what">{row.label}</span>
-            </button>
-          {/each}
-          {#if rows.length > MAX_ROWS}
-            <button
-              class="more"
+              class="num"
+              title="Open this day"
               onclick={() => {
                 calendar.view = 'day'
                 calendar.goto(iso)
-              }}>{rows.length - MAX_ROWS} more</button
+              }}
             >
-          {/if}
-        </div>
+              <!-- The first of a month names itself, so the boundary between
+                   two months is legible without counting back to a heading. -->
+              {#if first}<span class="mon"
+                  >{dateFormat({ month: 'short' }).format(new Date(iso + 'T00:00'))}</span
+                >{/if}
+              {Number(iso.slice(8, 10))}
+            </button>
+            {#if calendar.hasEntry(iso)}
+              <span class="wrote" title="You wrote something on this day">
+                <Icon name="quote" size={10} weight={2} />
+              </span>
+            {/if}
+          </div>
+
+          <div class="rows">
+            {#each rows.slice(0, MAX_ROWS) as row (row.key)}
+              <button
+                class="row {row.kind}"
+                class:muted={row.muted}
+                class:ghost={row.ghost}
+                class:movable={!!row.move}
+                class:saving={row.saving}
+                style="--c: {row.color}"
+                title={row.ghost ? `Proposed: ${row.label}` : row.label}
+                draggable={!!row.move}
+                ondragstart={(e) => row.move && startDayMove(e, row.move)}
+                ondragend={() => (dropOn = null)}
+                onclick={row.onopen}
+                oncontextmenu={(e) => menu.show(e, row.menu())}
+              >
+                <span class="dot" aria-hidden="true"></span>
+                {#if row.time}<span class="at">{row.time}</span>{/if}
+                <span class="what">{row.label}</span>
+              </button>
+            {/each}
+            {#if rows.length > MAX_ROWS}
+              <button
+                class="more"
+                onclick={() => {
+                  calendar.view = 'day'
+                  calendar.goto(iso)
+                }}>{rows.length - MAX_ROWS} more</button
+              >
+            {/if}
+          </div>
+        {/if}
       </div>
     {/each}
   </div>
+
+  {#if phone.on}
+    <section class="plist" aria-label="The day">
+      <header class="phead">
+        <h2 class="ptitle">{dayHeading(new Date(pick + 'T00:00'))}</h2>
+        <button class="btn btn-outline popen" onclick={() => openDay(pick)}>
+          Day
+          <Icon name="chevron" size={14} />
+        </button>
+      </header>
+      <CalendarAgenda days={[pick]} heads={false} empty="Nothing on this day." />
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -434,5 +495,157 @@
   }
   .more:hover {
     color: var(--fg-muted);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The grid is as tall as its six rows need and no more; what is on the
+     picked day gets the rest of the screen. */
+  :global([data-phone]) .heading {
+    padding: var(--sp-1) 0;
+    text-align: center;
+  }
+  :global([data-phone]) .weeks {
+    flex: none;
+    overflow: visible;
+    grid-auto-rows: 46px;
+    padding: 0 var(--sp-1);
+  }
+  :global([data-phone]) .cell {
+    padding: 0;
+    border-left: none;
+  }
+
+  /* A day: its number, and under it a dot for each of the first four things
+     on it, in what the dots mean on the desktop -- filled for your own time,
+     ringed for somebody else's, square for a task. */
+  .pday {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    border-radius: var(--radius);
+  }
+  .pnum {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    font-size: var(--text-md);
+    font-weight: 560;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+  }
+  .cell.outside .pnum {
+    color: var(--fg-faint);
+  }
+  .cell.today .pnum {
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .pday.picked .pnum {
+    background: var(--bg-active);
+  }
+  .cell.today .pday.picked .pnum {
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+  }
+  .pday:active .pnum {
+    background: var(--bg-active);
+  }
+
+  .pdots {
+    height: 7px;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .pdot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    border: 1.5px solid var(--c);
+  }
+  .pdot.block {
+    background: var(--c);
+  }
+  .pdot.event {
+    background: color-mix(in oklab, var(--c) 35%, transparent);
+  }
+  .pdot.task {
+    border-radius: 1.5px;
+  }
+  .pdot.reading {
+    border-color: transparent;
+    background: var(--c);
+  }
+  .pdot.ghost {
+    background: none;
+    border-style: dashed;
+  }
+
+  .plist {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+  .phead {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-4);
+  }
+  .ptitle {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--text-md);
+    font-weight: 650;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .popen {
+    flex: none;
+    gap: var(--sp-1);
+  }
+
+  /* A phone on its side: the month on the left, the picked day's list on the
+     right, each scrolling by itself, since there is not height for both. */
+  @media (max-height: 500px) {
+    :global([data-phone]) .month {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    :global([data-phone]) .headings {
+      grid-column: 1;
+    }
+    :global([data-phone]) .weeks {
+      grid-column: 1;
+      overflow-y: auto;
+      grid-auto-rows: 40px;
+    }
+    .plist {
+      grid-column: 2;
+      grid-row: 1 / -1;
+      border-top: none;
+      border-left: 1px solid var(--border);
+    }
+    .pnum {
+      width: 26px;
+      height: 26px;
+      font-size: var(--text-base);
+    }
+    .pday {
+      gap: 1px;
+    }
   }
 </style>

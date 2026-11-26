@@ -25,6 +25,7 @@
   // is ever wanted.
 
   import { todo, type TaskNode } from '../lib/todo.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { friendlyDate, formatClock, formatMinutes } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { taskMenu } from '../lib/menus'
@@ -171,7 +172,7 @@
     class:drop-after={over === 'after'}
     class:drop-into={over === 'into'}
     data-row={task.id}
-    draggable={!renaming}
+    draggable={!renaming && !phone.on}
     ondragstart={(e) => {
       drag.id = task.id
       if (!e.dataTransfer) return
@@ -702,5 +703,77 @@
   .addsub-inline:hover {
     background: var(--bg-hover);
     color: var(--fg-muted);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A row is at least a finger tall. Its controls are as tall as that and no
+     more of the row's own height: they reach past its padding instead, so a
+     one-line task is not a tall one. */
+  :global([data-phone]) .wrap {
+    padding-left: calc(var(--depth) * 20px);
+  }
+  :global([data-phone]) .row {
+    min-height: 44px;
+    padding-block: var(--sp-3);
+  }
+  :global([data-phone]) .row.list-row:active {
+    background: var(--bg-hover);
+  }
+  :global([data-phone]) .tick {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    margin: -12px -6px -12px -10px;
+  }
+  /* The press that opens the task reaches the whole of the row's height, not
+     only the lines of text in it. */
+  :global([data-phone]) .body {
+    margin-block: -12px;
+    padding-block: 12px;
+    min-height: 44px;
+  }
+  :global([data-phone]) .titletext {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  :global([data-phone]) .grip {
+    display: none;
+  }
+
+  /* What shows on hover on a desktop is not there on a phone: the one control
+     that opens the rest -- the same menu a long press raises -- is, always,
+     and the three it holds are not drawn twice. */
+  :global([data-phone]) .actions {
+    opacity: 1;
+    margin: -12px -4px -12px 0;
+  }
+  :global([data-phone]) .act:not([data-menu-trigger]) {
+    display: none;
+  }
+  :global([data-phone]) .act {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .disclose {
+    min-height: 44px;
+    margin: -12px 0;
+    padding: 0 var(--sp-2);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .chip {
+    padding: 2px var(--sp-2);
+    font-size: var(--text-xs);
+  }
+  :global([data-phone]) .addsub-inline {
+    min-height: 40px;
+    margin-left: 20px;
+    padding: 0 var(--sp-2);
+  }
+  :global([data-phone]) .subadd,
+  :global([data-phone]) .replace-ghost {
+    margin-left: 20px;
+    padding-left: 0;
   }
 </style>

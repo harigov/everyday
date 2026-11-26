@@ -15,6 +15,7 @@
   import { filesUi, newAlbumAsk } from '../lib/files-ui.svelte'
   import { plural } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { remembered, type Zoom } from '../lib/photos'
   import type { Album, AlbumView } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
@@ -132,7 +133,7 @@
             >
               <span class="cover">
                 {#if view.cover}
-                  <FileThumb file={view.cover} size={COVER} fit="cover" />
+                  <FileThumb file={view.cover} size={phone.on ? undefined : COVER} fit="cover" />
                 {:else}
                   <span class="blank"><Icon name="image" size={26} weight={1.3} /></span>
                 {/if}
@@ -411,5 +412,60 @@
   .head .pane-sub {
     flex: none;
     align-self: center;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     Two albums across, each cover as wide as its column and square; the
+     open album's head wraps -- the way back and the count and the delete on
+     one row, the name and its line under them -- and the pencil that a
+     pointer finds on hover is always there. */
+  :global([data-phone]) .grid-pane {
+    padding: var(--sp-2) var(--sp-3) calc(var(--fab-size) + var(--sp-6));
+  }
+  :global([data-phone]) .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-4) var(--sp-3);
+  }
+  :global([data-phone]) .card {
+    width: auto;
+    min-width: 0;
+  }
+  :global([data-phone]) .cover {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+  }
+  :global([data-phone]) .head {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
+    padding: var(--sp-1) var(--sp-3) 0;
+  }
+  :global([data-phone]) .back {
+    height: 44px;
+    margin-left: calc(var(--sp-2) * -1);
+    padding: 0 var(--sp-3) 0 var(--sp-2);
+  }
+  :global([data-phone]) .head .pane-sub {
+    flex: 1;
+  }
+  :global([data-phone]) .titles {
+    order: 3;
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .rename {
+    min-height: 40px;
+  }
+  :global([data-phone]) .rename :global(svg) {
+    opacity: 0.6;
+  }
+  :global([data-phone]) .about {
+    min-height: 36px;
+  }
+  :global([data-phone]) .name-field {
+    max-width: none;
+  }
+  :global([data-phone]) .about-field {
+    max-width: none;
   }
 </style>

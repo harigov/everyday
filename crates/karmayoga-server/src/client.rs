@@ -603,6 +603,78 @@ impl RemoteClient {
         Ok(())
     }
 
+    /// Talk to the assistant on the computer at the other end: a voice
+    /// session there, on `conversation`, whose [`VoiceLink`] is handed back
+    /// to be driven exactly as one on this computer would be -- microphone
+    /// audio in, audio to play and events out. See `crate::voice`.
+    ///
+    /// Answers once the session is open, or with why it could not be (no
+    /// voice chosen there, the vault locked, a device without the agent
+    /// scope), so the caller can say so as it would for a session here.
+    pub async fn voice_open(
+        &self,
+        conversation: karmayoga_core::ConversationId,
+        on_screen: Option<Value>,
+    ) -> CommandResult<karmayoga_service::voice::VoiceLink> {
+        use crate::voice::{ClientMessage, Frame, ServerMessage};
+        use base64::Engine;
+
+        let http = voice_client(&self.connection.cert_pem)?;
+        // The whole of opening, bounded: a computer that took the request and
+        // then went quiet -- asleep, the network gone mid-way -- would leave
+        // the voice slot starting for ever. A minute, because the other end
+        // may load its voice models first.
+        let opening = async {
+            let key = base64::engine::general_purpose::STANDARD.encode(rand::random::<[u8; 16]>());
+            let response = http
+                .get(format!("{}{}", self.base, crate::voice::ROUTE))
+                .header("x-karmayoga-protocol", PROTOCOL.to_string())
+                .header(karmayoga_core::legacy::PROTOCOL_HEADER, PROTOCOL.to_string())
+                .bearer_auth(&self.token)
+                .header(reqwest::header::CONNECTION, "Upgrade")
+                .header(reqwest::header::UPGRADE, "websocket")
+                .header(reqwest::header::SEC_WEBSOCKET_VERSION, "13")
+                .header(reqwest::header::SEC_WEBSOCKET_KEY, key)
+                .send()
+                .await
+                .map_err(transport)?;
+            if response.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS {
+                // The server's own `{ code, message }`, when it refused.
+                response.error_for_body().await?;
+                return Err(CommandError::new(
+                    "network",
+                    "that computer did not open a voice session",
+                ));
+            }
+            let upgraded = response.upgrade().await.map_err(transport)?;
+            let socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                upgraded,
+                tokio_tungstenite::tungstenite::protocol::Role::Client,
+                None,
+            )
+            .await;
+            let (mut frames, out) = crate::voice::tungstenite_socket(socket);
+
+            let open = ClientMessage::Open { conversation_id: conversation, on_screen };
+            let _ = out.send(Frame::Text(serde_json::to_string(&open).unwrap_or_default()));
+            match frames.recv().await {
+                Some(Frame::Text(raw)) => match serde_json::from_str::<ServerMessage>(&raw) {
+                    Ok(ServerMessage::Opened) => Ok(crate::voice::link_over(frames, out)),
+                    Ok(ServerMessage::Failed { code, message }) => {
+                        Err(CommandError { code, message })
+                    }
+                    _ => {
+                        Err(CommandError::new("network", "that computer said something unexpected"))
+                    }
+                },
+                _ => Err(CommandError::new("network", crate::voice::LOST)),
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(60), opening).await.unwrap_or_else(|_| {
+            Err(CommandError::new("network", "your computer did not start talking in time"))
+        })
+    }
+
     /// Subscribe to what the server says, calling `on_event` for each.
     ///
     /// Returns when the stream ends, so the caller decides whether to try
@@ -826,6 +898,27 @@ pub fn pinned_client(cert_pem: &str) -> CommandResult<reqwest::Client> {
         .timeout(CALL_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .user_agent(concat!("KarmaYoga/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| CommandError::new("network", format!("could not start the client: {e}")))
+}
+
+/// [`client_for`], for a voice session: HTTP/1.1 only, because a WebSocket is
+/// an HTTP/1.1 upgrade and an HTTP/2 connection cannot be upgraded; and with
+/// no overall timeout, because a conversation lasts as long as it lasts.
+fn voice_client(cert_pem: &str) -> CommandResult<reqwest::Client> {
+    let builder = reqwest::Client::builder()
+        .http1_only()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .user_agent(concat!("KarmaYoga/", env!("CARGO_PKG_VERSION")));
+    let builder = if cert_pem.is_empty() {
+        builder.https_only(true)
+    } else {
+        let certificate = reqwest::Certificate::from_pem(cert_pem.as_bytes()).map_err(|e| {
+            CommandError::new("invalid", format!("that certificate is unusable: {e}"))
+        })?;
+        builder.tls_certs_only([certificate]).tls_danger_accept_invalid_hostnames(true)
+    };
+    builder
         .build()
         .map_err(|e| CommandError::new("network", format!("could not start the client: {e}")))
 }

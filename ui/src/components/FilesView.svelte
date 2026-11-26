@@ -31,6 +31,7 @@
   import { dragIsFromOutside, droppedFiles, folderName } from '../lib/files-ui.svelte'
   import { plural } from '../lib/format'
   import { panels } from '../lib/panels.svelte'
+  import { details, phone } from '../lib/phone.svelte'
   import AlbumsView from './AlbumsView.svelte'
   import EmptyState from './EmptyState.svelte'
   import FileInspector from './FileInspector.svelte'
@@ -38,6 +39,7 @@
   import FilesGrid from './FilesGrid.svelte'
   import FilesList from './FilesList.svelte'
   import FilesToolbar from './FilesToolbar.svelte'
+  import FilesUploads from './FilesUploads.svelte'
   import Icon from './Icon.svelte'
   import PhotosView from './PhotosView.svelte'
 
@@ -58,6 +60,16 @@
   // resize the grid beside it each time.
   const railed = $derived(files.selection.length > 0 || files.focused !== null)
   const several = $derived(files.selection.length > 1)
+  /** A phone shows a file's details as a page over the list, opened from the
+   *  selection's bar, and never as a column beside it (see `details`). */
+  const detailing = $derived(details.isOpen('files'))
+  const showRail = $derived(phone.on ? detailing && files.focused !== null : railed)
+
+  // The page of details closes when there is nothing left to describe: the
+  // file was trashed from it, or a view was left.
+  $effect(() => {
+    if (detailing && files.focused === null) details.close('files')
+  })
   const chosen = $derived(files.selectedFiles)
   const chosenBytes = $derived(chosen.reduce((sum, f) => sum + f.size, 0))
 
@@ -137,10 +149,12 @@
     void files.read(found.file.id, { block: found.hit.block })
   }
 
-  const EMPTY: Record<string, { lead: string; note: string }> = {
+  const EMPTY: Record<string, { lead: string; note: string; phoneNote?: string }> = {
     browse: {
       lead: 'This folder is empty.',
       note: 'Add files with the button, or drag them in from your desktop. They are kept as ordinary files in the folder, so other programs can use them too.',
+      phoneNote:
+        'Add files with the button. They are kept as ordinary files in the folder, so other programs can use them too.',
     },
     recent: {
       lead: 'Nothing has been added yet.',
@@ -238,7 +252,7 @@
   </section>
 {/snippet}
 
-<main class="files" style:--tint={files.accent}>
+<main class="files" class:detailing style:--tint={files.accent}>
   {#if !files.supported}
     <EmptyState lead="Files are not kept in this vault.">
       {#snippet icon()}<Icon name="folder" size={30} weight={1.3} />{/snippet}
@@ -327,6 +341,12 @@
     >
       <FilesToolbar />
 
+      <!-- The sidebar's drawer is where a desktop shows these; a phone shows
+           the files on their way in where it started them. -->
+      {#if phone.on && files.uploads.length > 0}
+        <FilesUploads />
+      {/if}
+
       {#if view === 'photos'}
         <PhotosView />
       {:else if view === 'albums'}
@@ -356,7 +376,7 @@
                 weight={1.3}
               />
             {/snippet}
-            {#snippet note()}{words.note}{/snippet}
+            {#snippet note()}{phone.on ? (words.phoneNote ?? words.note) : words.note}{/snippet}
             {#snippet action()}
               {#if view === 'browse' || view === 'recent' || view === 'encrypted'}
                 <button class="btn btn-primary" onclick={() => files.create()}>Add files</button>
@@ -380,9 +400,9 @@
       {/if}
     </div>
 
-    {#if railed}
+    {#if showRail}
       <div class="rail">
-        {#if several}
+        {#if several && !phone.on}
           <aside class="several" aria-label="Selection">
             <p class="several-count">{plural(files.selection.length, 'file')} selected</p>
             {#if chosenBytes > 0}<p class="several-size">{formatSize(chosenBytes)}</p>{/if}
@@ -394,7 +414,7 @@
             </button>
           </aside>
         {:else}
-          <FileInspector />
+          <FileInspector onclose={phone.on ? () => details.close('files') : undefined} />
         {/if}
       </div>
     {/if}
@@ -465,6 +485,22 @@
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
     color: var(--fg-subtle);
+  }
+
+  /* A phone: the details are a page laid over the list, which stays where it
+     was scrolled to underneath, out of sight and out of reach. */
+  :global([data-phone]) .files {
+    position: relative;
+  }
+  :global([data-phone]) .files.detailing .pane {
+    visibility: hidden;
+  }
+  :global([data-phone]) .rail {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    width: auto;
+    background: var(--bg-panel);
   }
 
   .loading {

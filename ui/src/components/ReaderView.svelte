@@ -35,11 +35,13 @@
   import { previewOf } from '../lib/files'
   import { isTyping, keysLabel } from '../lib/keys'
   import { menu } from '../lib/menu.svelte'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { reader } from '../lib/reader.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import { PDF_ZOOMS as ZOOMS } from '../lib/documents'
   import PdfView from './PdfView.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import ReaderFlow from './ReaderFlow.svelte'
   import ReaderOutline from './ReaderOutline.svelte'
   import ReaderSearch from './ReaderSearch.svelte'
@@ -192,6 +194,29 @@
 
   // ── Panes ───────────────────────────────────────────────────────────
 
+  // A phone starts at the document, not at its contents: the pane is a page
+  // over it there, and what was asked for is to read.
+  if (phone.on) reader.panel = null
+
+  // On a phone the document is a layer over the app it was opened from, and
+  // the contents or the search a page over the document: back puts away the
+  // top one.
+  closesOnBack(
+    () => phone.on,
+    () => reader.close(),
+  )
+  closesOnBack(
+    () => phone.on && outline !== null && reader.panel !== null,
+    () => (reader.panel = null),
+  )
+
+  /** A section chosen, or a hit: the pane is for choosing, and on a phone
+   *  there is no room for it beside what was chosen. */
+  function chosen(e: MouseEvent) {
+    if (!phone.on || !(e.target instanceof Element)) return
+    if (e.target.closest('.side-row, .hit')) reader.panel = null
+  }
+
   function toggle(which: 'outline' | 'search') {
     reader.panel = reader.panel === which ? null : which
   }
@@ -276,14 +301,18 @@
 
 <div class="reader" bind:this={root}>
   <header class="bar">
-    <button
-      class="tool back"
-      aria-label="Close the document"
-      title="Close (Esc)"
-      onclick={() => reader.close()}
-    >
-      <Icon name="chevron" size={17} />
-    </button>
+    {#if phone.on}
+      <PhoneBack onclick={() => reader.close()} />
+    {:else}
+      <button
+        class="tool back"
+        aria-label="Close the document"
+        title="Close (Esc)"
+        onclick={() => reader.close()}
+      >
+        <Icon name="chevron" size={17} />
+      </button>
+    {/if}
 
     <div class="pane-titles">
       <span class="pane-title" {title}>{title}</span>
@@ -375,17 +404,27 @@
         onclick={() => reader.ask()}
       >
         <Icon name="sparkle" size={15} />
-        Ask
+        <span class="ask-word">Ask</span>
       </button>
     {/if}
-    <button class="tool" aria-label="Close" title="Close (Esc)" onclick={() => reader.close()}>
+    <button
+      class="tool desktop-only"
+      aria-label="Close"
+      title="Close (Esc)"
+      onclick={() => reader.close()}
+    >
       <Icon name="close" size={17} />
     </button>
   </header>
 
   <div class="body">
     {#if outline && reader.panel}
-      <aside class="pane" aria-label={reader.panel === 'outline' ? 'Contents' : 'Search'}>
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+      <aside
+        class="pane"
+        aria-label={reader.panel === 'outline' ? 'Contents' : 'Search'}
+        onclick={chosen}
+      >
         <div class="side-head">
           <span class="eyebrow">{reader.panel === 'outline' ? 'Contents' : 'Search'}</span>
           <button
@@ -602,5 +641,70 @@
   .note span {
     flex: 1;
     min-width: 0;
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The bar: the way back, the title, the two panes, and under them -- it
+     wraps -- the page to go to and what the document's kind has. Every
+     control a finger's size. */
+  :global([data-phone]) .bar {
+    gap: 0 var(--sp-1);
+    min-height: 52px;
+    padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-1);
+  }
+  :global([data-phone]) .bar .pane-titles {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  :global([data-phone]) .tool {
+    min-width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .tool.small {
+    min-width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .percent {
+    height: 44px;
+  }
+  /* Ask is its sparkle: the word is a third of the bar. */
+  :global([data-phone]) .bar .btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    justify-content: center;
+  }
+  :global([data-phone]) .ask-word {
+    display: none;
+  }
+  :global([data-phone]) .jump {
+    order: 5;
+    flex: 1 1 auto;
+    padding: 0 0 var(--sp-1) var(--sp-3);
+  }
+  :global([data-phone]) .jump .field {
+    height: 40px;
+  }
+  :global([data-phone]) .zoom {
+    order: 6;
+    margin-left: auto;
+  }
+
+  /* The contents and the search are a page over the document, not a column
+     beside it. */
+  :global([data-phone]) .body {
+    position: relative;
+  }
+  :global([data-phone]) .pane {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    width: auto;
+    border-right: 0;
+    background: var(--bg-panel);
+  }
+  :global([data-phone]) .pane .side-head {
+    padding-top: var(--sp-2);
   }
 </style>

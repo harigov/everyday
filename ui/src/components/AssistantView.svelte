@@ -15,15 +15,19 @@
   // the todo app and continued there, and the rail is not drawn while this is
   // open, because it would be this page again, narrower.
 
+  import { untrack } from 'svelte'
   import { agent } from '../lib/agent.svelte'
   import { assistant } from '../lib/assistant.svelte'
   import { lookOf } from '../lib/companion'
   import { splitDigest } from '../lib/dream'
   import { panels } from '../lib/panels.svelte'
+  import { details, phone } from '../lib/phone.svelte'
   import AssistantDog from './AssistantDog.svelte'
+  import AssistantNav from './AssistantNav.svelte'
   import ChatThread from './ChatThread.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
 
   // Each time the page appears: the settings may have changed in the
   // meantime, and the thread list has moved if the rail was used elsewhere.
@@ -37,6 +41,35 @@
   const dog = $derived(agent.settings === null || lookOf(agent.settings.companion) !== null)
   /** How far down the conversation starts: below the dog and its name. */
   const STAGE_H = 154
+
+  // ── On a phone ──────────────────────────────────────────────────────
+  //
+  // There is room for the list of conversations or for one of them, not both
+  // (see `details` in `lib/phone.svelte.ts`): the app opens on the list --
+  // with what happened while you were away at the top of it, the thing the
+  // number on the bar of apps counts -- and a conversation chosen from it
+  // is shown over it, with a way back. The dog is a small face in the
+  // header's row rather than a figure over the thread: the thread is what
+  // the screen is for.
+
+  /** The list, rather than a conversation. */
+  const listing = $derived(phone.on && !details.isOpen('assistant'))
+  /** The dog floats over the thread; on a phone it sits in the header's row. */
+  const floats = $derived(dog && !phone.on)
+
+  // A conversation chosen somewhere that is not this page -- "See what it
+  // did" on a job, a file's "Ask about this", a new thread from the command
+  // bar -- has to be what is on screen when this page appears, not the list
+  // with that conversation highlighted in it. The first thread this page
+  // finds is not news: it is whichever one was open last.
+  let known: string | null = null
+  $effect(() => {
+    const id = agent.conversationId
+    untrack(() => {
+      if (phone.on && id !== null && known !== null && id !== known) details.open('assistant')
+      known = id
+    })
+  })
 
   // The thread's own title once the list has it, which is not until the
   // first turn has finished; until then, what was asked -- the same words the
@@ -56,29 +89,39 @@
 
 {#snippet sparkle()}<Icon name="sparkle" size={34} weight={1.4} />{/snippet}
 
-<main class="main" class:floating={dog} style="--thread-top: {dog ? STAGE_H : 0}px">
+<main
+  class="main"
+  class:floating={floats}
+  class:listing
+  style="--thread-top: {floats ? STAGE_H : 0}px"
+>
   <header class="head">
     <div class="side left">
+      <!-- A conversation is over the list, on a phone: the way back to it. -->
+      {#if !listing}<PhoneBack onclick={() => details.close('assistant')} />{/if}
       <div class="pane-titles">
-        <h1 class="pane-title" {title}>{title}</h1>
+        <h1 class="pane-title" title={listing ? undefined : title}>
+          {listing ? agent.displayName : title}
+        </h1>
       </div>
     </div>
     {#if dog}
       <div class="stage">
-        <AssistantDog width={156} height={132} />
-        <span class="pill">{agent.displayName}</span>
+        <AssistantDog width={phone.on ? 64 : 156} height={phone.on ? 54 : 132} />
+        <span class="pill desktop-only">{agent.displayName}</span>
       </div>
     {/if}
     <div class="side">
-      {#if agent.ready}
+      {#if agent.ready && !listing}
         <button
-          class="btn"
+          class="btn new"
           onclick={() => void agent.startThread()}
           disabled={agent.busy || agent.turns.length === 0}
           title="New conversation (C)"
+          aria-label="New conversation"
         >
           <Icon name="plus" size={14} />
-          New
+          <span class="label">New</span>
         </button>
       {/if}
       <button
@@ -92,7 +135,13 @@
     </div>
   </header>
 
-  {#if agent.settings === null}
+  {#if listing}
+    <!-- The conversations, as the sidebar's drawer lists them: one list, in
+         two places, so a row means the same in both. -->
+    <div class="list">
+      <AssistantNav />
+    </div>
+  {:else if agent.settings === null}
     <!-- The settings have not come back yet. Nothing rather than the "not set
          up" screen, which would flash past on every visit to a configured
          assistant. -->
@@ -230,5 +279,58 @@
     flex: 1;
     min-height: 0;
     padding-top: var(--thread-top);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     One row of header -- back, the conversation's name, the dog's face, New
+     and Settings, each a thumb's width -- over either the list or the
+     thread. */
+  .list {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+  :global([data-phone]) .head {
+    gap: var(--sp-1);
+    height: 56px;
+    padding: 0 var(--sp-1) 0 var(--sp-1);
+  }
+  :global([data-phone]) .main.listing .head {
+    padding-left: var(--sp-4);
+  }
+  :global([data-phone]) .side {
+    gap: 0;
+  }
+  :global([data-phone]) .side.left {
+    flex: 1;
+    min-width: 0;
+  }
+  :global([data-phone]) .side.left .pane-titles {
+    flex: 1;
+    min-width: 0;
+  }
+  :global([data-phone]) .pane-title {
+    font-size: var(--text-md);
+  }
+  /* The dog is one of the row's own items rather than over it. */
+  :global([data-phone]) .stage {
+    position: static;
+    flex: none;
+    transform: none;
+  }
+  :global([data-phone]) .new {
+    width: 44px;
+    padding: 0;
+    border-color: transparent;
+    background: none;
+  }
+  :global([data-phone]) .new .label {
+    display: none;
+  }
+  :global([data-phone]) .ghost {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
   }
 </style>

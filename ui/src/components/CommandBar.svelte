@@ -42,6 +42,7 @@
   import { notify } from '../lib/notify.svelte'
   import { toWire } from '../lib/onscreen'
   import { panels } from '../lib/panels.svelte'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { parseQuickAdd } from '../lib/quickadd'
   import { quick as quickState } from '../lib/quick.svelte'
   import { describeQuickTrack, isRecordable, parseQuickTrack } from '../lib/quicktrack'
@@ -392,8 +393,20 @@
     if (panels.palette) panels.closePalette()
   }
 
+  // A phone's field is narrower than the sentence, and nothing there is typed
+  // with a key to reach it by: the shorter one fits.
   const placeholder = $derived(
-    commanding ? 'Type a command, or something to keep…' : `${search!.placeholder}…`,
+    commanding
+      ? phone.on
+        ? 'Type a command…'
+        : 'Type a command, or something to keep…'
+      : `${search!.placeholder}…`,
+  )
+
+  // Back puts the list away and ends this use of the bar, as Escape does.
+  closesOnBack(
+    () => phone.on && mode !== null,
+    () => finish(),
   )
 </script>
 
@@ -643,5 +656,45 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     padding: 1px 5px;
+  }
+
+  /* A phone: the field is a finger tall, and the list is a sheet of the
+     screen's width under the top bar -- not as wide as the field, which
+     shares the bar with the sidebar's button -- with rows to match. */
+  :global([data-phone]) .field {
+    height: 40px;
+  }
+  :global([data-phone]) .lead {
+    width: 36px;
+  }
+  :global([data-phone]) .clear {
+    width: 40px;
+    height: 40px;
+    margin-right: 0;
+  }
+  :global([data-phone]) .rows {
+    position: fixed;
+    top: calc(var(--topbar-h) + var(--safe-top) + var(--sp-1));
+    left: calc(var(--safe-left) + var(--sp-2));
+    right: calc(var(--safe-right) + var(--sp-2));
+    max-height: calc(100dvh - var(--topbar-h) - var(--safe-top) - var(--sp-3));
+    overscroll-behavior: contain;
+  }
+  :global([data-phone]) .row {
+    min-height: 44px;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .head {
+    padding: var(--sp-3) var(--sp-3) var(--sp-1);
+  }
+  /* A note beside a label that has no room: under it, not squeezing it to
+     nothing. */
+  :global([data-phone]) .row {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .note {
+    flex-basis: 100%;
+    margin-left: calc(18px + 10px);
+    white-space: normal;
   }
 </style>

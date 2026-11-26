@@ -7,8 +7,11 @@
   import { onMount } from 'svelte'
   import { calendar, type View } from '../lib/calendar.svelte'
   import { dateFormat, dayHeading, formatMinutes, monthYear } from '../lib/format'
+  import { closesOnBack, details, phone } from '../lib/phone.svelte'
   import { proposals } from '../lib/proposals.svelte'
+  import { addDays, instantAt, todayIso } from '../lib/time'
   import Icon from './Icon.svelte'
+  import CalendarAgenda from './CalendarAgenda.svelte'
   import TimeGrid from './TimeGrid.svelte'
   import MonthGrid from './MonthGrid.svelte'
   import EventDetail from './EventDetail.svelte'
@@ -45,7 +48,11 @@
     const first = new Date(days[0] + 'T00:00')
     const last = new Date(days[days.length - 1] + 'T00:00')
     if (calendar.view === 'day') {
-      return dayHeading(first)
+      // "Wednesday, November 25" is as wide as a small phone's heading, with
+      // the arrows beside it: the month short is not.
+      return phone.on
+        ? dateFormat({ weekday: 'long', month: 'short', day: 'numeric' }).format(first)
+        : dayHeading(first)
     }
     if (calendar.view === 'month') {
       return monthYear(new Date(calendar.anchor + 'T00:00'))
@@ -80,6 +87,76 @@
     return bits.join(' · ')
   })
 
+  // ── On a phone ───────────────────────────────────────────────────────
+  //
+  // The grid has the whole screen, and what the rail holds -- an event
+  // opened, one being written, the list of what is not scheduled -- is a
+  // page laid over it, with a way back (`PhoneBack`, in the page's own
+  // header) and Android's back button to the same end. The grid stays where
+  // it was underneath, scroll and all.
+
+  /** Something is open in the rail: an event, a block, a proposal, a draft. */
+  const opened = $derived(
+    calendar.selection !== null || calendar.selectedProposal !== null || calendar.draft !== null,
+  )
+  /** The list of what is not scheduled, opened from the header. */
+  const listing = $derived(details.isOpen('calendar'))
+  const layered = $derived(phone.on && (opened || listing))
+
+  closesOnBack(
+    () => phone.on && opened,
+    () => {
+      calendar.selection = null
+      calendar.closeProposal()
+    },
+  )
+  // An event being changed goes back to the event, not off the page.
+  closesOnBack(
+    () => phone.on && calendar.editing?.status === 'ready' && calendar.editing.event.own,
+    () => calendar.cancelEdit(),
+  )
+
+  /**
+   * A new event on the day picked in the month, or today if it is on screen,
+   * or the day the view is on: at the next whole hour of today -- nine
+   * tomorrow when that is past eleven at night -- or at nine on any other
+   * day, written to the calendar new events go to. Opened as a draft, so
+   * nothing exists until Save and Cancel leaves nothing behind -- a tap on
+   * an empty hour is how this would be made on a desktop, and on a phone a
+   * tap is too often a scroll.
+   */
+  function startEvent() {
+    const today = todayIso()
+    const picked =
+      calendar.view === 'month' && calendar.picked && calendar.days.includes(calendar.picked)
+        ? calendar.picked
+        : null
+    let day = picked ?? (calendar.days.includes(today) ? today : calendar.anchor)
+    let startMinutes = 9 * 60
+    if (day === today) {
+      const next = (new Date().getHours() + 1) * 60
+      if (next <= 23 * 60) startMinutes = next
+      else day = addDays(today, 1)
+    }
+    const target = calendar.defaultCalendar
+    // Nowhere for it to go: `newEvent` says so, once.
+    if (!target && !calendar.thisComputerOn) {
+      void calendar.newEvent({ day, startMinutes, minutes: 60 })
+      return
+    }
+    calendar.openDraft(target?.id ?? null, {
+      title: '',
+      description: '',
+      location: '',
+      start: instantAt(day, startMinutes),
+      end: instantAt(day, startMinutes + 60),
+      allDay: false,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      attendees: [],
+      recurrence: null,
+    })
+  }
+
   // The bare-letter shortcuts this view used to own -- d, w, m, t, the
   // arrows and Delete -- are rows in `lib/shortcuts.svelte.ts` now, gated on
   // the calendar being the app on screen. They were a second
@@ -88,67 +165,132 @@
   // them; see that file for what having one table buys.
 </script>
 
-<main class="cal">
+<main class="cal" class:layered>
   <div class="pane">
-    <header class="top">
-      <div class="nav">
+    {#if phone.on}
+      <!-- Two short rows rather than the desktop's one long one: where we
+           are and the two ways to move, then how many days and the two things
+           done most -- go home, make one. -->
+      <header class="ptop">
+        <div class="prow">
+          <div class="ptitle">
+            <h1 class="pane-title">{heading}</h1>
+            {#if summary || calendar.syncNote}
+              <span class="psummary">{calendar.syncNote ?? summary}</span>
+            {/if}
+          </div>
+          <button class="pstep" aria-label="Previous" onclick={() => calendar.step(-1)}>
+            <span class="back"><Icon name="chevron" size={18} /></span>
+          </button>
+          <button class="pstep" aria-label="Next" onclick={() => calendar.step(1)}>
+            <Icon name="chevron" size={18} />
+          </button>
+        </div>
+        <div class="prow">
+          <div class="pviews" role="group" aria-label="View">
+            {#each VIEWS as v (v.id)}
+              <button
+                class="pview"
+                class:on={calendar.view === v.id}
+                aria-label="{v.label} view"
+                aria-pressed={calendar.view === v.id}
+                onclick={() => calendar.setView(v.id)}>{v.label}</button
+              >
+            {/each}
+          </div>
+          <button class="btn btn-outline ptoday" onclick={() => calendar.goToday()}>Today</button>
+          <button class="pnew" aria-label="New event" onclick={startEvent}>
+            <Icon name="plus" size={20} weight={2} />
+          </button>
+        </div>
+        <!-- What is waiting to be given a time, a page of its own. -->
         <button
-          class="step"
-          title="Previous (←)"
-          aria-label="Previous"
-          onclick={() => calendar.step(-1)}
+          class="pwaiting"
+          aria-label="Not scheduled{calendar.unscheduled.length > 0
+            ? `, ${calendar.unscheduled.length}`
+            : ''}"
+          onclick={() => details.open('calendar')}
         >
-          <span class="back"><Icon name="chevron" size={15} /></span>
+          <Icon name="clock" size={15} />
+          <span class="plabel">Not scheduled</span>
+          {#if calendar.unscheduled.length > 0}
+            <span class="pcount">{calendar.unscheduled.length}</span>
+          {/if}
+          <span class="pgo"><Icon name="chevron" size={14} /></span>
         </button>
-        <button class="btn btn-outline" title="Jump to today (T)" onclick={() => calendar.goToday()}
-          >Today</button
-        >
-        <button class="step" title="Next (→)" aria-label="Next" onclick={() => calendar.step(1)}>
-          <Icon name="chevron" size={15} />
-        </button>
-        <div class="pane-titles">
-          <h1 class="pane-title">{heading}</h1>
+      </header>
+      <!-- Only while one runs: starting one is on the page of what is not
+           scheduled, and an idle timer is not worth a strip of the screen. -->
+      {#if calendar.timer}<TrackNow />{/if}
+    {:else}
+      <header class="top">
+        <div class="nav">
+          <button
+            class="step"
+            title="Previous (←)"
+            aria-label="Previous"
+            onclick={() => calendar.step(-1)}
+          >
+            <span class="back"><Icon name="chevron" size={15} /></span>
+          </button>
+          <button
+            class="btn btn-outline"
+            title="Jump to today (T)"
+            onclick={() => calendar.goToday()}>Today</button
+          >
+          <button class="step" title="Next (→)" aria-label="Next" onclick={() => calendar.step(1)}>
+            <Icon name="chevron" size={15} />
+          </button>
+          <div class="pane-titles">
+            <h1 class="pane-title">{heading}</h1>
+          </div>
         </div>
-      </div>
 
-      <div class="tools">
-        <div class="views" role="group" aria-label="View">
-          {#each VIEWS as v (v.id)}
-            <button
-              class="view"
-              class:on={calendar.view === v.id}
-              title="{v.label} ({v.key})"
-              aria-label="{v.label} view"
-              aria-pressed={calendar.view === v.id}
-              onclick={() => calendar.setView(v.id)}
-            >
-              <Icon name={v.icon} size={15} />
-            </button>
-          {/each}
+        <div class="tools">
+          <div class="views" role="group" aria-label="View">
+            {#each VIEWS as v (v.id)}
+              <button
+                class="view"
+                class:on={calendar.view === v.id}
+                title="{v.label} ({v.key})"
+                aria-label="{v.label} view"
+                aria-pressed={calendar.view === v.id}
+                onclick={() => calendar.setView(v.id)}
+              >
+                <Icon name={v.icon} size={15} />
+              </button>
+            {/each}
+          </div>
         </div>
-      </div>
-    </header>
+      </header>
 
-    <!-- The window's totals, under the header. There used to be a set of
+      <!-- The window's totals, under the header. There used to be a set of
          Both / Plan / Record chips here; a block is an event like any other
          now, and what counts as time spent is decided by the clock -- see
          `Vault::settle_blocks`. -->
-    <div class="toolbar">
-      <div class="toolbar-end right">
-        <span class="summary">{summary}</span>
-        {#if calendar.syncNote}<span class="note">{calendar.syncNote}</span>{/if}
+      <div class="toolbar">
+        <div class="toolbar-end right">
+          <span class="summary">{summary}</span>
+          {#if calendar.syncNote}<span class="note">{calendar.syncNote}</span>{/if}
+        </div>
       </div>
-    </div>
+    {/if}
 
     {#if calendar.view === 'month'}
       <MonthGrid days={calendar.days} />
+    {:else if phone.on && calendar.view === 'week'}
+      <!-- A week is seven columns of fifty pixels on a phone: a list of the
+           days, each with the whole width, instead. -->
+      <CalendarAgenda days={calendar.days} scrollToToday />
     {:else}
       <TimeGrid days={calendar.days} />
     {/if}
   </div>
 
   <div class="side">
-    <TrackNow />
+    <!-- On a phone the timer is under the heading of the page of what is not
+         scheduled, where it is started (`EventDetail`). -->
+    {#if !phone.on}<TrackNow />{/if}
     <EventDetail />
   </div>
 </main>
@@ -279,5 +421,184 @@
   }
   .note {
     color: var(--fg-subtle);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The rail is not beside the grid: it is a page over it, while something
+     is open in it. The grid is only hidden, not taken away, so it is as it
+     was -- scrolled to the same hour -- when the page is put away. */
+  :global([data-phone]) .cal {
+    position: relative;
+  }
+  :global([data-phone]) .side {
+    display: none;
+  }
+  :global([data-phone]) .cal.layered .side {
+    display: flex;
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    background: var(--bg-panel);
+  }
+  :global([data-phone]) .cal.layered .pane {
+    visibility: hidden;
+  }
+
+  .ptop {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3) var(--sp-2);
+  }
+  .prow {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .ptitle {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .psummary {
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pstep {
+    width: 44px;
+    height: 44px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    color: var(--fg-muted);
+  }
+  .pstep:active {
+    background: var(--bg-active);
+  }
+
+  /* Day, week and month as words, in a pill that takes what Today and the
+     new-event button leave. */
+  .pviews {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 999px;
+    background: var(--bg-active);
+  }
+  .pview {
+    flex: 1;
+    min-width: 0;
+    height: 38px;
+    border-radius: 999px;
+    font-size: var(--text-base);
+    font-weight: 550;
+    color: var(--fg-subtle);
+  }
+  .pview.on {
+    background: var(--bg-raised);
+    color: var(--fg);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .ptoday {
+    flex: none;
+    height: 44px;
+  }
+  .pnew {
+    width: 44px;
+    height: 44px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--fg-on-accent);
+    box-shadow: var(--shadow-sm);
+  }
+  .pnew:active {
+    background: var(--accent-hover);
+  }
+
+  /* One quiet line that opens the list of what has no time yet. */
+  .pwaiting {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-height: 40px;
+    padding: 0 var(--sp-3);
+    border-radius: var(--radius);
+    background: var(--bg-sunken);
+    font-size: var(--text-base);
+    color: var(--fg-muted);
+    text-align: left;
+  }
+  .pwaiting:active {
+    background: var(--bg-active);
+  }
+  .plabel {
+    flex: 1;
+  }
+  .pcount {
+    min-width: 22px;
+    padding: 1px 7px;
+    border-radius: 99px;
+    background: var(--bg-active);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    color: var(--fg-muted);
+  }
+  .pgo {
+    display: flex;
+    color: var(--fg-faint);
+  }
+
+  /* A phone on its side has a hundred pixels of screen between its two bars
+     for the grid, if the header is three rows. One row: the heading, the
+     steps, the three views, Today, new, and what is not scheduled as its
+     icon and count. */
+  @media (max-height: 500px) {
+    .ptop {
+      flex-direction: row;
+      align-items: center;
+      padding-block: 0;
+    }
+    .ptop > .prow:first-child {
+      flex: 1;
+      min-width: 0;
+    }
+    .ptop > .prow:nth-child(2) {
+      flex: none;
+    }
+    .psummary,
+    .plabel,
+    .pgo {
+      display: none;
+    }
+    .pviews {
+      flex: none;
+      width: 232px;
+    }
+    .pwaiting {
+      flex: none;
+      min-height: 44px;
+      padding: 0 var(--sp-3);
+    }
+    .pcount {
+      padding-inline: 6px;
+    }
   }
 </style>

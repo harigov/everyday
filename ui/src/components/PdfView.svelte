@@ -707,4 +707,29 @@
   :global(.textLayer[data-main-rotation='270']) {
     transform: rotate(270deg) translateX(-100%);
   }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     Pages as wide as the screen allows, and a pill of zoom buttons a
+     finger can hit, clear of the gesture bar. */
+  :global([data-phone]) .pages {
+    padding: 4px 8px 96px;
+    overscroll-behavior: contain;
+  }
+  :global([data-phone]) .pages.bare {
+    padding-bottom: 24px;
+  }
+  :global([data-phone]) .controls {
+    bottom: calc(var(--safe-bottom) + 16px);
+    padding: 4px 8px;
+  }
+  :global([data-phone]) .controls button {
+    min-width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .controls .zoom {
+    min-width: 60px;
+  }
+  :global([data-phone]) .controls .count {
+    white-space: nowrap;
+  }
 </style>

@@ -5,7 +5,10 @@
   // because it is the thing you came here to use and it should not move when
   // the list grows.
 
+  import { untrack } from 'svelte'
   import { FILTER_LABELS, TASK_FILTERS, todo } from '../lib/todo.svelte'
+  import { details, phone } from '../lib/phone.svelte'
+  import { purpose } from '../lib/purpose.svelte'
   import { formatMinutes } from '../lib/format'
   import Icon from './Icon.svelte'
   import ProgressPie from './ProgressPie.svelte'
@@ -20,6 +23,44 @@
   import type { Priority } from '../lib/types'
 
   void todo.start()
+
+  // ── On a phone ───────────────────────────────────────────────────────
+  //
+  // The list is the page, and what is opened from it -- a task, a proposed
+  // task, a goal in the goals pane -- is a page laid over it, with a way back
+  // (`PhoneBack`, in its own header; see `details` in `phone.svelte.ts`).
+  // Whatever opens something here -- a row, a card, a menu's "Open details",
+  // the goals pane -- only says which one is selected; this keeps the flag
+  // true to that, and the selection true to the flag when back closes it.
+
+  /** What is open over the list, if anything: a task, a proposal or a goal. */
+  const selection = $derived(
+    todo.showingGoals
+      ? purpose.selected
+      : todo.goal
+        ? null
+        : (todo.selectedTask ?? todo.selectedProposal?.id ?? null),
+  )
+
+  $effect(() => {
+    const open = selection !== null
+    untrack(() => (open ? details.open('todo') : details.close('todo')))
+  })
+
+  // Back, by the button or Android's: the page goes, and the selection with
+  // it -- a row left selected under a closed page would be "Close details" in
+  // its menu and a toggle off on its next tap.
+  let wasOpen = false
+  $effect(() => {
+    const open = details.isOpen('todo')
+    if (wasOpen && !open) {
+      untrack(() => {
+        if (todo.showingGoals) purpose.selected = null
+        else void todo.open(null)
+      })
+    }
+    wasOpen = open
+  })
 
   let capture = $state<ReturnType<typeof QuickAdd> | null>(null)
 
@@ -94,12 +135,12 @@
      it, because `.pane` is a *column* -- a rail rendered in there would sit
      under the list rather than beside it. -->
 {#if todo.showingGoals}
-  <main class="todo"><GoalsPane /></main>
+  <main class="todo" class:layered={phone.on && details.isOpen('todo')}><GoalsPane /></main>
 {:else if todo.goal}
   <!-- One goal: the projects filed under it, as a project is its tasks. -->
   <main class="todo"><GoalProjects id={todo.goal} /></main>
 {:else}
-  <main class="todo">
+  <main class="todo" class:layered={phone.on && details.isOpen('todo')}>
     <div class="pane">
       <header class="top">
         <div class="pane-titles">
@@ -228,7 +269,10 @@
     </div>
 
     {#if todo.selectedProposal}
-      <TaskProposalDetail proposal={todo.selectedProposal} />
+      <!-- Its own header carries its close; a phone puts it over the list. -->
+      <div class="proposalpage">
+        <TaskProposalDetail proposal={todo.selectedProposal} />
+      </div>
     {:else}
       <TaskDetail />
     {/if}
@@ -366,5 +410,135 @@
     height: 1px;
     overflow: hidden;
     clip-path: inset(50%);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The page for what is opened is laid over the list, which is hidden, not
+     taken away, so it is as it was -- scrolled to the same place -- when the
+     page is put away. */
+  :global([data-phone]) .todo {
+    position: relative;
+  }
+  :global([data-phone]) .todo.layered > :global(.pane) {
+    visibility: hidden;
+  }
+  /* Not a box of its own on a desktop: the rail stays the flex item it was. */
+  .proposalpage {
+    display: contents;
+  }
+  :global([data-phone]) .proposalpage {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    background: var(--bg-panel);
+  }
+  :global([data-phone]) .proposalpage > :global(.detail) {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    border-left: none;
+  }
+  :global([data-phone]) .proposalpage :global(.close) {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* The header: the name and how it stands, and under them the two choices
+     that shape the list, each a size a finger can hit. */
+  :global([data-phone]) .top {
+    height: auto;
+    min-height: var(--header-h);
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-3);
+    padding: var(--sp-2) var(--sp-4) var(--sp-1);
+  }
+  :global([data-phone]) .tools {
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .view {
+    width: 40px;
+    height: 34px;
+  }
+  :global([data-phone]) .views {
+    padding: 3px;
+  }
+  :global([data-phone]) .select {
+    height: 40px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .clear {
+    height: 40px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .bar {
+    padding: var(--sp-1) var(--sp-4) var(--sp-2);
+  }
+
+  /* Priority and tag, then the status chips as a strip that slides sideways
+     -- one line rather than a block of wrapped chips over the list. */
+  :global([data-phone]) .toolbar {
+    flex-direction: column;
+    /* Not the desktop's wrapping: in a column that makes each line as wide as
+       its widest item, which is a strip of chips that never needs to scroll. */
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: var(--sp-1);
+    padding: 0 0 var(--sp-2);
+  }
+  :global([data-phone]) .toolbar-end {
+    flex: none;
+    flex-wrap: wrap;
+    padding: 0 var(--sp-3);
+    min-width: 0;
+  }
+  :global([data-phone]) .toolbar .filters {
+    order: 2;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    margin: 0 var(--sp-4);
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+  :global([data-phone]) .toolbar .filters::-webkit-scrollbar {
+    display: none;
+  }
+  :global([data-phone]) .toolbar .filter {
+    flex: none;
+    min-height: 40px;
+  }
+  :global([data-phone]) .toolbar-end.right {
+    order: 1;
+  }
+
+  /* The name has the line to itself, and the choices that shape the list are
+     the line under it. */
+  :global([data-phone]) .pane-titles {
+    flex: 1 0 100%;
+  }
+  :global([data-phone]) .tools {
+    flex: 1 0 100%;
+    justify-content: space-between;
+  }
+
+  /* A phone on its side: the heading, the line to add a task and the
+     filters fill the whole of a short screen, so they scroll away with the
+     tasks rather than standing over them. */
+  @media (max-height: 500px) {
+    :global([data-phone]) .pane {
+      overflow-y: auto;
+    }
+    :global([data-phone]) .pane > :global(*) {
+      flex: none;
+    }
+    :global([data-phone]) .pane :global(.scroll.list) {
+      overflow: visible;
+      min-height: auto;
+    }
   }
 </style>

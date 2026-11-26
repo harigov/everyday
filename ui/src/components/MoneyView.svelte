@@ -14,9 +14,11 @@
   // stay reachable: categories and budgets can be set before the first
   // transaction arrives.
 
+  import { untrack } from 'svelte'
   import { money, type MoneyView as Pane } from '../lib/money.svelte'
   import { formatMoney, monthLabel, thisMonth } from '../lib/money'
   import { plural } from '../lib/format'
+  import { details, phone } from '../lib/phone.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import MoneyAccounts from './MoneyAccounts.svelte'
@@ -49,6 +51,28 @@
   const atNow = $derived(month >= thisMonth())
   const openTxn = $derived(view === 'transactions' ? money.txn : null)
   const keysMissing = $derived(money.plaid !== null && !money.plaid.configured)
+
+  // A phone shows the transaction opened from the list over the list, with a
+  // way back (see `details`). Whichever way it came open -- a tap on a row, one
+  // just typed in -- it is shown over the list, and going back -- the button,
+  // Android's -- closes it in the store too.
+  let wasOver = false
+  $effect(() => {
+    const over = details.isOpen('money')
+    untrack(() => {
+      if (wasOver && !over && money.openId !== null) money.open(null)
+    })
+    wasOver = over
+  })
+  $effect(() => {
+    const id = money.openId
+    untrack(() => {
+      if (!phone.on) return
+      if (id !== null) details.open('money')
+      else details.close('money')
+    })
+  })
+  const covered = $derived(openTxn !== null && details.isOpen('money'))
 
   const TITLES: Record<Pane, string> = {
     overview: 'Overview',
@@ -110,7 +134,7 @@
   }
 </script>
 
-<main class="money" style:--tint={money.accent}>
+<main class="money" class:covered style:--tint={money.accent}>
   <div class="pane">
     <header class="top">
       <div class="pane-titles">
@@ -347,5 +371,57 @@
     flex-wrap: wrap;
     justify-content: center;
     gap: var(--sp-2);
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     Two rows: the title, with what is under it, and the sync button; then
+     the month, as wide as the screen with arrows a finger can hit. A
+     transaction opened is a page laid over the list (which keeps its place,
+     out of sight under it). */
+  :global([data-phone]) .money {
+    position: relative;
+  }
+  :global([data-phone]) .money.covered .pane {
+    visibility: hidden;
+  }
+  :global([data-phone]) .money > :global(.detail) {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    width: auto;
+  }
+  :global([data-phone]) .top {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 56px;
+    padding: var(--sp-1) var(--sp-3) var(--sp-1);
+    gap: var(--sp-1) var(--sp-2);
+  }
+  /* The tools' own box goes, so the month and the sync button are the row's
+     to arrange. */
+  :global([data-phone]) .tools {
+    display: contents;
+  }
+  :global([data-phone]) .round {
+    order: 2;
+    width: 44px;
+    height: 44px;
+    margin-right: calc(var(--sp-2) * -1);
+  }
+  :global([data-phone]) .months {
+    order: 3;
+    flex: 1 1 100%;
+    justify-content: space-between;
+  }
+  :global([data-phone]) .step {
+    width: 44px;
+    height: 40px;
+  }
+  :global([data-phone]) .month {
+    flex: 1;
+    height: 40px;
+  }
+  :global([data-phone]) .note {
+    padding: var(--sp-2) var(--sp-4);
   }
 </style>

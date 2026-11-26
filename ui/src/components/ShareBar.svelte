@@ -169,4 +169,13 @@
     color: var(--fg-faint);
     font-size: var(--text-sm);
   }
+
+  /* A narrow screen gives the share's name the room: the amount, which can be
+     a list of every category folded into "others", keeps to one line. */
+  :global([data-phone]) .amount {
+    max-width: 38vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 </style>

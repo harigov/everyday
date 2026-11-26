@@ -23,6 +23,7 @@
   import Icon from './Icon.svelte'
   import MoneyAmount from './MoneyAmount.svelte'
   import MoneyCategoryPicker from './MoneyCategoryPicker.svelte'
+  import PhoneBack from './PhoneBack.svelte'
 
   const { txn }: { txn: Txn } = $props()
 
@@ -79,6 +80,7 @@
 
 <aside class="detail" aria-label="Transaction">
   <div class="top">
+    <PhoneBack onclick={() => money.open(null)} label="Transactions" />
     <span class="when">{longDate(txn.date)}</span>
     <button
       class="close"
@@ -341,5 +343,49 @@
   .foot {
     gap: var(--sp-2);
     align-items: flex-start;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     A page of its own, the whole width, the way back at its head, and
+     fields and links a finger can aim at. */
+  :global([data-phone]) .detail {
+    width: 100%;
+    border-left: 0;
+  }
+  :global([data-phone]) .top {
+    justify-content: flex-start;
+    gap: var(--sp-2);
+    padding-left: var(--sp-1);
+  }
+  :global([data-phone]) .close {
+    display: none;
+  }
+  :global([data-phone]) .when {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  :global([data-phone]) .body {
+    padding: 0 var(--sp-4) calc(var(--fab-size) + var(--sp-8));
+  }
+  :global([data-phone]) .field.small {
+    height: 44px;
+  }
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  :global([data-phone]) .link.inline {
+    display: inline;
+    min-height: 0;
+  }
+  :global([data-phone]) .toggle {
+    padding: var(--sp-1) 0;
+  }
+  :global([data-phone]) .toggle input {
+    width: 22px;
+    height: 22px;
   }
 </style>

@@ -40,7 +40,9 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { openExternal } from '../lib/open-external'
+  import { phone } from '../lib/phone.svelte'
   import { pref } from '../lib/prefs'
+  import { sidebar } from '../lib/sidebar.svelte'
   import type { SourceSummary } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
@@ -290,7 +292,11 @@
       class="side-add"
       title="Browse podcasts and feeds"
       aria-label="Browse podcasts and feeds"
-      onclick={() => feed.openDirectory()}
+      onclick={() => {
+        // A phone's drawer goes with the choice it was opened for.
+        if (phone.on) sidebar.hide()
+        feed.openDirectory()
+      }}
     >
       <Icon name="compass" size={15} />
     </button>
@@ -298,7 +304,10 @@
       class="side-add"
       title="Follow something"
       aria-label="Follow something"
-      onclick={() => feed.openAdd()}
+      onclick={() => {
+        if (phone.on) sidebar.hide()
+        feed.openAdd()
+      }}
     >
       <Icon name="plus" size={15} />
     </button>
@@ -477,5 +486,10 @@
     padding: var(--sp-3);
     color: var(--fg-faint);
     font-size: var(--text-sm);
+  }
+
+  /* The folder's fold button: a finger's width. */
+  :global([data-phone]) .fold {
+    width: 36px;
   }
 </style>

@@ -1,3 +1,10 @@
+<script module lang="ts">
+  // Where the phone's list was scrolled to when a note was opened over it
+  // and put away -- the list is unmounted meanwhile -- so that back finds it
+  // there rather than at the top.
+  const memory = { top: 0 }
+</script>
+
 <script lang="ts">
   // The notes app's half of the sidebar: the list, and what narrows it.
   //
@@ -13,8 +20,11 @@
   // the most used tags get a chip, with how many notes carry each, the rest
   // in a menu.
 
+  import { untrack } from 'svelte'
   import { agent } from '../lib/agent.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { details, phone } from '../lib/phone.svelte'
+  import { sidebar } from '../lib/sidebar.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { meetings } from '../lib/meetings.svelte'
@@ -34,16 +44,59 @@
   import { templates } from '../lib/templates.svelte'
   import { plural } from '../lib/format'
   import { proposals, recordAs } from '../lib/proposals.svelte'
-  import type { NoteOrigin, NoteSummary } from '../lib/types'
+  import type { NoteId, NoteOrigin, NoteSummary, TemplateId } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
   import RecordingCard from './RecordingCard.svelte'
 
+  // On a phone this is drawn twice, and each draws half of it. The list of
+  // notes is the app's home, in the stage (`home`, from `NotesView`), and
+  // what narrows it -- the kind filter, the tags, the order -- is in the
+  // sidebar's drawer, where every other app keeps its navigation. On a desktop
+  // it is one component in the sidebar, as it always was.
+  let { home = false }: { home?: boolean } = $props()
+  const phoneHome = $derived(phone.on && home)
+  const phoneDrawer = $derived(phone.on && !home)
+
   // Loaded when the sidebar appears rather than when the store is imported,
   // so a vault whose owner never opens this app never pays for the query.
-  // Idempotent, so coming back refreshes instead of blanking.
-  void notes.start()
+  // Idempotent, so coming back refreshes instead of blanking. On a phone by
+  // the home, which is on screen whenever a note is not.
+  if (untrack(() => !phone.on || home)) void notes.start()
+
+  let scroller = $state<HTMLElement | null>(null)
+
+  // Back where it was, once, when the page is drawn.
+  let restored = false
+  $effect(() => {
+    if (!phoneHome || !scroller || restored) return
+    restored = true
+    scroller.scrollTop = memory.top
+  })
+
+  /** A choice made in the drawer is made to be seen: put the drawer away. */
+  function chosen() {
+    if (phoneDrawer) sidebar.hide()
+  }
+
+  /** Open a note -- over the list, on a phone. */
+  async function open(id: NoteId) {
+    await notes.openNote(id)
+    details.open('notes')
+  }
+
+  /** Start a note, blank or from a template, and open it the same way. */
+  async function start(templateId: TemplateId | null = null) {
+    await notes.create('', templateId)
+    details.open('notes')
+  }
+
+  /** A proposed note or change, open in place of a note. */
+  function openProposal(p: Parameters<typeof notes.openProposal>[0]) {
+    notes.openProposal(p)
+    details.open('notes')
+  }
 
   let pendingDelete = $state<NoteSummary | null>(null)
 
@@ -91,6 +144,9 @@
   )
 
   const tagChips = $derived(shortlistTags(notes.tags, notes.tag))
+  /** Every tag in the drawer, which scrolls, rather than the most used and a
+   *  menu for the rest: a menu of twenty tags is a second, shorter screen. */
+  const shownTags = $derived(phoneDrawer ? notes.tags : tagChips.shown)
 
   /** "27 notes", or "8 notes · Sakha" under the kind filter -- the chips
    *  are icons, so the heading is where the chosen kind is named. */
@@ -123,7 +179,10 @@
         label: t.tag,
         hint: t.count.toLocaleString(),
         checked: sameTag(t.tag, notes.tag),
-        run: () => void notes.setTag(sameTag(t.tag, notes.tag) ? null : t.tag),
+        run: () => {
+          void notes.setTag(sameTag(t.tag, notes.tag) ? null : t.tag)
+          chosen()
+        },
       })),
     ])
   }
@@ -147,7 +206,7 @@
 
   function noteMenu(note: NoteSummary): MenuItem[] {
     return tidyMenu([
-      { label: 'Open', icon: 'quote', run: () => void notes.openNote(note.id) },
+      { label: 'Open', icon: 'quote', run: () => void open(note.id) },
       {
         label: note.pinned ? 'Unpin' : 'Pin to the top',
         icon: 'pin',
@@ -171,7 +230,7 @@
 
   /** One row per template offered for notes, each starting a note from it. */
   function templateItems(): MenuItem[] {
-    return noteTemplates.map((t) => ({ label: t.name, run: () => void notes.create('', t.id) }))
+    return noteTemplates.map((t) => ({ label: t.name, run: () => void start(t.id) }))
   }
 
   function pickTemplate(e: MouseEvent) {
@@ -184,11 +243,11 @@
 
   function navMenu(): MenuItem[] {
     return tidyMenu([
-      { label: 'New note', icon: 'plus', hint: 'Ctrl+N', run: () => void notes.create() },
+      { label: 'New note', icon: 'plus', hint: 'Ctrl+N', run: () => void start() },
       ...(noteTemplates.length
         ? [{ label: 'New note from template', icon: 'layers' as const, items: templateItems() }]
         : []),
-      ...(meetings.supported
+      ...(meetings.canRecord
         ? [{ label: 'Record a call', icon: 'mic' as const, run: () => (recordSheet = true) }]
         : []),
       SEP,
@@ -213,47 +272,131 @@
   }}
 />
 
-<nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
-  <div class="side-head">
-    <span class="eyebrow">
-      {#if searching}
-        {plural(notes.results.length, 'result')}
-      {:else}
-        {heading}
+<nav
+  class="scroll side-nav"
+  class:home={phoneHome}
+  bind:this={scroller}
+  onscroll={phoneHome ? () => scroller && (memory.top = scroller.scrollTop) : undefined}
+  oncontextmenu={(e) => menu.show(e, navMenu())}
+>
+  {#if phoneHome}
+    <!-- The app's page on a phone: its name, how many, and the buttons that
+         start a note. What narrows the list is in the drawer. -->
+    <header class="phonetop">
+      <div class="pane-titles">
+        <h1 class="pane-title">Notes</h1>
+        <span class="pane-sub">
+          {#if searching}
+            {plural(notes.results.length, 'result')}
+          {:else}
+            {heading}
+          {/if}
+        </span>
+      </div>
+      {#if meetings.canRecord}
+        <button
+          class="side-add"
+          title="Record a call"
+          aria-label="Record a call"
+          onclick={() => (recordSheet = true)}
+        >
+          <Icon name="mic" size={17} />
+        </button>
       {/if}
-    </span>
-    {#if meetings.supported}
+      {#if noteTemplates.length}
+        <button
+          class="side-add"
+          title="New note from template"
+          aria-label="New note from template"
+          aria-haspopup="menu"
+          onclick={pickTemplate}
+        >
+          <Icon name="layers" size={17} />
+        </button>
+      {/if}
       <button
-        class="side-add"
-        title="Record a call"
-        aria-label="Record a call"
-        onclick={() => (recordSheet = true)}
+        class="side-add primary"
+        title="New note"
+        aria-label="New note"
+        onclick={() => void start()}
       >
-        <Icon name="mic" size={15} />
+        <Icon name="plus" size={20} weight={2} />
       </button>
-    {/if}
-    {#if noteTemplates.length}
-      <button
-        class="side-add"
-        title="New note from template"
-        aria-label="New note from template"
-        aria-haspopup="menu"
-        onclick={pickTemplate}
-      >
-        <Icon name="layers" size={15} />
-      </button>
-    {/if}
-    <button
-      class="side-add"
-      title="New note"
-      aria-label="New note"
-      onclick={() => void notes.create()}
-    >
-      <Icon name="plus" size={15} />
-    </button>
-  </div>
+    </header>
 
-  {#if !searching && (notes.mixed || notes.origin)}
+    <!-- What is narrowing the list, with a way to let it go: the choosing is
+         in the drawer, and a list that is short for a reason nobody can see
+         reads as a list that has lost notes. -->
+    {#if !searching && (notes.origin || notes.tag)}
+      <div class="active" role="group" aria-label="Narrowed to">
+        {#if notes.origin}
+          <button
+            class="tagchip on"
+            aria-label="Showing {originLabel(notes.origin, agent.displayName)}: show every kind"
+            onclick={() => notes.setOrigin(null)}
+          >
+            <Icon name={ORIGIN_ICONS[notes.origin]} size={13} />
+            {originLabel(notes.origin, agent.displayName)}
+            <Icon name="close" size={12} weight={1.8} />
+          </button>
+        {/if}
+        {#if notes.tag}
+          {@const tag = notes.tag}
+          <button
+            class="tagchip on"
+            aria-label="Showing notes tagged {tag}: show every note"
+            onclick={() => void notes.setTag(null)}
+          >
+            <span class="hash">#</span>{tag}
+            <Icon name="close" size={12} weight={1.8} />
+          </button>
+        {/if}
+      </div>
+    {/if}
+  {:else}
+    <div class="side-head">
+      <span class="eyebrow">
+        {#if searching}
+          {plural(notes.results.length, 'result')}
+        {:else}
+          {heading}
+        {/if}
+      </span>
+      {#if !phoneDrawer}
+        {#if meetings.canRecord}
+          <button
+            class="side-add"
+            title="Record a call"
+            aria-label="Record a call"
+            onclick={() => (recordSheet = true)}
+          >
+            <Icon name="mic" size={15} />
+          </button>
+        {/if}
+        {#if noteTemplates.length}
+          <button
+            class="side-add"
+            title="New note from template"
+            aria-label="New note from template"
+            aria-haspopup="menu"
+            onclick={pickTemplate}
+          >
+            <Icon name="layers" size={15} />
+          </button>
+        {/if}
+        <button
+          class="side-add"
+          title="New note"
+          aria-label="New note"
+          onclick={() => void start()}
+        >
+          <Icon name="plus" size={15} />
+        </button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if !phoneHome && !searching && (notes.mixed || notes.origin)}
     <!-- The shared filter bar: each kind an icon and how many there are,
          the chosen one named in the heading above rather than on its chip
          -- in a sidebar this narrow a chip naming itself clipped the
@@ -270,7 +413,10 @@
           aria-label={kind.label}
           class:on
           title={`${kind.label}: ${plural(kind.count, 'note')}`}
-          onclick={() => notes.setOrigin(kind.key)}
+          onclick={() => {
+            notes.setOrigin(kind.key)
+            chosen()
+          }}
         >
           <Icon name={kind.key ? ORIGIN_ICONS[kind.key] : 'list'} size={14} />
           <span class="n">{kind.count.toLocaleString()}</span>
@@ -279,19 +425,22 @@
     </div>
   {/if}
 
-  {#if !searching && (notes.tags.length > 0 || notes.tag)}
+  {#if !phoneHome && !searching && (notes.tags.length > 0 || notes.tag)}
     <!-- The most used tags, each with how many notes carry it -- the order
          and the number together say which matter. One at a time, like
          every other filter; picking the one in force again lets it go. -->
     <div class="tagrow" role="group" aria-label="Tags">
-      {#each tagChips.shown as t (t.tag)}
+      {#each shownTags as t (t.tag)}
         {@const on = sameTag(t.tag, notes.tag)}
         <button
           class="tagchip"
           class:on
           aria-pressed={on}
           title={on ? 'Show every note' : plural(t.count, 'note')}
-          onclick={() => void notes.setTag(on ? null : t.tag)}
+          onclick={() => {
+            void notes.setTag(on ? null : t.tag)
+            chosen()
+          }}
         >
           <span class="hash">#</span>{t.tag}
           {#if on}
@@ -301,7 +450,7 @@
           {/if}
         </button>
       {/each}
-      {#if tagChips.rest > 0}
+      {#if tagChips.rest > 0 && !phoneDrawer}
         <button
           class="tagchip more"
           aria-haspopup="menu"
@@ -315,13 +464,13 @@
     </div>
   {/if}
 
-  {#if !searching && meetings.recordingsError}
+  {#if !phoneHome && !searching && meetings.recordingsError}
     <p class="error recordings-error">
       Couldn’t refresh call recordings: {meetings.recordingsError}
     </p>
   {/if}
 
-  {#if !searching && meetings.recordings.length > 0}
+  {#if !phoneHome && !searching && meetings.recordings.length > 0}
     <div class="recordings">
       {#each meetings.recordings as r (r.id)}
         <RecordingCard recording={r} />
@@ -329,7 +478,22 @@
     </div>
   {/if}
 
-  {#if searching}
+  {#if phoneDrawer}
+    <!-- The order, which on a desktop is in the menu a right-click raises. A
+         row, so choosing one puts the drawer away. -->
+    <div class="side-head"><span class="eyebrow">Sort by</span></div>
+    {#each SORTS as sort (sort.value)}
+      <button
+        class="side-row"
+        class:sel={notes.sort === sort.value}
+        aria-pressed={notes.sort === sort.value}
+        onclick={() => void notes.setSort(sort.value)}
+      >
+        <span class="side-text">{sort.label}</span>
+        {#if notes.sort === sort.value}<Icon name="check" size={15} weight={2} />{/if}
+      </button>
+    {/each}
+  {:else if searching}
     {#if notes.searching && notes.results.length === 0}
       <p class="hint">Searching…</p>
     {:else if notes.results.length === 0}
@@ -339,8 +503,8 @@
         {@const origin = originOf.get(hit.id) ?? 'own'}
         <button
           class="side-row hit"
-          class:sel={notes.selected === hit.id}
-          onclick={() => void notes.openNote(hit.id)}
+          class:sel={!phoneHome && notes.selected === hit.id}
+          onclick={() => void open(hit.id)}
         >
           {#if marked}
             <span class="mark {origin}">
@@ -371,7 +535,7 @@
     {#each ghosts as p (p.id)}
       {@const note = recordAs(p, 'note')}
       {#if note}
-        <ProposalGhost proposal={p} color="var(--accent)" onopen={() => notes.openProposal(p)}>
+        <ProposalGhost proposal={p} color="var(--accent)" onopen={() => openProposal(p)}>
           <span class="text">
             <span class="title">{note.title || 'Untitled note'}</span>
           </span>
@@ -391,10 +555,10 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="side-row noterow"
-          class:sel={notes.selected === note.id}
+          class:sel={!phoneHome && notes.selected === note.id}
           oncontextmenu={(e) => menu.show(e, noteMenu(note))}
         >
-          <button class="rowbody" onclick={() => void notes.openNote(note.id)}>
+          <button class="rowbody" onclick={() => void open(note.id)}>
             {#if marked}
               <span
                 class="mark {note.origin}"
@@ -428,7 +592,7 @@
           <ProposalGhost
             proposal={replaceProposal}
             color="var(--accent)"
-            onopen={() => notes.openProposal(replaceProposal)}
+            onopen={() => openProposal(replaceProposal)}
           />
         {/if}
       {/if}
@@ -697,5 +861,66 @@
     margin-top: var(--sp-2);
     color: var(--danger);
     font-size: var(--text-sm);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The list is the app's page. Its tail clears the floating assistant
+     button, and a row is the width of the screen. */
+  .home {
+    padding: 0 var(--sp-2) var(--fab-clear);
+  }
+  .phonetop {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    padding: var(--sp-2) var(--sp-1) var(--sp-2) var(--sp-2);
+  }
+  .side-add.primary {
+    width: 40px;
+    height: 40px;
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    color: var(--accent);
+  }
+  .side-add.primary:active {
+    background: color-mix(in oklab, var(--accent) 24%, transparent);
+  }
+  .home .side-row:active {
+    background: var(--bg-hover);
+  }
+  .home .section {
+    padding-inline: var(--sp-2);
+  }
+  .home .hint {
+    padding-inline: var(--sp-2);
+  }
+  .active {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    padding: 0 var(--sp-2) var(--sp-1);
+  }
+  .active .tagchip {
+    height: 34px;
+  }
+
+  /* Chips a finger can hit, in the drawer and on the page. */
+  :global([data-phone]) .tagchip {
+    height: 34px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .tagrow {
+    gap: var(--sp-1);
+    padding-top: var(--sp-3);
+  }
+  :global([data-phone]) .rowbody {
+    padding-block: var(--sp-2);
+  }
+
+  /* The drawer reaches the foot of the screen, over the bar of apps: what is
+     last in it has to clear the gesture bar and be reachable. */
+  :global([data-phone]) .side-nav:not(.home) {
+    padding-bottom: calc(var(--bottombar-h) + var(--safe-bottom));
   }
 </style>

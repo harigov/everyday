@@ -79,4 +79,9 @@
     line-height: var(--leading-normal);
     color: var(--fg-faint);
   }
+
+  /* On a phone: a row is as tall as every other row of a list there. */
+  :global([data-phone]) .side-row {
+    min-height: 48px;
+  }
 </style>

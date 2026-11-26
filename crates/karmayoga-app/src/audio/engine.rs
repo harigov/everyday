@@ -81,9 +81,12 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvErr
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+#[cfg(mobile)]
+use super::no_models::{Cleanup, MicCleanup, NoiseFilter, VoiceIsolation};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, SupportedStreamConfig};
 use karmayoga_service::speech::SAMPLE_RATE;
+#[cfg(desktop)]
 use karmayoga_service::speech::cleanup::{Cleanup, MicCleanup, NoiseFilter, VoiceIsolation};
 use karmayoga_service::voice::cue::{Bed, listening_chime};
 

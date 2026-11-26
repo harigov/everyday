@@ -21,6 +21,7 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { panels } from '../lib/panels.svelte'
+  import { details } from '../lib/phone.svelte'
   import { proposals } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
   import type { ConversationSummary } from '../lib/types'
@@ -36,13 +37,32 @@
     (app.supportsRoutines ? assistant.unseen : 0) + (app.supportsJobs ? jobs.unseen : 0),
   )
 
+  /**
+   * A conversation chosen from the list. On a phone it is shown over the list
+   * (see `details`), at once rather than when it has loaded, so the screen
+   * answers the tap; a reply being written into the one on screen is not
+   * interrupted by choosing another, as on a desktop, where the row does
+   * nothing until it has finished.
+   */
+  function open(thread: ConversationSummary) {
+    if (agent.busy && thread.id !== agent.conversationId) return
+    void agent.openThread(thread.id)
+    details.open('assistant')
+  }
+
+  /** A fresh conversation, with the caret in its box once it is on screen. */
+  function start() {
+    void agent.startThread()
+    details.open('assistant')
+  }
+
   function threadMenu(thread: ConversationSummary): MenuItem[] {
     return tidyMenu([
       {
         label: 'Open',
         icon: 'quote',
         disabled: agent.busy,
-        run: () => void agent.openThread(thread.id),
+        run: () => open(thread),
       },
       SEP,
       {
@@ -62,7 +82,7 @@
         icon: 'plus',
         hint: 'C',
         disabled: agent.busy,
-        run: () => void agent.startThread(),
+        run: start,
       },
       SEP,
       { label: 'Routines', icon: 'clock', run: () => assistant.setPane('routines') },
@@ -78,16 +98,18 @@
   async function remove() {
     const thread = pendingDelete
     pendingDelete = null
-    if (thread) await agent.deleteThread(thread.id)
+    if (!thread) return
+    const shown = thread.id === agent.conversationId
+    await agent.deleteThread(thread.id)
+    // Deleting the open conversation starts a fresh one in its place, which
+    // the thread page would follow into (see `AssistantView`); what a phone
+    // wants after a delete is the list it was deleted from.
+    if (shown) details.close('assistant')
   }
 </script>
 
 <nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
-  <button
-    class="side-row new"
-    onclick={() => void agent.startThread()}
-    disabled={agent.busy || !agent.ready}
-  >
+  <button class="side-row new" onclick={start} disabled={agent.busy || !agent.ready}>
     <span class="side-icon"><Symbol name="plus" size={17} /></span>
     <span class="side-text">New conversation</span>
   </button>
@@ -119,7 +141,7 @@
       <button
         class="side-row"
         class:sel={thread.id === agent.conversationId}
-        onclick={() => void agent.openThread(thread.id)}
+        onclick={() => open(thread)}
         oncontextmenu={(e) => {
           e.stopPropagation()
           menu.show(e, threadMenu(thread))

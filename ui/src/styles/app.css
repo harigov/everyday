@@ -818,6 +818,117 @@ textarea.field {
   padding: var(--sp-4);
 }
 
+/* ── Phones ─────────────────────────────────────────────────────────────
+   `data-phone` on <html> is the one breakpoint -- `lib/phone.svelte.ts` sets
+   it, and every rule a phone needs, here and in components
+   (`:global([data-phone]) .thing`), keys off it. The frame on a phone is
+   the top bar, the open app, and the bar along the bottom (`BottomBar`);
+   the sidebar is a drawer and the assistant covers the screen.
+
+   The screen's edges: a phone draws the page under its status bar and its
+   gesture bar (and a notch, on its side), and says how far in from each
+   edge is clear. The top bar, the bottom bar and anything else laid against
+   an edge pad themselves by these.
+   The Android shell measures them itself, as `--edge-*` (see
+   `phone.svelte.ts`), since its webview does not report every one. */
+:root {
+  --safe-top: max(env(safe-area-inset-top, 0px), var(--edge-top, 0px));
+  --safe-right: max(env(safe-area-inset-right, 0px), var(--edge-right, 0px));
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--edge-bottom, 0px));
+  --safe-left: max(env(safe-area-inset-left, 0px), var(--edge-left, 0px));
+  /* The bottom bar's own height, above the gesture bar's inset. */
+  --bottombar-h: 62px;
+}
+
+/* The frame's panels touch and square off on a phone: a margin of backdrop
+   between them is width the app needs. Over a theme's own values, which it
+   sets on the same element. */
+:root[data-phone] {
+  --shell-gap: 0px;
+  --shell-radius: 0px;
+  --topbar-h: 52px;
+  --sidebar-w: min(86vw, 320px);
+  -webkit-tap-highlight-color: transparent;
+}
+[data-phone] body {
+  overscroll-behavior: none;
+}
+
+/* The bar of apps steps aside while the on-screen keyboard is up: the room
+   above the keyboard is for what is being typed. */
+:root[data-keyboard] [data-bottom-bar] {
+  display: none;
+}
+
+/* No keyboard on a phone, so no hints about its shortcuts. */
+[data-phone] kbd {
+  display: none;
+}
+
+/* Sixteen pixels in a field: iOS zooms the page into any smaller one when
+   it takes focus, and a field a finger types in reads better at that size
+   anyway. */
+[data-phone] input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']),
+[data-phone] textarea,
+[data-phone] select {
+  font-size: max(16px, 1em);
+}
+
+/* Finger-sized: the shared controls every app draws. A pointer can hit a
+   28 px row; a fingertip covers about 40. */
+[data-phone] .btn {
+  min-height: 40px;
+}
+[data-phone] .btn-sm {
+  min-height: 34px;
+}
+[data-phone] .side-row {
+  min-height: 44px;
+}
+[data-phone] .filter {
+  min-height: 34px;
+}
+
+/* A press on a control is a press, not the start of selecting its label or
+   of the system's own menu for it. */
+[data-phone] button,
+[data-phone] [role='button'],
+[data-phone] [role='tab'] {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* A sheet on a phone: over the bar of apps and the sidebar's drawer, which
+   its scrim dims too, as wide as the screen allows, hanging from the top
+   under the status bar, and never reaching past the top of the bar -- a sheet
+   centred in the whole window sent its buttons under it. (With the keyboard
+   up the bar steps aside, and the page, and with it the room, is shorter.) */
+[data-phone] .scrim {
+  z-index: 65;
+}
+[data-phone] .sheet {
+  z-index: 66;
+  width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
+  top: calc(var(--safe-top) + max(8dvh, var(--sp-4)));
+  max-height: calc(
+    100dvh - var(--safe-top) - max(8dvh, var(--sp-4)) - var(--bottombar-h) - var(--safe-bottom) -
+      var(--sp-3)
+  );
+}
+
+/* The sidebar's add buttons, at a finger's size. */
+[data-phone] .side-add {
+  width: 36px;
+  height: 36px;
+}
+
+/* What only a phone draws, and what a phone leaves out. */
+:root:not([data-phone]) .phone-only,
+[data-phone] .desktop-only {
+  display: none !important;
+}
+
 /* Respect the platform's reduced-motion preference. */
 @media (prefers-reduced-motion: reduce) {
   *,

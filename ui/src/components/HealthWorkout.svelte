@@ -20,6 +20,7 @@
   import { minutesBetween } from '../lib/time'
   import HealthLine from './HealthLine.svelte'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import StatTile from './StatTile.svelte'
 
   const HEART = 'oklch(var(--app-lightness) var(--app-chroma) 25)'
@@ -223,7 +224,8 @@
 <div class="workout scroll">
   <div class="page">
     <div class="bar">
-      <button class="btn btn-sm back-btn" onclick={() => health.openWorkout(null)}>
+      <PhoneBack onclick={() => health.openWorkout(null)} label="Activity" />
+      <button class="btn btn-sm back-btn desktop-only" onclick={() => health.openWorkout(null)}>
         <span class="back"><Icon name="chevron" size={13} /></span>
         Back to activity
       </button>
@@ -433,5 +435,18 @@
   }
   .spacer {
     flex: 1;
+  }
+
+  /* A phone: the way back (PhoneBack, above) takes the place of the
+     desktop's button, and the page's actions wrap beneath each other
+     rather than off the screen. */
+  :global([data-phone]) .actions {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .actions .spacer {
+    display: none;
+  }
+  :global([data-phone]) .actions .btn {
+    flex: 1 1 8em;
   }
 </style>

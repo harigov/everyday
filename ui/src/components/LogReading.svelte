@@ -308,4 +308,28 @@
   .cname {
     font-size: var(--text-xs);
   }
+
+  /* A phone: the field, its tick and the known trackers a finger tall, in
+     a popover never wider than the screen. */
+  :global([data-phone]) .log {
+    min-width: 0;
+    max-width: min(340px, 100vw - var(--sp-6));
+  }
+  :global([data-phone]) .line {
+    height: 46px;
+  }
+  :global([data-phone]) .line input {
+    align-self: stretch;
+  }
+  :global([data-phone]) .go {
+    width: 38px;
+    height: 38px;
+  }
+  :global([data-phone]) .chip {
+    min-height: 40px;
+    padding-right: var(--sp-3);
+  }
+  :global([data-phone]) .cname {
+    font-size: var(--text-sm);
+  }
 </style>

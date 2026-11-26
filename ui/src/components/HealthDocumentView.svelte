@@ -25,6 +25,7 @@
   import HealthLabReview from './HealthLabReview.svelte'
   import Icon from './Icon.svelte'
   import PdfView from './PdfView.svelte'
+  import PhoneBack from './PhoneBack.svelte'
 
   const KINDS: DocKind[] = [
     'labReport',
@@ -241,7 +242,8 @@
 {#if doc}
   <div class="doc">
     <header class="top">
-      <button class="back" onclick={() => health.openDocument(null)}>
+      <PhoneBack onclick={() => health.openDocument(null)} label="Records" />
+      <button class="back desktop-only" onclick={() => health.openDocument(null)}>
         <span class="flip"><Icon name="chevron" size={13} /></span>
         Records
       </button>
@@ -730,5 +732,51 @@
     .side {
       overflow: visible;
     }
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     A page of its own: the way back and Delete across the top, the title
+     under them, the document as tall as a phone's screen allows, and the
+     details a finger can fill in. */
+  :global([data-phone]) .top {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0 var(--sp-2);
+    padding: var(--sp-1) var(--sp-3) var(--sp-2);
+  }
+  :global([data-phone]) .top .pane-titles {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-inline: var(--sp-2);
+  }
+  :global([data-phone]) .top .btn {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  :global([data-phone]) .top .pane-title {
+    white-space: normal;
+  }
+  :global([data-phone]) .cols {
+    padding-inline: var(--sp-3);
+    gap: var(--sp-4);
+  }
+  :global([data-phone]) .page {
+    height: min(62dvh, 640px);
+  }
+  :global([data-phone]) .two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :global([data-phone]) .check {
+    min-height: 44px;
+  }
+  :global([data-phone]) .check input {
+    width: 20px;
+    height: 20px;
+  }
+  :global([data-phone]) .pill {
+    height: 40px;
+  }
+  :global([data-phone]) .save {
+    flex-wrap: wrap;
   }
 </style>

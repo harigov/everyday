@@ -6,15 +6,21 @@
 //! and where this session's remarks are emitted -- plus the choice between a
 //! vault in this process and one on another machine.
 
+#[cfg(desktop)]
 use karmayoga_server::Registry;
 use karmayoga_service::Service;
+#[cfg(desktop)]
 use karmayoga_service::error::{CommandError, CommandResult};
 use karmayoga_service::events::EventSink;
+use std::sync::Mutex;
+#[cfg(desktop)]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
+#[cfg(desktop)]
 use crate::mcp::Mcp;
 use crate::remote::Session;
+#[cfg(desktop)]
 use crate::sharing::Sharing;
 
 pub struct AppState {
@@ -28,19 +34,24 @@ pub struct AppState {
     session: RwLock<Session>,
     /// Set once the interface has been told to save and close, so the second
     /// `CloseRequested` -- the one we ask for ourselves -- is let through.
+    #[cfg(desktop)]
     closing: AtomicBool,
     /// Set by an explicit Quit, so the close it asks for is not turned into a
     /// hide, which is what closing the window does. See [`AppState::quit`].
+    #[cfg(desktop)]
     quitting: AtomicBool,
     /// Where the service's remarks go. Kept so a remote session can re-emit the
     /// server's events through the same channel a local vault uses.
     sink: RwLock<Option<Arc<dyn EventSink>>>,
     /// Serving this window's vault to other machines, when that is on.
+    #[cfg(desktop)]
     sharing: Arc<Sharing>,
     /// Serving this vault's tools to an MCP client, when that is on.
+    #[cfg(desktop)]
     mcp: Arc<Mcp>,
     /// Web access -- the interface in a browser on the tailnet. A third
     /// switch beside sharing and MCP, composed into the fan-out the same way.
+    #[cfg(desktop)]
     web: Arc<crate::web::WebAccess>,
     /// A meeting being recorded, or being started, for the life of the
     /// capture. See `capture.rs`'s `CaptureSlot` and `meeting.rs`'s
@@ -48,12 +59,15 @@ pub struct AppState {
     /// before it is ever `Some(CaptureSlot::Recording(_))` -- `meeting_start`
     /// refuses a second recording while this is `Some` at all, whichever
     /// variant.
+    #[cfg(desktop)]
     capture: Mutex<Option<crate::capture::CaptureSlot>>,
     /// A conversation being talked, for as long as it lasts. See `voice`.
     voice: Mutex<Option<crate::voice::VoiceHandle>>,
     /// Something being read aloud, for as long as it lasts. See `listen`.
+    #[cfg(desktop)]
     listen: Mutex<Option<crate::listen::ListenHandle>>,
     /// Someone dictating, for as long as it lasts. See `dictation`.
+    #[cfg(desktop)]
     dictation: Mutex<Option<crate::dictation::DictationHandle>>,
     /// The one open handle onto `devices.json`, for the life of this
     /// process.
@@ -68,6 +82,7 @@ pub struct AppState {
     /// other. `registry()` below is the one place this process opens that
     /// file; `Sharing` and `Mcp` themselves hold no path to it at all, only
     /// whatever `Arc` a caller hands them.
+    #[cfg(desktop)]
     registry: Mutex<Option<Arc<Registry>>>,
 }
 
@@ -83,20 +98,30 @@ impl AppState {
         Self {
             session: RwLock::new(Session::Local(service.clone())),
             service,
+            #[cfg(desktop)]
             closing: AtomicBool::new(false),
+            #[cfg(desktop)]
             quitting: AtomicBool::new(false),
             sink: RwLock::new(None),
+            #[cfg(desktop)]
             sharing: Arc::default(),
+            #[cfg(desktop)]
             mcp: Arc::default(),
+            #[cfg(desktop)]
             web: Arc::default(),
+            #[cfg(desktop)]
             capture: Mutex::new(None),
             voice: Mutex::new(None),
+            #[cfg(desktop)]
             listen: Mutex::new(None),
+            #[cfg(desktop)]
             dictation: Mutex::new(None),
+            #[cfg(desktop)]
             registry: Mutex::new(None),
         }
     }
 
+    #[cfg(desktop)]
     /// The active (or starting) recording's slot -- what `meeting.rs`'s
     /// commands take a handle out of (`meeting_stop`) or check the presence
     /// of (`begin_headless`'s "already running" reservation, `meeting_status`).
@@ -108,22 +133,27 @@ impl AppState {
         &self.voice
     }
 
+    #[cfg(desktop)]
     pub fn listen(&self) -> &Mutex<Option<crate::listen::ListenHandle>> {
         &self.listen
     }
 
+    #[cfg(desktop)]
     pub fn dictation(&self) -> &Mutex<Option<crate::dictation::DictationHandle>> {
         &self.dictation
     }
 
+    #[cfg(desktop)]
     pub fn sharing(&self) -> Arc<Sharing> {
         self.sharing.clone()
     }
 
+    #[cfg(desktop)]
     pub fn web(&self) -> Arc<crate::web::WebAccess> {
         self.web.clone()
     }
 
+    #[cfg(desktop)]
     pub fn mcp(&self) -> Arc<Mcp> {
         self.mcp.clone()
     }
@@ -132,6 +162,7 @@ impl AppState {
         self.service.clone()
     }
 
+    #[cfg(desktop)]
     /// The shared device registry, opened the first time anything asks and
     /// reused after that.
     ///
@@ -153,6 +184,7 @@ impl AppState {
         Ok(registry)
     }
 
+    #[cfg(desktop)]
     /// Is there work here that does not need a window?
     ///
     /// A routine the assistant is expected to run on a schedule, a vault being
@@ -185,6 +217,7 @@ impl AppState {
         self.sink.read().unwrap().clone()
     }
 
+    #[cfg(desktop)]
     /// Point the service's events at the window, and at sharing and MCP,
     /// whichever of them happen to be on right now.
     ///
@@ -242,6 +275,7 @@ impl AppState {
         matches!(&*self.session.read().unwrap(), Session::Remote(_))
     }
 
+    #[cfg(desktop)]
     /// Claim the right to run the save-before-close handshake.
     ///
     /// True the first time and false afterwards, so the close that follows a
@@ -251,6 +285,7 @@ impl AppState {
         !self.closing.swap(true, Ordering::SeqCst)
     }
 
+    #[cfg(desktop)]
     /// Mark the close about to be asked for as a quit, not a hide.
     ///
     /// The tray's Quit closes the window the same way its close button does,
@@ -263,6 +298,7 @@ impl AppState {
         self.quitting.store(true, Ordering::SeqCst);
     }
 
+    #[cfg(desktop)]
     pub fn is_quitting(&self) -> bool {
         self.quitting.load(Ordering::SeqCst)
     }

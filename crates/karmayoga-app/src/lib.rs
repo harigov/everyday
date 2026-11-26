@@ -8,58 +8,103 @@
 //! point is a library: Tauri builds iOS and Android targets from `run()` rather
 //! than from `main`.
 
+// The modules marked `cfg(desktop)` are the desktop's alone: the tray, the
+// OS-wide keys, the small windows that work over other applications, the
+// microphone and speakers, serving this vault, screen time. The phone shell
+// is `mobile`, and is built from the rest.
+//
 // Only tests: the ones that keep `build.rs`, `invoke_handler` and the capability
 // files in step. See the module's own doc.
 #[cfg(test)]
 mod acl;
+// The desktop's voice transport, which a phone uses too. What serves only
+// the desktop -- the talk key's and the wake word's own conversations, a
+// recording's last seconds -- is compiled and unused there.
+#[cfg_attr(mobile, allow(dead_code))]
 mod audio;
+#[cfg(desktop)]
 mod badge;
+#[cfg(desktop)]
 pub mod capture;
+#[cfg(desktop)]
 mod clipboard;
 mod commands;
+#[cfg(desktop)]
 mod desk;
+#[cfg(desktop)]
 mod dictation;
 mod events;
+#[cfg(desktop)]
 mod fanout;
+#[cfg(desktop)]
 mod files;
 #[cfg(target_os = "linux")]
 mod gnome;
 mod guard;
+#[cfg(desktop)]
 mod health;
+#[cfg(desktop)]
 mod hotkey;
+#[cfg(desktop)]
 mod legacy;
+#[cfg(desktop)]
 mod listen;
+#[cfg(desktop)]
 mod listener;
+#[cfg(desktop)]
 mod machine_config;
+#[cfg(desktop)]
 mod mcp;
+#[cfg(desktop)]
 mod microphone;
 // `pub`: `meeting::begin_headless` is the window-free core of
 // `meeting_start`/`start_automatic` -- see its own doc -- and an E2E test
 // (`tests/meeting_e2e.rs`) drives a recording through it with no Tauri
 // window at all. Everything else in this module stays private.
+#[cfg(desktop)]
 pub mod meeting;
+#[cfg(desktop)]
 mod micwatch;
+#[cfg(mobile)]
+mod mobile;
 mod navigation;
 mod notice;
+#[cfg(desktop)]
 mod offers;
+#[cfg(desktop)]
 mod panel;
+#[cfg(desktop)]
 mod player;
 #[cfg(target_os = "linux")]
 mod portal;
 mod protocol;
 mod remote;
 mod remotes;
+#[cfg(desktop)]
 mod screentime;
+#[cfg(desktop)]
 mod sharing;
 mod state;
+#[cfg(desktop)]
 mod talk;
+#[cfg(desktop)]
 mod transfer;
+#[cfg(desktop)]
 mod tray;
+// The desktop's voice transport, which a phone uses too. What serves only
+// the desktop -- the talk key's and the wake word's own conversations, a
+// recording's last seconds -- is compiled and unused there.
+#[cfg_attr(mobile, allow(dead_code))]
 mod voice;
+#[cfg(desktop)]
 mod voicetyping;
+#[cfg(desktop)]
 mod wake;
+#[cfg(desktop)]
 mod web;
+#[cfg(desktop)]
 mod windows;
+#[cfg(desktop)]
 mod writing;
 
 // Re-exported, not the whole (otherwise private) `state` module: the one
@@ -67,18 +112,24 @@ mod writing;
 // be able to name. See that function's own doc.
 pub use state::SessionHandle;
 
+#[cfg(desktop)]
 use badge::Badge;
+#[cfg(desktop)]
 use state::AppState;
+#[cfg(desktop)]
 use tauri::{Emitter, Manager, WindowEvent};
+#[cfg(desktop)]
 use tray::Tray;
 
 /// Asks the interface to write pending edits and then close the window.
 /// Its other half is `commands::ready_to_close`.
+#[cfg(desktop)]
 pub const SAVE_AND_CLOSE: &str = "karmayoga://save-and-close";
 
 /// How long the window waits for the interface to finish saving before it
 /// closes anyway. Generous for a handful of local writes, and short enough
 /// that a wedged interface does not read as an app that will not quit.
+#[cfg(desktop)]
 pub(crate) const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Entry point shared by the desktop binary and the mobile harnesses.
@@ -92,22 +143,33 @@ pub fn run() {
         panel::topcard::run_child();
     }
 
-    tracing_subscriber::fmt()
+    let log = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("KARMAYOGA_LOG")
                 .unwrap_or_else(|_| "karmayoga_app=info,karmayoga_core=info".into()),
         )
-        .with_target(false)
-        .init();
+        .with_target(false);
+    // An app's standard output goes nowhere on Android. See `mobile::Logcat`.
+    #[cfg(target_os = "android")]
+    let log = log.with_writer(mobile::Logcat).with_ansi(false).without_time();
+    log.init();
 
     for (old, new) in karmayoga_core::legacy::old_environment() {
         tracing::warn!("{old} is no longer read; it is {new} now");
     }
+
+    // The phone: a remote client in one window, built from the shared half
+    // of this crate. See `mobile`.
+    #[cfg(mobile)]
+    mobile::run();
+
     // Before the single-instance check and before any window: an installation
     // of Every Day is carried across first, or this build would open on empty
     // folders. See `legacy`.
+    #[cfg(desktop)]
     legacy::carry_over();
 
+    #[cfg(desktop)]
     tauri::Builder::default()
         // Must be the first plugin registered: a second launch has to be
         // turned away before it can build a window or open a vault.

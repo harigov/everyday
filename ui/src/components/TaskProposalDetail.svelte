@@ -10,7 +10,9 @@
   import { declineItems, edited, proposals, recordAs } from '../lib/proposals.svelte'
   import { todo } from '../lib/todo.svelte'
   import { formatMinutes } from '../lib/format'
+  import { closesOnBack } from '../lib/phone.svelte'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import PurposeField from './PurposeField.svelte'
   import { PRIORITIES, TASK_STATUSES } from '../lib/types'
   import type { DeclineReason, Priority, Purpose, Task, TaskStatus } from '../lib/types'
@@ -34,6 +36,12 @@
     if (!draft || !original) return false
     return JSON.stringify(draft) !== JSON.stringify(original)
   })
+
+  // A phone's back button closes it, as its own way back does.
+  closesOnBack(
+    () => draft !== null,
+    () => todo.closeProposal(),
+  )
 
   const busy = $derived(proposals.isBusy(proposal.id))
   const reasons = Symbol('decline reasons')
@@ -75,8 +83,15 @@
 {#if draft}
   <aside class="detail proposal">
     <header class="top">
+      <!-- A phone shows it over the list, with the way back to it. -->
+      <PhoneBack onclick={() => todo.closeProposal()} label="Tasks" />
       <span class="badge"><Icon name="sparkle" size={12} /> Proposed task</span>
-      <button class="close" title="Close" aria-label="Close" onclick={() => todo.closeProposal()}>
+      <button
+        class="close desktop-only"
+        title="Close"
+        aria-label="Close"
+        onclick={() => todo.closeProposal()}
+      >
         <Icon name="close" size={15} />
       </button>
     </header>
@@ -353,5 +368,46 @@
     padding: var(--sp-3) var(--sp-4);
     border-top: 1px solid var(--border);
     flex: none;
+  }
+
+  /* A phone: the whole of the screen between its bars, over the list the
+     proposal was chosen from, with the fields a finger can use and the
+     answers where a thumb rests. */
+  :global([data-phone]) .detail {
+    position: fixed;
+    inset: calc(var(--safe-top) + var(--topbar-h)) var(--safe-right)
+      calc(var(--bottombar-h) + var(--safe-bottom)) var(--safe-left);
+    z-index: 40;
+    width: auto;
+    border-left: 0;
+  }
+  :global([data-phone]) .top {
+    height: 56px;
+    justify-content: flex-start;
+    gap: var(--sp-2);
+    padding: 0 var(--sp-3) 0 var(--sp-1);
+  }
+  :global([data-phone]) .grid {
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: var(--sp-3) var(--sp-2);
+  }
+  :global([data-phone]) .lab {
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .pick {
+    height: 44px;
+    padding: 0 var(--sp-3);
+    font-size: max(16px, var(--text-sm));
+  }
+  :global([data-phone]) .pair .time {
+    flex: 0 0 120px;
+  }
+  :global([data-phone]) .answers {
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .answers .btn {
+    flex: 1;
+    justify-content: center;
   }
 </style>

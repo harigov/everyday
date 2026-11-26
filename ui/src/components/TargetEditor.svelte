@@ -272,4 +272,32 @@
   .add:hover {
     color: var(--fg);
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* Fields and buttons a finger can hit. The line already wraps, so what does
+     not fit beside the others goes under them. */
+  :global([data-phone]) .line {
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) select,
+  :global([data-phone]) .num {
+    height: 44px;
+    padding: 0 var(--sp-2);
+    font-size: max(16px, var(--text-base));
+  }
+  :global([data-phone]) .num {
+    width: 5.5rem;
+  }
+  :global([data-phone]) .drop {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .add {
+    min-height: 44px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .reads {
+    font-size: var(--text-sm);
+  }
 </style>

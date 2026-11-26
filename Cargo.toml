@@ -127,6 +127,31 @@ opt-level = 3
 [profile.dev.package.loqui-g2p]
 opt-level = 3
 
+# The microphone's echo cancelling and noise suppression (sonora, a port of
+# WebRTC's audio processing) and the resampler in front of it run on every
+# 10 ms of audio: unoptimised, a phone build heard one second of speech in
+# every twenty, and the assistant never heard anybody finish a sentence.
+[profile.dev.package.sonora]
+opt-level = 3
+[profile.dev.package.sonora-aec3]
+opt-level = 3
+[profile.dev.package.sonora-agc2]
+opt-level = 3
+[profile.dev.package.sonora-common-audio]
+opt-level = 3
+[profile.dev.package.sonora-fft]
+opt-level = 3
+[profile.dev.package.sonora-ns]
+opt-level = 3
+[profile.dev.package.sonora-simd]
+opt-level = 3
+[profile.dev.package.rubato]
+opt-level = 3
+[profile.dev.package.realfft]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 # Unwind, not abort. The supervisor restarts a background task that panics,

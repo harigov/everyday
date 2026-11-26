@@ -8,6 +8,7 @@
   // scrim, Escape and Cancel all run `oncancel`.
 
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
 
   let {
     title,
@@ -20,6 +21,12 @@
     options: { label: string; danger?: boolean; run: () => unknown }[]
     oncancel: () => unknown
   } = $props()
+
+  // Shown for as long as it exists, so a phone's back button is a "no".
+  closesOnBack(
+    () => true,
+    () => void oncancel(),
+  )
 </script>
 
 <svelte:window
@@ -29,8 +36,8 @@
 />
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim" onclick={() => oncancel()}></div>
-<div class="sheet" role="alertdialog" aria-modal="true" aria-label={title} use:trapFocus>
+<div class="scrim phone-fit" onclick={() => oncancel()}></div>
+<div class="sheet phone-fit" role="alertdialog" aria-modal="true" aria-label={title} use:trapFocus>
   <h2 class="sheet-title">{title}</h2>
   {#if detail}<p class="hint">{detail}</p>{/if}
   <!-- The answers stacked, widest reach last, so the three read as a
@@ -72,5 +79,14 @@
   }
   .choices .btn {
     justify-content: center;
+  }
+  /* Each answer a finger tall, and a long one wraps. */
+  :global([data-phone]) .choices .btn,
+  :global([data-phone]) .sheet-row .btn {
+    min-height: 44px;
+    height: auto;
+    padding-block: var(--sp-2);
+    white-space: normal;
+    text-align: center;
   }
 </style>

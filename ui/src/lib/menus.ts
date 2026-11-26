@@ -669,7 +669,7 @@ export function readingMenu(reading: Reading, tracker: Tracker): MenuItem[] {
         // A reading logged from no page has no journal to select, and the
         // entry pointer is what this row is offered for anyway.
         if (reading.journalId) await app.selectJournal(reading.journalId)
-        await app.openEntry(reading.entryId!)
+        await app.showEntry(reading.entryId!)
       },
     },
     {

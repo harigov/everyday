@@ -27,8 +27,14 @@
 />
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim" onclick={() => (panels.shortcuts = false)}></div>
-<div class="sheet" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" use:trapFocus>
+<div class="scrim phone-fit" onclick={() => (panels.shortcuts = false)}></div>
+<div
+  class="sheet wide phone-fit"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Keyboard shortcuts"
+  use:trapFocus
+>
   <header>
     <h2>Keyboard</h2>
     <button class="ghost" onclick={() => (panels.shortcuts = false)} title="Close">
@@ -192,5 +198,40 @@
     border-radius: var(--radius-sm);
     background: var(--bg-sunken);
     color: var(--fg-muted);
+  }
+
+  /* A phone has no keyboard to look these up for, but a hardware one may be
+     attached, and the sheet may be opened -- so it is drawn properly: the
+     width of the screen, one column, a finger-sized way out, and the keys
+     shown (the shared rule that hides them is for hints beside controls, and
+     here they are the content). */
+  :global([data-phone]) .sheet {
+    top: calc(var(--safe-top) + var(--sp-3));
+    translate: -50% 0;
+    width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
+  }
+  :global([data-phone]) .body {
+    columns: 1;
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  }
+  :global([data-phone]) header {
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-4);
+  }
+  :global([data-phone]) footer {
+    padding: var(--sp-3) var(--sp-4);
+  }
+  :global([data-phone]) .ghost {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .line {
+    padding: var(--sp-1) 0;
+  }
+  :global([data-phone]) .keys {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  :global([data-phone]) kbd {
+    display: inline-block;
   }
 </style>

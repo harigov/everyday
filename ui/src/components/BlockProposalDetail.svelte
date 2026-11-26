@@ -12,6 +12,7 @@
   import { dayHeading, formatMinutes, toLocalTimeValue } from '../lib/format'
   import { instantAt, minutesBetween } from '../lib/time'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import type { DeclineReason, Proposal, TimeBlock } from '../lib/types'
 
   let { proposal }: { proposal: Proposal } = $props()
@@ -78,6 +79,7 @@
   {@const colour = calendar.colorOfBlock(draft)}
   <div class="panel scroll proposal" style="--c: {colour}">
     <header class="phead">
+      <PhoneBack onclick={() => calendar.closeProposal()} label="Calendar" />
       <span class="badge"><Icon name="sparkle" size={12} /> Proposed block</span>
       <button class="x" title="Close" aria-label="Close" onclick={() => calendar.closeProposal()}>
         <Icon name="close" size={15} />
@@ -310,5 +312,49 @@
     justify-content: flex-end;
     gap: var(--sp-2);
     margin-top: auto;
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A page over the grid, as an event's is: a back button in a header that
+     stays put, fields a finger can hit, and the two answers side by side
+     above the assistant's button, not under it. */
+  :global([data-phone]) .panel {
+    padding: 0 var(--sp-4) var(--fab-clear);
+  }
+  :global([data-phone]) .phead {
+    flex: none;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    justify-content: flex-start;
+    min-height: 52px;
+    margin: 0 calc(-1 * var(--sp-4));
+    padding: 0 var(--sp-3) 0 var(--sp-1);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+  :global([data-phone]) .x {
+    display: none;
+  }
+  :global([data-phone]) .badge {
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .titlefield {
+    min-height: 44px;
+  }
+  :global([data-phone]) .timefield input {
+    height: 44px;
+    font-size: 16px;
+  }
+  :global([data-phone]) .notes {
+    font-size: 16px;
+  }
+  :global([data-phone]) .answers {
+    gap: var(--sp-3);
+  }
+  :global([data-phone]) .answers .btn {
+    flex: 1;
+    min-height: 44px;
   }
 </style>

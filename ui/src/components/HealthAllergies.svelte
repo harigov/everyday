@@ -354,4 +354,30 @@
   .spacer {
     flex: 1;
   }
+
+  /* A phone: the edit and delete buttons are always there at a finger's
+     size (nothing waits for a hover), and the form's labels sit over their
+     fields rather than beside them in a column too narrow for either. */
+  :global([data-phone]) .actions {
+    opacity: 1;
+    gap: 0;
+  }
+  :global([data-phone]) .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .grid > label:not(:first-child) {
+    margin-top: var(--sp-2);
+  }
+  :global([data-phone]) .field.small {
+    height: 40px;
+  }
+  :global([data-phone]) .editor-row {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
 </style>

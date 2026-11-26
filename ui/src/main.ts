@@ -4,6 +4,24 @@ import './lib/legacy'
 import './styles/app.css'
 import { mount } from 'svelte'
 import App from './App.svelte'
+import { installLongPress, isIOS } from './lib/longpress'
+
+// "ResizeObserver loop completed with undelivered notifications": a list that
+// measures its rows as they are drawn (virtua, behind `VirtualList`) changes
+// size in the same frame it is measured in, the browser puts off telling it
+// until the next, and WebKit reports that deferral as an uncaught error.
+// Nothing is lost -- the next frame delivers it -- so it is not let through
+// as one.
+window.addEventListener('error', (e) => {
+  if (e.message?.includes('ResizeObserver loop')) {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+  }
+})
+
+// iOS raises no `contextmenu` for a long press, which is how a phone opens
+// every row's menu. See `lib/longpress.ts`.
+if (isIOS()) installLongPress()
 
 const target = document.getElementById('app')
 if (!target) throw new Error('#app is missing from index.html')

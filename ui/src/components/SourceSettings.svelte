@@ -50,6 +50,7 @@
     unfollowDetail,
   } from '../lib/feed'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { PLAYER_SPEEDS } from '../lib/player.svelte'
   import {
     downloadPolicyLabel,
@@ -186,6 +187,31 @@
     await feed.deleteSource(original.id)
     onclose()
   }
+
+  // A phone's back button is its Escape.
+  closesOnBack(
+    () => true,
+    () => onclose(),
+  )
+
+  /**
+   * Draw this over the window rather than where it is declared. It is raised
+   * from the Feed's sidebar, which on a phone is a drawer, and a drawer that
+   * has been moved (`translate`, even to nowhere) is the box that `position:
+   * fixed` inside it is measured against -- the sheet came out as wide as the
+   * screen, laid from the drawer's left edge, cut off by the screen's.
+   */
+  function portal(node: HTMLElement) {
+    // Only there: the desktop's sidebar is not moved, and its sheet is where
+    // it always was.
+    if (!phone.on) return
+    document.body.append(node)
+    return {
+      destroy() {
+        node.remove()
+      },
+    }
+  }
 </script>
 
 <svelte:window
@@ -194,329 +220,336 @@
   }}
 />
 
-<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim" onclick={onclose}></div>
-<div
-  class="sheet wide"
-  role="dialog"
-  aria-modal="true"
-  aria-label="Settings for {sourceLabel(original)}"
-  use:trapFocus
->
-  <h2>{sourceLabel(original)}</h2>
-  <div class="following">
-    <p class="hint line">{following}</p>
-    {#if found}
-      <p class="hint line">Found among your newsletters.</p>
-    {/if}
-  </div>
-
-  <label class="field-label" for="src-title">Name</label>
-  <input
-    id="src-title"
-    class="field"
-    placeholder={sourceLabel({ ...original, title: '' })}
-    bind:value={title}
-    use:focusOnMount
-  />
-
-  {#if !isShow}
-    <label class="field-label spaced" for="src-folder">Folder</label>
-    <input
-      id="src-folder"
-      class="field"
-      list="src-folders"
-      placeholder="None"
-      autocomplete="off"
-      bind:value={folder}
-    />
-    <datalist id="src-folders">
-      {#each folders as name (name)}
-        <option value={name}></option>
-      {/each}
-    </datalist>
-  {/if}
-
-  <div class="switches">
-    <label class="toggle">
-      <input type="checkbox" bind:checked={images} />
-      <span>
-        <b>Load pictures</b>
-        <small>
-          Fetched when a story is opened and kept on this device. The site that published them sees
-          the request.
-        </small>
-      </span>
-    </label>
-
-    {#if isWeb && !isShow}
-      <label class="toggle">
-        <input type="checkbox" bind:checked={fullText} />
-        <span>
-          <b>Always fetch the full article</b>
-          <small>
-            For feeds that carry only a few lines. Each new story's page is fetched and read for
-            you; otherwise the button on a story does it when you ask.
-          </small>
-        </span>
-      </label>
-    {/if}
-
-    {#if isMail}
-      <label class="toggle">
-        <input type="checkbox" bind:checked={keepOutOfInbox} />
-        <span>
-          <b>Keep these out of the inbox</b>
-          <small>
-            New issues are archived in your mail as they arrive, so they live here and not in your
-            inbox. Your mail server sees that move.
-          </small>
-        </span>
-      </label>
-    {/if}
-
-    <label class="toggle">
-      <input type="checkbox" bind:checked={paused} />
-      <span>
-        <b>Pause</b>
-        <small>A paused source is not refreshed. What it already fetched stays readable.</small>
-      </span>
-    </label>
-  </div>
-
-  <hr class="sep spaced" />
-  <h3 class="eyebrow section">Automation</h3>
-
-  <div class="switches under">
-    <label class="toggle">
-      <input type="checkbox" bind:checked={auto.summarize} />
-      <span>
-        <b>{isShow ? 'Write an article from each transcript' : 'Summarise new stories'}</b>
-        <small>
-          {#if isShow}
-            Once an episode has a transcript, an article is written from it and kept in Files: the
-            Summary tab. A show does this unless it is turned off.
-          {:else}
-            Each new story is summarised as it arrives, and the summary is kept in Files. Otherwise
-            the Summary tab makes it when you ask.
-          {/if}
-        </small>
-      </span>
-    </label>
-
-    {#if !isShow}
-      <label class="toggle">
-        <input type="checkbox" bind:checked={auto.audio} />
-        <span>
-          <b>Make each new article into audio</b>
-          <small>
-            Each new article is recorded and kept in Files, so it plays from Up Next without asking.
-          </small>
-        </span>
-      </label>
-    {/if}
-  </div>
-
-  {#if isShow}
-    <hr class="sep spaced" />
-    <h3 class="eyebrow section">Podcast</h3>
-
-    <label class="field-label" for="pod-download">Download episodes</label>
-    <div class="choice">
-      <select id="pod-download" class="field" bind:value={form.download}>
-        <option value="default">
-          {useDefault(defaults ? downloadPolicyLabel(defaults.download) : null)}
-        </option>
-        <option value="off">Off</option>
-        <option value="newest">The newest</option>
-        <option value="all">Every episode</option>
-      </select>
-      {#if form.download === 'newest'}
-        <input
-          class="field days"
-          type="number"
-          min="1"
-          max="999"
-          aria-label="How many of the newest episodes to download"
-          bind:value={form.downloadCount}
-        />
-        <span class="hint">episodes</span>
+<div class="portal" use:portal>
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+  <div class="scrim phone-fit" onclick={onclose}></div>
+  <div
+    class="sheet wide phone-fit"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Settings for {sourceLabel(original)}"
+    use:trapFocus
+  >
+    <h2>{sourceLabel(original)}</h2>
+    <div class="following">
+      <p class="hint line">{following}</p>
+      {#if found}
+        <p class="hint line">Found among your newsletters.</p>
       {/if}
     </div>
-    <p class="hint under">An episode is fetched into your files folder, and plays from there.</p>
 
-    <label class="field-label spaced" for="pod-keep">Keep downloaded episodes</label>
-    <div class="choice">
-      <select id="pod-keep" class="field" bind:value={form.keep}>
+    <label class="field-label" for="src-title">Name</label>
+    <input
+      id="src-title"
+      class="field"
+      placeholder={sourceLabel({ ...original, title: '' })}
+      bind:value={title}
+      use:focusOnMount
+    />
+
+    {#if !isShow}
+      <label class="field-label spaced" for="src-folder">Folder</label>
+      <input
+        id="src-folder"
+        class="field"
+        list="src-folders"
+        placeholder="None"
+        autocomplete="off"
+        bind:value={folder}
+      />
+      <datalist id="src-folders">
+        {#each folders as name (name)}
+          <option value={name}></option>
+        {/each}
+      </datalist>
+    {/if}
+
+    <div class="switches">
+      <label class="toggle">
+        <input type="checkbox" bind:checked={images} />
+        <span>
+          <b>Load pictures</b>
+          <small>
+            Fetched when a story is opened and kept on this device. The site that published them
+            sees the request.
+          </small>
+        </span>
+      </label>
+
+      {#if isWeb && !isShow}
+        <label class="toggle">
+          <input type="checkbox" bind:checked={fullText} />
+          <span>
+            <b>Always fetch the full article</b>
+            <small>
+              For feeds that carry only a few lines. Each new story's page is fetched and read for
+              you; otherwise the button on a story does it when you ask.
+            </small>
+          </span>
+        </label>
+      {/if}
+
+      {#if isMail}
+        <label class="toggle">
+          <input type="checkbox" bind:checked={keepOutOfInbox} />
+          <span>
+            <b>Keep these out of the inbox</b>
+            <small>
+              New issues are archived in your mail as they arrive, so they live here and not in your
+              inbox. Your mail server sees that move.
+            </small>
+          </span>
+        </label>
+      {/if}
+
+      <label class="toggle">
+        <input type="checkbox" bind:checked={paused} />
+        <span>
+          <b>Pause</b>
+          <small>A paused source is not refreshed. What it already fetched stays readable.</small>
+        </span>
+      </label>
+    </div>
+
+    <hr class="sep spaced" />
+    <h3 class="eyebrow section">Automation</h3>
+
+    <div class="switches under">
+      <label class="toggle">
+        <input type="checkbox" bind:checked={auto.summarize} />
+        <span>
+          <b>{isShow ? 'Write an article from each transcript' : 'Summarise new stories'}</b>
+          <small>
+            {#if isShow}
+              Once an episode has a transcript, an article is written from it and kept in Files: the
+              Summary tab. A show does this unless it is turned off.
+            {:else}
+              Each new story is summarised as it arrives, and the summary is kept in Files.
+              Otherwise the Summary tab makes it when you ask.
+            {/if}
+          </small>
+        </span>
+      </label>
+
+      {#if !isShow}
+        <label class="toggle">
+          <input type="checkbox" bind:checked={auto.audio} />
+          <span>
+            <b>Make each new article into audio</b>
+            <small>
+              Each new article is recorded and kept in Files, so it plays from Up Next without
+              asking.
+            </small>
+          </span>
+        </label>
+      {/if}
+    </div>
+
+    {#if isShow}
+      <hr class="sep spaced" />
+      <h3 class="eyebrow section">Podcast</h3>
+
+      <label class="field-label" for="pod-download">Download episodes</label>
+      <div class="choice">
+        <select id="pod-download" class="field" bind:value={form.download}>
+          <option value="default">
+            {useDefault(defaults ? downloadPolicyLabel(defaults.download) : null)}
+          </option>
+          <option value="off">Off</option>
+          <option value="newest">The newest</option>
+          <option value="all">Every episode</option>
+        </select>
+        {#if form.download === 'newest'}
+          <input
+            class="field days"
+            type="number"
+            min="1"
+            max="999"
+            aria-label="How many of the newest episodes to download"
+            bind:value={form.downloadCount}
+          />
+          <span class="hint">episodes</span>
+        {/if}
+      </div>
+      <p class="hint under">An episode is fetched into your files folder, and plays from there.</p>
+
+      <label class="field-label spaced" for="pod-keep">Keep downloaded episodes</label>
+      <div class="choice">
+        <select id="pod-keep" class="field" bind:value={form.keep}>
+          <option value="default">
+            {useDefault(defaults ? keepPolicyLabel(defaults.keep) : null)}
+          </option>
+          <option value="forever">Forever</option>
+          <option value="afterPlayed">For a while after they are played</option>
+          <option value="newest">Only the newest</option>
+        </select>
+        {#if form.keep === 'afterPlayed'}
+          <input
+            class="field days"
+            type="number"
+            min="1"
+            max="365"
+            aria-label="Days to keep an episode after it is played to the end"
+            bind:value={form.keepNumber}
+          />
+          <span class="hint">days</span>
+        {:else if form.keep === 'newest'}
+          <input
+            class="field days"
+            type="number"
+            min="1"
+            max="999"
+            aria-label="How many of the newest episodes to keep"
+            bind:value={form.keepNumber}
+          />
+          <span class="hint">episodes</span>
+        {/if}
+      </div>
+      <p class="hint under">
+        Favourites, saved stories and what is in Up Next are never removed. Transcripts are kept.
+      </p>
+
+      <label class="field-label spaced" for="pod-transcribe">Transcribe</label>
+      <select id="pod-transcribe" class="field" bind:value={form.transcribe}>
         <option value="default">
-          {useDefault(defaults ? keepPolicyLabel(defaults.keep) : null)}
+          {useDefault(defaults ? transcribePolicyLabel(defaults.transcribe) : null)}
         </option>
-        <option value="forever">Forever</option>
-        <option value="afterPlayed">For a while after they are played</option>
-        <option value="newest">Only the newest</option>
+        <option value="off">{transcribePolicyLabel('off')}</option>
+        <option value="whenDownloaded">{transcribePolicyLabel('whenDownloaded')}</option>
+        <option value="whenPlayed">{transcribePolicyLabel('whenPlayed')}</option>
       </select>
-      {#if form.keep === 'afterPlayed'}
+
+      <label class="field-label spaced" for="pod-queue">Put new episodes in Up Next</label>
+      <select id="pod-queue" class="field" bind:value={form.queueNew}>
+        <option value="default">
+          {useDefault(defaults ? (defaults.queueNew ? 'Yes' : 'No') : null)}
+        </option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </select>
+
+      <label class="field-label spaced" for="pod-speed">Speed</label>
+      <select id="pod-speed" class="field" bind:value={form.speed}>
+        <option value={null}>The player's own</option>
+        {#each PLAYER_SPEEDS as speed (speed)}
+          <option value={speed}>{speedLabel(speed)}</option>
+        {/each}
+      </select>
+
+      <label class="field-label spaced" for="pod-skip">Skip the intro</label>
+      <div class="choice">
+        <input
+          id="pod-skip"
+          class="field days"
+          type="number"
+          min="0"
+          max="600"
+          bind:value={form.skipIntroS}
+        />
+        <span class="hint">seconds, in an episode not started yet. 0 plays from the start.</span>
+      </div>
+    {/if}
+
+    <hr class="sep spaced" />
+    <h3 class="eyebrow section">Clean-up</h3>
+
+    <label class="field-label" for="src-clean">Clean up after</label>
+    <div class="choice">
+      <select id="src-clean" class="field" bind:value={keepChoice, chooseKeep}>
+        <option value="default">Use the default ({retentionLabel(keepDefault)})</option>
+        <option value="custom">Choose for this source</option>
+      </select>
+      {#if keep.custom}
         <input
           class="field days"
           type="number"
           min="1"
-          max="365"
-          aria-label="Days to keep an episode after it is played to the end"
-          bind:value={form.keepNumber}
+          max={MAX_RETENTION_DAYS}
+          aria-label="Days to keep a story after it is read"
+          bind:value={keep.readDays}
+          oninput={() => (keepEdited = true)}
         />
-        <span class="hint">days</span>
-      {:else if form.keep === 'newest'}
+        <span class="hint">days once read, and</span>
         <input
           class="field days"
           type="number"
           min="1"
-          max="999"
-          aria-label="How many of the newest episodes to keep"
-          bind:value={form.keepNumber}
+          max={MAX_RETENTION_DAYS}
+          aria-label="Days to keep a story that was never read"
+          bind:value={keep.unreadDays}
+          oninput={() => (keepEdited = true)}
         />
-        <span class="hint">episodes</span>
+        <span class="hint">days if not.</span>
       {/if}
     </div>
     <p class="hint under">
-      Favourites, saved stories and what is in Up Next are never removed. Transcripts are kept.
+      {#if fromSender}
+        An old issue is removed from the Feed; its email stays in Mail unless you say otherwise
+        below.
+      {:else if isMail}
+        An old issue is removed from the Feed; its email stays in Mail.
+      {:else}
+        An old story is removed from the Feed.
+      {/if}
+      Saved stories are kept for good.
     </p>
 
-    <label class="field-label spaced" for="pod-transcribe">Transcribe</label>
-    <select id="pod-transcribe" class="field" bind:value={form.transcribe}>
-      <option value="default">
-        {useDefault(defaults ? transcribePolicyLabel(defaults.transcribe) : null)}
-      </option>
-      <option value="off">{transcribePolicyLabel('off')}</option>
-      <option value="whenDownloaded">{transcribePolicyLabel('whenDownloaded')}</option>
-      <option value="whenPlayed">{transcribePolicyLabel('whenPlayed')}</option>
-    </select>
-
-    <label class="field-label spaced" for="pod-queue">Put new episodes in Up Next</label>
-    <select id="pod-queue" class="field" bind:value={form.queueNew}>
-      <option value="default">
-        {useDefault(defaults ? (defaults.queueNew ? 'Yes' : 'No') : null)}
-      </option>
-      <option value="yes">Yes</option>
-      <option value="no">No</option>
-    </select>
-
-    <label class="field-label spaced" for="pod-speed">Speed</label>
-    <select id="pod-speed" class="field" bind:value={form.speed}>
-      <option value={null}>The player's own</option>
-      {#each PLAYER_SPEEDS as speed (speed)}
-        <option value={speed}>{speedLabel(speed)}</option>
-      {/each}
-    </select>
-
-    <label class="field-label spaced" for="pod-skip">Skip the intro</label>
-    <div class="choice">
-      <input
-        id="pod-skip"
-        class="field days"
-        type="number"
-        min="0"
-        max="600"
-        bind:value={form.skipIntroS}
-      />
-      <span class="hint">seconds, in an episode not started yet. 0 plays from the start.</span>
-    </div>
-  {/if}
-
-  <hr class="sep spaced" />
-  <h3 class="eyebrow section">Clean-up</h3>
-
-  <label class="field-label" for="src-clean">Clean up after</label>
-  <div class="choice">
-    <select id="src-clean" class="field" bind:value={keepChoice, chooseKeep}>
-      <option value="default">Use the default ({retentionLabel(keepDefault)})</option>
-      <option value="custom">Choose for this source</option>
-    </select>
-    {#if keep.custom}
-      <input
-        class="field days"
-        type="number"
-        min="1"
-        max={MAX_RETENTION_DAYS}
-        aria-label="Days to keep a story after it is read"
-        bind:value={keep.readDays}
-        oninput={() => (keepEdited = true)}
-      />
-      <span class="hint">days once read, and</span>
-      <input
-        class="field days"
-        type="number"
-        min="1"
-        max={MAX_RETENTION_DAYS}
-        aria-label="Days to keep a story that was never read"
-        bind:value={keep.unreadDays}
-        oninput={() => (keepEdited = true)}
-      />
-      <span class="hint">days if not.</span>
-    {/if}
-  </div>
-  <p class="hint under">
     {#if fromSender}
-      An old issue is removed from the Feed; its email stays in Mail unless you say otherwise below.
-    {:else if isMail}
-      An old issue is removed from the Feed; its email stays in Mail.
-    {:else}
-      An old story is removed from the Feed.
+      <div class="switches">
+        <label class="toggle">
+          <input type="checkbox" bind:checked={trashMail} />
+          <span>
+            <b>Also move each issue’s email to Trash when it is cleaned up</b>
+            <small>
+              Starred ones stay. The email goes to Trash in Mail like any other you delete, where it
+              can be got back.
+            </small>
+          </span>
+        </label>
+      </div>
     {/if}
-    Saved stories are kept for good.
-  </p>
 
-  {#if fromSender}
-    <div class="switches">
-      <label class="toggle">
-        <input type="checkbox" bind:checked={trashMail} />
-        <span>
-          <b>Also move each issue’s email to Trash when it is cleaned up</b>
-          <small>
-            Starred ones stay. The email goes to Trash in Mail like any other you delete, where it
-            can be got back.
-          </small>
-        </span>
-      </label>
+    <hr class="sep spaced" />
+
+    <label class="field-label spaced" for="src-mute">Mute words</label>
+    <input
+      id="src-mute"
+      class="field"
+      placeholder="sponsored, giveaway"
+      spellcheck="false"
+      bind:value={mute}
+    />
+    <p class="hint under">
+      Separated by commas. A story with one of them in its title is dropped as it arrives.
+    </p>
+
+    <div class="sheet-row">
+      <button class="btn btn-ghost-danger" onclick={() => (confirming = true)}>
+        {found ? 'Not a newsletter…' : 'Unfollow…'}
+      </button>
+      <span class="spacer"></span>
+      <button class="btn" onclick={onclose}>Cancel</button>
+      <button class="btn btn-primary" disabled={saving} onclick={() => void save()}>Save</button>
     </div>
-  {/if}
-
-  <hr class="sep spaced" />
-
-  <label class="field-label spaced" for="src-mute">Mute words</label>
-  <input
-    id="src-mute"
-    class="field"
-    placeholder="sponsored, giveaway"
-    spellcheck="false"
-    bind:value={mute}
-  />
-  <p class="hint under">
-    Separated by commas. A story with one of them in its title is dropped as it arrives.
-  </p>
-
-  <div class="sheet-row">
-    <button class="btn btn-ghost-danger" onclick={() => (confirming = true)}>
-      {found ? 'Not a newsletter…' : 'Unfollow…'}
-    </button>
-    <span class="spacer"></span>
-    <button class="btn" onclick={onclose}>Cancel</button>
-    <button class="btn btn-primary" disabled={saving} onclick={() => void save()}>Save</button>
   </div>
+
+  {#if confirming}
+    <ConfirmDialog
+      title={found
+        ? 'Take “' + sourceLabel(original) + '” out of the Feed?'
+        : 'Unfollow “' + sourceLabel(original) + '”?'}
+      detail={found ? NOT_NEWSLETTER_DETAIL : unfollowDetail(original)}
+      confirmLabel={found ? 'Not a newsletter' : 'Unfollow'}
+      onconfirm={() => void unfollow()}
+      oncancel={() => (confirming = false)}
+    />
+  {/if}
 </div>
 
-{#if confirming}
-  <ConfirmDialog
-    title={found
-      ? 'Take “' + sourceLabel(original) + '” out of the Feed?'
-      : 'Unfollow “' + sourceLabel(original) + '”?'}
-    detail={found ? NOT_NEWSLETTER_DETAIL : unfollowDetail(original)}
-    confirmLabel={found ? 'Not a newsletter' : 'Unfollow'}
-    onconfirm={() => void unfollow()}
-    oncancel={() => (confirming = false)}
-  />
-{/if}
-
 <style>
+  .portal {
+    display: contents;
+  }
   /* Centred rather than hung from the shared sheet's 22%: nine fields would
      otherwise run off the bottom of the window before the max-height made
      them scroll. */
@@ -606,5 +639,16 @@
   }
   .days {
     width: 76px;
+  }
+
+  /* A phone: a tick to hit, and fields at the size that keeps iOS from
+     zooming into them. */
+  :global([data-phone]) .toggle input {
+    width: 24px;
+    height: 24px;
+  }
+  :global([data-phone]) .sheet input:not([type='checkbox']),
+  :global([data-phone]) .sheet select {
+    font-size: max(16px, 1em);
   }
 </style>

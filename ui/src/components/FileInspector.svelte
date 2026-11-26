@@ -84,6 +84,7 @@
   } from '../lib/types'
   import FileThumb from './FileThumb.svelte'
   import Icon from './Icon.svelte'
+  import PhoneBack from './PhoneBack.svelte'
 
   interface Props {
     /** Closes the panel; absent, closing stops describing the file. */
@@ -317,11 +318,18 @@
     return at < 0 ? 'The top of the files folder' : f.storage.path.slice(0, at)
   }
 
+  /** An instant as a day in words. (`longDate` is for a day, `YYYY-MM-DD`: a
+   *  whole instant, which is what the vault says here, is not one.) */
+  const dayOf = (instant: string) =>
+    dateFormat({ weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(
+      new Date(instant),
+    )
+
   function status(f: FileEntry): string | null {
     const s = f.status
-    if (s.state === 'missing') return `Missing from the folder since ${longDate(s.since)}.`
+    if (s.state === 'missing') return `Missing from the folder since ${dayOf(s.since)}.`
     if (s.state === 'trashed') {
-      return `In the trash since ${longDate(s.at)}${s.from ? `, from ${s.from}` : ''}.`
+      return `In the trash since ${dayOf(s.at)}${s.from ? `, from ${s.from}` : ''}.`
     }
     return null
   }
@@ -507,6 +515,7 @@
   {@const f = file}
   <aside class="detail" aria-label="File">
     <div class="top">
+      <PhoneBack onclick={close} />
       <span class="when">{KIND_LABELS[f.kind]} · {formatSize(f.size)}</span>
       <button class="close" title="Close" aria-label="Close the details" onclick={close}>
         <Icon name="close" size={15} />
@@ -1500,5 +1509,62 @@
     font-size: var(--text-xs);
     color: var(--fg-subtle);
     line-height: var(--leading-snug);
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     A page of its own, the whole width, with the way back at its head and
+     fields a finger can aim at. */
+  :global([data-phone]) .detail {
+    width: 100%;
+    border-left: 0;
+  }
+  :global([data-phone]) .top {
+    justify-content: flex-start;
+    gap: var(--sp-1);
+    padding-left: var(--sp-1);
+  }
+  :global([data-phone]) .close {
+    display: none;
+  }
+  :global([data-phone]) .body {
+    padding: 0 var(--sp-4) calc(var(--safe-bottom) + var(--fab-clear));
+  }
+  :global([data-phone]) .field.small,
+  :global([data-phone]) .ptype {
+    height: 44px;
+  }
+  :global([data-phone]) .fav {
+    height: 44px;
+  }
+  :global([data-phone]) .stars button {
+    width: 40px;
+    height: 44px;
+  }
+  :global([data-phone]) .chip {
+    height: 32px;
+    padding-left: var(--sp-3);
+  }
+  :global([data-phone]) .chip-x {
+    width: 28px;
+    height: 28px;
+  }
+  :global([data-phone]) .chip-input {
+    height: 36px;
+  }
+  :global([data-phone]) .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+  }
+  :global([data-phone]) .link.inline {
+    display: inline;
+    min-height: 0;
+  }
+  :global([data-phone]) .use {
+    padding: var(--sp-3) var(--sp-2);
+  }
+  :global([data-phone]) .actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
   }
 </style>

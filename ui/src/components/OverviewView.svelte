@@ -31,6 +31,7 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { overview, type OverviewPage } from '../lib/overview.svelte'
   import { panels } from '../lib/panels.svelte'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { todayIso } from '../lib/time'
   import AddWidgetDialog from './AddWidgetDialog.svelte'
@@ -76,6 +77,21 @@
     if (placing) overview.add(placing, null, before)
     placing = null
   }
+
+  // A phone's back button closes, in turn, what is over the page: the reading
+  // field, the catalogue, and a card waiting for somewhere to go.
+  closesOnBack(
+    () => logging,
+    () => (logging = false),
+  )
+  closesOnBack(
+    () => adding,
+    () => (adding = false),
+  )
+  closesOnBack(
+    () => placing !== null,
+    () => (placing = null),
+  )
 
   // A tray action can ask for the reading field before this view exists to
   // give it.
@@ -150,8 +166,8 @@
   /** The page itself, where there is no card under the pointer. */
   function pageMenu(): MenuItem[] {
     return tidyMenu([
-      { label: 'Add a card…', icon: 'plus', run: () => (adding = true) },
-      {
+      home && { label: 'Add a card…', icon: 'plus', run: () => (adding = true) },
+      home && {
         label: overview.editing ? 'Stop arranging' : 'Arrange this page',
         icon: 'grip',
         run: () => (overview.editing = !overview.editing),
@@ -166,13 +182,23 @@
         run: () => panels.openSettings('profile'),
       },
       SEP,
-      {
+      home && {
         label: 'Put the page back as it was',
         icon: 'refresh',
         danger: true,
         run: () => overview.restoreDefaults(),
       },
     ])
+  }
+
+  /**
+   * A phone's one button for everything the header has no room for: the same
+   * choices the page's context menu has, opened under the button, where a
+   * long press is the only other way to them.
+   */
+  function openMore(e: MouseEvent) {
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    menu.showAt(box.right, box.bottom + 4, pageMenu())
   }
 
   function onDragStart(e: DragEvent, id: string) {
@@ -228,8 +254,9 @@
 
     <div class="tools">
       <div class="logwrap">
+        <!-- A phone has this in its "more" menu, with the page's other tools. -->
         <button
-          class="btn"
+          class="btn desktop-only"
           aria-haspopup="dialog"
           aria-expanded={logging}
           onclick={() => (logging = !logging)}
@@ -264,12 +291,17 @@
       {/if}
 
       {#if home}
-        <button class="btn" aria-haspopup="dialog" onclick={() => (adding = true)}>
+        <button
+          class="btn add"
+          class:arranging={overview.editing}
+          aria-haspopup="dialog"
+          onclick={() => (adding = true)}
+        >
           <Icon name="plus" size={14} /> Add
         </button>
 
         <button
-          class="btn"
+          class="btn desktop-only"
           class:on={overview.editing}
           aria-pressed={overview.editing}
           onclick={() => (overview.editing = !overview.editing)}
@@ -278,14 +310,30 @@
           {overview.editing ? 'Done' : 'Arrange'}
         </button>
       {/if}
+
+      <!-- Where a phone's header has no room for the rest. While arranging,
+           Done is the way out of it, as the Arrange button is on a desktop. -->
+      {#if home && overview.editing}
+        <button class="btn btn-primary phone-only done" onclick={() => (overview.editing = false)}>
+          Done
+        </button>
+      {/if}
+      <button
+        class="btn icon-only phone-only more"
+        aria-label="Page options"
+        aria-haspopup="menu"
+        onclick={openMore}
+      >
+        <Icon name="more" size={18} />
+      </button>
     </div>
   </header>
 
   {#if placing}
     <div class="placing" role="status">
       <span>
-        Choose where <b>{specOf(placing).label}</b> goes: click a card to put it in front of it, or the
-        space at the end.
+        Choose where <b>{specOf(placing).label}</b> goes: {phone.on ? 'tap' : 'click'} a card to put it
+        in front of it, or the space at the end.
       </span>
       <button class="btn" onclick={() => (placing = null)}>Cancel</button>
     </div>
@@ -294,6 +342,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="scroll body"
+    class:brief={!home}
     oncontextmenu={(e) => {
       if (home) menu.show(e, pageMenu())
     }}
@@ -331,7 +380,7 @@
           <div
             class="slot"
             style="--span: {spanOf(w)}"
-            draggable={overview.editing}
+            draggable={overview.editing && !phone.on}
             ondragstart={(e) => onDragStart(e, w.id)}
             ondragend={() => {
               dragging = null
@@ -615,5 +664,114 @@
   }
   .link:hover {
     text-decoration: underline;
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The header is two rows rather than one: the title with the page's one
+     tool and its "more" button, then the page switch with the week's arrows.
+     In one row, the title ran under the tabs and the tools were cut off by
+     the screen's edge. The tools folded into "more" are the page's own
+     context menu -- see `openMore`. */
+  :global([data-phone]) .bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-2);
+    min-height: 0;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .bar .pane-titles {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+  }
+  /* The tools are the grid's own cells, so each can be put in its place. */
+  :global([data-phone]) .bar .tools,
+  :global([data-phone]) .bar .logwrap {
+    display: contents;
+  }
+  :global([data-phone]) .bar .add,
+  :global([data-phone]) .bar .done {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  /* Done takes Add's place while arranging. */
+  :global([data-phone]) .bar .add.arranging {
+    display: none;
+  }
+  :global([data-phone]) .bar .more {
+    grid-column: 3;
+    grid-row: 1;
+    width: 40px;
+    padding: 0;
+  }
+  :global([data-phone]) .bar .pages {
+    grid-column: 1;
+    grid-row: 2;
+    min-width: 0;
+  }
+  :global([data-phone]) .bar .pages :global(.filter) {
+    min-height: 38px;
+  }
+  :global([data-phone]) .bar .week-nav {
+    grid-column: 2 / span 2;
+    grid-row: 2;
+    justify-self: end;
+  }
+  :global([data-phone]) .week-nav button {
+    height: 38px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .week-nav .step {
+    width: 38px;
+    padding: 0;
+  }
+
+  /* The reading field, under the top bar and as wide as the screen. */
+  :global([data-phone]) .logpop {
+    position: fixed;
+    top: calc(var(--safe-top) + var(--topbar-h) + var(--sp-2));
+    right: var(--sp-3);
+    left: var(--sp-3);
+    width: auto;
+  }
+  :global([data-phone]) .logpop :global(.log) {
+    min-width: 0;
+    max-width: none;
+  }
+  /* The field and its tick, and the trackers beneath it, a finger's size. */
+  :global([data-phone]) .logpop :global(.line) {
+    height: 46px;
+  }
+  :global([data-phone]) .logpop :global(.line input) {
+    align-self: stretch;
+  }
+  :global([data-phone]) .logpop :global(.go) {
+    width: 38px;
+    height: 38px;
+  }
+  :global([data-phone]) .logpop :global(.chip) {
+    min-height: 40px;
+    padding-right: var(--sp-3);
+  }
+
+  :global([data-phone]) .placing {
+    flex-wrap: wrap;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .placing span {
+    flex: 1 1 200px;
+  }
+
+  :global([data-phone]) .body {
+    padding: var(--sp-3) var(--sp-3) var(--fab-clear);
+  }
+  :global([data-phone]) .grid {
+    gap: var(--sp-3);
+  }
+  /* The brief has margins of its own: a second set is a reading column
+     narrower by a thumb's width on each side. */
+  :global([data-phone]) .body.brief {
+    padding: 0;
   }
 </style>

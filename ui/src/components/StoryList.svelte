@@ -34,6 +34,7 @@
   import { relativeTime } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { phone } from '../lib/phone.svelte'
   import { player } from '../lib/player.svelte'
   import { downloadLine, episodeProgress, formatDuration, workLine } from '../lib/podcast'
   import { upnext } from '../lib/upnext.svelte'
@@ -46,6 +47,9 @@
   import PaneResizer from './PaneResizer.svelte'
   import SourceIcon from './SourceIcon.svelte'
   import VirtualList from './VirtualList.svelte'
+
+  /** A phone shows a story over the list, which stays as it was beneath it. */
+  let { under = false }: { under?: boolean } = $props()
 
   const rows = $derived(feed.visible)
   const title = $derived(scopeTitle(feed.scope, feed.sources, feed.kind))
@@ -261,7 +265,7 @@
   }
 </script>
 
-<section class="list" style:--tint={feed.accent}>
+<section class="list" class:under style:--tint={feed.accent}>
   <div class="top">
     <div class="pane-titles">
       <span class="pane-title">{title}</span>
@@ -392,13 +396,15 @@
     <p class="note" role="status">{feed.note}</p>
   {/if}
 
-  <PaneResizer
-    cssVar="--feed-list-w"
-    storageKey="pane-w:feed-list"
-    defaultWidth={380}
-    min={300}
-    max={640}
-  />
+  {#if !phone.on}
+    <PaneResizer
+      cssVar="--feed-list-w"
+      storageKey="pane-w:feed-list"
+      defaultWidth={380}
+      min={300}
+      max={640}
+    />
+  {/if}
 </section>
 
 <!-- One story in the list. The unread dot sits in the gutter left of the
@@ -772,5 +778,76 @@
     height: 1px;
     overflow: hidden;
     clip-path: inset(50%);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The list is the whole screen, not a column beside a story, and stays
+     where it is -- scrolled to the same row -- while a story is over it. */
+  :global([data-phone]) .list {
+    width: auto;
+    flex: 1;
+    min-width: 0;
+    border-right: 0;
+  }
+  :global([data-phone]) .list.under {
+    visibility: hidden;
+  }
+  :global([data-phone]) .top {
+    padding: var(--sp-2) var(--sp-2) var(--sp-1) var(--sp-4);
+  }
+  :global([data-phone]) .plus {
+    width: 44px;
+    height: 44px;
+  }
+  :global([data-phone]) .tabs {
+    padding: var(--sp-1) var(--sp-3) var(--sp-3);
+  }
+
+  /* A row: the unread dot in the gutter, and the round control for an
+     episode a finger's size at its end. */
+  :global([data-phone]) .row {
+    padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
+  }
+  :global([data-phone]) .row.episode {
+    padding-right: calc(44px + var(--sp-3) * 2);
+  }
+  :global([data-phone]) .end {
+    right: var(--sp-3);
+  }
+  :global([data-phone]) .load-more {
+    min-height: 48px;
+  }
+  :global([data-phone]) .note {
+    padding: var(--sp-2) var(--sp-4);
+  }
+
+  /* On its side a phone has a couple of hundred pixels between its bars: the
+     heading is one short line and the tabs sit close under it. */
+  @media (max-height: 500px) {
+    :global([data-phone]) .top {
+      min-height: 0;
+      padding-block: var(--sp-1);
+    }
+    :global([data-phone]) .pane-sub {
+      display: none;
+    }
+    :global([data-phone]) .tabs {
+      padding-bottom: var(--sp-2);
+    }
+  }
+
+  /* A finger leaves nothing under it: no highlight stuck to the row last
+     pressed or last opened, only the press itself. */
+  :global([data-phone]) .row:hover,
+  :global([data-phone]) .row.sel {
+    background: transparent;
+  }
+  :global([data-phone]) .row:active {
+    background: var(--bg-hover);
+  }
+  :global([data-phone]) .row.sel::after,
+  :global([data-phone]) .row:hover::after {
+    opacity: 1;
   }
 </style>

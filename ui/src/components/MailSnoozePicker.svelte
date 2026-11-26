@@ -7,6 +7,7 @@
 
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { isTyping } from '../lib/keys'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { mail } from '../lib/mail.svelte'
   import { customSnoozeInstant, earliestSnoozeDate } from '../lib/mail'
   import { toLocalInputValue } from '../lib/format'
@@ -18,6 +19,12 @@
   // time would drift false, and a `const` read once here at mount was
   // exactly that -- correct the moment the sheet opened, quietly wrong (a
   // dropped "Later today", a stale "in 3 hours") the longer it stayed open.
+
+  // A phone's back button puts the picker away, as Cancel does.
+  closesOnBack(
+    () => true,
+    () => oncancel(),
+  )
 
   let customDate = $state('')
   let customTime = $state('08:00')
@@ -125,5 +132,28 @@
   .custom input[type='time'] {
     flex: none;
     width: 6.5em;
+  }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     Rows to tap, and the date and time on a line of their own with the
+     button under them: three side by side were wider than the sheet. */
+  :global([data-phone]) .choice {
+    min-height: 48px;
+    padding: 0 var(--sp-3);
+  }
+  :global([data-phone]) .custom {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .custom input {
+    min-height: 44px;
+    min-width: 0;
+    font-size: 16px;
+  }
+  :global([data-phone]) .custom input[type='date'] {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .custom input[type='time'] {
+    flex: 1;
+    width: auto;
   }
 </style>

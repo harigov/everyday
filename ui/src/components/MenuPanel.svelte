@@ -8,6 +8,7 @@
 
   import { dismissable } from '../lib/dismiss'
   import { placeMenu, placeSubmenu, type MenuAction, type MenuItem } from '../lib/menu'
+  import { phone } from '../lib/phone.svelte'
   import Icon from './Icon.svelte'
   import Self from './MenuPanel.svelte'
 
@@ -52,6 +53,28 @@
   let openByKey = $state(false)
   let subAnchor = $state<{ left: number; right: number; top: number } | null>(null)
 
+  /**
+   * On a phone, the part of the window clear of the status bar, the gesture
+   * bar and a notch: a menu raised at the edge is placed inside it, not under
+   * what the system draws over the page. `--safe-*` is `max(env(), --edge-*)`,
+   * which only resolves to pixels when a box is padded by it.
+   */
+  function clearOfEdges() {
+    const probe = document.createElement('div')
+    probe.style.cssText =
+      'position:fixed;visibility:hidden;padding:var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left)'
+    document.body.append(probe)
+    const css = getComputedStyle(probe)
+    const edges = {
+      top: parseFloat(css.paddingTop) || 0,
+      right: parseFloat(css.paddingRight) || 0,
+      bottom: parseFloat(css.paddingBottom) || 0,
+      left: parseFloat(css.paddingLeft) || 0,
+    }
+    probe.remove()
+    return edges
+  }
+
   // Measured, then placed, then given the keyboard -- in that order and in
   // one pass. Until it is placed it is drawn at the origin and left
   // transparent, so nothing is seen jumping into position.
@@ -68,8 +91,26 @@
     if (!panel) return
     const box = panel.getBoundingClientRect()
     const size = { width: box.width, height: box.height }
-    const viewport = { width: window.innerWidth, height: window.innerHeight }
-    pos = anchor ? placeSubmenu(anchor, size, viewport) : at ? placeMenu(at, size, viewport) : null
+    const edges = phone.on ? clearOfEdges() : { top: 0, right: 0, bottom: 0, left: 0 }
+    const viewport = {
+      width: window.innerWidth - edges.left - edges.right,
+      height: window.innerHeight - edges.top - edges.bottom,
+    }
+    const placed = anchor
+      ? placeSubmenu(
+          {
+            ...anchor,
+            left: anchor.left - edges.left,
+            right: anchor.right - edges.left,
+            top: anchor.top - edges.top,
+          },
+          size,
+          viewport,
+        )
+      : at
+        ? placeMenu({ x: at.x - edges.left, y: at.y - edges.top }, size, viewport)
+        : null
+    pos = placed && { x: placed.x + edges.left, y: placed.y + edges.top }
     // A panel opened by the keyboard puts the caret on its first item. The
     // root panel opened by the mouse takes focus itself, so Escape and the
     // arrow keys work without a row being highlighted under a pointer that
@@ -407,5 +448,20 @@
 
   .head {
     padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  }
+
+  /* A phone: a finger's height a row, never wider or taller than the part of
+     the screen clear of the bars. */
+  :global([data-phone]) .menu {
+    max-width: min(320px, calc(100vw - var(--safe-left) - var(--safe-right) - 12px));
+    max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 12px);
+  }
+  :global([data-phone]) .item {
+    height: 44px;
+    padding: 0 var(--sp-3);
+    gap: var(--sp-3);
+  }
+  :global([data-phone]) .mark {
+    width: 18px;
   }
 </style>

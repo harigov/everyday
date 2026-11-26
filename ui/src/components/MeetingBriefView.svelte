@@ -292,4 +292,14 @@
   .hint.gap {
     font-style: italic;
   }
+
+  /* A phone: the tick's circle has a hit area a finger can land on, taken
+     out of the row's own padding so that the list does not grow. */
+  :global([data-phone]) .tick {
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin: -10px -8px -10px -10px;
+  }
 </style>

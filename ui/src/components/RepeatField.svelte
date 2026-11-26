@@ -385,4 +385,27 @@
     padding: 0 var(--sp-3);
     font-size: var(--text-sm);
   }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* Fields and the seven days a finger can hit, in type iOS will not zoom
+     into. The days share the row, so each is as wide as seven will go. */
+  :global([data-phone]) .pick {
+    height: 44px;
+    font-size: 16px;
+  }
+  :global([data-phone]) .pick.num {
+    flex-basis: 76px;
+  }
+  :global([data-phone]) .day {
+    height: 44px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .small {
+    height: 40px;
+  }
+  :global([data-phone]) .word,
+  :global([data-phone]) .said {
+    font-size: var(--text-base);
+  }
 </style>

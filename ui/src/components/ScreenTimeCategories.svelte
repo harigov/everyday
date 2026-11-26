@@ -14,6 +14,7 @@
   import { CATEGORY_COLORS } from '../lib/screentime'
   import { screentime } from '../lib/screentime.svelte'
   import { dismissable } from '../lib/dismiss'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import type { ScreenCategory, ScreenCategoryId } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -24,6 +25,11 @@
 
   /** Whose palette is open. */
   let choosing = $state<ScreenCategoryId | null>(null)
+  // On a phone the colours are a sheet over the screen, and back puts it away.
+  closesOnBack(
+    () => phone.on && choosing !== null,
+    () => (choosing = null),
+  )
   let newName = $state('')
   let adding = $state(false)
 
@@ -103,6 +109,7 @@
                 onclick={() => (choosing = choosing === c.id ? null : c.id)}
               ></button>
               {#if choosing === c.id}
+                {#if phone.on}<div class="scrim" aria-hidden="true"></div>{/if}
                 <div
                   class="palette"
                   role="group"
@@ -339,5 +346,52 @@
   .field-new {
     border-color: var(--border);
     background: var(--bg);
+  }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     Each row's swatch and three buttons are a finger's size; the colours
+     are a sheet under the status bar over a scrim, six to a row at a size
+     one can choose between, rather than a popover of 22 px squares. */
+  :global([data-phone]) .row {
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2);
+  }
+  :global([data-phone]) button.swatch {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background-clip: content-box;
+    border: 11px solid transparent;
+  }
+  :global([data-phone]) .tools {
+    gap: 0;
+  }
+  :global([data-phone]) .icon-btn {
+    width: 38px;
+    height: 40px;
+  }
+  :global([data-phone]) .new {
+    padding: 0;
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .new .name {
+    flex: 1 1 8em;
+    min-height: 44px;
+  }
+  :global([data-phone]) .palette {
+    position: fixed;
+    z-index: 66;
+    top: calc(var(--safe-top) + var(--sp-4));
+    right: auto;
+    left: 50%;
+    translate: -50% 0;
+    grid-template-columns: repeat(6, 40px);
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .chip {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
   }
 </style>

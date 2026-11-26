@@ -15,6 +15,7 @@
   // anything else.
 
   import Icon from './Icon.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { purpose as store, samePurpose } from '../lib/purpose.svelte'
   import type { Purpose, AreaId } from '../lib/types'
 
@@ -152,9 +153,11 @@
   <div class="new">
     <!-- Focused on open: this popover exists to be typed into, and the rows
          above it are reachable with Tab and the arrow keys. -->
+    <!-- Not on a phone, where focus is the keyboard coming up over the rows
+         the sheet is for. -->
     <!-- svelte-ignore a11y_autofocus -->
     <input
-      autofocus
+      autofocus={!phone.on}
       bind:value={draft}
       {onkeydown}
       placeholder={areasOnly || areas.length === 0 ? 'New area…' : 'New goal…'}
@@ -344,5 +347,35 @@
   .blank-note {
     margin: 0;
     padding: var(--sp-3) var(--sp-2);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The sheet's own width and height, rows and fields for a finger. */
+  :global([data-phone]) .picker {
+    min-width: 0;
+    max-width: none;
+    min-height: 0;
+  }
+  :global([data-phone]) .rows {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+  }
+  :global([data-phone]) .row {
+    min-height: 44px;
+    font-size: var(--text-base);
+  }
+  :global([data-phone]) .new input {
+    height: 40px;
+  }
+  :global([data-phone]) .new select {
+    height: 40px;
+    max-width: 120px;
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .go {
+    width: 40px;
+    height: 40px;
   }
 </style>

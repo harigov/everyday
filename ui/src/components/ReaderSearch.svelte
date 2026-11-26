@@ -252,4 +252,13 @@
     font-size: var(--text-sm);
     color: var(--fg-faint);
   }
+
+  /* On a phone: a field and hits a finger can use. */
+  :global([data-phone]) .top .field {
+    height: 44px;
+  }
+  :global([data-phone]) .hit {
+    min-height: 56px;
+    padding: var(--sp-3);
+  }
 </style>

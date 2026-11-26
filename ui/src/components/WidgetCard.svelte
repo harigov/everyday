@@ -19,6 +19,7 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { overview } from '../lib/overview.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { SIZE_LABELS, specOf, WIDGET_SIZES, type Widget } from '../lib/dashboard'
   import { tracking } from '../lib/tracking.svelte'
   import Icon from './Icon.svelte'
@@ -73,15 +74,16 @@
         run: () => overview.move(widget.id, 1),
       },
       SEP,
-      spec.sizes.length > 1 && {
-        label: 'Width',
-        icon: 'grid',
-        items: WIDGET_SIZES.filter((s) => spec.sizes.includes(s)).map((size) => ({
-          label: SIZE_LABELS[size],
-          checked: widget.size === size,
-          run: () => overview.resize(widget.id, size),
-        })),
-      },
+      !phone.on &&
+        spec.sizes.length > 1 && {
+          label: 'Width',
+          icon: 'grid',
+          items: WIDGET_SIZES.filter((s) => spec.sizes.includes(s)).map((size) => ({
+            label: SIZE_LABELS[size],
+            checked: widget.size === size,
+            run: () => overview.resize(widget.id, size),
+          })),
+        },
       spec.subject === 'tracker' && {
         label: 'Which tracker',
         icon: 'refresh',
@@ -127,7 +129,7 @@
       <!-- The grip is the drag handle and says so. `draggable` is set on the
            card itself by the grid, because a drag started from a button
            inside a text field would otherwise select text instead. -->
-      <span class="grip" title="Drag to move"><Icon name="grip" size={14} /></span>
+      <span class="grip desktop-only" title="Drag to move"><Icon name="grip" size={14} /></span>
     {/if}
     <!-- The card's own mark, in the colour of the app it draws from -- the
          app bar's colour for that app, so a glance at the page says which
@@ -162,10 +164,10 @@
           disabled={index === count - 1}
           onclick={() => overview.move(widget.id, 1)}
         >
-          <Icon name="chevron" size={13} />
+          <span class="fwd"><Icon name="chevron" size={13} /></span>
         </button>
         {#if spec.sizes.length > 1}
-          <div class="sizes" role="group" aria-label="Width">
+          <div class="sizes desktop-only" role="group" aria-label="Width">
             {#each WIDGET_SIZES.filter((s) => spec.sizes.includes(s)) as size (size)}
               <button
                 class="handle wide"
@@ -369,5 +371,37 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
+  }
+
+  /* A phone: a column of cards, each a little less padded so the figures in
+     it have the room, and no drag handle or width choice -- one card is the
+     whole width -- but the arrows and the cross, which move and remove a
+     card by tap, a size a fingertip can hit. */
+  :global([data-phone]) .card {
+    padding: var(--sp-4);
+  }
+  :global([data-phone]) header {
+    margin-bottom: var(--sp-3);
+  }
+  :global([data-phone]) .window {
+    height: 32px;
+    padding: 0 var(--sp-3);
+    font-size: var(--text-sm);
+  }
+  :global([data-phone]) .handles {
+    gap: var(--sp-1);
+  }
+  :global([data-phone]) .handle {
+    width: 38px;
+    height: 38px;
+  }
+  /* One column: earlier is up and later is down. */
+  :global([data-phone]) .back {
+    rotate: -90deg;
+  }
+  :global([data-phone]) .fwd {
+    display: grid;
+    place-items: center;
+    rotate: 90deg;
   }
 </style>

@@ -90,6 +90,10 @@ pub struct Server {
     /// The browsers signed in, for a server answering `Transport::Web`.
     /// `None` everywhere else, where nothing could be signed in.
     sessions: Option<Arc<crate::web::session::Sessions>>,
+    /// Set when the listener answering for this server stops (`start`): what
+    /// a connection that outlives its request -- a voice session -- watches,
+    /// since the listener's graceful shutdown does not reach an upgraded one.
+    pub(crate) closing: tokio::sync::watch::Sender<bool>,
 }
 
 impl Server {
@@ -110,6 +114,7 @@ impl Server {
             allow_remote_unlock: std::sync::atomic::AtomicBool::new(allow_remote_unlock),
             in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT * 4)),
             sessions: None,
+            closing: tokio::sync::watch::channel(false).0,
         })
     }
 
@@ -133,6 +138,7 @@ impl Server {
             allow_remote_unlock: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT * 4)),
             sessions: Some(sessions),
+            closing: tokio::sync::watch::channel(false).0,
         })
     }
 
@@ -186,6 +192,8 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         .route("/v1/health/hae/{source}", post(crate::health::push))
         .route("/v1/call/{name}", post(call))
         .route("/v1/stream/{name}", post(stream))
+        // Talking to the assistant from another device: see `crate::voice`.
+        .route(crate::voice::ROUTE, get(voice))
         .route("/v1/blob", post(put_blob))
         .route("/v1/blob/{id}", get(get_blob))
         .route("/v1/mail/body/{id}", get(get_mail_body))
@@ -528,6 +536,54 @@ pub(crate) async fn read_body(
         out.extend_from_slice(&chunk);
     }
     Ok(out)
+}
+
+/// A voice session for a paired device: its microphone in, this computer's
+/// models and assistant, its speaker out, over one WebSocket. See
+/// `crate::voice`.
+///
+/// The token and the agent scope are checked before the upgrade, so a device
+/// that may not talk to the assistant is refused with the same `{ code,
+/// message }` as any command, not a socket that opens and then closes.
+async fn voice(
+    State((server, transport)): Ctxt,
+    headers: HeaderMap,
+    upgrade: axum::extract::ws::WebSocketUpgrade,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::Agent)?;
+    let service = server.service.clone();
+    let device = match &ctx.caller {
+        Caller::Device(id) => Some(id.clone()),
+        _ => None,
+    };
+    Ok(upgrade.on_upgrade(move |socket| async move {
+        let (frames, out) = crate::voice::axum_socket(socket);
+        let frames = crate::voice::until(frames, disallowed(server, device));
+        crate::voice::serve(service, ctx, frames, out).await;
+    }))
+}
+
+/// Finishes when a voice session stops being allowed: its device revoked, or
+/// sharing switched off. The token was looked at once, before the upgrade,
+/// and a session lasts as long as somebody keeps talking -- so the device is
+/// looked for again every few seconds.
+async fn disallowed(server: Arc<Server>, device: Option<String>) {
+    let mut closing = server.closing.subscribe();
+    let mut every = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        tokio::select! {
+            _ = closing.wait_for(|closing| *closing) => return,
+            _ = every.tick() => {
+                if let Some(id) = &device
+                    && !server.registry.holds(id)
+                {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// The one command that answers with a stream.

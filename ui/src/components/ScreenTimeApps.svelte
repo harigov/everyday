@@ -429,4 +429,77 @@
     font-size: var(--text-sm);
     color: var(--fg-subtle);
   }
+
+  /* ── A phone ────────────────────────────────────────────────────────
+     The search over the chips; a row is two lines, the name and where it
+     was seen on the first and, on the second, the time with the category's
+     picker and the two buttons -- six things do not fit in one. Both
+     buttons are a finger's size (the row's long-press menu is the same
+     "more"). */
+  :global([data-phone]) .toolbar {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    padding-inline: var(--sp-3);
+  }
+  :global([data-phone]) .toolbar-end {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .toolbar-end.right {
+    display: none;
+  }
+  :global([data-phone]) .search {
+    max-width: none;
+    height: 44px;
+  }
+  :global([data-phone]) .toolbar .filters {
+    flex: 1 1 100%;
+  }
+  :global([data-phone]) .toolbar .filter {
+    flex: 1;
+    justify-content: center;
+  }
+  :global([data-phone]) .list-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    column-gap: var(--sp-2);
+    row-gap: 0;
+    align-items: center;
+    padding: var(--sp-2) var(--sp-3);
+  }
+  :global([data-phone]) .glyph {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    align-self: start;
+    margin-top: 6px;
+  }
+  :global([data-phone]) .who {
+    grid-column: 2 / span 2;
+    grid-row: 1;
+  }
+  :global([data-phone]) .secs {
+    grid-column: 2;
+    grid-row: 2;
+    width: auto;
+    text-align: left;
+  }
+  :global([data-phone]) .cat {
+    grid-column: 3;
+    grid-row: 2;
+    width: auto;
+  }
+  :global([data-phone]) .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+  :global([data-phone]) .icon-btn:first-of-type {
+    grid-column: 4;
+    grid-row: 2;
+  }
+  :global([data-phone]) .icon-btn:last-of-type {
+    grid-column: 4;
+    grid-row: 1;
+  }
+  :global([data-phone]) .split {
+    min-height: 36px;
+  }
 </style>

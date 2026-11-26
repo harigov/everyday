@@ -309,6 +309,7 @@ async fn a_timer_said_to_voice_mode_is_set_on_this_computer() {
         via: None,
         typist: None,
         woken: false,
+        away: false,
     };
 
     assistant

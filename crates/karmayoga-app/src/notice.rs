@@ -101,6 +101,7 @@ async fn deliver(app: &AppHandle, key: &str, summary: &str, body: &str) -> bool 
     }
 }
 
+#[cfg(desktop)]
 /// Show (or replace) the notification for offer `key`. `actions` are
 /// `(action key, label)` pairs; a press comes back through
 /// [`crate::offers::on_notice_action`].
@@ -134,6 +135,7 @@ pub fn show(app: &AppHandle, key: &str, summary: &str, body: &str, actions: &[(&
     }
 }
 
+#[cfg(desktop)]
 /// [`show`] for something that has to be noticed -- a timer that has run out
 /// -- rather than something that may be: on Linux the notification is
 /// critical, so it stays up until it is dismissed and is shown through Do Not
@@ -190,6 +192,7 @@ impl Alert {
     }
 }
 
+#[cfg(desktop)]
 /// Take the notification for `key` down, if it is up. A no-op off Linux,
 /// where the plain notification this module raises cannot be recalled.
 pub fn withdraw(app: &AppHandle, key: &str) {

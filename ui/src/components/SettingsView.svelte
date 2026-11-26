@@ -43,7 +43,8 @@
   // any more, because that was the one way `Escape` in this file ever
   // differed from `Escape` in every other app's.
 
-  import { api, isWeb } from '../lib/api'
+  import { onMount, untrack } from 'svelte'
+  import { api, isWeb, mobileShell } from '../lib/api'
   import { agent } from '../lib/agent.svelte'
   import { files } from '../lib/files.svelte'
   import { assistant, PANE_LABELS, type Pane } from '../lib/assistant.svelte'
@@ -55,6 +56,7 @@
   import { panels, type SettingsTab } from '../lib/panels.svelte'
   import { app } from '../lib/state.svelte'
   import { meetings } from '../lib/meetings.svelte'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { tray } from '../lib/tray.svelte'
   import { badge } from '../lib/badge.svelte'
   import AccountsPanel from './AccountsPanel.svelte'
@@ -76,6 +78,7 @@
   import MoneySettingsPanel from './MoneySettingsPanel.svelte'
   import ScreenTimeSettingsPanel from './ScreenTimeSettingsPanel.svelte'
   import HealthSettingsPanel from './HealthSettingsPanel.svelte'
+  import PhoneBack from './PhoneBack.svelte'
   import McpPanel from './McpPanel.svelte'
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
@@ -130,6 +133,41 @@
 
   const status = $derived(app.status)
   const tab = $derived(panels.settings ?? 'general')
+
+  // A phone has room for the list of pages or for one page, not both side by
+  // side: it shows the list, a tap on a row shows that page over the whole
+  // screen with a way back (`PhoneBack`), and back -- the button, Android's --
+  // shows the list again. Opened *at* a page -- a link in another app's empty
+  // state, "Turn it on" in Screen time -- it starts on that page, so the
+  // list is what the plain way in (the bar's Settings, `panels.openSettings()`
+  // with no tab, which is General) lands on. A page asked for while this is
+  // open, by a link from one page to another, is shown the same way. On a
+  // desktop the flag is kept and ignored.
+  let pageOpen = $state(phone.on && panels.settings !== 'general')
+  let asked = panels.settings
+  $effect(() => {
+    const t = panels.settings
+    untrack(() => {
+      if (t === asked) return
+      asked = t
+      if (t !== null) pageOpen = true
+    })
+  })
+  // Android's back closes the page first; Settings itself is closed by
+  // `App.svelte`'s own layer, which this one has to lie over. Opened at a
+  // page, both would be laid down in the one frame, this one first, so it
+  // waits a turn: back then takes the page off, and the next back Settings.
+  let armed = $state(false)
+  onMount(() => {
+    const t = setTimeout(() => (armed = true))
+    return () => clearTimeout(t)
+  })
+  closesOnBack(
+    () => phone.on && pageOpen && armed,
+    () => (pageOpen = false),
+  )
+  const showList = $derived(!phone.on || !pageOpen)
+  const showPage = $derived(!phone.on || pageOpen)
 
   /**
    * The rail's two halves. Platform is what every app stands on -- who you
@@ -296,7 +334,8 @@
   const vaultSubs = $derived(
     [
       { id: 'security' as VaultSub, label: 'Security', show: !!status?.encrypted },
-      { id: 'sharing' as VaultSub, label: 'Sharing', show: !isWeb && !app.remote },
+      // Nor on a phone, which only ever looks at a vault and serves none.
+      { id: 'sharing' as VaultSub, label: 'Sharing', show: !isWeb && !app.remote && !mobileShell },
       { id: 'about' as VaultSub, label: 'About', show: true },
     ].filter((t) => t.show),
   )
@@ -427,442 +466,461 @@
      or calendar app's -- see `Sidebar.svelte`, which draws exactly this shape
      around those. Settings has no app of its own to be drawn inside, so it
      draws its own aside rather than being handed one. -->
-<aside class="nav shell-card">
-  <div class="head">
-    <h2 class="pane-title">Settings</h2>
-    <button class="ghost" onclick={() => panels.closeSettings()} title="Close settings">
-      <Icon name="close" size={16} />
-    </button>
-  </div>
-  <nav class="scroll side-nav tabs" aria-label="Settings sections">
-    {#each grouped as g (g.id)}
-      <!-- A group with its heading as its name, so a screen reader announces
+{#if showList}
+  <aside class="nav shell-card">
+    <div class="head">
+      <h2 class="pane-title">Settings</h2>
+      <button class="ghost" onclick={() => panels.closeSettings()} title="Close settings">
+        <Icon name="close" size={16} />
+      </button>
+    </div>
+    <nav class="scroll side-nav tabs" aria-label="Settings sections">
+      {#each grouped as g (g.id)}
+        <!-- A group with its heading as its name, so a screen reader announces
            "Platform" or "Apps" on entering one, the way the eye reads it. -->
-      <div class="group" role="group" aria-labelledby="settings-group-{g.id}">
-        <div class="side-head">
-          <h3 class="eyebrow" id="settings-group-{g.id}">{g.label}</h3>
+        <div class="group" role="group" aria-labelledby="settings-group-{g.id}">
+          <div class="side-head">
+            <h3 class="eyebrow" id="settings-group-{g.id}">{g.label}</h3>
+          </div>
+          {#each g.tabs as t (t.id)}
+            <!-- No row is the open one on a phone: the list is a list of
+               places to go, and the page is somewhere else. -->
+            <button
+              class="side-row tab"
+              class:sel={tab === t.id && !phone.on}
+              class:sub={t.sub}
+              aria-current={tab === t.id && !phone.on ? 'page' : undefined}
+              onclick={() => {
+                panels.openSettings(t.id)
+                pageOpen = true
+              }}
+            >
+              <span class="side-icon"><Symbol name={t.icon} size={17} /></span>
+              <span class="side-text">{t.label}</span>
+              {#if count(t.id) > 0}<span class="side-count strong">{count(t.id)}</span>{/if}
+              <span class="phone-only go"><Icon name="chevron" size={14} /></span>
+            </button>
+          {/each}
         </div>
-        {#each g.tabs as t (t.id)}
-          <button
-            class="side-row tab"
-            class:sel={tab === t.id}
-            class:sub={t.sub}
-            aria-current={tab === t.id ? 'page' : undefined}
-            onclick={() => panels.openSettings(t.id)}
-          >
-            <span class="side-icon"><Symbol name={t.icon} size={17} /></span>
-            <span class="side-text">{t.label}</span>
-            {#if count(t.id) > 0}<span class="side-count strong">{count(t.id)}</span>{/if}
-          </button>
-        {/each}
-      </div>
-    {/each}
-  </nav>
-</aside>
+      {/each}
+    </nav>
+  </aside>
+{/if}
 
-<!-- A landmark rather than `role="dialog"`: this is a page in the panes, not
-     a sheet raised over them, and nothing here traps focus or needs Escape
-     caught locally -- see the header comment, and the `Escape` row in
-     `shortcuts.svelte.ts`'s table for how this closes instead. -->
-<div class="shell-stage">
-  <main class="pane scroll" aria-label="Settings">
-    <div class="content">
-      {#if tab === 'assistant'}
-        <AgentPanel />
-      {:else if tab === 'models'}
-        <ModelsPanel />
-      {:else if tab === 'ai'}
-        <AiFeaturesPanel />
-      {:else if isPane(tab)}
-        <AssistantPanes pane={tab} />
-      {:else if tab === 'briefs'}
-        <BriefSettingsPanel />
-      {:else if tab === 'skills'}
-        <SkillsPanel />
-      {:else if tab === 'chat'}
-        <ChatLinksPanel />
-      {:else if tab === 'money'}
-        <MoneySettingsPanel />
-      {:else if tab === 'screentime'}
-        <ScreenTimeSettingsPanel />
-      {:else if tab === 'files'}
-        <FilesSettingsPanel />
-      {:else if tab === 'feed'}
-        <FeedSettingsPanel />
-      {:else if tab === 'health'}
-        <HealthSettingsPanel />
-      {:else if tab === 'meetings'}
-        <MeetingsPanel />
-      {:else if tab === 'templates'}
-        <TemplatesPanel />
-      {:else if tab === 'keepintouch'}
-        <KeepInTouchPanel />
-      {:else if tab === 'profile'}
-        <ProfilePanel />
-      {:else if tab === 'accounts'}
-        <AccountsPanel />
-      {:else if tab === 'sorting'}
-        <MailSortingPanel />
-      {:else if tab === 'writing'}
-        <MailWritingPanel />
-      {:else if tab === 'connections'}
-        <ConnectionsPanel />
-      {:else if tab === 'backup'}
-        <BackupPanel />
-      {:else if tab === 'data'}
-        <DataPanel />
-      {:else if tab === 'general'}
-        <section>
-          <span class="eyebrow">Appearance</span>
-          <ThemePicker />
-        </section>
-
-        {#if tray.supported}
+{#if showPage}
+  <div class="shell-stage settings-stage">
+    <!-- A phone's page has its own header, outside what scrolls: the way back
+       to the list, the page's name, and the way out of Settings. -->
+    {#if phone.on}
+      <header class="pagehead">
+        <PhoneBack onclick={() => (pageOpen = false)} label="Settings" />
+        <h2 class="pane-title">{TABS.find((t) => t.id === tab)?.label}</h2>
+        <button class="ghost" onclick={() => panels.closeSettings()} aria-label="Close settings">
+          <Icon name="close" size={16} />
+        </button>
+      </header>
+    {/if}
+    <main class="pane scroll" aria-label="Settings">
+      <div class="content">
+        {#if tab === 'assistant'}
+          <AgentPanel />
+        {:else if tab === 'models'}
+          <ModelsPanel />
+        {:else if tab === 'ai'}
+          <AiFeaturesPanel />
+        {:else if isPane(tab)}
+          <AssistantPanes pane={tab} />
+        {:else if tab === 'briefs'}
+          <BriefSettingsPanel />
+        {:else if tab === 'skills'}
+          <SkillsPanel />
+        {:else if tab === 'chat'}
+          <ChatLinksPanel />
+        {:else if tab === 'money'}
+          <MoneySettingsPanel />
+        {:else if tab === 'screentime'}
+          <ScreenTimeSettingsPanel />
+        {:else if tab === 'files'}
+          <FilesSettingsPanel />
+        {:else if tab === 'feed'}
+          <FeedSettingsPanel />
+        {:else if tab === 'health'}
+          <HealthSettingsPanel />
+        {:else if tab === 'meetings'}
+          <MeetingsPanel />
+        {:else if tab === 'templates'}
+          <TemplatesPanel />
+        {:else if tab === 'keepintouch'}
+          <KeepInTouchPanel />
+        {:else if tab === 'profile'}
+          <ProfilePanel />
+        {:else if tab === 'accounts'}
+          <AccountsPanel />
+        {:else if tab === 'sorting'}
+          <MailSortingPanel />
+        {:else if tab === 'writing'}
+          <MailWritingPanel />
+        {:else if tab === 'connections'}
+          <ConnectionsPanel />
+        {:else if tab === 'backup'}
+          <BackupPanel />
+        {:else if tab === 'data'}
+          <DataPanel />
+        {:else if tab === 'general'}
           <section>
-            <span class="eyebrow">Quick actions</span>
-            <label class="toggle">
-              <input
-                type="checkbox"
-                checked={tray.enabled}
-                onchange={(e) => tray.setEnabled(e.currentTarget.checked)}
-              />
-              <span>
-                <b>Show Karma Yoga in the {TRAY_WORD}</b>
-                <small>
-                  <!-- What closing the window does follows from the icon being
+            <span class="eyebrow">Appearance</span>
+            <ThemePicker />
+          </section>
+
+          {#if tray.supported}
+            <section>
+              <span class="eyebrow">Quick actions</span>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={tray.enabled}
+                  onchange={(e) => tray.setEnabled(e.currentTarget.checked)}
+                />
+                <span>
+                  <b>Show Karma Yoga in the {TRAY_WORD}</b>
+                  <small>
+                    <!-- What closing the window does follows from the icon being
                      up -- `showing`, the shell's own answer, which is what its
                      close handler asks too: with it, closing hides the window
                      and Quit is in the menu. Without it, closing quits unless
                      there is work to do and a hotkey to come back by, which is
                      more than a line here should try to say. -->
-                  {#if tray.unavailable}
-                    This desktop session has no {TRAY_WORD} for Karma Yoga to appear in.
-                  {:else if tray.showing}
-                    Start an entry, a task or an hour without coming back to the window. Closing the
-                    window keeps Karma Yoga running here; quit it from this menu.
-                  {:else}
-                    Start an entry, a task or an hour without coming back to the window.
-                  {/if}
-                </small>
-              </span>
-            </label>
-            <!-- Only meaningful once the switch above is on -- greyed out
-                 rather than hidden, the same way the lock choices above are
-                 suspended while the keychain switch is on, so the choice
-                 underneath is still visible for when it is turned back on. -->
-            <label class="toggle" class:disabled={!tray.enabled}>
-              <input
-                type="checkbox"
-                checked={tray.meetingEnabled}
-                disabled={!tray.enabled}
-                onchange={(e) => tray.setMeetingEnabled(e.currentTarget.checked)}
-              />
-              <span>
-                <b>Show the next meeting in the {TRAY_WORD}</b>
-                <small>
-                  {#if !tray.enabled}
-                    Only shown while Karma Yoga is in the {TRAY_WORD}.
-                  {:else}
-                    The meeting you are in, or the next one starting soon today. Nothing is shown
-                    while the vault is locked.
-                  {/if}
-                </small>
-              </span>
-            </label>
-          </section>
-        {/if}
-
-        {#if badge.supported}
-          <section>
-            <span class="eyebrow">Icon badge</span>
-            <p class="hint">
-              A number on Karma Yoga's icon in the {DOCK_WORD}, adding up whatever you choose here.
-              Nothing is shown while the vault is locked.
-            </p>
-            <div class="segmented">
-              {#each BADGE_TASKS as c (c.value)}
-                <button
-                  class="seg"
-                  class:on={badge.sources.tasks === c.value}
-                  aria-pressed={badge.sources.tasks === c.value}
-                  onclick={() => badge.set({ tasks: c.value })}
-                >
-                  {c.label}
-                </button>
-              {/each}
-            </div>
-            {#if badge.sources.tasks === 'due'}
-              <p class="hint">Open tasks due today or overdue, the number beside Today in Todo.</p>
-            {:else if badge.sources.tasks === 'open'}
-              <p class="hint">Every task not yet done, the number beside All tasks in Todo.</p>
-            {/if}
-            <label class="toggle">
-              <input
-                type="checkbox"
-                checked={badge.sources.mail}
-                onchange={(e) => badge.set({ mail: e.currentTarget.checked })}
-              />
-              <span>
-                <b>Unread mail</b>
-                <small>Unread messages in every account's inbox, leaving out snoozed ones.</small>
-              </span>
-            </label>
-            <label class="toggle">
-              <input
-                type="checkbox"
-                checked={badge.sources.assistant}
-                onchange={(e) => badge.set({ assistant: e.currentTarget.checked })}
-              />
-              <span>
-                <b>Waiting in the assistant</b>
-                <small>
-                  Runs and proposals you have not looked at yet, the number on the assistant's
-                  button.
-                </small>
-              </span>
-            </label>
-          </section>
-        {/if}
-
-        <section>
-          <span class="eyebrow">Keyboard</span>
-          <p class="hint">
-            Two keys for anything you do often: <kbd>G</kbd> then <kbd>J</kbd> for the journal,
-            <kbd>C</kbd> to start the next thing, <kbd>/</kbd> to search.
-          </p>
-
-          {#if hotkey}
-            <label class="toggle">
-              <input
-                type="checkbox"
-                checked={hotkey.registered}
-                disabled={!hotkey.registered && !hotkeyAvailable}
-                onchange={(e) => setHotkey(e.currentTarget.checked)}
-              />
-              <span>
-                <b>Reach Karma Yoga from anywhere with {hotkey.shortcut}</b>
-                <small>
-                  {#if hotkeyNotice}
-                    {hotkeyNotice}
-                  {:else}
-                    Raises the window with the command palette open, whatever you are looking at.
-                  {/if}
-                </small>
-              </span>
-            </label>
-          {/if}
-          <div>
-            <button
-              class="btn btn-outline"
-              onclick={() => {
-                panels.closeSettings()
-                panels.shortcuts = true
-              }}
-            >
-              Show every shortcut
-            </button>
-          </div>
-        </section>
-      {:else}
-        {#if vaultSubs.length > 1}
-          <SubTabs
-            tabs={vaultSubs}
-            bind:value={() => vaultSub, (v: VaultSub) => (vaultPicked = v)}
-            label="Vault sections"
-          />
-        {/if}
-        {#if vaultSub === 'security'}
-          <section>
-            <span class="eyebrow">Lock after</span>
-            <!-- Suspended rather than hidden while the key is in the
-                 keychain: the choice underneath is still there, waiting, for
-                 the day the switch below goes off again. -->
-            <div class="segmented" class:disabled={opensItself}>
-              {#each LOCK_CHOICES as c (c.value)}
-                <button
-                  class="seg"
-                  class:on={status?.autoLockSeconds === c.value}
-                  disabled={opensItself}
-                  onclick={() => setAutoLock(c.value)}
-                >
-                  {c.label}
-                </button>
-              {/each}
-            </div>
-            <p class="hint">
-              {#if opensItself}
-                Off while the key is in this computer's keychain — signing in to this computer is
-                what unlocks it. Lock it yourself with {LOCK_SHORTCUT}.
-              {:else}
-                How long this window may sit untouched before it hides what it is showing and asks
-                for the password again. The vault stays open behind it.
-              {/if}
-            </p>
-          </section>
-
-          <section>
-            <span class="eyebrow">Forget the key after</span>
-            <div class="segmented" class:disabled={opensItself}>
-              {#each KEY_CHOICES as c (c.value)}
-                <button
-                  class="seg"
-                  class:on={status?.forgetKeySeconds === c.value}
-                  disabled={opensItself}
-                  onclick={() => setForgetKey(c.value)}
-                >
-                  {c.label}
-                </button>
-              {/each}
-            </div>
-            <p class="hint">
-              {#if opensItself}
-                Off while the key is in this computer's keychain — signing in to this computer is
-                what unlocks it. Lock it yourself with {LOCK_SHORTCUT}.
-              {:else}
-                The heavier of the two. This computer holds the key while the vault is open, and
-                serves it to your other windows, to any device you have paired, and to the
-                assistant's own routines. Forgetting it stops all of them until somebody types the
-                password again. Quitting always forgets it.
-              {/if}
-            </p>
-          </section>
-
-          <!-- This machine's keychain, so nothing a browser on web access can
-             reach: the keychain is the desktop's. -->
-          {#if !isWeb}
-            <section>
-              <span class="eyebrow">Opening this vault</span>
-              <!-- The box is driven by `opensItself` and nothing else, and the
-                 handler puts it straight back: turning it on only opens the
-                 password step, so a cancelled or refused attempt must not
-                 leave a switch that says the key is kept when it is not. -->
-              <label class="toggle">
-                <input
-                  type="checkbox"
-                  checked={opensItself}
-                  onchange={(e) => {
-                    e.currentTarget.checked = opensItself
-                    void setOpensItself(!opensItself)
-                  }}
-                />
-                <span>
-                  <b>Open without a password when the app starts</b>
-                  <small>
-                    This computer keeps the key in its own keychain. The vault is then as safe as
-                    your login here, rather than as safe as its password — anybody already sitting
-                    at this desk, logged in as you, can read it. Signing in here is what unlocks it
-                    from then on, so it also stops both idle locks above from firing; lock it
-                    yourself with
-                    {LOCK_SHORTCUT} when you mean to.
+                    {#if tray.unavailable}
+                      This desktop session has no {TRAY_WORD} for Karma Yoga to appear in.
+                    {:else if tray.showing}
+                      Start an entry, a task or an hour without coming back to the window. Closing
+                      the window keeps Karma Yoga running here; quit it from this menu.
+                    {:else}
+                      Start an entry, a task or an hour without coming back to the window.
+                    {/if}
                   </small>
                 </span>
               </label>
-              <p class="hint">
-                Worth it for one thing: the assistant's routines run where the vault is, and a vault
-                that is shut from the moment this machine boots until somebody types a password is a
-                vault whose morning brief does not happen.
-              </p>
-              {#if askingForKey}
-                <form onsubmit={confirmOpensItself}>
-                  <input
-                    class="field"
-                    type="password"
-                    placeholder="Your vault password"
-                    bind:value={keyPassword}
-                    autocomplete="current-password"
-                    use:focusOnMount
-                  />
-                  <div class="row">
-                    <button class="btn" type="button" onclick={cancelOpensItself}>Cancel</button>
-                    <button class="btn btn-primary" type="submit" disabled={!keyPassword}>
-                      Keep the key
-                    </button>
-                  </div>
-                </form>
-              {/if}
+              <!-- Only meaningful once the switch above is on -- greyed out
+                 rather than hidden, the same way the lock choices above are
+                 suspended while the keychain switch is on, so the choice
+                 underneath is still visible for when it is turned back on. -->
+              <label class="toggle" class:disabled={!tray.enabled}>
+                <input
+                  type="checkbox"
+                  checked={tray.meetingEnabled}
+                  disabled={!tray.enabled}
+                  onchange={(e) => tray.setMeetingEnabled(e.currentTarget.checked)}
+                />
+                <span>
+                  <b>Show the next meeting in the {TRAY_WORD}</b>
+                  <small>
+                    {#if !tray.enabled}
+                      Only shown while Karma Yoga is in the {TRAY_WORD}.
+                    {:else}
+                      The meeting you are in, or the next one starting soon today. Nothing is shown
+                      while the vault is locked.
+                    {/if}
+                  </small>
+                </span>
+              </label>
             </section>
           {/if}
 
-          <section>
-            <span class="eyebrow">Password</span>
-            {#if changing}
-              <form onsubmit={changePassword}>
-                <input
-                  class="field"
-                  type="password"
-                  placeholder="Current password"
-                  bind:value={current}
-                  autocomplete="current-password"
-                />
-                <div class="gap"></div>
-                <input
-                  class="field"
-                  type="password"
-                  placeholder="New password"
-                  bind:value={next}
-                  autocomplete="new-password"
-                />
-                <p class="hint">
-                  The new password locks the same key, it does not make a new one. A copy of this
-                  vault or a backup taken before today still opens with the old password, so if the
-                  old one was found out, those copies are worth deleting too.
-                </p>
-                <div class="row">
-                  <button class="btn" type="button" onclick={() => (changing = false)}>
-                    Cancel
+          {#if badge.supported}
+            <section>
+              <span class="eyebrow">Icon badge</span>
+              <p class="hint">
+                A number on Karma Yoga's icon in the {DOCK_WORD}, adding up whatever you choose
+                here. Nothing is shown while the vault is locked.
+              </p>
+              <div class="segmented">
+                {#each BADGE_TASKS as c (c.value)}
+                  <button
+                    class="seg"
+                    class:on={badge.sources.tasks === c.value}
+                    aria-pressed={badge.sources.tasks === c.value}
+                    onclick={() => badge.set({ tasks: c.value })}
+                  >
+                    {c.label}
                   </button>
-                  <button class="btn btn-primary" type="submit" disabled={next.length < 8}>
-                    Change
+                {/each}
+              </div>
+              {#if badge.sources.tasks === 'due'}
+                <p class="hint">
+                  Open tasks due today or overdue, the number beside Today in Todo.
+                </p>
+              {:else if badge.sources.tasks === 'open'}
+                <p class="hint">Every task not yet done, the number beside All tasks in Todo.</p>
+              {/if}
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={badge.sources.mail}
+                  onchange={(e) => badge.set({ mail: e.currentTarget.checked })}
+                />
+                <span>
+                  <b>Unread mail</b>
+                  <small>Unread messages in every account's inbox, leaving out snoozed ones.</small>
+                </span>
+              </label>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={badge.sources.assistant}
+                  onchange={(e) => badge.set({ assistant: e.currentTarget.checked })}
+                />
+                <span>
+                  <b>Waiting in the assistant</b>
+                  <small>
+                    Runs and proposals you have not looked at yet, the number on the assistant's
+                    button.
+                  </small>
+                </span>
+              </label>
+            </section>
+          {/if}
+
+          <section class="desktop-only">
+            <span class="eyebrow">Keyboard</span>
+            <p class="hint">
+              Two keys for anything you do often: <kbd>G</kbd> then <kbd>J</kbd> for the journal,
+              <kbd>C</kbd> to start the next thing, <kbd>/</kbd> to search.
+            </p>
+
+            {#if hotkey}
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={hotkey.registered}
+                  disabled={!hotkey.registered && !hotkeyAvailable}
+                  onchange={(e) => setHotkey(e.currentTarget.checked)}
+                />
+                <span>
+                  <b>Reach Karma Yoga from anywhere with {hotkey.shortcut}</b>
+                  <small>
+                    {#if hotkeyNotice}
+                      {hotkeyNotice}
+                    {:else}
+                      Raises the window with the command palette open, whatever you are looking at.
+                    {/if}
+                  </small>
+                </span>
+              </label>
+            {/if}
+            <div>
+              <button
+                class="btn btn-outline"
+                onclick={() => {
+                  panels.closeSettings()
+                  panels.shortcuts = true
+                }}
+              >
+                Show every shortcut
+              </button>
+            </div>
+          </section>
+        {:else}
+          {#if vaultSubs.length > 1}
+            <SubTabs
+              tabs={vaultSubs}
+              bind:value={() => vaultSub, (v: VaultSub) => (vaultPicked = v)}
+              label="Vault sections"
+            />
+          {/if}
+          {#if vaultSub === 'security'}
+            <section>
+              <span class="eyebrow">Lock after</span>
+              <!-- Suspended rather than hidden while the key is in the
+                 keychain: the choice underneath is still there, waiting, for
+                 the day the switch below goes off again. -->
+              <div class="segmented" class:disabled={opensItself}>
+                {#each LOCK_CHOICES as c (c.value)}
+                  <button
+                    class="seg"
+                    class:on={status?.autoLockSeconds === c.value}
+                    disabled={opensItself}
+                    onclick={() => setAutoLock(c.value)}
+                  >
+                    {c.label}
+                  </button>
+                {/each}
+              </div>
+              <p class="hint">
+                {#if opensItself}
+                  Off while the key is in this computer's keychain — signing in to this computer is
+                  what unlocks it. Lock it yourself with {LOCK_SHORTCUT}.
+                {:else}
+                  How long this window may sit untouched before it hides what it is showing and asks
+                  for the password again. The vault stays open behind it.
+                {/if}
+              </p>
+            </section>
+
+            <section>
+              <span class="eyebrow">Forget the key after</span>
+              <div class="segmented" class:disabled={opensItself}>
+                {#each KEY_CHOICES as c (c.value)}
+                  <button
+                    class="seg"
+                    class:on={status?.forgetKeySeconds === c.value}
+                    disabled={opensItself}
+                    onclick={() => setForgetKey(c.value)}
+                  >
+                    {c.label}
+                  </button>
+                {/each}
+              </div>
+              <p class="hint">
+                {#if opensItself}
+                  Off while the key is in this computer's keychain — signing in to this computer is
+                  what unlocks it. Lock it yourself with {LOCK_SHORTCUT}.
+                {:else}
+                  The heavier of the two. This computer holds the key while the vault is open, and
+                  serves it to your other windows, to any device you have paired, and to the
+                  assistant's own routines. Forgetting it stops all of them until somebody types the
+                  password again. Quitting always forgets it.
+                {/if}
+              </p>
+            </section>
+
+            <!-- This machine's keychain, so nothing a browser on web access can
+             reach, nor a phone: the keychain is the desktop's. -->
+            {#if !isWeb && !mobileShell}
+              <section>
+                <span class="eyebrow">Opening this vault</span>
+                <!-- The box is driven by `opensItself` and nothing else, and the
+                 handler puts it straight back: turning it on only opens the
+                 password step, so a cancelled or refused attempt must not
+                 leave a switch that says the key is kept when it is not. -->
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    checked={opensItself}
+                    onchange={(e) => {
+                      e.currentTarget.checked = opensItself
+                      void setOpensItself(!opensItself)
+                    }}
+                  />
+                  <span>
+                    <b>Open without a password when the app starts</b>
+                    <small>
+                      This computer keeps the key in its own keychain. The vault is then as safe as
+                      your login here, rather than as safe as its password — anybody already sitting
+                      at this desk, logged in as you, can read it. Signing in here is what unlocks
+                      it from then on, so it also stops both idle locks above from firing; lock it
+                      yourself with
+                      {LOCK_SHORTCUT} when you mean to.
+                    </small>
+                  </span>
+                </label>
+                <p class="hint">
+                  Worth it for one thing: the assistant's routines run where the vault is, and a
+                  vault that is shut from the moment this machine boots until somebody types a
+                  password is a vault whose morning brief does not happen.
+                </p>
+                {#if askingForKey}
+                  <form onsubmit={confirmOpensItself}>
+                    <input
+                      class="field"
+                      type="password"
+                      placeholder="Your vault password"
+                      bind:value={keyPassword}
+                      autocomplete="current-password"
+                      use:focusOnMount
+                    />
+                    <div class="row">
+                      <button class="btn" type="button" onclick={cancelOpensItself}>Cancel</button>
+                      <button class="btn btn-primary" type="submit" disabled={!keyPassword}>
+                        Keep the key
+                      </button>
+                    </div>
+                  </form>
+                {/if}
+              </section>
+            {/if}
+
+            <section>
+              <span class="eyebrow">Password</span>
+              {#if changing}
+                <form onsubmit={changePassword}>
+                  <input
+                    class="field"
+                    type="password"
+                    placeholder="Current password"
+                    bind:value={current}
+                    autocomplete="current-password"
+                  />
+                  <div class="gap"></div>
+                  <input
+                    class="field"
+                    type="password"
+                    placeholder="New password"
+                    bind:value={next}
+                    autocomplete="new-password"
+                  />
+                  <p class="hint">
+                    The new password locks the same key, it does not make a new one. A copy of this
+                    vault or a backup taken before today still opens with the old password, so if
+                    the old one was found out, those copies are worth deleting too.
+                  </p>
+                  <div class="row">
+                    <button class="btn" type="button" onclick={() => (changing = false)}>
+                      Cancel
+                    </button>
+                    <button class="btn btn-primary" type="submit" disabled={next.length < 8}>
+                      Change
+                    </button>
+                  </div>
+                </form>
+              {:else}
+                <div>
+                  <button class="btn btn-outline" onclick={() => (changing = true)}>
+                    Change password…
                   </button>
                 </div>
-              </form>
-            {:else}
-              <div>
-                <button class="btn btn-outline" onclick={() => (changing = true)}>
-                  Change password…
-                </button>
-              </div>
-            {/if}
-          </section>
+              {/if}
+            </section>
 
-          {#if notice}<p class="notice">{notice}</p>{/if}
-        {:else if vaultSub === 'sharing'}
-          <!-- Said first, and always: each of the three draws nothing until
+            {#if notice}<p class="notice">{notice}</p>{/if}
+          {:else if vaultSub === 'sharing'}
+            <!-- Said first, and always: each of the three draws nothing until
                the shell has answered whether it can serve the vault, and a
                build that cannot draws none of them at all. -->
-          <p class="hint lead">
-            Ways to reach this vault from somewhere other than this window: other computers on your
-            network, a browser over your tailnet, and other agents through MCP.
-          </p>
-          <SharePanel />
+            <p class="hint lead">
+              Ways to reach this vault from somewhere other than this window: other computers on
+              your network, a browser over your tailnet, and other agents through MCP.
+            </p>
+            <SharePanel />
 
-          <WebAccessPanel />
+            <WebAccessPanel />
 
-          <McpPanel />
-        {:else}
-          <section>
-            <span class="eyebrow">This vault</span>
-            <div class="facts">
-              <div><span>Name</span><b>{status?.name}</b></div>
-              <div><span>Storage</span><b>{status?.backend}</b></div>
-              <div>
-                <span>Encryption</span>
-                <b class:warn={!status?.encrypted}>{status?.encrypted ? 'On' : 'Off'}</b>
-              </div>
-              {#if status?.stats}
+            <McpPanel />
+          {:else}
+            <section>
+              <span class="eyebrow">This vault</span>
+              <div class="facts">
+                <div><span>Name</span><b>{status?.name}</b></div>
+                <div><span>Storage</span><b>{status?.backend}</b></div>
                 <div>
-                  <span>Entries</span><b>{plural(status.stats.entries, 'entry', 'entries')}</b>
+                  <span>Encryption</span>
+                  <b class:warn={!status?.encrypted}>{status?.encrypted ? 'On' : 'Off'}</b>
                 </div>
-                <div><span>Media</span><b>{humanBytes(status.stats.blobBytes)}</b></div>
-              {/if}
-            </div>
-            <p class="path" title={status?.path}>{status?.path}</p>
-          </section>
+                {#if status?.stats}
+                  <div>
+                    <span>Entries</span><b>{plural(status.stats.entries, 'entry', 'entries')}</b>
+                  </div>
+                  <div><span>Media</span><b>{humanBytes(status.stats.blobBytes)}</b></div>
+                {/if}
+              </div>
+              <p class="path" title={status?.path}>{status?.path}</p>
+            </section>
+          {/if}
         {/if}
-      {/if}
-    </div>
-  </main>
-</div>
+      </div>
+    </main>
+  </div>
+{/if}
 
 <style>
   /* The same width, background and border every app's sidebar draws with --
@@ -959,7 +1017,7 @@
   .content::after {
     content: '';
     display: block;
-    height: var(--sp-8);
+    height: var(--settings-foot, var(--sp-8));
   }
 
   /* A tab with a draft ends on its `.save` row -- Assistant, Models, Mail
@@ -976,7 +1034,7 @@
     position: sticky;
     bottom: 0;
     z-index: 2;
-    margin-bottom: calc(-1 * var(--sp-8));
+    margin-bottom: calc(-1 * var(--settings-foot, var(--sp-8)));
     padding-bottom: var(--sp-4);
     background: var(--float);
   }
@@ -1137,5 +1195,140 @@
     color: var(--fg-faint);
     overflow-wrap: anywhere;
     user-select: text;
+  }
+
+  /* ── A phone ──────────────────────────────────────────────────────────
+     The list of pages is the screen, then one page is. See `pageOpen`. */
+  :global([data-phone]) .nav {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    border-right: 0;
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+  }
+  :global([data-phone]) .head {
+    height: 52px;
+    padding: 0 var(--sp-2) 0 var(--sp-4);
+  }
+  :global([data-phone]) .ghost {
+    width: 44px;
+    height: 44px;
+    flex: none;
+  }
+  /* The indent is the cue; the row is still a finger's height. */
+  :global([data-phone]) .side-row.sub {
+    height: auto;
+  }
+  .go {
+    display: none;
+    flex: none;
+    color: var(--fg-faint);
+  }
+  :global([data-phone]) .go {
+    display: inline-flex;
+  }
+  /* The page: a header that stays, over what scrolls. */
+  :global([data-phone]) .settings-stage {
+    flex-direction: column;
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+  }
+  .pagehead {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--sp-1);
+    height: 52px;
+    padding: 0 var(--sp-2) 0 var(--sp-1);
+    border-bottom: 1px solid var(--border);
+  }
+  .pagehead .pane-title {
+    flex: 1;
+    min-width: 0;
+  }
+  :global([data-phone]) .pane {
+    height: auto;
+    flex: 1;
+    padding: var(--sp-4) var(--sp-4) 0;
+    --settings-foot: var(--sp-4);
+  }
+  /* A pinned Save with a message and two or three buttons beside it is wider
+     than the screen: it wraps instead of running off the left edge. */
+  :global([data-phone]) .pane .content > :global(.save) {
+    flex-wrap: wrap;
+    row-gap: var(--sp-2);
+  }
+  /* A choice between a few words -- the same control, drawn again in every
+     page that has one -- wraps rather than cutting off its last option, each
+     a finger tall. */
+  :global([data-phone]) .settings-stage :global(.segmented) {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .settings-stage :global(.segmented > .seg) {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 40px;
+    white-space: normal;
+  }
+  /* A link-looking button that stands on its own -- the Edit, Duplicate and
+     Delete under a card, Forget beside a fact -- is an action, so it is a
+     finger tall. One in the middle of a sentence is a word and stays one. */
+  :global([data-phone])
+    .settings-stage
+    :global(
+      :not(p, small, span, label, em, strong, li, dd, b)
+        > :is(button.link, button.textlink, button.linkish)
+    ) {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding-inline: var(--sp-2);
+  }
+  /* A setting whose words sit beside a button or a menu -- "Rescan now",
+     "Keep the trash for" -- is a sentence a column wide and a control, which
+     left the sentence a few words a line. The control goes under it. Drawn
+     by four pages, each with its own copy of the row. */
+  :global([data-phone]) .settings-stage :global(.row-setting:has(> .btn, > select)) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-2);
+  }
+  :global([data-phone]) .settings-stage :global(.row-setting:has(> .btn, > select) > .btn) {
+    align-self: flex-start;
+  }
+  /* What every page's fields are, whatever each says of its own: sixteen
+     pixels or more, or iOS zooms the page into one when it takes focus. A
+     page's own rule for a field's size is more specific than the shared
+     phone one in app.css, so this has to be said over it. */
+  :global([data-phone])
+    .settings-stage
+    :global(
+      input:not(
+        [type='checkbox'],
+        [type='radio'],
+        [type='range'],
+        [type='color'],
+        [type='file'],
+        [type='hidden']
+      )
+    ),
+  :global([data-phone]) .settings-stage :global(textarea),
+  :global([data-phone]) .settings-stage :global(select) {
+    font-size: max(16px, 1em) !important;
+  }
+  /* A tick or a dot a finger can hit; the label round it is the target, this
+     is what it is aimed at. */
+  :global([data-phone]) .settings-stage :global(input[type='checkbox']),
+  :global([data-phone]) .settings-stage :global(input[type='radio']) {
+    width: 24px;
+    height: 24px;
+  }
+  /* And what a tick is in is the target: a line with one on it is a finger
+     tall, however short its words. */
+  :global([data-phone])
+    .settings-stage
+    :global(label:has(> input[type='checkbox'], > input[type='radio'])) {
+    min-height: 44px;
   }
 </style>

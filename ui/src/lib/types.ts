@@ -1657,6 +1657,11 @@ export interface Bootstrap {
    * when the process starts. Off unless somebody turned it on.
    */
   opensItself: boolean
+  /**
+   * The phone shell: always a remote client, so setup offers pairing and
+   * never a vault of its own. Absent from a browser on web access.
+   */
+  mobile?: boolean
 }
 
 /**

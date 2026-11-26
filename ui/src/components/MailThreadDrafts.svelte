@@ -188,4 +188,22 @@
     font-size: var(--text-sm);
     color: var(--fg-subtle);
   }
+
+  /* ── On a phone ─────────────────────────────────────────────────────
+     The card's words over its two buttons, which share the width. */
+  :global([data-phone]) .drafts {
+    padding: 0 var(--sp-3) var(--sp-4);
+  }
+  :global([data-phone]) .draft {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :global([data-phone]) .open {
+    min-height: 48px;
+  }
+  :global([data-phone]) .actions .btn {
+    flex: 1;
+  }
+  :global([data-phone]) .stale .link {
+    min-height: 36px;
+  }
 </style>

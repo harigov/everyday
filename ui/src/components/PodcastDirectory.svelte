@@ -28,12 +28,19 @@
   import { api } from '../lib/api'
   import { feed } from '../lib/feed.svelte'
   import { hostOf, looksLikeAddress, sameFeedAddress } from '../lib/feed'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { compactCount, plural } from '../lib/format'
   import { app, isLocked } from '../lib/state.svelte'
   import { debounce } from '../lib/store/debounce'
   import type { FeedHit, PodcastHit } from '../lib/types'
   import Icon from './Icon.svelte'
+
+  // A phone's back button puts the sheet away rather than leaving the app.
+  closesOnBack(
+    () => true,
+    () => feed.closeDirectory(),
+  )
 
   type Tab = 'podcasts' | 'feeds'
   const TABS: { id: Tab; label: string }[] = [
@@ -683,5 +690,37 @@
     align-items: center;
     gap: 4px;
     flex: none;
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* As tall as the screen allows between the status bar and the bar of apps,
+     hung from the top like every sheet on a phone: the results scroll inside
+     it, so the search and the tabs stay put. */
+  :global([data-phone]) .sheet.wide {
+    top: calc(var(--safe-top) + var(--sp-3));
+    translate: -50% 0;
+    width: calc(100vw - var(--sp-6) - var(--safe-left) - var(--safe-right));
+    height: calc(
+      100dvh - var(--safe-top) - var(--sp-3) - var(--bottombar-h) - var(--safe-bottom) - var(--sp-3)
+    );
+    max-height: none;
+  }
+  :global([data-phone]) .shut {
+    width: 44px;
+    height: 44px;
+    margin: -8px -8px -8px 0;
+  }
+  :global([data-phone]) .tab {
+    height: 40px;
+  }
+  :global([data-phone]) .genre {
+    height: 40px;
+  }
+  :global([data-phone]) .hit {
+    min-height: 64px;
+  }
+  :global([data-phone]) .address {
+    min-height: 56px;
   }
 </style>

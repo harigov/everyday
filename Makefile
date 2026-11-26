@@ -487,7 +487,9 @@ cli: ## Run the karmayoga CLI, e.g. make cli ARGS="list"
 # drops the gradient and hands back a black tile.
 icons: ## Regenerate the app icons from crates/karmayoga-app/icons/icon.svg
 	cd $(APP_DIR) && cargo tauri icon icons/icon.svg -o icons
-	@# Desktop only: the mobile sets Tauri also emits have no shell to go with.
+	@# Android's set goes into the Android project's resources; iOS has no
+	@# project here yet. See docs/mobile.md.
+	cp -r $(APP_DIR)/icons/android/* $(APP_DIR)/gen/android/app/src/main/res/
 	rm -rf $(APP_DIR)/icons/android $(APP_DIR)/icons/ios
 
 # Wayland hands the compositor an app id, not an icon, and GNOME resolves it

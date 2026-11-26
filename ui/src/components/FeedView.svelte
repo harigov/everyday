@@ -18,6 +18,7 @@
   // story in its own source's list.
 
   import { feed } from '../lib/feed.svelte'
+  import { closesOnBack, phone } from '../lib/phone.svelte'
   import { upnext } from '../lib/upnext.svelte'
   import AddSource from './AddSource.svelte'
   import EmptyState from './EmptyState.svelte'
@@ -47,6 +48,20 @@
   const empty = $derived(ready && feed.sources.length === 0)
   const story = $derived(feed.story)
   const scope = $derived(feed.scope.kind)
+
+  // ── On a phone ───────────────────────────────────────────────────────
+  //
+  // The list is home, and a story opened from it is a page over it, with a
+  // way back (`PhoneBack`, in the story's own header) and Android's back
+  // button to the same end. Judged by the story rather than by a flag set
+  // where a row is pressed, since a story is also opened from History, from
+  // Recommended and by the assistant. The list stays where it is underneath,
+  // scrolled to the same row.
+  const layered = $derived(phone.on && story !== null)
+  closesOnBack(
+    () => layered,
+    () => feed.close(),
+  )
 
   let followingHackerNews = $state(false)
 
@@ -92,23 +107,26 @@
   </main>
 {:else}
   {#if scope === 'recommended'}
-    <RecommendedView />
+    <RecommendedView under={layered} />
   {:else}
-    <StoryList />
+    <StoryList under={layered} />
   {/if}
-  <main class="main">
-    {#if story}
-      <StoryView {story} />
-    {:else}
-      <EmptyState lead="Select a story">
-        {#snippet note()}
-          {scope === 'recommended'
-            ? 'The arrow keys move, Enter opens.'
-            : 'j and k move, Enter opens.'}
-        {/snippet}
-      </EmptyState>
-    {/if}
-  </main>
+  <!-- A phone has nothing to say beside the list: no story, no pane. -->
+  {#if story || !phone.on}
+    <main class="main" class:layered>
+      {#if story}
+        <StoryView {story} />
+      {:else}
+        <EmptyState lead="Select a story">
+          {#snippet note()}
+            {scope === 'recommended'
+              ? 'The arrow keys move, Enter opens.'
+              : 'j and k move, Enter opens.'}
+          {/snippet}
+        </EmptyState>
+      {/if}
+    </main>
+  {/if}
 {/if}
 
 {#if feed.adding}
@@ -139,5 +157,20 @@
     flex-wrap: wrap;
     justify-content: center;
     gap: var(--sp-2);
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* A story is a page over the list, filling the open app (`.panes`, which
+     holds nothing else on a phone), not a column beside it. */
+  :global([data-phone]) .main {
+    min-width: 0;
+  }
+  :global([data-phone]) .main.layered {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    height: auto;
+    background: var(--surface);
   }
 </style>

@@ -12,6 +12,7 @@
   // free, all of which would otherwise have to be rebuilt badly.
 
   import { todo } from '../lib/todo.svelte'
+  import { phone } from '../lib/phone.svelte'
   import { friendlyDate, formatMinutes } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -42,6 +43,22 @@
   /** Where the card would land: the column and the slot within it. */
   let over = $state<{ status: TaskStatus; index: number } | null>(null)
   let adding = $state<TaskStatus | null>(null)
+
+  // ── On a phone ───────────────────────────────────────────────────────
+  //
+  // The columns are a strip, one to a screen, that snaps; which one is showing
+  // is the tab that is lit, and a tab is also how to get to another.
+
+  let strip = $state<HTMLElement | null>(null)
+  let showing = $state(0)
+
+  function onStrip() {
+    if (strip) showing = Math.round(strip.scrollLeft / Math.max(1, strip.clientWidth))
+  }
+
+  function showColumn(i: number) {
+    strip?.scrollTo({ left: i * strip.clientWidth, behavior: 'smooth' })
+  }
 
   function start(e: DragEvent, task: Task) {
     dragging = task
@@ -118,7 +135,24 @@
   }
 </script>
 
-<div class="scroll board">
+{#if phone.on}
+  <div class="colbar" role="tablist" aria-label="Columns">
+    {#each todo.columns as status, i (status)}
+      <button
+        class="coltab"
+        class:on={showing === i}
+        role="tab"
+        aria-selected={showing === i}
+        onclick={() => showColumn(i)}
+      >
+        {LABELS[status]}
+        <span class="tabn">{todo.column(status).length}</span>
+      </button>
+    {/each}
+  </div>
+{/if}
+
+<div class="scroll board" bind:this={strip} onscroll={phone.on ? onStrip : undefined}>
   {#each todo.columns as status (status)}
     {@const cards = todo.column(status)}
     <section
@@ -169,7 +203,7 @@
             class:lifted={dragging?.id === task.id}
             class:sel={todo.selectedTask === task.id}
             data-card={task.id}
-            draggable="true"
+            draggable={!phone.on}
             ondragstart={(e) => start(e, task)}
             ondragend={() => {
               dragging = null
@@ -437,5 +471,93 @@
 
   .ghost-card {
     display: flex;
+  }
+
+  /* ── On a phone ──────────────────────────────────────────────────────── */
+
+  /* The board as a strip of columns, one to a screen, that snaps -- six
+     columns side by side would each be a sliver -- under a row of tabs that
+     say which is showing and go to another. A card is moved to another column
+     by its status, in its page or its menu: not by dragging it across a strip
+     that is also being scrolled along. The strip scrolls up and down as a
+     whole, for what is longer than the screen. */
+  .colbar {
+    display: flex;
+    flex: none;
+    gap: var(--sp-1);
+    padding: 0 var(--sp-3) var(--sp-2);
+    overflow-x: auto;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+  .colbar::-webkit-scrollbar {
+    display: none;
+  }
+  .coltab {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: var(--sp-2);
+    min-height: 40px;
+    padding: 0 var(--sp-3);
+    border-radius: 999px;
+    color: var(--fg-subtle);
+    font-size: var(--text-sm);
+    font-weight: 550;
+    white-space: nowrap;
+  }
+  .coltab.on {
+    background: var(--bg-active);
+    color: var(--fg);
+  }
+  .tabn {
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  :global([data-phone]) .board {
+    gap: 0;
+    padding: 0 0 var(--fab-clear);
+    scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain;
+  }
+  /* The margin round a column is a transparent border, so that the snap
+     lines up its edge and the one before it is wholly off the screen. */
+  :global([data-phone]) .col {
+    flex: 0 0 100%;
+    width: 100%;
+    max-height: none;
+    align-self: flex-start;
+    box-sizing: border-box;
+    border: 12px solid transparent;
+    border-top-width: 2px;
+    border-radius: calc(var(--radius) + 12px);
+    background-clip: padding-box;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+  :global([data-phone]) .cards {
+    flex: none;
+    overflow: visible;
+  }
+  :global([data-phone]) .colhead {
+    padding: var(--sp-1) var(--sp-1) var(--sp-2) var(--sp-2);
+  }
+  :global([data-phone]) .add {
+    width: 44px;
+    height: 44px;
+    margin: -8px 0;
+  }
+  :global([data-phone]) .card {
+    cursor: default;
+  }
+  :global([data-phone]) .card:active {
+    background: var(--bg-hover);
+  }
+  :global([data-phone]) .cardbody {
+    min-height: 48px;
+    padding: var(--sp-3);
+  }
+  :global([data-phone]) .empty {
+    height: 48px;
   }
 </style>

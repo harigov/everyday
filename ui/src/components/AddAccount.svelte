@@ -32,6 +32,7 @@
   } from '../lib/accounts'
   import { errorMessage } from '../lib/errors'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { openExternal } from '../lib/open-external'
   import type {
     Account,
@@ -243,6 +244,12 @@
     if (preset?.oauth) void startOAuth()
     else void submitPassword()
   }
+
+  // A phone's back button is its Escape: not while a sign-in is being waited on.
+  closesOnBack(
+    () => true,
+    () => phase !== 'waiting' && onclose(),
+  )
 </script>
 
 <svelte:window
@@ -252,8 +259,14 @@
 />
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim" onclick={() => phase !== 'waiting' && onclose()}></div>
-<div class="sheet wide" role="dialog" aria-modal="true" aria-label="Add account" use:trapFocus>
+<div class="scrim phone-fit" onclick={() => phase !== 'waiting' && onclose()}></div>
+<div
+  class="sheet wide phone-fit"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Add account"
+  use:trapFocus
+>
   <h2>Add account</h2>
 
   {#if phase === 'waiting' || phase === 'error' || phase === 'cancelled' || phase === 'success'}

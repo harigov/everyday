@@ -20,6 +20,7 @@
   // rather than an extra.
 
   import { dateFormat } from '../lib/format'
+  import { phone } from '../lib/phone.svelte'
 
   interface Point {
     /** `YYYY-MM-DD`. The column's identity and its tooltip's date. */
@@ -107,6 +108,19 @@
    */
   const gap = $derived(points.length > 40 ? 1 : 2)
 
+  // A finger cannot hover for a column's tooltip, so on a phone pressing the
+  // chart, or dragging along it, reads the column under the finger out in
+  // the line under the chart where its largest value is otherwise said.
+  let chosen = $state<number | null>(null)
+  const chosenPoint = $derived(chosen === null ? null : (points[chosen] ?? null))
+
+  function touch(e: PointerEvent) {
+    if (!phone.on || points.length === 0) return
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const at = (e.clientX - box.left) / box.width
+    chosen = Math.min(points.length - 1, Math.max(0, Math.floor(at * points.length)))
+  }
+
   function shortDate(iso: string): string {
     const at = new Date(`${iso}T00:00:00`)
     return dateFormat({
@@ -121,11 +135,22 @@
   <p class="none">Nothing recorded in this window.</p>
 {:else}
   <div class="chart" style="--c: {color}; --h: {height}px; --gap: {gap}px">
-    <div class="plot" role="img" aria-label="{points.length} days, up to {last?.label}">
+    <div
+      class="plot"
+      class:touch={phone.on}
+      role="img"
+      aria-label="{points.length} days, up to {last?.label}"
+      onpointerdown={touch}
+      onpointermove={touch}
+    >
       {#each points as point, i (point.date)}
         {@const pct = (point.value / ceiling) * 100}
         {@const at = points.length > 1 ? i / (points.length - 1) : 0.5}
-        <div class="slot" title="{shortDate(point.date)} — {point.label}">
+        <div
+          class="slot"
+          class:chosen={phone.on && chosen === i}
+          title="{shortDate(point.date)} — {point.label}"
+        >
           {#if labelled.has(point.date)}
             <span
               class="tip"
@@ -144,7 +169,13 @@
          columns grow from, and the only rule this chart draws. -->
     <div class="axis">
       <span>{first ? shortDate(first.date) : ''}</span>
-      <span class="cap">{ceiling.toLocaleString()}{unit ? ` ${unit}` : ''} at most</span>
+      <span class="cap" class:read={!!chosenPoint && phone.on}>
+        {#if chosenPoint && phone.on}
+          {shortDate(chosenPoint.date)} — {chosenPoint.label}
+        {:else}
+          {ceiling.toLocaleString()}{unit ? ` ${unit}` : ''} at most
+        {/if}
+      </span>
       <span>{last ? shortDate(last.date) : ''}</span>
     </div>
   </div>
@@ -228,6 +259,20 @@
 
   .axis .cap {
     text-align: center;
+  }
+
+  /* A phone: the whole plot is the target, a drag along it is read rather
+     than taken for a scroll, and the column read is shaded and named in
+     the axis's middle. */
+  .plot.touch {
+    touch-action: pan-y;
+  }
+  .slot.chosen {
+    background: var(--bg-hover);
+  }
+  .axis .cap.read {
+    color: var(--fg);
+    font-weight: 600;
   }
 
   .none {
