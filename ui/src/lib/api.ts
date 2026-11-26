@@ -224,6 +224,7 @@ import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
 import type { Commands } from './generated/commands'
 import type { Section } from './apps'
 import { isIOS } from './longpress'
+import { inShell, schemeOrigin } from './platform'
 import type { MockDictationControls } from './mock-dictation'
 import type { MockListenControls } from './mock-listen'
 import {
@@ -247,7 +248,7 @@ import {
 // with sample entries in it: for a journal app, that failure mode is
 // indistinguishable from having lost everything.
 /** Inside the desktop app's webview, with its shell to talk to. */
-const SHELL = '__TAURI_INTERNALS__' in window
+const SHELL = inShell
 const MOCK = import.meta.env.DEV && !SHELL
 /**
  * A built interface in an ordinary browser: served by the machine holding
@@ -3022,11 +3023,7 @@ export function mediaUrl(blob: string): string {
   if (MOCK) return mockMediaUrl(blob)
   if (WEB) return `${webMediaBase()}/v1/blob/${blob}`
   // Tauri maps custom schemes to an http origin on Windows and Android.
-  const base =
-    navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
-      ? 'http://karmayoga.localhost'
-      : 'karmayoga://localhost'
-  return `${base}/${blob}`
+  return `${schemeOrigin('localhost')}/${blob}`
 }
 
 /**
@@ -3043,11 +3040,7 @@ export function fileUrl(id: string, version = ''): string {
   const v = version ? `?v=${encodeURIComponent(version)}` : ''
   if (MOCK) return mockFileUrl(id)
   if (WEB) return `${webMediaBase()}/v1/files/file/${id}${v}`
-  const base =
-    navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
-      ? 'http://karmayoga.localhost/files'
-      : 'karmayoga://files'
-  return `${base}/file/${id}${v}`
+  return `${schemeOrigin('files')}/file/${id}${v}`
 }
 
 /**

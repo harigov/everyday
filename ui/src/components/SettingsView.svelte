@@ -59,35 +59,16 @@
   import { closesOnBack, phone } from '../lib/phone.svelte'
   import { tray } from '../lib/tray.svelte'
   import { badge } from '../lib/badge.svelte'
-  import AccountsPanel from './AccountsPanel.svelte'
-  import AgentPanel from './AgentPanel.svelte'
-  import AiFeaturesPanel from './AiFeaturesPanel.svelte'
   import AssistantPanes from './AssistantPanes.svelte'
-  import BackupPanel from './BackupPanel.svelte'
-  import BriefSettingsPanel from './BriefSettingsPanel.svelte'
-  import ChatLinksPanel from './ChatLinksPanel.svelte'
   import Connect from './Connect.svelte'
-  import ConnectionsPanel from './ConnectionsPanel.svelte'
-  import DataPanel from './DataPanel.svelte'
-  import FeedSettingsPanel from './FeedSettingsPanel.svelte'
-  import FilesSettingsPanel from './FilesSettingsPanel.svelte'
-  import KeepInTouchPanel from './KeepInTouchPanel.svelte'
-  import MailSortingPanel from './MailSortingPanel.svelte'
-  import MailWritingPanel from './MailWritingPanel.svelte'
-  import MeetingsPanel from './MeetingsPanel.svelte'
-  import ModelsPanel from './ModelsPanel.svelte'
-  import MoneySettingsPanel from './MoneySettingsPanel.svelte'
-  import ScreenTimeSettingsPanel from './ScreenTimeSettingsPanel.svelte'
-  import HealthSettingsPanel from './HealthSettingsPanel.svelte'
   import PhoneBack from './PhoneBack.svelte'
   import McpPanel from './McpPanel.svelte'
-  import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
   import WebAccessPanel from './WebAccessPanel.svelte'
-  import SkillsPanel from './SkillsPanel.svelte'
   import SubTabs from './SubTabs.svelte'
   import { shownTab } from '../lib/subtabs'
-  import TemplatesPanel from './TemplatesPanel.svelte'
+  import { settingsPage } from '../lib/settings-pages'
+  import { userAgentMac, userAgentWindows } from '../lib/platform'
   import ThemePicker from './ThemePicker.svelte'
   import Icon from './Icon.svelte'
   import Symbol from './Symbol.svelte'
@@ -134,6 +115,8 @@
 
   const status = $derived(app.status)
   const tab = $derived(panels.settings ?? 'general')
+  /** The page's component when it is one `lib/settings-pages.ts` lists. */
+  const Page = $derived(settingsPage(tab))
 
   // A phone has room for the list of pages or for one page, not both side by
   // side: it shows the list, a tap on a row shows that page over the whole
@@ -427,19 +410,15 @@
   // The same strip of the screen has three names. Calling it the wrong one
   // is how a setting becomes unfindable: nobody on macOS goes looking for a
   // "system tray".
-  const TRAY_WORD = navigator.userAgent.includes('Mac')
+  const TRAY_WORD = userAgentMac
     ? 'menu bar'
-    : navigator.userAgent.includes('Windows')
+    : userAgentWindows
       ? 'notification area'
       : 'system tray'
 
   // And the place the application's icon lives has three more. The badge is
   // drawn on that icon, so the setting has to say which one.
-  const DOCK_WORD = navigator.userAgent.includes('Mac')
-    ? 'Dock'
-    : navigator.userAgent.includes('Windows')
-      ? 'taskbar'
-      : 'dock'
+  const DOCK_WORD = userAgentMac ? 'Dock' : userAgentWindows ? 'taskbar' : 'dock'
 
   const BADGE_TASKS: { label: string; value: BadgeSources['tasks'] }[] = [
     { label: 'No tasks', value: 'off' },
@@ -452,7 +431,7 @@
   // out from the one place that knows the platform's own glyph for it,
   // rather than a second "Ctrl+L" written out by hand that could drift from
   // the real shortcut.
-  const LOCK_SHORTCUT = keysLabel('mod+l', navigator.userAgent.includes('Mac'))
+  const LOCK_SHORTCUT = keysLabel('mod+l', userAgentMac)
 
   const LOCK_CHOICES = [
     { label: 'Never', value: 0 },
@@ -532,50 +511,10 @@
     {/if}
     <main class="pane scroll" aria-label="Settings">
       <div class="content">
-        {#if tab === 'assistant'}
-          <AgentPanel />
-        {:else if tab === 'models'}
-          <ModelsPanel />
-        {:else if tab === 'ai'}
-          <AiFeaturesPanel />
+        {#if Page}
+          <Page />
         {:else if isPane(tab)}
           <AssistantPanes pane={tab} />
-        {:else if tab === 'briefs'}
-          <BriefSettingsPanel />
-        {:else if tab === 'skills'}
-          <SkillsPanel />
-        {:else if tab === 'chat'}
-          <ChatLinksPanel />
-        {:else if tab === 'money'}
-          <MoneySettingsPanel />
-        {:else if tab === 'screentime'}
-          <ScreenTimeSettingsPanel />
-        {:else if tab === 'files'}
-          <FilesSettingsPanel />
-        {:else if tab === 'feed'}
-          <FeedSettingsPanel />
-        {:else if tab === 'health'}
-          <HealthSettingsPanel />
-        {:else if tab === 'meetings'}
-          <MeetingsPanel />
-        {:else if tab === 'templates'}
-          <TemplatesPanel />
-        {:else if tab === 'keepintouch'}
-          <KeepInTouchPanel />
-        {:else if tab === 'profile'}
-          <ProfilePanel />
-        {:else if tab === 'accounts'}
-          <AccountsPanel />
-        {:else if tab === 'sorting'}
-          <MailSortingPanel />
-        {:else if tab === 'writing'}
-          <MailWritingPanel />
-        {:else if tab === 'connections'}
-          <ConnectionsPanel />
-        {:else if tab === 'backup'}
-          <BackupPanel />
-        {:else if tab === 'data'}
-          <DataPanel />
         {:else if tab === 'general'}
           <section>
             <span class="eyebrow">Appearance</span>

@@ -234,14 +234,12 @@ import {
   mockFeedFile,
 } from './mock-feed'
 import { FINISHED_POINTS, JOURNAL_POINTS, habitPoints, scoreDay, taskPoints } from './karma'
-import { mockBackup } from './mock-backup'
 import { MOCK_SECTIONS, mockBrief, mockBriefRoutine, mockBriefRun } from './mock-brief'
-import { mockConnections } from './mock-connections'
 import { isMockDocumentsCommand, mockDocumentFields, mockDocumentsInvoke } from './mock-documents'
-import { mockMoney } from './mock-money'
-import { mockScreenMinutes, mockScreenTime } from './mock-screentime'
+import { mockDomainFor } from './mock-registry'
+import { mockScreenMinutes } from './mock-screentime'
 import { isMockFilesCommand, mockFilesInvoke, mockMadePicture } from './mock-files'
-import { mockHealth, mockHealthDaily } from './mock-health'
+import { mockHealthDaily } from './mock-health'
 import {
   mockAllowRemoteImagesOnce,
   mockArchive,
@@ -5392,6 +5390,16 @@ export const mockInvoke = async <T>(
     return mockDocumentsInvoke(cmd, args) as T
   }
 
+  // The domains with a file of their own -- backups, connections, money, screen
+  // time, health -- are listed in `mock-registry.ts`: each says which of its
+  // commands want the vault open and answers them itself. `pick_folder`,
+  // `screentime_*` and `health_push_*` are the shell's, answered locked or not.
+  const domain = mockDomainFor(cmd)
+  if (domain) {
+    if (domain.needsVault(cmd)) requireUnlocked()
+    return domain.invoke(cmd, args) as T
+  }
+
   switch (cmd) {
     case 'bootstrap':
       return {
@@ -8002,45 +8010,6 @@ export const mockInvoke = async <T>(
       } as T
     }
 
-    // ── Backups ─────────────────────────────────────────────────────
-    //
-    // `mock-backup.ts` holds the settings, the copies kept and a run worked
-    // out from the clock; these only check the vault is open and hand the
-    // call over. `pick_folder` is the shell's, answered locked or not.
-
-    case 'pick_folder':
-      return mockBackup(cmd, args) as T
-    case 'backup_settings':
-    case 'save_backup_settings':
-    case 'set_backup_keys':
-    case 'clear_backup_keys':
-    case 'run_backup':
-    case 'cancel_backup':
-    case 'backup_snapshots':
-    case 'check_backup_destination':
-      requireUnlocked()
-      return mockBackup(cmd, args) as T
-
-    // ── Connections ─────────────────────────────────────────────────
-    //
-    // `mock-connections.ts` holds the list, each one's secrets apart from
-    // what the views say, and a sign-in that takes a moment; these check the
-    // vault is open and hand the call over.
-
-    case 'connections':
-    case 'add_connection':
-    case 'update_connection':
-    case 'remove_connection':
-    case 'set_connection_secrets':
-    case 'check_connection':
-    case 'set_connection_tool_policy':
-    case 'begin_connection_sign_in':
-    case 'await_connection_sign_in':
-    case 'cancel_connection_sign_in':
-    case 'sign_out_connection':
-      requireUnlocked()
-      return mockConnections(cmd, args) as T
-
     // ── Accounts ────────────────────────────────────────────────────
 
     case 'list_accounts': {
@@ -8985,165 +8954,6 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       mockRerank()
       return undefined as T
-
-    // ── Money -- docs/plans/money.md ────────────────────────────────────
-    //
-    // `mock-money.ts` holds the banks, accounts, transactions, categories
-    // and rules, and narrows its own arguments; these only check the vault
-    // is open and hand the call over. `mock_money_link_outcome` is the
-    // mock's own, called by name from a test to decide how the next bank
-    // sign-in ends, and is never generated into the surface.
-
-    case 'plaid_setup':
-    case 'save_plaid_credentials':
-    case 'clear_plaid_credentials':
-    case 'start_bank_link':
-    case 'check_bank_link':
-    case 'cancel_bank_link':
-    case 'list_bank_links':
-    case 'save_bank_link':
-    case 'delete_bank_link':
-    case 'sync_bank_links':
-    case 'list_bank_accounts':
-    case 'save_bank_account':
-    case 'create_manual_account':
-    case 'delete_bank_account':
-    case 'list_transactions':
-    case 'get_transaction':
-    case 'update_transactions':
-    case 'add_manual_transaction':
-    case 'delete_transactions':
-    case 'preview_import':
-    case 'import_transactions':
-    case 'list_money_categories':
-    case 'save_money_category':
-    case 'delete_money_category':
-    case 'list_money_rules':
-    case 'save_money_rule':
-    case 'delete_money_rule':
-    case 'apply_money_rules':
-    case 'money_month':
-    case 'money_cash_flow':
-    case 'money_net_worth':
-    case 'money_recurring':
-    case 'mock_money_link_outcome':
-      requireUnlocked()
-      return mockMoney(cmd, args) as T
-
-    // ── Screen time -- docs/plans/screentime.md ─────────────────────────
-    //
-    // `mock-screentime.ts` holds thirty days of two machines' spans, the
-    // labels and the categories, and narrows its own arguments. The vault's
-    // commands want it open; the shell's `screentime_*` do not -- they are
-    // this computer's, answered whether or not a vault is unlocked.
-
-    case 'record_screen_time':
-    case 'screen_time_collector':
-    case 'screen_time_report':
-    case 'screen_time_timeline':
-    case 'list_screen_apps':
-    case 'save_screen_app':
-    case 'delete_screen_app':
-    case 'list_screen_categories':
-    case 'save_screen_category':
-    case 'delete_screen_category':
-    case 'list_screen_devices':
-    case 'screen_time_settings':
-    case 'save_screen_time_settings':
-    case 'forget_screen_item':
-    case 'delete_screen_time':
-      requireUnlocked()
-      return mockScreenTime(cmd, args) as T
-    case 'screentime_status':
-    case 'screentime_set_tracking':
-    case 'screentime_set_device':
-    case 'screentime_install_gnome_extension':
-    case 'screentime_connect_browser':
-      return mockScreenTime(cmd, args) as T
-
-    // ── Health -- docs/plans/health.md ──────────────────────────────────
-    //
-    // `mock-health.ts` holds sixty days of one person's watch, glucose
-    // monitor, meals, medicines, conditions and records, and narrows its own
-    // arguments. The vault's commands want it open; the shell's `health_*`
-    // do not -- they are this computer's, answered whether or not a vault is
-    // unlocked.
-
-    case 'health_catalog':
-    case 'health_settings':
-    case 'save_health_settings':
-    case 'list_health_sources':
-    case 'save_health_source':
-    case 'delete_health_source':
-    case 'record_health_push':
-    case 'import_apple_health':
-    case 'import_apple_health_file':
-    case 'apple_import_status':
-    case 'cancel_apple_import':
-    case 'health_keys':
-    case 'save_health_keys':
-    case 'clear_health_keys':
-    case 'health_today':
-    case 'health_series':
-    case 'health_samples':
-    case 'health_latest':
-    case 'add_health_reading':
-    case 'delete_health_samples':
-    case 'health_activity':
-    case 'health_sleep':
-    case 'health_glucose':
-    case 'health_nutrition':
-    case 'health_day_timeline':
-    case 'list_workouts':
-    case 'get_workout':
-    case 'save_workout':
-    case 'delete_workout':
-    case 'list_medications':
-    case 'save_medication':
-    case 'delete_medication':
-    case 'list_doses':
-    case 'log_dose':
-    case 'delete_dose':
-    case 'doses_due':
-    case 'medication_alerts':
-    case 'medication_adherence':
-    case 'list_allergies':
-    case 'save_allergy':
-    case 'delete_allergy':
-    case 'list_conditions':
-    case 'save_condition':
-    case 'delete_condition':
-    case 'condition_templates':
-    case 'apply_condition_template':
-    case 'condition_report':
-    case 'list_labs':
-    case 'save_lab':
-    case 'delete_lab':
-    case 'lab_trends':
-    case 'list_health_documents':
-    case 'get_health_document':
-    case 'add_health_document':
-    case 'save_health_document':
-    case 'delete_health_document':
-    case 'extract_health_document':
-    case 'accept_document_labs':
-    case 'list_foods':
-    case 'save_food':
-    case 'delete_food':
-    case 'search_foods':
-    case 'lookup_barcode':
-    case 'list_meals':
-    case 'save_meal':
-    case 'delete_meal':
-    case 'estimate_meal_photo':
-    case 'meal_response':
-    case 'health_visit_brief':
-      requireUnlocked()
-      return mockHealth(cmd, args) as T
-    case 'health_push_setup':
-    case 'health_push_revoke':
-    case 'health_import_apple':
-      return mockHealth(cmd, args) as T
 
     // An Articles item on the library's shelf, made the way the library's
     // own `add_item` makes one. The mock library has no Articles shelf until

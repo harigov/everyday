@@ -374,6 +374,21 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
 }
 
+/** Every command this file answers that wants the vault open. */
+export const MOCK_BACKUP_COMMANDS: ReadonlySet<string> = new Set([
+  'backup_settings',
+  'save_backup_settings',
+  'set_backup_keys',
+  'clear_backup_keys',
+  'run_backup',
+  'cancel_backup',
+  'backup_snapshots',
+  'check_backup_destination',
+])
+
+/** The shell's own, answered whether or not a vault is unlocked. */
+export const MOCK_BACKUP_SHELL_COMMANDS: ReadonlySet<string> = new Set(['pick_folder'])
+
 export function mockBackup(cmd: string, args: Record<string, unknown>): unknown {
   // The shell's, and answered whether or not a vault is open.
   if (cmd === 'pick_folder') return PICKED_FOLDER

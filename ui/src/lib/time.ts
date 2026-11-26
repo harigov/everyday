@@ -36,10 +36,14 @@ export const SNAP_MINUTES = 15
 /** Shortest block the grid will create or resize to. */
 export const MIN_BLOCK_MINUTES = 15
 
+/** A whole number as at least two digits: `7` is `07`. */
+export function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
 /** `YYYY-MM-DD` for a `Date`, in local time. */
 export function isoDate(at: Date): string {
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}`
+  return `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}`
 }
 
 /** Midnight at the start of the local day `iso` names. */

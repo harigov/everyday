@@ -29,6 +29,7 @@
   // reader's are taken before it hears them, in the capture phase.
 
   import { tick, untrack } from 'svelte'
+  import { appleKeyboard } from '../lib/platform'
   import { agent } from '../lib/agent.svelte'
   import { pinned } from '../lib/appwindow'
   import { fileUrl, fileVersion } from '../lib/api'
@@ -46,7 +47,7 @@
   import ReaderOutline from './ReaderOutline.svelte'
   import ReaderSearch from './ReaderSearch.svelte'
 
-  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform ?? '')
+  const mac = appleKeyboard
   const findKeys = keysLabel('mod+f', mac)
 
   const file = $derived(reader.file)

@@ -32,6 +32,7 @@
 // In the browser preview, `?window=todo` stands in for the label.
 
 import { APP_ORDER, type Section } from './apps'
+import { inShell } from './platform'
 
 /** Every app window's label starts with this -- see `windows.rs`'s `PREFIX`. */
 const PREFIX = 'app-'
@@ -40,7 +41,7 @@ function sectionOf(raw: string | null | undefined): Section | null {
   return APP_ORDER.includes(raw as Section) ? (raw as Section) : null
 }
 
-const shell = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+const shell = inShell
 
 async function find(): Promise<Section | null> {
   if (shell) {

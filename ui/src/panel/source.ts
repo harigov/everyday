@@ -6,6 +6,7 @@
 // `MOCK` to `false` and the sample cards are not merely unused but not shipped.
 // The runtime check sits inside the dev guard on purpose. A release build that
 // cannot reach its shell must show nothing, not cards that were never sent.
+import { inShell } from '../lib/platform'
 import {
   onPanelLevel,
   onPanelState,
@@ -39,7 +40,7 @@ const shell: PanelSource = {
 }
 
 /** In a development build with no shell to talk to: the sample cards in `mock.ts`. */
-export const MOCK = import.meta.env.DEV && !('__TAURI_INTERNALS__' in window)
+export const MOCK = import.meta.env.DEV && !inShell
 
 export async function openSource(): Promise<PanelSource> {
   if (MOCK) return (await import('./mock')).mockSource(location.search)

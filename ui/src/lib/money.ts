@@ -25,7 +25,7 @@
 import { dateFormat, plural } from './format'
 import type { IconName } from './icons'
 import type { MoneyView } from './money.svelte'
-import { locale, todayIso } from './time'
+import { isoDate, locale, todayIso } from './time'
 import type {
   AccountKind,
   BankAccount,
@@ -575,8 +575,7 @@ export function upcomingCharges(
 ): Recurring[] {
   const [y, m, d] = today.split('-').map(Number)
   const until = new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + days)
-  const p = (n: number) => String(n).padStart(2, '0')
-  const last = `${until.getFullYear()}-${p(until.getMonth() + 1)}-${p(until.getDate())}`
+  const last = isoDate(until)
   return recurring
     .filter((r) => r.amount < 0 && r.next >= today && r.next <= last)
     .sort((a, b) => a.next.localeCompare(b.next))

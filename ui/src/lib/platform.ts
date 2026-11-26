@@ -47,10 +47,10 @@ export const macPlatform: boolean = /mac/i.test(nav?.platform ?? '')
  * The user agent mentions "Mac". True on a Mac, and on an iPhone or iPad too
  * ("like Mac OS X"). What the shortcut labels in mail and Settings test.
  */
-export const userAgentMac: boolean = nav?.userAgent.includes('Mac') ?? false
+export const userAgentMac: boolean = nav?.userAgent?.includes('Mac') ?? false
 
 /** The user agent mentions "Windows". */
-export const userAgentWindows: boolean = nav?.userAgent.includes('Windows') ?? false
+export const userAgentWindows: boolean = nav?.userAgent?.includes('Windows') ?? false
 
 /**
  * The webview serves the shell's custom scheme as `http://karmayoga.localhost`
@@ -58,7 +58,7 @@ export const userAgentWindows: boolean = nav?.userAgent.includes('Windows') ?? f
  * and on Android. `crates/karmayoga-app/src/protocol.rs` accepts both shapes.
  */
 export const schemeOverHttp: boolean =
-  (nav?.userAgent.includes('Windows') ?? false) || (nav?.userAgent.includes('Android') ?? false)
+  (nav?.userAgent?.includes('Windows') ?? false) || (nav?.userAgent?.includes('Android') ?? false)
 
 /**
  * The origin the shell's custom scheme answers on, for one of its hosts:
@@ -70,7 +70,9 @@ export const schemeOverHttp: boolean =
  */
 export function schemeOrigin(host: string): string {
   if (schemeOverHttp) {
-    return host === 'localhost' ? 'http://karmayoga.localhost' : `http://karmayoga.localhost/${host}`
+    return host === 'localhost'
+      ? 'http://karmayoga.localhost'
+      : `http://karmayoga.localhost/${host}`
   }
   return `karmayoga://${host}`
 }

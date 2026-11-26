@@ -24,7 +24,7 @@
 // importer want a `Task`, not a line of shorthand.
 
 import type { Priority, TaskStatus } from './types'
-import { isoDate, todayIso } from './time'
+import { addDays, pad2, todayIso } from './time'
 
 /** What one quick-add line means. */
 export interface QuickAdd {
@@ -84,17 +84,6 @@ const STATUSES: Record<string, TaskStatus> = {
 // Sunday-first, matching `Date.getDay()`.
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
 
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
-}
-
-function addDays(iso: string, days: number): string {
-  const [y, m, d] = iso.split('-').map(Number)
-  // Constructing from parts and letting Date normalise the overflow is what
-  // makes month ends and leap days correct without a calendar table.
-  return isoDate(new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + days))
-}
-
 /**
  * `@…` as a calendar date. Returns null for anything not understood, which
  * leaves the token in the title.
@@ -150,7 +139,7 @@ export function parseTime(word: string): string | null {
     return null
   }
   if (hour > 23 || minute > 59) return null
-  return `${pad(hour)}:${pad(minute)}:00`
+  return `${pad2(hour)}:${pad2(minute)}:00`
 }
 
 /** `~…` as an effort in minutes: `90`, `90m`, `2h`, `1h30`, `1h30m`. */

@@ -5,9 +5,9 @@
   // draws them (and lets 1-5 pick one without the mouse) and reads a date
   // and time for the custom choice.
 
-  import { focusOnMount, trapFocus } from '../lib/focus'
+  import { focusOnMount } from '../lib/focus'
   import { isTyping } from '../lib/keys'
-  import { closesOnBack } from '../lib/phone.svelte'
+  import Sheet from './Sheet.svelte'
   import { mail } from '../lib/mail.svelte'
   import { customSnoozeInstant, earliestSnoozeDate } from '../lib/mail'
   import { toLocalInputValue } from '../lib/format'
@@ -19,12 +19,6 @@
   // time would drift false, and a `const` read once here at mount was
   // exactly that -- correct the moment the sheet opened, quietly wrong (a
   // dropped "Later today", a stale "in 3 hours") the longer it stayed open.
-
-  // A phone's back button puts the picker away, as Cancel does.
-  closesOnBack(
-    () => true,
-    () => oncancel(),
-  )
 
   let customDate = $state('')
   let customTime = $state('08:00')
@@ -41,10 +35,6 @@
    *  and time fields below are typed into with digits too, and a global
    *  `keydown` would otherwise steal every one of them. */
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      oncancel()
-      return
-    }
     if (isTyping(e.target)) return
     const n = Number(e.key)
     if (!Number.isInteger(n) || n < 1 || n > 5) return
@@ -55,15 +45,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-<div class="scrim" onclick={oncancel}></div>
-<div
-  class="sheet small"
-  role="dialog"
-  aria-modal="true"
-  aria-label="Snooze this thread"
-  use:trapFocus
->
+<Sheet label="Snooze this thread" sheetClass="small" onclose={oncancel}>
   <h2>Snooze until…</h2>
   <div class="choices">
     {#each mail.snoozeOptions() as choice, i (choice.key)}
@@ -85,7 +67,7 @@
     <span class="spacer"></span>
     <button class="btn" onclick={oncancel}>Cancel</button>
   </div>
-</div>
+</Sheet>
 
 <style>
   h2 {

@@ -7,6 +7,7 @@
 // them without booting Svelte's reactivity or a mock backend.
 
 import { DEFAULT_COLORS } from './colors'
+import { pad2 } from './time'
 import type { Attribution, LocalModel, SpeechConfig, Stage } from './types'
 
 /** What a recording's stage says in a list row or a card. */
@@ -43,9 +44,8 @@ export function formatTimer(ms: number): string {
   const hours = Math.floor(total / 3600)
   const minutes = Math.floor((total % 3600) / 60)
   const seconds = total % 60
-  const pad = (n: number) => String(n).padStart(2, '0')
-  if (hours > 0) return `${hours}:${pad(minutes)}:${pad(seconds)}`
-  return `${minutes}:${pad(seconds)}`
+  if (hours > 0) return `${hours}:${pad2(minutes)}:${pad2(seconds)}`
+  return `${minutes}:${pad2(seconds)}`
 }
 
 /**

@@ -1962,6 +1962,46 @@ function recurring(): Recurring[] {
 // ── The commands ─────────────────────────────────────────────────────────
 
 /**
+ * Every command this file answers, all wanting the vault open.
+ * `mock_money_link_outcome` is the mock's own, called by name from a test.
+ */
+export const MOCK_MONEY_COMMANDS: ReadonlySet<string> = new Set([
+  'plaid_setup',
+  'save_plaid_credentials',
+  'clear_plaid_credentials',
+  'start_bank_link',
+  'check_bank_link',
+  'cancel_bank_link',
+  'list_bank_links',
+  'save_bank_link',
+  'delete_bank_link',
+  'sync_bank_links',
+  'list_bank_accounts',
+  'save_bank_account',
+  'create_manual_account',
+  'delete_bank_account',
+  'list_transactions',
+  'get_transaction',
+  'update_transactions',
+  'add_manual_transaction',
+  'delete_transactions',
+  'preview_import',
+  'import_transactions',
+  'list_money_categories',
+  'save_money_category',
+  'delete_money_category',
+  'list_money_rules',
+  'save_money_rule',
+  'delete_money_rule',
+  'apply_money_rules',
+  'money_month',
+  'money_cash_flow',
+  'money_net_worth',
+  'money_recurring',
+  'mock_money_link_outcome',
+])
+
+/**
  * Every Money command, by its wire name. `mock.ts` has already checked the
  * vault is unlocked; this only narrows what arrived and does the work.
  *

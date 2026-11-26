@@ -17,6 +17,7 @@
   // see `WindowControls.svelte`.
 
   import { app } from '../lib/state.svelte'
+  import { appleKeyboard } from '../lib/platform'
   import { pinned } from '../lib/appwindow'
   import { meetings } from '../lib/meetings.svelte'
   import { keysLabel } from '../lib/keys'
@@ -31,7 +32,7 @@
   import RecordingPill from './RecordingPill.svelte'
   import WindowControls from './WindowControls.svelte'
 
-  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform ?? '')
+  const mac = appleKeyboard
 
   /** The Overview has no sidebar, and Settings draws its own list of tabs. */
   const foldable = $derived(app.section !== 'overview' && panels.settings === null)

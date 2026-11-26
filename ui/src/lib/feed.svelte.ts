@@ -40,6 +40,7 @@ import { mediaBase } from './web'
 import { notify } from './notify.svelte'
 import { seen, type Showing } from './onscreen'
 import { openExternal } from './open-external'
+import { schemeOrigin } from './platform'
 import { pref } from './prefs'
 import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { debounce } from './store/debounce'
@@ -182,9 +183,7 @@ function plural(n: number, one: string, many: string): string {
  */
 function newsOrigin(): string {
   if (isWeb) return `${mediaBase()}/v1/news`
-  return navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
-    ? 'http://karmayoga.localhost/news'
-    : 'karmayoga://news'
+  return schemeOrigin('news')
 }
 
 /**

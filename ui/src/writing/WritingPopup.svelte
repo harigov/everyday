@@ -5,6 +5,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import { onMount, tick } from 'svelte'
+  import { macPlatform } from '../lib/platform'
   import type { WritingAssist } from '../lib/types'
   import {
     CHOICES,
@@ -35,7 +36,7 @@
   let applying = false
 
   const overlay = $derived(selection?.mode === 'overlay')
-  const pasteKey = /Mac/.test(navigator.platform) ? '⌘V' : 'Ctrl+V'
+  const pasteKey = macPlatform ? '⌘V' : 'Ctrl+V'
 
   function show(next: Selection) {
     selection = next
