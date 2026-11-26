@@ -182,7 +182,7 @@ class Back {
     // keeps its entry, so the next back closes it rather than the app. The
     // entries are alike, so taking any one off the end is taking this one.
     const [layer] = this.#layers.splice(at, 1)
-    if (!layer.pushed) return
+    if (!layer?.pushed) return
     this.#quiet++
     history.go(-1)
     // A traversal that cannot happen -- already at the first entry -- never
