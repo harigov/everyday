@@ -1141,10 +1141,10 @@ assert.deepEqual(sumCategoryCounts([]), [], 'no inboxes, no badges')
     'older than everything on the page: at the end',
   )
 
-  assert.equal(onlyEmptyLead(new Set(['unread'])), 'No unread mail here.')
-  assert.equal(onlyEmptyLead(new Set(['starred'])), 'Nothing starred here.')
-  assert.equal(onlyEmptyLead(new Set(['attachments'])), 'No attachments here.')
-  assert.equal(onlyEmptyLead(new Set(['unread', 'starred'])), 'Nothing matches these filters.')
+  assert.equal(onlyEmptyLead(new Set(['unread'])), 'No unread mail here')
+  assert.equal(onlyEmptyLead(new Set(['starred'])), 'Nothing starred here')
+  assert.equal(onlyEmptyLead(new Set(['attachments'])), 'No attachments here')
+  assert.equal(onlyEmptyLead(new Set(['unread', 'starred'])), 'Nothing matches these filters')
 
   const byMailbox = new Map([
     ['inbox', new Set(['unread', 'starred'])],

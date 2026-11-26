@@ -44,9 +44,9 @@ const open = (title) => async (ctx) => {
 }
 
 /**
- * One of the assistant's tabs in Settings, drawn at the width of the screen.
- * The list of tabs beside it is Settings' own, and has its own scenarios; it
- * is put away here so that what is checked is this app's content.
+ * One of the assistant's tabs, drawn beside the conversations in the app
+ * itself: the row opens it over the list (on a phone) or in place of the
+ * thread (on a desktop), and the tabs along its top reach the others.
  */
 const pane =
   (from, tab) =>
@@ -54,25 +54,9 @@ const pane =
     await press(row(page, from))
     await settle(600)
     if (tab) {
-      const beside = page.locator('aside.nav').getByText(tab, { exact: true }).first()
-      if (await beside.isVisible()) {
-        await press(beside)
-      } else {
-        // A phone's Settings is one page at a time: back to its list of
-        // pages, then the one wanted.
-        await back(page)
-        await settle(600)
-        await press(
-          page
-            .locator('nav[aria-label="Settings sections"] .tab')
-            .filter({ has: page.locator('.side-text', { hasText: new RegExp(`^${tab}$`) }) })
-            .first(),
-        )
-      }
+      await press(page.getByRole('tab', { name: tab }).first())
       await settle(600)
     }
-    await page.addStyleTag({ content: 'aside.nav { display: none !important }' })
-    await settle(300)
   }
 
 /** Say something in the open conversation. */
@@ -139,12 +123,12 @@ export default {
       },
     },
 
-    // What the rows above the list lead to: Settings' tabs for what it did,
-    // what is waiting, and its routines and memory.
+    // What the rows above the list lead to: the tabs for what it did, what is
+    // waiting, and its routines and memory, in the app.
     { name: 'runs', run: pane('What it did') },
     { name: 'proposals', run: pane('Waiting for you') },
     { name: 'routines', run: pane('Routines and memory') },
-    { name: 'memory', run: pane('Routines and memory', 'Memory') },
+    { name: 'memory', run: pane('Routines and memory', 'What it remembers') },
     { name: 'conversation', run: open('Plan a week in Lisbon') },
     {
       name: 'conversation-back',

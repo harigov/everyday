@@ -79,3 +79,58 @@ export function take(items: Suggestion[], taken: Taken, key: string, scope = '')
 export function exhausted(items: Suggestion[], taken: Taken, scope = ''): boolean {
   return remaining(items, taken, scope).length === 0
 }
+
+/**
+ * Three things worth asking from the app that is open, for the blank rail.
+ * Each is something the assistant can do with that app's own records, so a
+ * chip is a demonstration rather than a guess. An app with none of its own
+ * (the Assistant page, Settings) gets none, and the page has its own set.
+ */
+export function askExamples(section: string): string[] {
+  switch (section) {
+    case 'todo':
+      return ['What should I do first today?', 'What is overdue?', 'Break down my biggest task']
+    case 'notes':
+      return ['Summarise my latest note', 'Find what I wrote about…', 'Turn this note into tasks']
+    case 'calendar':
+      return [
+        'What does my week look like?',
+        'Find an hour for focused work',
+        'What is on tomorrow?',
+      ]
+    case 'mail':
+      return ['What needs a reply?', 'Summarise my unread mail', 'Draft a reply to this']
+    case 'library':
+      return ['What should I read next?', 'What did I finish this year?', 'Find something short']
+    case 'feed':
+      return [
+        'What is new in my feed?',
+        'Summarise today’s headlines',
+        'Find an episode for a walk',
+      ]
+    case 'money':
+      return [
+        'Where did my money go this month?',
+        'What are my biggest expenses?',
+        'Any charges I should look at?',
+      ]
+    case 'health':
+      return [
+        'How have I been sleeping?',
+        'What medications are due today?',
+        'How was my week of exercise?',
+      ]
+    case 'files':
+      return ['Find a file about…', 'What did I add recently?', 'Summarise this file']
+    case 'journal':
+      return [
+        'What have I been writing about lately?',
+        'How have I been feeling this week?',
+        'Find an entry about…',
+      ]
+    case 'overview':
+      return ['What is on my plate today?', 'What needs my attention?', 'How is the week going?']
+    default:
+      return []
+  }
+}

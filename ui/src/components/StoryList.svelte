@@ -44,6 +44,7 @@
   import { openTranscript, playEpisode } from '../lib/episodes'
   import EpisodeActions from './EpisodeActions.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import PaneResizer from './PaneResizer.svelte'
   import SourceIcon from './SourceIcon.svelte'
   import VirtualList from './VirtualList.svelte'
@@ -329,7 +330,7 @@
   </div>
 
   {#if feed.loading && feed.stories.length === 0}
-    <p class="hint">Loading…</p>
+    <Loading label="Loading stories" centred />
   {:else if rows.length === 0}
     {#if searching}
       <EmptyState lead={`Nothing matches “${feed.query.trim()}”.`}>
@@ -555,12 +556,7 @@
   /* A refresh in progress: the icon turns, the button stays put. Stopped
      outright under reduced motion -- the title still says "Refreshing…". */
   .plus.spinning :global(svg) {
-    animation: spin 1s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+    animation: ky-spin 1s linear infinite;
   }
   @media (prefers-reduced-motion: reduce) {
     .plus.spinning :global(svg) {
@@ -578,12 +574,6 @@
     gap: var(--sp-2);
     flex: none;
     padding: var(--sp-1) var(--sp-4) var(--sp-3);
-  }
-
-  .hint {
-    padding: var(--sp-4) var(--sp-5);
-    color: var(--fg-faint);
-    font-size: var(--text-sm);
   }
   .note {
     flex: none;
@@ -814,6 +804,11 @@
   }
   :global([data-phone]) .end {
     right: var(--sp-3);
+  }
+  /* The assistant button floats over the bottom right: the last row, and the
+     episode button at its end, scroll clear of it. */
+  :global([data-phone]) .story-rows {
+    padding-bottom: var(--fab-clear);
   }
   :global([data-phone]) .load-more {
     min-height: 48px;

@@ -100,8 +100,8 @@ design; the wire format is what FluffyChat 2.11.5's own source sends.
   in the chat.
 - **Approvals the voice cannot take are asked in the chat.** Spoken approval is
   as narrow as at the desktop (see `voice.md`). Anything else is asked as the
-  usual question in the chat, with the reactions, and the session says "That
-  needs your go-ahead in our chat." A tap or a typed yes answers it; if the
+  usual question in the chat, with the reactions, and the session says what it
+  is about and "You'll need to approve that in our chat." A tap or a typed yes answers it; if the
   voice or the turn settles it first, the question is withdrawn.
 - **Failure is said in the chat**: a call that cannot be taken (no speech model
   or voice chosen, the vault locking), a token service or SFU that cannot be

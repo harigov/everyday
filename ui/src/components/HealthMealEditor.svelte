@@ -733,7 +733,7 @@
     align-items: center;
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid var(--border-strong);
     font-size: var(--text-xs);
     font-weight: 550;

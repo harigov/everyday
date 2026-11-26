@@ -114,6 +114,7 @@
         class="fold"
         aria-expanded={!hidden}
         aria-label={hidden ? 'Show what needs attention' : 'Hide what needs attention'}
+        title={hidden ? 'Show what needs attention' : 'Hide what needs attention'}
         onclick={() => (hidden = !hidden)}
       >
         <span class:down={!hidden}><Icon name="chevron" size={13} /></span>
@@ -200,7 +201,7 @@
 
   .count {
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--accent);
     color: var(--fg-on-accent);
     font-size: var(--text-xs);
@@ -215,8 +216,8 @@
   .fold {
     display: grid;
     place-items: center;
-    width: 24px;
-    height: 24px;
+    width: 28px;
+    height: 28px;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
   }
@@ -287,9 +288,10 @@
     flex: none;
     align-items: center;
     gap: 3px;
-    padding: 2px 10px 2px var(--sp-2);
+    min-height: 28px;
+    padding: 0 var(--sp-3) 0 var(--sp-2);
     border: 1px solid var(--border-strong);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-raised);
     color: var(--fg-muted);
     font-size: var(--text-xs);

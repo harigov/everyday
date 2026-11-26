@@ -12,7 +12,7 @@
 
   import { onMount } from 'svelte'
   import { dismissable } from '../lib/dismiss'
-  import { focusOnMount } from '../lib/focus'
+  import { focusOnMount, trapFocus } from '../lib/focus'
   import { files } from '../lib/files.svelte'
   import { filesUi } from '../lib/files-ui.svelte'
   import { closesOnBack, phone } from '../lib/phone.svelte'
@@ -102,8 +102,10 @@
   class:right={align === 'right'}
   role="dialog"
   aria-label="Add to album"
+  aria-modal="true"
   tabindex="-1"
   style={place}
+  use:trapFocus
   use:dismissable={{ onaway: onclose, within: '[data-album-trigger]' }}
 >
   <input

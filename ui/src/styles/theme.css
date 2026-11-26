@@ -77,6 +77,9 @@
   --radius: 8px;
   --radius-lg: 12px;
   --radius-xl: 16px;
+  /* Fully rounded ends: a pill-shaped button, a count badge, a chip. It was
+     written as 99px, 999px and 9999px in different stylesheets. */
+  --radius-pill: 999px;
 
   /* The app bar down the left edge: an icon and a word, at a size that can
      be hit without aiming. */
@@ -120,6 +123,19 @@
      sittings; this is wider by choice, and the column still narrows with
      the pane. */
   --measure: 50rem;
+  /* The column a page of cards, figures or a form is laid out in -- Health's
+     panes, Money's, Screen time's, a settings page -- and the wider one for a
+     page whose figures want the room. Each app had picked its own: 780, 860,
+     960 and 1080 pixels, so the left edge of the content jumped from one app
+     to the next, and between two panes of the same app. Prose keeps
+     `--measure`. */
+  --page-w: 60rem;
+  --page-w-wide: 68rem;
+  /* A detail rail beside a list -- a task, a goal, a shelf item, a file, a
+     transaction. Seven stylesheets wrote 320, 340 or 380 pixels each; this
+     grows a little with the window, so a 1920-pixel screen is not left with
+     a sliver of a rail beside an acre of list. */
+  --detail-w: clamp(320px, 24vw, 400px);
 
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
   --fast: 120ms;
@@ -167,7 +183,12 @@
  *   --scrim          the dimming under a sheet
  *
  * Text and lines
- *   --fg, --fg-muted, --fg-subtle, --fg-faint, --fg-on-accent
+ *   --fg, --fg-muted, --fg-subtle, --fg-faint
+ *   --fg-on-accent   text and icons on a filled --accent (a primary button,
+ *                    the assistant button); at least 4.5:1 against it, so
+ *                    dark ink on a dark theme's pale accent, not white
+ *   --fg-on-danger   the same on a filled --danger (an overdue badge, a
+ *                    destructive confirm)
  *   --border, --border-strong
  *
  * Meaning

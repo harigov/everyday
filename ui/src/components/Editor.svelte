@@ -15,7 +15,6 @@
   import type { Editor as TipTapEditor } from '@tiptap/core'
   import EntryMeta from './EntryMeta.svelte'
   import TrackerStrip from './TrackerStrip.svelte'
-  import Logo from './Logo.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -238,8 +237,8 @@
 
 {#if !entry}
   <div class="empty">
-    <EmptyState lead="Nothing open">
-      {#snippet icon()}<Logo size={40} />{/snippet}
+    <EmptyState lead="Pick a day">
+      {#snippet icon()}<Icon name="quote" size={34} weight={1.4} />{/snippet}
       {#snippet note()}Choose a day from the list, or start today's entry.{/snippet}
       {#snippet action()}
         <button class="btn btn-primary" onclick={() => app.newEntry()}>Today's entry</button>
@@ -360,13 +359,22 @@
           {#if quick.enabled('journal.readings') || quick.enabled('journal.labels') || quick.enabled('journal.title')}
             <div class="quick-row">
               {#if quick.enabled('journal.readings') || quick.enabled('journal.labels')}
-                <button class="quick-btn" disabled={reading} onclick={() => void readTheDay()}>
+                <button
+                  class="quick-btn"
+                  disabled={reading}
+                  title="Your quick model reads this day and offers readings and tags. Nothing is recorded until you accept."
+                  onclick={() => void readTheDay()}
+                >
                   <Icon name="sparkle" size={12} />
                   Read the day back
                 </button>
               {/if}
               {#if quick.enabled('journal.title') && !entry.title.trim()}
-                <button class="quick-btn" onclick={() => void suggestTitle()}>
+                <button
+                  class="quick-btn"
+                  title="Your quick model reads this day and offers a title. Nothing changes until you accept."
+                  onclick={() => void suggestTitle()}
+                >
                   <Icon name="sparkle" size={12} />
                   Suggest a title
                 </button>
@@ -452,7 +460,7 @@
     gap: var(--sp-1);
     padding: 2px var(--sp-2);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     color: var(--fg-subtle);
     font: inherit;
@@ -582,7 +590,7 @@
     gap: 5px;
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-pill);
     color: var(--fg-faint);
     font-size: var(--text-xs);
     transition:
@@ -594,33 +602,10 @@
     color: var(--danger);
   }
 
-  .dropzone {
-    position: absolute;
-    inset: var(--sp-3);
-    display: grid;
-    place-items: center;
-    border: 2px dashed var(--accent);
-    border-radius: var(--radius-lg);
-    background: color-mix(in oklab, var(--accent) 8%, transparent);
-    backdrop-filter: blur(2px);
-    font-weight: 600;
-    color: var(--accent);
-    pointer-events: none;
-  }
-
   .empty {
     display: flex;
     height: 100%;
   }
-
-  /* ── Prose ───────────────────────────────────────────────────────────
-     Typography for the entry body. This is the part of the app people
-     actually look at, so it gets the reading face, a generous measure and a
-     line height chosen for continuous reading rather than for UI density.
-
-     The face is a humanist sans rather than a serif. It still contrasts with
-     the interface around it -- different drawing, different colour on the
-     page -- without the serif's mismatch against a screen-first UI. */
 
   /* ── On a phone ──────────────────────────────────────────────────────── */
 

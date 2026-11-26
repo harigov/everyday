@@ -397,20 +397,11 @@
     gap: 4px;
     height: 20px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     color: var(--fg-muted);
     font-size: var(--text-xs);
     font-weight: 550;
-    white-space: nowrap;
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
     white-space: nowrap;
   }
 

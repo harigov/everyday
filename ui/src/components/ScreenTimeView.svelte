@@ -15,6 +15,7 @@
 
   import { formatDuration, type RangeKind } from '../lib/screentime'
   import { screentime, type ScreenView as Pane } from '../lib/screentime.svelte'
+  import { app } from '../lib/state.svelte'
   import { panels } from '../lib/panels.svelte'
   import { friendlyDate, plural } from '../lib/format'
   import { addDays, todayIso } from '../lib/time'
@@ -35,6 +36,10 @@
   const nothing = $derived(ready && screentime.knownDevices.length === 0)
   const blank = $derived(nothing && (view === 'summary' || view === 'timeline'))
   const status = $derived(screentime.status)
+  // On a remote client, or where the status question got no answer, this
+  // device records nothing and Settings has nothing to set up: say where
+  // recording is turned on instead of offering buttons that go nowhere.
+  const elsewhere = $derived(app.remote || (!status && !!screentime.statusError))
   const gnomeWaiting = $derived(
     status?.backend === 'gnome' && !!status.extension && !status.extension.active,
   )
@@ -162,7 +167,7 @@
     {/if}
   </header>
 
-  {#if status?.tracking === false && !blank}
+  {#if status?.tracking === false && !blank && !app.remote}
     <p class="note" role="status">
       This computer is not recording its screen time.
       <button class="inline" onclick={openSettings}>Turn it on</button>
@@ -173,7 +178,10 @@
     <EmptyState lead="No screen time recorded yet.">
       {#snippet icon()}<Icon name="monitor" size={30} weight={1.3} />{/snippet}
       {#snippet note()}
-        {#if status?.tracking === false}
+        {#if elsewhere}
+          Nothing has been recorded yet. Turn on screen time on the computer that holds your vault
+          (Settings → Screen time).
+        {:else if status?.tracking === false}
           Recording is switched off on this computer. Turn it on in Settings → Screen time and the
           app in front of you is counted from then on, minus any time away from the keyboard.
         {:else if gnomeWaiting}
@@ -187,12 +195,14 @@
         {/if}
       {/snippet}
       {#snippet action()}
-        <div class="actions">
-          <button class="btn btn-primary" onclick={openSettings}>
-            {gnomeWaiting ? 'Install the GNOME extension' : 'Set up this computer'}
-          </button>
-          <button class="btn" onclick={openSettings}>Connect a browser</button>
-        </div>
+        {#if !elsewhere}
+          <div class="actions">
+            <button class="btn btn-primary" onclick={openSettings}>
+              {gnomeWaiting ? 'Install the GNOME extension' : 'Set up this computer'}
+            </button>
+            <button class="btn" onclick={openSettings}>Connect a browser</button>
+          </div>
+        {/if}
       {/snippet}
     </EmptyState>
   {:else if view === 'summary'}
@@ -245,7 +255,7 @@
     align-items: center;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
   }
   .step {

@@ -23,10 +23,16 @@
   import { untrack } from 'svelte'
   import { agent } from '../lib/agent.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
-  import { details, phone } from '../lib/phone.svelte'
+  import { closesOnBack, details, phone } from '../lib/phone.svelte'
   import { sidebar } from '../lib/sidebar.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { purposeItems } from '../lib/menus'
+  import { keysLabel } from '../lib/keys'
+  import { userAgentMac } from '../lib/platform'
+  import { pieces } from '../lib/entry-rows'
+  import { fileUrl, mediaUrl } from '../lib/api'
+  import { purpose as purposeStore } from '../lib/purpose.svelte'
   import { meetings } from '../lib/meetings.svelte'
   import {
     countOrigins,
@@ -44,8 +50,10 @@
   import { templates } from '../lib/templates.svelte'
   import { plural } from '../lib/format'
   import { proposals, recordAs } from '../lib/proposals.svelte'
-  import type { NoteId, NoteOrigin, NoteSummary, TemplateId } from '../lib/types'
+  import type { NoteHit, NoteId, NoteOrigin, NoteSummary, TemplateId } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
+  import EmptyState from './EmptyState.svelte'
+  import Loading from './Loading.svelte'
   import Icon from './Icon.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
   import RecordingCard from './RecordingCard.svelte'
@@ -98,13 +106,21 @@
     details.open('notes')
   }
 
-  let pendingDelete = $state<NoteSummary | null>(null)
+  let pendingDelete = $state<{ id: NoteId; title: string } | null>(null)
+
+  /** How "new" is pressed here, for the hints: never a hard-coded Ctrl. */
+  const newKeys = keysLabel('mod+n', userAgentMac)
 
   // ── Record a call ────────────────────────────────────────────────────
 
   let recordSheet = $state(false)
   let recordTitle = $state('')
   let recordError = $state<string | null>(null)
+  // A phone's back gesture puts the sheet away rather than leaving the app.
+  closesOnBack(
+    () => recordSheet,
+    () => (recordSheet = false),
+  )
 
   // `meetings.starting` (not a local flag) gates the Start button below --
   // see that field's own doc: this keeps a press here from racing a press
@@ -142,6 +158,22 @@
       ? notes.results.some((h) => (originOf.get(h.id) ?? 'own') !== 'own')
       : notes.visible.some((n) => n.origin !== 'own'),
   )
+
+  /**
+   * The areas the loaded notes are filed under, with how many each holds --
+   * a chip for an area nothing is under would only be a way to an empty list.
+   * Counted off the rows already in memory, in the order the areas are kept.
+   */
+  const areaChips = $derived.by(() => {
+    const counts = new Map<string, number>()
+    for (const n of notes.list) {
+      const id = purposeStore.areaOf(n.purpose)
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1)
+    }
+    return purposeStore.activeAreas
+      .filter((a) => counts.has(a.id) || a.id === notes.area)
+      .map((a) => ({ ...a, count: counts.get(a.id) ?? 0 }))
+  })
 
   const tagChips = $derived(shortlistTags(notes.tags, notes.tag))
   /** Every tag in the drawer, which scrolls, rather than the most used and a
@@ -210,17 +242,37 @@
       {
         label: note.pinned ? 'Unpin' : 'Pin to the top',
         icon: 'pin',
-        run: async () => {
-          await notes.openNote(note.id)
-          await notes.togglePinned()
-        },
+        // By id: pinning from a row must not open the note as a side effect.
+        run: () => void notes.setPinnedById(note.id, !note.pinned),
+      },
+      {
+        label: 'File under…',
+        icon: 'compass',
+        items: purposeItems(note.purpose, (next) => notes.setPurposeById(note.id, next)),
       },
       SEP,
       {
         label: 'Delete note…',
         icon: 'trash',
         danger: true,
-        run: () => (pendingDelete = note),
+        run: () => (pendingDelete = { id: note.id, title: note.title || 'Untitled note' }),
+      },
+    ])
+  }
+
+  /** The same for a search result, which carries a snippet rather than the
+   *  row's flags: the list row it matches gives those, when it is loaded. */
+  function hitMenu(hit: NoteHit): MenuItem[] {
+    const row = notes.list.find((n) => n.id === hit.id)
+    if (row) return noteMenu(row)
+    return tidyMenu([
+      { label: 'Open', icon: 'quote', run: () => void open(hit.id) },
+      SEP,
+      {
+        label: 'Delete note…',
+        icon: 'trash',
+        danger: true,
+        run: () => (pendingDelete = { id: hit.id, title: hit.title || 'Untitled note' }),
       },
     ])
   }
@@ -243,7 +295,7 @@
 
   function navMenu(): MenuItem[] {
     return tidyMenu([
-      { label: 'New note', icon: 'plus', hint: 'Ctrl+N', run: () => void start() },
+      { label: 'New note', icon: 'plus', hint: newKeys, run: () => void start() },
       ...(noteTemplates.length
         ? [{ label: 'New note from template', icon: 'layers' as const, items: templateItems() }]
         : []),
@@ -327,8 +379,19 @@
     <!-- What is narrowing the list, with a way to let it go: the choosing is
          in the drawer, and a list that is short for a reason nobody can see
          reads as a list that has lost notes. -->
-    {#if !searching && (notes.origin || notes.tag)}
+    {#if !searching && (notes.origin || notes.tag || notes.area)}
       <div class="active" role="group" aria-label="Narrowed to">
+        {#if notes.area}
+          {@const area = purposeStore.area(notes.area)}
+          <button
+            class="tagchip on"
+            aria-label="Showing {area?.name ?? 'one goal or area'}: show every note"
+            onclick={() => notes.setArea(null)}
+          >
+            {area?.name ?? 'Goal or area'}
+            <Icon name="close" size={12} weight={1.8} />
+          </button>
+        {/if}
         {#if notes.origin}
           <button
             class="tagchip on"
@@ -464,6 +527,33 @@
     </div>
   {/if}
 
+  {#if !phoneHome && !searching && areaChips.length > 0}
+    <!-- Goal or area, in the same chip pattern as the tags: one at a time,
+         and the one in force again lets it go. -->
+    <div class="tagrow" role="group" aria-label="Goal or area">
+      {#each areaChips as a (a.id)}
+        {@const on = notes.area === a.id}
+        <button
+          class="tagchip"
+          class:on
+          aria-pressed={on}
+          title={on ? 'Show every note' : plural(a.count, 'note')}
+          onclick={() => {
+            notes.setArea(on ? null : a.id)
+            chosen()
+          }}
+        >
+          <span class="swatch" style="background: {a.color}"></span>{a.name}
+          {#if on}
+            <Icon name="close" size={11} weight={1.8} />
+          {:else}
+            <span class="n">{a.count.toLocaleString()}</span>
+          {/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   {#if !phoneHome && !searching && meetings.recordingsError}
     <p class="error recordings-error">
       Couldn’t refresh call recordings: {meetings.recordingsError}
@@ -495,9 +585,14 @@
     {/each}
   {:else if searching}
     {#if notes.searching && notes.results.length === 0}
-      <p class="hint">Searching…</p>
+      <Loading label="Searching…" />
     {:else if notes.results.length === 0}
-      <p class="hint">Nothing matched.</p>
+      <EmptyState lead={`Nothing matches “${notes.query.trim()}”`} centred={false}>
+        {#snippet note()}Try a shorter word.{/snippet}
+        {#snippet action()}
+          <button class="btn" onclick={() => notes.clearSearch()}>Clear the search</button>
+        {/snippet}
+      </EmptyState>
     {:else}
       {#each notes.results as hit (hit.id)}
         {@const origin = originOf.get(hit.id) ?? 'own'}
@@ -505,6 +600,7 @@
           class="side-row hit"
           class:sel={!phoneHome && notes.selected === hit.id}
           onclick={() => void open(hit.id)}
+          oncontextmenu={(e) => menu.show(e, hitMenu(hit))}
         >
           {#if marked}
             <span class="mark {origin}">
@@ -512,22 +608,35 @@
             </span>
           {/if}
           <span class="text">
-            <span class="title">{hit.title}</span>
-            <span class="sub">{hit.snippet}</span>
+            <span class="title">{hit.title || 'Untitled note'}</span>
+            <span class="sub snippet">
+              {#each pieces(hit.snippet, hit.highlights) as p, i (i)}
+                {#if p.hit}<mark>{p.text}</mark>{:else}{p.text}{/if}
+              {/each}
+            </span>
           </span>
         </button>
       {/each}
     {/if}
   {:else if rows.length === 0 && ghosts.length === 0}
-    <p class="hint">
-      {#if notes.origin && notes.list.length > 0}
-        {emptyLine(notes.origin)}
-      {:else if notes.tag}
-        No notes tagged {notes.tag}.
-      {:else}
-        No notes yet.
-      {/if}
-    </p>
+    {#if (notes.origin || notes.area) && notes.list.length > 0}
+      <p class="hint">
+        {#if notes.area && !notes.origin}
+          Nothing filed under that goal or area here.
+        {:else if notes.origin}
+          {emptyLine(notes.origin)}
+        {/if}
+      </p>
+    {:else if notes.tag}
+      <p class="hint">No notes tagged {notes.tag}.</p>
+    {:else}
+      <EmptyState lead="No notes yet" centred={false}>
+        {#snippet note()}A recipe, a reading list, the notes from a call.{/snippet}
+        {#snippet action()}
+          <button class="btn btn-primary" onclick={() => void start()}>New note</button>
+        {/snippet}
+      </EmptyState>
+    {/if}
   {:else}
     <!-- Ghosts at the top: a note is written forward, so there is no due
          date or column for a proposed one to join the foot of the way a
@@ -573,12 +682,18 @@
                  as Apple Notes has it: in a sidebar this narrow a date beside
                  the title took a third of the room the title had. -->
             <span class="text">
-              <span class="title">{note.title}</span>
+              <span class="title">{note.title || 'Untitled note'}</span>
               <span class="sub">
                 <span class="when">{rowWhen(note, notes.sort)}</span>
+                {#if note.tags[0]}<span class="rtag">#{note.tags[0]}</span>{/if}
                 {note.excerpt}
               </span>
             </span>
+            {#if note.cover}
+              <img class="thumb" src={mediaUrl(note.cover)} alt="" loading="lazy" />
+            {:else if note.coverFile}
+              <img class="thumb" src={fileUrl(note.coverFile)} alt="" loading="lazy" />
+            {/if}
           </button>
           {#if deleteProposal}
             <span class="delete-chip">
@@ -689,7 +804,7 @@
     max-width: 100%;
     height: 24px;
     padding: 0 7px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     font-size: var(--text-xs);
     font-weight: 550;
@@ -737,6 +852,13 @@
 
   /* Two lines -- the title, and a line of the note under it -- so these rows
      are as tall as what is in them rather than the sidebar's one line. */
+  .side-row.hit .sub {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
+  }
   .side-row.hit {
     height: auto;
     align-items: flex-start;
@@ -784,10 +906,10 @@
     height: 19px;
   }
   .mark.assistant {
-    color: var(--app-assistant);
+    color: color-mix(in oklab, var(--app-assistant) 70%, var(--fg));
   }
   .mark.meeting {
-    color: var(--app-calendar);
+    color: color-mix(in oklab, var(--app-calendar) 70%, var(--fg));
   }
   .side-row.sel .mark {
     color: inherit;
@@ -812,6 +934,32 @@
      name does. */
   .side-row.sel .title {
     color: inherit;
+  }
+
+  .swatch {
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 50%;
+  }
+  .rtag {
+    margin-right: 6px;
+    color: var(--fg-subtle);
+  }
+  /* The picture a note leads with, small, at the row's end. No shadow: a
+     blurred one per row is what made long lists scroll badly. */
+  .thumb {
+    width: 36px;
+    height: 36px;
+    flex: none;
+    border-radius: var(--radius-sm);
+    object-fit: cover;
+    background: var(--bg-sunken);
+  }
+  .snippet :global(mark) {
+    background: color-mix(in oklab, var(--accent) 26%, transparent);
+    color: var(--fg);
+    border-radius: 2px;
   }
 
   .when {

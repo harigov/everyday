@@ -270,7 +270,7 @@ const scenarios = [
     name: 'purpose',
     run: async (ctx) => {
       await openNote(ctx)
-      await press(ctx.page.getByRole('button', { name: /Not filed|Filed under/ }).first())
+      await press(ctx.page.locator('.purposefield .value').first())
       await ctx.settle()
     },
   },

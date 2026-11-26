@@ -13,12 +13,19 @@
   import { panels } from '../lib/panels.svelte'
   import { applicableBindings, spellings } from '../lib/shortcuts.svelte'
   import { trapFocus } from '../lib/focus'
+  import { closesOnBack } from '../lib/phone.svelte'
   import Icon from './Icon.svelte'
 
   const mac = userAgentMac
   // Read once, when the sheet opens: the bindings' `when` closures read the
   // stores, and nothing behind a modal is moving.
   const groups = applicableBindings()
+
+  // On a phone with a hardware keyboard the back button puts it away.
+  closesOnBack(
+    () => true,
+    () => (panels.shortcuts = false),
+  )
 </script>
 
 <svelte:window
@@ -38,12 +45,23 @@
 >
   <header>
     <h2>Keyboard</h2>
-    <button class="ghost" onclick={() => (panels.shortcuts = false)} title="Close">
+    <button
+      class="ghost"
+      onclick={() => (panels.shortcuts = false)}
+      title="Close"
+      aria-label="Close"
+    >
       <Icon name="close" size={16} />
     </button>
   </header>
 
   <div class="body scroll">
+    <!-- The table has far more in it than there are comfortable keys, and the
+         bar at the top of the window is how to reach the rest. -->
+    <p class="pointer">
+      Not here? Press <kbd>{keysLabel('mod+k', mac)}</kbd> for the command bar: everything the app can
+      do, and somewhere to keep what you type.
+    </p>
     {#each groups as group (group.group)}
       <section>
         <span class="eyebrow">{group.group}</span>
@@ -143,6 +161,12 @@
        read by scanning, so a single tall column costs a scroll for nothing. */
     columns: 2;
     column-gap: var(--sp-8);
+  }
+  .pointer {
+    column-span: all;
+    margin: 0 0 var(--sp-4);
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
   }
   section {
     /* A group is not split across the fold of the columns: a heading at the

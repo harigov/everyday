@@ -644,7 +644,7 @@
     column-gap: var(--sp-2);
   }
   :global([data-phone]) .rows {
-    padding-bottom: calc(var(--fab-size) + var(--sp-6));
+    padding-bottom: var(--fab-clear);
   }
   .pic.tick {
     position: relative;

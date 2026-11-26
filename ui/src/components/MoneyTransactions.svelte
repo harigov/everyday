@@ -36,6 +36,7 @@
   import Icon from './Icon.svelte'
   import MoneyAmount from './MoneyAmount.svelte'
   import MoneyCategoryPicker from './MoneyCategoryPicker.svelte'
+  import Loading from './Loading.svelte'
   import VirtualList from './VirtualList.svelte'
 
   const rows = $derived(money.page?.txns ?? [])
@@ -346,7 +347,7 @@
   {/if}
 
   {#if money.loading && rows.length === 0}
-    <p class="hint">Loading…</p>
+    <Loading label="Loading transactions" centred />
   {:else if rows.length === 0}
     {#if narrowed}
       <EmptyState lead="Nothing matches.">
@@ -547,7 +548,7 @@
     max-width: 200px;
     padding: 0 var(--sp-2);
     border: none;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     font-size: var(--text-sm);
     color: var(--fg-subtle);
@@ -563,7 +564,7 @@
   .clear {
     height: 26px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     color: var(--fg-subtle);
   }
@@ -583,7 +584,7 @@
     max-width: 180px;
     height: 24px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     font-size: var(--text-xs);
     color: var(--fg-muted);
@@ -611,12 +612,6 @@
   }
   .spacer {
     flex: 1;
-  }
-
-  .hint {
-    padding: var(--sp-4) var(--sp-5);
-    color: var(--fg-faint);
-    font-size: var(--text-sm);
   }
 
   .txn-rows {
@@ -733,7 +728,7 @@
     max-width: 150px;
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     font-size: var(--text-xs);
     color: var(--fg-muted);
@@ -756,7 +751,8 @@
   }
   .acct {
     flex: none;
-    max-width: 120px;
+    /* Grows with the row where there is room, as the list is a container. */
+    max-width: clamp(120px, 14cqw, 220px);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -859,7 +855,7 @@
     max-width: none;
     height: 44px;
     padding: 0 var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     color: var(--fg-muted);
     text-overflow: ellipsis;

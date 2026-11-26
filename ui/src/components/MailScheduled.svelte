@@ -76,7 +76,7 @@
                 </button>
               {/each}
               <div class="custom">
-                <input type="datetime-local" bind:value={customAt} />
+                <input type="datetime-local" bind:value={customAt} aria-label="Send at" />
                 <button class="btn" disabled={!customAt} onclick={() => rescheduleCustom(s)}>
                   Set
                 </button>
@@ -146,7 +146,7 @@
     font-weight: 600;
   }
   .link.danger {
-    color: var(--danger, #c0392b);
+    color: var(--danger);
   }
   .reschedule {
     display: flex;

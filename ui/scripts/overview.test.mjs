@@ -398,7 +398,7 @@ check('a deleted goal reads as unattributed', areaOf({ type: 'goal', id: 'g-gone
   // 45 with no purpose at all, plus 15 against a goal that no longer exists.
   check('unfiled time and a dead pointer land together', unfiled.actualMinutes, 60)
   check('...as do meetings from a feed with no area', unfiled.eventMinutes, 30)
-  check('the unattributed row is named rather than blank', unfiled.name, 'Not filed')
+  check('the unattributed row is named rather than blank', unfiled.name, 'No goal or area')
 
   check(
     'an archived area gets no row',

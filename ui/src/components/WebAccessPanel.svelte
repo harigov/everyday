@@ -12,7 +12,9 @@
   import { api } from '../lib/api'
   import { app } from '../lib/state.svelte'
   import { notify } from '../lib/notify.svelte'
+  import { panels } from '../lib/panels.svelte'
   import type { WebStatus } from '../lib/types'
+  import RemoteNote from './RemoteNote.svelte'
 
   let web = $state<WebStatus | null>(null)
   let busy = $state(false)
@@ -65,11 +67,18 @@
   const encrypted = $derived(app.status?.encrypted !== false)
 </script>
 
-{#if web && !app.remote}
+{#if app.remote}
+  <!-- A phone or a browser is a window onto the vault; the switch is on the
+       computer that holds it, and saying so beats a section that is simply gone. -->
+  <section>
+    <span class="eyebrow">Open in a browser</span>
+    <RemoteNote what="Web access" />
+  </section>
+{:else if web}
   <section>
     <span class="eyebrow">Open in a browser</span>
 
-    <label class="toggle">
+    <label class="check-row">
       <input
         type="checkbox"
         checked={web.running}
@@ -133,6 +142,11 @@
         </p>
       {/if}
     {/if}
+
+    <p class="hint">
+      Talking to the assistant from your phone through Matrix is set up under
+      <button class="inline-link" onclick={() => panels.openSettings('chat')}>Chat</button>.
+    </p>
   </section>
 {/if}
 
@@ -186,35 +200,18 @@
 
   .problem {
     font-size: var(--text-sm);
-    color: var(--danger, var(--fg));
+    color: var(--danger);
   }
 
-  /* The switch and its explanation, as every other settings panel draws
-     them (SettingsView's own copy is scoped to that file and does not reach
-     this one): the sentence under the title, not run on beside it. */
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
-    cursor: pointer;
+  .inline-link {
+    color: var(--accent);
+    font: inherit;
+    font-weight: 550;
   }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
+  .inline-link:hover {
+    text-decoration: underline;
   }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small,
+
   .hint {
     margin: 0;
     font-size: var(--text-sm);

@@ -34,6 +34,7 @@
   import EmptyState from './EmptyState.svelte'
   import EpisodeActions from './EpisodeActions.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import PaneResizer from './PaneResizer.svelte'
   import SourceIcon from './SourceIcon.svelte'
 
@@ -140,7 +141,7 @@
   {/if}
 
   {#if upnext.recommendedLoading && recs.length === 0}
-    <p class="hint">Looking…</p>
+    <Loading label="Looking…" centred />
   {:else if recs.length === 0}
     <EmptyState lead="Nothing to recommend.">
       {#snippet note()}
@@ -302,12 +303,7 @@
     color: var(--fg);
   }
   .plus.spinning :global(svg) {
-    animation: spin 1s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+    animation: ky-spin 1s linear infinite;
   }
   @media (prefers-reduced-motion: reduce) {
     .plus.spinning :global(svg) {
@@ -333,11 +329,6 @@
     text-decoration: underline;
   }
 
-  .hint {
-    padding: var(--sp-4) var(--sp-5);
-    color: var(--fg-faint);
-    font-size: var(--text-sm);
-  }
   .note {
     flex: none;
     margin: 0;
@@ -556,11 +547,12 @@
     width: 44px;
     height: 44px;
   }
+  /* The last row clears the floating assistant button. */
+  :global([data-phone]) .story-rows {
+    padding-bottom: var(--fab-clear);
+  }
   :global([data-phone]) .ranking {
     padding: 0 var(--sp-4) var(--sp-3);
-  }
-  :global([data-phone]) .hint {
-    padding: var(--sp-4);
   }
   :global([data-phone]) .row {
     padding-right: calc(40px + var(--sp-3) * 2);

@@ -577,13 +577,4 @@
     background: linear-gradient(var(--border-strong), var(--border-strong)) center / 100% 1px
       no-repeat;
   }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
 </style>

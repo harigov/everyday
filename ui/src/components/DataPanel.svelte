@@ -16,6 +16,8 @@
   import { dateFormat, humanBytes, plural } from '../lib/format'
   import { hasShell, transfer } from '../lib/transfer.svelte'
   import { app } from '../lib/state.svelte'
+  import { panels } from '../lib/panels.svelte'
+  import Loading from './Loading.svelte'
   import Icon from './Icon.svelte'
 
   let picker = $state<HTMLInputElement | null>(null)
@@ -51,8 +53,19 @@
   }
 </script>
 
+<!-- Said first, where somebody deciding between the two is looking, and with
+     the way to the other one: this was a section at the very foot, below
+     everything a person came here to do. -->
+<p class="hint lead">
+  This is not a backup. An export is your writing in a form anything can read, with the encryption
+  taken off. A backup is the vault copied as it is, still sealed, and it keeps what an export leaves
+  out: your model keys, the devices you have paired and the key the vault is locked with. That is
+  <button class="link" onclick={() => panels.openSettings('backup')}>Backup</button>, which makes
+  one on a schedule, to a folder or a bucket.
+</p>
+
 <section>
-  <span class="eyebrow">Export</span>
+  <h3 class="eyebrow">Export</h3>
   <p class="hint">
     A zip of plain files: your journal and notes as Markdown, your calendars as
     <code>.ics</code>, your shelves and your tracking as CSV. Nothing in it needs Karma Yoga to
@@ -60,7 +73,7 @@
   </p>
 
   {#if transfer.parts === null}
-    <p class="hint">Counting…</p>
+    <Loading label="Counting what you have…" />
   {:else}
     <ul class="parts">
       {#each parts as part (part.id)}
@@ -116,12 +129,13 @@
       >
         Export {records ? count(records, 'records') : 'nothing'}…
       </button>
+      <span class="hint">The file is not encrypted.</span>
     </div>
   {/if}
 </section>
 
 <section>
-  <span class="eyebrow">Import</span>
+  <h3 class="eyebrow">Import</h3>
   <p class="hint">
     An archive Karma Yoga exported, or a folder of Markdown zipped up by anything else. You will be
     told what is in it before anything is read.
@@ -178,17 +192,21 @@
         {/each}
       </ul>
 
-      <div class="segmented">
+      <div class="seg-group" role="radiogroup" aria-label="What to do with records already here">
         <button
-          class="seg"
+          class="seg-opt"
           class:on={transfer.mode === 'skip'}
+          role="radio"
+          aria-checked={transfer.mode === 'skip'}
           onclick={() => (transfer.mode = 'skip')}
         >
           Only add what is missing
         </button>
         <button
-          class="seg"
+          class="seg-opt"
           class:on={transfer.mode === 'replace'}
+          role="radio"
+          aria-checked={transfer.mode === 'replace'}
           onclick={() => (transfer.mode = 'replace')}
         >
           Replace what is here
@@ -267,17 +285,6 @@
   <p class="notice good">{transfer.outcome}</p>
 {/if}
 
-<section>
-  <span class="eyebrow">This is not a backup</span>
-  <p class="hint">
-    An export is your writing in a form anything can read, which means it is your writing with the
-    encryption taken off. A <i>backup</i> is the vault copied as it is, still sealed, still opening with
-    the same password — and it keeps the things an export deliberately leaves out: your model keys, the
-    devices you have paired, and the key the vault itself is locked with. That is Settings → Backup, which
-    makes one on a schedule, to a folder or a bucket.
-  </p>
-</section>
-
 <style>
   /* This tab had no `section` rule of its own -- the three sections above
      relied on a pair of `<hr>`s for the space between them instead of the
@@ -347,7 +354,7 @@
      which is what stops "Journal 412" being read as a title. */
   .records {
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     color: var(--fg-subtle);
     font-variant-numeric: tabular-nums;
@@ -370,6 +377,18 @@
     margin: 0 0 var(--sp-2);
     font-size: var(--text-sm);
     font-weight: 600;
+  }
+
+  /* A word in a sentence that goes somewhere else in Settings. */
+  .link {
+    color: var(--accent);
+    font-weight: 550;
+  }
+  .link:hover {
+    text-decoration: underline;
+  }
+  .lead {
+    margin-bottom: var(--sp-6);
   }
 
   .hidden {

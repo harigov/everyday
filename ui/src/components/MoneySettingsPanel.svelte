@@ -22,6 +22,7 @@
   import type { PlaidEnvironment } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   /** Where Plaid lists an account's keys. A constant: nothing here opens an address from data. */
   const DASHBOARD = 'https://dashboard.plaid.com/developers/keys'
@@ -106,7 +107,7 @@
     </div>
 
     {#if setup === null}
-      <p class="hint">Loading…</p>
+      <Loading />
     {:else if setup.configured}
       <div class="stored">
         <span>
@@ -151,18 +152,22 @@
           autocomplete="new-password"
         />
       </label>
-      <label class="setting">
-        <span>Environment</span>
-        <select bind:value={environment}>
-          <option value="production">Production — your real banks</option>
-          <option value="sandbox">Sandbox — Plaid's test banks</option>
-        </select>
-      </label>
+      <!-- Not drawn until the saved keys have answered: before then it showed
+           Production and flipped to Sandbox a moment later. -->
+      {#if setup !== null}
+        <label class="setting">
+          <span>Environment</span>
+          <select bind:value={environment}>
+            <option value="production">Production — your real banks</option>
+            <option value="sandbox">Sandbox — Plaid's test banks</option>
+          </select>
+        </label>
+      {/if}
       <p class="hint">
         Each environment has its own secret. A bank stays with the environment it was connected in,
         so switching does not move existing connections.
       </p>
-      <div class="save">
+      <div class="save save-row">
         {#if notice}
           <span class="notice" class:bad={notice.bad} role="status">{notice.text}</span>
         {/if}
@@ -304,18 +309,6 @@
     color: var(--danger);
   }
 
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
-  }
   .notice.bad {
     color: var(--danger);
   }

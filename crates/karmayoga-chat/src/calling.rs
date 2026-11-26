@@ -340,8 +340,8 @@ pub(crate) struct Step {
 /// Follows the session's events to decide when the chat is asked.
 ///
 /// A voice session answers some confirmations by voice itself and says so;
-/// the rest it cannot, and tells the owner "That needs your go-ahead in our
-/// chat" and reports [`VoiceState::WaitingForClick`]. Only those are asked in
+/// the rest it cannot, and tells the owner what it is about and "You'll need
+/// to approve that in our chat" and reports [`VoiceState::WaitingForClick`]. Only those are asked in
 /// the chat: a question there that the owner has just answered aloud would be
 /// a second, stale yes-or-no under the call.
 ///

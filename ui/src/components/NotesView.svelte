@@ -11,10 +11,10 @@
   import { app, handle } from '../lib/state.svelte'
   import { notes } from '../lib/notes.svelte'
   import { insertFilled, templates } from '../lib/templates.svelte'
-  import { focusOnMount } from '../lib/focus'
   import { details, phone } from '../lib/phone.svelte'
   import { plural, relativeTime } from '../lib/format'
   import { renderMarkdown } from '../lib/markdown'
+  import { mergeTags } from '../lib/tags'
   import { documentToMarkdown, type PMNode } from '../lib/markdown-copy'
   import RichText from './RichText.svelte'
   import Toolbar from './Toolbar.svelte'
@@ -22,6 +22,7 @@
   import PhoneBack from './PhoneBack.svelte'
   import type { Editor as TipTapEditor } from '@tiptap/core'
   import PurposeField from './PurposeField.svelte'
+  import TagEditor from './TagEditor.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -41,8 +42,6 @@
   let dropping = $state(false)
   let storing = $state<string | null>(null)
   let confirmingDelete = $state(false)
-  let addingTag = $state(false)
-  let tagDraft = $state('')
 
   const note = $derived(notes.open)
 
@@ -114,86 +113,14 @@
   const kind = $derived(note ? noteOrigin(note) : 'own')
   const origin = $derived(originLine(kind, agent.displayName))
 
-  // ── adding a tag ─────────────────────────────────────────────────────
-  //
-  // The tags already in use are offered as you type, most used first with
-  // their counts. Without them every note grew its own spelling of the same
-  // idea -- a real vault had forty tags on thirty-seven notes, thirty-one
-  // of them used once -- and a filter over forty one-note tags narrows
-  // nothing.
-
-  /** The offered tag the arrow keys are on, or -1 for the typed text. */
-  let tagPick = $state(-1)
-
-  const tagOptions = $derived.by(() => {
-    if (!addingTag || !note) return []
-    const typed = tagDraft.trim().replace(/^#/, '').toLowerCase()
-    const have = new Set(note.tags.map((t) => t.toLowerCase()))
-    const free = notes.tags.filter((t) => !have.has(t.tag.toLowerCase()))
-    if (!typed) return free.slice(0, 6)
-    // Those starting with what was typed before those merely containing it,
-    // each run still most used first.
-    const starts = free.filter((t) => t.tag.toLowerCase().startsWith(typed))
-    const within = free.filter(
-      (t) => !t.tag.toLowerCase().startsWith(typed) && t.tag.toLowerCase().includes(typed),
-    )
-    return [...starts, ...within].slice(0, 6)
-  })
-
-  function commitTag(picked?: string) {
-    const typed = (picked ?? tagDraft).trim().replace(/^#/, '')
-    tagDraft = ''
-    addingTag = false
-    tagPick = -1
-    const target = notes.open
-    if (!typed || !target) return
-    // A tag already in use is taken as it is already spelled, so "Boats"
-    // typed beside an existing "boats" does not start a second one.
-    const tag = notes.tags.find((t) => t.tag.toLowerCase() === typed.toLowerCase())?.tag ?? typed
-    if (target.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
-    void notes.setTags([...target.tags, tag])
-  }
-
-  /**
-   * The arrows walk the offered tags. Tab does too, but only once something
-   * has been typed and only while there is an option to move to: the list
-   * shows as soon as the field opens, and a Tab that never left it would
-   * trap the keyboard in the field.
-   */
-  function tagKeys(e: KeyboardEvent) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      tagPick = Math.min(tagPick + 1, tagOptions.length - 1)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      tagPick = Math.max(tagPick - 1, -1)
-    } else if (e.key === 'Tab' && tagDraft.trim()) {
-      const next = tagPick + (e.shiftKey ? -1 : 1)
-      if (next >= -1 && next < tagOptions.length) {
-        e.preventDefault()
-        tagPick = next
-      }
-    } else if (e.key === 'Enter') {
-      e.preventDefault()
-      commitTag(tagOptions[tagPick]?.tag)
-    } else if (e.key === 'Escape') {
-      tagDraft = ''
-      tagPick = -1
-      addingTag = false
-    }
-  }
-
-  function removeTag(tag: string) {
-    const target = notes.open
-    if (!target) return
-    void notes.setTags(target.tags.filter((t) => t !== tag))
-  }
+  // The tags already in use are offered as you type (`TagEditor`), most used
+  // first with their counts. Without them every note grew its own spelling of
+  // the same idea -- a real vault had forty tags on thirty-seven notes,
+  // thirty-one of them used once -- and a filter over forty one-note tags
+  // narrows nothing.
 
   function setPurpose(next: Purpose | null) {
-    const target = notes.open
-    if (!target) return
-    target.purpose = next
-    void notes.setTags(target.tags)
+    notes.setPurpose(next)
   }
 
   // ── what the quick model read out of the note ────────────────────────
@@ -269,8 +196,9 @@
 
   function acceptTag(tag: string) {
     const target = notes.open
-    if (!target || target.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
-    void notes.setTags([...target.tags, tag])
+    if (!target) return
+    const next = mergeTags(target.tags, [tag])
+    if (next.length !== target.tags.length) void notes.setTags(next)
   }
 
   onDestroy(() => {
@@ -371,8 +299,8 @@
     </div>
   {:else}
     <div class="empty">
-      <EmptyState lead="Nothing open">
-        {#snippet icon()}<Icon name="quote" size={34} weight={1.4} />{/snippet}
+      <EmptyState lead="Pick a note">
+        {#snippet icon()}<Icon name="pencil" size={34} weight={1.4} />{/snippet}
         {#snippet note()}
           A note is a recipe, a reading list, the notes from a call — anything that is not a day.
         {/snippet}
@@ -479,66 +407,29 @@
               {note.pinned ? 'Pinned' : 'Pin'}
             </button>
 
-            {#each note.tags as tag (tag)}
-              <button class="tag chip" onclick={() => removeTag(tag)} title="Remove tag">
-                {tag}<span class="x"><Icon name="close" size={11} weight={1.8} /></span>
-              </button>
-            {/each}
-
-            {#if addingTag}
-              <span class="tag-field">
-                <input
-                  class="tag-input"
-                  placeholder="tag"
-                  bind:value={tagDraft}
-                  use:focusOnMount
-                  oninput={() => (tagPick = -1)}
-                  onblur={() => commitTag()}
-                  onkeydown={tagKeys}
-                  role="combobox"
-                  aria-expanded={tagOptions.length > 0}
-                  aria-controls="note-tag-options"
-                  aria-autocomplete="list"
-                />
-                {#if tagOptions.length}
-                  <!-- Held open through a click: `mousedown` is cancelled
-                       so the field keeps focus, and its blur does not file
-                       the half-typed text before the click lands. -->
-                  <ul class="tag-options" id="note-tag-options" role="listbox">
-                    {#each tagOptions as t, i (t.tag)}
-                      <!-- The keys are the field's: it is the combobox, and
-                           these options are reached through it. -->
-                      <!-- svelte-ignore a11y_click_events_have_key_events -->
-                      <li
-                        role="option"
-                        aria-selected={i === tagPick}
-                        class:on={i === tagPick}
-                        onmousedown={(e) => e.preventDefault()}
-                        onclick={() => commitTag(t.tag)}
-                      >
-                        <span class="opt-tag"><span class="hash">#</span>{t.tag}</span>
-                        <span class="opt-n">{t.count.toLocaleString()}</span>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-              </span>
-            {:else}
-              <button class="add" onclick={() => (addingTag = true)}>
-                <Icon name="plus" size={11} weight={1.8} /> Tag
-              </button>
-            {/if}
+            <TagEditor
+              tags={note.tags}
+              known={notes.tags}
+              onchange={(next: string[]) => void notes.setTags(next)}
+              id="note-tag-options"
+            />
           </div>
 
           {#if app.supportsOverview}
             <div class="purpose-row">
+              <span class="purpose-label">Goal or area</span>
               <PurposeField value={note.purpose} onchange={setPurpose} />
             </div>
           {/if}
 
           {#if quick.enabled('notes.tasks') || quick.enabled('notes.labels')}
             <div class="quick-row">
-              <button class="quick-btn" disabled={scanning} onclick={() => void readTheNote()}>
+              <button
+                class="quick-btn"
+                disabled={scanning}
+                title="Your quick model reads this note and offers a title, tasks and tags. Nothing changes until you accept."
+                onclick={() => void readTheNote()}
+              >
                 <Icon name="sparkle" size={12} />
                 What is in here?
               </button>
@@ -601,6 +492,8 @@
       <span class="dot">·</span>
       <span>
         {#if storing}Storing {storing}…
+        {:else if notes.saving}Saving…
+        {:else if notes.lastSaved}Saved {relativeTime(notes.lastSaved)}
         {:else}Edited {relativeTime(note.updatedAt)}{/if}
       </span>
       <span class="spacer"></span>
@@ -647,7 +540,7 @@
     gap: var(--sp-1);
     padding: 2px var(--sp-2);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     color: var(--fg-subtle);
     font: inherit;
@@ -743,7 +636,7 @@
     gap: 5px;
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-faint);
     font-size: var(--text-xs);
     transition:
@@ -755,20 +648,6 @@
     color: var(--danger);
   }
 
-  .dropzone {
-    position: absolute;
-    inset: var(--sp-3);
-    display: grid;
-    place-items: center;
-    border: 2px dashed var(--accent);
-    border-radius: var(--radius-lg);
-    background: color-mix(in oklab, var(--accent) 8%, transparent);
-    backdrop-filter: blur(2px);
-    font-weight: 600;
-    color: var(--accent);
-    pointer-events: none;
-  }
-
   /* The same, for the pane with no note open: an empty state centred in
      half the window reads as a layout that has gone wrong. */
   .empty {
@@ -777,15 +656,6 @@
     min-width: 0;
     height: 100%;
   }
-
-  /* ── Prose ───────────────────────────────────────────────────────────
-     Typography for the entry body. This is the part of the app people
-     actually look at, so it gets the reading face, a generous measure and a
-     line height chosen for continuous reading rather than for UI density.
-
-     The face is a humanist sans rather than a serif. It still contrasts with
-     the interface around it -- different drawing, different colour on the
-     page -- without the serif's mismatch against a screen-first UI. */
 
   .conflict {
     display: flex;
@@ -816,27 +686,31 @@
      sits in a label/field grid that already spaces its rows. Here, under
      the tag row, it needs the same breathing room the journal gives the
      tracker strip under its own tag row (see `.strip` in `TrackerStrip`):
-     without it, "Not filed" sat flush against Pin/tags with no gap at all. */
+     without it, the field sat flush against Pin/tags with no gap at all. */
   .purpose-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
     margin-top: var(--sp-4);
   }
+  .purpose-label {
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+    font-weight: 550;
+  }
 
-  .chip,
-  .add,
   .pin {
     display: inline-flex;
     align-items: center;
     gap: 3px;
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     color: var(--fg-muted);
     font-size: var(--text-xs);
   }
 
-  .chip:hover,
-  .add:hover,
   .pin:hover {
     color: var(--fg);
   }
@@ -845,14 +719,6 @@
     background: var(--bg-active);
     color: var(--fg);
     font-weight: 550;
-  }
-
-  .tag .x {
-    display: none;
-  }
-
-  .tag:hover .x {
-    display: inline-flex;
   }
 
   /* Where the note came from: a word, not a control, in the colour of the
@@ -868,72 +734,10 @@
     font-weight: 550;
   }
   .origin.assistant :global(svg) {
-    color: var(--app-assistant);
+    color: color-mix(in oklab, var(--app-assistant) 70%, var(--fg));
   }
   .origin.meeting :global(svg) {
-    color: var(--app-calendar);
-  }
-
-  .tag-field {
-    position: relative;
-    display: inline-flex;
-  }
-
-  .tag-options {
-    position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
-    z-index: 20;
-    min-width: 12rem;
-    margin: 0;
-    padding: 4px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--card);
-    box-shadow: var(--shadow);
-    list-style: none;
-  }
-  .tag-options li {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    height: 26px;
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    cursor: pointer;
-  }
-  .tag-options li:hover,
-  .tag-options li.on {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .opt-tag {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .opt-tag .hash {
-    color: var(--fg-faint);
-  }
-  .opt-n {
-    color: var(--fg-faint);
-    font-size: var(--text-xs);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .tag-input {
-    width: 6rem;
-    height: 22px;
-    padding: 0 var(--sp-2);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--bg);
-    color: var(--fg);
-    font-size: var(--text-xs);
+    color: color-mix(in oklab, var(--app-calendar) 70%, var(--fg));
   }
 
   /* ── On a phone ──────────────────────────────────────────────────────── */
@@ -1005,36 +809,15 @@
   :global([data-phone]) .meta {
     gap: var(--sp-2);
   }
-  :global([data-phone]) .chip,
-  :global([data-phone]) .add,
   :global([data-phone]) .pin {
     height: 34px;
     padding: 0 var(--sp-3);
     font-size: var(--text-sm);
     gap: 5px;
   }
-  :global([data-phone]) .tag .x {
-    display: inline-flex;
-  }
   :global([data-phone]) .origin {
     height: 34px;
     font-size: var(--text-sm);
-  }
-  :global([data-phone]) .tag-field {
-    flex: 1 0 100%;
-  }
-  :global([data-phone]) .tag-input {
-    width: 100%;
-    height: 40px;
-    padding: 0 var(--sp-3);
-  }
-  :global([data-phone]) .tag-options {
-    right: 0;
-    min-width: 0;
-  }
-  :global([data-phone]) .tag-options li {
-    height: 44px;
-    font-size: var(--text-base);
   }
   :global([data-phone]) .quick-btn {
     min-height: 34px;

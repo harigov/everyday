@@ -9,7 +9,8 @@
   import { menu } from '../lib/menu.svelte'
   import { declineItems, edited, proposals, recordAs } from '../lib/proposals.svelte'
   import { todo } from '../lib/todo.svelte'
-  import { formatMinutes } from '../lib/format'
+  import { formatMinutes, friendlyDate } from '../lib/format'
+  import { reminderLabel } from '../lib/tasklist'
   import { closesOnBack } from '../lib/phone.svelte'
   import Icon from './Icon.svelte'
   import PhoneBack from './PhoneBack.svelte'
@@ -182,13 +183,42 @@
           </span>
         </div>
 
-        <label class="lab" for="pd-purpose">For</label>
+        <label class="lab" for="pd-purpose" title="Which goal or area of your life this is for"
+          >Goal or area</label
+        >
         <div id="pd-purpose">
           <PurposeField
             value={draft.purpose}
             onchange={(purpose: Purpose | null) => patch({ purpose })}
+            placeholder={todo.projectOf(draft.projectId)?.purpose
+              ? 'Same as the project'
+              : 'No goal or area'}
           />
         </div>
+
+        <!-- What a proposal can carry that this pane has no field for. Shown
+             as read, when set, so accepting is never a surprise: it is
+             carried over exactly as proposed. -->
+        {#if draft.startDate}
+          <span class="lab">Start</span>
+          <span class="ro">{friendlyDate(draft.startDate)}</span>
+        {/if}
+        {#if draft.assignee === 'assistant'}
+          <span class="lab">Done by</span>
+          <span class="ro">The assistant</span>
+        {/if}
+        {#if draft.remindAt}
+          <span class="lab">{draft.assignee === 'assistant' ? 'Do at' : 'Remind'}</span>
+          <span class="ro">{reminderLabel(draft.remindAt)}</span>
+        {/if}
+        {#if draft.tags.length > 0}
+          <span class="lab">Tags</span>
+          <span class="ro">{draft.tags.join(', ')}</span>
+        {/if}
+        {#if draft.raiseWith?.length}
+          <span class="lab">Bring up with</span>
+          <span class="ro">{draft.raiseWith.map((p) => p.name).join(', ')}</span>
+        {/if}
       </div>
 
       <div class="head"><span class="eyebrow">Notes</span></div>
@@ -221,7 +251,7 @@
 
 <style>
   .detail {
-    width: 320px;
+    width: var(--detail-w);
     flex: none;
     display: flex;
     flex-direction: column;
@@ -244,7 +274,6 @@
     font-size: var(--text-xs);
     font-weight: 600;
     color: var(--accent);
-    text-transform: lowercase;
   }
   .close {
     width: 26px;
@@ -287,13 +316,13 @@
     color: var(--fg);
     user-select: text;
   }
-  .title:focus {
+  .title:focus:not(:focus-visible) {
     outline: none;
   }
 
   .grid {
     display: grid;
-    grid-template-columns: 62px 1fr;
+    grid-template-columns: 88px 1fr;
     align-items: center;
     gap: var(--sp-2) var(--sp-2);
     margin-top: var(--sp-4);
@@ -315,8 +344,10 @@
     user-select: text;
   }
   .pick:focus {
-    outline: none;
     border-color: var(--accent);
+  }
+  .pick:focus:not(:focus-visible) {
+    outline: none;
   }
   .pick:disabled {
     opacity: 0.45;
@@ -329,6 +360,12 @@
   }
   .pair .time {
     flex: 0 0 82px;
+  }
+  .ro {
+    min-width: 0;
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
   }
   .unit {
     font-size: var(--text-xs);
@@ -357,8 +394,10 @@
     user-select: text;
   }
   .notes:focus {
-    outline: none;
     border-color: var(--accent);
+  }
+  .notes:focus:not(:focus-visible) {
+    outline: none;
   }
 
   .answers {
@@ -388,7 +427,7 @@
     padding: 0 var(--sp-3) 0 var(--sp-1);
   }
   :global([data-phone]) .grid {
-    grid-template-columns: 76px minmax(0, 1fr);
+    grid-template-columns: 96px minmax(0, 1fr);
     gap: var(--sp-3) var(--sp-2);
   }
   :global([data-phone]) .lab {

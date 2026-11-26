@@ -119,6 +119,10 @@
           ? `${plural(banks, 'bank')} · ${plural(accounts, 'account')}`
           : plural(accounts, 'account')
       }
+      case 'overview': {
+        const n = money.accounts.length
+        return n > 0 ? `Across ${plural(n, 'account')}` : ''
+      }
       case 'rules':
         return money.rules.length > 0 ? plural(money.rules.length, 'rule') : ''
       case 'reports':
@@ -139,7 +143,9 @@
     <header class="top">
       <div class="pane-titles">
         <h1 class="pane-title">{title}</h1>
-        {#if sub && !blank}<span class="pane-sub">{sub}</span>{/if}
+        <!-- Always drawn, even when empty, so a one-line title does not sit
+             lower than a two-line one as the panes change. -->
+        {#if !blank}<span class="pane-sub">{sub || '\u00a0'}</span>{/if}
       </div>
 
       <div class="tools">
@@ -283,7 +289,7 @@
     align-items: center;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
   }
   .step {
@@ -310,7 +316,7 @@
     min-width: 8.5em;
     height: 26px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-weight: 600;
     color: var(--fg);
@@ -344,12 +350,7 @@
   /* A sync in progress: the icon turns, the button stays put. Stopped under
      reduced motion; the title still says "Syncing…". */
   .round.spinning :global(svg) {
-    animation: spin 1s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+    animation: ky-spin 1s linear infinite;
   }
   @media (prefers-reduced-motion: reduce) {
     .round.spinning :global(svg) {

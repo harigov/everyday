@@ -5,6 +5,7 @@
   // apart from the project list: "Today" is a question about every project
   // at once, and filing something into it is not a thing you can do.
 
+  import { tick } from 'svelte'
   import { todo, type Scope } from '../lib/todo.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { targets } from '../lib/targets.svelte'
@@ -75,10 +76,28 @@
     ),
   )
 
+  // Past a handful the sidebar would push the projects below the fold, so
+  // only the first few are listed -- the open goal always among them -- and a
+  // row at the foot says how many more there are and opens the whole pane.
+  const GOALS_SHOWN = 5
+  const shownGoalRows = $derived.by(() => {
+    if (goalRows.length <= GOALS_SHOWN + 1) return goalRows
+    const first = goalRows.slice(0, GOALS_SHOWN)
+    const open = goalRows.find((r) => goalSelected(r.goal.id))
+    return open && !first.includes(open) ? [...first, open] : first
+  })
+
   /** Every goal, grouped under its area, with no rail open. */
   async function showAllGoals() {
     purpose.selected = null
     await todo.setScope({ kind: 'goals' })
+  }
+
+  /** To the goals pane with the new-goal line of the first area ready to type in. */
+  async function newGoal() {
+    await showAllGoals()
+    await tick()
+    document.querySelector<HTMLInputElement>('input[data-newgoal]')?.focus()
   }
 
   /** One goal: the projects filed under it, as a project opens its tasks. */
@@ -108,6 +127,17 @@
         run: async () => {
           purpose.selected = goal.id
           await todo.setScope({ kind: 'goals' })
+        },
+      },
+      {
+        label: 'Rename…',
+        icon: 'pencil',
+        run: async () => {
+          purpose.selected = goal.id
+          await todo.setScope({ kind: 'goals' })
+          await tick()
+          // The rail's title is the rename field; see `GoalsPane`.
+          document.querySelector<HTMLButtonElement>('.detail .titlebtn')?.click()
         },
       },
       SEP,
@@ -190,7 +220,7 @@
         // The highest-value place in the whole application to set one:
         // everything under this project inherits it, so a body of work is
         // attributed once rather than task by task.
-        label: 'File under',
+        label: 'File under…',
         icon: 'compass',
         items: purposeItems({ ...$state.snapshot(p) }.purpose, (purpose) =>
           todo.saveProject({ ...$state.snapshot(p), purpose }),
@@ -212,21 +242,30 @@
   function navMenu(): MenuItem[] {
     return tidyMenu([
       { label: 'New project', icon: 'plus', run: () => (creating = true) },
+      app.supportsOverview && { label: 'New goal', icon: 'target', run: newGoal },
       app.supportsOverview && {
-        label: 'Goals',
+        label: 'All goals',
         icon: 'target',
         checked: todo.scope.kind === 'goals',
         run: () => todo.setScope({ kind: 'goals' }),
       },
       SEP,
       app.supportsOverview && {
-        label: 'Areas…',
+        label: 'Edit areas in Settings',
         icon: 'compass',
-        hint: 'in About You',
         run: () => panels.openSettings('profile'),
       },
     ])
   }
+
+  // Projects that are finished or archived leave the list above and wait
+  // here, folded, so they can still be opened and brought back (Status ->
+  // Active in the same menu) rather than vanishing.
+  const finished = $derived(
+    todo.projects.filter((p) => p.status === 'done' || p.status === 'archived'),
+  )
+  const current = $derived(todo.liveProjects.filter((p) => p.status !== 'done'))
+  let showFinished = $state(false)
 
   const due = $derived(todo.dueTodayCount)
   const overdue = $derived(todo.stats?.overdue ?? 0)
@@ -262,19 +301,22 @@
       <span class="eyebrow">Goals</span>
       <button
         class="side-add"
-        title="Areas, in Settings"
-        aria-label="Set up your areas"
+        title="Edit areas in Settings"
+        aria-label="Edit areas in Settings"
         onclick={() => panels.openSettings('profile')}
       >
         <Icon name="settings" size={14} />
       </button>
+      <button class="side-add" title="New goal" aria-label="New goal" onclick={newGoal}>
+        <Icon name="plus" size={15} />
+      </button>
     </div>
     <button class="side-row" class:sel={todo.scope.kind === 'goals'} onclick={showAllGoals}>
       <span class="side-icon"><Symbol name="target" size={16} /></span>
-      <span class="side-text">What this is all for</span>
+      <span class="side-text">All goals</span>
       {#if openGoals > 0}<span class="side-count">{openGoals}</span>{/if}
     </button>
-    {#each goalRows as { goal, area } (goal.id)}
+    {#each shownGoalRows as { goal, area } (goal.id)}
       {@const measure = targets.headline(goal.id)}
       {@const words = measure ? describeProgress(measure.tracker, measure.progress) : null}
       <!-- The area's colour is set on the whole row rather than on its dot,
@@ -312,6 +354,12 @@
         {/if}
       </button>
     {/each}
+    {#if goalRows.length > shownGoalRows.length}
+      <button class="side-row quiet" onclick={showAllGoals}>
+        <span class="side-icon"></span>
+        <span class="side-text">Show all {goalRows.length} goals</span>
+      </button>
+    {/if}
   {/if}
 
   <div class="side-head">
@@ -326,7 +374,7 @@
     </button>
   </div>
 
-  {#each todo.liveProjects as p (p.id)}
+  {#each current as p (p.id)}
     {#if renaming?.id === p.id}
       <input
         class="side-new"
@@ -356,7 +404,34 @@
     {/if}
   {/each}
 
-  {#if todo.liveProjects.length === 0 && !creating}
+  {#if finished.length > 0}
+    <button
+      class="side-row quiet"
+      aria-expanded={showFinished}
+      onclick={() => (showFinished = !showFinished)}
+    >
+      <span class="side-icon fold" class:open={showFinished}><Icon name="chevron" size={12} /></span
+      >
+      <span class="side-text">Finished</span>
+      <span class="side-count">{finished.length}</span>
+    </button>
+    {#if showFinished}
+      {#each finished as p (p.id)}
+        <button
+          class="side-row paused"
+          class:sel={selected({ kind: 'project', id: p.id })}
+          onclick={() => todo.setScope({ kind: 'project', id: p.id })}
+          oncontextmenu={(e) => menu.show(e, projectMenu(p))}
+          title={p.status === 'archived' ? `${p.name} (archived)` : p.notes || p.name}
+        >
+          <span class="side-icon">{p.icon}</span>
+          <span class="side-text">{p.name}</span>
+        </button>
+      {/each}
+    {/if}
+  {/if}
+
+  {#if current.length === 0 && finished.length === 0 && !creating}
     <p class="blank">No projects yet. Tasks go to the inbox until you make one.</p>
   {/if}
 
@@ -418,6 +493,19 @@
   /* A paused project or goal is still there, just not shouting. */
   .side-row.paused .side-text {
     opacity: 0.6;
+  }
+
+  .side-row.quiet .side-text {
+    color: var(--fg-subtle);
+  }
+
+  /* The chevron turns down when the Finished group is open. */
+  .side-icon.fold {
+    rotate: -90deg;
+    transition: rotate var(--fast) var(--ease);
+  }
+  .side-icon.fold.open {
+    rotate: 0deg;
   }
 
   .gmeter {

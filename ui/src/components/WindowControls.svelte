@@ -50,6 +50,6 @@
   }
   .close:hover {
     background: var(--danger);
-    color: #fff;
+    color: var(--fg-on-danger);
   }
 </style>

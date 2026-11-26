@@ -186,12 +186,7 @@
     color: var(--fg-faint);
   }
   .spin :global(svg) {
-    animation: spin 1s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+    animation: ky-spin 1s linear infinite;
   }
   @media (prefers-reduced-motion: reduce) {
     .spin :global(svg) {

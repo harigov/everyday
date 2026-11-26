@@ -24,6 +24,7 @@ import { agent } from './agent.svelte'
 import { api, hasShell, isMock, voiceStart } from './api'
 import { toWire } from './onscreen'
 import { player } from './player.svelte'
+import { phone } from './phone.svelte'
 import { onScreenNow } from './screen.svelte'
 import { app, errorMessage, isLocked, quietly } from './state.svelte'
 import type { ConversationId, OnScreen, VoiceEvent, VoiceState } from './types'
@@ -119,7 +120,8 @@ class VoiceSession {
       case 'asking':
         return 'Say yes or no'
       case 'waitingForClick':
-        return 'Waiting for your click'
+        // A phone is touched, not clicked.
+        return phone.on ? 'Waiting for your tap' : 'Waiting for your click'
       case null:
         return ''
     }

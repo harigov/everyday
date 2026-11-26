@@ -19,6 +19,7 @@ import { Autosave } from './autosave'
 import { registerApply, type ChangeWithIds } from './live-apply'
 import { noteOrigin, sameTag, sortNotes } from './note-list'
 import { proposals, recordAs } from './proposals.svelte'
+import { purpose as purposeStore } from './purpose.svelte'
 import { seen, type Showing } from './onscreen'
 import { app, handle, isConflict, isLocked } from './state.svelte'
 import { debounce } from './store/debounce'
@@ -36,6 +37,7 @@ import type {
   NoteTag,
   Proposal,
   ProposalId,
+  Purpose,
   TemplateId,
 } from './types'
 
@@ -80,7 +82,21 @@ class NotesState {
    */
   origin = $state<NoteOrigin | null>(null)
   /** The list the sidebar draws: `list` narrowed to one kind of note. */
-  visible = $derived(this.origin ? this.list.filter((n) => n.origin === this.origin) : this.list)
+  visible = $derived.by(() => {
+    const kind = this.origin
+    const area = this.area
+    if (!kind && !area) return this.list
+    return this.list.filter(
+      (n) => (!kind || n.origin === kind) && (!area || purposeStore.areaOf(n.purpose) === area),
+    )
+  })
+  /**
+   * The area the list is narrowed to, or `null` for every note. Narrowed on
+   * the rows already loaded, like the kind filter, so it costs the list
+   * nothing: the answer to "which area is this note's" is one lookup per row
+   * and the list is virtual past what is on screen.
+   */
+  area = $state<string | null>(null)
   /**
    * Whether this vault holds notes the person did not write, so whether the
    * kind filter is worth drawing at all. Read again from every list that is
@@ -144,12 +160,16 @@ class NotesState {
     // journal, for the same reason.
     const sending = note.updatedAt
     this.#stamp ??= newRequestId()
+    this.saving = true
     try {
       await api.saveNote($state.snapshot(note), this.#base, this.#stamp)
       this.#stamp = null
       this.#base = sending
+      this.lastSaved = new Date().toISOString()
+      this.saving = false
       await this.refresh()
     } catch (e) {
+      this.saving = false
       if (isConflict(e)) {
         // The same policy the journal has: say so and stop writing. Silently
         // winning would throw away whatever the other writer did, and a retry
@@ -168,6 +188,10 @@ class NotesState {
 
   /** True while an edit is refusing to save because somebody else wrote. */
   conflict = $state(false)
+  /** A write of the open note is on the wire. What the page's foot says. */
+  saving = $state(false)
+  /** When the open note last reached the vault from this window, or null. */
+  lastSaved = $state<string | null>(null)
 
   constructor() {
     app.onLock(() => this.reset())
@@ -192,7 +216,10 @@ class NotesState {
     this.tag = null
     this.tags = []
     this.origin = null
+    this.area = null
     this.mixed = false
+    this.saving = false
+    this.lastSaved = null
     this.clearSearch()
     this.conflict = false
     this.#base = null
@@ -322,6 +349,10 @@ class NotesState {
     this.origin = origin
   }
 
+  setArea(area: string | null) {
+    this.area = area
+  }
+
   /** Read `mixed` again off a list no tag narrows -- see its own doc. */
   #recountKinds() {
     if (!this.tag) this.mixed = this.list.some((n) => n.origin !== 'own')
@@ -349,6 +380,8 @@ class NotesState {
       this.selected = id
       this.#base = note.updatedAt
       this.conflict = false
+      // "Saved just now" belongs to the note that was saved, not this one.
+      this.lastSaved = null
     } catch (e) {
       if (isLocked(e)) return
       await handle(e)
@@ -448,6 +481,47 @@ class NotesState {
     this.open.pinned = !this.open.pinned
     this.#edited()
     await this.flush()
+  }
+
+  /** What the open note is for. The write that follows is an ordinary edit. */
+  setPurpose(purpose: Purpose | null) {
+    if (!this.open) return
+    this.open.purpose = purpose
+    this.#edited()
+  }
+
+  /**
+   * Pin or unpin a note from its row, without opening it. A row's menu used
+   * to open the note first, which moved the editor to a note nobody had asked
+   * to read; the open note keeps its own path so its unsaved text is not
+   * written twice.
+   */
+  async setPinnedById(id: NoteId, pinned: boolean) {
+    await this.#editById(id, (note) => (note.pinned = pinned))
+  }
+
+  /** File a note under an area or goal from its row, without opening it. */
+  async setPurposeById(id: NoteId, purpose: Purpose | null) {
+    await this.#editById(id, (note) => (note.purpose = purpose))
+  }
+
+  async #editById(id: NoteId, change: (note: Note) => void) {
+    if (this.open?.id === id) {
+      change(this.open)
+      this.#edited()
+      await this.flush()
+      return
+    }
+    try {
+      const note = await api.note(id)
+      // Conditional on the version just read, like every other save here.
+      const expect = note.updatedAt
+      change(note)
+      await api.saveNote($state.snapshot(note), expect, newRequestId())
+      await this.refresh()
+    } catch (e) {
+      await handle(e)
+    }
   }
 
   /**
@@ -626,6 +700,37 @@ export const notes = new NotesState()
 /** Plain text out of a note's rich body -- what a read-only preview draws. */
 export function previewText(body: Note['body']): string {
   return plainText(body)
+}
+
+/**
+ * A note's body as paragraphs -- one string per paragraph, heading, list
+ * item or code block, in order. For the read-only preview, which has to show
+ * where one paragraph ends; `plainText` joins everything with spaces because
+ * an excerpt and a word count want exactly that, so this is its own walk.
+ */
+export function previewParagraphs(body: Note['body']): string[] {
+  const out: string[] = []
+  const inline = (node: unknown): string => {
+    if (!node || typeof node !== 'object') return ''
+    const n = node as Record<string, unknown>
+    if (n.type === 'text') return typeof n.text === 'string' ? n.text : ''
+    if (n.type === 'hardBreak') return '\n'
+    return Array.isArray(n.content) ? n.content.map(inline).join('') : ''
+  }
+  const walk = (node: unknown) => {
+    if (!node || typeof node !== 'object') return
+    const n = node as Record<string, unknown>
+    if (n.type === 'paragraph' || n.type === 'heading' || n.type === 'codeBlock') {
+      const text = inline(n).trim()
+      if (text) out.push(text)
+      return
+    }
+    const caption = (n.attrs as Record<string, unknown> | undefined)?.caption
+    if (n.type === 'media' && typeof caption === 'string' && caption.trim()) out.push(caption)
+    if (Array.isArray(n.content)) n.content.forEach(walk)
+  }
+  walk(body)
+  return out
 }
 
 /**

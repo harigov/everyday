@@ -48,6 +48,7 @@
   import { upnext } from '../lib/upnext.svelte'
   import type { Story } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import SubTabs from './SubTabs.svelte'
 
   let {
@@ -251,14 +252,14 @@
       {#if failed}
         <p class="loading">This story could not be loaded.</p>
       {:else if body === null}
-        <p class="loading">Loading…</p>
+        <Loading label="Loading the story" />
       {:else}
         {@render page(body, story.title || 'Story')}
       {/if}
     {:else if brokenKey === wanted}
       <p class="loading">The {label.toLowerCase()} could not be loaded.</p>
     {:else if loaded === null || loaded.key !== wanted}
-      <p class="loading">Loading…</p>
+      <Loading label={`Loading the ${label.toLowerCase()}`} />
     {:else}
       {@render page(loaded.doc, `${label}: ${story.title || 'Story'}`)}
     {/if}

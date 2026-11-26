@@ -24,6 +24,8 @@
   import { focusOnMount } from '../lib/focus'
   import { coverRatio, library } from '../lib/library.svelte'
   import { phone } from '../lib/phone.svelte'
+  import { proposals, recordAs } from '../lib/proposals.svelte'
+  import { mergeTags } from '../lib/tags'
   import { ratingLabel } from '../lib/rating'
   import { reader } from '../lib/reader.svelte'
   import { app } from '../lib/state.svelte'
@@ -38,6 +40,7 @@
     ItemId,
     KindInfo,
     LogEvent,
+    Purpose,
     QuickFields,
     CatchUpVia,
     SearchResult,
@@ -56,6 +59,8 @@
   import FilePicker from './FilePicker.svelte'
   import Icon from './Icon.svelte'
   import PhoneBack from './PhoneBack.svelte'
+  import ProposalGhost from './ProposalGhost.svelte'
+  import PurposeField from './PurposeField.svelte'
   import Rating from './Rating.svelte'
   import Suggestions from './Suggestions.svelte'
 
@@ -74,6 +79,23 @@
   /** A person, whose log is catch-ups and who may be due one. */
   const person = $derived(isContactShelf(kind))
   const due = $derived(person ? library.dueOf(item.id) : null)
+  /**
+   * Catch-ups the assistant read out of the journal for this person and has
+   * not been answered on: shown at the top of their history, where the
+   * accepted row would land.
+   */
+  const proposedCatchUps = $derived(
+    person
+      ? proposals.forKind('log').filter((p) => recordAs(p, 'log')?.log.itemId === item.id)
+      : [],
+  )
+
+  // A card for a person is not a book with the nouns changed: nobody "made"
+  // them, rates them in stars, or queues them to read next. Wording and the
+  // controls that do not apply come from here, in one place.
+  const subtitleLabel = $derived(person ? 'Role or company' : 'Subtitle')
+  const creatorLabel = $derived(person ? '' : 'Who made it')
+  const summaryPlaceholder = $derived(person ? 'Who they are' : 'What it is')
 
   let confirming = $state(false)
   let tagDraft = $state('')
@@ -351,8 +373,10 @@
   function addTag() {
     const tag = tagDraft.trim().replace(/^#/, '')
     tagDraft = ''
-    if (!tag || item.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
-    edit(() => item.tags.push(tag))
+    if (!tag) return
+    const merged = mergeTags(item.tags, [tag])
+    if (merged.length === item.tags.length) return
+    edit(() => (item.tags = merged))
   }
 
   function setFact(key: string, value: string) {
@@ -562,7 +586,7 @@
             disabled={library.enriching}
             onclick={toggleCoverSearch}
           >
-            <Icon name="search" size={12} />
+            <Icon name="search" size={12} /> <span class="act-word">Search</span>
           </button>
           <button
             class="cover-act"
@@ -573,7 +597,7 @@
             disabled={library.enriching}
             onclick={toggleCoverUrl}
           >
-            <Icon name="link" size={12} />
+            <Icon name="link" size={12} /> <span class="act-word">Address</span>
           </button>
           {#if item.cover}
             <button
@@ -582,7 +606,7 @@
               aria-label="Remove the cover"
               onclick={() => library.removeCover(item.id)}
             >
-              <Icon name="close" size={12} />
+              <Icon name="close" size={12} /> <span class="act-word">Remove</span>
             </button>
           {/if}
         </div>
@@ -611,36 +635,42 @@
         <input
           class="creator subtitle"
           value={item.subtitle}
-          placeholder="Subtitle"
-          aria-label="Subtitle"
+          placeholder={subtitleLabel}
+          aria-label={subtitleLabel}
           oninput={(e) => edit(() => (item.subtitle = e.currentTarget.value))}
         />
-        <input
-          class="creator"
-          value={item.creator}
-          placeholder="Who made it"
-          aria-label="Creator"
-          oninput={(e) => edit(() => (item.creator = e.currentTarget.value))}
-        />
-
-        <div class="mine">
-          <Rating
-            value={item.rating}
-            size={phone.on ? 28 : 19}
-            showNumber
-            label="Your rating"
-            onchange={(v: number | null) => void library.rate(item.id, v)}
+        {#if !person}
+          <input
+            class="creator"
+            value={item.creator}
+            placeholder={creatorLabel}
+            aria-label="Creator"
+            oninput={(e) => edit(() => (item.creator = e.currentTarget.value))}
           />
-        </div>
+
+          <!-- Stars are for things you consume. The rating stays stored on a
+               card that already has one; it is only not offered here. -->
+          <div class="mine">
+            <Rating
+              value={item.rating}
+              size={phone.on ? 28 : 19}
+              showNumber
+              label="Your rating"
+              onchange={(v: number | null) => void library.rate(item.id, v)}
+            />
+          </div>
+        {/if}
 
         {#each item.external as rating (rating.source)}
+          <!-- Plain text on one line, not stars: a row of small stars under
+               your own rating read as a second copy of it. -->
           <div class="theirs" title="{rating.source}, not your rating">
-            <Rating value={rating.score} size={11} readonly muted />
             <!-- The separator is interpolated rather than written as text
                  between the tags: Svelte collapses the newline the formatter
                  puts there, so a literal "·" loses the space before it. -->
             <span>
-              {ratingLabel(rating.score)} on {rating.source}{rating.count
+              {rating.source}
+              {ratingLabel(rating.score)}{rating.count
                 ? ` \u00b7 ${plural(rating.count, 'rating')}`
                 : ''}
             </span>
@@ -667,15 +697,17 @@
               <Icon name="sparkle" size={14} /> Ask
             </button>
           {/if}
-          <button
-            class="btn btn-sm btn-outline"
-            aria-pressed={queued}
-            title={queued ? 'In Up Next: take it out' : 'Add it to Up Next'}
-            onclick={toggleQueued}
-          >
-            <Icon name="queue-add" size={14} />
-            {queued ? 'In Up Next' : 'Add to Up Next'}
-          </button>
+          {#if !person}
+            <button
+              class="btn btn-sm btn-outline"
+              aria-pressed={queued}
+              title={queued ? 'In Up Next: take it out' : 'Add it to Up Next'}
+              onclick={toggleQueued}
+            >
+              <Icon name="queue-add" size={14} />
+              {queued ? 'In Up Next' : 'Add to Up Next'}
+            </button>
+          {/if}
         </div>
         {#if readingFile && readerProgress}<span class="read-at">{readerProgress}</span>{/if}
       </div>
@@ -735,6 +767,17 @@
         </p>
       {/if}
     {/if}
+
+    <!-- Which goal or area of life this is for. Quiet when empty, like the
+         same row on a task; the list's own menu files things here too. -->
+    <div class="purpose-row">
+      <span class="purpose-label" id="item-purpose-label">Goal or area</span>
+      <PurposeField
+        value={item.purpose}
+        placeholder="No goal or area"
+        onchange={(next: Purpose | null) => edit(() => (item.purpose = next))}
+      />
+    </div>
 
     {#if item.startedOn || item.finishedOn}
       <!-- `friendlyDate`, not the long form: two full weekday-and-month dates
@@ -864,7 +907,7 @@
       <textarea
         class="summary"
         rows="3"
-        placeholder="What it is"
+        placeholder={summaryPlaceholder}
         value={item.summary}
         oninput={(e) => edit(() => (item.summary = e.currentTarget.value))}
       ></textarea>
@@ -1023,6 +1066,10 @@
           </button>
         </div>
       </div>
+
+      {#each proposedCatchUps as p (p.id)}
+        <ProposalGhost proposal={p} {color} />
+      {/each}
 
       {#if library.logs.length === 0}
         <p class="empty">
@@ -1204,7 +1251,7 @@
   }
 
   .detail {
-    width: 380px;
+    width: var(--detail-w);
     flex: none;
     display: flex;
     flex-direction: column;
@@ -1307,11 +1354,15 @@
     color: var(--fg-subtle);
     background: var(--bg-hover);
   }
-  /* Only "Choose" carries a word: four labelled buttons do not fit under a
-     116px cover, and the others say what they are on hover. */
+  /* Only "Choose" carries a word on a desktop: four labelled buttons do not
+     fit under a 116px cover, and the others say what they are on hover. (A
+     phone has no hover, so it shows all four; see below.) */
   .cover-act + .cover-act {
     flex: none;
     width: 24px;
+  }
+  .cover-act + .cover-act .act-word {
+    display: none;
   }
   /* And not even "Choose" once a cover is there to be removed: four buttons
      leave it too narrow for the word, which would spill under its neighbour.
@@ -1428,6 +1479,23 @@
     gap: 5px;
     font-size: var(--text-xs);
     color: var(--fg-faint);
+    min-width: 0;
+  }
+  .theirs span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .purpose-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .purpose-label {
+    flex: none;
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
   }
 
   /* Read and Ask, under the rating, with where the reader left off. */
@@ -1546,7 +1614,7 @@
   }
   .track {
     height: 5px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
     overflow: hidden;
   }
@@ -1651,7 +1719,7 @@
     color: var(--fg);
   }
   button.held-name:hover {
-    color: var(--tint);
+    color: color-mix(in oklab, var(--tint) 70%, var(--fg));
     text-decoration: underline;
   }
   .held-row.gone .held-name {
@@ -1666,7 +1734,7 @@
   .copy {
     margin-right: var(--sp-1);
     font-weight: 600;
-    color: var(--tint);
+    color: color-mix(in oklab, var(--tint) 70%, var(--fg));
   }
   .held-acts {
     flex: none;
@@ -1733,7 +1801,7 @@
     gap: 4px;
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-xs);
     color: var(--fg-muted);
     background: var(--bg-active);
@@ -1747,7 +1815,7 @@
     flex: 1;
     padding: 0 var(--sp-2);
     border: 1px dashed var(--border-strong);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     font-size: var(--text-xs);
     color: var(--fg);
@@ -1772,7 +1840,7 @@
     align-items: center;
     gap: 5px;
     font-size: var(--text-sm);
-    color: var(--tint);
+    color: color-mix(in oklab, var(--tint) 70%, var(--fg));
     text-decoration: none;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1826,7 +1894,7 @@
     font-weight: 500;
   }
   .touch.late .lead {
-    color: var(--tint, var(--accent));
+    color: color-mix(in oklab, var(--tint, var(--accent)) 70%, var(--fg));
   }
   .via {
     font: inherit;
@@ -1947,6 +2015,10 @@
   :global([data-phone]) .cover-actions:not(.crowded) .cover-act:first-child {
     flex-basis: 100%;
   }
+  /* A finger gets no tooltip, so every button says its word here. */
+  :global([data-phone]) .cover-actions .act-word {
+    display: inline;
+  }
   :global([data-phone]) .cover-fetch {
     height: 40px;
   }
@@ -1955,11 +2027,15 @@
     height: 40px;
   }
 
+  /* Three across and two under: a grid keeps the five the same width and
+     in the same places, where wrapping flex let the last two stretch and
+     moved the chosen one between rows. */
   :global([data-phone]) .statuses {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
     gap: 4px;
   }
   :global([data-phone]) .status {
-    flex: 1 1 28%;
     height: 40px;
   }
 

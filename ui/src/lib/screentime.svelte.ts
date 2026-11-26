@@ -88,9 +88,8 @@ export interface ScreenQuestion {
 
 const RANGES: readonly RangeKind[] = ['day', 'week', 'month']
 
-/** What Screen time tints the window with: the palette's indigo, apart from
- *  the Feed's blue and Money's green. */
-const SCREEN_ACCENT = '#4338ca'
+/** What Screen time tints the window with: the theme's own Screen time hue. */
+const SCREEN_ACCENT = 'var(--app-screentime)'
 
 /**
  * At most one reload a minute for heartbeats arriving. A collector flushes
@@ -369,6 +368,14 @@ class ScreenTimeState {
 
   // ── navigation ───────────────────────────────────────────────────────
 
+  /** What the top bar's search has typed, narrowing the Apps pane. Kept here
+   *  and not in the pane so the bar, which outlives the pane, can own it. */
+  appsQuery = $state('')
+
+  setAppsQuery(q: string): void {
+    this.appsQuery = q
+  }
+
   setView(view: ScreenView): void {
     if (view === this.view) return
     this.view = view
@@ -590,9 +597,15 @@ class ScreenTimeState {
 
   async #deleteCategory(category: ScreenCategory): Promise<void> {
     if (!app.supportsScreenTime) return
+    const inIt = this.apps.filter(
+      (r) => !r.label?.uncategorized && (r.label?.category ?? r.suggested) === category.id,
+    ).length
     const yes = await this.#ask(
       `Delete “${category.name}”?`,
-      'What was in it goes back to its suggested category, or to none. Nothing recorded is deleted.',
+      (inIt > 0
+        ? `${plural(inIt, 'app or site', 'apps and sites')} count${inIt === 1 ? 's' : ''} under it. They go back to their suggested category, or to none.`
+        : 'Anything in it goes back to its suggested category, or to none.') +
+        ' Nothing recorded is deleted.',
       'Delete',
     )
     if (!yes) return

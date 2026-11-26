@@ -12,11 +12,13 @@
   // alone, newest first -- and pages it; this asks for the next page as the
   // end of what is loaded comes into view.
 
+  import { focusOnMount, trapFocus } from '../lib/focus'
   import { files } from '../lib/files.svelte'
   import { closesOnBack, phone } from '../lib/phone.svelte'
   import { remembered, type Zoom } from '../lib/photos'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import PhotosBar from './PhotosBar.svelte'
   import PhotosFacets from './PhotosFacets.svelte'
   import PhotosTimeline from './PhotosTimeline.svelte'
@@ -57,6 +59,15 @@
   )
 </script>
 
+<svelte:window
+  onkeydown={(e: KeyboardEvent) => {
+    if (e.key === 'Escape' && sheet && phone.on) {
+      e.preventDefault()
+      sheet = false
+    }
+  }}
+/>
+
 <!-- Measured here, not asked of a container query: a `container-type` would
      make this box the containing block of the viewer and the album popover,
      which are `position: fixed` and belong to the window. -->
@@ -82,7 +93,7 @@
     >
       {#snippet empty()}
         {#if files.page === null}
-          <EmptyState lead="Loading the photos…" />
+          <Loading label="Loading the photos…" centred />
         {:else if narrowed}
           <EmptyState lead="No pictures match.">
             {#snippet note()}
@@ -125,10 +136,10 @@
 {#if sheet && phone.on}
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div class="scrim" onclick={() => (sheet = false)}></div>
-  <div class="sheet browse" role="dialog" aria-modal="true" aria-label="Browse by">
+  <div class="sheet browse" role="dialog" aria-modal="true" aria-label="Browse by" use:trapFocus>
     <div class="browse-head">
       <h2>Browse by</h2>
-      <button class="btn btn-sm" onclick={() => (sheet = false)}>Done</button>
+      <button class="btn btn-sm" use:focusOnMount onclick={() => (sheet = false)}>Done</button>
     </div>
     <div class="browse-list"><PhotosFacets /></div>
   </div>

@@ -45,6 +45,7 @@
     ScanReport,
   } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   // The panel needs the status and nothing else, whether or not Files was
   // ever opened.
@@ -395,15 +396,13 @@
 
 <div class="panes">
   {#if !files.supported}
-    <section>
-      <span class="eyebrow">Files</span>
-      <p class="hint">This vault cannot hold a catalog of files.</p>
-    </section>
+    <p class="blank-note">This vault cannot hold a catalog of files.</p>
   {:else if !status || !settings}
-    <section>
-      <span class="eyebrow">Folder</span>
-      <p class="hint">{files.error ?? 'Looking at the folder…'}</p>
-    </section>
+    {#if files.error}
+      <p class="hint">{files.error}</p>
+    {:else}
+      <Loading label="Looking at the folder…" />
+    {/if}
   {:else}
     <section aria-labelledby="fs-folder">
       <span class="eyebrow" id="fs-folder">Folder</span>
@@ -517,7 +516,7 @@
         </p>
       </div>
       {#each ORIGINS as o (o.id)}
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={settings.encrypted.includes(o.id)}
@@ -552,7 +551,7 @@
     <section aria-labelledby="fs-privacy">
       <span class="eyebrow" id="fs-privacy">Privacy</span>
 
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={settings.assistantAccess}
@@ -568,7 +567,7 @@
         </span>
       </label>
 
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={settings.namePlaces}
@@ -577,8 +576,8 @@
         <span>
           <b>Name the places photos were taken</b>
           <small>
-            Sends a photo’s coordinates -- not the photo -- to OpenStreetMap to find the town or
-            city. That puts where you were on the network, so it is off until you switch it on.
+            Sends a photo’s coordinates, not the photo, to OpenStreetMap to find the town or city.
+            That puts where you were on the network, so it is off until you switch it on.
           </small>
         </span>
       </label>
@@ -587,7 +586,7 @@
     <section aria-labelledby="fs-docs">
       <span class="eyebrow" id="fs-docs">Documents</span>
 
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={settings.indexDocuments}
@@ -688,8 +687,8 @@
                 legacy.messages > 0 ? plural(legacy.messages, 'assistant message') : '',
               ]
                 .filter(Boolean)
-                .join(', ')}. Bringing them in puts each in the folder -- or encrypts it, for an app
-              ticked above -- and points where it was used at it. Nothing is lost.
+                .join(', ')}. Bringing them in puts each in the folder, or encrypts it for an app
+              ticked above, and points where it was used at it. Nothing is lost.
             </small>
           </span>
           <button
@@ -792,19 +791,6 @@
     color: var(--fg-faint);
   }
 
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle > span,
   .row-setting > span:first-child {
     display: flex;
     flex-direction: column;

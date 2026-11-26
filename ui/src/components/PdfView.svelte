@@ -32,6 +32,7 @@
   import { MAX_SELECTION_QUOTE } from '../lib/types'
   import { PDF_ZOOMS as ZOOMS } from '../lib/documents'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   interface Props {
     /** The file's bytes. pdf.js takes them over. */
@@ -514,7 +515,7 @@
         </div>
       {/each}
     {:else}
-      <p class="wait">Opening…</p>
+      <Loading label="Opening…" centred />
     {/if}
   </div>
   {#if pdf && controls}
@@ -553,7 +554,8 @@
     position: relative;
     height: 100%;
     overflow: auto;
-    padding: 4px 16px 72px;
+    /* The 16px either side is what `pageWidth` leaves out of `available`. */
+    padding: 16px 16px 72px;
     outline: none;
   }
   /* No pill to clear. */
@@ -565,17 +567,15 @@
     margin: 0 auto 14px;
     background: #ffffff;
     border-radius: 2px;
+    /* A hairline as well as the shadow: on a dark theme the shadow vanishes
+       and the page's edge would otherwise be white on near-black. */
+    outline: 1px solid rgb(0 0 0 / 0.18);
     box-shadow: 0 1px 3px rgb(0 0 0 / 0.4);
   }
   .sheet-of-paper canvas {
     display: block;
     width: 100%;
     height: 100%;
-  }
-  .wait {
-    margin-top: 30vh;
-    text-align: center;
-    color: var(--pdf-quiet, rgb(255 255 255 / 0.7));
   }
   .controls {
     position: absolute;
@@ -586,7 +586,7 @@
     align-items: center;
     gap: 2px;
     padding: 4px 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: rgb(28 27 31 / 0.92);
     color: #f2f1ee;
     box-shadow: 0 2px 10px rgb(0 0 0 / 0.35);
@@ -599,7 +599,7 @@
     min-width: 30px;
     height: 30px;
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: inherit;
   }
   .controls button:hover:not(:disabled) {

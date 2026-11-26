@@ -154,9 +154,9 @@ const DOCUMENT_MIN_QUERY = 2
 /** How long a failed chunk waits before its one retry. */
 const RETRY_AFTER_MS = 500
 
-/** What Files tints the window with: a teal, apart from the Feed's blue,
- *  Money's green and Screen time's indigo. */
-const FILES_ACCENT = '#0f766e'
+/** What Files tints the window with: the app's own colour from the theme, the
+ *  same token the sidebar and the app switcher use. */
+const FILES_ACCENT = 'var(--app-files)'
 
 const SORTS: readonly FileSort[] = ['when', 'added', 'name', 'size']
 

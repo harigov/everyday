@@ -40,6 +40,7 @@
   import { reader } from '../lib/reader.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import { PDF_ZOOMS as ZOOMS } from '../lib/documents'
   import PdfView from './PdfView.svelte'
   import PhoneBack from './PhoneBack.svelte'
@@ -350,13 +351,13 @@
             commitPage()
           }}
         >
-          <label for="reader-page">Page</label>
+          <label for="reader-page">{isPdf ? 'Page' : 'Section'}</label>
           <input
             id="reader-page"
             class="field"
             inputmode="numeric"
             autocomplete="off"
-            aria-label="Go to page"
+            aria-label={isPdf ? 'Go to page' : 'Go to section'}
             bind:value={pageText}
             onfocus={(e) => {
               editing = true
@@ -470,7 +471,7 @@
           {/snippet}
         </EmptyState>
       {:else if !outline || (isPdf && !pdfData)}
-        <p class="wait" role="status">Opening…</p>
+        <Loading label="Opening…" centred />
       {:else}
         {#key file?.id}
           {#if isPdf && pdfData}
@@ -528,7 +529,7 @@
     min-width: 32px;
     height: 32px;
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     transition:
       background var(--fast) var(--ease),
@@ -578,7 +579,7 @@
   .percent {
     min-width: 48px;
     height: 32px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
     color: var(--fg-muted);
@@ -612,21 +613,15 @@
     display: flex;
     flex-direction: column;
   }
-  /* Pages are white paper: they stand on the muted surface of the theme,
-     and the waiting line is in its own quiet colour. */
+  /* Pages are white paper: they stand on the muted surface of the theme. */
   .doc.paper {
     background: var(--bg-sunken);
-    --pdf-quiet: var(--fg-subtle);
   }
   /* The document fills what is left under the note, if there is one. */
   .doc > :global(.pdf),
   .doc > :global(.flow) {
     flex: 1;
     min-height: 0;
-  }
-  .wait {
-    margin: auto;
-    color: var(--fg-faint);
   }
   .note {
     display: flex;
@@ -654,9 +649,12 @@
     min-height: 52px;
     padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-1);
   }
+  /* Room for a title that can be read: the controls on this row take what
+     they need, and the page to go to wraps to the row below rather than
+     leaving the title two letters and an ellipsis. */
   :global([data-phone]) .bar .pane-titles {
     flex: 1 1 0;
-    min-width: 0;
+    min-width: 7em;
   }
   :global([data-phone]) .tool {
     min-width: 44px;

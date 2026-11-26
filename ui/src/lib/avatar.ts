@@ -13,21 +13,22 @@
 // browser (`scripts/avatar.test.mjs`).
 
 /**
- * Mid-tone colours white initials stay legible on, light theme and dark --
- * soft rather than saturated, so a screen of them reads as calm rather than
- * as a sweet jar. Ordered so neighbours differ in hue.
+ * Colours white initials stay legible on -- each one darkened until white on
+ * it is at least 4.5:1, light theme and dark -- soft rather than saturated, so
+ * a screen of them reads as calm rather than as a sweet jar. Ordered so
+ * neighbours differ in hue.
  */
 export const AVATAR_COLORS = [
-  '#7c6fd6',
-  '#d9894a',
-  '#3fa47f',
-  '#4f8fd6',
-  '#c96a9a',
-  '#4f9fa8',
-  '#b8873a',
-  '#8b7cb8',
-  '#d1695a',
-  '#6e9150',
+  '#7567d4',
+  '#ad6124',
+  '#328365',
+  '#2f78c8',
+  '#be4c86',
+  '#3f7e85',
+  '#956d2f',
+  '#7c6baf',
+  '#c84c3a',
+  '#5f7d45',
 ] as const
 
 /**

@@ -10,6 +10,7 @@
   // animating anything that paints (a shadow, a blur, a size) is what made
   // the scroll stutter.
 
+  import { phone } from '../lib/phone.svelte'
   import { voice } from '../lib/voice.svelte'
   import Icon from './Icon.svelte'
 
@@ -51,7 +52,7 @@
   </span>
   {#if voice.error}
     <!-- The session carries on, so this is a remark and not an ending. -->
-    <span class="trouble" title={voice.error}>{voice.error}</span>
+    <span class="trouble" role="alert" title={voice.error}>{voice.error}</span>
   {/if}
 
   <button
@@ -60,12 +61,19 @@
     onclick={() => void voice.toggleMute()}
     aria-pressed={voice.muted}
     aria-label={voice.muted ? 'Turn the microphone on' : 'Turn the microphone off'}
-    title={voice.muted ? 'Turn the microphone on' : 'Turn the microphone off'}
+    title={voice.muted
+      ? 'Turn the microphone on'
+      : 'Turn the microphone off — the conversation stays open and nothing you say is heard'}
   >
     <Icon name={voice.muted ? 'mic-off' : 'mic'} size={16} />
   </button>
-  <button class="end" onclick={() => void voice.stop()} title="End the conversation (Esc)">
+  <button
+    class="end"
+    onclick={() => void voice.stop()}
+    title={phone.on ? 'End the conversation' : 'End the conversation (Esc)'}
+  >
     End
+    {#if !phone.on}<kbd class="esc" aria-hidden="true">Esc</kbd>{/if}
   </button>
 </div>
 
@@ -260,7 +268,7 @@
     height: 28px;
     padding: 0 var(--sp-3);
     border: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--fg);
     color: var(--bg);
     font-size: var(--text-sm);
@@ -268,12 +276,20 @@
     cursor: pointer;
   }
 
+  .end .esc {
+    margin-left: var(--sp-1);
+    font: inherit;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    opacity: 0.6;
+  }
+
   .trouble {
     flex: 1;
     min-width: 0;
     overflow: hidden;
-    color: var(--danger, var(--fg-muted));
-    font-size: var(--text-xs, 12px);
+    color: var(--danger);
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -282,6 +298,18 @@
      composer's own. */
   :global([data-phone]) .voice {
     min-height: 44px;
+  }
+  /* The whole of an error, on a line of its own, rather than a few words and
+     an ellipsis beside the label. */
+  :global([data-phone]) .voice {
+    flex-wrap: wrap;
+  }
+  :global([data-phone]) .trouble {
+    order: 9;
+    flex: 1 0 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
   }
   :global([data-phone]) .tool {
     width: 44px;

@@ -364,6 +364,10 @@
             <span class="deftag">Default</span>
           {/if}
         </span>
+        {#if cal.lastError}
+          <!-- Said on the row as well as in the tooltip: a phone has no hover. -->
+          <span class="reason">Couldn’t be reached</span>
+        {/if}
       </button>
       {#if cal.origin.type !== 'file'}
         <button
@@ -559,6 +563,10 @@
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
   }
+  .reason {
+    font-size: var(--text-xs);
+    color: var(--danger);
+  }
   .warn {
     color: var(--danger);
     display: flex;
@@ -596,7 +604,7 @@
     height: 24px;
     padding: 0 var(--sp-2);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-raised);
     font-size: var(--text-sm);
     color: var(--fg-muted);

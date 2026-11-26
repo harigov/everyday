@@ -258,7 +258,7 @@
     max-width: 100%;
     height: 24px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     color: var(--fg-muted);
     font-size: var(--text-xs);

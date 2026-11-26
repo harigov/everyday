@@ -216,7 +216,8 @@ pub(super) static TOOLS: &[Tool] = &[
          so reach for this beside that, not instead of it. On the Contacts shelf, when they say \
          they talked to somebody, log event `contact` on that person with `via` saying how and \
          `note` for what it was about. A `note` about somebody, or a change of status, does not \
-         count as having been in touch.",
+         count as having been in touch. Not for a tracker's reading (log_reading), a \
+         health measurement (log_health_reading) or a journal entry (create_entry).",
         run_log_item
     ),
     tool!(

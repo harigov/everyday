@@ -393,7 +393,7 @@
   }
   .page {
     width: 100%;
-    max-width: 860px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
   }
@@ -473,7 +473,7 @@
     gap: 6px;
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
     font-size: var(--text-sm);
     color: var(--fg);

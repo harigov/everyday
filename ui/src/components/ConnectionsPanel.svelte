@@ -12,18 +12,22 @@
   // list and the shared look of all three live here; the add form, the
   // detail, the fields they share and the tool list are their own files.
   //
-  // The styles the children use -- captions, switches, the three-way choice,
-  // the status pill -- are written once below under `.conn`, as `:global`
-  // rules, so five files do not each carry a copy that drifts.
+  // The styles only the children use -- captions, the status pill -- are
+  // written once below under `.conn`, as `:global` rules, so five files do
+  // not each carry a copy that drifts. Switches, the segmented choice and the
+  // spinner are the shared ones in app.css.
 
   import { onMount } from 'svelte'
   import { connections } from '../lib/connections.svelte'
   import { closesOnBack } from '../lib/phone.svelte'
   import { statusLabel, transportSummary } from '../lib/connections'
+  import { plural } from '../lib/format'
   import type { ConnectionId, ConnectionView } from '../lib/types'
   import ConnectionAdd from './ConnectionAdd.svelte'
   import ConnectionDetail from './ConnectionDetail.svelte'
+  import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   // Loading, and reloading while this is open, last as long as the pane.
   onMount(() => connections.watch())
@@ -46,7 +50,9 @@
   function subtitle(v: ConnectionView): string {
     const preset = connections.presets.find((p) => p.key === v.connection.preset)
     const where = transportSummary(v.connection.transport)
-    return preset ? `${preset.name} · ${where}` : where
+    const tools = v.state.tools.length
+    const line = preset ? `${preset.name} · ${where}` : where
+    return tools > 0 ? `${line} · ${plural(tools, 'tool')}` : line
   }
 </script>
 
@@ -63,27 +69,41 @@
     {/key}
   {:else}
     <section class="list">
+      <!-- No title of its own: the page already has one. -->
       <div class="head">
-        <span class="eyebrow">Connected services</span>
-        <button class="btn btn-primary" onclick={() => (screen = { kind: 'add' })}>
-          <Icon name="plus" size={13} /> Add connection
-        </button>
+        <p class="hint lead">
+          Let the assistant use other services you have an account with: search a chat, file an
+          issue, look through a drive. What it may do is set per tool, inside each connection.
+        </p>
+        {#if connections.view && connections.connections.length > 0}
+          <button class="btn btn-primary" onclick={() => (screen = { kind: 'add' })}>
+            <Icon name="plus" size={13} /> Add connection
+          </button>
+        {/if}
       </div>
-      <p class="hint lead">
-        The assistant can use other services through their MCP servers: search a chat, file an
-        issue, read a pull request, look through a drive. Each connection is one account, so the
-        same service can be connected twice. What the assistant may do with a connection is set per
-        tool, inside it.
-      </p>
+      <details class="hint how">
+        <summary>How this works</summary>
+        <p>
+          Each connection is one account on a service that offers its tools to assistants (an “MCP
+          server”), so the same service can be connected twice.
+        </p>
+      </details>
 
       {#if connections.error}<p class="error" role="alert">{connections.error}</p>{/if}
 
       {#if !connections.view}
-        <p class="hint">Loading…</p>
+        <Loading centred />
       {:else if connections.connections.length === 0}
-        <p class="hint">
-          Nothing is connected yet. Add one to let the assistant reach a service you use.
-        </p>
+        <EmptyState lead="Nothing is connected yet" centred={false}>
+          {#snippet note()}
+            Add one to let the assistant reach a service you use.
+          {/snippet}
+          {#snippet action()}
+            <button class="btn btn-primary" onclick={() => (screen = { kind: 'add' })}>
+              <Icon name="plus" size={13} /> Add connection
+            </button>
+          {/snippet}
+        </EmptyState>
       {:else}
         <ul class="rows">
           {#each connections.connections as v (v.connection.id)}
@@ -124,9 +144,22 @@
   }
   .head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: var(--sp-3);
+  }
+  .head .hint {
+    margin: 0;
+  }
+  .head .btn {
+    flex: none;
+  }
+  .how summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .how p {
+    margin: var(--sp-2) 0 0;
   }
   .list > .hint {
     margin: 0;
@@ -243,67 +276,6 @@
     margin-top: var(--sp-3);
   }
 
-  /* The three-way choice: the same control as Backup's destination and Lock
-     after, whose styles are scoped to those files. */
-  .conn :global(.segmented) {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    background: var(--bg-sunken);
-    border-radius: var(--radius);
-  }
-  .conn :global(.seg) {
-    flex: 1;
-    height: 28px;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .conn :global(.seg:hover) {
-    color: var(--fg);
-  }
-  .conn :global(.seg.on) {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
-  }
-
-  .conn :global(.toggle) {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    min-width: 0;
-    cursor: pointer;
-  }
-  .conn :global(.toggle.disabled) {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .conn :global(.toggle input) {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .conn :global(.toggle span) {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .conn :global(.toggle b) {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .conn :global(.toggle small) {
-    font-size: var(--text-sm);
-    line-height: var(--leading-normal);
-    color: var(--fg-subtle);
-  }
-
   /* How a connection is doing, in the theme's own colours. */
   .conn :global(.status) {
     display: inline-flex;
@@ -339,26 +311,5 @@
   }
   .conn :global(.status.tone-error) {
     color: var(--danger);
-  }
-
-  .conn :global(.spinner) {
-    flex: none;
-    width: 14px;
-    height: 14px;
-    border: 2px solid var(--border-strong);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: conn-spin 0.9s linear infinite;
-  }
-  /* Global by name: scoping would rename it away from the `:global` rule above. */
-  @keyframes -global-conn-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .conn :global(.spinner) {
-      animation-duration: 3s;
-    }
   }
 </style>

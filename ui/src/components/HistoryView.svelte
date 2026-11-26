@@ -36,6 +36,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   // While this page is on screen a `consumption` change reads it again; the
   // first read is the Feed's own, made when the sidebar selected it.
@@ -117,7 +118,7 @@
   {#if upnext.historyError}
     <p class="hint wait" role="alert">{upnext.historyError}</p>
   {:else if upnext.historyLoading && upnext.history.length === 0}
-    <p class="hint wait">Loading…</p>
+    <Loading label="Loading what you have read and heard" centred />
   {:else if upnext.history.length === 0}
     <EmptyState lead="Nothing has been read or heard yet.">
       {#snippet icon()}<Icon name="clock" size={30} weight={1.3} />{/snippet}

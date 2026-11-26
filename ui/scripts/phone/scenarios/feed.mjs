@@ -234,7 +234,7 @@ const scenarios = [
     name: 'add-found',
     run: async (ctx) => {
       await sideButton('Follow something')(ctx)
-      const field = ctx.page.getByRole('textbox', { name: 'Address' })
+      const field = ctx.page.getByRole('textbox', { name: 'Web address' })
       await field.fill('https://example.com')
       await press(ctx.page.getByRole('button', { name: 'Find feeds' }))
       await ctx.settle(900)

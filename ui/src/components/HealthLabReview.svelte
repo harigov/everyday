@@ -406,7 +406,7 @@
     gap: var(--sp-1);
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--warning) 16%, transparent);
     color: color-mix(in oklab, var(--warning) 55%, var(--fg));
     font-size: var(--text-xs);

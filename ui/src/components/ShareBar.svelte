@@ -107,7 +107,7 @@
        that is not data, and would double up where two segments meet. */
     gap: 2px;
     height: 14px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     overflow: hidden;
   }
 

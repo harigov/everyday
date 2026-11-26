@@ -431,6 +431,9 @@ export const ICONS = {
     '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/>' +
     '<path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
 
+  /** Lucide's "arrow-up-down": ordering a list, for the sort control. */
+  sort: '<path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>',
+
   /** Lucide's "list-filter": three narrowing lines, for the Rules pane. */
   filter: '<path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/>',
 

@@ -35,6 +35,7 @@
   import { upnext } from '../lib/upnext.svelte'
   import { voice } from '../lib/voice.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   interface Props {
     /** The box a film is laid over: only drawn for one. */
@@ -401,17 +402,20 @@
     </div>
 
     {#if upnext.error}
-      <p class="error" role="alert">{upnext.error}</p>
+      <p class="error" role="alert">
+        {upnext.error}
+        <button class="link" onclick={() => void upnext.load()}>Try again</button>
+      </p>
     {/if}
 
     {#if upnext.items.length === 0}
-      <p class="hint empty">
-        {#if upnext.loading}
-          Loading…
-        {:else}
+      {#if upnext.loading}
+        <Loading label="Loading Up Next" />
+      {:else}
+        <p class="hint empty">
           Nothing is queued. Add episodes, articles and files from the Feed, the Library or Files.
-        {/if}
-      </p>
+        </p>
+      {/if}
     {:else}
       <ul class="rows scroll">
         {#each upnext.items as item, i (item.entry.id)}
@@ -566,7 +570,7 @@
     place-items: center;
     width: 30px;
     height: 30px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     transition:
       background var(--fast) var(--ease),
@@ -689,7 +693,7 @@
     place-items: center;
     width: 44px;
     height: 44px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     transition:
       background var(--fast) var(--ease),

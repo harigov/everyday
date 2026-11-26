@@ -92,10 +92,10 @@ const scenarios = [
     name: 'record',
     run: async (ctx) => {
       if (desktop()) {
-        await press(ctx.page.getByRole('button', { name: 'Record something' }))
+        await press(ctx.page.getByRole('button', { name: 'Log a habit' }))
       } else {
         await options(ctx)
-        await press(ctx.page.getByRole('menuitem', { name: 'Record a reading…' }))
+        await press(ctx.page.getByRole('menuitem', { name: 'Log a habit…' }))
       }
       await ctx.settle()
     },

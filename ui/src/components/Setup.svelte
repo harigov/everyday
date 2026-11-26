@@ -20,13 +20,17 @@
     mobileShell || app.remotes.length > 0 ? 'connect' : 'create',
   )
 
-  let name = $state('My Journal')
+  let name = $state('My Vault')
   let backend = $state('sqlite')
   let password = $state('')
   let confirm = $state('')
   let encrypt = $state(true)
   let busy = $state(false)
   let acknowledged = $state(false)
+  // The storage and encryption choices, folded away: nearly everybody keeps
+  // the defaults (a folder on this computer, encrypted), and four options on
+  // a first screen is a decision nobody has the facts for yet.
+  let advanced = $state(false)
 
   /**
    * What has been typed into each backend's fields, keyed by backend then by
@@ -97,7 +101,7 @@
       }
       await app.createVault({
         path,
-        name: name.trim() || 'My Journal',
+        name: name.trim() || 'My Vault',
         backend,
         settings: chosen,
         password: encrypt ? password : null,
@@ -129,7 +133,9 @@
     <div class="mark"><Logo size={46} tile /></div>
     <h1>Karma Yoga</h1>
     <p class="sub">
-      {mobileShell ? 'Your vault, from your computer.' : "A private journal. Let's set it up."}
+      {mobileShell
+        ? 'Your vault, from your computer.'
+        : 'Your private space for notes, tasks, mail and more. Let’s set it up.'}
     </p>
 
     {#if !mobileShell}
@@ -155,60 +161,74 @@
       <Connect />
     {:else}
       <label class="field-label" for="name">What should we call it?</label>
-      <input id="name" class="field" bind:value={name} placeholder="My Journal" />
+      <input id="name" class="field" bind:value={name} placeholder="My Vault" />
 
-      <div class="group">
-        <span class="field-label">How should it be stored?</span>
-        {#each backends as b (b.id)}
-          <label class="option" class:on={backend === b.id}>
-            <input type="radio" name="backend" value={b.id} bind:group={backend} />
+      <details class="advanced" bind:open={advanced}>
+        <summary>Advanced</summary>
+        <div class="group">
+          <span class="field-label">How should it be stored?</span>
+          {#each backends as b (b.id)}
+            <label class="option" class:on={backend === b.id}>
+              <input type="radio" name="backend" value={b.id} bind:group={backend} />
+              <span class="opt-body">
+                <span class="opt-name">{b.name}</span>
+                <span class="opt-desc">{b.description}</span>
+              </span>
+            </label>
+          {/each}
+        </div>
+
+        <!-- Whatever the chosen backend asked for. Nothing at all for a vault
+           that lives in a folder on this computer, which is why this is driven
+           by the backend's own declaration rather than by a branch on its id. -->
+        {#each fields as f (backend + f.key)}
+          <label class="field-label" for="set-{f.key}">
+            {f.label}{#if !f.required}<span class="opt-desc"> — optional</span>{/if}
+          </label>
+          <input
+            id="set-{f.key}"
+            class="field"
+            type={f.secret ? 'password' : 'text'}
+            placeholder={f.placeholder}
+            autocomplete="off"
+            spellcheck="false"
+            value={value(f.key)}
+            oninput={(e) => setValue(f.key, e.currentTarget.value)}
+          />
+          <div class="gap"></div>
+        {/each}
+
+        {#if fields.length}
+          <p class="hint">
+            Entries are sealed on this computer before they are sent, so the server holds ciphertext
+            and never your password. What it can see is the shape of your vault: how many entries
+            there are and which days you wrote on.
+          </p>
+        {/if}
+        <div class="group">
+          <label class="option" class:on={encrypt}>
+            <input type="checkbox" bind:checked={encrypt} />
             <span class="opt-body">
-              <span class="opt-name">{b.name}</span>
-              <span class="opt-desc">{b.description}</span>
+              <span class="opt-name">Encrypt this vault</span>
+              <span class="opt-desc">
+                Everything is sealed with a key derived from your password.
+              </span>
             </span>
           </label>
-        {/each}
-      </div>
-
-      <!-- Whatever the chosen backend asked for. Nothing at all for a vault
-         that lives in a folder on this computer, which is why this is driven
-         by the backend's own declaration rather than by a branch on its id. -->
-      {#each fields as f (backend + f.key)}
-        <label class="field-label" for="set-{f.key}">
-          {f.label}{#if !f.required}<span class="opt-desc"> — optional</span>{/if}
-        </label>
-        <input
-          id="set-{f.key}"
-          class="field"
-          type={f.secret ? 'password' : 'text'}
-          placeholder={f.placeholder}
-          autocomplete="off"
-          spellcheck="false"
-          value={value(f.key)}
-          oninput={(e) => setValue(f.key, e.currentTarget.value)}
-        />
-        <div class="gap"></div>
-      {/each}
-
-      {#if fields.length}
-        <p class="hint">
-          Entries are sealed on this computer before they are sent, so the server holds ciphertext
-          and never your password. What it can see is the shape of the journal: how many entries
-          there are and which days you wrote on.
-        </p>
-      {/if}
-
-      <div class="group">
-        <label class="option" class:on={encrypt}>
-          <input type="checkbox" bind:checked={encrypt} />
-          <span class="opt-body">
-            <span class="opt-name">Encrypt this journal</span>
-            <span class="opt-desc">
-              Everything is sealed with a key derived from your password.
+        </div>
+        {#if !encrypt}
+          <label class="option danger" class:on={acknowledged}>
+            <input type="checkbox" bind:checked={acknowledged} />
+            <span class="opt-body">
+              <span class="opt-name">I understand this vault will not be encrypted</span>
+              <span class="opt-desc">
+                Anything written to it is stored in the clear, readable by any program on this
+                computer and by anything that backs it up.
+              </span>
             </span>
-          </span>
-        </label>
-      </div>
+          </label>
+        {/if}
+      </details>
 
       {#if encrypt}
         <label class="field-label" for="pw">Password</label>
@@ -230,20 +250,9 @@
         />
 
         <p class="hint warn">
-          There is no way to recover this journal without the password. It is not stored anywhere
-          and it cannot be reset.
+          There is no way to recover this vault without the password. It is not stored anywhere and
+          it cannot be reset.
         </p>
-      {:else}
-        <label class="option danger" class:on={acknowledged}>
-          <input type="checkbox" bind:checked={acknowledged} />
-          <span class="opt-body">
-            <span class="opt-name">I understand this journal will not be encrypted</span>
-            <span class="opt-desc">
-              Anything written to it is stored in the clear, readable by any program on this
-              computer and by anything that backs it up.
-            </span>
-          </span>
-        </label>
       {/if}
 
       {#if missingHint}<p class="error">{missingHint} is needed.</p>{/if}
@@ -251,7 +260,7 @@
       {#if app.error}<p class="error">{app.error}</p>{/if}
 
       <button class="btn btn-primary wide" type="submit" disabled={!ready}>
-        {busy ? 'Creating…' : 'Create journal'}
+        {busy ? 'Creating…' : 'Create vault'}
       </button>
 
       {#if path}<p class="hint where">It will live in <code>{path}</code></p>{/if}
@@ -285,6 +294,19 @@
     background: var(--bg-raised);
     color: var(--fg);
     font-weight: 600;
+  }
+
+  .advanced {
+    margin-top: var(--sp-3);
+  }
+  .advanced summary {
+    cursor: pointer;
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    list-style-position: inside;
+  }
+  .advanced[open] summary {
+    margin-bottom: var(--sp-2);
   }
 
   .setup {

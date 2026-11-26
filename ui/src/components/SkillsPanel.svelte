@@ -27,6 +27,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   let skills = $state<Skill[]>([])
   let loading = $state(true)
@@ -113,7 +114,7 @@
 <div class="panel">
   {#if !editing}
     <header class="head">
-      {#if loading}<span class="dim">Loading…</span>{/if}
+      {#if loading}<Loading />{/if}
       <span class="spacer"></span>
       <button class="btn btn-primary" onclick={() => void draft()}>New skill</button>
     </header>
@@ -123,12 +124,12 @@
     {#if editing}
       <section class="editor">
         <label class="field-row">
-          <span class="eyebrow">Name</span>
+          <span class="field-label">Name</span>
           <input class="field" placeholder="Plan a trip" bind:value={editing.name} />
         </label>
 
         <label class="field-row">
-          <span class="eyebrow">When should the assistant use this?</span>
+          <span class="field-label">When should the assistant use this?</span>
           <input
             class="field"
             placeholder="Use when asked to plan a trip or a multi-day journey."
@@ -141,7 +142,7 @@
         </label>
 
         <label class="field-row">
-          <span class="eyebrow">Instructions</span>
+          <span class="field-label">Instructions</span>
           <textarea
             class="field area"
             rows="10"
@@ -157,7 +158,7 @@
           </span>
         </label>
 
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={editing.enabled} />
           <span>
             <b>Switched on</b>
@@ -213,16 +214,18 @@
         <article class="card" class:off={!skill.enabled}>
           <header class="cardhead">
             <span class="name">{skill.name}</span>
+            {#if !skill.enabled}<span class="tag">Switched off</span>{/if}
             <span class="spacer"></span>
           </header>
           {#if skill.description}<p class="said">{skill.description}</p>{/if}
           <footer class="cardfoot">
-            <button class="link" onclick={() => edit(skill)}>Edit</button>
-            <button class="link" onclick={() => void toggle(skill)}>
+            <button class="btn btn-sm" onclick={() => edit(skill)}>Edit</button>
+            <button class="btn btn-sm" onclick={() => void toggle(skill)}>
               {skill.enabled ? 'Switch off' : 'Switch on'}
             </button>
+            <span class="spacer"></span>
             <button
-              class="link"
+              class="btn btn-sm btn-ghost-danger"
               onclick={() => (pendingDelete = { id: skill.id, name: skill.name })}
             >
               Delete
@@ -260,11 +263,6 @@
 
   .spacer {
     flex: 1;
-  }
-
-  .dim {
-    color: var(--fg-faint);
-    font-size: var(--text-sm);
   }
 
   .lead {
@@ -310,15 +308,6 @@
     line-height: 1.55;
   }
 
-  .link {
-    color: var(--accent);
-    font-size: var(--text-sm);
-  }
-
-  .link:hover {
-    text-decoration: underline;
-  }
-
   .editor {
     display: grid;
     gap: var(--sp-4);
@@ -344,18 +333,6 @@
     color: var(--fg-faint);
     font-size: var(--text-xs);
     line-height: 1.5;
-  }
-
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-  }
-
-  .toggle small {
-    display: block;
-    color: var(--fg-faint);
-    font-size: var(--text-xs);
   }
 
   .editorfoot {

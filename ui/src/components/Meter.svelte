@@ -98,7 +98,7 @@
   .track {
     display: block;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--c) 16%, transparent);
     overflow: hidden;
   }
@@ -106,7 +106,7 @@
   .fill {
     display: block;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--c);
     transition: width var(--med) var(--ease);
   }

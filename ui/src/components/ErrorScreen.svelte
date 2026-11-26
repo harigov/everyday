@@ -32,8 +32,8 @@
       </p>
     {:else}
       <p class="reassure">
-        Your journal has not been changed. Nothing was written, and nothing was deleted — this is a
-        problem reaching the storage backend, not a problem with your entries.
+        Your vault has not been changed. Nothing was written and nothing was deleted; this is a
+        problem reaching where it is stored.
       </p>
     {/if}
 

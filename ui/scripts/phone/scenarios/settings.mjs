@@ -35,7 +35,7 @@ async function openPage(ctx, label) {
 /** A sub-tab of the open page. */
 async function openSub(ctx, label) {
   const tab = ctx.page.getByRole('tab', { name: label, exact: true })
-  // Not every sub-tab is offered everywhere: Sharing is a computer's.
+  // Not every sub-tab is offered everywhere: Security needs a password.
   if ((await tab.count()) === 0) return
   await press(tab.first())
   await ctx.settle()
@@ -44,7 +44,7 @@ async function openSub(ctx, label) {
 /** [name, row label, sub-tabs worth a screen of their own] */
 const PAGES = [
   ['general', 'General'],
-  ['profile', 'About You', ['Areas']],
+  ['profile', 'About you', ['Areas']],
   ['models', 'Models', ['Decision', 'Speech', 'Voice', 'Image']],
   ['ai', 'AI features', ['In the apps']],
   ['sorting', 'Mail sorting', ['Follow-ups', 'Older mail']],
@@ -145,7 +145,7 @@ onPage('chat-add', 'Chat', async ({ page, settle }) => {
   await press(page.getByRole('button', { name: 'Add a Matrix bot' }))
   await settle()
 })
-onPage('about-you-area-menu', 'About You', async ({ page, settle }) => {
+onPage('about-you-area-menu', 'About you', async ({ page, settle }) => {
   await openSub({ page, settle }, 'Areas')
   await press(page.locator('button.more').first())
   await settle()

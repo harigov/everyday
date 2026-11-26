@@ -16,10 +16,12 @@
   // menu's "Move earlier" and "Move later" do the same thing, which is what
   // makes this reachable without a pointer at all.
 
+  import { APPS } from '../lib/apps'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { overview } from '../lib/overview.svelte'
   import { phone } from '../lib/phone.svelte'
+  import { app } from '../lib/state.svelte'
   import { SIZE_LABELS, specOf, WIDGET_SIZES, type Widget } from '../lib/dashboard'
   import { tracking } from '../lib/tracking.svelte'
   import Icon from './Icon.svelte'
@@ -39,6 +41,40 @@
   const { widget, index, count, dragOver = false, children, tools }: Props = $props()
 
   const spec = $derived(specOf(widget.type))
+
+  /**
+   * The app a card's title opens, or null where there is nowhere better to
+   * go than the page already on screen: the cards about the Overview's own
+   * things, and the brief, which has its Read button.
+   */
+  const opens = $derived(spec.app === 'overview' || spec.app === 'assistant' ? null : spec.app)
+
+  /**
+   * The tracker a tracker card is about: the one chosen, or -- as the card
+   * itself draws it -- the first, when none has been. Named in the header
+   * because a heatmap with no name on it is a heatmap of nothing in
+   * particular, and the choice was only ever in the context menu.
+   */
+  const tracker = $derived(
+    spec.subject === 'tracker'
+      ? ((widget.subject ? tracking.tracker(widget.subject) : null) ?? tracking.live[0] ?? null)
+      : null,
+  )
+
+  /** The tracker choices, for the card menu and the chip in the header alike. */
+  function trackerItems(): MenuItem[] {
+    return tracking.live.map((t) => ({
+      label: t.name,
+      dot: t.color,
+      checked: tracker?.id === t.id,
+      run: () => overview.retarget(widget.id, t.id),
+    }))
+  }
+
+  function pickTracker(e: MouseEvent) {
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    menu.showAt(box.left, box.bottom + 4, trackerItems())
+  }
 
   function windowLabel(days: number): string {
     return days >= 365 ? 'A year' : `${days} days`
@@ -87,12 +123,7 @@
       spec.subject === 'tracker' && {
         label: 'Which tracker',
         icon: 'refresh',
-        items: tracking.live.map((t) => ({
-          label: t.name,
-          dot: t.color,
-          checked: widget.subject === t.id,
-          run: () => overview.retarget(widget.id, t.id),
-        })),
+        items: trackerItems(),
       },
       spec.windows && {
         label: 'Window',
@@ -135,9 +166,37 @@
          app bar's colour for that app, so a glance at the page says which
          card is mail and which is the calendar before a word is read. -->
     <span class="mark" aria-hidden="true"><Icon name={spec.icon} size={15} weight={1.8} /></span>
-    <h2>{spec.label}</h2>
+    <h2>
+      {#if opens && !overview.editing}
+        <!-- The title is the way into the app the card is about. Inert while
+             arranging, where a press on the card is the start of a drag. -->
+        <button
+          class="title-link"
+          title="Open {APPS[opens].label}"
+          onclick={() => void app.goTo(opens)}
+        >
+          {spec.label}
+        </button>
+      {:else}
+        {spec.label}
+      {/if}
+    </h2>
     <span class="spacer"></span>
     {#if tools}<div class="tools">{@render tools()}</div>{/if}
+    {#if tracker}
+      <!-- Which tracker, said in the header and changeable from it: the same
+           choices as the card menu's "Which tracker". -->
+      <button
+        class="window which"
+        title="Change the tracker"
+        aria-haspopup="menu"
+        onclick={pickTracker}
+      >
+        <span class="swatch" style="background: {tracker.color}"></span>
+        <span class="which-name">{tracker.name}</span>
+        <span class="down"><Icon name="chevron" size={10} /></span>
+      </button>
+    {/if}
     {#if spec.windows && widget.days !== null}
       <!-- The window on show, always: "who sends you the most" means
            nothing without "over what". The same choices as the card menu. -->
@@ -289,10 +348,38 @@
     height: 24px;
     padding: 0 var(--sp-2) 0 var(--sp-3);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-subtle);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
+  }
+  /* The tracker's chip: its colour as a dot, and a name that gives way
+     before the card's own title does. */
+  .which {
+    min-width: 0;
+    max-width: 11rem;
+    gap: var(--sp-1);
+  }
+  .which-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .swatch {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .title-link {
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+  }
+  .title-link:hover {
+    color: var(--accent);
+    text-decoration: underline;
   }
   .window:hover {
     background: var(--bg-hover);
@@ -315,8 +402,8 @@
   .handle {
     display: grid;
     place-items: center;
-    width: 22px;
-    height: 22px;
+    width: 26px;
+    height: 26px;
     border-radius: var(--radius-sm);
     color: var(--fg-subtle);
   }

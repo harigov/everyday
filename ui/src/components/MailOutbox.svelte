@@ -146,7 +146,7 @@
     font-weight: 600;
   }
   .link.danger {
-    color: var(--danger, #c0392b);
+    color: var(--danger);
   }
 
   /* ── On a phone ─────────────────────────────────────────────────────

@@ -19,6 +19,7 @@
   import type { EventRef, NoteId, RecordingId, Segment, Speaker, Transcript } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   let {
     noteId,
@@ -230,7 +231,7 @@
 </script>
 
 {#if loading}
-  <p class="hint">Loading the transcript…</p>
+  <Loading label="Loading the transcript…" />
 {:else if transcript}
   <section class="panel">
     <button class="head" onclick={() => (expanded = !expanded)} aria-expanded={expanded}>
@@ -412,7 +413,7 @@
     align-items: center;
     gap: 6px;
     padding: 4px var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--c) 14%, transparent);
     font-size: var(--text-sm);
   }
@@ -571,7 +572,7 @@
   }
   .who-name {
     flex: none;
-    color: var(--c);
+    color: color-mix(in oklab, var(--c) 70%, var(--fg));
     font-size: var(--text-sm);
     font-weight: 600;
   }

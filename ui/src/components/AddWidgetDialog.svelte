@@ -15,7 +15,9 @@
 
   import { GROUPS, SIZE_LABELS, WIDGET_TYPES, specOf, type WidgetType } from '../lib/dashboard'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { briefs } from '../lib/brief.svelte'
   import { overview } from '../lib/overview.svelte'
+  import { app } from '../lib/state.svelte'
   import Icon from './Icon.svelte'
 
   const { onpick, onclose }: { onpick: (type: WidgetType) => void; onclose: () => void } = $props()
@@ -27,10 +29,21 @@
     return out
   })
 
+  /**
+   * Whether this device can draw the card at all. A card for an app the
+   * backend does not keep would only ever say it is not available, so it is
+   * left out of the catalogue rather than offered and then apologised for.
+   * The brief is the one card whose app (the assistant) is not what it needs:
+   * it needs routines.
+   */
+  function offered(type: WidgetType): boolean {
+    return type === 'brief' ? briefs.enabled : app.canShow(specOf(type).app)
+  }
+
   const byGroup = $derived(
     GROUPS.map((group) => ({
       group,
-      types: WIDGET_TYPES.filter((t) => specOf(t).group === group),
+      types: WIDGET_TYPES.filter((t) => specOf(t).group === group && offered(t)),
     })).filter((g) => g.types.length > 0),
   )
 </script>
@@ -53,9 +66,11 @@
   <header>
     <div>
       <h2>Add to the Overview</h2>
-      <p class="lead">Pick a card, then choose where on the page it goes.</p>
+      <p class="lead">
+        Pick a card, then choose where on the page it goes. The page is kept on this device.
+      </p>
     </div>
-    <button class="close" aria-label="Close" use:focusOnMount onclick={onclose}>
+    <button class="close" aria-label="Close" title="Close" use:focusOnMount onclick={onclose}>
       <Icon name="close" size={14} />
     </button>
   </header>
@@ -91,7 +106,7 @@
 </div>
 
 <style>
-  /* Wider and taller than a confirmation: this is a catalogue of seventeen
+  /* Wider and taller than a confirmation: this is a catalogue of some forty
      cards, and a 420px sheet would make it a column of rows again. */
   .picker {
     top: 8%;
@@ -202,7 +217,7 @@
   }
   .count {
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
     color: var(--fg-muted);
     font-weight: 600;

@@ -316,6 +316,21 @@
     outline: none;
     border-color: var(--accent);
   }
+  /* The system's own arrow is drawn in its own colour and size, which is the
+     one thing on this field that did not follow the theme. A drawn one does,
+     and the field keeps room for it. */
+  select.pick {
+    appearance: none;
+    padding-right: 24px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--fg-subtle) 50%),
+      linear-gradient(135deg, var(--fg-subtle) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 50%,
+      calc(100% - 9px) 50%;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+  }
   .pick:disabled {
     opacity: 0.45;
   }
@@ -354,7 +369,7 @@
     flex: 1;
     height: 28px;
     min-width: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid var(--border);
     background: var(--bg-raised);
     font-size: var(--text-xs);

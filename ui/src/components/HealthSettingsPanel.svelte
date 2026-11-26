@@ -24,6 +24,7 @@
   import { health } from '../lib/health.svelte'
   import { digitsFor, fromDisplay, toDisplay, unitFor } from '../lib/health'
   import { openExternal } from '../lib/open-external'
+  import { panels } from '../lib/panels.svelte'
   import type {
     ActivityGoals,
     HealthSettings,
@@ -35,6 +36,7 @@
   import HealthImport from './HealthImport.svelte'
   import HealthSources from './HealthSources.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   // Opened straight from Settings, before the app ever was, nothing here is
   // loaded: ask for it.
@@ -305,7 +307,7 @@
   <HealthImport />
 
   {#if !settings}
-    <p class="hint">Loading…</p>
+    <Loading />
   {:else}
     <section aria-labelledby="hs-units">
       <span class="eyebrow" id="hs-units">Units</span>
@@ -412,7 +414,7 @@
 
     <section aria-labelledby="hs-notices">
       <span class="eyebrow" id="hs-notices">Notices</span>
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={settings.doseReminders}
@@ -489,7 +491,7 @@
           autocomplete="new-password"
         />
       </label>
-      <div class="save">
+      <div class="save save-row">
         <button class="btn btn-primary" type="submit" disabled={!canSaveKey}>
           {savingKey ? 'Saving…' : 'Save key'}
         </button>
@@ -500,10 +502,11 @@
   <p class="hint">
     Your health data is sealed in the vault with everything else, so it is unreadable while the
     vault is locked. The assistant can read it to answer you, using the models you have set up under
-    Models: if one of them runs in the cloud, what it reads goes there. A photo of a meal or the
-    pages of a document are sent only when you ask for them to be read. The token on your phone can
-    only add readings: it cannot read anything, and you can revoke it at any time. This is not a
-    medical device. It makes no diagnosis and gives no advice about a dose.
+    <button class="link" onclick={() => panels.openSettings('models')}>Models</button>: if one of
+    them runs in the cloud, what it reads goes there. A photo of a meal or the pages of a document
+    are sent only when you ask for them to be read. The token on your phone can only add readings:
+    it cannot read anything, and you can revoke it at any time. This is not a medical device. It
+    makes no diagnosis and gives no advice about a dose.
   </p>
 </div>
 
@@ -558,19 +561,6 @@
     color: var(--fg-muted);
   }
 
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle > span,
   .row-setting > span:first-child {
     display: flex;
     flex-direction: column;
@@ -672,8 +662,9 @@
   .link.danger {
     color: var(--danger);
   }
-  .save {
-    display: flex;
-    justify-content: flex-end;
+  /* A link inside a sentence stays on the sentence's line. */
+  .hint .link {
+    display: inline;
+    font-size: inherit;
   }
 </style>

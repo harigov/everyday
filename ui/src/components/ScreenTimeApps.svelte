@@ -33,7 +33,6 @@
   ]
 
   let filter = $state<Filter>('all')
-  let query = $state('')
 
   /** The category a row counts under, and whether that is only a suggestion. */
   function categoryOf(row: ScreenAppRow): { id: ScreenCategoryId | null; suggested: boolean } {
@@ -64,7 +63,8 @@
     ) as Record<Filter, number>,
   )
 
-  const needle = $derived(query.trim().toLowerCase())
+  // The query is typed in the top bar (see `apps.ts`), held by the store.
+  const needle = $derived(screentime.appsQuery.trim().toLowerCase())
   const rows = $derived(
     screentime.apps
       .filter((r) => matches(r, filter))
@@ -130,19 +130,6 @@
 
 <div class="apps">
   <div class="toolbar">
-    <div class="toolbar-end">
-      <label class="search">
-        <Icon name="search" size={14} />
-        <input
-          type="search"
-          bind:value={query}
-          placeholder="Find an app or site"
-          aria-label="Find an app or site"
-          spellcheck="false"
-          autocomplete="off"
-        />
-      </label>
-    </div>
     <div class="filters" role="group" aria-label="Show">
       {#each FILTERS as f (f.id)}
         <button
@@ -156,7 +143,6 @@
         </button>
       {/each}
     </div>
-    <div class="toolbar-end right"></div>
   </div>
 
   <div class="list scroll">
@@ -164,7 +150,7 @@
       <p class="quiet">No apps or sites seen yet. They appear here as they are used.</p>
     {:else if rows.length === 0}
       <p class="quiet">
-        {needle ? `Nothing matches “${query.trim()}”.` : 'Nothing here.'}
+        {needle ? `Nothing matches “${screentime.appsQuery.trim()}”.` : 'Nothing here.'}
       </p>
     {:else}
       <ul>
@@ -227,7 +213,7 @@
               </div>
 
               <button
-                class="icon-btn"
+                class="icon-btn ignore"
                 class:on={ignored}
                 aria-pressed={ignored}
                 aria-label={ignored ? `Count ${name} again` : `Ignore ${name}`}
@@ -239,7 +225,7 @@
                 <Icon name={ignored ? 'hidden' : 'eye'} size={15} />
               </button>
               <button
-                class="icon-btn"
+                class="icon-btn more"
                 aria-label="More for {name}"
                 title="More"
                 onclick={(e) => menu.show(e, rowMenu(row))}
@@ -262,31 +248,10 @@
     flex-direction: column;
   }
 
-  .search {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    width: 100%;
-    max-width: 240px;
-    height: 32px;
-    padding: 0 var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--bg);
-    color: var(--fg-faint);
-  }
-  .search:focus-within {
-    border-color: var(--accent);
-  }
-  .search input {
-    flex: 1;
-    min-width: 0;
-    border: none;
-    background: none;
-    color: var(--fg);
-    font-size: var(--text-sm);
-    outline: none;
-    user-select: text;
+  /* The chips are the toolbar's only content now that the search lives in the
+     top bar: keep them centred as they were between the two spacers. */
+  .apps > .toolbar {
+    justify-content: center;
   }
 
   .list {
@@ -295,7 +260,7 @@
     padding-bottom: var(--fab-clear);
   }
   ul {
-    max-width: 960px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: 0;
     list-style: none;
@@ -431,7 +396,7 @@
   }
 
   /* ── A phone ────────────────────────────────────────────────────────
-     The search over the chips; a row is two lines, the name and where it
+     The chips; a row is two lines, the name and where it
      was seen on the first and, on the second, the time with the category's
      picker and the two buttons -- six things do not fit in one. Both
      buttons are a finger's size (the row's long-press menu is the same
@@ -440,16 +405,6 @@
     flex-wrap: wrap;
     gap: var(--sp-2);
     padding-inline: var(--sp-3);
-  }
-  :global([data-phone]) .toolbar-end {
-    flex: 1 1 100%;
-  }
-  :global([data-phone]) .toolbar-end.right {
-    display: none;
-  }
-  :global([data-phone]) .search {
-    max-width: none;
-    height: 44px;
   }
   :global([data-phone]) .toolbar .filters {
     flex: 1 1 100%;
@@ -491,13 +446,18 @@
     width: 40px;
     height: 40px;
   }
-  :global([data-phone]) .icon-btn:first-of-type {
+  /* Ignore is one visible button on a desktop; on a phone it is the menu's
+     (the "more" button, or a long press), so a row keeps one button. */
+  :global([data-phone]) .icon-btn.ignore {
+    display: none;
+  }
+  :global([data-phone]) .icon-btn.more {
     grid-column: 4;
     grid-row: 2;
   }
-  :global([data-phone]) .icon-btn:last-of-type {
-    grid-column: 4;
-    grid-row: 1;
+  /* No hover on touch, so say the name can be edited. */
+  :global([data-phone]) .name {
+    border-color: var(--border);
   }
   :global([data-phone]) .split {
     min-height: 36px;

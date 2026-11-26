@@ -88,7 +88,9 @@ pub(super) static TOOLS: &[Tool] = &[
         "Record one reading against a tracker. The value is clamped to whatever \
          the tracker's scale allows. Only for trackers whose source is 'manual': \
          the others are worked out from time blocks and the library, and are \
-         changed by logging time or finishing something there.",
+         changed by logging time or finishing something there. Not for a health \
+         measurement (log_health_reading), a meal (log_meal), a dose (log_dose) or a \
+         line in a library item's history (log_item).",
         run_log_reading
     ),
     tool!(

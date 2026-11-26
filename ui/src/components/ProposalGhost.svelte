@@ -220,7 +220,7 @@
     align-items: center;
     gap: 3px;
     flex: none;
-    color: color-mix(in oklab, var(--ghost-color) 80%, var(--fg-muted));
+    color: color-mix(in oklab, var(--ghost-color) 70%, var(--fg));
     text-transform: lowercase;
   }
   .why {
@@ -253,7 +253,7 @@
     gap: 3px;
     padding: 2px 10px 2px var(--sp-2);
     border: 1px solid var(--border-strong);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-raised);
     color: var(--fg-muted);
     font: inherit;

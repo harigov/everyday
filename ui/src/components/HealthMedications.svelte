@@ -276,7 +276,7 @@
               {:else}
                 {#if d.overdue}<span class="overdue">Overdue</span>{/if}
                 <span class="due-actions">
-                  <button class="btn btn-sm btn-outline" onclick={() => take(d)}>Taken</button>
+                  <button class="btn btn-sm btn-primary" onclick={() => take(d)}>Taken</button>
                   <button class="btn btn-sm" onclick={() => skip(d)}>Skip</button>
                   <button class="link" onclick={() => askOther(d)}>At another time</button>
                 </span>
@@ -414,7 +414,7 @@
     overflow-y: auto;
   }
   .page {
-    max-width: 860px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;

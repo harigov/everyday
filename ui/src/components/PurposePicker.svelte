@@ -90,7 +90,7 @@
 </script>
 
 <div class="picker">
-  <div class="rows" role="listbox" aria-label="What this is for">
+  <div class="rows" role="listbox" aria-label="Goal or area">
     <!-- Always first, always available. Purpose is optional everywhere. -->
     <button
       class="row none"
@@ -100,7 +100,7 @@
       onclick={() => choose(null)}
     >
       <span class="swatch none"></span>
-      <span class="name">Nothing in particular</span>
+      <span class="name">No goal or area</span>
       {#if !value}<Icon name="check" size={13} />{/if}
     </button>
 

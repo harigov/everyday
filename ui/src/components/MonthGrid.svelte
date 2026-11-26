@@ -246,7 +246,12 @@
               {Number(iso.slice(8, 10))}
             </button>
             {#if calendar.hasEntry(iso)}
-              <span class="wrote" title="You wrote something on this day">
+              <span
+                class="wrote"
+                role="img"
+                title="You wrote something on this day"
+                aria-label="You wrote something on this day"
+              >
                 <Icon name="quote" size={10} weight={2} />
               </span>
             {/if}
@@ -261,7 +266,8 @@
                 class:movable={!!row.move}
                 class:saving={row.saving}
                 style="--c: {row.color}"
-                title={row.ghost ? `Proposed: ${row.label}` : row.label}
+                title={(row.ghost ? `Proposed: ${row.label}` : row.label) +
+                  (row.time ? ` · ${row.time}` : '')}
                 draggable={!!row.move}
                 ondragstart={(e) => row.move && startDayMove(e, row.move)}
                 ondragend={() => (dropOn = null)}
@@ -405,6 +411,8 @@
     gap: 1px;
     min-height: 0;
     overflow: hidden;
+    /* So a chip can ask how wide its cell is: see `.at` below. */
+    container-type: inline-size;
   }
 
   .row {
@@ -479,6 +487,13 @@
     font-variant-numeric: tabular-nums;
     color: var(--fg-faint);
     flex: none;
+  }
+  /* In a narrow cell the clock would take most of the row and leave the title
+     as an ellipsis. The time stays in the chip's tooltip and the day view. */
+  @container (max-width: 120px) {
+    .at {
+      display: none;
+    }
   }
   .what {
     overflow: hidden;

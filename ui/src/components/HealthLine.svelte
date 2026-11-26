@@ -114,11 +114,22 @@
       lo = 0
       hi = 1
     }
-    const spread = hi - lo || Math.abs(hi) * 0.1 || 1
+    const neverNegative = lo >= 0
+    // A line is never stretched over less than a few percent of its own
+    // level: a resting heart rate of 58, 58, 59 would otherwise fill the
+    // whole axis and read as a swing. Short of that, the points sit in the
+    // middle of an axis of that width.
+    const least = Math.abs(hi) * 0.08 || 1
+    if (hi - lo < least) {
+      const mid = (lo + hi) / 2
+      lo = mid - least / 2
+      hi = mid + least / 2
+    }
+    const spread = hi - lo
     let a = yMin ?? lo - spread * 0.15
     const b0 = yMax ?? hi + spread * 0.15
     // A quantity that is never negative does not get an axis that is.
-    if (yMin === undefined && lo >= 0 && a < 0) a = 0
+    if (yMin === undefined && neverNegative && a < 0) a = 0
     return { a, b: b0 <= a ? a + 1 : b0 }
   })
 

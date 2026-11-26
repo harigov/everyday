@@ -37,7 +37,7 @@
   const GROUPS: { group: MetricGroup; title: string }[] = [
     { group: 'heart', title: 'Heart' },
     { group: 'body', title: 'Body' },
-    { group: 'vitals', title: 'Vitals' },
+    { group: 'vitals', title: 'Other' },
     { group: 'respiratory', title: 'Breathing' },
     { group: 'metabolic', title: 'Glucose and insulin' },
   ]
@@ -257,7 +257,9 @@
                   <span class="mname">{r.name}</span>
                   <span class="mval">
                     {r.value}
-                    {#if r.mark}<span class="mark" title={r.words}>{r.mark}</span>{/if}
+                    {#if r.mark}<span class="mark" title={r.words}
+                        >{r.mark}<span class="sr-only"> {r.words}</span></span
+                      >{/if}
                   </span>
                   <span class="mwhen">{r.when}</span>
                 </button>
@@ -357,22 +359,25 @@
                 {#if isPressure}
                   <button
                     class="btn btn-sm btn-ghost-danger"
+                    title="Only the readings in the range shown above"
                     onclick={() => removeRange(SYS, 'top-number blood pressure')}
                   >
-                    Delete top numbers in {health.rangeLabel}…
+                    Delete these top numbers…
                   </button>
                   <button
                     class="btn btn-sm btn-ghost-danger"
+                    title="Only the readings in the range shown above"
                     onclick={() => removeRange(DIA, 'bottom-number blood pressure')}
                   >
-                    Delete bottom numbers in {health.rangeLabel}…
+                    Delete these bottom numbers…
                   </button>
                 {:else}
                   <button
                     class="btn btn-sm btn-ghost-danger"
+                    title="Only the readings in the range shown above"
                     onclick={() => removeRange(metric, name.toLowerCase())}
                   >
-                    Delete {plural(stats?.readings ?? 0, 'reading')} in {health.rangeLabel}…
+                    Delete these {plural(stats?.readings ?? 0, 'reading')}…
                   </button>
                 {/if}
               </div>
@@ -391,7 +396,7 @@
     overflow-y: auto;
   }
   .page {
-    max-width: 1080px;
+    max-width: var(--page-w-wide);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;
@@ -489,7 +494,7 @@
   .tiles {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-end;
+    align-items: flex-start;
     gap: var(--sp-4) var(--sp-8);
   }
 

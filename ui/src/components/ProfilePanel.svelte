@@ -37,12 +37,18 @@
   let saving = $state(false)
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
   let sub = $state<'about' | 'areas'>('about')
+  // What was last read or written, to tell whether the fields have a change
+  // waiting. The Save is on the About you tab only, so a name typed there and
+  // then left for Areas would otherwise wait unsaved with nothing to say so.
+  let saved = $state('')
+  const unsaved = $derived(!!draft && JSON.stringify(draft) !== saved)
 
   // Loaded here rather than in a store: nothing else in the interface draws
   // it yet, and a store would be a singleton kept in memory for one dialog.
   void (async () => {
     try {
       draft = await api.profile()
+      saved = JSON.stringify(draft)
     } catch {
       // A profile that cannot be read leaves the fields empty and the Save
       // button honest about what it will do.
@@ -54,6 +60,7 @@
         location: '',
         about: '',
       }
+      saved = JSON.stringify(draft)
     }
   })()
 
@@ -69,6 +76,7 @@
     saving = true
     try {
       draft = await api.saveProfile($state.snapshot(draft))
+      saved = JSON.stringify(draft)
       notice = 'Saved.'
       noticeTimer = setTimeout(() => (notice = null), 2400)
     } catch (e) {
@@ -85,7 +93,7 @@
   {#if app.supportsOverview}
     <SubTabs
       tabs={[
-        { id: 'about', label: 'About you' },
+        { id: 'about', label: unsaved ? 'About you (unsaved)' : 'About you' },
         { id: 'areas', label: 'Areas' },
       ]}
       bind:value={sub}
@@ -103,7 +111,7 @@
     </section>
 
     <section>
-      <span class="eyebrow">Name</span>
+      <h3 class="eyebrow">Name</h3>
       <div class="pair">
         <input
           class="field"
@@ -123,7 +131,7 @@
     </section>
 
     <section>
-      <span class="eyebrow">Born</span>
+      <h3 class="eyebrow">Born</h3>
       <input
         class="field"
         type="date"
@@ -137,7 +145,7 @@
     </section>
 
     <section>
-      <span class="eyebrow">Gender</span>
+      <h3 class="eyebrow">Gender</h3>
       <input
         class="field"
         placeholder="However you would put it"
@@ -148,12 +156,12 @@
     </section>
 
     <section>
-      <span class="eyebrow">Where you live</span>
+      <h3 class="eyebrow">Where you live</h3>
       <input class="field" placeholder="City" bind:value={draft.location} oninput={touched} />
     </section>
 
     <section>
-      <span class="eyebrow">About you</span>
+      <h3 class="eyebrow">In your own words</h3>
       <textarea
         class="field area"
         rows="12"
@@ -163,9 +171,8 @@
       ></textarea>
     </section>
 
-    <div class="save">
-      {#if notice}<span class="notice">{notice}</span>{/if}
-      <span class="spacer"></span>
+    <div class="save save-row">
+      {#if notice}<span class="notice" role="status">{notice}</span>{/if}
       <button class="btn btn-primary" onclick={save} disabled={saving || !app.status?.writable}>
         {saving ? 'Saving…' : 'Save'}
       </button>
@@ -208,21 +215,5 @@
   .hint {
     color: var(--fg-faint);
     font-size: var(--text-xs);
-  }
-
-  .save {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    padding-top: var(--sp-4);
-  }
-
-  .notice {
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-  }
-
-  .save .spacer {
-    flex: 1;
   }
 </style>

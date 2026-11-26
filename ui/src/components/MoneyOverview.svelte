@@ -140,7 +140,7 @@
       <section class="card" aria-labelledby="ov-budgets">
         <div class="card-head">
           <h2 class="eyebrow" id="ov-budgets">Budgets running over</h2>
-          <button class="link" onclick={() => money.setView('budget')}>The budget</button>
+          <button class="card-link" onclick={() => money.setView('budget')}>Open budget</button>
         </div>
         {#if running.length === 0}
           <p class="quiet">
@@ -212,7 +212,7 @@
     overflow-y: auto;
   }
   .page {
-    max-width: 960px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;
@@ -247,6 +247,8 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
     gap: var(--sp-5);
+    /* Two cards of different lengths keep their own heights. */
+    align-items: start;
   }
 
   .quiet {
@@ -356,14 +358,14 @@
     display: block;
     width: 100%;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--c, var(--accent)) 16%, transparent);
     overflow: hidden;
   }
   .fill {
     display: block;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--c, var(--accent));
   }
   .track.over {
@@ -445,6 +447,7 @@
     flex: 1 1 100%;
     height: 44px;
   }
+  :global([data-phone]) .card-link,
   :global([data-phone]) .link {
     display: inline-flex;
     align-items: center;

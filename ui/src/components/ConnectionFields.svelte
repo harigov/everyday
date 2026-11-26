@@ -203,7 +203,7 @@
 <div class="fields">
   {#if transport.type === 'http'}
     <div class="setting">
-      <label class="caption" for="{uid}-url">URL</label>
+      <label class="caption" for="{uid}-url">Server address</label>
       <input
         id="{uid}-url"
         class="field"

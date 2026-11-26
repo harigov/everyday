@@ -48,7 +48,7 @@
     WakeSettings,
     WritingSettings,
   } from '../lib/types'
-  import { humanBytes } from '../lib/format'
+  import { humanBytes, plural } from '../lib/format'
   import Meter from './Meter.svelte'
   import SubTabs from './SubTabs.svelte'
   import { shownTab } from '../lib/subtabs'
@@ -95,7 +95,11 @@
     const blocked = mailAccounts.filter((a) => !allowed(a, key))
     const paused = blocked.filter(isOn)
     const on = able.filter(isOn).length
+    const onEverywhere = mailAccounts.filter(isOn).length
     return {
+      /** How many accounts have it on, paused ones included, and how many do not. */
+      onCount: onEverywhere,
+      offCount: mailAccounts.length - onEverywhere,
       able,
       paused,
       /** Off, and waiting on their box before it can be on. */
@@ -308,7 +312,7 @@
   /** What the switch's small print says, by desktop. */
   function voiceTypingBlurb(d: VoiceTypingSettings): string {
     const what =
-      'Speak, and what you said is heard by the speech model in Settings → Models, written up ' +
+      'Speak, and what you said is heard by the speech model chosen under Models, written up ' +
       'by the medium model and typed where the cursor is. Every use is kept in this vault.'
     switch (d.platform) {
       case 'wayland':
@@ -586,7 +590,7 @@
   <p class="hint lead">
     What the models set under
     <button class="link" onclick={() => panels.openSettings('models')}>Models</button> are used for. Each
-    switch says what it sends and which model reads it; a model on this computer sends nothing anywhere.
+    switch says which model reads it, and changes apply straight away.
   </p>
 
   {#if subs.length > 1}
@@ -598,8 +602,8 @@
       <span class="eyebrow">In the background</span>
       <p class="hint">
         These run on their own as mail arrives or a thread is opened, not as something you ask for
-        in chat, and they read your mail the way the assistant's own tools do. An account takes part
-        once its "I understand" box is ticked, under Settings → Accounts → the account → Agents.
+        in chat. An account takes part once you have ticked “I understand” for it, under Agents in
+        its <button class="link" onclick={() => panels.openSettings('accounts')}>Accounts</button> settings.
       </p>
       {#if !ackKnown && models.settings}
         <p class="hint warn">
@@ -615,7 +619,7 @@
       {:else}
         {#each MAIL_AI_SWITCHES as sw (sw.key)}
           {@const st = mailState(sw.key)}
-          <label class="toggle" class:disabled={st.disabled}>
+          <label class="check-row" class:disabled={st.disabled}>
             <input
               type="checkbox"
               checked={st.checked}
@@ -626,28 +630,36 @@
             <span>
               <b>{sw.label}</b>
               <small>{sw.hint} {mailModel(sw.key)}</small>
-              {#if st.mixed}
-                <small class="note"
-                  >On for some accounts and not others. Tick to turn it on for all.</small
-                >
-              {/if}
-              {#if ackKnown && st.paused.length > 0}
+              {#if st.mixed || (ackKnown && (st.paused.length > 0 || st.waiting.length > 0))}
                 <small class="note">
-                  Paused for {st.paused.map((a) => a.address).join(', ')} until {st.paused
-                    .length === 1
-                    ? 'its'
-                    : 'their'} "I understand" box is ticked again; untick to switch it off there too.
-                </small>
-              {/if}
-              {#if ackKnown && st.waiting.length > 0}
-                <small class="note">
-                  Not for {st.waiting.map((a) => a.address).join(', ')} — {st.waiting.length === 1
-                    ? 'its'
-                    : 'their'} "I understand" box is not ticked.
+                  {st.onCount === 0
+                    ? 'Off for every account.'
+                    : `On for ${plural(st.onCount, 'account')}, off for ${st.offCount}.`}
+                  {st.mixed ? 'Tick to turn it on for all.' : ''}
                 </small>
               {/if}
             </span>
           </label>
+          {#if ackKnown && (st.paused.length > 0 || st.waiting.length > 0)}
+            <details class="which">
+              <summary>Which accounts, and why</summary>
+              {#if st.paused.length > 0}
+                <p>
+                  Paused for {st.paused.map((a) => a.address).join(', ')} until {st.paused
+                    .length === 1
+                    ? 'its'
+                    : 'their'} “I understand” box is ticked again; untick to switch it off there too.
+                </p>
+              {/if}
+              {#if st.waiting.length > 0}
+                <p>
+                  Not for {st.waiting.map((a) => a.address).join(', ')} — {st.waiting.length === 1
+                    ? 'its'
+                    : 'their'} “I understand” box is not ticked.
+                </p>
+              {/if}
+            </details>
+          {/if}
         {/each}
       {/if}
     </section>
@@ -671,12 +683,17 @@
     <section>
       <span class="eyebrow">Quick asks</span>
       <p class="hint">
-        Small things the other apps ask the small model as you work — filling in a shelf's fields,
-        suggesting a title. A separate switch from the assistant, and deliberately: wanting your
-        shelves filled in is not the same as wanting something to talk to. Each one says what it
-        sends; the ones that read a journal entry start switched off. None of them ever changes what
-        you already typed.
+        Small things the other apps ask the small model as you work, like filling in a shelf’s
+        fields or suggesting a title. None of them ever changes what you already typed.
       </p>
+      <details class="hint how">
+        <summary>How this works</summary>
+        <p>
+          This is a separate switch from the assistant, and deliberately: wanting your shelves
+          filled in is not the same as wanting something to talk to. Each one says what it sends;
+          the ones that read a journal entry start switched off.
+        </p>
+      </details>
       {#if !quick.configured}
         <p class="hint warn">
           No small model is set up, so none of these run — they never fall back to a bigger one.
@@ -688,7 +705,7 @@
           <div class="group">
             <span class="group-name">{appName}</span>
             {#each asks as ask (ask.name)}
-              <label class="toggle">
+              <label class="check-row">
                 <input
                   type="checkbox"
                   checked={ask.on}
@@ -708,7 +725,7 @@
     {#if writing}
       <section>
         <span class="eyebrow">Writing help</span>
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={writing.enabled}
@@ -758,7 +775,7 @@
     {#if voiceTyping}
       <section>
         <span class="eyebrow">Voice typing</span>
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={voiceTyping.enabled}
@@ -805,11 +822,18 @@
             </div>
           </form>
         {/if}
-        <div class="segmented" class:disabled={!voiceTyping.enabled}>
+        <div
+          class="seg-group"
+          class:disabled={!voiceTyping.enabled}
+          role="radiogroup"
+          aria-label="How the voice typing key works"
+        >
           {#each VOICE_TYPING_MODES as m (m.value)}
             <button
-              class="seg"
+              class="seg-opt"
               class:on={voiceTyping.mode === m.value}
+              role="radio"
+              aria-checked={voiceTyping.mode === m.value}
               disabled={voiceTypingBusy || !voiceTyping.enabled}
               onclick={() => saveVoiceTyping(true, null, m.value)}
             >
@@ -830,7 +854,7 @@
             {/each}
           </select>
         </label>
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={voiceTyping.clean}
@@ -851,7 +875,7 @@
     {#if talk}
       <section>
         <span class="eyebrow">Voice assistant</span>
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={talk.enabled}
@@ -862,7 +886,7 @@
             <b>Talk to the assistant from anywhere with {talk.key.shortcut || talk.shortcut}</b>
             <small>
               Press the key anywhere to talk to the assistant; the answer is spoken and shown in the
-              corner of the screen. It uses the speech models in Settings → Models and the
+              corner of the screen. It uses the speech models chosen under Models and the
               assistant's own model, and carries on in a chat of its own.
             </small>
             {#if talkStatus(talk)}
@@ -895,11 +919,18 @@
             </div>
           </form>
         {/if}
-        <div class="segmented" class:disabled={!talk.enabled}>
+        <div
+          class="seg-group"
+          class:disabled={!talk.enabled}
+          role="radiogroup"
+          aria-label="How the voice assistant key works"
+        >
           {#each TALK_MODES as m (m.value)}
             <button
-              class="seg"
+              class="seg-opt"
               class:on={talk.mode === m.value}
+              role="radio"
+              aria-checked={talk.mode === m.value}
               disabled={talkBusy || !talk.enabled}
               onclick={() => saveTalk(true, null, m.value)}
             >
@@ -907,7 +938,7 @@
             </button>
           {/each}
         </div>
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={talk.keepReady}
@@ -953,7 +984,7 @@
     {#if wake}
       <section>
         <span class="eyebrow">Wake word</span>
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={wake.enabled}
@@ -998,7 +1029,7 @@
             Empty answers to the assistant’s own name. Several, separated by commas, for a name the
             speech model spells more than one way.
           </small>
-          <label class="toggle">
+          <label class="check-row">
             <input
               type="checkbox"
               checked={wake.pauseInCalls}
@@ -1043,7 +1074,7 @@
           </button>
         </div>
 
-        <label class="toggle" class:disabled={!mic.voiceRecorded}>
+        <label class="check-row" class:disabled={!mic.voiceRecorded}>
           <input
             type="checkbox"
             checked={mic.onlyMyVoice}
@@ -1063,12 +1094,13 @@
           </span>
         </label>
         {#if mic.onlyMyVoice}
-          <div class="segmented" role="group" aria-label="How strict">
+          <div class="seg-group" role="radiogroup" aria-label="How strict">
             {#each VOICE_CHECKS as c (c.value)}
               <button
-                class="seg"
+                class="seg-opt"
                 class:on={mic.strictness === c.value}
-                aria-pressed={mic.strictness === c.value}
+                role="radio"
+                aria-checked={mic.strictness === c.value}
                 disabled={micBusy}
                 onclick={() => saveMic({ strictness: c.value })}
               >
@@ -1082,7 +1114,7 @@
           </small>
         {/if}
 
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={mic.isolateVoice}
@@ -1106,7 +1138,7 @@
           {@render modelRow(isolationModel)}
         {/if}
 
-        <label class="toggle">
+        <label class="check-row">
           <input
             type="checkbox"
             checked={mic.strongNoiseFilter}
@@ -1184,45 +1216,47 @@
     margin-bottom: var(--sp-4);
   }
 
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle.disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle b.small {
+  .check-row b.small {
     font-size: var(--text-sm);
     font-weight: 550;
   }
-  .toggle small,
   .hint {
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
     color: var(--fg-subtle);
   }
-  .toggle small.note {
+  small.note {
     color: var(--fg-muted);
     font-style: italic;
+  }
+  /* A cross-reference to another page of Settings, in the line it belongs to. */
+  .link {
+    color: var(--accent);
+    font: inherit;
+    font-weight: 550;
+  }
+  .link:hover {
+    text-decoration: underline;
+  }
+
+  .which {
+    margin: calc(var(--sp-1) * -1) 0 0 calc(13px + var(--sp-3));
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
+  .which summary {
+    cursor: pointer;
+  }
+  .which p {
+    margin: var(--sp-1) 0 0;
+    line-height: var(--leading-normal);
+  }
+  .how summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .how p {
+    margin: var(--sp-2) 0 0;
   }
   .hint.warn {
     color: var(--fg-muted);
@@ -1255,42 +1289,6 @@
     display: flex;
     gap: var(--sp-2);
     flex-wrap: wrap;
-  }
-
-  .segmented {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    background: var(--bg-sunken);
-    border-radius: var(--radius);
-  }
-  .segmented.disabled {
-    opacity: 0.5;
-  }
-  .seg {
-    flex: 1;
-    height: 30px;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .seg:hover {
-    color: var(--fg);
-  }
-  .seg:disabled {
-    cursor: default;
-  }
-  .seg:disabled:hover {
-    color: var(--fg-subtle);
-  }
-  .seg.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
   }
 
   .row {

@@ -62,6 +62,7 @@
   import BriefWeek from './BriefWeek.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   onMount(() => {
     void briefs.start()
@@ -308,7 +309,7 @@
               ? hearing
                 ? 'Stop reading it aloud'
                 : 'Read this brief aloud'
-              : 'Reading aloud works in the desktop app'}
+              : 'Listening works on your computer for now.'}
             onclick={listen}
           >
             {#if hearing}
@@ -346,14 +347,18 @@
       </p>
     {/if}
 
+    {#if run && kind !== 'podcast' && !listening.available}
+      <!-- Said on the page, not only in the disabled button's tooltip, which a
+           phone has no way to show. -->
+      <p class="hint text listen-note">Listening works on your computer for now.</p>
+    {/if}
+
     {#if !briefs.enabled}
-      <EmptyState lead="This vault does not keep routines, and a brief is one.">
+      <EmptyState lead="Briefs aren’t available on this device">
         {#snippet icon()}<Icon name="sun" size={28} />{/snippet}
       </EmptyState>
     {:else if !briefs.loaded}
-      <p class="loading" role="status">
-        <span class="spinner" aria-hidden="true"></span> Loading your briefs…
-      </p>
+      <Loading label="Loading your briefs…" centred />
     {:else if run && brief && digest}
       {#if making}
         <p class="writing text" role="status">
@@ -624,7 +629,7 @@
     display: grid;
     place-items: center;
     height: 28px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     font-size: var(--text-sm);
   }
@@ -709,28 +714,16 @@
     }
   }
 
-  .spinner {
-    flex: none;
-    display: inline-block;
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    border: 1.5px solid var(--fg-faint);
-    border-top-color: var(--accent);
-    animation: spin 0.8s linear infinite;
-  }
+  /* The ring is the global `.spinner`; these only size and colour it for the
+     tab chip and for a button on the accent. */
   .spinner.small {
-    width: 9px;
-    height: 9px;
+    width: 10px;
+    height: 10px;
+    border-width: 1.5px;
   }
   .spinner.on-accent {
-    border-color: color-mix(in oklab, var(--fg-on-accent) 35%, transparent);
-    border-top-color: var(--fg-on-accent);
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+    color: var(--fg-on-accent);
+    opacity: 1;
   }
 
   /* ── The page ─────────────────────────────────────────────────────── */
@@ -754,9 +747,12 @@
     margin-inline: auto;
   }
 
+  .listen-note {
+    margin-bottom: var(--sp-4);
+  }
+
   .oops,
-  .writing,
-  .loading {
+  .writing {
     display: flex;
     align-items: center;
     gap: var(--sp-2);
@@ -782,11 +778,6 @@
     border-radius: var(--radius);
     background: var(--bg-raised);
   }
-  .loading {
-    justify-content: center;
-    margin-top: var(--sp-10);
-  }
-
   .page {
     display: flex;
     flex-direction: column;
@@ -1117,9 +1108,6 @@
   @media (prefers-reduced-motion: reduce) {
     .page {
       animation: none;
-    }
-    .spinner {
-      animation-duration: 2.4s;
     }
     .eq i {
       animation: none;

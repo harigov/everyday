@@ -25,7 +25,7 @@
   import { TRACKER_ICON_GROUPS } from '../lib/tracker-icons'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { closesOnBack } from '../lib/phone.svelte'
-  import { DEFAULT_COLORS } from '../lib/colors'
+  import { DEFAULT_COLORS, colorName } from '../lib/colors'
   import type {
     Journal,
     JournalTemplates,
@@ -101,6 +101,30 @@
     '#db2777',
     '#78716c',
   ]
+
+  /** A journal with no name is nothing to pick from the sidebar: emptied, the
+   *  field goes back to what it was rather than saving a blank. */
+  /** What to call each tracker colour, for a screen reader and a tooltip. */
+  const PALETTE_NAMES: Record<string, string> = {
+    '#e11d48': 'Red',
+    '#f97316': 'Orange',
+    '#f59e0b': 'Amber',
+    '#16a34a': 'Green',
+    '#0d9488': 'Teal',
+    '#0284c7': 'Blue',
+    '#4f46e5': 'Indigo',
+    '#9333ea': 'Purple',
+    '#db2777': 'Pink',
+    '#78716c': 'Stone',
+  }
+
+  async function saveName() {
+    if (!draft.name.trim()) {
+      draft.name = journal.name
+      return
+    }
+    await save()
+  }
 
   async function save() {
     draft.updatedAt = new Date().toISOString()
@@ -470,7 +494,9 @@
   <header class="head">
     <span class="glyph" style="--c: {draft.color}">{draft.icon}</span>
     <h2>{draft.name || 'Journal settings'}</h2>
-    <button class="x" aria-label="Close" onclick={onclose}><Icon name="close" size={16} /></button>
+    <button class="x" aria-label="Close" title="Close" onclick={onclose}
+      ><Icon name="close" size={16} /></button
+    >
   </header>
 
   <div class="body scroll">
@@ -479,10 +505,10 @@
       <div class="row two">
         <label class="lbl">
           Name
-          <input class="text" bind:value={draft.name} use:focusOnMount onchange={save} />
+          <input class="text" bind:value={draft.name} use:focusOnMount onchange={saveName} />
         </label>
         <label class="lbl narrow">
-          Symbol
+          Symbol (an emoji)
           <input class="text mid" bind:value={draft.icon} onchange={save} maxlength="4" />
         </label>
       </div>
@@ -499,13 +525,16 @@
 
       <div class="lbl">
         Colour
-        <div class="swatches">
+        <div class="swatches" role="radiogroup" aria-label="Colour">
           {#each DEFAULT_COLORS as c (c)}
             <button
               class="swatch"
               class:on={draft.color.toLowerCase() === c.toLowerCase()}
               style="--c: {c}"
-              aria-label={c}
+              role="radio"
+              aria-checked={draft.color.toLowerCase() === c.toLowerCase()}
+              aria-label={colorName(c)}
+              title={colorName(c)}
               onclick={() => {
                 draft.color = c
                 void save()
@@ -698,6 +727,7 @@
                   <button
                     class="mini"
                     aria-label="Move up"
+                    title="Move up"
                     disabled={i === 0}
                     onclick={() => moveRule(i, -1)}
                   >
@@ -706,12 +736,18 @@
                   <button
                     class="mini"
                     aria-label="Move down"
+                    title="Move down"
                     disabled={i === rules.length - 1}
                     onclick={() => moveRule(i, 1)}
                   >
                     <span class="down"><Icon name="chevron" size={13} /></span>
                   </button>
-                  <button class="mini" aria-label="Remove rule" onclick={() => removeRule(i)}>
+                  <button
+                    class="mini"
+                    aria-label="Remove rule"
+                    title="Remove rule"
+                    onclick={() => removeRule(i)}
+                  >
                     <Icon name="close" size={13} />
                   </button>
                 </div>
@@ -782,6 +818,7 @@
                   <button
                     class="ghost tiny"
                     aria-label="Move up"
+                    title="Move up"
                     disabled={i === 0}
                     onclick={() => move(tracker, -1)}
                   >
@@ -790,6 +827,7 @@
                   <button
                     class="ghost tiny"
                     aria-label="Move down"
+                    title="Move down"
                     disabled={i === live.length - 1}
                     onclick={() => move(tracker, 1)}
                   >
@@ -799,6 +837,7 @@
                 <button
                   class="ghost"
                   aria-label="Edit"
+                  title="Edit"
                   onclick={() => {
                     editing = structuredClone($state.snapshot(tracker))
                     adding = false
@@ -819,6 +858,7 @@
               <button
                 class="iconbtn"
                 aria-label="Choose an icon"
+                title="Choose an icon"
                 onclick={() => (pickingIcon = !pickingIcon)}
               >
                 <TrackerIcon name={editing.icon} color={editing.color} size={38} />
@@ -869,7 +909,8 @@
                   class="swatch"
                   class:on={editing.color.toLowerCase() === c}
                   style="--c: {c}"
-                  aria-label={c}
+                  aria-label={PALETTE_NAMES[c] ?? c}
+                  title={PALETTE_NAMES[c] ?? c}
                   onclick={() => editing && (editing.color = c)}
                 ></button>
               {/each}
@@ -1249,7 +1290,7 @@
     width: 28px;
     height: 28px;
     border: 1px solid var(--border-strong);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-muted);
     font-size: var(--text-xs);
     font-weight: 600;
@@ -1302,7 +1343,7 @@
   .swatch {
     width: 20px;
     height: 20px;
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: var(--c);
     box-shadow: 0 0 0 1px rgb(0 0 0 / 0.08) inset;
   }
@@ -1567,7 +1608,7 @@
     gap: 6px;
     height: 32px;
     padding: 0 var(--sp-3) 0 5px;
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     border: 1px solid var(--border);
     background: var(--bg-raised);
     font-size: var(--text-sm);

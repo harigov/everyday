@@ -1,3 +1,10 @@
+<script lang="ts" module>
+  // The sheets that are open, oldest first. Escape closes the top one only:
+  // each sheet listens on the window, so without this a confirmation raised
+  // over a dialog went down with it on the one key press.
+  const open: object[] = []
+</script>
+
 <script lang="ts">
   // The modal shell most dialogs share: a scrim that closes it when pressed,
   // and a sheet that traps focus, closes on Escape and, on a phone, is put
@@ -40,11 +47,20 @@
     () => backWhen(),
     () => void onclose(),
   )
+
+  const me = {}
+  $effect(() => {
+    open.push(me)
+    return () => {
+      const at = open.indexOf(me)
+      if (at >= 0) open.splice(at, 1)
+    }
+  })
 </script>
 
 <svelte:window
   onkeydown={(e: KeyboardEvent) => {
-    if (e.key === 'Escape') void onclose()
+    if (e.key === 'Escape' && open[open.length - 1] === me) void onclose()
   }}
 />
 

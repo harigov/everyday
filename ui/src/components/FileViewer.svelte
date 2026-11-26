@@ -37,6 +37,7 @@
   import { formatSize, kindIcon, previewOf } from '../lib/files'
   import { files as store } from '../lib/files.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { renderMarkdown } from '../lib/markdown'
   import { closesOnBack, phone } from '../lib/phone.svelte'
   import { player } from '../lib/player.svelte'
   import { formatDuration, playRequestForFile } from '../lib/podcast'
@@ -44,6 +45,7 @@
   import { upnext } from '../lib/upnext.svelte'
   import FileInspector from './FileInspector.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import PdfView from './PdfView.svelte'
 
   interface Props {
@@ -96,6 +98,8 @@
     | { state: 'pdf'; data: Uint8Array }
     | { state: 'text'; text: string; truncated: boolean }
   let shown = $state.raw<Shown>({ state: 'loading' })
+  /** The text of a text file on show, for the rendered Markdown view. */
+  const shownText = $derived(shown.state === 'text' ? shown.text : '')
 
   /** What the load below depends on: the file and its version, and nothing
    *  else about it, so a rename or a tag does not reload what is open. */
@@ -216,6 +220,17 @@
   })
 
   const name = $derived(current?.name || 'File')
+
+  // A Markdown file is shown as it reads, with its source a button away. The
+  // renderer escapes the text before it looks at it (see `markdown.ts`), so
+  // nothing in the file can reach the page as markup. Which file is being
+  // shown as source is held by id, so stepping to the next starts formatted.
+  const isMarkdown = $derived(
+    current !== undefined &&
+      (/\.(md|markdown)$/i.test(current.name) || current.mime === 'text/markdown'),
+  )
+  let sourceOf = $state<string | null>(null)
+  const asSource = $derived(current !== undefined && sourceOf === current.id)
   const facts = $derived.by(() => {
     if (!current) return ''
     const m = current.media
@@ -488,8 +503,8 @@
   use:focusOnMount
   use:trapFocus
 >
-  <!-- The window's own title bar is under this, so the bar stands in for it
-       as somewhere to drag the window by. -->
+  <!-- On a computer the window's own top bar, with its controls, stays above
+       this; the bar is still somewhere to drag the window by. -->
   <header class="bar" data-tauri-drag-region>
     {#if phone.on}
       <button class="tool back" aria-label="Close" onclick={onclose}>
@@ -512,7 +527,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="stage" onclick={(e) => e.target === e.currentTarget && onclose()}>
       {#if shown.state === 'loading'}
-        <p class="quiet">Loading…</p>
+        <Loading label="Opening it…" />
       {:else if shown.state === 'failed'}
         <div class="failed">
           {#if current}<span class="kind"
@@ -633,7 +648,23 @@
         </div>
       {:else}
         <div class="paper scroll">
-          <pre>{shown.text}</pre>
+          {#if isMarkdown}
+            <button
+              class="btn btn-sm source"
+              aria-pressed={asSource}
+              onclick={() => (sourceOf = asSource ? null : (current?.id ?? null))}
+            >
+              {asSource ? 'Show formatted' : 'Show source'}
+            </button>
+          {/if}
+          {#if isMarkdown && !asSource}
+            <!-- Safe by construction: `renderMarkdown` escapes before anything
+                 else (see `scripts/markdown.test.mjs`). -->
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+            <div class="rendered">{@html renderMarkdown(shownText)}</div>
+          {:else}
+            <pre>{shown.text}</pre>
+          {/if}
           {#if shown.truncated}
             <p class="cut">Only the first megabyte is shown. Save the file to read the rest.</p>
           {/if}
@@ -658,13 +689,13 @@
      same literals the attachment viewer's lightbox uses. */
   .backdrop {
     position: fixed;
-    inset: 0;
+    inset: var(--topbar-h) 0 0;
     z-index: 64;
     background: rgb(14 13 16 / 0.88);
   }
   .viewer {
     position: fixed;
-    inset: 0;
+    inset: var(--topbar-h) 0 0;
     z-index: 65;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
@@ -704,7 +735,7 @@
     min-width: 34px;
     height: 34px;
     padding: 0 8px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: inherit;
   }
   .tool:hover:not(:disabled) {
@@ -854,6 +885,60 @@
     overflow-wrap: anywhere;
     tab-size: 4;
   }
+  .source {
+    float: right;
+    margin: 0 0 var(--sp-2) var(--sp-3);
+  }
+  .rendered {
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
+    overflow-wrap: anywhere;
+  }
+  .rendered :global(h1),
+  .rendered :global(h2),
+  .rendered :global(h3),
+  .rendered :global(h4) {
+    margin: 1.2em 0 0.4em;
+    line-height: var(--leading-tight);
+  }
+  .rendered :global(h1:first-child),
+  .rendered :global(h2:first-child) {
+    margin-top: 0;
+  }
+  .rendered :global(p),
+  .rendered :global(ul),
+  .rendered :global(ol),
+  .rendered :global(blockquote),
+  .rendered :global(pre),
+  .rendered :global(table) {
+    margin: 0 0 0.8em;
+  }
+  .rendered :global(blockquote) {
+    padding-left: var(--sp-3);
+    border-left: 3px solid var(--border);
+    color: var(--fg-muted);
+  }
+  .rendered :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+  }
+  .rendered :global(pre) {
+    padding: var(--sp-3);
+    border-radius: var(--radius-sm);
+    background: var(--bg-sunken);
+    overflow-x: auto;
+  }
+  .rendered :global(th),
+  .rendered :global(td) {
+    padding: 2px var(--sp-2);
+    border: 1px solid var(--border);
+  }
+  .rendered :global(a) {
+    color: var(--accent);
+  }
+  .stage :global(.loading) {
+    color: rgb(255 255 255 / 0.6);
+  }
   .cut {
     margin: var(--sp-4) 0 0;
     font-size: var(--text-sm);
@@ -868,6 +953,10 @@
   /* Not see-through: the screen is the viewer's, whatever is under it. */
   :global([data-phone]) .backdrop {
     background: rgb(14 13 16);
+  }
+  :global([data-phone]) .backdrop,
+  :global([data-phone]) .viewer {
+    inset: 0;
   }
   :global([data-phone]) .viewer {
     grid-template-columns: minmax(0, 1fr);

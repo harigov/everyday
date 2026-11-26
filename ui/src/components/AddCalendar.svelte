@@ -23,6 +23,7 @@
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { closesOnBack } from '../lib/phone.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import type { AccountId, CalendarProvider, ProviderInfo, RemoteCalendarInfo } from '../lib/types'
 
   let { onclose }: { onclose: () => void } = $props()
@@ -139,21 +140,37 @@
   <h2>Add a calendar</h2>
 
   {#if calendarAccounts.length > 0}
-    <div class="providers" role="group" aria-label="How to add it">
-      <button class="provider" class:on={mode === 'address'} onclick={() => (mode = 'address')}>
+    <div class="seg-group providers" role="radiogroup" aria-label="How to add it">
+      <button
+        class="seg-opt provider"
+        role="radio"
+        aria-checked={mode === 'address'}
+        class:on={mode === 'address'}
+        onclick={() => (mode = 'address')}
+      >
         By address
       </button>
-      <button class="provider" class:on={mode === 'account'} onclick={() => (mode = 'account')}>
+      <button
+        class="seg-opt provider"
+        role="radio"
+        aria-checked={mode === 'account'}
+        class:on={mode === 'account'}
+        onclick={() => (mode = 'account')}
+      >
         From an account
       </button>
     </div>
   {/if}
 
   {#if mode === 'address'}
-    <div class="providers" role="group" aria-label="Where from">
+    <div class="seg-group providers" role="radiogroup" aria-label="Where from">
       {#each providers as p (p.id)}
-        <button class="provider" class:on={provider === p.id} onclick={() => (provider = p.id)}
-          >{p.label}</button
+        <button
+          class="seg-opt provider"
+          role="radio"
+          aria-checked={provider === p.id}
+          class:on={provider === p.id}
+          onclick={() => (provider = p.id)}>{p.label}</button
         >
       {/each}
     </div>
@@ -196,6 +213,7 @@
               class:on={color === c}
               style="--c: {c}"
               aria-label="Use this colour"
+              title="Use this colour"
               onclick={() => (color = c)}
             ></button>
           {/each}
@@ -234,10 +252,12 @@
       </button>
     </div>
   {:else}
-    <div class="providers" role="group" aria-label="Which account">
+    <div class="seg-group providers" role="radiogroup" aria-label="Which account">
       {#each calendarAccounts as a (a.id)}
         <button
-          class="provider"
+          class="seg-opt provider"
+          role="radio"
+          aria-checked={selectedAccount === a.id}
           class:on={selectedAccount === a.id}
           onclick={() => pickAccount(a.id)}
         >
@@ -247,7 +267,7 @@
     </div>
 
     {#if loadingRemote}
-      <p class="hint">Looking…</p>
+      <Loading label="Looking…" />
     {:else if selectedAccount}
       {#if remoteCalendars.length === 0}
         <p class="hint">This account has no calendars to offer.</p>
@@ -298,31 +318,7 @@
   }
 
   .providers {
-    display: flex;
-    gap: 2px;
-    padding: 2px;
     margin-bottom: var(--sp-2);
-    border-radius: var(--radius-sm);
-    background: var(--bg-active);
-  }
-  .provider {
-    flex: 1;
-    height: 26px;
-    border-radius: 4px;
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .provider:hover {
-    color: var(--fg);
-  }
-  .provider.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
   }
 
   .where {
@@ -455,7 +451,6 @@
   }
   :global([data-phone]) .provider {
     flex: 1 1 calc(50% - 2px);
-    height: 40px;
     font-size: var(--text-base);
   }
   :global([data-phone]) .row {

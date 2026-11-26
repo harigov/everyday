@@ -77,15 +77,16 @@
           </div>
           <div class="tool-set">
             <div
-              class="segmented"
-              role="group"
+              class="seg-group"
+              role="radiogroup"
               aria-label="What happens when the assistant uses {t.name}"
             >
               {#each POLICIES as p (p.value)}
                 <button
-                  class="seg"
+                  class="seg-opt"
                   class:on={row.policy === p.value}
-                  aria-pressed={row.policy === p.value}
+                  role="radio"
+                  aria-checked={row.policy === p.value}
                   title={p.hint}
                   onclick={() => void connections.setPolicy(id, t.name, p.value)}
                 >
@@ -181,7 +182,7 @@
     align-items: flex-end;
     gap: var(--sp-2);
   }
-  .tool-set .segmented {
+  .tool-set .seg-group {
     width: 168px;
   }
 </style>

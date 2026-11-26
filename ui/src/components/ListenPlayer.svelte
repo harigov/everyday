@@ -154,7 +154,7 @@
     height: 28px;
     margin-right: var(--sp-2);
     padding: 0 4px 0 var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--accent) 12%, transparent);
     color: var(--accent);
     font-size: var(--text-xs);
@@ -220,7 +220,7 @@
     place-items: center;
     width: 24px;
     height: 24px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: inherit;
     transition: background var(--fast) var(--ease);
   }
@@ -242,7 +242,7 @@
     height: 24px;
     min-width: 38px;
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: inherit;
     font-size: var(--text-xs);
     font-weight: 700;

@@ -35,6 +35,7 @@
   import { debounce } from '../lib/store/debounce'
   import type { FeedHit, PodcastHit } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   // A phone's back button puts the sheet away rather than leaving the app.
   closesOnBack(
@@ -365,7 +366,7 @@
       {#if feed.directoryError}
         <p class="error">{feed.directoryError}</p>
       {:else if feed.directoryLoading && podcastRows.length === 0}
-        <p class="hint">{typed === '' ? 'Loading the charts…' : 'Searching…'}</p>
+        <Loading label={typed === '' ? 'Loading the charts…' : 'Searching…'} />
       {:else if podcastRows.length === 0}
         <p class="hint">
           {typed === '' ? 'Nothing is on the charts right now.' : `No podcast matches “${typed}”.`}
@@ -378,7 +379,7 @@
             <li class="hit">
               <span class="art" use:nearScreen={hit.artwork}>
                 {#if picture}
-                  <img src={picture} alt="" decoding="async" />
+                  <img src={picture} alt="" loading="lazy" decoding="async" />
                 {:else}
                   <Icon name="podcast" size={22} />
                 {/if}
@@ -413,7 +414,7 @@
       {:else if feed.directoryError}
         <p class="error">{feed.directoryError}</p>
       {:else if feed.directoryLoading && feedRows.length === 0}
-        <p class="hint">Searching…</p>
+        <Loading label="Searching…" />
       {:else if feedRows.length === 0}
         <p class="hint">No feed matches “{typed}”.</p>
       {:else}
@@ -424,7 +425,7 @@
             <li class="hit">
               <span class="art small" use:nearScreen={hit.icon}>
                 {#if picture}
-                  <img src={picture} alt="" decoding="async" />
+                  <img src={picture} alt="" loading="lazy" decoding="async" />
                 {:else}
                   <Icon name="rss" size={18} />
                 {/if}

@@ -38,7 +38,7 @@ const search = async ({ page, settle }, text) => {
  *  it folded away, and a desktop shows it. */
 const showMonth = async ({ page, settle }) => {
   if ((await page.locator('.minimonth').count()) === 0) {
-    await press(page.getByRole('button', { name: 'Show the month' }))
+    await press(page.getByRole('button', { name: 'The month', exact: true }))
     await settle()
   }
 }
@@ -239,7 +239,7 @@ const scenarios = [
     name: 'month',
     run: async ({ page, settle }) => {
       // Shown by default on a desktop, folded on a phone: the button that
-      // is "Show the month" there is what puts it back.
+      // is "The month" there is what puts it back.
       if (desktop()) return
       await showMonth({ page, settle })
     },

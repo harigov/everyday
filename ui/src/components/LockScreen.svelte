@@ -1,9 +1,13 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
   import { isMock } from '../lib/api'
+  import { VaultError } from '../lib/types'
   import Logo from './Logo.svelte'
 
   let password = $state('')
+  // What to say about the last try. A wrong password and a backend that
+  // could not be reached are different news and must not read alike.
+  let failure = $state<string | null>(null)
   let busy = $state(false)
   let shake = $state(false)
 
@@ -11,12 +15,17 @@
     e.preventDefault()
     if (!password || busy) return
     busy = true
+    failure = null
     try {
       await app.unlock(password)
       password = ''
-    } catch {
-      // The message is already in `app.error`; nudge the form so the
-      // failure is felt as well as read.
+    } catch (err) {
+      // The raw message is in `app.error`; the screen words it for a person.
+      failure =
+        err instanceof VaultError && err.code === 'bad_password'
+          ? 'That password didn’t work.'
+          : `Could not unlock: ${err instanceof Error ? err.message : String(err)}`
+      // Nudge the form so the failure is felt as well as read.
       shake = true
       setTimeout(() => (shake = false), 420)
       password = ''
@@ -32,9 +41,9 @@
     <h1>Karma Yoga</h1>
     <p class="sub">
       {#if app.screenOnly}
-        This screen is locked. {app.status?.name ?? 'Your journal'} is still open.
+        This screen is locked. {app.status?.name ?? 'Your vault'} is still open.
       {:else}
-        {app.status?.name ?? 'Your journal'} is locked.
+        {app.status?.name ?? 'Your vault'} is locked.
       {/if}
     </p>
 
@@ -43,13 +52,14 @@
       class="field pw"
       type="password"
       placeholder="Password"
+      aria-label="Password"
       bind:value={password}
       autofocus
       autocomplete="current-password"
       disabled={busy}
     />
 
-    {#if app.error}<p class="error">{app.error}</p>{/if}
+    {#if failure ?? app.error}<p class="error" role="alert">{failure ?? app.error}</p>{/if}
 
     <button class="btn btn-primary wide" type="submit" disabled={busy || !password}>
       {#if busy}
@@ -163,8 +173,12 @@
     height: 48px;
   }
 
-  .shake {
-    animation: shake 0.4s var(--ease);
+  /* The nudge is a motion; the message under it says the same thing, so
+     somebody who asked for less of it loses nothing. */
+  @media (prefers-reduced-motion: no-preference) {
+    .shake {
+      animation: shake 0.4s var(--ease);
+    }
   }
   @keyframes shake {
     10%,

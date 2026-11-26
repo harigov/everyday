@@ -27,12 +27,13 @@
   import { calendar } from '../lib/calendar.svelte'
   import { api } from '../lib/api'
   import { KARMA_DAYS, overview } from '../lib/overview.svelte'
-  import { karmaSummary, signed } from '../lib/karma'
+  import { DEED_LABELS, karmaSummary, signed } from '../lib/karma'
   import { ask, quick } from '../lib/quick.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { proposals, recordAs } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
   import { todo } from '../lib/todo.svelte'
+  import { notify } from '../lib/notify.svelte'
   import { tracking } from '../lib/tracking.svelte'
   import { notes as noteStore } from '../lib/notes.svelte'
   import { mail as mailStore } from '../lib/mail.svelte'
@@ -54,6 +55,9 @@
   import { addDays, localeWeekStart, startOfDay, startOfWeek } from '../lib/time'
   import { currentDay } from '../lib/today.svelte'
   import { formatValue } from '../lib/tracker'
+  import { formatMoney } from '../lib/money'
+  import { durationText } from '../lib/health'
+  import { formatDuration, itemName } from '../lib/screentime'
   import {
     aqiTier,
     byTimeOrLast,
@@ -74,8 +78,10 @@
     Item,
     Proposal,
     RoutineRun,
+    ScreenItem,
     Story,
     Thread,
+    Tracker,
     WeatherCurrent,
     WeatherDay,
   } from '../lib/types'
@@ -93,6 +99,7 @@
   import StatTile from './StatTile.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   const { widget }: { widget: Widget } = $props()
 
@@ -309,6 +316,30 @@
     await todo.setScope({ kind: 'goals' })
   }
 
+  /**
+   * A tap on a habit's chip. An unlit one logs; a lit one is not a second log
+   * by accident -- see `tracking.tapLit` -- and either way the toast says what
+   * happened and offers to put it back.
+   */
+  async function tapHabit(tracker: Tracker, done: boolean) {
+    if (!done) {
+      await tracking.log(tracker, tracker.defaultValue)
+      return
+    }
+    const result = await tracking.tapLit(tracker, today)
+    if (!result) return
+    notify.info(result.message, {
+      key: `habit:${tracker.id}`,
+      action: { label: 'Undo', run: () => void result.undo() },
+    })
+  }
+
+  /** The Todo app's goals page, for a card that has none to show. */
+  async function openGoals() {
+    if (!(await app.goTo('todo'))) return
+    await todo.setScope({ kind: 'goals' })
+  }
+
   // ── What's going on ──────────────────────────────────────────────────
   //
   // What they are in the middle of, one line per kind of thing: projects,
@@ -411,14 +442,14 @@
   /** What a mail card says while it has nothing to draw. */
   const mailWaiting = $derived(
     !app.supportsMail
-      ? 'This vault does not keep mail.'
+      ? 'Mail isn’t available on this device.'
       : overview.loading
         ? 'Counting the mail…'
         : 'No mail counted yet.',
   )
   const meetWaiting = $derived(
     !app.supportsCalendar
-      ? 'This vault does not keep a calendar.'
+      ? 'The calendar isn’t available on this device.'
       : overview.loading
         ? 'Counting the calendar…'
         : 'No meetings counted yet.',
@@ -572,7 +603,7 @@
 
   const readingWaiting = $derived(
     !app.supportsNews
-      ? 'This vault does not keep a feed.'
+      ? 'The Feed isn’t available on this device.'
       : overview.loading
         ? 'Looking at what is unread…'
         : 'Nothing followed yet.',
@@ -670,7 +701,7 @@
 
   /** What a mail card says while it has no rows, for each card's own empty. */
   function inboxWaiting(empty: string): string {
-    if (!app.supportsMail) return 'This vault does not keep mail.'
+    if (!app.supportsMail) return 'Mail isn’t available on this device.'
     return overview.loading ? 'Reading the Inbox…' : empty
   }
 
@@ -726,7 +757,7 @@
    * was looking for rather than that nothing is happening.
    */
   const shelfEmpty = $derived.by(() => {
-    if (!app.supportsLibrary) return 'This vault does not keep a library.'
+    if (!app.supportsLibrary) return 'The Library isn’t available on this device.'
     if (overview.loading && overview.goingShelves.length === 0) return 'Looking at the shelves…'
     const fallback: Record<string, [string, string]> = {
       book: ['Books', 'Reading'],
@@ -766,6 +797,13 @@
     if (cur.windDirectionCompass) line += ` ${cur.windDirectionCompass}`
     if (cur.windGusts != null) line += `, gusts ${Math.round(cur.windGusts)}`
     return line
+  }
+
+  /** What took the most of the day, whatever order the report listed it in. */
+  function mostUsed(items: ScreenItem[]): ScreenItem | null {
+    let best: ScreenItem | null = null
+    for (const item of items) if (!best || item.secs > best.secs) best = item
+    return best
   }
 
   // ── Today's brief ────────────────────────────────────────────────────
@@ -834,7 +872,7 @@
 
 {#if widget.type === 'brief'}
   {#if !briefs.enabled}
-    <p class="dim">This vault's storage does not keep routines, and a brief is one.</p>
+    <p class="dim">Briefs aren’t available on this device.</p>
   {:else if latestBrief?.brief}
     {@const run = latestBrief}
     {@const b = latestBrief.brief}
@@ -862,17 +900,22 @@
             ? reading
               ? 'Stop reading it aloud'
               : 'Hear it, as it was written to be heard'
-            : 'Reading aloud needs the desktop app, on a vault of its own'}
+            : 'Listening works on your computer for now.'}
           onclick={() => listenToBrief(run)}
         >
           <Icon name={reading ? 'stop' : 'play'} size={13} />
           {reading ? 'Stop' : 'Listen'}
         </button>
       </div>
+      <!-- Said on the card rather than left to a tooltip: a disabled button
+           with its reason in `title` is a button nobody on a phone can read. -->
+      {#if !listening.available}
+        <p class="footnote">Listening works on your computer for now.</p>
+      {/if}
       {#if briefs.error}<p class="footnote">{briefs.error}</p>{/if}
     </div>
   {:else if !briefs.loaded}
-    <p class="dim">Reading your briefs…</p>
+    <Loading label="Reading your briefs…" />
   {:else}
     <p class="dim">
       {briefs.isMaking(firstKind)
@@ -897,7 +940,11 @@
   <!-- ── Karma ─────────────────────────────────────────────────────── -->
 {:else if widget.type === 'karma'}
   {#if !overview.karma}
-    <p class="dim">Karma has not been worked out yet.</p>
+    {#if overview.loading}
+      <Loading label="Adding up your Karma…" />
+    {:else}
+      <p class="dim">Karma has not been worked out yet.</p>
+    {/if}
   {:else}
     {@const k = overview.karma}
     {@const sum = karmaSummary(k.days, today, weekStart)}
@@ -942,6 +989,13 @@
             since={k.since}
             {weekStart}
           />
+          <!-- Always there, and short: what Karma counts is the question a
+               total with no explanation raises, and the long answer below
+               only shows while the page is new. -->
+          <p class="footnote">
+            What counts: {Object.values(DEED_LABELS).join(' · ')}. A habit you are breaking costs
+            Karma.
+          </p>
           {#if k.days.length === 0 || k.since === today}
             <p class="footnote">
               Karma started {k.since === today ? 'today' : friendlyDate(k.since)}, at zero. Tasks
@@ -1017,8 +1071,7 @@
 {:else if widget.type === 'habitsToday'}
   {#if tracking.loggable.length === 0}
     <p class="dim">
-      Nothing is tracked yet. “Record something” at the top of this page makes one out of what you
-      type.
+      Nothing is tracked yet. “Log a habit” at the top of this page makes one out of what you type.
     </p>
   {:else}
     <div class="chips">
@@ -1029,8 +1082,13 @@
           class="habit-chip"
           class:on={done}
           style="--c: {tracker.color}"
-          title={done ? `${tracker.name} — recorded today` : `Record ${tracker.name}`}
-          onclick={() => tracking.log(tracker, tracker.defaultValue)}
+          title={done
+            ? tracker.kind === 'check'
+              ? `${tracker.name} — done today. Tap to take it back`
+              : `${tracker.name} — logged today. Tap to log another`
+            : `Log ${tracker.name}`}
+          aria-pressed={tracker.kind === 'check' ? done : undefined}
+          onclick={() => void tapHabit(tracker, done)}
         >
           <TrackerIcon name={tracker.icon} color={tracker.color} size={22} solid={done} />
           <span class="cname">{tracker.name}</span>
@@ -1072,7 +1130,7 @@
 {:else if widget.type === 'weather'}
   {#if overview.weatherNoLocation}
     <p class="dim">Add where you live in Settings to see the weather here.</p>
-    <button class="footnote-btn" onclick={() => panels.openSettings('profile')}>
+    <button class="btn btn-sm action" onclick={() => panels.openSettings('profile')}>
       Set your location
     </button>
   {:else if overview.weather}
@@ -1143,7 +1201,7 @@
   {:else if overview.weatherError}
     <p class="dim">Could not load the weather. {overview.weatherError}</p>
   {:else}
-    <p class="dim">Loading the weather…</p>
+    <Loading label="Loading the weather…" />
   {/if}
 
   <!-- ── Where the week went ───────────────────────────────────────── -->
@@ -1173,7 +1231,7 @@
   {:else if composing}
     <p class="footnote">Reading the week…</p>
   {:else if quick.enabled('overview.week')}
-    <button class="footnote-btn" onclick={() => void writeTheWeek()}>
+    <button class="btn btn-sm action" onclick={() => void writeTheWeek()}>
       <Icon name="sparkle" size={12} /> Write the week
     </button>
   {:else}
@@ -1206,6 +1264,7 @@
 {:else if widget.type === 'goalProgress'}
   {#if goalRows.length === 0}
     <p class="dim">No goals are open. They live in the Todo app, under Goals.</p>
+    <button class="btn btn-sm action" onclick={() => void openGoals()}>Open Goals</button>
   {:else}
     <div class="meters">
       {#each goalRows as row (row.goal.id)}
@@ -1486,7 +1545,7 @@
   <!-- ── Today's events ────────────────────────────────────────────── -->
 {:else if widget.type === 'todayEvents'}
   {#if !app.supportsCalendar}
-    <p class="dim">This vault does not keep a calendar.</p>
+    <p class="dim">The calendar isn’t available on this device.</p>
   {:else if agenda.length === 0}
     <p class="dim">
       {overview.loading ? 'Reading the calendar…' : 'Nothing on the calendar today.'}
@@ -1521,7 +1580,7 @@
        same box takes a mistaken tick back. -->
 {:else if widget.type === 'todayTasks'}
   {#if !app.supportsTasks}
-    <p class="dim">This vault does not keep tasks.</p>
+    <p class="dim">Tasks aren’t available on this device.</p>
   {:else if todayRows.length === 0}
     <p class="dim">
       {overview.loading ? 'Reading the list…' : 'Nothing is due today, and nothing has slipped.'}
@@ -1668,19 +1727,107 @@
   <ColumnChart points={writing.points} height={64} />
 
   <!-- ── Notes you touched last ────────────────────────────────────── -->
-{:else if overview.notes.length === 0}
-  <p class="dim">No notes yet.</p>
-{:else}
-  <ul class="plain">
-    {#each overview.notes as note (note.id)}
-      <li>
-        <button class="notelink" onclick={() => void openNote(note.id)}>
-          <span class="nname">{note.title || 'Untitled note'}</span>
-          <span class="dim">{relativeTime(note.updatedAt)}</span>
-        </button>
-      </li>
-    {/each}
-  </ul>
+  <!-- ── Money this month ──────────────────────────────────────────── -->
+{:else if widget.type === 'moneyMonth'}
+  {#if !app.supportsMoney}
+    <p class="dim">Money isn’t available on this device.</p>
+  {:else if !overview.moneyMonth}
+    {#if overview.loading}
+      <Loading label="Adding up the month…" />
+    {:else}
+      <p class="dim">Nothing to show for this month yet.</p>
+    {/if}
+  {:else}
+    {@const m = overview.moneyMonth}
+    <StatTile
+      label="Left over"
+      value={formatMoney(m.net, m.currency)}
+      note={m.income === 0 && m.spending === 0
+        ? 'Nothing recorded this month yet.'
+        : `${formatMoney(m.income, m.currency)} in · ${formatMoney(m.spending, m.currency)} out`}
+      warn={m.net < 0}
+    >
+      <button class="card-link foot" onclick={() => void app.goTo('money')}>Open Money</button>
+    </StatTile>
+  {/if}
+
+  <!-- ── Health today ──────────────────────────────────────────────── -->
+{:else if widget.type === 'healthToday'}
+  {#if !app.supportsHealth}
+    <p class="dim">Health isn’t available on this device.</p>
+  {:else if !overview.healthDay}
+    {#if overview.loading}
+      <Loading label="Reading today…" />
+    {:else}
+      <p class="dim">Nothing to show for today yet.</p>
+    {/if}
+  {:else}
+    {@const day = overview.healthDay}
+    {@const late = day.dosesDue.filter((d) => d.overdue).length}
+    <dl class="facts">
+      <div>
+        <dt>Doses due</dt>
+        <dd>
+          {day.dosesDue.length === 0 ? 'None' : plural(day.dosesDue.length, 'dose')}
+          {#if late > 0}<span class="late">· {late} overdue</span>{/if}
+        </dd>
+      </div>
+      <div>
+        <dt>Steps</dt>
+        <dd>{day.activity.steps.toLocaleString()}</dd>
+      </div>
+      <div>
+        <dt>Last night</dt>
+        <dd>{day.sleep ? durationText(day.sleep.asleepMin) : 'Not recorded'}</dd>
+      </div>
+    </dl>
+    <button class="card-link foot" onclick={() => void app.goTo('health')}>Open Health</button>
+  {/if}
+
+  <!-- ── Screen time today ─────────────────────────────────────────── -->
+{:else if widget.type === 'screenToday'}
+  {#if !app.supportsScreenTime}
+    <p class="dim">Screen time isn’t available on this device.</p>
+  {:else if !overview.screenToday}
+    {#if overview.loading}
+      <Loading label="Adding up today…" />
+    {:else}
+      <p class="dim">Nothing to show for today yet.</p>
+    {/if}
+  {:else}
+    {@const r = overview.screenToday}
+    {@const top = mostUsed(r.items)}
+    <StatTile
+      label="So far today"
+      value={formatDuration(r.totalSecs)}
+      note={top && r.totalSecs > 0
+        ? `Most on ${itemName(top)}, ${formatDuration(top.secs)}`
+        : 'Nothing recorded yet.'}
+    >
+      <button class="card-link foot" onclick={() => void app.goTo('screentime')}>
+        Open Screen time
+      </button>
+    </StatTile>
+  {/if}
+
+  <!-- ── Notes you touched last ────────────────────────────────────── -->
+{:else if widget.type === 'recentNotes'}
+  {#if overview.notes.length === 0}
+    <p class="dim">No notes yet.</p>
+  {:else}
+    <ul class="plain">
+      {#each overview.notes as note (note.id)}
+        <li>
+          <button class="notelink" onclick={() => void openNote(note.id)}>
+            <span class="nname">{note.title || 'Untitled note'}</span>
+            <span class="dim">{relativeTime(note.updatedAt)}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+  <!-- Nothing after this: a type with no branch above draws nothing rather
+       than somebody else's notes. -->
 {/if}
 
 <style>
@@ -1820,7 +1967,7 @@
   .thing {
     padding: 1px var(--sp-2);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg);
     font-size: var(--text-sm);
   }
@@ -1852,6 +1999,43 @@
 
   .footnote-btn:hover:not(:disabled) {
     color: var(--fg-muted);
+  }
+
+  /* The link under a card's figure: what it opens, in the accent. */
+  .card-link.foot {
+    align-self: flex-start;
+    margin-top: var(--sp-2);
+  }
+
+  /* Health today: a label and its figure per line, the figures lined up. */
+  .facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: var(--sp-2) var(--sp-4);
+    margin: 0;
+  }
+  .facts > div {
+    display: contents;
+  }
+  .facts dt {
+    color: var(--fg-subtle);
+    font-size: var(--text-sm);
+  }
+  .facts dd {
+    margin: 0;
+    color: var(--fg);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .facts + .card-link.foot {
+    margin-top: var(--sp-3);
+  }
+
+  /* A card's one action, as a button: a faint footnote link is for the
+     second thing on a card, not the only thing on it. */
+  .action {
+    margin-top: var(--sp-2);
   }
 
   .dim {
@@ -2006,7 +2190,7 @@
     height: 38px;
     padding: 0 var(--sp-3);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg);
     color: var(--fg-muted);
     font-size: var(--text-sm);
@@ -2027,7 +2211,7 @@
   }
   .streak {
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
     font-size: var(--text-xs);
     font-weight: 650;
@@ -2132,9 +2316,9 @@
     flex: none;
     align-self: center;
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--accent);
-    color: var(--bg);
+    color: var(--fg-on-accent);
     font-size: var(--text-xs);
     font-weight: 650;
   }
@@ -2157,6 +2341,10 @@
   .tick {
     display: flex;
     flex: none;
+    /* A 16 px circle is a hard target; the padding makes the button 28 px
+       and the negative margin gives the row its height back. */
+    padding: 6px;
+    margin: -6px;
     color: var(--fg-faint);
     transition:
       color var(--fast) var(--ease),
@@ -2266,7 +2454,7 @@
     display: block;
     height: 3px;
     margin-top: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
     overflow: hidden;
   }

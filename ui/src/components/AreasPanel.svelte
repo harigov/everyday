@@ -34,6 +34,10 @@
   let renaming = $state<AreaInfo | null>(null)
   let renameDraft = $state('')
   let pendingDelete = $state<AreaInfo | null>(null)
+  // The glyph beside an area's name -- an emoji -- edited in the row, the
+  // way its name is.
+  let iconFor = $state<AreaInfo | null>(null)
+  let iconDraft = $state('')
 
   void purpose.load()
 
@@ -57,6 +61,15 @@
     }
   }
 
+  async function commitIcon() {
+    const area = iconFor
+    const icon = iconDraft.trim()
+    iconFor = null
+    if (area && icon && icon !== area.icon) {
+      await purpose.saveArea({ ...$state.snapshot(area), icon })
+    }
+  }
+
   function areaMenu(area: AreaInfo): MenuItem[] {
     return tidyMenu([
       {
@@ -65,6 +78,14 @@
         run: () => {
           renameDraft = area.name
           renaming = area
+        },
+      },
+      {
+        label: 'Icon…',
+        icon: 'star',
+        run: () => {
+          iconDraft = area.icon
+          iconFor = area
         },
       },
       {
@@ -108,17 +129,16 @@
 </script>
 
 <section>
-  <span class="eyebrow">Your areas</span>
+  <h3 class="eyebrow">Your areas</h3>
   <p class="hint">
     The parts of your life — <em>Family</em>, <em>Work</em>, <em>Health</em>. Everything that takes
-    time can be filed under one, which is what lets the Overview say where a week went, and what a
-    goal in the Todo app hangs from.
+    time can be filed under one, which is what lets the Overview say where a week went. An area
+    carries on; a goal is something you are working towards inside one.
   </p>
 
   {#if live.length === 0 && !creating}
     <p class="hint">
-      None yet. Nothing writes this list for you: what a life is made of is a claim, and it is not
-      one this application gets to make.
+      No areas yet. Nothing adds them for you — what your life is made of is yours to say.
     </p>
     <div>
       <button class="btn btn-outline" disabled={!writable} onclick={() => void purpose.seed()}>
@@ -130,7 +150,19 @@
   <ul class="areas">
     {#each live as area (area.id)}
       <li>
-        {#if renaming?.id === area.id}
+        {#if iconFor?.id === area.id}
+          <input
+            class="field icon-field"
+            aria-label="Icon for {area.name}, an emoji"
+            bind:value={iconDraft}
+            use:focusOnMount
+            onblur={commitIcon}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') void commitIcon()
+              if (e.key === 'Escape') iconFor = null
+            }}
+          />
+        {:else if renaming?.id === area.id}
           <input
             class="field"
             aria-label="Area name"
@@ -157,7 +189,7 @@
               aria-label="More, for {area.name}"
               onclick={(e) => menu.show(e, areaMenu(area))}
             >
-              <Icon name="chevron" size={13} />
+              <Icon name="more" size={15} />
             </button>
           </div>
         {/if}
@@ -189,7 +221,7 @@
   {/if}
 
   {#if archived.length > 0}
-    <span class="eyebrow archived">Archived</span>
+    <h3 class="eyebrow archived">Archived</h3>
     <ul class="areas">
       {#each archived as area (area.id)}
         <li>
@@ -200,10 +232,11 @@
             <span class="name">{area.name}</span>
             <button
               class="more"
+              title="What can be done to this area"
               aria-label="More, for {area.name}"
               onclick={(e) => menu.show(e, areaMenu(area))}
             >
-              <Icon name="chevron" size={13} />
+              <Icon name="more" size={15} />
             </button>
           </div>
         </li>
@@ -298,8 +331,7 @@
   }
 
   /* The same menu the right-click raises, for anybody who does not know
-     there is one. A chevron rotated to point down, which is the icon set's
-     one direction. */
+     there is one. */
   .more {
     display: grid;
     flex: none;
@@ -308,7 +340,9 @@
     height: 22px;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
-    rotate: 90deg;
+  }
+  .icon-field {
+    max-width: 8rem;
   }
   .more:hover {
     background: var(--bg-active);

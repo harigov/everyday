@@ -58,7 +58,9 @@
       <span class="side-icon"><Symbol name={`health-${view}`} size={17} /></span>
       <span class="side-text">{LABELS[view]}</span>
       {#if view === 'medications' && overdue > 0}
-        <span class="side-count strong" title="Doses to log">{overdue}</span>
+        <span class="side-count strong" title="Doses to log"
+          >{overdue}<span class="sr-only"> {overdue === 1 ? 'dose' : 'doses'} to log</span></span
+        >
       {/if}
     </button>
 
@@ -86,7 +88,7 @@
 
   <button class="side-row settings" onclick={openSettings}>
     <span class="side-icon"><Symbol name="settings" size={16} /></span>
-    <span class="side-text">Health settings…</span>
+    <span class="side-text">Health settings</span>
   </button>
 </nav>
 

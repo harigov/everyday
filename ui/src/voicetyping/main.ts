@@ -10,4 +10,4 @@ import '../styles/themes.css'
 import VoiceTypingPill from './VoiceTypingPill.svelte'
 import { bootWindow } from '../lib/window-boot'
 
-export default bootWindow('voice-typing', VoiceTypingPill)
+export default bootWindow('voice-typing', VoiceTypingPill, { follow: true })

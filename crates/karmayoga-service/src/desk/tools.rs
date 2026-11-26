@@ -444,7 +444,7 @@ fn search_address(site: &SearchSite, query: &str) -> Result<String, ToolExecutio
 fn control_media_tool(here: Here) -> PortableDynamicTool {
     PortableDynamicTool::new(
         CONTROL_MEDIA,
-        "Control what is playing music, a podcast or a video on this computer: play, pause, \
+        "Control the music, podcast or video playing on this computer: play, pause, \
          toggle (play or pause), next, previous, or status to only say what is playing.",
         object(
             json!({

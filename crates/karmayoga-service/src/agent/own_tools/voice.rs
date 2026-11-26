@@ -223,7 +223,7 @@ pub(in crate::agent) fn read_brief_tool(vault: Arc<Vault>) -> PortableDynamicToo
     PortableDynamicTool::new(
         READ_BRIEF,
         "Read the person's daily brief out to them in full, in your voice, when they ask to \
-         hear it (\"read me my brief\", \"how does my day look\"). It is read after your \
+         hear it (\"read me my brief\"). It is read after your \
          reply, as it was written to be heard, and they can stop it by talking. Give kind to \
          choose the morning, evening or weekly brief, or the daily podcast (a quarter of an \
          hour by default); omit it for the newest. After calling it, \
@@ -255,8 +255,8 @@ pub(in crate::agent) fn read_brief_tool(vault: Arc<Vault>) -> PortableDynamicToo
                         .map_err(|e| ToolExecutionError::other(e.to_string()))?
                         .ok_or_else(|| {
                             ToolExecutionError::invalid_args(
-                                "read_brief: there is no brief yet. Switch one on in Settings \
-                                 \u{2192} Briefs, or make one now with run_routine.",
+                                "read_brief: there is no brief yet. Switch one on in the Briefs \
+                                 settings, or make one now with run_routine.",
                             )
                         })?;
                     let brief = run.brief.as_deref().expect("briefs() keeps only runs with one");

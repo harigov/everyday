@@ -197,12 +197,12 @@ button {
 
 .btn-danger {
   background: var(--danger);
-  color: #fff;
+  color: var(--fg-on-danger);
   box-shadow: var(--shadow-sm);
 }
 .btn-danger:hover {
   background: color-mix(in oklab, var(--danger) 88%, #000);
-  color: #fff;
+  color: var(--fg-on-danger);
 }
 
 /* A `.btn` that is the only action under a paragraph, with no primary button
@@ -816,6 +816,209 @@ textarea.field {
   overflow-y: auto;
   margin: calc(var(--sp-4) * -1);
   padding: var(--sp-4);
+}
+
+/* ── Shared controls ──────────────────────────────────────────────────
+   Each of these was written out, near enough identically, in a dozen or
+   more components' own stylesheets -- twenty-four copies of the checkbox
+   row, eleven of the segmented control, eleven spinners -- and the copies
+   had begun to drift (a 2px gap here, no `min-width: 0` there, one with
+   `accent-color` and one without). One copy each, here. The names are new
+   ones, not the components' old `.toggle`/`.segmented`/`.seg`, so a
+   component still using an old name for something else -- Mail's thread
+   `.toggle` is a folded-message button -- is not restyled by accident. */
+
+/* Text only a screen reader reads: a row's "unread", an icon's meaning. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* A checkbox with a label and, under it, a line saying what it does:
+
+     <label class="check-row">
+       <input type="checkbox" bind:checked={…} />
+       <span><b>Label</b><small>What turning it on does.</small></span>
+     </label>
+
+   `.disabled` on the label for a choice that is suspended rather than
+   gone -- still shown, at half strength. */
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-width: 0;
+  cursor: pointer;
+}
+.check-row.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.check-row > input {
+  flex: none;
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+.check-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.check-row b {
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+.check-row small {
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--fg-subtle);
+}
+
+/* A choice of two to five, all on show, one of them on -- a segmented
+   control. For a page's own sections use `SubTabs` instead (chips, arrow
+   keys); this is for a value inside a form:
+
+     <div class="seg-group" role="radiogroup" aria-label="…">
+       <button class="seg-opt" class:on={v === 'a'} role="radio"
+               aria-checked={v === 'a'} onclick={…}>A</button> …
+     </div> */
+.seg-group {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--bg-sunken);
+  border-radius: var(--radius);
+}
+.seg-group.disabled {
+  opacity: 0.5;
+}
+.seg-opt {
+  flex: 1;
+  min-height: 30px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 550;
+  color: var(--fg-subtle);
+  transition:
+    background var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+.seg-opt:hover {
+  color: var(--fg);
+}
+.seg-opt:disabled {
+  cursor: default;
+}
+.seg-opt:disabled:hover {
+  color: var(--fg-subtle);
+}
+.seg-opt.on {
+  background: var(--bg-raised);
+  color: var(--fg);
+  box-shadow: var(--shadow-sm);
+}
+[data-phone] .seg-opt {
+  min-height: 40px;
+}
+
+/* The row a settings page's draft ends on: what happened, then Save. Give
+   it both classes, `class="save save-row"` -- `.save` is what
+   `SettingsView` pins to the foot of the pane; this is the row itself. The
+   `.notice` says "Saved." or what went wrong, and is announced. */
+.save-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  margin-top: var(--sp-6);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+.save-row .notice {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+/* A small spinning ring, for "working on it" beside a word. Stops under
+   reduced motion (the rule at the foot of this file). */
+.spinner {
+  display: inline-block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.7;
+  vertical-align: -2px;
+  animation: ky-spin 0.8s linear infinite;
+}
+@keyframes ky-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The link at the right of a card's heading: "All medications", "Open
+   budget". One style and one kind of wording -- what it opens, not "More". */
+.card-link {
+  flex: none;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--accent);
+}
+.card-link:hover {
+  text-decoration: underline;
+}
+
+/* Where something can be dropped, while it is being dragged over: the
+   editor's, a note's. No blur behind it -- the dashed edge says enough, and
+   a blur over a long page is paid for on every frame of the drag. */
+.dropzone {
+  position: absolute;
+  inset: var(--sp-3);
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  font-weight: 600;
+  color: var(--accent);
+  pointer-events: none;
+}
+
+/* Sheets arrive rather than appear: the dimming fades in and the sheet
+   rises 4px as it does, over `--fast`. Menus stay instant -- they are
+   aimed at, and a menu that is still moving is a menu that misses. Focus
+   is not delayed; this is paint only. */
+@keyframes ky-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes ky-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.scrim {
+  animation: ky-fade-in var(--fast) var(--ease);
+}
+.sheet {
+  animation: ky-rise-in var(--fast) var(--ease);
 }
 
 /* ── Phones ─────────────────────────────────────────────────────────────

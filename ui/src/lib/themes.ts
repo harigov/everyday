@@ -158,6 +158,7 @@ export const THEME_TOKENS = [
   '--fg-subtle',
   '--fg-faint',
   '--fg-on-accent',
+  '--fg-on-danger',
   '--border',
   '--border-strong',
   // Meaning.

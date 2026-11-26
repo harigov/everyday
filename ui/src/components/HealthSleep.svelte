@@ -567,7 +567,7 @@
     overflow-y: auto;
   }
   .page {
-    max-width: 960px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;
@@ -578,7 +578,7 @@
   .tiles {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-end;
+    align-items: flex-start;
     gap: var(--sp-4) var(--sp-8);
   }
   .page > .tiles {
@@ -741,14 +741,14 @@
   .pbar {
     display: block;
     height: 4px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--accent) 16%, transparent);
     overflow: hidden;
   }
   .pfill {
     display: block;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--accent);
   }
   .pval {

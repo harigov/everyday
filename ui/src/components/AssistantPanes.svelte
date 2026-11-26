@@ -53,6 +53,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
   import JobCard from './JobCard.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
   import SkillProposalPreview from './SkillProposalPreview.svelte'
@@ -426,7 +427,7 @@
 <div class="panes">
   {#if (pane === 'routines' && app.supportsRoutines && !editing) || pane === 'memory' || assistant.loading}
     <header class="head">
-      {#if assistant.loading}<span class="dim">Loading…</span>{/if}
+      {#if assistant.loading}<Loading />{/if}
       <span class="spacer"></span>
       {#if pane === 'routines' && app.supportsRoutines && !editing}
         <button class="btn btn-primary" onclick={() => void assistant.draft()}>New routine</button>
@@ -439,7 +440,7 @@
   <div class="body">
     {#if pane === 'runs'}
       {#if assistant.runs.length === 0 && jobs.jobs.length === 0}
-        <EmptyState lead="It has not done anything yet">
+        <EmptyState lead="{agent.displayName} has not done anything yet">
           {#snippet icon()}<Icon name="sparkle" size={34} weight={1.4} />{/snippet}
           {#snippet note()}
             Set up a routine and it will start turning up here on its own. Whatever it makes — a
@@ -802,6 +803,7 @@
           >
             <header class="cardhead">
               <span class="name">{routine.name}</span>
+              {#if !routine.enabled}<span class="tag">Off</span>{/if}
               {#if isDream && routine.kind?.type === 'dream'}
                 <span class="pill dream">{DREAM_SCOPE_LABELS[routine.kind.scope]}</span>
               {:else if routine.kind?.type === 'brief'}
@@ -842,7 +844,10 @@
                 <button class="link" onclick={() => void assistant.runNow(routine.id)}>
                   Run now
                 </button>
-                <button class="link" onclick={() => void assistant.toggle(routine)}>
+                <button
+                  class={routine.enabled ? 'link' : 'btn btn-sm btn-outline'}
+                  onclick={() => void assistant.toggle(routine)}
+                >
                   {routine.enabled ? 'Switch off' : 'Switch on'}
                 </button>
               {/if}
@@ -993,7 +998,7 @@
       {#if memoryGroups.noticed.length > 0 || memoryProposals.length > 0}
         <p class="lead heading">What it has noticed</p>
         <p class="hint">
-          Noticed by a dream, not told to it. It may be wrong -- say so, and it stops assuming it.
+          Noticed by a dream, not told to it. It may be wrong — say so, and it stops assuming it.
         </p>
         {#each memoryProposals as p (p.id)}
           <ProposalGhost proposal={p} confirm={true} color="var(--accent)">
@@ -1027,7 +1032,7 @@
                 <span class="dim">last seen {relativeTime(memory.lastSupported)}</span>
               {/if}
               <button class="link" onclick={() => void confirmNoticed(memory.id)}>
-                That's right
+                That’s right
               </button>
               <button class="link" onclick={() => void rejectNoticed(memory.id)}>Not true</button>
             {/if}
@@ -1036,8 +1041,8 @@
       {/if}
 
       {#if memoryGroups.unassumed.length > 0}
-        <p class="lead heading">What it won't assume</p>
-        <p class="hint">Struck out, and kept -- so a later dream cannot learn them again.</p>
+        <p class="lead heading">What it won’t assume</p>
+        <p class="hint">Struck out, and kept — so a later dream cannot learn them again.</p>
         {#each memoryGroups.unassumed as memory (memory.id)}
           <div class="memory rejected">
             <span class="memtext">{memory.text}</span>
@@ -1055,11 +1060,11 @@
       <!-- "Waiting for you": every pending proposal, grouped by kind, and a
            short history of what has been answered lately. -->
       {#if proposals.pending.length === 0}
-        <EmptyState lead="Nothing waiting.">
+        <EmptyState lead="Nothing waiting">
           {#snippet icon()}<Icon name="tick" size={34} weight={1.4} />{/snippet}
           {#snippet note()}
-            Work it prepared but did not do turns up here -- a task, a block of time, something it
-            has noticed -- until you accept or decline it.
+            Work it prepared but did not do turns up here — a task, a block of time, something it
+            has noticed — until you accept or decline it.
           {/snippet}
         </EmptyState>
       {:else}
@@ -1082,7 +1087,7 @@
 
       <p class="lead heading">Recently answered</p>
       {#if loadingAnswered}
-        <p class="hint">Loading…</p>
+        <Loading />
       {:else if answered.length === 0}
         <p class="hint">Nothing in the last seven days.</p>
       {:else}
@@ -1162,8 +1167,12 @@
     border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
   }
 
-  .card.off {
-    opacity: 0.6;
+  /* Off is said in words and in quieter text, not by fading the whole card:
+     the links on it are still what somebody came to press, and must read at
+     full contrast. */
+  .card.off .name,
+  .card.off .said {
+    color: var(--fg-muted);
   }
 
   .cardhead,
@@ -1179,7 +1188,7 @@
 
   .pill {
     padding: 1px var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     color: var(--fg-muted);
     font-size: var(--text-xs);

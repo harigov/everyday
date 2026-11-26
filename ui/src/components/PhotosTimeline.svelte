@@ -699,7 +699,7 @@
     gap: 3px;
     height: 18px;
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: rgb(0 0 0 / 0.5);
     color: #fff;
     font-size: var(--text-xs);

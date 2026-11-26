@@ -17,17 +17,22 @@
 
   import { untrack } from 'svelte'
   import { agent } from '../lib/agent.svelte'
-  import { assistant } from '../lib/assistant.svelte'
+  import { assistant, PANE_LABELS, PANES, type Pane } from '../lib/assistant.svelte'
   import { lookOf } from '../lib/companion'
   import { splitDigest } from '../lib/dream'
   import { panels } from '../lib/panels.svelte'
   import { details, phone } from '../lib/phone.svelte'
   import AssistantDog from './AssistantDog.svelte'
   import AssistantNav from './AssistantNav.svelte'
+  import AssistantPanes from './AssistantPanes.svelte'
   import ChatThread from './ChatThread.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import PhoneBack from './PhoneBack.svelte'
+  import SubTabs from './SubTabs.svelte'
+  import { jobs } from '../lib/jobs.svelte'
+  import { proposals } from '../lib/proposals.svelte'
+  import { app } from '../lib/state.svelte'
 
   // Each time the page appears: the settings may have changed in the
   // meantime, and the thread list has moved if the rail was used elsewhere.
@@ -54,8 +59,37 @@
 
   /** The list, rather than a conversation. */
   const listing = $derived(phone.on && !details.isOpen('assistant'))
+  /**
+   * One of the standing tabs (what it did, routines, memory, waiting for you)
+   * is open in place of the conversation. They are tabs of Settings too; from
+   * the sidebar here they open in this app, so the app and its row stay
+   * selected and the way back is one press.
+   */
+  const pane = $derived(listing ? null : assistant.pane)
   /** The dog floats over the thread; on a phone it sits in the header's row. */
-  const floats = $derived(dog && !phone.on)
+  const floats = $derived(dog && !phone.on && pane === null)
+
+  /** The tabs this vault can fill, as Settings offers them. */
+  const paneTabs = $derived(
+    PANES.filter(
+      (p) =>
+        (p !== 'proposals' || app.supportsProposals) && (p !== 'routines' || app.supportsRoutines),
+    ).map((id) => ({
+      id,
+      label: PANE_LABELS[id],
+      count:
+        id === 'runs'
+          ? (app.supportsRoutines ? assistant.unseen : 0) + (app.supportsJobs ? jobs.unseen : 0)
+          : id === 'proposals'
+            ? proposals.unseen
+            : 0,
+    })),
+  )
+
+  // Back at the phone's list, the tab is done with.
+  $effect(() => {
+    if (listing) untrack(() => (assistant.pane = null))
+  })
 
   // A conversation chosen somewhere that is not this page -- "See what it
   // did" on a job, a file's "Ask about this", a new thread from the command
@@ -67,6 +101,9 @@
     const id = agent.conversationId
     untrack(() => {
       if (phone.on && id !== null && known !== null && id !== known) details.open('assistant')
+      // Another conversation put on screen (from a job, a file, the sidebar)
+      // replaces the tab rather than hiding behind it.
+      if (known !== null && id !== known) assistant.pane = null
       known = id
     })
   })
@@ -98,21 +135,33 @@
   <header class="head">
     <div class="side left">
       <!-- A conversation is over the list, on a phone: the way back to it. -->
-      {#if !listing}<PhoneBack onclick={() => details.close('assistant')} />{/if}
+      {#if !listing}
+        <PhoneBack
+          onclick={() => {
+            assistant.pane = null
+            details.close('assistant')
+          }}
+        />
+      {/if}
       <div class="pane-titles">
-        <h1 class="pane-title" title={listing ? undefined : title}>
-          {listing ? agent.displayName : title}
+        <h1 class="pane-title" title={listing ? undefined : pane ? PANE_LABELS[pane] : title}>
+          {listing ? agent.displayName : pane ? PANE_LABELS[pane] : title}
         </h1>
       </div>
     </div>
-    {#if dog}
+    {#if dog && pane === null}
       <div class="stage">
         <AssistantDog width={phone.on ? 64 : 156} height={phone.on ? 54 : 132} />
         <span class="pill desktop-only">{agent.displayName}</span>
       </div>
     {/if}
     <div class="side">
-      {#if agent.ready && !listing}
+      {#if pane !== null}
+        <button class="btn btn-sm back desktop-only" onclick={() => (assistant.pane = null)}>
+          Back to conversation
+        </button>
+      {/if}
+      {#if agent.ready && !listing && pane === null}
         <button
           class="btn new"
           onclick={() => void agent.startThread()}
@@ -140,6 +189,18 @@
          two places, so a row means the same in both. -->
     <div class="list">
       <AssistantNav />
+    </div>
+  {:else if pane !== null}
+    <!-- The same tabs Settings holds, drawn here beside the conversations. -->
+    <div class="tab scroll">
+      <div class="tab-body">
+        <SubTabs
+          tabs={paneTabs}
+          bind:value={() => pane, (v: Pane) => (assistant.pane = v)}
+          label="What the assistant has done and remembers"
+        />
+        <AssistantPanes {pane} />
+      </div>
     </div>
   {:else if agent.settings === null}
     <!-- The settings have not come back yet. Nothing rather than the "not set
@@ -248,7 +309,7 @@
     margin-top: -8px;
     padding: 4px var(--sp-4);
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-raised);
     box-shadow:
       0 0 0 1px var(--border),
@@ -272,6 +333,27 @@
   .ghost:hover {
     background: var(--bg-hover);
     color: var(--fg);
+  }
+
+  .tab {
+    flex: 1;
+    min-height: 0;
+    padding: var(--sp-6) var(--sp-8) 0;
+  }
+  .tab-body {
+    display: grid;
+    align-content: start;
+    gap: var(--sp-4);
+    width: 100%;
+    max-width: calc(var(--measure) + var(--sp-8) * 2);
+    margin: 0 auto;
+    padding-bottom: var(--sp-8);
+  }
+  :global([data-phone]) .tab {
+    padding: var(--sp-4) var(--sp-4) 0;
+  }
+  :global([data-phone]) .tab-body {
+    padding-bottom: var(--fab-clear);
   }
 
   .wait {

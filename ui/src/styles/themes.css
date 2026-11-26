@@ -70,6 +70,7 @@
   --fg-subtle: #8b857c;
   --fg-faint: #aaa49a;
   --fg-on-accent: #fff;
+  --fg-on-danger: #fff;
   --border: rgb(0 0 0 / 0.09);
   --border-strong: rgb(0 0 0 / 0.16);
 
@@ -124,7 +125,8 @@
   --fg-muted: #a8a4b0;
   --fg-subtle: #7d7a86;
   --fg-faint: #5c5966;
-  --fg-on-accent: #fff;
+  --fg-on-accent: #1c1207;
+  --fg-on-danger: #1c1207;
   --border: rgb(255 255 255 / 0.09);
   --border-strong: rgb(255 255 255 / 0.17);
 
@@ -186,6 +188,7 @@
   --fg-subtle: #6a788d;
   --fg-faint: #98a4b5;
   --fg-on-accent: #fff;
+  --fg-on-danger: #fff;
   --border: rgb(20 55 110 / 0.1);
   --border-strong: rgb(20 55 110 / 0.18);
 
@@ -247,6 +250,7 @@
   --fg-subtle: #957381;
   --fg-faint: #bd9eaa;
   --fg-on-accent: #fff;
+  --fg-on-danger: #fff;
   --border: rgb(110 30 60 / 0.1);
   --border-strong: rgb(110 30 60 / 0.18);
 
@@ -308,6 +312,7 @@
   --fg-subtle: #6c8173;
   --fg-faint: #9cb0a2;
   --fg-on-accent: #fff;
+  --fg-on-danger: #fff;
   --border: rgb(20 70 40 / 0.1);
   --border-strong: rgb(20 70 40 / 0.18);
 
@@ -369,6 +374,7 @@
   --fg-subtle: #8e7e6c;
   --fg-faint: #b6a794;
   --fg-on-accent: #fff;
+  --fg-on-danger: #fff;
   --border: rgb(90 55 20 / 0.1);
   --border-strong: rgb(90 55 20 / 0.18);
 
@@ -430,7 +436,8 @@
   --fg-muted: #c4bdf0;
   --fg-subtle: #958dc8;
   --fg-faint: #6d66a0;
-  --fg-on-accent: #fff;
+  --fg-on-accent: #150f2e;
+  --fg-on-danger: #150f2e;
   --border: rgb(190 170 255 / 0.14);
   --border-strong: rgb(190 170 255 / 0.26);
 
@@ -492,7 +499,8 @@
   --fg-muted: #e5c6b8;
   --fg-subtle: #b8958a;
   --fg-faint: #86675e;
-  --fg-on-accent: #fff;
+  --fg-on-accent: #1f0d02;
+  --fg-on-danger: #1f0d02;
   --border: rgb(255 185 150 / 0.14);
   --border-strong: rgb(255 185 150 / 0.26);
 
@@ -554,7 +562,8 @@
   --fg-muted: #c4c9ee;
   --fg-subtle: #969dcf;
   --fg-faint: #6d74aa;
-  --fg-on-accent: #fff;
+  --fg-on-accent: #1e0e02;
+  --fg-on-danger: #1e0e02;
   --border: rgb(150 180 255 / 0.14);
   --border-strong: rgb(150 180 255 / 0.26);
 
@@ -616,7 +625,8 @@
   --fg-muted: #b9dbe8;
   --fg-subtle: #88afc0;
   --fg-faint: #5d8496;
-  --fg-on-accent: #fff;
+  --fg-on-accent: #2a0906;
+  --fg-on-danger: #2a0906;
   --border: rgb(140 225 255 / 0.14);
   --border-strong: rgb(140 225 255 / 0.26);
 

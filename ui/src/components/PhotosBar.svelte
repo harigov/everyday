@@ -170,7 +170,7 @@
     gap: var(--sp-2);
     height: 28px;
     padding: 0 var(--sp-3);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-selected);
     color: var(--accent);
     font-size: var(--text-sm);

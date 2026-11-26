@@ -325,9 +325,18 @@ export const APPS: Record<Section, AppModule> = {
     // `screentime.create`.
     create: (d) => d.screentime.create(),
     onScreen: (d) => d.screentime.showing,
-    // What is listed are the person's apps and sites, a few dozen at most,
-    // read at a glance; there is nothing for a search to narrow.
-    search: () => null,
+    // Only the Apps pane lists enough to narrow -- every app and site that
+    // has been in front of anyone, which on an old vault is hundreds. The
+    // summary, the timeline and the categories are read as they are and have
+    // nothing for a search to narrow.
+    search: (d) =>
+      d.screentime.view === 'apps'
+        ? {
+            placeholder: 'Search apps and sites',
+            query: d.screentime.appsQuery,
+            set: (q) => d.screentime.setAppsQuery(q),
+          }
+        : null,
   },
   files: {
     section: 'files',

@@ -1,28 +1,11 @@
 <script lang="ts">
-  import type { Entry } from '../lib/types'
+  import type { Entry, Purpose } from '../lib/types'
   import { app } from '../lib/state.svelte'
-  import { focusOnMount } from '../lib/focus'
   import Icon from './Icon.svelte'
+  import PurposeField from './PurposeField.svelte'
+  import TagEditor from './TagEditor.svelte'
 
   let { entry }: { entry: Entry } = $props()
-
-  let adding = $state(false)
-  let draft = $state('')
-
-  function commitTag() {
-    const tag = draft.trim().replace(/^#/, '')
-    draft = ''
-    adding = false
-    if (!tag) return
-    if (entry.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
-    entry.tags = [...entry.tags, tag]
-    app.scheduleSave()
-  }
-
-  function removeTag(tag: string) {
-    entry.tags = entry.tags.filter((t) => t !== tag)
-    app.scheduleSave()
-  }
 </script>
 
 <div class="meta">
@@ -33,33 +16,28 @@
     </span>
   {/if}
 
-  {#each entry.tags as tag (tag)}
-    <button class="tag chip" onclick={() => removeTag(tag)} title="Remove tag">
-      {tag}<span class="x"><Icon name="close" size={11} weight={1.8} /></span>
-    </button>
-  {/each}
-
-  {#if adding}
-    <input
-      class="tag-input"
-      placeholder="tag"
-      bind:value={draft}
-      use:focusOnMount
-      onblur={commitTag}
-      onkeydown={(e) => {
-        if (e.key === 'Enter') commitTag()
-        if (e.key === 'Escape') {
-          draft = ''
-          adding = false
-        }
-      }}
-    />
-  {:else}
-    <button class="add" onclick={() => (adding = true)}>
-      <Icon name="plus" size={11} weight={1.8} /> Tag
-    </button>
-  {/if}
+  <TagEditor
+    tags={entry.tags}
+    onchange={(next: string[]) => {
+      entry.tags = next
+      app.scheduleSave()
+    }}
+    id="entry-tag-options"
+  />
 </div>
+
+{#if app.supportsOverview}
+  <!-- The same field, worded the same, as a note's: what this day was for.
+       Written through the store's own setter, which saves at once and keeps
+       the list behind the page in step. -->
+  <div class="purpose-row">
+    <span class="purpose-label">Goal or area</span>
+    <PurposeField
+      value={entry.purpose}
+      onchange={(next: Purpose | null) => void app.setEntryPurpose(entry.id, next)}
+    />
+  </div>
+{/if}
 
 <style>
   .meta {
@@ -78,86 +56,25 @@
     color: var(--fg-subtle);
   }
 
-  .chip {
-    cursor: pointer;
-    transition: all var(--fast) var(--ease);
-  }
-  .chip:hover {
-    border-color: var(--danger);
-    color: var(--danger);
-  }
-  .x {
+  .purpose-row {
     display: flex;
-    margin-left: 3px;
-    opacity: 0;
-    transition: opacity var(--fast) var(--ease);
-  }
-  .chip:hover .x {
-    opacity: 1;
-  }
-
-  .add {
-    display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+  }
+  .purpose-label {
+    color: var(--fg-subtle);
     font-size: var(--text-xs);
-    font-weight: 500;
-    color: var(--fg-faint);
-    padding: 0 var(--sp-2);
-    height: 20px;
-    border-radius: 99px;
-    border: 1px dashed var(--border-strong);
-  }
-  .add:hover {
-    color: var(--fg-muted);
-    border-color: var(--fg-subtle);
-  }
-
-  .tag-input {
-    height: 20px;
-    width: 90px;
-    padding: 0 var(--sp-2);
-    border-radius: 99px;
-    border: 1px solid var(--accent);
-    background: var(--bg-raised);
-    font-size: var(--text-xs);
-    user-select: text;
-  }
-  .tag-input:focus {
-    outline: none;
+    font-weight: 550;
   }
 
   /* ── On a phone ──────────────────────────────────────────────────────── */
 
-  /* Tags a finger can hit and take off -- the cross always there, since
-     there is no hover to show it -- and the field for a new one the width of
-     the page, where it has room for what is typed and the keyboard's own
-     suggestions. */
   :global([data-phone]) .meta {
     gap: var(--sp-2);
   }
   :global([data-phone]) .place {
     min-height: 34px;
     font-size: var(--text-base);
-  }
-  :global([data-phone]) .chip {
-    display: inline-flex;
-    align-items: center;
-    height: 34px;
-    padding: 0 var(--sp-3);
-    font-size: var(--text-sm);
-  }
-  :global([data-phone]) .x {
-    opacity: 1;
-  }
-  :global([data-phone]) .add {
-    height: 34px;
-    padding: 0 var(--sp-3);
-    font-size: var(--text-sm);
-  }
-  :global([data-phone]) .tag-input {
-    flex: 1 0 100%;
-    height: 40px;
-    padding: 0 var(--sp-3);
   }
 </style>

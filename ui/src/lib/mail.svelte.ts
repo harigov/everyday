@@ -21,6 +21,7 @@ import * as mailApi from './mail-api'
 import { accounts } from './accounts.svelte'
 import { registerApply, type ChangeWithIds } from './live-apply'
 import { notify, windowInFront } from './notify.svelte'
+import { debounce } from './store/debounce'
 import { proposals } from './proposals.svelte'
 import {
   CATEGORY_TABS,
@@ -62,6 +63,7 @@ import {
   type FollowUpRows,
   type MailOnly,
 } from './mail'
+import { plural } from './format'
 import { pref } from './prefs'
 import { seen, type Showing } from './onscreen'
 import { sorting } from './sorting.svelte'
@@ -1324,8 +1326,8 @@ class MailState {
   async #remove(
     ids: readonly ThreadId[],
     call: (ids: ThreadId[]) => Promise<unknown>,
-  ): Promise<void> {
-    if (ids.length === 0) return
+  ): Promise<boolean> {
+    if (ids.length === 0) return false
     const leaving = new Set(ids)
     // Finding 5: move on to the neighbour rather than simply closing the
     // pane -- `#advanceIfOpen` must run before the row disappears below, so
@@ -1356,6 +1358,7 @@ class MailState {
     try {
       await call([...ids])
       this.#scheduleUnreadRefresh()
+      return true
     } catch (e) {
       for (const r of removed.reverse()) this.threads = restoreRow(this.threads, r)
       for (const r of searchRemoved.reverse()) {
@@ -1365,7 +1368,82 @@ class MailState {
         this.#followUps = restoreRow(this.#followUps, r)
       }
       await handle(e)
+      return false
     }
+  }
+
+  /**
+   * Where each of these threads is right now, as the mailbox it would go
+   * back to: the one on screen when that is a real folder, otherwise (an
+   * "All accounts" row, a search) that thread's own account's folder of the
+   * same kind, falling back to its Inbox. Read *before* the rows leave the
+   * list, because afterwards nothing says which account a thread was in --
+   * and a unified list spans several, so one "where it came from" would put
+   * half of them in the wrong account.
+   */
+  #originsOf(ids: readonly ThreadId[]): Map<MailboxId, ThreadId[]> {
+    const here = this.mailbox
+    // A real folder has no `pseudo`; the synthetic Snoozed row is an id the
+    // backend never saw, so it is treated like the list of several.
+    const real = here && !here.pseudo && !here.id.startsWith('synthetic-snoozed:')
+    const gathered = listTarget(here, this.mailboxes)?.mailboxIds[0]
+    const role = this.mailboxes.find((m) => m.id === gathered)?.role ?? 'inbox'
+    const origins = new Map<MailboxId, ThreadId[]>()
+    // A search reaches every folder, and a result does not say which one it
+    // came from: guessing by the role on screen would send an archived Inbox
+    // thread "back" to Sent. Over a search there is no guess, so no Undo.
+    const searching = this.searchQuery.trim() !== ''
+    for (const id of ids) {
+      let origin: MailboxId | undefined = real && !searching ? here.id : undefined
+      if (!origin && !searching) {
+        const row =
+          this.threads.find((t) => t.id === id) ??
+          this.searchResults.find((t) => t.id === id) ??
+          this.#followUps.find((t) => t.id === id)
+        const account =
+          row?.accountId ??
+          (this.openThread?.thread.id === id ? this.openThread.thread.accountId : undefined)
+        origin = this.mailboxes.find(
+          (m) => m.accountId === account && !m.pseudo && m.role === role,
+        )?.id
+      }
+      if (origin) origins.set(origin, [...(origins.get(origin) ?? []), id])
+    }
+    return origins
+  }
+
+  /** Archive or trash with a way back: the toast's Undo moves each thread to
+   *  the mailbox it was in, then reads the list again so it reappears. */
+  async #removeWithUndo(
+    ids: readonly ThreadId[],
+    call: (ids: ThreadId[]) => Promise<unknown>,
+    verb: 'Archived' | 'Moved to Trash' | 'Snoozed',
+    key: string,
+    back: (origins: Map<MailboxId, ThreadId[]>) => Promise<unknown>,
+    /** Whether Undo needs to know where each thread was: a move does, an
+     *  unsnooze does not. */
+    needsOrigin = true,
+  ): Promise<void> {
+    const origins = this.#originsOf(ids)
+    const count = new Set(ids).size
+    if (!(await this.#remove(ids, call))) return
+    const what = plural(count, 'conversation')
+    notify.info(verb === 'Moved to Trash' ? `${what} moved to Trash` : `${verb} ${what}`, {
+      key,
+      // Nothing to put back where it came from, nothing to offer.
+      ...(needsOrigin && origins.size === 0
+        ? {}
+        : {
+            action: {
+              label: 'Undo',
+              run: () => {
+                void back(origins)
+                  .then(() => this.refresh())
+                  .catch((e) => handle(e))
+              },
+            },
+          }),
+    })
   }
 
   markRead(id: ThreadId) {
@@ -1463,13 +1541,21 @@ class MailState {
     return this.archiveMany([id])
   }
   archiveMany(ids: readonly ThreadId[]) {
-    return this.#remove(ids, mailApi.archiveMany)
+    return this.#removeWithUndo(ids, mailApi.archiveMany, 'Archived', 'mail-archive', (o) =>
+      this.#moveBack(o),
+    )
+  }
+  /** Undo of an archive or trash: each group back to its own mailbox. */
+  #moveBack(origins: Map<MailboxId, ThreadId[]>): Promise<unknown> {
+    return Promise.all([...origins].map(([box, group]) => mailApi.moveManyToMailbox(group, box)))
   }
   trash(id: ThreadId) {
     return this.trashMany([id])
   }
   trashMany(ids: readonly ThreadId[]) {
-    return this.#remove(ids, mailApi.trashMany)
+    return this.#removeWithUndo(ids, mailApi.trashMany, 'Moved to Trash', 'mail-trash', (o) =>
+      this.#moveBack(o),
+    )
   }
 
   /** Trash or Spam, when that is the list on screen -- see `emptiableRole`.
@@ -1630,7 +1716,14 @@ class MailState {
     return this.snoozeMany([id], until)
   }
   snoozeMany(ids: readonly ThreadId[], until: Date) {
-    return this.#remove(ids, (t) => mailApi.snoozeMany(t, until.toISOString()))
+    return this.#removeWithUndo(
+      ids,
+      (t) => mailApi.snoozeMany(t, until.toISOString()),
+      'Snoozed',
+      'mail-snooze',
+      () => mailApi.unsnoozeMany([...ids]),
+      false,
+    )
   }
   /**
    * Unsnooze. In the Snoozed view itself this must also drop the row --
@@ -2088,13 +2181,19 @@ class MailState {
     this.searchCursor = null
     this.clearChecked()
     if (!q.trim()) {
+      // Cleared on purpose: a query typed a moment ago must not land after.
+      this.#search.cancel()
       this.searchResults = []
       this.searching = false
       return
     }
     this.searching = true
-    void this.#runSearch(q)
+    this.#search.call(q)
   }
+
+  /** The search box's debounce: a query per pause in typing, not per key,
+   *  the way the notes app's search does it. */
+  #search = debounce((q: string) => void this.#runSearch(q), 160)
 
   async #runSearch(q: string) {
     try {
@@ -2133,6 +2232,7 @@ class MailState {
   }
 
   clearSearch() {
+    this.#search.cancel()
     this.searchQuery = ''
     this.searchResults = []
     this.searchCursor = null

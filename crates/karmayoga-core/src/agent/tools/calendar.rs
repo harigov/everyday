@@ -152,8 +152,9 @@ pub(super) static TOOLS: &[Tool] = &[
             "Change an event on an account's calendar: its title, time, description, \
              location, guests or how it repeats. Only names what changes; everything left out \
              stays as it is. Only events the person organised can be changed. A change to an \
-             event with guests is confirmed with the person first. For your own planned \
-             time, use update_time_block instead.",
+             event with guests is confirmed with the person first. The event_id is from \
+             list_events on an account calendar; time planned on this computer is a time \
+             block with its own id, so use update_time_block for that.",
             run_update_event,
             Some(describe_update_event)
         )
@@ -179,8 +180,9 @@ pub(super) static TOOLS: &[Tool] = &[
                 &["event_id"]
             ),
             "Delete an event from an account's calendar -- one occurrence, or a whole \
-             repeating series. Guests are sent a cancellation by the calendar's server. For \
-             your own planned time, use delete_time_block instead.",
+             repeating series. Guests are sent a cancellation by the calendar's server. The \
+             event_id is from list_events on an account calendar; time planned on this \
+             computer is a time block with its own id, so use delete_time_block for that.",
             run_delete_event,
             Some(describe_delete_event)
         )

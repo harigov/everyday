@@ -47,6 +47,7 @@
   } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   let {
     accountId,
@@ -412,38 +413,41 @@
         {/if}
       </p>
     </div>
-    <button class="close" aria-label="Close" onclick={onclose}>
+    <button class="close" aria-label="Close" title="Close" onclick={onclose}>
       <Icon name="close" size={14} />
     </button>
   </header>
 
   <div class="controls">
-    <div class="segmented" role="group" aria-label="Which mail">
+    <div class="seg-group" role="radiogroup" aria-label="Which mail">
       <button
-        class="seg"
+        class="seg-opt"
         class:on={!older}
-        aria-pressed={!older}
+        role="radio"
+        aria-checked={!older}
         disabled={busy}
         onclick={() => turn(false)}
       >
         Last
       </button>
       <button
-        class="seg"
+        class="seg-opt"
         class:on={older}
-        aria-pressed={older}
+        role="radio"
+        aria-checked={older}
         disabled={busy}
         onclick={() => turn(true)}
       >
         Older than
       </button>
     </div>
-    <div class="segmented" role="group" aria-label={older ? 'Older than' : 'Over the last'}>
+    <div class="seg-group" role="radiogroup" aria-label={older ? 'Older than' : 'Over the last'}>
       {#each PERIODS.filter((p) => !older || p.days !== null) as p (p.label)}
         <button
-          class="seg"
+          class="seg-opt"
           class:on={days === p.days}
-          aria-pressed={days === p.days}
+          role="radio"
+          aria-checked={days === p.days}
           disabled={busy}
           onclick={() => {
             days = p.days
@@ -553,14 +557,14 @@
       onclick={() => bulk('trash')}
     >
       <Icon name="trash" size={13} />
-      Delete selected{chosenThreads.length > 0 ? ` (${chosenThreads.length})` : ''}
+      Trash selected{chosenThreads.length > 0 ? ` (${chosenThreads.length})` : ''}
     </button>
   </div>
 
   <div class="scroll body" aria-busy={loading} bind:this={scroller}>
     {#if rows.length === 0}
       {#if loading}
-        <p class="hint">Loading…</p>
+        <Loading label="Reading your mail…" centred />
       {:else if failed}
         <p class="hint">Could not ask just now. Try another period, or again in a moment.</p>
       {:else if loaded}
@@ -602,7 +606,7 @@
               onclick={() => void act('trash', [s])}
             >
               <Icon name="trash" size={13} />
-              Delete
+              Trash
             </button>
           </li>
         {/each}
@@ -619,6 +623,7 @@
       <button
         class="act prev"
         aria-label="Previous page"
+        title="Previous page"
         disabled={at === 0}
         onclick={() => turnTo(at - 1)}
       >
@@ -627,6 +632,7 @@
       <button
         class="act"
         aria-label="Next page"
+        title="Next page"
         disabled={at >= pages - 1}
         onclick={() => turnTo(at + 1)}
       >
@@ -710,30 +716,9 @@
     gap: var(--sp-2);
     padding: 0 var(--sp-4) var(--sp-3);
   }
-  /* The same segmented control Settings → Meeting notes draws. */
-  .segmented {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    background: var(--bg-sunken);
-    border-radius: var(--radius);
-  }
-  .seg {
-    height: 26px;
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
+  /* The shared `.seg-group`, kept to its words on the one line. */
+  .controls .seg-opt {
     white-space: nowrap;
-  }
-  .seg.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
-  }
-  .seg:disabled {
-    opacity: 0.6;
   }
   .scope {
     display: inline-flex;
@@ -1000,18 +985,16 @@
   :global([data-phone]) .controls {
     padding: 0 var(--sp-4) var(--sp-2);
   }
-  :global([data-phone]) .segmented {
+  :global([data-phone]) .controls .seg-group {
     max-width: 100%;
   }
-  :global([data-phone]) .seg {
-    flex: 1;
+  :global([data-phone]) .controls .seg-opt {
     min-width: 0;
-    height: 36px;
     padding: 0 var(--sp-2);
   }
   /* The periods share the line; the one-line choice of Last or Older than
      keeps to its own words. */
-  :global([data-phone]) .controls > .segmented:nth-child(2) {
+  :global([data-phone]) .controls > .seg-group:nth-child(2) {
     flex: 1 1 100%;
   }
   :global([data-phone]) .scope {

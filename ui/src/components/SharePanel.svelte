@@ -64,7 +64,7 @@
   <section>
     <span class="eyebrow">Share on the network</span>
 
-    <label class="toggle">
+    <label class="check-row">
       <input type="checkbox" checked={share.sharing} disabled={busy} onchange={toggle} />
       <span>
         <b>Let other computers use this vault</b>
@@ -122,7 +122,7 @@
         </div>
       {/if}
 
-      <label class="toggle">
+      <label class="check-row">
         <input
           type="checkbox"
           checked={share.allowRemoteUnlock}
@@ -297,32 +297,6 @@
     gap: 0.4rem;
   }
 
-  /* The switch and its explanation, as every other settings panel draws
-     them (SettingsView's own copy is scoped to that file and does not reach
-     this one): the sentence under the title, not run on beside it. */
-  .toggle {
-    display: flex;
-    gap: var(--sp-3);
-    align-items: flex-start;
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle input {
-    flex: none;
-    margin-top: 3px;
-    accent-color: var(--accent);
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small,
   .hint {
     margin: 0;
     font-size: var(--text-sm);
@@ -346,10 +320,10 @@
   :global([data-phone]) .row {
     flex-wrap: wrap;
   }
-  :global([data-phone]) .toggle {
+  :global([data-phone]) .check-row {
     min-height: 44px;
   }
-  :global([data-phone]) .toggle input {
+  :global([data-phone]) .check-row input {
     width: 20px;
     height: 20px;
     margin-top: 1px;

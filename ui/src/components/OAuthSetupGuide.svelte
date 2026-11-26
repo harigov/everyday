@@ -58,11 +58,11 @@
           target="_blank"
           rel="noreferrer">OAuth consent screen</a
         >, and add the Gmail{calendar ? ' and Calendar' : ''} scopes this account needs to it{#if calendar}
-          -- for calendar, both <code>calendar.readonly</code> and <code>calendar.events</code>, the
+          — for calendar, both <code>calendar.readonly</code> and <code>calendar.events</code>, the
           second being what lets a new event, or a change to one, be written back{/if}.
       </li>
       <li>
-        Create credentials for a <strong>Desktop app</strong> client -- not "Web application", which expects
+        Create credentials for a <strong>Desktop app</strong> client — not "Web application", which expects
         a server to receive the redirect. Copy its client id and client secret into the two fields below.
       </li>
       <li class="loud">
@@ -91,7 +91,7 @@
       <li>
         Add the delegated permissions <code>IMAP.AccessAsUser.All</code>,
         <code>SMTP.Send</code>{calendar ? ', ' : ' and '}<code>offline_access</code>{#if calendar},
-          and <code>Calendars.ReadWrite</code> -- read and write, so events can be added and changed from
+          and <code>Calendars.ReadWrite</code> — read and write, so events can be added and changed from
           here as well as shown{/if}.
       </li>
       <li>

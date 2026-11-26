@@ -22,7 +22,7 @@
     placeholder?: string
   }
 
-  const { value, onchange, areasOnly = false, placeholder = 'Not filed' }: Props = $props()
+  const { value, onchange, areasOnly = false, placeholder = 'No goal or area' }: Props = $props()
 
   let open = $state(false)
 
@@ -30,14 +30,14 @@
   const set = $derived(!!value && label.areaId !== null)
 </script>
 
-<div class="field">
+<div class="purposefield">
   <button
     class="value"
     class:set
     onclick={() => (open = !open)}
     aria-haspopup="listbox"
     aria-expanded={open}
-    title={set ? `Filed under ${label.name}` : 'Say what this is for'}
+    title={set ? `Filed under ${label.name}` : 'Which goal or area of your life this is for'}
   >
     {#if set}
       <span class="swatch" style="background: {label.color}"></span>
@@ -49,14 +49,17 @@
   </button>
 
   {#if open}
-    <div class="pop" use:dismissable={{ onaway: () => (open = false), within: '.field .value' }}>
+    <div
+      class="pop"
+      use:dismissable={{ onaway: () => (open = false), within: '.purposefield .value' }}
+    >
       <PurposePicker {value} {onchange} {areasOnly} onclose={() => (open = false)} />
     </div>
   {/if}
 </div>
 
 <style>
-  .field {
+  .purposefield {
     position: relative;
   }
 
@@ -120,12 +123,6 @@
   /* A row a finger can hit, and the picker a sheet hung from the top under
      the status bar, as every sheet is: opening downward from a field in the
      middle of a page ran it off the right edge and under the bar of apps. */
-  /* The wrapper wears the shared `.field`'s box, a fixed 38px: it takes the
-     button's height instead. */
-  :global([data-phone]) .field {
-    height: auto;
-    padding: 0;
-  }
   :global([data-phone]) .value {
     min-height: 44px;
     font-size: var(--text-base);

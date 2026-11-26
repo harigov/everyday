@@ -15,7 +15,7 @@
 
   import { threadGroups } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
-  import { assistant } from '../lib/assistant.svelte'
+  import { assistant, type Pane } from '../lib/assistant.svelte'
   import { jobs } from '../lib/jobs.svelte'
   import { viaTitle } from '../lib/chat'
   import { menu } from '../lib/menu.svelte'
@@ -46,14 +46,26 @@
    */
   function open(thread: ConversationSummary) {
     if (agent.busy && thread.id !== agent.conversationId) return
+    assistant.pane = null
     void agent.openThread(thread.id)
     details.open('assistant')
   }
 
   /** A fresh conversation, with the caret in its box once it is on screen. */
   function start() {
+    assistant.pane = null
     void agent.startThread()
     details.open('assistant')
+  }
+
+  /**
+   * One of the standing tabs, beside the conversations. It opens in this app
+   * and the row stays selected; only from a place that is not the app does it
+   * go to Settings (see `setPane`).
+   */
+  function openPane(pane: Pane) {
+    assistant.setPane(pane)
+    if (assistant.pane === pane) details.open('assistant')
   }
 
   function threadMenu(thread: ConversationSummary): MenuItem[] {
@@ -85,8 +97,8 @@
         run: start,
       },
       SEP,
-      { label: 'Routines', icon: 'clock', run: () => assistant.setPane('routines') },
-      { label: 'What it remembers', icon: 'sparkle', run: () => assistant.setPane('memory') },
+      { label: 'Routines', icon: 'clock', run: () => openPane('routines') },
+      { label: 'What it remembers', icon: 'sparkle', run: () => openPane('memory') },
       {
         label: 'Assistant settings',
         icon: 'settings',
@@ -120,14 +132,24 @@
          unseen, and they are the app bar's count broken down -- the number
          somebody pressed Assistant to find. -->
     {#if didUnseen > 0}
-      <button class="side-row" onclick={() => assistant.setPane('runs')}>
+      <button
+        class="side-row"
+        class:sel={assistant.pane === 'runs'}
+        aria-current={assistant.pane === 'runs' ? 'page' : undefined}
+        onclick={() => openPane('runs')}
+      >
         <span class="side-icon"><Symbol name="inbox" size={17} /></span>
         <span class="side-text">What it did</span>
         <span class="side-count strong">{didUnseen}</span>
       </button>
     {/if}
     {#if app.supportsProposals && proposals.unseen > 0}
-      <button class="side-row" onclick={() => assistant.setPane('proposals')}>
+      <button
+        class="side-row"
+        class:sel={assistant.pane === 'proposals'}
+        aria-current={assistant.pane === 'proposals' ? 'page' : undefined}
+        onclick={() => openPane('proposals')}
+      >
         <span class="side-icon"><Symbol name="tick" size={17} /></span>
         <span class="side-text">Waiting for you</span>
         <span class="side-count strong">{proposals.unseen}</span>
@@ -140,7 +162,7 @@
     {#each group.threads as thread (thread.id)}
       <button
         class="side-row"
-        class:sel={thread.id === agent.conversationId}
+        class:sel={assistant.pane === null && thread.id === agent.conversationId}
         onclick={() => open(thread)}
         oncontextmenu={(e) => {
           e.stopPropagation()
@@ -164,7 +186,11 @@
 </nav>
 
 <footer class="foot">
-  <button class="side-row" onclick={() => assistant.setPane('routines')}>
+  <button
+    class="side-row"
+    class:sel={assistant.pane === 'routines' || assistant.pane === 'memory'}
+    onclick={() => openPane('routines')}
+  >
     <span class="side-icon"><Symbol name="clock" size={16} /></span>
     <span class="side-text">Routines and memory</span>
   </button>

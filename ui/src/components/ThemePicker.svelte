@@ -296,7 +296,7 @@
     bottom: 6px;
     width: 18px;
     height: 7px;
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: var(--accent);
   }
 </style>

@@ -475,7 +475,7 @@
     font-weight: 650;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--c);
+    color: color-mix(in oklab, var(--c) 70%, var(--fg));
   }
   .cdot {
     width: 7px;

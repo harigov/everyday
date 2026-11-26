@@ -16,7 +16,7 @@
   // moves with the rest of the app. A day's meals come from `health.meals`;
   // the numbers shown are worked out from them, never kept twice.
 
-  import { health } from '../lib/health.svelte'
+  import { HEALTH_RANGES, health, type HealthRange } from '../lib/health.svelte'
   import { durationText, slotName, sumNutrients } from '../lib/health'
   import { dateFormat, friendlyDate } from '../lib/format'
   import { addDays, isoDate, startOfDay, todayIso } from '../lib/time'
@@ -147,6 +147,13 @@
   const glucoseUnit = $derived(health.displayUnit('blood_glucose'))
 
   // ── Day by day ──────────────────────────────────────────────────────────
+
+  const RANGE_LABELS: Record<HealthRange, string> = {
+    week: 'Week',
+    month: 'Month',
+    quarter: '3 months',
+    year: 'Year',
+  }
 
   let measure = $state<'kcal' | 'carbs'>('kcal')
   const rangeMetric = $derived<Metric>(measure === 'kcal' ? 'dietary_energy' : 'dietary_carbs')
@@ -411,8 +418,41 @@
         </div>
       </div>
 
-      <!-- The stretch is the header's: its range chips and stepper drive this
-           chart as they do every range pane. -->
+      <!-- The stretch: the page header's day stepper is for the meals, so this
+           chart's range chips and stepper live here and drive the same window
+           the other range panes' headers do. -->
+      <div class="range-bar">
+        <div class="filters" role="group" aria-label="How much time to show">
+          {#each HEALTH_RANGES as r (r)}
+            <button
+              class="filter"
+              class:on={health.range === r}
+              aria-pressed={health.range === r}
+              onclick={() => health.setRange(r)}>{RANGE_LABELS[r]}</button
+            >
+          {/each}
+        </div>
+        <div class="days" role="group" aria-label="Range">
+          <button
+            class="step"
+            aria-label="The one before"
+            title="The one before"
+            onclick={() => health.step(-1)}
+          >
+            <span class="back"><Icon name="chevron" size={13} /></span>
+          </button>
+          <span class="range-label" aria-live="polite">{health.rangeLabel}</span>
+          <button
+            class="step"
+            aria-label="The one after"
+            title="The one after"
+            disabled={health.atPresent}
+            onclick={() => health.step(1)}
+          >
+            <Icon name="chevron" size={13} />
+          </button>
+        </div>
+      </div>
       {#if !anyLogged}
         <p class="quiet">Nothing logged in this stretch yet.</p>
       {:else}
@@ -465,7 +505,7 @@
     overflow-y: auto;
   }
   .page {
-    max-width: 860px;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-6) var(--fab-clear);
     display: flex;
@@ -490,7 +530,7 @@
     align-items: center;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-sunken);
   }
   .step {
@@ -513,11 +553,28 @@
     place-items: center;
     rotate: 180deg;
   }
+  .range-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  .range-label {
+    min-width: 8.5em;
+    padding: 0 var(--sp-2);
+    text-align: center;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
   .when {
     min-width: 8.5em;
     height: 26px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     font-weight: 600;
     color: var(--fg);

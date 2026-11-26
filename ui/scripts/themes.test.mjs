@@ -73,6 +73,24 @@ function blocks(css) {
   return out
 }
 
+/** WCAG contrast between two opaque hex colours; 0 for anything else, which
+ *  fails the 4.5 the callers ask for -- a token this cannot read is a token
+ *  nobody has checked. */
+function contrast(a, b) {
+  const lum = (hex) => {
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim())
+    if (!m) return null
+    const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1]
+    const [r, g, bl] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
+    const lin = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(bl)
+  }
+  const la = lum(a)
+  const lb = lum(b)
+  if (la === null || lb === null) return 0
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+}
+
 /**
  * A colour's alpha, 0 to 1, for the forms a theme writes: hex of 3, 4, 6 or
  * 8 digits, and `rgb()`/`rgba()` with commas or a slash and a number or a
@@ -196,6 +214,17 @@ for (const theme of THEMES) {
     `${theme.id}: --shell-shadow reaches ${reach}px sideways, inside the ${gap}px gap`,
     reach === 0 || reach < gap,
   )
+  // Words on a filled button: a primary button's label on --accent, an
+  // overdue badge's on --danger. White on a dark theme's pale orange was
+  // 2.2:1; WCAG asks 4.5:1 of text this size.
+  for (const [fg, bg] of [
+    ['--fg-on-accent', '--accent'],
+    ['--fg-on-accent', '--accent-hover'],
+    ['--fg-on-danger', '--danger'],
+  ]) {
+    const ratio = contrast(decls.get(fg) ?? '', decls.get(bg) ?? '')
+    ok(`${theme.id}: ${fg} on ${bg} is ${ratio.toFixed(2)}:1, at least 4.5:1`, ratio >= 4.5)
+  }
 }
 
 // theme.css: layout on :root, the derived tokens on [data-theme], and no

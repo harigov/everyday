@@ -21,7 +21,7 @@
   // rather than instructions to assemble one on the worst day to be doing it.
 
   import { onDestroy, onMount, untrack } from 'svelte'
-  import { api, isWeb } from '../lib/api'
+  import { api, isWeb, mobileShell } from '../lib/api'
   import { backup } from '../lib/backup.svelte'
   import {
     DESTINATION_KINDS,
@@ -52,6 +52,8 @@
   import Icon from './Icon.svelte'
   import Meter from './Meter.svelte'
   import SubTabs from './SubTabs.svelte'
+  import Loading from './Loading.svelte'
+  import RemoteNote from './RemoteNote.svelte'
 
   // ── The draft ───────────────────────────────────────────────────────
 
@@ -96,7 +98,7 @@
   })
 
   /** Clears "Saved." after a moment, and only that -- see `ModelsPanel`. */
-  function confirm(message: string) {
+  function announce(message: string) {
     notice = message
     if (noticeTimer) clearTimeout(noticeTimer)
     noticeTimer = setTimeout(() => {
@@ -131,6 +133,9 @@
   // this computer's folders for a backup that runs on that one. Both get the
   // text field alone. The mock answers with a made-up disk.
   const canPick = $derived(!isWeb && !app.remote)
+  /** Restoring is a command typed where the vault is: not on a phone, nor in
+   *  a browser, nor on a computer looking at another's vault. */
+  const canRestoreHere = $derived(!isWeb && !app.remote && !mobileShell)
 
   function pickKind(next: DestinationKind) {
     if (!draft) return
@@ -209,7 +214,7 @@
       }
       await backup.save(settings)
       if (backup.settings) seed(backup.settings)
-      confirm('Saved.')
+      announce('Saved.')
     } catch (e) {
       notice = sentence(errorMessage(e))
     } finally {
@@ -319,7 +324,7 @@
 {#if !view && backup.error}
   <p class="hint">Backups could not be read: {backup.error}</p>
 {:else if !view || !draft}
-  <p class="hint">Loading…</p>
+  <Loading label="Loading backups…" centred />
 {:else if !view.supported}
   <p class="hint lead">
     This vault’s database is on a server, so it is backed up where that server is — by whoever runs
@@ -355,13 +360,14 @@
       {/if}
 
       <section aria-labelledby="backup-where">
-        <span class="eyebrow" id="backup-where">Where</span>
-        <div class="segmented" role="group" aria-labelledby="backup-where">
+        <h3 class="eyebrow" id="backup-where">Where</h3>
+        <div class="seg-group" role="radiogroup" aria-labelledby="backup-where">
           {#each DESTINATION_KINDS as k (k.value)}
             <button
-              class="seg"
+              class="seg-opt"
               class:on={kind === k.value}
-              aria-pressed={kind === k.value}
+              role="radio"
+              aria-checked={kind === k.value}
               onclick={() => pickKind(k.value)}
             >
               {k.label}
@@ -598,8 +604,8 @@
       </section>
     {:else if sub === 'when'}
       <section aria-labelledby="backup-when">
-        <span class="eyebrow" id="backup-when">When</span>
-        <label class="toggle" class:disabled={!d}>
+        <h3 class="eyebrow" id="backup-when">When</h3>
+        <label class="check-row" class:disabled={!d}>
           <input type="checkbox" bind:checked={draft.enabled} disabled={!d} />
           <span>
             <b>Back up automatically</b>
@@ -645,7 +651,7 @@
           shares goes with it.
         </p>
 
-        <label class="toggle">
+        <label class="check-row">
           <input type="checkbox" bind:checked={draft.includeConfig} />
           <span>
             <b>Include this computer’s settings</b>
@@ -659,7 +665,7 @@
       </section>
     {:else}
       <section aria-labelledby="backup-status">
-        <span class="eyebrow" id="backup-status">Last backup</span>
+        <h3 class="eyebrow" id="backup-status">Last backup</h3>
         {#if !savedDestination || !status}
           <p class="hint">
             None yet. Choose where copies go under Where and save, and Back up now makes the first
@@ -754,7 +760,7 @@
 
       {#if savedDestination}
         <section aria-labelledby="backup-copies">
-          <span class="eyebrow" id="backup-copies">Copies kept</span>
+          <h3 class="eyebrow" id="backup-copies">Copies kept</h3>
           {#if !shownList?.copies}
             <div class="row">
               <button class="btn btn-outline" disabled={listing} onclick={() => void loadCopies()}>
@@ -789,29 +795,36 @@
           {/if}
           {#if shownList?.error}<p class="problem">{sentence(shownList.error)}</p>{/if}
 
-          <p class="hint">
-            Restoring is done on the command line for now. This lays {chosenCopy
-              ? 'the copy chosen above'
-              : 'the newest copy'} down as a vault in a new folder, and that folder opens in Karma Yoga
-            with this vault’s password:
-          </p>
-          <div class="command">
-            <code>{command}</code>
-            <button class="btn btn-sm" onclick={() => void copyCommand()}>
-              {copied ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-          <p class="hint">
-            The folder has to be empty or not there yet; change <code>{RESTORE_INTO}</code> to
-            wherever it should go. Add <code>--snapshot</code> and a copy’s name for an older one —
-            choosing one above does that — and <code>--config</code> to bring this computer’s settings
-            back too, never over a file that is already there.
-          </p>
-          {#if usesStoredKey(savedDestination)}
+          {#if !canRestoreHere}
+            <!-- The command has to be typed on the computer that holds the
+                 vault, which a phone or a browser is not. -->
+            <RemoteNote what="Restoring a copy" />
+          {:else}
             <p class="hint">
-              The access key is kept in the vault, and the vault is what is being restored: on that
-              computer, set <code>AWS_ACCESS_KEY_ID</code> and <code>AWS_SECRET_ACCESS_KEY</code> first.
+              <b>To restore, run this in a terminal on the computer that holds your vault.</b> It
+              lays
+              {chosenCopy ? 'the copy chosen above' : 'the newest copy'} down as a vault in a new folder,
+              and that folder opens in Karma Yoga with this vault’s password:
             </p>
+            <div class="command">
+              <code>{command}</code>
+              <button class="btn btn-sm" onclick={() => void copyCommand()}>
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <p class="hint">
+              The folder has to be empty or not there yet; change <code>{RESTORE_INTO}</code> to
+              wherever it should go. Add <code>--snapshot</code> and a copy’s name for an older one
+              — choosing one above does that — and <code>--config</code> to bring this computer’s settings
+              back too, never over a file that is already there.
+            </p>
+            {#if usesStoredKey(savedDestination)}
+              <p class="hint">
+                The access key is kept in the vault, and the vault is what is being restored: on
+                that computer, set <code>AWS_ACCESS_KEY_ID</code> and
+                <code>AWS_SECRET_ACCESS_KEY</code> first.
+              </p>
+            {/if}
           {/if}
         </section>
       {/if}
@@ -819,7 +832,7 @@
   </div>
 
   {#if sub !== 'copies'}
-    <div class="save">
+    <div class="save save-row">
       {#if notice}<span class="notice" role="status">{notice}</span>{/if}
       <button class="btn btn-primary" onclick={() => void save()} disabled={saving || !dirty}>
         {saving ? 'Saving…' : 'Save'}
@@ -866,36 +879,6 @@
     color: color-mix(in oklab, var(--warning) 80%, var(--fg));
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
-  }
-
-  /* The three-way choice: the same control as the Lock after choices in
-     Settings → Vault and the offer choices in Meetings, whose styles are
-     scoped to those files. */
-  .segmented {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    background: var(--bg-sunken);
-    border-radius: var(--radius);
-  }
-  .seg {
-    flex: 1;
-    height: 30px;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .seg:hover {
-    color: var(--fg);
-  }
-  .seg.on {
-    background: var(--bg-raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm);
   }
 
   /* A caption over a field -- not app.css's `.field`, which is a different
@@ -1078,52 +1061,6 @@
     overflow-wrap: anywhere;
   }
 
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    min-width: 0;
-    cursor: pointer;
-  }
-  .toggle.disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .toggle input {
-    margin-top: 3px;
-  }
-  .toggle span {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  .toggle b {
-    font-size: var(--text-base);
-    font-weight: 600;
-  }
-  .toggle small {
-    font-size: var(--text-sm);
-    line-height: var(--leading-normal);
-    color: var(--fg-subtle);
-    overflow-wrap: anywhere;
-  }
-
-  .save {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--sp-3);
-    padding-top: var(--sp-4);
-    border-top: 1px solid var(--border);
-  }
-  .notice {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
-  }
-
   /* Label on the left, the fact on the right -- Settings → Vault's "This
      vault" table, whose styles are scoped to that file. */
   .facts {
@@ -1202,7 +1139,7 @@
   }
   .newest {
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-hover);
     color: var(--fg-subtle);
     font-size: var(--text-xs);

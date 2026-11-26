@@ -23,6 +23,7 @@
   import { purpose } from '../lib/purpose.svelte'
   import { todo } from '../lib/todo.svelte'
   import { app } from '../lib/state.svelte'
+  import { focusOnMount } from '../lib/focus'
   import type {
     AreaId,
     Goal,
@@ -127,6 +128,24 @@
     })
   }
 
+  /** The goal whose title is being edited in the rail, if any. */
+  let renamingId = $state<GoalId | null>(null)
+  let renameDraft = $state('')
+
+  function startRename(target: Goal) {
+    renameDraft = target.title
+    renamingId = target.id
+    purpose.selected = target.id
+  }
+
+  async function commitRename() {
+    const target = goal
+    const title = renameDraft.trim()
+    renamingId = null
+    if (!target || !title || title === target.title) return
+    await purpose.saveGoal({ ...$state.snapshot(target), title })
+  }
+
   function goalMenu(target: Goal): MenuItem[] {
     return tidyMenu([
       {
@@ -140,6 +159,7 @@
         disabled: purpose.selected === target.id,
         run: () => (purpose.selected = target.id),
       },
+      { label: 'Rename…', icon: 'pencil', run: () => startRename(target) },
       SEP,
       { label: 'Area', icon: 'compass', items: goalAreaItems(target) },
       { label: 'Status', icon: 'flag', items: goalStatusItems(target) },
@@ -401,9 +421,8 @@
   function paneMenu(): MenuItem[] {
     return tidyMenu([
       {
-        label: 'Areas…',
+        label: 'Edit areas in Settings',
         icon: 'compass',
-        hint: 'in About You',
         run: () => panels.openSettings('profile'),
       },
       { label: 'Back to the tasks', icon: 'list', run: () => todo.setScope({ kind: 'all' }) },
@@ -413,8 +432,10 @@
 
 <div class="pane">
   <header class="top">
-    <h1 class="heading"><Icon name="target" size={15} /> Goals</h1>
-    <span class="summary">{plural(purpose.openGoals.length, 'open goal')}</span>
+    <div class="pane-titles">
+      <h1 class="pane-title"><Icon name="target" size={15} /> Goals</h1>
+      <span class="pane-sub">{plural(purpose.openGoals.length, 'open goal')}</span>
+    </div>
   </header>
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -423,7 +444,7 @@
       <!-- Areas are never written for somebody. A list of what a life is made
          of is a claim, and an application that filled it in would be telling
          its owner who they are. -->
-      <EmptyState lead="Nothing here yet, because nobody has said what your life is made of.">
+      <EmptyState lead="Nothing here yet, because nobody has said what your life is made of">
         {#snippet icon()}<Icon name="compass" size={28} />{/snippet}
         {#snippet note()}
           An <em>area</em> is a part of your life — Family, Work, Health. A <em>goal</em> is something
@@ -439,7 +460,16 @@
     {:else}
       {#each purpose.byArea as group (group.area.id)}
         <div class="areagroup">
-          <button class="areahead" onclick={() => purpose.toggleArea(group.area.id)}>
+          <button
+            class="areahead"
+            aria-expanded={!purpose.collapsed.has(group.area.id)}
+            onclick={() => purpose.toggleArea(group.area.id)}
+          >
+            <span
+              class="disclose"
+              class:shut={purpose.collapsed.has(group.area.id)}
+              aria-hidden="true"><Icon name="chevron" size={12} /></span
+            >
             <span class="dot" style="background: {group.area.color}"></span>
             <span class="glyph">{group.area.icon}</span>
             <span class="rname">{group.area.name}</span>
@@ -454,6 +484,7 @@
                     class="goalrow"
                     class:sel={purpose.selected === row.goal.id}
                     class:closed={row.goal.status === 'done' || row.goal.status === 'dropped'}
+                    aria-current={purpose.selected === row.goal.id ? 'true' : undefined}
                     oncontextmenu={(e) => menu.show(e, goalMenu(row.goal))}
                     onclick={() =>
                       // A row toggles its rail on a desktop; on a phone the
@@ -509,10 +540,29 @@
     <header>
       <!-- A phone shows the goal over the list of goals: the way back. -->
       <PhoneBack onclick={() => details.close('todo')} label="Goals" />
-      <h2>{goal.title}</h2>
+      {#if renamingId === goal.id}
+        <input
+          class="titleedit"
+          aria-label="Goal name"
+          bind:value={renameDraft}
+          use:focusOnMount
+          onblur={commitRename}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') void commitRename()
+            if (e.key === 'Escape') renamingId = null
+          }}
+        />
+      {:else}
+        <h2>
+          <button class="titlebtn" title="Rename this goal" onclick={() => startRename(goal)}
+            >{goal.title}</button
+          >
+        </h2>
+      {/if}
       <button
         class="quiet desktop-only"
         aria-label="Close"
+        title="Close"
         onclick={() => (purpose.selected = null)}
       >
         <Icon name="close" size={15} />
@@ -555,7 +605,7 @@
     <!-- Which part of a life it sits under. A goal is moved here, or from
          its menu anywhere it is listed; nothing filed under it moves with it
          or needs to, since everything points at the goal. -->
-    <label class="lab" for="g-area">Area</label>
+    <label class="eyebrow lab" for="g-area">Area</label>
     <select
       id="g-area"
       value={goal.areaId}
@@ -571,7 +621,7 @@
       {/each}
     </select>
 
-    <label class="lab" for="g-status">Status</label>
+    <label class="eyebrow lab" for="g-status">Status</label>
     <select
       id="g-status"
       value={goal.status}
@@ -586,7 +636,7 @@
       {/each}
     </select>
 
-    <label class="lab" for="g-horizon">Horizon</label>
+    <label class="eyebrow lab" for="g-horizon">Horizon</label>
     <input
       id="g-horizon"
       type="date"
@@ -602,7 +652,7 @@
       that nagged would make it a task.
     </p>
 
-    <label class="lab" for="g-notes">What done looks like</label>
+    <label class="eyebrow lab" for="g-notes">What done looks like</label>
     <textarea
       id="g-notes"
       rows="4"
@@ -661,7 +711,7 @@
 
     {#if adding}
       <div class="adding">
-        <label class="lab" for="t-measure">Count</label>
+        <label class="eyebrow lab" for="t-measure">Count</label>
         <select
           id="t-measure"
           value={adding.measure}
@@ -758,7 +808,7 @@
     {/if}
 
     <button
-      class="danger"
+      class="btn btn-ghost-danger danger"
       disabled={!app.status?.writable}
       onclick={() => (pendingDelete = { id: goal.id, title: goal.title })}
     >
@@ -790,7 +840,7 @@
     margin-bottom: var(--sp-2);
     padding: 2px var(--sp-2);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     color: var(--fg-subtle);
     font: inherit;
@@ -803,10 +853,6 @@
     color: var(--fg-muted);
   }
 
-  /* The same metrics the task pane uses, and deliberately: switching between
-     the two should not move the heading. Written out rather than shared,
-     because Svelte scopes styles per component and the alternative is a
-     global class for two panes. */
   .pane {
     display: flex;
     flex: 1;
@@ -822,28 +868,6 @@
     flex: none;
     height: var(--header-h);
     padding: 0 var(--sp-4);
-    /* Same cap as `.areagroup` below, so "Goals" and its count sit directly
-       over the list they describe instead of spanning the full pane while
-       the rows under them stop at a readable width -- on a wide window the
-       count was ending up hundreds of pixels right of the last row. */
-    max-width: 56rem;
-  }
-
-  .heading {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    min-width: 0;
-    margin: 0;
-    font-size: var(--text-md);
-    font-weight: 620;
-    letter-spacing: -0.008em;
-  }
-
-  .summary {
-    flex: none;
-    color: var(--fg-faint);
-    font-size: var(--text-sm);
   }
 
   .goals {
@@ -853,7 +877,7 @@
   }
 
   .areagroup {
-    max-width: 56rem;
+    max-width: var(--page-w);
     margin-bottom: var(--sp-6);
   }
 
@@ -867,6 +891,17 @@
     color: var(--fg);
     font-size: var(--text-md);
     font-weight: 600;
+  }
+
+  /* Points down while open and right when the area is folded away. */
+  .disclose {
+    display: grid;
+    flex: none;
+    color: var(--fg-faint);
+    transition: rotate var(--fast) var(--ease);
+  }
+  .disclose.shut {
+    rotate: -90deg;
   }
 
   .dot {
@@ -943,7 +978,7 @@
   .tag {
     flex: none;
     padding: 1px 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
     color: var(--fg-subtle);
     font-size: var(--text-xs);
@@ -973,7 +1008,7 @@
 
   .detail {
     flex: none;
-    width: 320px;
+    width: var(--detail-w);
     padding: var(--sp-4);
     border-left: 1px solid var(--border);
     background: var(--bg-panel);
@@ -1003,6 +1038,23 @@
     text-transform: uppercase;
   }
 
+  /* The title is the rename affordance, and reads as a heading. */
+  .titlebtn {
+    max-width: 100%;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: text;
+  }
+  .detail input.titleedit {
+    flex: 1;
+    min-width: 0;
+    padding: 2px var(--sp-2);
+    font-size: var(--text-md);
+    font-weight: 650;
+  }
+
   .quiet {
     display: grid;
     place-items: center;
@@ -1016,14 +1068,10 @@
     color: var(--fg);
   }
 
+  /* `.eyebrow` supplies the type; this is the label's place above its control. */
   .lab {
     display: block;
     margin: var(--sp-4) 0 var(--sp-1);
-    color: var(--fg-faint);
-    font-size: var(--text-xs);
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
   }
 
   .detail select,
@@ -1074,20 +1122,10 @@
     line-height: var(--leading-normal);
   }
 
+  /* The shared ghost-danger button, set to the rail's width. */
   .danger {
     width: 100%;
-    height: 32px;
     margin-top: var(--sp-6);
-    border-radius: var(--radius-sm);
-    color: var(--danger);
-    font-size: var(--text-sm);
-    font-weight: 550;
-  }
-  .danger:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--danger) 12%, transparent);
-  }
-  .danger:disabled {
-    opacity: 0.4;
   }
 
   /* ── Targets ────────────────────────────────────────────────────── */
@@ -1197,6 +1235,9 @@
   :global([data-phone]) .danger {
     height: 48px;
     font-size: var(--text-base);
+  }
+  :global([data-phone]) .titlebtn {
+    min-height: 44px;
   }
   :global([data-phone]) .link,
   :global([data-phone]) .link-danger {

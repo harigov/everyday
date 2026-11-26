@@ -6,7 +6,14 @@
   // the list grows.
 
   import { untrack } from 'svelte'
-  import { FILTER_LABELS, TASK_FILTERS, todo } from '../lib/todo.svelte'
+  import {
+    FILTER_LABELS,
+    TASK_FILTERS,
+    groupChoices,
+    todo,
+    type TaskFilter,
+  } from '../lib/todo.svelte'
+  import { menu } from '../lib/menu.svelte'
   import { details, phone } from '../lib/phone.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { formatMinutes } from '../lib/format'
@@ -19,7 +26,7 @@
   import TaskBoard from './TaskBoard.svelte'
   import TaskDetail from './TaskDetail.svelte'
   import TaskProposalDetail from './TaskProposalDetail.svelte'
-  import type { GroupBy } from '../lib/todo.svelte'
+  import type { GroupBy } from '../lib/tasklist'
   import type { Priority } from '../lib/types'
 
   void todo.start()
@@ -78,12 +85,37 @@
       : (HEADINGS[todo.scope.kind] ?? 'Tasks'),
   )
 
-  const GROUPS: { id: GroupBy; label: string }[] = [
-    { id: 'due', label: 'Due date' },
-    { id: 'status', label: 'Status' },
-    { id: 'priority', label: 'Priority' },
-    { id: 'none', label: 'Nothing' },
-  ]
+  const GROUPS = $derived(groupChoices(purpose.enabled))
+
+  // Three chips for what people look for, the rest behind one. Eight chips
+  // in a row read as a wall of equal choices, and four of them are rare. A
+  // rare status that is the active filter takes the "More" chip's place so
+  // the bar still says what the list is showing.
+  const MAIN_FILTERS: TaskFilter[] = ['open', 'done', 'all']
+  const MORE_FILTERS = TASK_FILTERS.filter((f) => !MAIN_FILTERS.includes(f))
+  const FILTER_HINTS: Record<TaskFilter, string> = {
+    open: 'Everything not finished or cancelled',
+    all: 'Every task, whatever its status',
+    backlog: 'Ideas and someday tasks',
+    todo: 'Ready to start',
+    doing: 'In progress',
+    blocked: 'Waiting on something',
+    done: 'Finished',
+    cancelled: 'Dropped, not done',
+  }
+  const moreOn = $derived(MORE_FILTERS.includes(todo.statusFilter))
+
+  function moreMenu(e: MouseEvent) {
+    menu.show(
+      e,
+      MORE_FILTERS.map((f) => ({
+        label: FILTER_LABELS[f],
+        hint: String(todo.countFor(f)),
+        checked: todo.statusFilter === f,
+        run: () => todo.setStatusFilter(f),
+      })),
+    )
+  }
 
   /** The one-line summary in the header: what is left, and what it cost. */
   const summary = $derived.by(() => {
@@ -146,7 +178,7 @@
         <div class="pane-titles">
           <h1 class="pane-title">
             {#if todo.project}<span class="mark">{todo.project.icon}</span>{/if}
-            {#if counted > 0}
+            {#if counted > 0 && (todo.scope.kind === 'project' || todo.scope.kind === 'all')}
               <ProgressPie
                 {done}
                 total={counted}
@@ -165,20 +197,20 @@
             <div class="views" role="group" aria-label="View">
               <button
                 class="view"
-                class:on={todo.view === 'list'}
+                class:on={todo.effectiveView === 'list'}
                 title="List"
                 aria-label="List view"
-                aria-pressed={todo.view === 'list'}
+                aria-pressed={todo.effectiveView === 'list'}
                 onclick={() => todo.setView('list')}
               >
                 <Icon name="list" size={15} />
               </button>
               <button
                 class="view"
-                class:on={todo.view === 'board'}
+                class:on={todo.effectiveView === 'board'}
                 title="Board"
                 aria-label="Board view"
-                aria-pressed={todo.view === 'board'}
+                aria-pressed={todo.effectiveView === 'board'}
                 onclick={() => todo.setView('board')}
               >
                 <Icon name="board" size={15} />
@@ -186,13 +218,13 @@
             </div>
           {/if}
 
-          {#if todo.view === 'list'}
+          {#if todo.effectiveView === 'list'}
             <label class="group">
-              <span class="vh">Group by</span>
+              <span class="sr-only">Group by</span>
               <select
                 class="select"
                 value={todo.groupBy}
-                onchange={(e) => (todo.groupBy = e.currentTarget.value as GroupBy)}
+                onchange={(e) => todo.setGroupBy(e.currentTarget.value as GroupBy)}
               >
                 {#each GROUPS as g (g.id)}<option value={g.id}>Group: {g.label}</option>{/each}
               </select>
@@ -239,19 +271,35 @@
         </div>
 
         <div class="filters" role="tablist" aria-label="Status">
-          {#each TASK_FILTERS as filter (filter)}
+          {#each MAIN_FILTERS as filter (filter)}
             {@const n = todo.countFor(filter)}
             <button
               class="filter"
               class:on={todo.statusFilter === filter}
               role="tab"
               aria-selected={todo.statusFilter === filter}
+              title={FILTER_HINTS[filter]}
               onclick={() => todo.setStatusFilter(filter)}
             >
               {FILTER_LABELS[filter]}
               {#if n > 0}<span class="n">{n}</span>{/if}
             </button>
           {/each}
+          <button
+            class="filter"
+            class:on={moreOn}
+            role="tab"
+            aria-selected={moreOn}
+            aria-haspopup="menu"
+            title={moreOn
+              ? FILTER_HINTS[todo.statusFilter]
+              : 'Backlog, to do, doing, blocked, cancelled'}
+            onclick={moreMenu}
+          >
+            {moreOn ? FILTER_LABELS[todo.statusFilter] : 'More'}
+            {#if moreOn}<span class="n">{todo.countFor(todo.statusFilter)}</span>{/if}
+            <Icon name="chevron" size={11} />
+          </button>
         </div>
 
         <div class="toolbar-end right">
@@ -261,7 +309,7 @@
         </div>
       </div>
 
-      {#if todo.view === 'board' && todo.boardable}
+      {#if todo.effectiveView === 'board' && todo.boardable}
         <TaskBoard />
       {:else}
         <TaskList />
@@ -329,7 +377,7 @@
     display: flex;
     gap: 2px;
     padding: 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--bg-active);
   }
   .view {
@@ -337,7 +385,7 @@
     height: 22px;
     display: grid;
     place-items: center;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--fg-subtle);
     transition:
       background var(--fast) var(--ease),
@@ -356,7 +404,7 @@
     height: 26px;
     padding: 0 var(--sp-2);
     border: none;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     font-size: var(--text-sm);
     color: var(--fg-subtle);
@@ -365,9 +413,6 @@
   .select:hover {
     background: var(--bg-hover);
     color: var(--fg);
-  }
-  .select:focus {
-    outline: none;
   }
 
   /* `.toolbar`'s ends carry more than most of the shared filter bar's other
@@ -393,7 +438,7 @@
   .clear {
     height: 26px;
     padding: 0 var(--sp-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-sm);
     color: var(--fg-subtle);
     white-space: nowrap;
@@ -401,15 +446,6 @@
   .clear:hover {
     background: var(--bg-hover);
     color: var(--fg);
-  }
-
-  /* Visually hidden, still announced. */
-  .vh {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
   }
 
   /* ── On a phone ──────────────────────────────────────────────────────── */

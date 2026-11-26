@@ -19,6 +19,7 @@
   import AccountDetail from './AccountDetail.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import Loading from './Loading.svelte'
 
   void accounts.load()
   void accounts.loadPresets()
@@ -96,7 +97,7 @@
   <!-- The button up here, and solid: below the list it read as a stray line
        of text, and a long list pushed it out of sight. -->
   <div class="head">
-    <span class="eyebrow">Mailboxes signed in</span>
+    <h3 class="eyebrow">Mailboxes signed in</h3>
     <button class="btn btn-primary" disabled={!writable} onclick={() => (adding = true)}>
       <Icon name="plus" size={13} /> Add account
     </button>
@@ -108,7 +109,7 @@
   </p>
 
   {#if accounts.loading && accounts.list.length === 0}
-    <p class="hint">Loading…</p>
+    <Loading label="Loading accounts…" />
   {:else if accounts.list.length === 0}
     <p class="hint">
       No mailboxes yet. Add one to read its mail offline and see its calendar alongside your own.
@@ -156,7 +157,7 @@
               menu.show(e, rowMenu(account))
             }}
           >
-            <Icon name="chevron" size={13} />
+            <Icon name="more" size={15} />
           </button>
         </div>
       </li>
@@ -166,7 +167,7 @@
 
 {#if app.supportsMail}
   <section>
-    <span class="eyebrow">Remote images</span>
+    <h3 class="eyebrow">Remote images</h3>
     <p class="hint">
       Every sender and domain a "Always from sender" or "Always from this domain" click has ever let
       load a remote image, across every account. Revoking one hides that sender's images again, the
@@ -208,7 +209,7 @@
 {#if pendingDelete}
   <ConfirmDialog
     title={'Remove ' + pendingDelete.address + '?'}
-    detail="The local copy of its mail is deleted from this vault. Nothing changes on the server itself -- signing in again later starts a fresh copy."
+    detail="The local copy of its mail is deleted from this vault. Nothing changes on the server itself — signing in again later starts a fresh copy."
     confirmLabel="Remove account"
     onconfirm={confirmRemove}
     oncancel={() => (pendingDelete = null)}
@@ -323,12 +324,16 @@
     border-radius: 50%;
     background: var(--fg-faint);
   }
-  .status.tone-warn .dot,
+  /* Three states, three colours: it was accent for fine and danger for
+     both a warning and a failure, so "needs a look" read as "broken". */
+  .status.tone-warn .dot {
+    background: var(--warning);
+  }
   .status.tone-error .dot {
     background: var(--danger);
   }
   .status.tone-ok .dot {
-    background: var(--accent);
+    background: var(--success);
   }
 
   .more {
@@ -339,7 +344,6 @@
     height: 22px;
     border-radius: var(--radius-sm);
     color: var(--fg-faint);
-    rotate: 90deg;
   }
   .more:hover {
     background: var(--bg-active);

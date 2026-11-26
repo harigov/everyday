@@ -266,7 +266,12 @@
                 {tracker.kind === 'dose' ? 'How much did you take?' : 'How much?'}
               </p>
               <div class="amount">
-                <button class="step" aria-label="Less" onclick={() => step(tracker, -1)}>
+                <button
+                  class="step"
+                  aria-label="Less"
+                  title="Less"
+                  onclick={() => step(tracker, -1)}
+                >
                   <Icon name="minus" size={15} />
                 </button>
                 <label class="field">
@@ -284,7 +289,12 @@
                   />
                   {#if tracker.unit}<span class="unit">{tracker.unit}</span>{/if}
                 </label>
-                <button class="step" aria-label="More" onclick={() => step(tracker, 1)}>
+                <button
+                  class="step"
+                  aria-label="More"
+                  title="More"
+                  onclick={() => step(tracker, 1)}
+                >
                   <Icon name="plus" size={15} />
                 </button>
                 <button class="add" onclick={() => commit(tracker, timed ? clockValue(null) : null)}
@@ -327,6 +337,7 @@
                     <button
                       class="drop"
                       aria-label="Remove this reading"
+                      title="Remove this reading"
                       onclick={() => void tracking.remove(r)}
                     >
                       <Icon name="close" size={12} weight={1.8} />
@@ -362,7 +373,7 @@
           class="panel wide"
           class:up
           role="dialog"
-          aria-label="Record a reading"
+          aria-label="Log a habit"
           use:dismissable={{ onaway: () => (logging = false), within: '.add' }}
           use:fitVertically
         >
@@ -385,7 +396,7 @@
     width: 30px;
     height: 30px;
     border: 1px dashed var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     color: var(--fg-faint);
   }
@@ -421,7 +432,7 @@
     gap: var(--sp-2);
     height: 34px;
     padding: 0 var(--sp-3) 0 5px;
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     border: 1px dashed var(--border-strong);
     background: transparent;
     color: var(--fg-muted);
@@ -663,7 +674,7 @@
     place-items: center;
     width: 20px;
     height: 20px;
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     color: var(--fg-faint);
   }
   .drop:hover {

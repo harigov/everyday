@@ -47,6 +47,7 @@
   import { details } from '../lib/phone.svelte'
   import { app } from '../lib/state.svelte'
   import type { Job, JobKind } from '../lib/types'
+  import ConfirmDialog from './ConfirmDialog.svelte'
 
   let {
     job,
@@ -173,6 +174,8 @@
 
   /** One action in flight at a time: Cancel and Answer now do not stack. */
   let pending = $state(false)
+  /** Which destructive button is waiting on a yes. Stopping a watch is not one: it can be set up again in a line. */
+  let asking = $state<'cancel' | 'delete' | null>(null)
   async function run(action: () => Promise<void>) {
     if (pending) return
     pending = true
@@ -305,7 +308,7 @@
         <button
           class="btn act btn-ghost-danger"
           disabled={pending}
-          onclick={() => void run(() => jobs.cancel(job.id))}
+          onclick={() => (watch ? void run(() => jobs.cancel(job.id)) : (asking = 'cancel'))}
         >
           {watch ? 'Stop watching' : 'Cancel'}
         </button>
@@ -337,11 +340,35 @@
       {/if}
       {#if onremove && !active}
         <span class="spacer"></span>
-        <button class="btn act btn-ghost-danger" onclick={onremove}>Delete</button>
+        <button class="btn act btn-ghost-danger" onclick={() => (asking = 'delete')}>Delete</button>
       {/if}
     </footer>
   {/if}
 </article>
+
+{#if asking === 'cancel'}
+  <ConfirmDialog
+    title="Cancel this {kind.toLowerCase()}?"
+    detail="What it has done so far is kept."
+    confirmLabel="Cancel {kind.toLowerCase()}"
+    oncancel={() => (asking = null)}
+    onconfirm={() => {
+      asking = null
+      void run(() => jobs.cancel(job.id))
+    }}
+  />
+{:else if asking === 'delete'}
+  <ConfirmDialog
+    title="Delete this result?"
+    detail="The result and its conversation will be removed. This cannot be undone."
+    confirmLabel="Delete"
+    oncancel={() => (asking = null)}
+    onconfirm={() => {
+      asking = null
+      onremove?.()
+    }}
+  />
+{/if}
 
 <style>
   /* The list's size: the same card the routine runs beside it are drawn on. */
@@ -510,18 +537,13 @@
     border: 1.5px solid color-mix(in oklab, var(--accent) 25%, transparent);
     border-top-color: var(--accent);
     border-radius: 50%;
-    animation: turn 0.8s linear infinite;
+    animation: ky-spin 0.8s linear infinite;
   }
   .dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     background: var(--fg-faint);
-  }
-  @keyframes turn {
-    to {
-      rotate: 360deg;
-    }
   }
   @keyframes pulse {
     0%,

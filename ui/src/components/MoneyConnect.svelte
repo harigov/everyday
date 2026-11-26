@@ -187,20 +187,6 @@
     font-weight: 550;
     color: var(--fg);
   }
-  .spinner {
-    flex: none;
-    width: 16px;
-    height: 16px;
-    border: 2px solid color-mix(in oklab, var(--accent) 25%, transparent);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.9s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   .fallback {
     margin-top: var(--sp-2);

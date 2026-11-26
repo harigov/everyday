@@ -235,7 +235,7 @@ const EXPECTED_TRAY_ROWS = [
   tray_('todo:add', 'Add a task', 'Todo'),
   tray_('calendar:book-now', 'New event', 'Calendar'),
   tray_('calendar:timer', 'Track time', 'Calendar'),
-  tray_('overview:log', 'Record a reading', 'Overview'),
+  tray_('overview:log', 'Log a habit', 'Overview'),
   tray_('library:add', 'Add to library', 'Library'),
   tray_('mail:compose', 'Compose a message', 'Mail'),
   tray_('notes:new', 'New note', 'Notes'),
@@ -254,7 +254,7 @@ const EXPECTED_QUICK_ROWS = [
   quick_('files:photos', 'Photos', 'Files'),
   quick_('files:add', 'Add files', 'Files'),
   quick_('health:today', "Today's health", 'Health'),
-  quick_('assistant:runs', 'What the assistant did', 'Assistant'),
+  quick_('assistant:runs', 'Assistant activity', 'Assistant'),
   quick_('assistant:new-routine', 'New routine', 'Assistant'),
 ]
 assert.deepEqual(ACTIONS.filter((a) => a.quick === true).map(actionShape), EXPECTED_QUICK_ROWS)
@@ -295,9 +295,9 @@ const EXPECTED_APP_MENUS = {
   Health: [{ id: 'health:today', label: "Today's health" }],
   // "How things are going" is the palette's alone: here it said what "Open
   // Overview" above it already does.
-  Overview: [{ id: 'overview:log', label: 'Record a reading' }],
+  Overview: [{ id: 'overview:log', label: 'Log a habit' }],
   Assistant: [
-    { id: 'assistant:runs', label: 'What the assistant did' },
+    { id: 'assistant:runs', label: 'Assistant activity' },
     { id: 'assistant:new-routine', label: 'New routine' },
   ],
   // One lock: the key, which is what the app bar's Lock drops too. Locking
@@ -332,7 +332,7 @@ assert.deepEqual(tray.menu().map(menuShape), [
   'Track time',
   'Add to library',
   'Compose a message',
-  'Record a reading',
+  'Log a habit',
   '---',
   'Lock the vault everywhere',
 ])

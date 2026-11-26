@@ -144,8 +144,8 @@
 
   /** A click on the overlay outside the card is a click outside the popup. */
   function onBackdrop(e: MouseEvent) {
-    // With no card at all -- nothing to show yet, or the shell failed
-    // half-way -- the whole overlay is outside it.
+    // With no card at all, nothing to show yet, or the shell failed
+    // half-way, the whole overlay is outside it.
     if (!card || !card.contains(e.target as Node)) void dismiss()
   }
 
@@ -206,6 +206,8 @@
         </div>
       {:else if view.kind === 'working'}
         <p class="status" role="status"><span class="spinner"></span>{view.choice.doing}…</p>
+        <!-- Esc and clicking away already stop it; a button says so for anyone who did not know. -->
+        <div class="actions"><button class="btn quiet" onclick={dismiss}>Cancel</button></div>
       {:else if view.kind === 'trouble'}
         <p class="status trouble" role="alert">{view.trouble.message}</p>
         <div class="actions">
@@ -341,6 +343,11 @@
       transform: rotate(1turn);
     }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation-duration: 3s;
+    }
+  }
   .actions {
     display: flex;
     gap: 6px;
@@ -350,7 +357,7 @@
     font: inherit;
     font-size: 13px;
     padding: 5px 12px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid transparent;
     background: var(--accent);
     color: var(--fg-on-accent);

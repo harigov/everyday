@@ -318,7 +318,7 @@
   .x {
     display: flex;
     color: var(--fg-faint);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     padding: 2px;
   }
   .x:hover {
@@ -332,7 +332,7 @@
     height: 22px;
     padding: 0 var(--sp-2);
     border: 1px dashed var(--border-strong);
-    border-radius: 99px;
+    border-radius: var(--radius-pill);
     background: none;
     font-size: var(--text-xs);
     user-select: text;

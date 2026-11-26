@@ -21,6 +21,7 @@ export type PrefKey =
   | 'karmayoga.theme'
   | 'karmayoga.section'
   | 'karmayoga.todo.view'
+  | 'karmayoga.todo.group'
   | 'karmayoga.calendar.view'
   | 'karmayoga.library.view'
   | 'karmayoga.library.capture'

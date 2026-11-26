@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { lateness } from '../lib/keepintouch'
+  import { isContactShelf, lateness } from '../lib/keepintouch'
   import { library } from '../lib/library.svelte'
   import type { Item, KindInfo } from '../lib/types'
   import Cover from './Cover.svelte'
@@ -35,6 +35,7 @@
   } = $props()
 
   const color = $derived(kind?.color ?? 'var(--accent)')
+  const person = $derived(isContactShelf(kind))
 
   const due = $derived.by(() => {
     const p = library.dueOf(item.id)
@@ -91,7 +92,9 @@
   </button>
 
   <div class="foot">
-    {#if item.rating !== null && item.rating !== undefined}
+    {#if person}
+      <!-- A person is not rated; any stars left on the card stay stored. -->
+    {:else if item.rating !== null && item.rating !== undefined}
       <Rating value={item.rating} size={12} readonly />
     {:else if item.external.length > 0}
       <!-- Somebody else's score, drawn faintly, so an unrated card is not a
@@ -164,7 +167,7 @@
     left: var(--sp-2);
     max-width: calc(100% - var(--sp-4));
     padding: 2px 7px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: var(--text-xs);
     font-weight: 600;
     letter-spacing: 0.01em;
@@ -238,7 +241,7 @@
     color: var(--fg-subtle);
   }
   .due.late {
-    color: var(--tint);
+    color: color-mix(in oklab, var(--tint) 70%, var(--fg));
     font-weight: 500;
   }
 

@@ -307,7 +307,7 @@
   .badge {
     flex: none;
     padding: 1px 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in oklab, var(--danger) 12%, transparent);
     color: var(--danger);
     font-size: 11px;

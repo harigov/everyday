@@ -61,7 +61,7 @@ const showBoard = async (ctx) => {
   await ctx.settle(600)
 }
 
-const openGoals = (ctx) => goTo(ctx, /What this is all for/)
+const openGoals = (ctx) => goTo(ctx, /^All goals/)
 
 const scenarios = [
   // The app as it opens: today's list.
@@ -212,7 +212,9 @@ const scenarios = [
     run: async (ctx) => {
       await openTask(ctx)
       await press(
-        ctx.page.getByRole('button', { name: /Not filed|Same as the project|Filed under/ }).first(),
+        ctx.page
+          .getByRole('button', { name: /No goal or area|Same as the project|Filed under/ })
+          .first(),
       )
       await ctx.settle()
     },

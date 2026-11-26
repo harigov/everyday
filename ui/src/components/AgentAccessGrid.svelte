@@ -82,7 +82,7 @@
   {/each}
 
   <p class="hint send-hint">
-    Sending is always confirmed in chat, whichever switches above allow it -- there is no setting
+    Sending is always confirmed in chat, whichever switches above allow it — there is no setting
     that sends without asking.
   </p>
 
@@ -94,7 +94,7 @@
       onchange={(e) => onacknowledge(e.currentTarget.checked)}
     />
     <span>
-      I understand -- until this is ticked, the assistant's mail tools stay off for this account
+      I understand — until this is ticked, the assistant's mail tools stay off for this account
       regardless of the switches above.
     </span>
   </label>
