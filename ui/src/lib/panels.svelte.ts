@@ -102,6 +102,12 @@ export function isSettingsTab(raw: string | null | undefined): raw is SettingsTa
 class Panels {
   /** Which settings tab is showing, or `null` when the dialog is closed. */
   settings = $state<SettingsTab | null>(null)
+  /**
+   * A part of that tab to show first -- "sharing" in Vault, say -- for
+   * whatever opened it to name; the tab takes it and clears it. `null` is
+   * the tab's own choice.
+   */
+  settingsPart = $state<string | null>(null)
   /** The keyboard shortcut sheet. */
   shortcuts = $state(false)
   /**
@@ -113,15 +119,16 @@ class Panels {
    */
   palette = $state(false)
 
-  openSettings(tab: SettingsTab = 'general') {
+  openSettings(tab: SettingsTab = 'general', part: string | null = null) {
     // A window of one app has no Settings of its own: the main window comes
     // forward with them open. See `appwindow.ts`.
     if (pinned) {
-      void api.showInMain({ settings: tab }).catch(() => {})
+      void api.showInMain({ settings: tab, part }).catch(() => {})
       return
     }
     this.shortcuts = false
     this.palette = false
+    this.settingsPart = part
     this.settings = tab
   }
 

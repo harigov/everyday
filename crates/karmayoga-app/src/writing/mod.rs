@@ -177,6 +177,8 @@ pub fn wayland_session(app: &AppHandle) -> bool {
 /// How the popup is drawn.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+// `Overlay` is Wayland's, where a window cannot be placed at the pointer.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum Mode {
     /// Inside a transparent window covering the screen, at `x`/`y` in it.
     Overlay,
@@ -262,6 +264,8 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .focused(true)
         .on_navigation(crate::navigation::guard(crate::navigation::dev_url(app)))
         .build()
+        // Over the app whose text it is helping with. See `overlay`.
+        .inspect(crate::overlay::float_over_full_screen)
         .map_err(|e| e.to_string())
 }
 

@@ -217,6 +217,9 @@ enum Control {
 pub struct AudioEngine {
     control: Sender<Control>,
     join: Option<std::thread::JoinHandle<()>>,
+    /// The audio session, held while the engine runs. See `session`.
+    #[cfg(target_os = "ios")]
+    _session: Option<super::session::Hold>,
 }
 
 impl AudioEngine {
@@ -239,12 +242,21 @@ impl AudioEngine {
         }
         let (control, control_rx) = std::sync::mpsc::channel();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        // Before any device opens: an iPhone records only in a category that
+        // allows it. Given back when the engine drops, or if it fails to start.
+        #[cfg(target_os = "ios")]
+        let session = Some(super::session::Hold::take(options.microphone));
         let join = std::thread::Builder::new()
             .name("audio-engine".into())
             .spawn(move || run(options, cleanup, sink, ready_tx, control_rx))
             .map_err(|e| AudioError(format!("could not start the audio thread: {e}")))?;
         // From here a failure drops `engine`, which reaps the thread.
-        let engine = AudioEngine { control, join: Some(join) };
+        let engine = AudioEngine {
+            control,
+            join: Some(join),
+            #[cfg(target_os = "ios")]
+            _session: session,
+        };
         match ready_rx.await {
             Ok(Ok(())) => Ok(engine),
             Ok(Err(e)) => Err(e),
@@ -312,16 +324,28 @@ impl AudioEngine {
     /// one. Everything said to it is dropped.
     pub fn detached() -> AudioEngine {
         let (control, _unheard) = std::sync::mpsc::channel();
-        AudioEngine { control, join: None }
+        AudioEngine {
+            control,
+            join: None,
+            #[cfg(target_os = "ios")]
+            _session: None,
+        }
     }
 }
 
 impl Drop for AudioEngine {
     fn drop(&mut self) {
         let _ = self.control.send(Control::Stop);
+        // The session is given back once the thread has closed its streams:
+        // iOS refuses to deactivate one that still has a stream running, and
+        // the music it interrupted is then never told it may carry on.
+        #[cfg(target_os = "ios")]
+        let session = self._session.take();
         if let Some(join) = self.join.take() {
             let _ = std::thread::Builder::new().name("audio-engine-join".into()).spawn(move || {
                 let _ = join.join();
+                #[cfg(target_os = "ios")]
+                drop(session);
             });
         }
     }

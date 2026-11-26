@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Merged into the iPhone app's Info.plist by `cargo tauri ios build` and
+  `ios dev`, last, so these win over anything else -- over the Mac's
+  Info.plist beside it in particular, which the iOS build merges too, and
+  whose microphone text ("never leaves this Mac") an iPhone must not show.
+
+  The phone is always a remote client (docs/mobile.md): it reaches one
+  computer on the local network or a tailnet, records the microphone only to
+  talk to the assistant -- the computer does the hearing -- and opens the
+  camera only when a file picker in the webview offers "Take Photo". iOS
+  refuses the local network quietly, and kills an app that opens the camera,
+  when the text for it is missing.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Karma Yoga connects to the computer that holds your vault, on your network or your tailnet. Nothing else on the network is contacted.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Karma Yoga uses the microphone when you talk to the assistant. What you say goes to the computer that holds your vault, which transcribes it.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Karma Yoga uses the camera only when you take a photo to add to an entry, a note or Files.</string>
+</dict>
+</plist>

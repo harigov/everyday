@@ -11,7 +11,8 @@
 # own settings. The password is `phone-test-pass`.
 #
 # For the emulator: `adb reverse tcp:7397 tcp:7397` makes the phone's
-# 127.0.0.1:7397 this machine's, which is the address the link names. A real
+# 127.0.0.1:7397 this machine's, which is the address the link names. The iOS
+# simulator, and a desktop app on this machine, reach it there as is. A real
 # phone on the same network or tailnet needs --listen set to an address it
 # can reach instead. See docs/mobile.md.
 set -euo pipefail
@@ -21,6 +22,14 @@ T="$HOME/.cache/ky-android/testserver"
 [ "${1:-}" = "--fresh" ] && rm -rf "$T"
 mkdir -p "$T/config" "$T/data" "$T/cache"
 export XDG_CONFIG_HOME="$T/config" XDG_DATA_HOME="$T/data" XDG_CACHE_HOME="$T/cache"
+# macOS keeps settings under ~/Library/Application Support and ignores the
+# XDG variables, so there a home of its own is what keeps this server's
+# certificate, devices and last-vault pointer out of the real ones -- and out
+# of the desktop app's, which may be the client pairing with it.
+if [ "$(uname -s)" = Darwin ]; then
+  mkdir -p "$T/home"
+  export HOME="$T/home"
+fi
 export KARMAYOGA_PASSWORD=phone-test-pass
 
 K="${KARMAYOGA_BIN:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/karmayoga}"
@@ -55,11 +64,11 @@ if [ ! -d "$V" ]; then
   tool create_note '{"title": "Books to look for", "body": "The Overstory. A Psalm for the Wild-Built. Piranesi."}'
   tool create_note '{"title": "Site rebuild", "body": "Static pages, one stylesheet, no framework."}'
   today=$(date +%F)
-  tomorrow=$(date -d tomorrow +%F)
-  tool create_event "{\"title\": \"Stand-up\", \"start\": \"${today}T09:30:00\", \"end\": \"${today}T09:45:00\"}"
-  tool create_event "{\"title\": \"Lunch with Priya\", \"start\": \"${today}T12:30:00\", \"end\": \"${today}T13:30:00\"}"
-  tool create_event "{\"title\": \"Dentist\", \"start\": \"${tomorrow}T15:00:00\", \"end\": \"${tomorrow}T15:30:00\"}"
-  tool create_event "{\"title\": \"Guitar lesson\", \"start\": \"${tomorrow}T18:00:00\", \"end\": \"${tomorrow}T19:00:00\"}"
+  tomorrow=$(date -d tomorrow +%F 2>/dev/null || date -v+1d +%F)   # GNU, then BSD (macOS)
+  tool create_event "{\"title\": \"Stand-up\", \"date\": \"$today\", \"start_time\": \"09:30\", \"end_time\": \"09:45\"}"
+  tool create_event "{\"title\": \"Lunch with Priya\", \"date\": \"$today\", \"start_time\": \"12:30\", \"end_time\": \"13:30\"}"
+  tool create_event "{\"title\": \"Dentist\", \"date\": \"$tomorrow\", \"start_time\": \"15:00\", \"end_time\": \"15:30\"}"
+  tool create_event "{\"title\": \"Guitar lesson\", \"date\": \"$tomorrow\", \"start_time\": \"18:00\", \"end_time\": \"19:00\"}"
 fi
 
 LISTEN="${LISTEN:-127.0.0.1}"

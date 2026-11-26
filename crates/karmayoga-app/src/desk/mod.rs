@@ -18,11 +18,11 @@
 //! through the opener plugin, the files catalog, the main window, the clipboard
 //! and the notification module, all of which already do. The rest -- other
 //! applications, the music, the volume, Do Not Disturb, the lock -- is the
-//! desktop's, and is [`linux`]'s for now, GNOME first. Elsewhere the desk says
-//! so honestly: [`Abilities`] names only what is there, the assistant is told
-//! about nothing else, and a method that is called anyway answers that it "isn't
-//! available on this computer yet". macOS and Windows have their own ways to do
-//! every one of these and are the obvious next two modules.
+//! desktop's, and is `linux`'s (GNOME first) and `macos`'s. Elsewhere the desk
+//! says so honestly: [`Abilities`] names only what is there, the assistant is
+//! told about nothing else, and a method that is called anyway answers that it
+//! "isn't available on this computer yet". Windows has its own ways to do
+//! every one of these and is the obvious next module.
 //!
 //! # Who calls these
 //!
@@ -38,6 +38,8 @@
 mod environment;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 mod words;
 
 use std::sync::Arc;
@@ -83,7 +85,11 @@ fn abilities() -> Abilities {
     {
         linux::abilities()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::abilities()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Abilities { files: true, sections: true, copy: true, ..Abilities::default() }
     }
@@ -137,7 +143,11 @@ impl Desk for AppDesk {
         {
             async { off_thread(|| Ok(linux::apps::installed())).await }.boxed()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            async { off_thread(|| Ok(macos::apps::installed())).await }.boxed()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             unavailable("Listing applications")
         }
@@ -149,7 +159,11 @@ impl Desk for AppDesk {
             let app = self.app.clone();
             async move { linux::apps::launch(&app, id).await }.boxed()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            async move { off_thread(move || macos::apps::launch(&id)).await }.boxed()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = id;
             unavailable("Opening applications")
@@ -161,7 +175,12 @@ impl Desk for AppDesk {
         {
             linux::media::control(action).boxed()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            let app = self.app.clone();
+            async move { macos::media::control(&app, action).await }.boxed()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = action;
             unavailable("Controlling the music")
@@ -173,7 +192,11 @@ impl Desk for AppDesk {
         {
             async move { off_thread(move || linux::volume::change(change)).await }.boxed()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            async move { off_thread(move || macos::volume::change(change)).await }.boxed()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = change;
             unavailable("Changing the volume")
@@ -189,7 +212,11 @@ impl Desk for AppDesk {
         {
             async move { off_thread(move || linux::settings::apply(setting, on)).await }.boxed()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            async move { off_thread(move || macos::settings::apply(setting, on)).await }.boxed()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = (setting, on);
             unavailable("Changing desktop settings")
@@ -201,7 +228,11 @@ impl Desk for AppDesk {
         {
             linux::lock::lock().boxed()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::lock::lock().boxed()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             unavailable("Locking the screen")
         }
@@ -268,7 +299,7 @@ pub(crate) async fn off_thread<T: Send + 'static>(
 /// Not what is offered -- [`Abilities`] says that, and an assistant is never
 /// offered what it cannot do -- but what a call that arrives regardless is
 /// answered with, rather than a panic or a silence.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn unavailable<T: Send + 'static>(what: &str) -> BoxFuture<'static, Result<T, String>> {
     let message = format!("{what} isn't available on this computer yet.");
     async move { Err(message) }.boxed()

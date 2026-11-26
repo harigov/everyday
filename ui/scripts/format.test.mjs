@@ -111,7 +111,13 @@ const LONG = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }
 
 assert.equal(weekdayShort(day), freshWeekday(new Date(2026, 2, 4)))
 assert.equal(longDate(day), asFreshlyBuilt(LONG, new Date(2026, 2, 4)))
-assert.equal(friendlyDate(new Date().toISOString().slice(0, 10)), 'Today')
+// Today as the local calendar has it: `toISOString()` is the UTC date, which
+// is already tomorrow every evening west of Greenwich.
+const now = new Date()
+const today = [now.getFullYear(), now.getMonth() + 1, now.getDate()]
+  .map((n, i) => String(n).padStart(i ? 2 : 4, '0'))
+  .join('-')
+assert.equal(friendlyDate(today), 'Today')
 
 // The presentations components used to build their own formatters for --
 // each checked against a fresh one built with the exact same options, which

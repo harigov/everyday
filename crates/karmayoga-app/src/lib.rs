@@ -33,6 +33,9 @@ mod commands;
 mod desk;
 #[cfg(desktop)]
 mod dictation;
+// A test script's way into a window: `--features drive` only. See `drive`.
+#[cfg(feature = "drive")]
+mod drive;
 mod events;
 #[cfg(desktop)]
 mod fanout;
@@ -71,6 +74,9 @@ mod navigation;
 mod notice;
 #[cfg(desktop)]
 mod offers;
+// The windows over other applications, over full-screen ones too. See `overlay`.
+#[cfg(desktop)]
+mod overlay;
 #[cfg(desktop)]
 mod panel;
 #[cfg(desktop)]
@@ -257,6 +263,8 @@ pub fn run() {
             // through. This is the earliest moment that handle exists.
             app.state::<AppState>()
                 .set_sink(std::sync::Arc::new(events::WindowSink::new(handle.clone())));
+            #[cfg(feature = "drive")]
+            drive::start(&handle);
             // The OS-wide key to the palette. A desktop that refuses it is the
             // ordinary case on Wayland, so this is not a failure to report:
             // the settings pane says whether it was granted, and the tray is

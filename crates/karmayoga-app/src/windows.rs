@@ -189,6 +189,8 @@ pub async fn open_app_window(
 struct ShowInMain {
     section: Option<&'static str>,
     settings: Option<String>,
+    /// A part of that tab to open at ("sharing" in Vault), passed through.
+    part: Option<String>,
 }
 
 /// Bring the main window forward showing `section`, or Settings at the tab
@@ -203,9 +205,10 @@ pub async fn show_in_main(
     app: AppHandle,
     section: Option<String>,
     settings: Option<String>,
+    part: Option<String>,
 ) -> CommandResult<()> {
     let section = section.map(|asked| app_named(&asked).map(|(s, _)| s)).transpose()?;
-    raise_main(&app, ShowInMain { section, settings })
+    raise_main(&app, ShowInMain { section, settings, part })
 }
 
 /// Bring the main window forward showing the app called `section`: what
@@ -216,7 +219,7 @@ pub async fn show_in_main(
 /// supplies is checked here and not trusted.
 pub fn show_section(app: &AppHandle, section: &str) -> CommandResult<()> {
     let (section, _) = app_named(section)?;
-    raise_main(app, ShowInMain { section: Some(section), settings: None })
+    raise_main(app, ShowInMain { section: Some(section), settings: None, part: None })
 }
 
 /// The two halves of showing something in the main window: lift it, and

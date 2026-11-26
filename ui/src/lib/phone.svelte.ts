@@ -89,7 +89,16 @@ if (typeof window !== 'undefined') {
       const up = phone.on && window.innerHeight - viewport.height > 150
       document.documentElement.toggleAttribute('data-keyboard', up)
     }
-    viewport.addEventListener('resize', watch)
+    // iOS raises `resize` as the keyboard starts to slide in, while the
+    // visible part is still the whole window, and not again once it is up,
+    // so a look at that moment always said "no keyboard". Look again when
+    // it has settled. (iOS itself scrolls the field being typed in into
+    // sight; this is only for what the page keeps along the bottom.)
+    const settle = () => {
+      watch()
+      setTimeout(watch, 400)
+    }
+    viewport.addEventListener('resize', settle)
   }
 }
 

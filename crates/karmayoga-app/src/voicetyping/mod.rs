@@ -431,6 +431,8 @@ pub(crate) struct Edge {
 
 /// How the desktop repeats a held key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Only GNOME's setting is read, so elsewhere it is always `Unknown`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) enum Repeats {
     /// Not known: not GNOME, or GNOME's setting not read yet.
     Unknown,

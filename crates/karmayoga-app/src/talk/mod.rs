@@ -981,7 +981,8 @@ pub fn on_panel_action(app: &AppHandle, action: &str) {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 let shown =
-                    crate::windows::show_in_main(app, Some("assistant".to_string()), None).await;
+                    crate::windows::show_in_main(app, Some("assistant".to_string()), None, None)
+                        .await;
                 if let Err(e) = shown {
                     tracing::debug!(error = %e, "the assistant could not be shown from the talk card");
                 }

@@ -13,7 +13,13 @@
   import { app } from '../lib/state.svelte'
   import { mobileShell } from '../lib/api'
   import { friendlyDate } from '../lib/format'
+  import { isoDate } from '../lib/time'
   import Icon from './Icon.svelte'
+
+  /** Drawn in Settings → Vault → Sharing rather than on the setup screen: a
+   *  computer that already has a vault of its own, which the setup screen
+   *  is never shown to. Headed like the sections beside it there. */
+  let { inSettings = false }: { inSettings?: boolean } = $props()
 
   let link = $state('')
   let busy = $state(false)
@@ -41,12 +47,22 @@
   }
 </script>
 
-<section class="connect">
-  <h2>{mobileShell ? 'Connect to your computer' : 'Use a vault on another computer'}</h2>
+<section class="connect" class:in-settings={inSettings}>
+  {#if inSettings}
+    <span class="eyebrow">Use a vault on another computer</span>
+  {:else}
+    <h2>{mobileShell ? 'Connect to your computer' : 'Use a vault on another computer'}</h2>
+  {/if}
   <p class="lead">
     Open <strong>Settings → Vault → Share on the network</strong> on the computer that holds your vault,
     then paste the link it shows here.
   </p>
+  {#if inSettings}
+    <p class="lead">
+      This window then shows that vault instead of this one, which it closes -- and stops sharing --
+      until you choose <strong>Stop using the other computer</strong> in the command palette.
+    </p>
+  {/if}
 
   {#if known.length > 0}
     <ul class="known">
@@ -56,7 +72,14 @@
             <Icon name="monitor" />
             <span class="what">
               <span class="name">{connection.name}</span>
-              <span class="host">{connection.host} · paired {friendlyDate(connection.paired)}</span>
+              <!-- `paired` is an instant; friendlyDate wants a day, and given
+                   the instant it drew an invalid date and threw, taking the
+                   whole list down with it. -->
+              <span class="host"
+                >{connection.host} · paired {friendlyDate(
+                  isoDate(new Date(connection.paired)),
+                )}</span
+              >
             </span>
           </button>
           <button
@@ -88,9 +111,9 @@
   </button>
 
   <p class="caveat">
-    Nothing is copied to this computer. Your entries, your key and your search index stay on the
-    machine that holds them, so this {mobileShell ? 'phone' : 'window'} shows nothing at all when that
-    machine is unreachable.
+    Nothing is copied to this {mobileShell ? 'phone' : 'computer'}. Your entries, your key and your
+    search index stay on the machine that holds them, so this {mobileShell ? 'phone' : 'window'} shows
+    nothing at all when that machine is unreachable.
   </p>
 </section>
 
@@ -100,6 +123,14 @@
     flex-direction: column;
     gap: 0.9rem;
     max-width: 30rem;
+  }
+
+  /* Spaced from the panel above it as SharePanel spaces itself: Settings'
+     own `section + section` rule does not reach a child component's. */
+  .connect.in-settings {
+    margin-top: var(--sp-6);
+    gap: var(--sp-3);
+    min-width: 0;
   }
 
   h2 {

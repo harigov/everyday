@@ -73,10 +73,35 @@ fn write(connections: &[Connection]) -> CommandResult<()> {
 /// merely an unused keychain entry.
 pub fn remember(connection: &Connection, token: &str) -> CommandResult<()> {
     put_token(&connection.id, token)?;
-    let mut connections = list();
-    connections.retain(|c| c.id != connection.id);
+    // Pairing again with a computer already paired -- the app set up anew, a
+    // link carried over twice -- makes a new device there, with a new id,
+    // and here a second row with no way to tell them apart. The new pairing
+    // replaces the old one, token and all.
+    let (stale, mut connections): (Vec<_>, Vec<_>) =
+        list().into_iter().partition(|c| c.id == connection.id || same_server(c, connection));
     connections.push(connection.clone());
-    write(&connections)
+    write(&connections)?;
+    if !karmayoga_vault::under_test() {
+        for old in stale.iter().filter(|c| c.id != connection.id) {
+            delete_token(&old.id);
+        }
+    }
+    Ok(())
+}
+
+/// The same server: the same certificate, or, where nothing was pinned, the
+/// same address. Not the vault's name as well: a pairing is with the
+/// server, not with whichever vault it serves -- its device list and its
+/// certificate are its installation's, kept beside its settings
+/// (`karmayoga_server::prepare`), so a token from the older row reaches the
+/// very same server, whatever vault it holds now, and nothing is lost by
+/// forgetting it. A vault renamed, or another served, keeps its row too.
+fn same_server(a: &Connection, b: &Connection) -> bool {
+    if a.fingerprint.is_empty() || b.fingerprint.is_empty() {
+        a.host == b.host
+    } else {
+        a.fingerprint == b.fingerprint
+    }
 }
 
 pub fn forget(id: &str) -> CommandResult<()> {
@@ -204,4 +229,46 @@ fn keychain_unavailable(e: keyring::Error) -> CommandError {
              vault is not something to write into a settings file. ({e})"
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paired(id: &str, name: &str, host: &str, fingerprint: &str) -> Connection {
+        Connection {
+            id: id.into(),
+            name: name.into(),
+            host: host.into(),
+            fingerprint: fingerprint.into(),
+            cert_pem: String::new(),
+            paired: jiff::Timestamp::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn pairing_the_same_server_again_is_the_same_pairing() {
+        let first = paired("a", "Journal", "10.0.0.2:7397", "ab12");
+        // A new device id, and the computer reached at another address.
+        assert!(same_server(&first, &paired("b", "Journal", "100.64.0.9:7397", "ab12")));
+        // The same server holding another vault: its device list is the
+        // server's, so the older token would reach it all the same.
+        assert!(same_server(&first, &paired("b", "Work", "10.0.0.2:7397", "ab12")));
+        // Nothing pinned: the address is all there is to go by.
+        assert!(same_server(
+            &paired("a", "Journal", "10.0.0.2:7397", ""),
+            &paired("b", "Journal", "10.0.0.2:7397", "")
+        ));
+    }
+
+    #[test]
+    fn another_computer_is_another_pairing() {
+        let first = paired("a", "Journal", "10.0.0.2:7397", "ab12");
+        // Another computer whose vault has the default name too.
+        assert!(!same_server(&first, &paired("b", "Journal", "10.0.0.3:7397", "cd34")));
+        assert!(!same_server(
+            &paired("a", "Journal", "10.0.0.2:7397", ""),
+            &paired("b", "Journal", "10.0.0.3:7397", "")
+        ));
+    }
 }

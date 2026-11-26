@@ -211,6 +211,9 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .focusable(false)
         .on_navigation(crate::navigation::guard(crate::navigation::dev_url(app)))
         .build()
+        // A call is often full-screen, and the offer to take notes on it has
+        // to show over it. See `overlay`.
+        .inspect(crate::overlay::float_over_full_screen)
         .map_err(|e| e.to_string())
 }
 

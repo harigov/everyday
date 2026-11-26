@@ -112,7 +112,31 @@
     return out
   })
 
-  function toggle() {
+  /** Whether the list opens above the button, and how tall its rows may be:
+   *  room enough for both, measured as it opens. Below the button and 300 px
+   *  tall regardless, a picker near the bottom of a window -- the category
+   *  of a transaction being typed in -- ran its last hundred pixels of rows
+   *  past the window's edge, where nothing could reach them. */
+  let up = $state(false)
+  let room = $state(300)
+
+  function place(trigger: HTMLElement) {
+    // A phone's is a sheet of its own size (see the styles).
+    if (phone.on) {
+      up = false
+      room = 300
+      return
+    }
+    // The search box, the padding and a margin from the window's edge.
+    const overhead = 64
+    const r = trigger.getBoundingClientRect()
+    const below = window.innerHeight - r.bottom - overhead
+    const above = r.top - overhead
+    up = below < 220 && above > below
+    room = Math.max(120, Math.min(300, up ? above : below))
+  }
+
+  function toggle(e: MouseEvent) {
     if (disabled) return
     if (open) {
       close()
@@ -120,6 +144,7 @@
     }
     text = ''
     active = 0
+    place(e.currentTarget as HTMLElement)
     open = true
   }
 
@@ -215,7 +240,12 @@
       <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
       <div class="scrim" onclick={close}></div>
     {/if}
-    <div class="pop" use:dismissable={{ onaway: close, within: `.${uid}` }}>
+    <div
+      class="pop"
+      class:up
+      style:--room="{room}px"
+      use:dismissable={{ onaway: close, within: `.${uid}` }}
+    >
       <input
         class="search"
         bind:value={text}
@@ -376,6 +406,10 @@
     left: auto;
     right: 0;
   }
+  .pop.up {
+    top: auto;
+    bottom: calc(100% + 4px);
+  }
 
   .search {
     margin: var(--sp-2);
@@ -394,7 +428,7 @@
   }
 
   .rows {
-    max-height: 300px;
+    max-height: var(--room, 300px);
     overflow-y: auto;
     padding: 0 var(--sp-1) var(--sp-1);
   }

@@ -112,5 +112,7 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .focusable(false)
         .on_navigation(crate::navigation::guard(crate::navigation::dev_url(app)))
         .build()
+        // Over the app being typed into, full-screen or not. See `overlay`.
+        .inspect(crate::overlay::float_over_full_screen)
         .map_err(|e| e.to_string())
 }

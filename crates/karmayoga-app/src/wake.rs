@@ -189,6 +189,14 @@ fn listener() -> MutexGuard<'static, Listener> {
     LISTENER.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Whether the microphone is open for the wake word right now. For
+/// `micwatch` on a Mac too old to say which program holds the microphone,
+/// where this listening would otherwise look like somebody else's call.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn hearing() -> bool {
+    listener().hearing
+}
+
 /// Look after the listening for the life of the process: start it when it
 /// may run and stop it when it may not.
 pub fn install(app: &AppHandle) {

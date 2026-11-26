@@ -31,6 +31,7 @@ help: ## Show this help
 
 setup: ## Install prerequisites: system headers, Tauri CLI, npm packages
 	@if [ "$$(uname -s)" = Linux ]; then ./scripts/setup-linux.sh; fi
+	@if [ "$$(uname -s)" = Darwin ]; then ./scripts/setup-macos.sh; fi
 	@if command -v cargo-tauri >/dev/null 2>&1; then \
 		echo "Tauri CLI: $$(cargo tauri --version)"; \
 	else \
@@ -487,10 +488,24 @@ cli: ## Run the karmayoga CLI, e.g. make cli ARGS="list"
 # drops the gradient and hands back a black tile.
 icons: ## Regenerate the app icons from crates/karmayoga-app/icons/icon.svg
 	cd $(APP_DIR) && cargo tauri icon icons/icon.svg -o icons
-	@# Android's set goes into the Android project's resources; iOS has no
-	@# project here yet. See docs/mobile.md.
+	@# Android's set goes into the Android project's resources. See docs/mobile.md.
 	cp -r $(APP_DIR)/icons/android/* $(APP_DIR)/gen/android/app/src/main/res/
 	rm -rf $(APP_DIR)/icons/android $(APP_DIR)/icons/ios
+	@# iOS draws its own rounded corners over a square, so its set is the tile
+	@# alone -- cut out of the Mac's grid, 100 of margin round an 824 tile --
+	@# flattened onto the sky's blue: the App Store refuses an icon with alpha,
+	@# and `--ios-color` leaves it in. On a Mac only (the flattening is Swift).
+	@# Nothing is copied unless every icon was flattened, and the scratch
+	@# folder goes either way.
+	@if [ "$$(uname -s)" = Darwin ]; then \
+		t=$$(mktemp -d) && trap 'rm -rf "$$t"' EXIT && \
+		sed 's/viewBox="0 0 1024 1024"/viewBox="100 100 824 824"/' $(APP_DIR)/icons/icon.svg > $$t/icon.svg && \
+		(cd $(APP_DIR) && cargo tauri icon $$t/icon.svg -o $$t/out >/dev/null) && \
+		swift scripts/flatten-png.swift '#1a7cf5' $$t/out/ios/*.png && \
+		cp $$t/out/ios/*.png $(APP_DIR)/gen/apple/Assets.xcassets/AppIcon.appiconset/; \
+	else \
+		echo "iOS icons not regenerated: that needs a Mac (scripts/flatten-png.swift)"; \
+	fi
 
 # Wayland hands the compositor an app id, not an icon, and GNOME resolves it
 # to an icon through the .desktop file that claims that id. A binary run

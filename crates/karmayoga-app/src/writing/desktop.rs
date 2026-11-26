@@ -66,6 +66,8 @@ fn press_copy(quietly: bool) -> Result<(), String> {
 // that read the selection, which no application can avoid.
 
 /// What was on the clipboard, kept to be put back.
+// `Png` is GTK's; Windows and macOS hand an image over as `Rgba`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) enum Saved {
     Text(String),
     /// An image, as GTK hands it over: PNG.

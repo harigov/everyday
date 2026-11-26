@@ -50,7 +50,7 @@
     unfollowDetail,
   } from '../lib/feed'
   import { focusOnMount, trapFocus } from '../lib/focus'
-  import { closesOnBack, phone } from '../lib/phone.svelte'
+  import { closesOnBack } from '../lib/phone.svelte'
   import { PLAYER_SPEEDS } from '../lib/player.svelte'
   import {
     downloadPolicyLabel,
@@ -200,11 +200,13 @@
    * has been moved (`translate`, even to nowhere) is the box that `position:
    * fixed` inside it is measured against -- the sheet came out as wide as the
    * screen, laid from the drawer's left edge, cut off by the screen's.
+   *
+   * On the desktop too: the sidebar can be that box there as well -- folded
+   * and peeking out, it is moved with `translate` just the same -- and the
+   * phone check's desktop pass found the sheet centred on the sidebar, a
+   * third of it off the window's left edge, in Chromium and WebKit alike.
    */
   function portal(node: HTMLElement) {
-    // Only there: the desktop's sidebar is not moved, and its sheet is where
-    // it always was.
-    if (!phone.on) return
     document.body.append(node)
     return {
       destroy() {

@@ -66,6 +66,7 @@
   import BackupPanel from './BackupPanel.svelte'
   import BriefSettingsPanel from './BriefSettingsPanel.svelte'
   import ChatLinksPanel from './ChatLinksPanel.svelte'
+  import Connect from './Connect.svelte'
   import ConnectionsPanel from './ConnectionsPanel.svelte'
   import DataPanel from './DataPanel.svelte'
   import FeedSettingsPanel from './FeedSettingsPanel.svelte'
@@ -340,6 +341,15 @@
     ].filter((t) => t.show),
   )
   let vaultPicked = $state<VaultSub>('security')
+  // Opened at a part of the tab -- "Use a vault on another computer" in the
+  // palette lands on Sharing.
+  $effect(() => {
+    const part = panels.settingsPart
+    if (part === 'security' || part === 'sharing' || part === 'about') {
+      vaultPicked = part
+      panels.settingsPart = null
+    }
+  })
   /** What is drawn: the pick, unless this vault does not offer it. */
   const vaultSub = $derived(shownTab(vaultSubs, vaultPicked))
 
@@ -896,6 +906,13 @@
             <WebAccessPanel />
 
             <McpPanel />
+
+            <!-- The other direction: this window looking at a vault on
+                 another computer. The setup screen offers it only to a
+                 computer with no vault yet, so this is where one that has a
+                 vault does it -- and where "Use a vault on another computer"
+                 in the palette lands. -->
+            <Connect inSettings />
           {:else}
             <section>
               <span class="eyebrow">This vault</span>

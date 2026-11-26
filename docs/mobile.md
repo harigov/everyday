@@ -1,6 +1,6 @@
 # Karma Yoga on a phone
 
-The same application on Android (and, later, iOS), built by Tauri from the
+The same application on Android and iOS, built by Tauri from the
 same crate and the same `ui/`. This page is how it is put together, how to
 build and test it, and the rules every change to the interface follows so
 that it keeps working on a phone.
@@ -261,7 +261,7 @@ Not yet known, or not done:
   (the emulator's do not reach this machine; voice was tested with a clip as
   the microphone), real performance, the gesture bar and notches. Android 8.0
   is the minimum: a Nexus 5X or 6P (8.1) qualifies, a Nexus 5 (6.0) does not.
-- **iOS** -- see below.
+- **iOS** on hardware, and a spoken turn there -- see below.
 - **No push notifications.** The phone hears of new mail, briefs and the
   assistant's questions only while the app is open; a closed app is told
   nothing.
@@ -329,12 +329,83 @@ swiftshader_indirect`.
 
 ## iOS
 
-What carries over unchanged: the Rust shell and everything cfg(mobile), the
-remote client, `set_app_dirs`, the whole phone layout, and the checks above
-(WebKit is iOS's engine). The keychain holds the token there (keyring's
-`apple-native`). What is left for a Mac: `cargo tauri ios init` and a build
-in Xcode, an Apple developer account to install on a phone, the microphone
-permission string, and safe areas checked against a notch (`env()` works
-there). WKWebView fires no `contextmenu` on a long press, so `lib/longpress.ts`
-raises one on iOS from a half-second hold; it is tested in WebKit under an
-iPhone's user agent, not yet on an iPhone.
+The same remote client, from the same crate and `ui/`: everything cfg(mobile),
+`set_app_dirs`, the phone layout, and the checks above (WebKit is iOS's
+engine). The device token is in the keychain (keyring's `apple-native`), not
+a file as on Android. `gen/apple/` is the Xcode project, committed as
+`gen/android/` is.
+
+What is the iPhone's own:
+
+- **Privacy texts**, in `crates/karmayoga-app/Info.ios.plist`, which the iOS
+  build merges in last: the local network (iOS refuses it quietly without a
+  text), the microphone, and the camera that a file picker's "Take Photo"
+  opens (an app with no text for it is killed). The build merges the Mac's
+  `Info.plist` too, first, so the iPhone's microphone text wins over its
+  "never leaves this Mac".
+- **Edge to edge** (`mobile::edge_to_edge`): WKWebView insets its content by
+  the safe area by itself, and the page pads itself with `env()` as well, so
+  the page was 96 points short with a band of nothing under the bar of apps.
+- **The audio session** (`audio::session`): iOS starts an app able to play
+  and not to record, and cpal leaves the category to the app, so an engine
+  takes PlayAndRecord while it runs.
+- **The keyboard** is noticed from `visualViewport`, looked at again once it
+  has finished sliding in; iOS scrolls the field into sight itself.
+- **Long press**: WKWebView fires no `contextmenu`, so `lib/longpress.ts`
+  raises one from a half-second hold.
+- **The icon** is the tile alone, flattened onto the sky's blue (iOS draws the
+  corners; the App Store refuses alpha). `make icons` makes it, on a Mac.
+
+### Building and running in the simulator
+
+One-time, on a Mac:
+
+- Xcode, then `sudo xcodebuild -license accept && sudo xcodebuild
+  -runFirstLaunch` (until first launch has run, every `simctl` call waits on
+  it), and a simulator runtime: `xcodebuild -downloadPlatform iOS` (8 GB).
+- `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`, the Tauri CLI,
+  XcodeGen and CocoaPods (`brew install xcodegen cocoapods`).
+- `cargo tauri ios init` only to make `gen/apple` anew. It runs `brew reinstall
+  libimobiledevice` when it thinks that is missing, which can relink
+  Homebrew's OpenSSL; `brew link --force openssl@3` puts it back.
+
+Then:
+
+```sh
+cd crates/karmayoga-app
+cargo tauri ios build --target aarch64-sim --features drive     # ~15 min first time
+xcrun simctl boot "iPhone 17"
+xcrun simctl install booted "gen/apple/build/arm64-sim/Karma Yoga.app"
+SIMCTL_CHILD_KARMAYOGA_DRIVE=$HOME/.cache/ky-drive.sock \
+  xcrun simctl launch booted app.karmayogi.KarmaYoga
+```
+
+A release build, not `--debug`: its build tree is a third the size (3 GB
+against 10), and a debug Rust tree next to a release one has filled a disk.
+The simulator shares this machine's network, so `scripts/phone-test-vault.sh`'s
+link to `127.0.0.1:7397` works as it is.
+
+**Driving it**: Playwright cannot reach WKWebView, so a build with `--features
+drive` runs JavaScript sent over the socket `KARMAYOGA_DRIVE` names (passed into
+the simulator as `SIMCTL_CHILD_KARMAYOGA_DRIVE`): `node ui/scripts/drive.mjs
+'return document.title'`, or `import { drive }` from a script. The same works
+for the Mac app. Screenshots: `xcrun simctl io booted screenshot shot.png`.
+Two things that look like failures and are not: `xcrun simctl privacy booted
+grant microphone app.karmayogi.KarmaYoga` terminates the app, as iOS does when
+a permission changes; and an app in the background is suspended, so nothing
+sent to it is answered until it is in front again.
+
+### Where it stands
+
+Checked in the simulator (iPhone 17, iOS 26.3), paired over TLS with the test
+vault served from the same Mac: pairing from the setup screen and the token in
+the keychain; every app opening from the bar or More with no page errors and
+nothing wider than the screen but the strips meant to scroll; long press;
+the safe areas round the Dynamic Island and the home indicator; dark mode;
+starting again goes straight back to the computer; back from the background,
+the next call answers at once.
+
+Not yet: hardware (an Apple developer account to install it), a spoken turn
+(it needs a computer with speech models to pair with), a phone on the same
+Wi-Fi rather than this machine's loopback (which is when iOS asks about the
+local network), and signing for TestFlight.

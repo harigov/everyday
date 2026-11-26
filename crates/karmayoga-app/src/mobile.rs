@@ -59,11 +59,17 @@ pub fn run() {
                 .build()?;
             #[cfg(target_os = "android")]
             android_context(&_window);
+            #[cfg(target_os = "ios")]
+            edge_to_edge(&_window);
 
             // The connection's events task re-raises the server's remarks
             // through this, as the desktop's does. See `remote`.
             app.state::<AppState>()
                 .set_sink(Arc::new(events::WindowSink::new(app.handle().clone())));
+            // A test script's way in, where no WebDriver reaches: the iOS
+            // simulator. See `drive`.
+            #[cfg(feature = "drive")]
+            crate::drive::start(app.handle());
             Ok(())
         })
         .register_asynchronous_uri_scheme_protocol("karmayoga", |ctx, request, responder| {
@@ -90,6 +96,43 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Karma Yoga");
+}
+
+/// Let the page run from edge to edge on an iPhone, as it does on Android.
+///
+/// A WKWebView's scroll view insets its content by the safe area on its own
+/// (`contentInsetAdjustmentBehavior` is `.automatic`, and wry leaves it so),
+/// which made the page only as tall as the screen less the status bar and
+/// the home indicator -- 778 of an iPhone 17's 874 points -- while the page
+/// pads itself for those same edges through `env(safe-area-inset-*)`
+/// (`--safe-*`, see `ui/src/lib/phone.svelte.ts`). Both at once left a band
+/// of nothing under the bar of apps. `.never` leaves the edges to the page.
+#[cfg(target_os = "ios")]
+fn edge_to_edge(window: &tauri::WebviewWindow) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    /// `UIScrollViewContentInsetAdjustmentNever`.
+    const NEVER: isize = 2;
+
+    let set = window.with_webview(|webview| {
+        let wk = webview.inner().cast::<AnyObject>();
+        if wk.is_null() {
+            return;
+        }
+        // SAFETY: `inner` is the window's WKWebView, alive for the length of
+        // this closure, which Tauri runs on the main thread as UIKit wants;
+        // `scrollView` is a UIScrollView it owns, checked before use.
+        unsafe {
+            let scroll: *mut AnyObject = msg_send![wk, scrollView];
+            if !scroll.is_null() {
+                let _: () = msg_send![scroll, setContentInsetAdjustmentBehavior: NEVER];
+            }
+        }
+    });
+    if let Err(e) = set {
+        tracing::warn!(error = %e, "the webview was not there to lay out edge to edge");
+    }
 }
 
 /// Hand `ndk-context` the Java VM and the application's Context, once.

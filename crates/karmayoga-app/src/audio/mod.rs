@@ -26,6 +26,9 @@ pub mod input;
 mod no_models;
 pub mod playback;
 pub mod resample;
+// The category an iPhone app must choose before it may record.
+#[cfg(target_os = "ios")]
+mod session;
 
 /// A plain, displayable error from the audio devices. Not
 /// [`karmayoga_service::error::CommandError`]: this crosses a `std::thread`

@@ -231,38 +231,38 @@ const SPEECH_KIT_SOURCES: &[Source] = &[
         url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
         file: ModelFile {
             dest: "speaker-embedding.onnx",
-            sha256: "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5",
-            bytes: 26_485_263,
+            sha256: "c4947caf150b8502fdd75bbe4089b971ab1ec42e90ee3ba547faca2cde44d9ee",
+            bytes: 26_485_264,
         },
     },
 ];
 
 const PARAKEET_V3_SOURCES: &[Source] = &[Source::Archive {
     url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
-    sha256: "5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf",
-    bytes: 487_170_055,
+    sha256: "1495e91b59d7fc53ddca91f3431758ec99f8fa253fdb0e1e851be0f72b14b0f9",
+    bytes: 487_211_443,
     members: &[
         (
             "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx",
             ModelFile {
                 dest: "encoder.int8.onnx",
-                sha256: "acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247",
-                bytes: 652_184_281,
+                sha256: "1afbe69c1ffdabee94755f42e4daf1d93549131a3da11356bda84fcef0f2c479",
+                bytes: 652_282_294,
             },
         ),
         (
             "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/decoder.int8.onnx",
             ModelFile {
                 dest: "decoder.int8.onnx",
-                sha256: "179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e",
-                bytes: 11_845_275,
+                sha256: "0222a86147299d4dee90edf95b6d13827edb42ad8b7c9cf0b2582f030937c0b5",
+                bytes: 11_845_274,
             },
         ),
         (
             "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/joiner.int8.onnx",
             ModelFile {
                 dest: "joiner.int8.onnx",
-                sha256: "3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3",
+                sha256: "cbd02f3696e9944970111fb439d9c3fd365a80374565f13f2b9c7007d253fc98",
                 bytes: 6_355_277,
             },
         ),

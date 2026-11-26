@@ -89,6 +89,9 @@ pub const LEVEL_EVENT: &str = "karmayoga://panel/level";
 
 /// The most cards drawn at once. Older ones beyond it wait, still in the
 /// stack, until one above them goes.
+// This and the three functions after `drawn_order` serve the X11 renderer
+// (`topcard`); elsewhere the page draws the cards and counts them itself.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const MAX_SHOWN: usize = 3;
 
 /// Which part of the shell a card belongs to, and so who hears its buttons.
@@ -340,17 +343,20 @@ fn has_meter(stack: &[Panel], id: &str) -> bool {
 /// except that the primary one goes last, rightmost. Owners list the primary
 /// first, as the most important; the page does the same (`ui/src/panel/
 /// cards.ts`'s `drawnOrder`).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn drawn_order(actions: &[Action]) -> Vec<&Action> {
     let (primary, rest): (Vec<&Action>, Vec<&Action>) = actions.iter().partition(|a| a.primary);
     rest.into_iter().chain(primary).collect()
 }
 
 /// The cards a renderer draws: the first [`MAX_SHOWN`], top to bottom.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn shown(stack: &[Panel]) -> &[Panel] {
     &stack[..stack.len().min(MAX_SHOWN)]
 }
 
 /// How many cards wait beyond [`shown`]: the "+N more".
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn hidden(stack: &[Panel]) -> usize {
     stack.len().saturating_sub(MAX_SHOWN)
 }

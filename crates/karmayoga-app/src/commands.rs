@@ -510,7 +510,10 @@ pub async fn connect_remote(
 ) -> CommandResult<Connected> {
     let invite = karmayoga_server::pairing::parse(&link)
         .map_err(|message| CommandError::new("invalid", message))?;
-    let device_name = device_name();
+    // Off the async workers: on a Mac it starts `scutil` and waits for it.
+    let device_name = tauri::async_runtime::spawn_blocking(device_name)
+        .await
+        .unwrap_or_else(|_| "A computer".to_string());
     let (client, token) = RemoteClient::pair(&invite, &device_name).await?;
     remotes::remember(client.connection(), &token)?;
     attach(&app, &state, client).await
@@ -608,8 +611,24 @@ fn device_name() -> String {
 /// The host name, because that is what somebody looking at a list of paired
 /// devices at two in the morning will recognise. Not an identifier of any kind:
 /// it is shown to the person who owns both machines and to nobody else.
-#[cfg(not(target_os = "android"))]
+///
+/// On a Mac, the name it goes by in its own Sharing settings ("Hari's
+/// MacBook Air") rather than the host name made from it. Neither `HOSTNAME`
+/// nor /etc/hostname exists on a Mac or on Windows, so before the system's
+/// own host name was the last resort every one of them was "A computer".
+#[cfg(desktop)]
 fn device_name() -> String {
+    #[cfg(target_os = "macos")]
+    if let Some(name) = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|name| !name.is_empty())
+    {
+        return name;
+    }
     std::env::var("HOSTNAME")
         .ok()
         .filter(|h| !h.trim().is_empty())
@@ -619,7 +638,59 @@ fn device_name() -> String {
                 .map(|h| h.trim().to_string())
                 .filter(|h| !h.is_empty())
         })
+        .or_else(|| {
+            let host = gethostname::gethostname().to_string_lossy().trim().to_string();
+            (!host.is_empty()).then_some(host)
+        })
         .unwrap_or_else(|| "A computer".to_string())
+}
+
+/// What the computer being paired with lists an iPhone or an iPad as. Since
+/// iOS 16 an app is told only "iPhone" or "iPad" for the device's name,
+/// whatever its owner called it, so the kind is all there is to say. Read
+/// from the hardware's model identifier ("iPad13,4"), which needs no main
+/// thread; the simulator says which device it is pretending to be.
+#[cfg(target_os = "ios")]
+fn device_name() -> String {
+    let model = std::env::var("SIMULATOR_MODEL_IDENTIFIER").ok().or_else(hardware_model);
+    if model.is_some_and(|m| m.starts_with("iPad")) {
+        "An iPad".to_string()
+    } else {
+        "An iPhone".to_string()
+    }
+}
+
+/// `hw.machine`, as `sysctl` gives it.
+#[cfg(target_os = "ios")]
+fn hardware_model() -> Option<String> {
+    unsafe extern "C" {
+        fn sysctlbyname(
+            name: *const std::ffi::c_char,
+            old: *mut std::ffi::c_void,
+            old_len: *mut usize,
+            new: *mut std::ffi::c_void,
+            new_len: usize,
+        ) -> std::ffi::c_int;
+    }
+    let mut buffer = [0u8; 64];
+    let mut len = buffer.len();
+    // SAFETY: a NUL-terminated name, and a buffer whose length is passed in
+    // and written back; nothing is set.
+    let status = unsafe {
+        sysctlbyname(
+            c"hw.machine".as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let text = &buffer[..len.min(buffer.len())];
+    let text = text.split(|b| *b == 0).next().unwrap_or_default();
+    Some(String::from_utf8_lossy(text).into_owned())
 }
 
 /// Store an attachment and return its content address.

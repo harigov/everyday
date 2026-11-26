@@ -503,9 +503,9 @@ class Live {
    *  its lock screen -- the latest only, which is the one still wanted. */
   #asked: ShowInMain | null = null
 
-  #show({ section, settings }: ShowInMain) {
+  #show({ section, settings, part }: ShowInMain) {
     if (section) app.setSection(section)
-    else if (isSettingsTab(settings)) panels.openSettings(settings)
+    else if (isSettingsTab(settings)) panels.openSettings(settings, part ?? null)
   }
 
   #note(change: ChangeEvent) {

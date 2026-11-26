@@ -37,7 +37,17 @@ base64 = "0.22"
 # `src/tray.rs`. On Linux it also wants libayatana-appindicator at runtime,
 # which is why the .deb declares it (tauri.conf.json) and `make setup`
 # installs its headers.
-tauri.workspace = true
+#
+# `macos-private-api`: the panel's cards, the voice-typing pill and writing
+# help are windows with nothing behind them but their own rounded card
+# (`.transparent(true)`), and on macOS a see-through webview is a private
+# WebKit setting that Tauri only offers behind this -- without it the app
+# does not compile there. It keeps the app off the Mac App Store, which it
+# is not on. Listed here, not with the desktop's features below, because
+# tauri-build matches it against `app.macOSPrivateApi` in tauri.conf.json
+# using this entry. Nothing changes on a phone: wry uses it only for a window
+# that asks to be see-through, and the phone's does not.
+tauri = { workspace = true, features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # Notifications on macOS and Windows, and the permission question on all of
@@ -48,7 +58,7 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1.53.1", features = ["sync", "time", "net"] }
+tokio = { version = "1.53.1", features = ["sync", "time", "net", "io-util"] }
 futures-util = "0.3"
 jiff.workspace = true
 # A device token is a bearer credential to an unlocked vault on another
@@ -126,6 +136,13 @@ hound = "3.5"
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-context = "0.1"
 
+# What wry and tao do not do on Apple's platforms: an iPhone's WKWebView
+# laid out edge to edge (`mobile::edge_to_edge`), its audio session
+# (`audio::session`), and a Mac's floating windows made panels that show
+# over a full-screen app (`overlay`). Already in the lock through wry and tao.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.6"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["pipewire"] }
 # The application icon's badge on Linux is one D-Bus signal --
@@ -201,3 +218,8 @@ tempfile = "3"
 [features]
 # Enabled by `tauri dev`/`tauri build`; keeps devtools out of releases.
 custom-protocol = ["tauri/custom-protocol"]
+# A test script's way into a window where no WebDriver reaches -- the Mac
+# app's WKWebView, the iOS simulator: JavaScript over a Unix socket named by
+# KARMAYOGA_DRIVE. Whoever can open that socket can do anything the
+# interface can, so nothing that ships turns it on. See `src/drive.rs`.
+drive = []

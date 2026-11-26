@@ -3324,9 +3324,15 @@ its own schema.
 ### Run it
 
 ```sh
-make setup    # WebKitGTK and Vulkan headers on Linux, Tauri CLI, npm packages
+make setup    # WebKitGTK and Vulkan headers on Linux, CMake on macOS, Tauri CLI, npm packages
 make run      # the desktop app, with hot reload
 ```
+
+On macOS, Xcode (or at least its command line tools) has to be installed and
+ready first: `sudo xcodebuild -license accept && sudo xcodebuild
+-runFirstLaunch` once after installing or updating it. `make setup` checks,
+and installs CMake with Homebrew for llama.cpp, which runs on the GPU through
+Metal there.
 
 `make` on its own lists every target. It is a thin wrapper and not a build
 system of its own: `make run` is `./scripts/dev.sh`, `make test` is
@@ -3827,7 +3833,10 @@ on the routine and a filter in one function, and a review state is a side
 table like `purposes` — so the first person to want either can have it without
 undoing any of this.
 
-Not yet built: mobile shells, a map view, task recurrence, writing back to a
+The phone apps, Android's and iOS's, are remote clients of a computer that
+holds the vault: see [docs/mobile.md](docs/mobile.md).
+
+Not yet built: a map view, task recurrence, writing back to a
 subscribed or account calendar (see above for why not), PDF previews
 (a PDF opens through its own URL instead), and importers for Day One's export format.
 

@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Merged into the generated Info.plist on macOS builds -- Tauri looks for a
-  file by this name next to tauri.conf.json automatically, no config entry
-  needed. See `src/capture.rs`: the only thing on this platform that opens
+  file by this name next to tauri.conf.json, and `cargo tauri dev` embeds
+  only a file by this name in the binary it runs, so it is not renamed. The
+  iOS build merges it too, and then Info.ios.plist over it, whose
+  microphone text wins there; the audio-capture key below means nothing to
+  iOS and is ignored. See `src/capture.rs`: the only thing on this platform that opens
   the microphone or a loopback tap is native `cpal` code in the shell, never
   the webview, but macOS still gates both behind a privacy prompt whose text
   comes from here. Windows needs nothing analogous; Linux's PipeWire asks the

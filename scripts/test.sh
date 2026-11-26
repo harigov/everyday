@@ -33,6 +33,13 @@ if command -v systemd-run >/dev/null 2>&1 &&
         -- cargo test --jobs "$JOBS" "$@"
 fi
 
+# macOS has no systemd, and refuses an address-space limit outright (`ulimit
+# -v` fails with "Invalid argument"), so the build-job cap is the only guard.
+if [ "$(uname -s)" = Darwin ]; then
+    echo "note: no memory cap on macOS, only the ${JOBS} build jobs" >&2
+    exec cargo test --jobs "$JOBS" "$@"
+fi
+
 # Fallback when transient user scopes are unavailable (e.g. inside a
 # container): an address-space rlimit is coarser, but still bounds damage.
 echo "note: systemd user scopes unavailable, falling back to ulimit -v" >&2

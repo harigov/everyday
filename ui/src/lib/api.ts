@@ -356,6 +356,8 @@ export let onOpenCalendar: (handler: () => void) => void = () => {}
 export interface ShowInMain {
   section: Section | null
   settings: string | null
+  /** The part of that tab to open at -- see `panels.openSettings`. */
+  part?: string | null
 }
 
 /**
@@ -1523,10 +1525,11 @@ export const api = {
    * From a window of one app: bring the main window forward showing another
    * app, or Settings at a tab.
    */
-  showInMain: (asked: { section?: Section; settings?: string }) =>
+  showInMain: (asked: { section?: Section; settings?: string; part?: string | null }) =>
     invoke<void>('show_in_main', {
       section: asked.section ?? null,
       settings: asked.settings ?? null,
+      part: asked.part ?? null,
     }),
   /**
    * Choose what the number on the application's icon counts; nothing chosen

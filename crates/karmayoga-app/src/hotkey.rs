@@ -317,6 +317,10 @@ impl Hotkeys {
     /// already agreed to is answered at once, so the wait is short except
     /// the first time, when the desktop's dialog is waiting on them -- and
     /// that is not worth holding a settings pane up for.
+    // Not an `async fn`: on Linux the lock is taken now, before the call it
+    // waits on, not when the future is first polled. Off Linux there is
+    // nothing to take, and clippy sees only the empty `async move`.
+    #[cfg_attr(not(target_os = "linux"), allow(clippy::manual_async_fn))]
     pub fn answer(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
         #[cfg(target_os = "linux")]
         let waiter = {

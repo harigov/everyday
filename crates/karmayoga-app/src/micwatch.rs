@@ -28,6 +28,8 @@
 //!   holds the two timers -- [`SETTLE`] before a call begins, [`RELEASE_GRACE`]
 //!   before it ends -- and takes the time as an argument, so a test can run
 //!   a call that lasts an hour in no time at all.
+//! - The macOS backend (`macos`) reads CoreAudio once a second and puts what
+//!   it finds in the same shared list.
 //! - The Linux backend (everything under `backend`) keeps a connection to
 //!   PipeWire open on its own thread, feeds [`mic_user`] each stream that
 //!   appears, and shares the list of those that are *running* with a second
@@ -55,26 +57,27 @@
 //!
 //! # Other platforms
 //!
-//! Only Linux is implemented. Elsewhere [`spawn`] does nothing, because neither of the others can be built or
-//! tried on the machines this is written on, and an untested detector that
-//! offers notes during a person's private call is worse than none. For whoever
-//! does it later:
+//! **macOS** is implemented in `macos`, and asks CoreAudio rather than a
+//! sound server. From macOS 14.4 it reads the list of processes that have
+//! input running, each with a process id and a bundle id: ours is left out
+//! by its id, and the well-known call programs are named. Before that all
+//! CoreAudio will say is `kAudioDevicePropertyDeviceIsRunningSomewhere` on
+//! the default input device -- some process, ours included, has it running
+//! -- which is a nameless user, ignored while one of our own recorders is
+//! open. Either way it is polled once a [`TICK`], and everything after the
+//! reading is the same as on Linux.
 //!
-//! - **macOS**: CoreAudio's `kAudioDevicePropertyDeviceIsRunningSomewhere`
-//!   on the default input device is true while any process, this one
-//!   included, has it running, with a property listener to be told when it
-//!   changes. It does not say *which* program, so there would be no name to
-//!   offer, and "any process" includes ours -- the answer would have to be
-//!   ignored while our own recording is running.
-//! - **Windows**: each program that has used the microphone has a key under
-//!   `HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone`
-//!   (packaged apps directly, desktop programs under `NonPackaged`) with a
-//!   `LastUsedTimeStart` and a `LastUsedTimeStop`; a `LastUsedTimeStop` of 0
-//!   means it is using the microphone now. The key name is the program's
-//!   path, which is a name to offer. Polling the registry once a second is
-//!   enough; `RegNotifyChangeKeyValue` would make it event-driven.
-//!
-//! Either would feed [`MicTracker`] the same way the Linux backend does.
+//! **Windows** is not, because it cannot be built or tried on the machines
+//! this is written on, and an untested detector that offers notes during a
+//! person's private call is worse than none. For whoever does it later: each
+//! program that has used the microphone has a key under
+//! `HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone`
+//! (packaged apps directly, desktop programs under `NonPackaged`) with a
+//! `LastUsedTimeStart` and a `LastUsedTimeStop`; a `LastUsedTimeStop` of 0
+//! means it is using the microphone now. The key name is the program's
+//! path, which is a name to offer. Polling the registry once a second is
+//! enough; `RegNotifyChangeKeyValue` would make it event-driven. It would feed
+//! [`MicTracker`] the same way the other backends do.
 //!
 //! # Switching it off
 //!
@@ -85,8 +88,11 @@
 //! it is watched.
 
 // Everything below the platform split is exercised by the tests on every
-// platform but only called on Linux.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+// platform but only called on Linux and macOS.
+#![cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+
+#[cfg(target_os = "macos")]
+mod macos;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -115,6 +121,7 @@ const TICK: Duration = Duration::from_secs(1);
 /// failing to connect or after losing the connection. A sound server that
 /// is not there is not about to be, and one that restarted is back within
 /// seconds; half a minute costs nothing when the answer is "still no".
+#[cfg(target_os = "linux")]
 const RETRY: Duration = Duration::from_secs(30);
 
 /// One program that has the microphone open.
@@ -232,6 +239,7 @@ impl MicTracker {
 /// `plasmashell` is on the list because KDE's sound applet draws its
 /// microphone meter from inside the shell, and the shell has no stream of
 /// its own that means anything else.
+#[cfg(any(target_os = "linux", test))]
 const PLUMBING: &[&str] = &[
     "pavucontrol",
     "pwvucontrol",
@@ -267,6 +275,7 @@ const PLUMBING: &[&str] = &[
 /// - a volume meter or an audio routing tool ([`PLUMBING`], or a stream
 ///   named "Peak detect", which is what PipeWire's own level metering
 ///   calls its streams whoever opens them).
+#[cfg(any(target_os = "linux", test))]
 pub fn mic_user(props: &dyn Fn(&str) -> Option<String>, own_pid: u32) -> Option<MicUser> {
     if props("media.class").as_deref() != Some("Stream/Input/Audio") {
         return None;
@@ -348,8 +357,8 @@ impl MicWatch {
     }
 }
 
-/// Start watching, for the life of the process. A no-op off Linux
-/// (see "Other platforms" in the module docs), and wherever `KARMAYOGA_NO_MICWATCH` is
+/// Start watching, for the life of the process. A no-op except on Linux and
+/// macOS (see "Other platforms" in the module docs), and wherever `KARMAYOGA_NO_MICWATCH` is
 /// set (see the module docs).
 ///
 /// Starts two threads and returns at once. Neither is ever joined: they
@@ -366,7 +375,14 @@ pub fn spawn(app: &AppHandle) {
         backend::spawn(shared.clone());
         spawn_policy(app.clone(), shared);
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        let shared = app.state::<MicWatch>().shared.clone();
+        macos::spawn(app.clone(), shared.clone());
+        spawn_policy(app.clone(), shared);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         // See "Other platforms" in the module docs.
         let _ = app;
@@ -377,7 +393,7 @@ pub fn spawn(app: &AppHandle) {
 /// and tells the hub. The flag is set before the hub is told, and cleared
 /// before it is told, so that anything the hub does in response -- asking
 /// [`MicWatch::session_active`] -- sees the state it was told about.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn spawn_policy(app: AppHandle, shared: Arc<Shared>) {
     let spawned = std::thread::Builder::new()
         .name("micwatch-policy".into())

@@ -1697,7 +1697,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     keywords: ['remote', 'server', 'connect', 'pair'],
     icon: 'monitor',
     when: () => app.screen === 'main' && !app.remote,
-    run: () => panels.openSettings('vault'),
+    run: () => panels.openSettings('vault', 'sharing'),
   },
   {
     label: 'Stop using the other computer',

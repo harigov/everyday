@@ -36,10 +36,12 @@ class WindowControls {
   /**
    * The Tauri window, imported on first use rather than at load, as
    * `api.ts` does: the module is not there in the browser preview, and the
-   * buttons must not be what breaks the preview.
+   * buttons must not be what breaks the preview. Nor on a phone, whose shell
+   * has no window plugin: `isMaximized` there rejected with "Plugin window
+   * not initialized", over and over.
    */
   #current(): Promise<TauriWindow> | null {
-    if (!shell) return null
+    if (!shell || mobileShell) return null
     this.#window ??= import('@tauri-apps/api/window').then((m) => m.getCurrentWindow())
     return this.#window
   }
