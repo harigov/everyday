@@ -123,11 +123,7 @@ fn build_client(https_only: bool) -> Result<reqwest::Client, String> {
         .connect_timeout(CONNECT_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .https_only(https_only)
-        .user_agent(concat!(
-            "KarmaYoga/",
-            env!("CARGO_PKG_VERSION"),
-            " (+https://github.com/karmayoga-app)"
-        ));
+        .user_agent(crate::http::USER_AGENT);
     if !https_only {
         // The fake is always on this machine; a proxy from the environment
         // would only stand between a test and its own server.

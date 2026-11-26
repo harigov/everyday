@@ -36,7 +36,8 @@
 //! What lasts is what is linked to the story, which is the file.
 
 use super::announce;
-use super::fetch::BROWSER_USER_AGENT;
+use super::route::{Refusals, Route};
+use crate::http::BROWSER_USER_AGENT;
 use super::queue;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Kind, Op};
@@ -599,55 +600,14 @@ fn is_present(vault: &Vault, file: FileId) -> bool {
 
 // ── The network ──────────────────────────────────────────────────────────
 
-/// How an episode's address is reached.
-#[derive(Clone)]
-enum Route {
-    /// Over [`http::public_client`], which keeps every private address out,
-    /// and with the address itself checked first: a literal one is never
-    /// handed to a resolver at all.
-    Public,
-    /// Any address, over a client of the test's own: the one place a server
-    /// on loopback may be asked for an episode.
-    #[cfg(test)]
-    Anywhere(reqwest::Client),
-}
-
-impl Route {
-    /// The client to ask with, and the address as something it can ask for.
-    /// The error is a sentence.
-    fn open(&self, address: &str) -> Result<(reqwest::Client, reqwest::Url), String> {
-        let url = reqwest::Url::parse(address.trim())
-            .map_err(|_| "the episode's address is not a web address.".to_string())?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(
-                "only web addresses, starting http:// or https://, can be downloaded.".into()
-            );
-        }
-        let Some(host) = url.host_str().filter(|h| !h.is_empty()) else {
-            return Err("the episode's address has no site in it.".into());
-        };
-        match self {
-            Route::Public => {
-                let literal = host
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse::<std::net::IpAddr>()
-                    .ok();
-                if literal.is_some_and(|ip| http::is_forbidden_address(ip, false))
-                    || karmayoga_core::chat::is_private_network_host(host)
-                {
-                    return Err("that episode is on a private network, and episodes are only \
-                         downloaded from the internet."
-                        .into());
-                }
-                let client = http::public_client().map_err(|e| e.message)?;
-                Ok((client.clone(), url))
-            }
-            #[cfg(test)]
-            Route::Anywhere(client) => Ok((client.clone(), url)),
-        }
-    }
-}
+/// What [`Route::open`] says when it refuses an episode's address.
+const REFUSALS: Refusals = Refusals {
+    not_a_web_address: "the episode's address is not a web address.",
+    only_web: "only web addresses, starting http:// or https://, can be downloaded.",
+    no_site: "the episode's address has no site in it.",
+    private_network: "that episode is on a private network, and episodes are only \
+         downloaded from the internet.",
+};
 
 /// What a download brought, beyond the file it wrote.
 struct Fetched {
@@ -666,7 +626,7 @@ async fn fetch_to(
     to: &Path,
     job: &mut Job,
 ) -> Result<Fetched, Stop> {
-    let (client, url) = route.open(address).map_err(Stop::Failed)?;
+    let (client, url) = route.open(address, &REFUSALS).map_err(Stop::Failed)?;
     let request = client
         .get(url)
         .header(USER_AGENT, BROWSER_USER_AGENT)

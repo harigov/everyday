@@ -77,11 +77,6 @@ const MOST_CHART: u32 = 100;
 /// those.
 const CHART_LENGTHS: [u32; 4] = [10, 25, 50, 100];
 
-/// Who is asking, in the words [`super::fetch`] uses. The public client sets
-/// none, and a good many services refuse a request that does not say.
-const AGENT: &str =
-    concat!("KarmaYoga/", env!("CARGO_PKG_VERSION"), " (+https://github.com/karmayoga-app)");
-
 const APPLE: &str = "Apple's podcast directory";
 const FEEDLY: &str = "Feedly";
 
@@ -226,7 +221,7 @@ pub async fn artwork_icon(vault: &Arc<Vault>, url: &str) -> Option<BlobId> {
             .ok()?
             .get(address)
             .header(ACCEPT, "image/jpeg, image/png, image/*;q=0.8")
-            .header(USER_AGENT, AGENT)
+            .header(USER_AGENT, crate::http::USER_AGENT)
             .send()
             .await
             .ok()?;
@@ -279,7 +274,7 @@ fn clean_query(query: &str) -> CommandResult<String> {
 
 /// Ask, and read the answer as JSON, within the cap and the time.
 async fn ask(request: reqwest::RequestBuilder, service: &str) -> CommandResult<Value> {
-    let request = request.header(ACCEPT, "application/json").header(USER_AGENT, AGENT);
+    let request = request.header(ACCEPT, "application/json").header(USER_AGENT, crate::http::USER_AGENT);
     let sent = tokio::time::timeout(ASK_TIMEOUT, async {
         let response = request.send().await.map_err(|e| trouble(service, &e))?;
         if !response.status().is_success() {

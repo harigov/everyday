@@ -1316,11 +1316,7 @@ fn download_client() -> Result<&'static reqwest::Client, String> {
             reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
                 .read_timeout(STALL_TIMEOUT)
-                .user_agent(concat!(
-                    "KarmaYoga/",
-                    env!("CARGO_PKG_VERSION"),
-                    " (+https://github.com/karmayoga-app)"
-                ))
+                .user_agent(crate::http::USER_AGENT)
                 .build()
                 .map_err(|e| e.to_string())
         })

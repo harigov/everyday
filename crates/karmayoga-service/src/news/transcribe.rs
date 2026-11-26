@@ -57,7 +57,8 @@
 
 use super::article;
 use super::downloads::safe_name;
-use super::fetch::BROWSER_USER_AGENT;
+use super::route::{Refusals, Route};
+use crate::http::BROWSER_USER_AGENT;
 use super::work::{self, Measured, Queue, Task, Worker};
 use super::{WorkItem, WorkKind, announce};
 use crate::error::{CommandError, CommandResult, codes};
@@ -791,54 +792,14 @@ fn not_downloaded(svc: &Service, story: StoryId) -> String {
 
 // ── The publisher's own ──────────────────────────────────────────────────
 
-/// How an address is reached.
-#[derive(Clone)]
-enum Route {
-    /// Over [`http::public_client`], which keeps every private address out,
-    /// and with the address itself checked first: a literal one is never
-    /// handed to a resolver at all. The address is one a stranger's feed
-    /// named.
-    Public,
-    /// Any address, over a client of the test's own: the one place a server on
-    /// loopback may be asked for a transcript.
-    #[cfg(test)]
-    Anywhere(reqwest::Client),
-}
-
-impl Route {
-    /// The client to ask with, and the address as something it can ask for.
-    /// The error is a sentence.
-    fn open(&self, address: &str) -> Result<(reqwest::Client, reqwest::Url), String> {
-        let url = reqwest::Url::parse(address.trim())
-            .map_err(|_| "its address is not a web address".to_string())?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err("only web addresses, starting http:// or https://, can be read".into());
-        }
-        let Some(host) = url.host_str().filter(|h| !h.is_empty()) else {
-            return Err("its address has no site in it".into());
-        };
-        match self {
-            Route::Public => {
-                let literal = host
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse::<std::net::IpAddr>()
-                    .ok();
-                if literal.is_some_and(|ip| http::is_forbidden_address(ip, false))
-                    || karmayoga_core::chat::is_private_network_host(host)
-                {
-                    return Err("it is on a private network, and what a feed names is only \
-                         read from the internet"
-                        .into());
-                }
-                let client = http::public_client().map_err(|e| e.message)?;
-                Ok((client.clone(), url))
-            }
-            #[cfg(test)]
-            Route::Anywhere(client) => Ok((client.clone(), url)),
-        }
-    }
-}
+/// What [`Route::open`] says when it refuses a transcript's address.
+const REFUSALS: Refusals = Refusals {
+    not_a_web_address: "its address is not a web address",
+    only_web: "only web addresses, starting http:// or https://, can be read",
+    no_site: "its address has no site in it",
+    private_network: "it is on a private network, and what a feed names is only \
+         read from the internet",
+};
 
 const TRANSCRIPT_ACCEPT: &str = "text/vtt, application/x-subrip, application/json, text/html;q=0.8, \
      text/plain;q=0.8, */*;q=0.5";
@@ -846,7 +807,7 @@ const TRANSCRIPT_ACCEPT: &str = "text/vtt, application/x-subrip, application/jso
 /// The words of the transcript `enclosure` names, or why they could not be
 /// had.
 async fn publishers(route: &Route, enclosure: &Enclosure) -> Result<Vec<TimedText>, String> {
-    let (client, url) = route.open(&enclosure.transcript_url)?;
+    let (client, url) = route.open(&enclosure.transcript_url, &REFUSALS)?;
     let path = url.path().to_string();
     let response = client
         .get(url)

@@ -70,11 +70,7 @@ const ACCEPT: &str = "text/html, text/plain;q=0.9, */*;q=0.5";
 /// many sites expect before they will serve anything at all, because a bare
 /// product name is refused outright by more front doors than it is
 /// welcomed by.
-const USER_AGENT: &str = concat!(
-    "Mozilla/5.0 (compatible; KarmaYoga/",
-    env!("CARGO_PKG_VERSION"),
-    "; +https://github.com/karmayoga-app)"
-);
+use crate::http::BROWSER_USER_AGENT as USER_AGENT;
 
 /// One page, as `read_web_page` returns it. The field names are the wire.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -445,10 +441,10 @@ pub fn parse(address: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-/// The address itself, when the host is one rather than a name. Brackets
-/// off an IPv6 literal first, for the reason `http`'s redirect policy gives.
+/// The address itself, when the host is one rather than a name: see
+/// [`crate::http::literal_ip`].
 pub(crate) fn literal_ip(url: &Url) -> Option<std::net::IpAddr> {
-    url.host_str()?.trim_start_matches('[').trim_end_matches(']').parse().ok()
+    crate::http::literal_ip(url.host_str()?)
 }
 
 fn unreadable(what: &str) -> CommandError {

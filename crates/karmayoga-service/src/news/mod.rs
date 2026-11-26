@@ -49,6 +49,7 @@ pub mod parse;
 pub mod queue;
 pub mod rank;
 pub mod refresh;
+mod route;
 pub mod sanitize;
 pub mod summary;
 pub mod transcribe;

@@ -36,7 +36,7 @@
 //! wording follows [`crate::feeds`], which does the same for a calendar.
 
 use super::{FoundFeed, discover, parse};
-use crate::http;
+use crate::http::{self, BROWSER_USER_AGENT};
 use crate::webpage::{self, Kind};
 use futures::future::join_all;
 use jiff::Timestamp;
@@ -94,17 +94,6 @@ const PAGE_ACCEPT: &str = "text/html, application/xhtml+xml, application/atom+xm
      */*;q=0.5";
 
 const ICON_ACCEPT: &str = "image/png, image/*;q=0.9, */*;q=0.5";
-
-/// Who is asking for a page a feed named -- an article, a site's icon --
-/// in the shape crawlers use, because a bare product name is refused outright
-/// by more sites than it is welcomed by. The same string
-/// [`crate::webpage`] sends, for the same reason; the feed itself goes out
-/// under [`crate::http::client`]'s honest one.
-pub(super) const BROWSER_USER_AGENT: &str = concat!(
-    "Mozilla/5.0 (compatible; KarmaYoga/",
-    env!("CARGO_PKG_VERSION"),
-    "; +https://github.com/karmayoga-app)"
-);
 
 /// What a conditional request for a feed came back with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,12 +429,6 @@ async fn get_page(address: Url, reach: Reach) -> Result<Page, FetchError> {
     Ok(Page { bytes, url, content_type })
 }
 
-/// Who we say we are to a feed. The same string [`crate::http::client`]
-/// sends on its own, repeated because the public client sets none: it is
-/// built for strangers' images, where saying nothing is the point.
-const FEED_USER_AGENT: &str =
-    concat!("KarmaYoga/", env!("CARGO_PKG_VERSION"), " (+https://github.com/karmayoga-app)");
-
 /// Whether an address names a machine on the person's own network, by what
 /// it says rather than what it resolves to. The one question that decides
 /// the client; see the module doc.
@@ -490,7 +473,7 @@ fn get(address: Url, reach: Reach) -> Result<reqwest::RequestBuilder, FetchError
         return Err(fail("that address is not one a feed can be fetched from."));
     }
     let client = http::public_client().map_err(|e| fail(e.message))?;
-    Ok(client.get(address).header(USER_AGENT, FEED_USER_AGENT))
+    Ok(client.get(address).header(USER_AGENT, http::USER_AGENT))
 }
 
 async fn send(request: reqwest::RequestBuilder) -> Result<reqwest::Response, FetchError> {
@@ -589,10 +572,7 @@ fn public_address(address: &str) -> Option<Url> {
 }
 
 fn is_private_literal(url: &Url) -> bool {
-    url.host_str()
-        .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-        .and_then(|h| h.parse::<std::net::IpAddr>().ok())
-        .is_some_and(|ip| http::is_forbidden_address(ip, false))
+    http::names_forbidden_literal(url)
 }
 
 /// A stored validator as a header value, if it still makes one: it came from

@@ -8,11 +8,11 @@
 //! sanitised exactly as a feed's own content is, because a Readability port
 //! decides what is the article, not what is safe.
 
-use super::fetch::BROWSER_USER_AGENT;
+use crate::http::BROWSER_USER_AGENT;
 use super::sanitize;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
-use crate::webpage::{self, Kind};
+use crate::webpage::{self, Kind, literal_ip};
 use dom_smoothie::{Config, Readability};
 use karmayoga_core::Vault;
 use karmayoga_core::id::StoryId;
@@ -125,13 +125,6 @@ fn not_a_page() -> CommandError {
         codes::UNSUPPORTED,
         "that address is not a web page, so there is no article to read. Open the original.",
     )
-}
-
-/// The address itself, when the host is one rather than a name -- the one
-/// case the public client's resolver never sees. Brackets off an IPv6
-/// literal first, for the reason `http`'s redirect policy gives.
-fn literal_ip(url: &reqwest::Url) -> Option<std::net::IpAddr> {
-    url.host_str()?.trim_start_matches('[').trim_end_matches(']').parse().ok()
 }
 
 fn explain_status(status: reqwest::StatusCode) -> String {

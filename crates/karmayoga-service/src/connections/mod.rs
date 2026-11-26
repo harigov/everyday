@@ -219,8 +219,11 @@ fn oauth_client(reach: Reach) -> reqwest::Client {
         // resolver below.
         Reach::PublicOnly => builder
             .no_proxy()
-            .dns_resolver(Arc::new(PublicOnlyResolver))
-            .redirect(public_redirects()),
+            .dns_resolver(Arc::new(crate::http::PublicOnly))
+            .redirect(crate::http::public_redirect_policy(
+                OAUTH_REDIRECTS,
+                crate::http::RedirectSchemes::HttpsOnly,
+            )),
         Reach::Anywhere => builder.redirect(reqwest::redirect::Policy::limited(OAUTH_REDIRECTS)),
     };
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
@@ -228,27 +231,6 @@ fn oauth_client(reach: Reach) -> reqwest::Client {
 
 /// How many redirects one OAuth request may follow.
 const OAUTH_REDIRECTS: usize = 5;
-
-/// Redirects for [`Reach::PublicOnly`]: see [`OAuthHttp`].
-fn public_redirects() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= OAUTH_REDIRECTS {
-            return attempt.error("too many redirects");
-        }
-        let url = attempt.url();
-        if url.scheme() != "https" {
-            return attempt.error("a redirect left https");
-        }
-        let literal = url
-            .host_str()
-            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-            .and_then(|h| h.parse::<std::net::IpAddr>().ok());
-        if literal.is_some_and(|ip| crate::http::is_forbidden_address(ip, false)) {
-            return attempt.error("a redirect pointed at a private network");
-        }
-        attempt.follow()
-    })
-}
 
 /// Whether a typed server address is on this computer or a private network,
 /// by what it says and not by what it resolves to: a name somebody else
@@ -266,38 +248,17 @@ fn is_private_target(url: &reqwest::Url) -> bool {
     if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
         return true;
     }
-    host.parse::<std::net::IpAddr>().is_ok_and(|ip| crate::http::is_forbidden_address(ip, false))
+    crate::http::literal_ip(host).is_some_and(|ip| crate::http::is_forbidden_address(ip, false))
 }
 
 /// The gate for a server on the internet: nothing a server names may be on
 /// this computer or a private network. A numeric address is refused here; a
-/// name is refused when it resolves, by [`PublicOnlyResolver`].
+/// name is refused when it resolves, by [`crate::http::PublicOnly`].
 fn public_address_only(url: &reqwest::Url) -> Result<(), String> {
     if is_private_target(url) {
         Err("points at this computer or a private network".to_string())
     } else {
         Ok(())
-    }
-}
-
-/// A resolver that answers only with addresses on the open internet. A name
-/// every answer of which is private is an error; one with a mix has the
-/// private answers dropped, so the connection cannot fall back to one.
-struct PublicOnlyResolver;
-
-impl reqwest::dns::Resolve for PublicOnlyResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        Box::pin(async move {
-            let found: Vec<std::net::SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
-                .await?
-                .filter(|addr| !crate::http::is_forbidden_address(addr.ip(), false))
-                .collect();
-            if found.is_empty() {
-                return Err("that address points at a private network, or at nothing".into());
-            }
-            let addrs: reqwest::dns::Addrs = Box::new(found.into_iter());
-            Ok(addrs)
-        })
     }
 }
 
