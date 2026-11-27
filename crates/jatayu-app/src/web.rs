@@ -64,7 +64,7 @@ impl WebAccess {
     ) -> CommandResult<WebStatus> {
         // Awaited, not merely signalled: what follows binds the same port.
         self.stop_and_wait().await;
-        let name = service.get().map(|v| v.status().name).unwrap_or_else(|| "Jatayu".into());
+        let name = service.get().map(|v| v.name()).unwrap_or_else(|| "Jatayu".into());
         config.enabled = true;
         config.save(&Self::dir())?;
         let web = Arc::new(Web::start(service, registry, assets, config, name));

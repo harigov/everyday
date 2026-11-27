@@ -266,6 +266,39 @@ export type EventEdit =
 type EventPlace = Pick<CalendarEvent, 'start' | 'end' | 'localDate' | 'endDate'>
 
 /**
+ * An event with its instants parsed, once per change to the events rather
+ * than once per event per day on screen: the month asks every one of them
+ * about each of its forty-two days, and the mini month beside it as many
+ * again. Plain numbers and strings, so laying out a day reads no proxies.
+ */
+interface EventSpan {
+  event: CalendarEvent
+  allDay: boolean
+  localDate: string
+  endDate: string
+  /** Milliseconds since the epoch. */
+  start: number
+  end: number
+}
+
+/** A block's instants, parsed the same way. See `EventSpan`. */
+interface BlockSpan {
+  block: TimeBlock
+  allDay: boolean
+  start: number
+  end: number
+}
+
+/** A reading with a time of day, parsed the same way. See `EventSpan`. */
+interface ReadingSpan {
+  reading: Reading
+  trackerId: Reading['trackerId']
+  localDate: string
+  value: number
+  at: number
+}
+
+/**
  * What a move is waiting to hear before it is sent -- which of a series it
  * means, or that its guests are to be told. Shaped for `ChoiceDialog`.
  */
@@ -521,13 +554,16 @@ class CalendarState {
     const view = viewPref.get()
     if (view) this.view = view
     // See `todo.start` for why this is idempotent and safe to ask twice.
-    if (!proposals.loaded) await proposals.refresh()
+    // Not waited for before the first read: ghost blocks read
+    // `proposals.pending` reactively and fill in when it lands.
+    const ghosts = proposals.loaded ? null : proposals.refresh()
 
     // The clock only runs while something needs it: a per-second re-render
     // of the whole grid for the sake of a "now" line nobody is watching is
     // exactly the sort of thing that shows up in a battery report.
     this.#startClock()
     await this.refresh()
+    await ghosts
   }
 
   /** A change from somewhere else. A window that has not opened the calendar has
@@ -694,13 +730,19 @@ class CalendarState {
    * "flossed", ticked at bedtime for the whole day, is a pin at an hour that
    * means nothing. The switch is in the journal's settings.
    */
-  get drawnTrackers(): Map<string, Tracker> {
+  get drawnTrackers(): ReadonlyMap<string, Tracker> {
+    return this.#drawnTrackers
+  }
+
+  // Once per change to the trackers rather than once per day drawn: every
+  // day's slots and marks ask for it.
+  #drawnTrackers = $derived.by(() => {
     const out = new Map<string, Tracker>()
     for (const tracker of tracking.trackers) {
       if (tracker.onCalendar && !tracker.archived) out.set(tracker.id, tracker)
     }
     return out
-  }
+  })
 
   /** The calendar an event came from, for its colour and its name. */
   calendarOf(id: CalendarId): CalendarInfo | null {
@@ -806,20 +848,23 @@ class CalendarState {
     const out: Slot[] = []
     const dayStart = 0
     const dayEnd = 24 * 60
+    // `offsetInDay`'s arithmetic, with the day's midnight worked out once.
+    const midnight = startOfDay(iso).getTime()
 
-    out.push(...this.blockSlots(iso))
-    out.push(...this.ghostBlockSlots(iso))
-    out.push(...this.readingSlots(iso))
+    out.push(...this.blockSlots(midnight))
+    out.push(...this.ghostBlockSlots(midnight))
+    out.push(...this.readingSlots(midnight))
     const live = this.liveSlot(iso)
     if (live) out.push(live)
 
-    for (const event of this.shownEvents) {
-      if (event.allDay) continue
-      const start = offsetInDay(event.start, iso)
-      const end = offsetInDay(event.end, iso)
+    for (const span of this.#eventSpans) {
+      if (span.allDay) continue
+      const start = (span.start - midnight) / 60_000
+      const end = (span.end - midnight) / 60_000
       // Clipped to this column: a meeting running past midnight appears at
       // the bottom of one day and the top of the next, which is what it did.
       if (end <= dayStart || start >= dayEnd) continue
+      const event = span.event
       const calendar = this.calendarOf(event.calendarId)
       out.push({
         key: `event:${event.id}`,
@@ -852,16 +897,75 @@ class CalendarState {
    * and the timer strip reads it every second.
    */
   shownEvents = $derived.by((): CalendarEvent[] => {
-    const open = this.editing?.status === 'ready' && this.editing.event.own ? this.editing : null
-    if (this.moves.size === 0 && !open) return this.events
-    return this.events.map((event) => {
+    const openId = this.#editingOwn
+    if (this.moves.size === 0 && openId === null) return this.events
+    let changed = false
+    const out = this.events.map((event) => {
       const moved = this.moves.get(event.id)
-      if (moved) return { ...event, ...moved }
-      if (open?.id !== event.id || open.draft.allDay !== event.allDay) return event
-      const { start, end } = open.draft
+      if (moved) {
+        changed = true
+        return { ...event, ...moved }
+      }
+      if (openId !== event.id || this.#editAllDay !== event.allDay) return event
+      const start = this.#editStart ?? event.start
+      const end = this.#editEnd ?? event.end
       if (start === event.start && end === event.end) return event
+      changed = true
       return { ...event, ...placeOf(event, start, end) }
     })
+    // The same list when nothing moved, so what draws it does not redraw.
+    return changed ? out : this.events
+  })
+
+  // The parts of an open edit the grid draws, each on its own: a title or a
+  // note typed into the editor replaces its draft, and these come out the
+  // same, so the grid is not laid out again for a keystroke.
+  #editingOwn = $derived(
+    this.editing?.status === 'ready' && this.editing.event.own ? this.editing.id : null,
+  )
+  #editStart = $derived(this.editing?.status === 'ready' ? this.editing.draft.start : null)
+  #editEnd = $derived(this.editing?.status === 'ready' ? this.editing.draft.end : null)
+  #editAllDay = $derived(this.editing?.status === 'ready' ? this.editing.draft.allDay : null)
+
+  /** `shownEvents`, parsed once per change. See `EventSpan`. */
+  #eventSpans = $derived.by((): EventSpan[] =>
+    this.shownEvents.map((event) => ({
+      event,
+      allDay: event.allDay,
+      localDate: event.localDate,
+      endDate: event.endDate,
+      start: Date.parse(event.start),
+      end: Date.parse(event.end),
+    })),
+  )
+
+  /**
+   * The blocks, parsed once per change. Read through the blocks themselves,
+   * so `patch`'s edits in place -- a drag, a resize -- are a change too.
+   */
+  #blockSpans = $derived.by((): BlockSpan[] =>
+    this.blocks.map((block) => ({
+      block,
+      allDay: block.allDay,
+      start: Date.parse(block.start),
+      end: Date.parse(block.end),
+    })),
+  )
+
+  /** The readings with a time of day, parsed once per change. */
+  #readingSpans = $derived.by((): ReadingSpan[] => {
+    const out: ReadingSpan[] = []
+    for (const reading of this.readings) {
+      if (!reading.at) continue
+      out.push({
+        reading,
+        trackerId: reading.trackerId,
+        localDate: reading.localDate,
+        value: reading.value,
+        at: Date.parse(reading.at),
+      })
+    }
+    return out
   })
 
   /**
@@ -872,16 +976,16 @@ class CalendarState {
    * which is the reading the strip's time field offers and the one a person
    * means by "when did you do it".
    */
-  private readingSlots(iso: string): Slot[] {
+  private readingSlots(midnight: number): Slot[] {
     const drawn = this.drawnTrackers
     const out: Slot[] = []
-    for (const reading of this.readings) {
-      if (!reading.at) continue
-      const tracker = drawn.get(reading.trackerId)
+    for (const span of this.#readingSpans) {
+      const tracker = drawn.get(span.trackerId)
       if (!tracker) continue
-      const minutes = durationMinutes(tracker, reading.value)
+      const minutes = durationMinutes(tracker, span.value)
       if (minutes === null) continue
-      const start = offsetInDay(reading.at, iso)
+      const reading = span.reading
+      const start = (span.at - midnight) / 60_000
       const end = start + minutes
       if (end <= 0 || start >= 24 * 60) continue
       out.push({
@@ -909,13 +1013,16 @@ class CalendarState {
   marksOn(iso: string): Mark[] {
     const drawn = this.drawnTrackers
     const out: Mark[] = []
-    for (const reading of this.readings) {
-      if (reading.localDate !== iso || !reading.at) continue
-      const tracker = drawn.get(reading.trackerId)
-      if (!tracker || durationMinutes(tracker, reading.value) !== null) continue
+    let midnight: number | null = null
+    for (const span of this.#readingSpans) {
+      if (span.localDate !== iso) continue
+      const tracker = drawn.get(span.trackerId)
+      if (!tracker || durationMinutes(tracker, span.value) !== null) continue
+      midnight ??= startOfDay(iso).getTime()
+      const reading = span.reading
       out.push({
         key: `mark:${reading.id}`,
-        minute: offsetInDay(reading.at, iso),
+        minute: (span.at - midnight) / 60_000,
         tracker,
         reading,
         label: `${tracker.name} · ${formatValue(tracker, reading.value)}`,
@@ -947,15 +1054,16 @@ class CalendarState {
       })
   }
 
-  private blockSlots(iso: string): Slot[] {
+  private blockSlots(midnight: number): Slot[] {
     const out: Slot[] = []
-    for (const block of this.blocks) {
-      if (block.allDay) continue
-      const start = offsetInDay(block.start, iso)
-      const end = offsetInDay(block.end, iso)
+    for (const span of this.#blockSpans) {
+      if (span.allDay) continue
+      const start = (span.start - midnight) / 60_000
+      const end = (span.end - midnight) / 60_000
       // Clipped to this column, so a block running past midnight appears at
       // the bottom of one day and the top of the next.
       if (end <= 0 || start >= 24 * 60) continue
+      const block = span.block
       out.push({
         key: `block:${block.id}`,
         kind: 'block',
@@ -978,14 +1086,14 @@ class CalendarState {
    * same lanes, coloured the way the block's subject would be -- so nothing
    * about the grid's layout has to know a ghost is not yet real.
    */
-  private ghostBlockSlots(iso: string): Slot[] {
+  private ghostBlockSlots(midnight: number): Slot[] {
     const out: Slot[] = []
     for (const p of proposals.forKind('block')) {
       if (p.payload.type !== 'create') continue
       const block = recordAs(p, 'block')
       if (!block || block.allDay) continue
-      const start = offsetInDay(block.start, iso)
-      const end = offsetInDay(block.end, iso)
+      const start = (Date.parse(block.start) - midnight) / 60_000
+      const end = (Date.parse(block.end) - midnight) / 60_000
       if (end <= 0 || start >= 24 * 60) continue
       out.push({
         key: `proposal:${p.id}`,
@@ -1062,9 +1170,13 @@ class CalendarState {
   }
 
   allDayOn(iso: string): CalendarEvent[] {
-    return this.shownEvents.filter(
-      (e) => (e.allDay || e.localDate !== e.endDate) && e.localDate <= iso && e.endDate >= iso,
-    )
+    const out: CalendarEvent[] = []
+    for (const s of this.#eventSpans) {
+      if ((s.allDay || s.localDate !== s.endDate) && s.localDate <= iso && s.endDate >= iso) {
+        out.push(s.event)
+      }
+    }
+    return out
   }
 
   /** Open tasks due on `iso`, for the band above the grid. */
@@ -1806,7 +1918,9 @@ class CalendarState {
       event.own !== false &&
       !this.#theirs.has(event.id) &&
       !this.moves.has(event.id) &&
-      !(open?.id === event.id && open.status === 'ready' && open.draft.allDay !== event.allDay)
+      // Through `#editAllDay`, not the draft: a keystroke in the editor
+      // replaces the draft, and every slot on the grid asks this.
+      !(open?.id === event.id && open.status === 'ready' && this.#editAllDay !== event.allDay)
     )
   }
 

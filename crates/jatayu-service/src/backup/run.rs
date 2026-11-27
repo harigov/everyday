@@ -309,7 +309,7 @@ async fn run_locked(
         created: now,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         host: plan.host.clone(),
-        vault_name: vault.status().name,
+        vault_name: vault.name(),
         // Where the files folder was: as it says now, or -- when it cannot
         // be asked -- as the copy whose files this one carries said.
         files_folder: match &files_folder {
@@ -318,7 +318,7 @@ async fn run_locked(
         },
         files: entries,
     };
-    repo::store_manifest(target, keys, &snapshot, &manifest, &cache).await?;
+    let manifest = repo::store_manifest(target, keys, &snapshot, manifest, &cache).await?;
     let snapshot_progress = progress.snapshot();
     let mut report = BackupReport {
         snapshot: snapshot.clone(),
@@ -670,6 +670,14 @@ fn leave_out_of_config(path: &str) -> bool {
         "vault.json",
         "vault.json.bak",
         "vault.lock",
+        // When this vault's store was last checked clean: true of this copy
+        // of it, not of one restored somewhere else.
+        "vault.checked",
+        "vault.checked.open",
+        // Which vaults' older keychain entries this computer's keychain has
+        // been searched for -- true of this keychain alone, like the
+        // webview markers below.
+        "keychain-searched",
     ];
     const FOLDERS: &[&str] = &[
         // Made again from the mail.
@@ -700,7 +708,7 @@ fn leave_out_of_config(path: &str) -> bool {
         || name.ends_with("-journal")
 }
 
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, BackupError> + Send + 'static,
 ) -> Result<T, BackupError> {
     // Same erasure as `service::blocking`: the closure and its value are

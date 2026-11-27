@@ -54,7 +54,7 @@ pub(crate) fn serve(
         let registry = parts.registry.clone();
         let broadcaster = parts.broadcaster.clone();
 
-        let name = vault.status().name;
+        let name = vault.name();
         let locked = !vault.is_unlocked();
         let service = std::sync::Arc::new(jatayu_service::Service::new());
         service.set(vault);

@@ -15,8 +15,11 @@
 //!
 //! Filing samples into a series day, matching a dose event to a
 //! medication, recording a dose change in a medication's history: each
-//! reads before it writes, so each does both inside one [`Vault::write`],
-//! which is exclusive.
+//! reads before it writes, so each does both inside one
+//! [`Vault::write_in`] under the health gate. Every write to health's tables
+//! takes that gate -- the plain deletes too, so none can land between a
+//! section's look and its write -- and none of them stops the rest of the
+//! vault being read while it runs.
 
 use super::Vault;
 use super::session::Domain;

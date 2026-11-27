@@ -1,8 +1,9 @@
 <script lang="ts" module>
   // A file's picture: its thumbnail when one has been drawn; for a picture
-  // with none, the file itself, when a webview can draw it; for a film with
-  // none, a poster frame drawn here once and handed back to the vault; and
-  // otherwise the icon for what kind of file it is.
+  // with none, the file itself, when a webview can draw it and it is small
+  // enough to draw in a tile; for a film with none, a poster frame drawn here
+  // once and handed back to the vault; and otherwise the icon for what kind
+  // of file it is.
   //
   // Lazy on every path. A grid of a few thousand of these is the point of the
   // app, and `loading="lazy"` leaves the ones off screen unfetched -- and,
@@ -133,17 +134,39 @@
     /** The edge of a square, in pixels. Absent, it fills what holds it. */
     size?: number
     fit?: 'cover' | 'contain'
+    /**
+     * When a picture with no thumbnail yet is drawn from the file itself.
+     * `small`, for a tile among many: only a file small enough to decode in
+     * passing, or a kind the vault never makes a thumbnail of. `always`, for
+     * the one large preview the inspector shows.
+     */
+    original?: 'always' | 'small'
   }
-  let { file, size, fit = 'cover' }: Props = $props()
+  let { file, size, fit = 'cover', original = 'small' }: Props = $props()
 
   /** Pictures a webview draws itself. HEIC and RAW are not among them: those
    *  have the vault's thumbnail or the icon. */
   const DRAWN = /^image\/(png|jpe?g|gif|webp|avif|bmp|svg\+xml)$/i
+  /** Pictures the vault never makes a thumbnail of, so waiting for one would
+   *  be waiting for ever. */
+  const NEVER_THUMBNAILED = /^image\/(avif|svg\+xml)$/i
+  /**
+   * The largest file drawn in a tile while its thumbnail is being made.
+   *
+   * Thumbnails are made one at a time after an import, and a grid of a
+   * hundred camera pictures drawn whole meanwhile asks the webview for some
+   * fifty megabytes each. Past this the tile shows the icon until its
+   * thumbnail arrives.
+   */
+  const SMALL_ORIGINAL = 1_000_000
 
   const present = $derived(file.status.state === 'present')
   const thumb = $derived(thumbnailUrl(file))
-  const original = $derived(
-    file.kind === 'image' && present && DRAWN.test(file.mime)
+  const full = $derived(
+    file.kind === 'image' &&
+      present &&
+      DRAWN.test(file.mime) &&
+      (original === 'always' || NEVER_THUMBNAILED.test(file.mime) || file.size <= SMALL_ORIGINAL)
       ? fileUrl(file.id, fileVersion(file))
       : null,
   )
@@ -157,7 +180,7 @@
   const src = $derived.by(() => {
     if (thumb && broken !== thumb) return thumb
     if (poster) return poster
-    if (!thumb && original && broken !== original) return original
+    if (!thumb && full && broken !== full) return full
     return null
   })
 

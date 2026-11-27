@@ -235,3 +235,54 @@ export function actChangesIn(turn: Turn | undefined, now: number): number | null
   const until = turn.endedAt + (turn.error ? DROOP_MS : CHEER_MS) - now
   return until > 0 ? until : null
 }
+
+// ── When it is drawn ──────────────────────────────────────────────────
+
+/**
+ * Is this act a turn at work -- or the moment just after one -- rather than
+ * the bird with nothing to do? Those are the acts that say "still going" from
+ * across the room, so they are drawn for as long as they last, watched or
+ * not. The rest settle and are then held on one frame (see `parks`).
+ */
+export function working(act: Act): boolean {
+  return act !== 'idle' && act !== 'sleep' && act !== 'listen'
+}
+
+/**
+ * How long a bird with nothing to do keeps moving, in a window somebody is
+ * at, before its picture is held: long enough to be seen settling into the
+ * new act. After that, drawing a bird that is only sitting, or asleep, thirty
+ * times a second all day is a core's worth of work for a picture that hardly
+ * changes. In a window nobody is at, it is held as soon as it has come to
+ * rest.
+ */
+export const SETTLE_S = 20
+
+/**
+ * Whether the scene can stop drawing and keep the frame it has: nothing to
+ * do, the change into this act finished and settled, the bird at rest within
+ * it -- eyes open, between two of idle's little fidgets -- and nothing laid
+ * over it still moving: a pat, hearts, the head easing back from the pointer.
+ */
+export function parks(state: {
+  /** What it is acting out. */
+  act: Act
+  /** How far through the change into it, 0 to 1. */
+  blend: number
+  /** Seconds since it last changed what it was acting out. */
+  quietFor: number
+  /** Whether anyone is likely to be looking: the window has the focus. */
+  watched: boolean
+  /** A pat, hearts, the head following the pointer, the crest wobbling. */
+  busy: boolean
+  /** At rest within the act. */
+  resting: boolean
+}): boolean {
+  return (
+    !working(state.act) &&
+    state.blend >= 1 &&
+    state.quietFor >= (state.watched ? SETTLE_S : 0) &&
+    !state.busy &&
+    state.resting
+  )
+}

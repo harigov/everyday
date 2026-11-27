@@ -135,11 +135,23 @@ impl Service {
         occasion: Occasion,
         from: HeardFrom,
     ) -> CommandResult<LiveTranscription> {
+        self.live_transcription_with(tuning, occasion, from, |transcriber| transcriber).await
+    }
+
+    /// [`Self::live_transcription`], with the recogniser put behind `wrap`
+    /// before anything else -- the owner's voice check -- is put in front.
+    pub(crate) async fn live_transcription_with(
+        self: &Arc<Self>,
+        tuning: Tuning,
+        occasion: Occasion,
+        from: HeardFrom,
+        wrap: impl FnOnce(Arc<dyn UtteranceTranscriber>) -> Arc<dyn UtteranceTranscriber>,
+    ) -> CommandResult<LiveTranscription> {
         self.require_unlocked()?;
         if let Some(refusal) = missing_kit(crate::local::files::speech_kit_installed()) {
             return Err(CommandError::new(codes::INVALID, refusal));
         }
-        let transcriber = self.utterance_transcriber(occasion).await?;
+        let transcriber = wrap(self.utterance_transcriber(occasion).await?);
         let transcriber = self.checked(transcriber, from).await;
         let detector = blocking(move || build_detector(tuning)).await?;
         // Loading a recogniser on this computer takes seconds -- 2.4 on a

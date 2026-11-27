@@ -311,7 +311,7 @@ impl Vault {
         let mut medication = medication.clone();
         clean_medication(&mut medication)?;
         let today = today();
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             existing_conditions(health, &medication.condition_ids)?;
             let now = Timestamp::now();
@@ -345,7 +345,7 @@ impl Vault {
     /// Deletes its doses too.
     pub fn delete_medication(&self, id: MedicationId) -> Result<()> {
         self.writable()?;
-        self.with_health(|h| h.delete_medication(id))?;
+        self.write_in(&self.gates.health, |u| health_of(u.store.as_ref())?.delete_medication(id))?;
         self.wrote(RecordKind::Medication, id);
         Ok(())
     }
@@ -377,7 +377,7 @@ impl Vault {
             (DoseStatus::Taken, Some(amount)) => Some(positive("a dose", amount)?),
             _ => None,
         };
-        let (saved, drew) = self.write(|u| {
+        let (saved, drew) = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let Some(mut medication) = existing(health.get_medication(dose.medication_id))? else {
                 return Err(Error::Invalid(
@@ -421,7 +421,7 @@ impl Vault {
     /// goes for good.
     pub fn delete_dose(&self, id: DoseId) -> Result<()> {
         self.writable()?;
-        self.write(|u| {
+        self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let mut dose = health.get_dose(id)?;
             if dose.key.is_empty() {
@@ -489,7 +489,7 @@ impl Vault {
         allergy.substance = name_text("an allergy's substance", &allergy.substance)?;
         allergy.reaction = person_text("a reaction", &allergy.reaction, MAX_NAME)?;
         allergy.notes = person_text("a note", &allergy.notes, MAX_NOTES)?;
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let now = Timestamp::now();
             allergy.created_at =
@@ -504,7 +504,7 @@ impl Vault {
 
     pub fn delete_allergy(&self, id: AllergyId) -> Result<()> {
         self.writable()?;
-        self.with_health(|h| h.delete_allergy(id))?;
+        self.write_in(&self.gates.health, |u| health_of(u.store.as_ref())?.delete_allergy(id))?;
         self.wrote(RecordKind::Allergy, id);
         Ok(())
     }
@@ -526,7 +526,7 @@ impl Vault {
         condition.notes = person_text("a note", &condition.notes, MAX_NOTES)?;
         clean_codes(&mut condition.codes)?;
         clean_plan(&mut condition.plan)?;
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let now = Timestamp::now();
             condition.created_at = existing(health.get_condition(condition.id))?
@@ -549,7 +549,7 @@ impl Vault {
     /// reason the rest are still tried and the first failure is answered.
     pub fn delete_condition(&self, id: ConditionId, remove_trackers: bool) -> Result<()> {
         self.writable()?;
-        let (medications, documents, trackers) = self.write(|u| {
+        let (medications, documents, trackers) = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let condition = health.get_condition(id)?;
             let now = Timestamp::now();
@@ -641,7 +641,7 @@ impl Vault {
             created_at: now,
             updated_at: now,
         };
-        let (condition, made) = self.write(|u| {
+        let (condition, made) = self.write_in(&self.gates.health, |u| {
             let mut made = Vec::new();
             if let Err(e) = create_condition(u.store.as_ref(), &mut condition, &names, &mut made) {
                 discard_trackers(u.store.as_ref(), &made);
@@ -747,7 +747,7 @@ impl Vault {
         self.writable()?;
         let mut lab = lab.clone();
         clean_lab(&mut lab)?;
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             if let Some(document) = lab.document_id
                 && existing(health.get_document(document))?.is_none()
@@ -769,7 +769,7 @@ impl Vault {
 
     pub fn delete_lab(&self, id: LabResultId) -> Result<()> {
         self.writable()?;
-        self.with_health(|h| h.delete_lab(id))?;
+        self.write_in(&self.gates.health, |u| health_of(u.store.as_ref())?.delete_lab(id))?;
         self.wrote(RecordKind::LabResult, id);
         Ok(())
     }
@@ -815,7 +815,7 @@ impl Vault {
                 size: entry.size,
             })
             .collect();
-        let document = self.write(|u| {
+        let document = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let now = Timestamp::now();
             let document = HealthDocument {
@@ -860,7 +860,7 @@ impl Vault {
         let mut condition_ids = document.condition_ids.clone();
         dedupe(&mut condition_ids);
         let pending = review_ready(document.id, document.pending_labs.clone())?;
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             existing_conditions(health, &condition_ids)?;
             let mut stored = health.get_document(document.id)?;
@@ -896,7 +896,7 @@ impl Vault {
         self.writable()?;
         let pending = extracted_labs(id, pending);
         let error = outside_text(error, MAX_NOTES);
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let mut document = health.get_document(id)?;
             document.extraction = state;
@@ -934,7 +934,7 @@ impl Vault {
         for lab in &mut accepted {
             clean_lab(lab)?;
         }
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let mut document = health.get_document(id)?;
             let now = Timestamp::now();
@@ -990,7 +990,7 @@ impl Vault {
     /// pointing at one that is not.
     pub fn delete_health_document(&self, id: HealthDocumentId, delete_labs: bool) -> Result<()> {
         self.writable()?;
-        let (deleted, detached, pages) = self.write(|u| {
+        let (deleted, detached, pages) = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let pages: Vec<FileId> =
                 health.get_document(id)?.files.iter().map(|f| f.file).collect();
@@ -1079,7 +1079,7 @@ impl Vault {
         self.writable()?;
         let mut food = food.clone();
         clean_food(&mut food)?;
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let now = Timestamp::now();
             match existing(health.get_food(food.id))? {
@@ -1104,7 +1104,7 @@ impl Vault {
 
     pub fn delete_food(&self, id: FoodId) -> Result<()> {
         self.writable()?;
-        self.with_health(|h| h.delete_food(id))?;
+        self.write_in(&self.gates.health, |u| health_of(u.store.as_ref())?.delete_food(id))?;
         self.wrote(RecordKind::Food, id);
         Ok(())
     }
@@ -1142,7 +1142,7 @@ impl Vault {
                 self.health_files(&[photo])?;
             }
         }
-        let (saved, used, before_photo) = self.write(|u| {
+        let (saved, used, before_photo) = self.write_in(&self.gates.health, |u| {
             let health = health_of(u.store.as_ref())?;
             let now = Timestamp::now();
             let stored = existing(health.get_meal(meal.id))?;
@@ -1185,7 +1185,8 @@ impl Vault {
     /// else refers to it (see [`Vault::release_health_files`]).
     pub fn delete_meal(&self, id: MealId) -> Result<()> {
         self.writable()?;
-        let photo = self.with_health(|h| {
+        let photo = self.write_in(&self.gates.health, |u| {
+            let h = health_of(u.store.as_ref())?;
             let photo = existing(h.get_meal(id))?.and_then(|m| m.photo);
             h.delete_meal(id)?;
             Ok(photo)

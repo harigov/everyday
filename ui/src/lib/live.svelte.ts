@@ -21,6 +21,7 @@ import {
   api,
   onChange,
   onLockState,
+  onOwnWrite,
   onPalette,
   onShowInMain,
   onTalk,
@@ -44,7 +45,7 @@ import { assistant } from './assistant.svelte'
 import { briefs } from './brief.svelte'
 import { meetings } from './meetings.svelte'
 import { money } from './money.svelte'
-import { applierFor, type ChangeWithIds } from './live-apply'
+import { applierFor, registerApply, type ChangeWithIds } from './live-apply'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { proposals } from './proposals.svelte'
@@ -81,6 +82,72 @@ const COALESCE_MS = 250
 const DOWN_MS = 3000
 
 /**
+ * Whether `section` is the app this window is showing to somebody: the one
+ * on screen, in a window not hidden away in the tray.
+ *
+ * An app that is not is not read again for every change that lands. Its
+ * store is marked stale instead, and reads in full on its own way back --
+ * its `start`, when the view mounts, or `HELD` below when the window is
+ * shown again.
+ */
+function onScreen(section: Section): boolean {
+  return app.section === section && document.visibilityState !== 'hidden'
+}
+
+/** An app whose reloads wait while it is off screen. See `HELD`. */
+interface Held {
+  section: Section
+  /** The reloads in `RELOAD` that are its. */
+  targets: readonly ReloadTarget[]
+  stale: () => boolean
+  markStale: () => void
+  start: () => Promise<unknown>
+}
+
+/**
+ * The apps whose reloads wait while they are off screen (see `onScreen`),
+ * and how each catches up: its own `start`, which reads in full once marked
+ * stale and draws what it has otherwise.
+ */
+const HELD: readonly Held[] = [
+  {
+    section: 'feed',
+    targets: ['feed'],
+    stale: () => feed.stale,
+    markStale: () => feed.markStale(),
+    start: () => feed.start(),
+  },
+  {
+    section: 'library',
+    targets: ['library'],
+    stale: () => library.stale,
+    markStale: () => library.markStale(),
+    start: () => library.start(),
+  },
+  {
+    section: 'money',
+    targets: ['money'],
+    stale: () => money.stale,
+    markStale: () => money.markStale(),
+    start: () => money.start(),
+  },
+  {
+    section: 'screentime',
+    targets: ['screentime', 'screentimeSpans'],
+    stale: () => screentime.stale,
+    markStale: () => screentime.markStale(),
+    start: () => screentime.start(),
+  },
+  {
+    section: 'health',
+    targets: ['health', 'healthSamples'],
+    stale: () => health.stale,
+    markStale: () => health.markStale(),
+    start: () => health.start(),
+  },
+]
+
+/**
  * The things that can be reloaded, by name.
  *
  * Named rather than referred to by function, and that is the whole reason this
@@ -105,21 +172,35 @@ export const RELOAD = {
   // The one list of templates, which Settings, a journal's settings and both
   // editors read. Only once something has read it since unlock.
   templates: () => templates.liveRefresh(),
-  // The briefs are routines too, and a run finishing is a brief arriving.
-  assistant: () => Promise.all([assistant.refresh(), briefs.loaded ? briefs.refresh() : null]),
+  // The assistant's own store registered an `apply` for this target: off
+  // screen only the count on the bar is read, and on screen the few runs a
+  // batch names are read again one by one. This is for a wider batch on
+  // screen, or a log nothing has read yet. The briefs, which are routines
+  // too, have an `apply` of their own registered below -- a run finishing is
+  // a brief arriving.
+  assistant: () => assistant.refresh(),
   // Work the assistant is doing in the background: a job moving from queued
   // to running to done, a line of progress, a cancel from another window.
   // Reloads the list and the count together, since the app bar draws one
-  // and Settings → "What it did" the other.
+  // and Settings → "What it did" the other. `jobs.svelte.ts` registered an
+  // `apply` that reads only the jobs a batch names, so this is for a batch
+  // naming more.
   jobs: () => jobs.refresh(),
-  proposals: () => proposals.refresh(),
+  // A fresh read, not a share of one already in the air: that may have left
+  // before the write this change is about.
+  proposals: () => proposals.refresh(true),
   shelves: () => library.refreshKinds(),
-  library: () => library.refresh(),
+  // Only while the Library is on screen: it reads in full when it comes back.
+  library: () => (onScreen('library') ? library.refresh() : library.markStale()),
   // `thread` and `draft` below route here for anything `mail.svelte.ts`'s
   // own `registerApply` declines -- a batch wider than one record.
   mail: () => mail.refresh(),
+  // A folder or label a sync pass met for the first time -- see `targetsFor`
+  // for why this one is not in `RELOADS`. Only where Mail has been opened,
+  // and held while nobody can see it: see `mailboxesChanged`.
+  mailboxes: () => mail.mailboxesChanged(),
   tracking: () => tracking.refresh(),
-  overview: () => overview.refresh(),
+  overview: () => overview.liveRefresh(),
   // Areas and goals, which three surfaces now draw: the todo app's goals
   // pane, every purpose picker, and whatever the Overview has on it. One
   // reload for all of them, because there is one copy -- see `purpose`.
@@ -147,7 +228,16 @@ export const RELOAD = {
   // is under way the downloads are asked after again: that is what tells Up
   // Next a file has arrived. So is one that has been transcribed, or an
   // article written from it, and the list of background work is asked again.
-  feed: () => Promise.all([feed.refreshSources(), feed.reload(), upnext.storyChanged()]),
+  //
+  // The two halves only while the Feed is on screen: a background pass lands
+  // about once a minute, and a list of hundreds read again for a window
+  // showing something else is wasted. It reads both when it comes back. Up
+  // Next's half always, since the player draws it in every app.
+  feed: () =>
+    Promise.all([
+      onScreen('feed') ? Promise.all([feed.refreshSources(), feed.reload()]) : feed.markStale(),
+      upnext.storyChanged(),
+    ]),
   // Up Next changed in another window, or by something in the background: a
   // show's new episode put in it, a top-up from Recommended. Read again at
   // once -- the player moves on to whatever is next in it.
@@ -163,15 +253,16 @@ export const RELOAD = {
   // screen -- and only once the app has been opened since the vault did:
   // a year of reports nobody has asked for is not worth reading for a
   // sync that lands while somebody is writing in the journal. It reads
-  // fresh when it is opened.
-  money: () => (money.loaded ? money.reload() : undefined),
+  // fresh when it is opened. Nor while another app is on screen, for the
+  // same reason: it is marked stale and reads in full when it comes back.
+  money: () => (money.loaded && onScreen('money') ? money.reload() : money.markStale()),
   // A label or a category changed on another machine. Read again only
   // while Screen time is the app on screen, and only once it has been
-  // opened since the vault did: it reads fresh whenever it is opened, and
-  // nothing outside it draws a label but a goal's measure picker, which
-  // asks for its own.
+  // opened since the vault did: otherwise it is marked stale and reads in
+  // full when it is next opened, and nothing outside it draws a label but a
+  // goal's measure picker, which asks for its own.
   screentime: () =>
-    screentime.loaded && app.section === 'screentime' ? screentime.reload() : undefined,
+    screentime.loaded && onScreen('screentime') ? screentime.reload() : screentime.markStale(),
   // Heartbeats arriving -- every half minute from every machine while
   // anything is in use. A target of its own so it can be held to far less
   // than a label is: only while today is on screen, and at most once a
@@ -194,9 +285,9 @@ export const RELOAD = {
   // A medication, a condition, a lab result, a meal or a workout changed on
   // another machine, or a source was edited. Read again only while Health is
   // the app on screen, and only once it has been opened since the vault was:
-  // it reads fresh whenever it is opened, and what is on screen is the only
-  // thing it ever loads.
-  health: () => (health.loaded && app.section === 'health' ? health.reload() : undefined),
+  // otherwise it is marked stale and reads in full when it is next opened,
+  // and what is on screen is the only thing it ever loads.
+  health: () => (health.loaded && onScreen('health') ? health.reload() : health.markStale()),
   // Samples arriving -- every hour from a phone, and a batch at a time from
   // an import. A target of its own so it can be held to far less than a
   // record is: at most once a minute. See `health.samplesArrived`.
@@ -213,6 +304,20 @@ export const RELOAD = {
  * was a runtime assertion in `live.test.mjs`.
  */
 export type ReloadTarget = keyof typeof RELOAD
+
+// The briefs are routines too, and a run finishing is a brief arriving: the
+// Brief page and Settings → Briefs read again whenever a routine or a run
+// moves, once something has read them, whatever the assistant's own `apply`
+// on the same target does with the batch. Answering `true` leaves the
+// decision about the assistant's lists to that `apply` alone.
+registerApply(
+  'assistant',
+  () => {
+    if (briefs.loaded) void briefs.refresh()
+    return true
+  },
+  'briefs',
+)
 
 /**
  * The kinds that can carry a purpose, and so change what the reports say.
@@ -315,7 +420,8 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   routine: 'assistant',
   routineRun: 'assistant',
   // A background job, which writes often while it runs -- every tool call is
-  // a progress line. The 250 ms window above gathers those into one reload.
+  // a progress line. The 250 ms window above gathers those into one read of
+  // the job they name (see `jobs.svelte.ts`'s `apply`).
   job: 'jobs',
   // Work the assistant prepared. Drawn in several apps from one list, which
   // also holds half the count on the app bar -- see `proposals.svelte.ts`.
@@ -401,6 +507,16 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
 }
 
 /**
+ * Whether a change is the service's `mailbox`: a folder or label a sync pass
+ * met for the first time. No command declares it, so it is not in the
+ * generated `ChangeKind`, and it is compared as the plain string it arrives as.
+ */
+function isMailbox(kind: ChangeKind): boolean {
+  const name: string = kind
+  return name === 'mailbox'
+}
+
+/**
  * What one batch of changes should reload, once each.
  *
  * Its own function so the collapsing is testable without the stores: it is a
@@ -420,6 +536,11 @@ export function targetsFor(
   const targets = new Set(
     kinds.map((kind) => RELOADS[kind]).filter((t): t is ReloadTarget => t != null),
   )
+  // The one of those this window acts on: a sync pass that met a folder or
+  // label for the first time. A list reload does not read the mailboxes
+  // again, and the pass may never be seen mid-flight for `MailNav`'s falling
+  // edge to catch it.
+  if (kinds.some(isMailbox)) targets.add('mailboxes')
   // See `PURPOSE_BEARING`: these do not name the Overview and still change what
   // it says, but only matter while somebody is looking at it.
   if (overviewShowing && kinds.some((kind) => PURPOSE_BEARING.has(kind))) {
@@ -476,6 +597,8 @@ class Live {
   #timer: ReturnType<typeof setTimeout> | null = null
   #started = false
   #downTimer: ReturnType<typeof setTimeout> | null = null
+  /** The stream has dropped since it was last up, so changes may have been missed. */
+  #missed = false
 
   /**
    * Whether the computer holding the vault is being heard from. False only
@@ -492,11 +615,52 @@ class Live {
       if (this.#downTimer !== null) clearTimeout(this.#downTimer)
       this.#downTimer = null
       this.reachable = true
-    } else if (this.#downTimer === null && this.reachable) {
+      // Whatever changed while it was down was never announced, so nothing
+      // held may draw what it has: each reads in full on its way back, and
+      // the one on screen now.
+      if (this.#missed) {
+        this.#missed = false
+        for (const held of HELD) held.markStale()
+        this.#catchUp()
+      }
+      return
+    }
+    this.#missed = true
+    if (this.#downTimer === null && this.reachable) {
       this.#downTimer = setTimeout(() => {
         this.#downTimer = null
         this.reachable = false
       }, DOWN_MS)
+    }
+  }
+
+  /**
+   * A write this window made itself. The app it belongs to has drawn it
+   * already if that app is on screen; one that is not -- a reading logged
+   * from the Overview, a story read from the Brief page -- reads in full on
+   * its way back rather than drawing what it had, as it did when every
+   * visit read everything.
+   *
+   * The briefs too, which a visit no longer reads on a desktop window: a run
+   * removed from "What it did", or a brief switched on by this window's
+   * assistant, is a routine change this window would otherwise never hear.
+   * And a label this window's assistant made, which no list here has drawn.
+   */
+  #ownWrite(kind: ChangeKind) {
+    if (isMailbox(kind)) RELOAD.mailboxes()
+    const target = RELOADS[kind]
+    if (target == null) return
+    if (target === 'assistant' && briefs.loaded) void briefs.refresh()
+    for (const held of HELD) {
+      if (held.targets.includes(target) && !onScreen(held.section)) held.markStale()
+    }
+  }
+
+  /** Read again the held app on screen, if anything has marked it stale. */
+  #catchUp() {
+    if (app.screen !== 'main') return
+    for (const held of HELD) {
+      if (onScreen(held.section) && held.stale()) void held.start().catch(() => {})
     }
   }
 
@@ -511,9 +675,20 @@ class Live {
     this.#started = true
 
     onChange((change: ChangeEvent) => this.#note(change))
+    // A server never echoes a client's own writes back to it, so on a phone
+    // or a web tab this is how the Overview learns a card it drew went stale
+    // (on the desktop the change arrives on the stream too; marking twice is
+    // harmless).
+    onOwnWrite((kind) => overview.noteChange(kind))
     // Only a browser on web access has a stream of its own to watch; the
     // desktop shell's remote client would feed `setStream` from its own.
     onWebStream((up) => this.setStream(up))
+    // A window hidden in the tray holds the reloads of the app it shows, as
+    // an app off screen does (see `onScreen`); being shown again is when
+    // that app catches up.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') this.#catchUp()
+    })
     // The main window's alone, both of these: the shell raises the main
     // window for either, and a window of one app opening its palette as well,
     // behind it, would be a second palette nobody can see.
@@ -631,7 +806,14 @@ class Live {
     // server filters by device id before it sends, so what arrives here from
     // another machine is already somebody else's; this covers the case where
     // the vault is in this process and the sink is talking to itself.
-    if (change.origin === ownOrigin) return
+    // Overview keeps what it drew and refreshes only what a change made
+    // stale, so it hears every change, this window's own writes included
+    // (a task ticked in Todo must still move the Overview's card).
+    overview.noteChange(change.kind)
+    if (change.origin === ownOrigin) {
+      this.#ownWrite(change.kind)
+      return
+    }
     this.#pendingChanges.push(change)
     if (this.#timer !== null) return
     this.#timer = setTimeout(() => {

@@ -1,11 +1,11 @@
 //! The assistant's standing work: the routines, and the log of what they did.
 //!
 //! Eleven commands, and the only one worth reading is `run_routine`: it does not
-//! run anything. It writes a `Running` row with no slot and returns its id,
-//! and the scheduler picks it up on the next tick. That is not laziness -- it
-//! is what keeps "one run at a time" true. A command that ran the turn itself
-//! would let three impatient clicks start three model calls that race each
-//! other for the vault's single writer.
+//! run anything. It writes a `Queued` row with no slot, wakes the scheduler and
+//! returns the row, and the scheduler's loop takes it up between its ticks.
+//! That is not laziness -- it is what keeps "one run at a time" true. A
+//! command that ran the turn itself would let three impatient clicks start
+//! three model calls that race each other for the vault's single writer.
 
 use super::Nothing;
 use crate::command;
@@ -36,6 +36,11 @@ pub struct SaveRoutine {
 pub struct Runs {
     #[serde(default)]
     pub query: RunQuery,
+    /// Leave each brief's written parts and digest off: a list of runs never
+    /// draws them, and a brief's are most of the answer. `get_run` and the
+    /// briefs' own commands still give them.
+    #[serde(default)]
+    pub slim: bool,
 }
 
 #[derive(Deserialize)]
@@ -152,7 +157,7 @@ async fn delete_routine(svc: Arc<Service>, _ctx: Ctx, args: RoutineRef) -> Comma
 /// what keeps runs serial however many times somebody presses the button.
 async fn run_routine(svc: Arc<Service>, _ctx: Ctx, args: RoutineRef) -> CommandResult<RoutineRun> {
     let vault = svc.require()?;
-    blocking(move || {
+    let queued = blocking(move || {
         let routine = vault.routine(args.id)?;
         // Not twice. A second queued run of the same routine would be a second
         // model call for the same question, paid for twice.
@@ -164,11 +169,25 @@ async fn run_routine(svc: Arc<Service>, _ctx: Ctx, args: RoutineRef) -> CommandR
         vault.save_run(&run)?;
         Ok(run)
     })
-    .await
+    .await;
+    // Taken up now rather than at the next tick, up to a minute away.
+    if queued.is_ok() {
+        crate::scheduler::wake();
+    }
+    queued
 }
 
 async fn list_runs(svc: Arc<Service>, _ctx: Ctx, args: Runs) -> CommandResult<Vec<RoutineRun>> {
-    svc.on_vault(move |vault| vault.runs(&args.query)).await
+    svc.on_vault(move |vault| {
+        let mut runs = vault.runs(&args.query)?;
+        if args.slim {
+            for run in &mut runs {
+                run.brief = None;
+            }
+        }
+        Ok(runs)
+    })
+    .await
 }
 
 async fn get_run(svc: Arc<Service>, _ctx: Ctx, args: RunRef) -> CommandResult<RoutineRun> {
@@ -437,7 +456,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "list_runs", scope: Agent, effect: Read,
         args: Runs, returns: "RoutineRun[]",
-        signature: &[("query", "RunQuery", false)],
+        signature: &[("query", "RunQuery", false), ("slim", "boolean", false)],
         run: list_runs,
     },
     command! {

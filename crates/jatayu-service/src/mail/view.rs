@@ -42,16 +42,36 @@
 //! one the person chose.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use jatayu_core::Vault;
-use jatayu_core::id::MailMessageId;
+use jatayu_core::id::{BlobId, MailMessageId};
 use jatayu_core::mail::{Body, PartRef, RemoteImageSettings};
 use jatayu_core::media;
 
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::blocking;
+
+/// A blob's picture made smaller for a small slot (`?w=`), which both
+/// transports serve beside what this module answers, the way they share
+/// `Service::blob_range`. Made in `crate::covers`, which is not public.
+pub use crate::covers::{forget_scaled, scaled_blob, width_tier};
+
+/// `bytes` gzipped at `level` (0 to 9), for a transport compressing a text
+/// answer -- a rendered body, a command's JSON -- for a client on another
+/// machine. Here because this crate carries the encoder and the server does
+/// not. `None` only if the encoder fails, which writing to memory does not.
+pub fn gzip(bytes: &[u8], level: u32) -> Option<Vec<u8>> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::with_capacity(bytes.len() / 4),
+        flate2::Compression::new(level.min(9)),
+    );
+    encoder.write_all(bytes).ok()?;
+    encoder.finish().ok()
+}
 
 // ---- the document -----------------------------------------------------------
 
@@ -611,6 +631,14 @@ pub(crate) fn placeholder_pixel() -> PartResponse {
     PartResponse { content_type: "image/png".to_string(), bytes, attachment: false, filename: None }
 }
 
+/// Are `bytes` the pixel a refused picture is answered with ([`remote_image`],
+/// and the Feed's twin)? What a client that keeps pictures it was sent checks,
+/// so a refusal never stands in for the real picture once it is allowed.
+pub fn is_placeholder(bytes: &[u8]) -> bool {
+    static PIXEL: LazyLock<Vec<u8>> = LazyLock::new(|| placeholder_pixel().bytes);
+    bytes == PIXEL.as_slice()
+}
+
 /// Answers an `jatayu://mail/img/{token}` request (or the server's
 /// equivalent) for `message_id`.
 ///
@@ -670,21 +698,100 @@ enum Ready {
     Fetch { url: String },
 }
 
+/// What a shared fetch hands everyone who asked: the picture, and whether it is
+/// still being kept -- when it is, whoever keeps it lets the fetch go once the
+/// body says where it is, so nobody fetches it again in between.
+#[derive(Clone)]
+pub(crate) struct Fetched {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) keeping: bool,
+}
+
 /// A fetch somebody has started, shared with whoever else asks while it is out.
 /// The frame asks for a message's pictures, and so does the window working out how
 /// tall the frame should be, usually in the same moment. The sender's server should
 /// see one request, and the same answer goes to both, a failure included. Held
-/// only while the fetch is out.
-type SharedFetch = Arc<tokio::sync::OnceCell<CommandResult<Vec<u8>>>>;
-static FETCHING: LazyLock<Mutex<HashMap<(MailMessageId, String), SharedFetch>>> =
+/// while the fetch is out and, after one that brought a picture, until the
+/// picture is kept.
+pub(crate) type SharedFetch = Arc<tokio::sync::OnceCell<CommandResult<Fetched>>>;
+pub(crate) type Fetches<K> = Mutex<HashMap<K, SharedFetch>>;
+static FETCHING: LazyLock<Fetches<(MailMessageId, String)>> = LazyLock::new(Mutex::default);
+
+/// Join the fetch out for `key`, or start one with `fetch` -- which is handed
+/// the shared fetch, to let go of once what it brought is kept. Let go here
+/// otherwise: after a failure, or a picture somebody else had kept already.
+pub(crate) async fn shared_fetch<K, F, Fut>(
+    fetches: &Fetches<K>,
+    key: K,
+    fetch: F,
+) -> CommandResult<Vec<u8>>
+where
+    K: Clone + Eq + Hash,
+    F: FnOnce(SharedFetch) -> Fut,
+    Fut: Future<Output = CommandResult<Fetched>>,
+{
+    let shared = fetches.lock().unwrap().entry(key.clone()).or_default().clone();
+    let outcome = shared.get_or_init(|| fetch(shared.clone())).await.clone();
+    if !matches!(outcome, Ok(Fetched { keeping: true, .. })) {
+        let_go(fetches, &key, &shared);
+    }
+    outcome.map(|fetched| fetched.bytes)
+}
+
+/// Forget the fetch for `key`, unless a newer one has already taken its place.
+pub(crate) fn let_go<K: Eq + Hash>(fetches: &Fetches<K>, key: &K, shared: &SharedFetch) {
+    let mut fetches = fetches.lock().unwrap();
+    if fetches.get(key).is_some_and(|held| Arc::ptr_eq(held, shared)) {
+        fetches.remove(key);
+    }
+}
+
+/// Pictures put in the blob store and waiting to be written into the body that
+/// names them. A body is read, changed and saved whole, so two pictures of one
+/// message saved apart would each forget the other was kept: they are written
+/// one body at a time, and whatever of one body's arrived meanwhile in the
+/// same write -- one read and one save for a newsletter's worth, not one each.
+pub(crate) struct Keeping<K> {
+    waiting: Mutex<HashMap<K, Vec<(String, BlobId)>>>,
+    turn: tokio::sync::Mutex<()>,
+}
+
+impl<K: Copy + Eq + Hash> Keeping<K> {
+    pub(crate) fn new() -> Self {
+        Self { waiting: Mutex::default(), turn: tokio::sync::Mutex::const_new(()) }
+    }
+
+    /// Note that the picture `token` names under `key` is `blob`, and, on this
+    /// caller's turn, have `write` write everything waiting for `key` (on the
+    /// blocking pool). Returns once `token` is written, by this caller or one
+    /// whose turn came first -- or that write failed.
+    pub(crate) async fn keep(
+        &self,
+        key: K,
+        token: String,
+        blob: BlobId,
+        write: impl FnOnce(Vec<(String, BlobId)>) -> CommandResult<()> + Send + 'static,
+    ) -> CommandResult<()> {
+        self.waiting.lock().unwrap().entry(key).or_default().push((token, blob));
+        let _turn = self.turn.lock().await;
+        let batch = self.waiting.lock().unwrap().remove(&key).unwrap_or_default();
+        if batch.is_empty() {
+            return Ok(());
+        }
+        blocking(move || write(batch)).await
+    }
+}
+
+static KEEPING: LazyLock<Keeping<MailMessageId>> = LazyLock::new(Keeping::new);
+
+/// Messages whose pictures a test is holding back from being kept, to look at
+/// what happens in between.
+#[cfg(test)]
+static HELD: LazyLock<Mutex<std::collections::HashSet<MailMessageId>>> =
     LazyLock::new(Mutex::default);
 
-/// One at a time, because a body is read, changed and saved whole: two pictures of
-/// one message arriving together would otherwise each forget the other was cached.
-static CACHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// The fetch itself, and storing what it brought. Looks once more first: this may
-/// have been decided on just as somebody else's fetch finished.
+/// The fetch itself. Looks once more first: this may have been decided on just as
+/// somebody else's fetch was kept.
 async fn fetch_once(
     vault: &Arc<Vault>,
     client: &reqwest::Client,
@@ -692,7 +799,8 @@ async fn fetch_once(
     token: &str,
     url: String,
     allow_loopback: bool,
-) -> CommandResult<Vec<u8>> {
+    shared: SharedFetch,
+) -> CommandResult<Fetched> {
     let cached = {
         let vault = vault.clone();
         let token = token.to_string();
@@ -706,24 +814,55 @@ async fn fetch_once(
         .await?
     };
     if let Some(bytes) = cached {
-        return Ok(bytes);
+        return Ok(Fetched { bytes, keeping: false });
     }
     let fetched = fetch_remote_image(client, &url, allow_loopback).await?;
-    let _caching = CACHING.lock().await;
+    keep_later(vault, message_id, token.to_string(), fetched.clone(), shared);
+    Ok(Fetched { bytes: fetched, keeping: true })
+}
+
+/// Keep a fetched picture -- into the blob store, then into its message's body
+/// -- and only then let its fetch go. Behind the response rather than in front
+/// of it: the picture is shown as soon as it arrives, and the writing, a body's
+/// read and save and the fsyncs of both, follows. Best effort: a vault that
+/// cannot be written still showed the picture, and pays for it next time.
+fn keep_later(
+    vault: &Arc<Vault>,
+    message_id: MailMessageId,
+    token: String,
+    bytes: Vec<u8>,
+    shared: SharedFetch,
+) {
     let vault = vault.clone();
-    let cache = fetched.clone();
-    let token = token.to_string();
-    blocking(move || {
-        let blob = vault.put_blob(&cache)?;
-        let mut body = vault.body(message_id)?;
-        if let Some(entry) = body.remote_images.iter_mut().find(|r| r.token == token) {
-            entry.cached_blob = Some(blob);
+    tokio::spawn(async move {
+        #[cfg(test)]
+        while HELD.lock().unwrap().contains(&message_id) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        vault.save_body(&body)?;
-        Ok(())
-    })
-    .await?;
-    Ok(fetched)
+        let kept = async {
+            let stored = vault.clone();
+            let blob = blocking(move || Ok(stored.put_blob(&bytes)?)).await?;
+            KEEPING
+                .keep(message_id, token.clone(), blob, move |batch| {
+                    let mut body = vault.body(message_id)?;
+                    for (token, blob) in batch {
+                        if let Some(entry) =
+                            body.remote_images.iter_mut().find(|r| r.token == token)
+                        {
+                            entry.cached_blob = Some(blob);
+                        }
+                    }
+                    vault.save_body(&body)?;
+                    Ok(())
+                })
+                .await
+        }
+        .await;
+        if let Err(e) = kept {
+            tracing::info!(error = %e, "could not keep a message's picture");
+        }
+        let_go(&FETCHING, &(message_id, token), &shared);
+    });
 }
 
 async fn remote_image_inner(
@@ -758,19 +897,10 @@ async fn remote_image_inner(
         Ready::Placeholder => return Ok(placeholder_pixel()),
         Ready::Cached(bytes) => bytes,
         Ready::Fetch { url } => {
-            let key = (message_id, token.to_string());
-            let shared = FETCHING.lock().unwrap().entry(key.clone()).or_default().clone();
-            let outcome = shared
-                .get_or_init(|| fetch_once(vault, client, message_id, token, url, allow_loopback))
-                .await
-                .clone();
-            {
-                let mut fetching = FETCHING.lock().unwrap();
-                if fetching.get(&key).is_some_and(|held| Arc::ptr_eq(held, &shared)) {
-                    fetching.remove(&key);
-                }
-            }
-            outcome?
+            shared_fetch(&FETCHING, (message_id, token.to_string()), |shared| {
+                fetch_once(vault, client, message_id, token, url, allow_loopback, shared)
+            })
+            .await?
         }
     };
 
@@ -1456,8 +1586,8 @@ mod tests {
 
         assert_eq!(first.unwrap().bytes, second.unwrap().bytes);
         assert_eq!(server.hits(), 1);
+        kept(id).await;
         assert!(vault.body(id).unwrap().remote_images[0].cached_blob.is_some());
-        assert!(FETCHING.lock().unwrap().keys().all(|(message, _)| *message != id));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1476,6 +1606,7 @@ mod tests {
 
         assert!(first.is_err() && second.is_err());
         assert_eq!(server.hits(), 1);
+        // Nothing to keep, so let go at once.
         assert!(FETCHING.lock().unwrap().keys().all(|(message, _)| *message != id));
     }
 
@@ -1508,8 +1639,78 @@ mod tests {
             served.unwrap();
         }
 
+        kept(id).await;
         let body = vault.body(id).unwrap();
         assert!(body.remote_images.iter().all(|r| r.cached_blob.is_some()));
+    }
+
+    /// Keeping a picture -- the blob's fsync, the body's read and save -- is
+    /// behind the response, not in front of it; and while it is under way, a
+    /// picture asked for again joins the fetch that brought it rather than
+    /// going back to the sender's server.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pictures_are_answered_before_they_are_kept_and_fetched_once_all_the_same() {
+        let server = spawn_test_image_server().await;
+        let (_dir, vault) = test_vault();
+        let vault = Arc::new(vault);
+        let url = format!("http://{}/x.png", server.addr);
+        let (id, token) = seeded_with_remote_image(&vault, "a@example.com", &url);
+        let mut body = vault.body(id).unwrap();
+        for other in 0..9 {
+            body.remote_images.push(RemoteImage {
+                original_url: format!("{url}?{other}"),
+                token: format!("tok{other}"),
+                cached_blob: None,
+            });
+        }
+        vault.save_body(&body).unwrap();
+        let client = http::client().unwrap();
+        let tokens: Vec<String> =
+            std::iter::once(token).chain((0..9).map(|n| format!("tok{n}"))).collect();
+
+        HELD.lock().unwrap().insert(id);
+        let asked = tokens
+            .iter()
+            .map(|t| remote_image_allowing_loopback_for_test(&vault, client, id, t, true));
+        for served in futures::future::join_all(asked).await {
+            assert_eq!(served.unwrap().content_type, "image/png");
+        }
+        assert_eq!(server.hits(), 10, "ten pictures, one request each");
+        assert!(
+            vault.body(id).unwrap().remote_images.iter().all(|r| r.cached_blob.is_none()),
+            "answered before any of them was kept"
+        );
+        // Asked again while they are still being kept: no second request.
+        let again = remote_image_allowing_loopback_for_test(&vault, client, id, &tokens[3], true);
+        assert_eq!(again.await.unwrap().content_type, "image/png");
+        assert_eq!(server.hits(), 10);
+
+        HELD.lock().unwrap().remove(&id);
+        kept(id).await;
+        assert!(vault.body(id).unwrap().remote_images.iter().all(|r| r.cached_blob.is_some()));
+        for t in &tokens {
+            remote_image_allowing_loopback_for_test(&vault, client, id, t, true).await.unwrap();
+        }
+        assert_eq!(server.hits(), 10, "kept pictures are not fetched again");
+    }
+
+    /// Until every picture of `id` that was fetched has been kept: its fetches
+    /// are let go only once the body says where the picture is.
+    async fn kept(id: MailMessageId) {
+        for _ in 0..1000 {
+            if FETCHING.lock().unwrap().keys().all(|(message, _)| *message != id) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("the pictures of {id} were never kept");
+    }
+
+    #[test]
+    fn only_the_refusal_pixel_is_the_placeholder() {
+        assert!(is_placeholder(&placeholder_pixel().bytes));
+        assert!(!is_placeholder(b"\x89PNG\r\n\x1a\n"));
+        assert!(!is_placeholder(&[]));
     }
 
     // ---- a tiny local HTTP server, for the fetch tests above -------------

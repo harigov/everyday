@@ -74,6 +74,11 @@ const {
   followUpAccountLine,
   followUpHint,
   followUpStall,
+  sectioner,
+  unreadTargets,
+  mailAccountKey,
+  sameJson,
+  reuseRows,
 } = mailLib
 
 function person(name, email) {
@@ -634,6 +639,73 @@ assert.equal(
   )
   assert.equal(isSnoozedMailbox(row('snoozed')), true, 'the unified Snoozed is a Snoozed view')
   assert.equal(isSnoozedMailbox(row('inbox')), false)
+
+  // What `mail_unread_badges` is asked: one target per row, reading what
+  // that row lists.
+  const targets = unreadTargets([...BOTH, row('inbox'), row('snoozed')], BOTH)
+  assert.deepEqual(
+    targets.find((t) => t.key === unifiedMailboxId('inbox')),
+    { key: unifiedMailboxId('inbox'), mailboxes: ['a1-inbox', 'a2-inbox'], snoozed: false },
+    'the unified Inbox asks for its members',
+  )
+  assert.deepEqual(
+    targets.find((t) => t.key === unifiedMailboxId('snoozed')),
+    { key: unifiedMailboxId('snoozed'), mailboxes: ['a1-inbox', 'a2-inbox'], snoozed: true },
+    'the unified Snoozed for their snoozed threads',
+  )
+  assert.deepEqual(
+    targets.find((t) => t.key === 'a1-sent'),
+    { key: 'a1-sent', mailboxes: ['a1-sent'], snoozed: false },
+    'an ordinary mailbox for itself',
+  )
+  assert.equal(targets.length, BOTH.length + 2, 'one per row')
+}
+
+// ── Which accounts the mailboxes were read for ──────────────────────────
+
+{
+  const account = (id, mail, status = 'active') => ({
+    id,
+    services: { mail },
+    status: { type: status },
+  })
+  const key = mailAccountKey([account('b', true), account('a', true), account('c', false)])
+  assert.equal(
+    key,
+    mailAccountKey([account('a', true), account('b', true)]),
+    'mail only, any order',
+  )
+  assert.notEqual(key, mailAccountKey([account('a', true)]), 'an account gone moves it')
+  assert.notEqual(
+    key,
+    mailAccountKey([account('a', true), account('b', true, 'needsSignIn')]),
+    'and so does one needing to sign in again',
+  )
+}
+
+// ── Reloads that change nothing redraw nothing ──────────────────────────
+
+{
+  assert.equal(sameJson({ a: [1, { b: null }] }, { a: [1, { b: null }] }), true)
+  assert.equal(sameJson({ a: 1 }, { a: 1, b: undefined }), false, 'a key missing is a difference')
+  assert.equal(sameJson([1, 2], [2, 1]), false)
+  assert.equal(sameJson(null, {}), false)
+
+  const row = (id, unreadCount = 0) => ({ id, subject: id, unreadCount })
+  const drawn = [row('t1'), row('t2'), row('t3')]
+  assert.equal(
+    reuseRows([row('t1'), row('t2'), row('t3')], drawn),
+    drawn,
+    'the same rows again: the list already drawn',
+  )
+  const changed = reuseRows([row('t1'), row('t2', 1), row('t3')], drawn)
+  assert.notEqual(changed, drawn)
+  assert.equal(changed[0], drawn[0], 'an unchanged row is the one already drawn')
+  assert.notEqual(changed[1], drawn[1], 'a changed one is new')
+  assert.equal(changed[2], drawn[2])
+  const moved = reuseRows([row('t2'), row('t1'), row('t3')], drawn)
+  assert.notEqual(moved, drawn, 'a new order is a new list')
+  assert.equal(moved[0], drawn[1], 'of the same rows')
 }
 
 // ── Sync status ─────────────────────────────────────────────────────────
@@ -865,6 +937,59 @@ assert.deepEqual(
   { key: 'thisWeek', label: 'Earlier this week' },
   'Tuesday the 15th, in the week (Mon 14th -) "now" itself is in',
 )
+
+// `sectioner` works the boundaries out once for a whole list, and says what
+// working out each row's calendar days used to: checked across two years of
+// instants and every midnight near the boundaries, against "now"s on a
+// Monday, late on a Sunday, the first and last of a month, New Year's Day
+// and the clock changes of Europe and North America.
+{
+  const day = (at) => new Date(at.getFullYear(), at.getMonth(), at.getDate())
+  const before = (instant, now) => {
+    const d = day(new Date(instant))
+    const today = day(now)
+    const ago = Math.round((today.getTime() - d.getTime()) / 86_400_000)
+    if (ago <= 0) return 'today'
+    if (ago === 1) return 'yesterday'
+    const thisWeekStart = new Date(today)
+    thisWeekStart.setDate(thisWeekStart.getDate() - ((now.getDay() + 6) % 7))
+    if (d >= thisWeekStart) return 'thisWeek'
+    const lastWeekStart = new Date(thisWeekStart)
+    lastWeekStart.setDate(lastWeekStart.getDate() - 7)
+    if (d >= lastWeekStart) return 'lastWeek'
+    if (d >= new Date(now.getFullYear(), now.getMonth(), 1)) return 'thisMonth'
+    if (d >= new Date(now.getFullYear(), now.getMonth() - 1, 1)) return 'lastMonth'
+    return `${d.getFullYear()}-${d.getMonth()}`
+  }
+  const nows = [
+    '2026-09-14T10:00:00',
+    '2026-09-13T23:30:00',
+    '2026-03-01T08:00:00',
+    '2026-03-31T22:00:00',
+    '2026-01-01T00:10:00',
+    '2026-03-08T12:00:00',
+    '2026-03-29T12:00:00',
+    '2026-10-25T12:00:00',
+    '2026-11-01T12:00:00',
+  ].map((at) => new Date(at))
+  let seed = 7
+  const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+  const from = new Date('2025-01-01T00:00:00').getTime()
+  const span = new Date('2027-01-01T00:00:00').getTime() - from
+  for (const now of nows) {
+    const sectionOf = sectioner(now)
+    const instants = Array.from({ length: 400 }, () =>
+      new Date(from + Math.floor(random() * span)).toISOString(),
+    )
+    for (let d = -70; d <= 2; d++) {
+      const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + d)
+      instants.push(midnight.toISOString(), new Date(midnight.getTime() - 1).toISOString())
+    }
+    for (const instant of instants) {
+      assert.equal(sectionOf(instant).key, before(instant, now), `${instant} from ${now}`)
+    }
+  }
+}
 
 // `withDateSections` interleaves one heading per run, not one per row --
 // reusing `thread()` from the keyset-paging tests above for its rows.

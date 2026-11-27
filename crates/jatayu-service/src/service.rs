@@ -758,6 +758,8 @@ impl Service {
         self.money.on_lock();
         // A brief is the vault's own facts -- mail, notes, who somebody is.
         self.meeting_briefs.clear();
+        // Scaled copies of covers and pictures, held in memory in the clear.
+        crate::covers::forget_scaled();
         self.token_cache.clear().await;
         // The assistant's browsers: whatever a page has open in one is part
         // of a conversation the key no longer unlocks.
@@ -1046,8 +1048,12 @@ impl Service {
         // called anyway.
         self.meetings.on_lock();
         self.meeting_briefs.clear();
+        crate::covers::forget_scaled();
         self.supervisor().stop_all().await;
         self.close_mail();
+        // An index open that began a moment ago holds the vault until it is
+        // done; the vault must be let go before this returns.
+        let _ = tokio::task::spawn_blocking(crate::mail::sync::wiring::wait_for_opens).await;
         self.documents.close();
         self.mail.on_lock();
         self.listen_briefings.lock().unwrap().clear();

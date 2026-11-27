@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use jatayu_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 35;
+pub const SCHEMA_VERSION: i64 = 36;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -124,6 +124,35 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v33(d),
         v34(),
         v35(d),
+        v36(),
+    ]
+}
+
+/// Version 36: two indexes mail's hot reads were missing. Nothing in the
+/// clear that was not already.
+///
+/// - `mail_messages_by_account_date`: one account's messages by date --
+///   `messages_between`, which the Feed's newsletters, the Overview's mail
+///   cards and keep-in-touch read a window of, walked every message of the
+///   account and sorted it. It replaces `mail_messages_by_account`, every one
+///   of whose questions (`account_id = ?`, the account cascade among them) its
+///   first column answers.
+/// - `threads_by_id_snooze_cat`: what a thread list asks of each row it
+///   joins -- not snoozed, of a category -- answered from the index, so a
+///   row that does not qualify is passed over without reading the sealed
+///   thread beside it, and category counts never read a thread at all. The
+///   order of the columns is what lets the planner use it for both.
+///
+/// Additive but for the index it replaces.
+fn v36() -> Vec<String> {
+    vec![
+        "CREATE INDEX IF NOT EXISTS mail_messages_by_account_date \
+         ON mail_messages (account_id, date_us)"
+            .into(),
+        "DROP INDEX IF EXISTS mail_messages_by_account".into(),
+        "CREATE INDEX IF NOT EXISTS threads_by_id_snooze_cat \
+         ON threads (id, snoozed_until_us, category)"
+            .into(),
     ]
 }
 

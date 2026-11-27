@@ -359,6 +359,8 @@ import type {
   TxnPage,
   TxnPatch,
   TxnQuery,
+  UnreadBadge,
+  UnreadTarget,
   UnsubscribeOffer,
   UnsubscribeOutcome,
   UploadTicket,
@@ -774,7 +776,7 @@ export interface Commands {
   listRecordings: { args: { query?: RecordingQuery }; result: Recording[] }
   listRemoteImageAllowances: { args: Record<string, never>; result: RemoteImageSettings }
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
-  listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
+  listRuns: { args: { query?: RunQuery; slim?: boolean }; result: RoutineRun[] }
   listScreenApps: { args: Record<string, never>; result: ScreenAppRow[] }
   listScreenCategories: { args: Record<string, never>; result: ScreenCategory[] }
   listScreenDevices: { args: Record<string, never>; result: ScreenDevice[] }
@@ -834,6 +836,7 @@ export interface Commands {
   mailActivity: { args: { from: string; to: string; tz?: string }; result: MailActivity }
   mailFollowUps: { args: { account?: AccountId | null }; result: FollowUpList }
   mailSorting: { args: Record<string, never>; result: MailSortingView }
+  mailUnreadBadges: { args: { targets: UnreadTarget[] }; result: UnreadBadge[] }
   mailWriting: { args: Record<string, never>; result: MailWriting }
   markAllStoriesRead: { args: { sources: NewsSourceId[]; upTo: string }; result: StoryId[] }
   markJobsSeen: { args: { ids?: JobId[] }; result: void }
@@ -1565,6 +1568,7 @@ export const COMMAND_NAMES = {
   mailActivity: 'mail_activity',
   mailFollowUps: 'mail_follow_ups',
   mailSorting: 'mail_sorting',
+  mailUnreadBadges: 'mail_unread_badges',
   mailWriting: 'mail_writing',
   markAllStoriesRead: 'mark_all_stories_read',
   markJobsSeen: 'mark_jobs_seen',
@@ -2165,6 +2169,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'mail_activity',
   'mail_follow_ups',
   'mail_sorting',
+  'mail_unread_badges',
   'mail_writing',
   'mark_all_stories_read',
   'mark_jobs_seen',

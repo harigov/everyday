@@ -235,14 +235,16 @@ class NotesState {
    */
   async start() {
     if (!app.supportsNotes) return
-    // See `todo.start` for why this is idempotent and safe to ask twice.
-    if (!proposals.loaded) await proposals.refresh()
+    // See `todo.start` for why this is idempotent and safe to ask twice, and
+    // why it loads beside the list rather than ahead of it.
+    const ghosts = proposals.loaded ? null : proposals.refresh()
     this.loading = true
     try {
       await this.refresh()
     } finally {
       this.loading = false
     }
+    await ghosts
   }
 
   /**

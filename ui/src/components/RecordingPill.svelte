@@ -180,7 +180,10 @@
     height: 7px;
     border-radius: 50%;
     background: var(--danger);
-    animation: pulse 1.6s ease-in-out infinite;
+    /* A few pulses as it appears, then steady: the clock beside it ticks for
+       as long as it records, and a dot pulsing for an hour beside it was
+       redrawn every frame to say the same thing. */
+    animation: pulse 1.6s ease-in-out 4;
   }
   @media (prefers-reduced-motion: reduce) {
     .dot {

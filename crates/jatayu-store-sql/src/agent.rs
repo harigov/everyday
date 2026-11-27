@@ -40,6 +40,16 @@ use crate::conn::{SqlExt, ToValue, Value};
 use crate::record::Record;
 use crate::{SqlStore, to_us, vals};
 
+/// A conversation's write: `created_us` is left alone on conflict.
+const PUT_CONVERSATION: &str = "INSERT INTO conversations (id, created_us, updated_us, data)
+     VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT (id) DO UPDATE SET updated_us = ?3, data = ?4";
+
+/// A message's write: only `data` moves on conflict.
+const PUT_MESSAGE: &str = "INSERT INTO messages (id, conversation_id, created_us, data)
+     VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT (id) DO UPDATE SET data = ?4";
+
 impl Record for Conversation {
     const TABLE: &'static str = "conversations";
 
@@ -182,9 +192,7 @@ impl AgentStore for SqlStore {
         // rewrites every column `Record::columns` names. See the module docs.
         let data = self.seal(&conversation_aad(c.id), c)?;
         self.write().execute(
-            "INSERT INTO conversations (id, created_us, updated_us, data)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (id) DO UPDATE SET updated_us = ?3, data = ?4",
+            PUT_CONVERSATION,
             &vals![c.id.to_string(), to_us(c.created_at), to_us(c.updated_at), data],
         )?;
         Ok(())
@@ -227,12 +235,43 @@ impl AgentStore for SqlStore {
         // module docs.
         let data = self.seal(&message_aad(m.id), m)?;
         self.write().execute(
-            "INSERT INTO messages (id, conversation_id, created_us, data)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (id) DO UPDATE SET data = ?4",
+            PUT_MESSAGE,
             &vals![m.id.to_string(), m.conversation_id.to_string(), to_us(m.created_at), data],
         )?;
         Ok(())
+    }
+
+    fn put_messages_touching(
+        &self,
+        messages: &[Message],
+        touched: Option<&Conversation>,
+    ) -> Result<()> {
+        // Sealed before the writer is taken, which mail's ingest shares: it
+        // is held only for the writes, and they cost one commit -- one sync
+        // to disk -- however many rows there are.
+        let messages: Vec<(&Message, Vec<u8>)> = messages
+            .iter()
+            .map(|m| Ok((m, self.seal(&message_aad(m.id), m)?)))
+            .collect::<Result<_>>()?;
+        let touched = match touched {
+            Some(c) => Some((c, self.seal(&conversation_aad(c.id), c)?)),
+            None => None,
+        };
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        for (m, data) in messages {
+            tx.execute(
+                PUT_MESSAGE,
+                &vals![m.id.to_string(), m.conversation_id.to_string(), to_us(m.created_at), data],
+            )?;
+        }
+        if let Some((c, data)) = touched {
+            tx.execute(
+                PUT_CONVERSATION,
+                &vals![c.id.to_string(), to_us(c.created_at), to_us(c.updated_at), data],
+            )?;
+        }
+        tx.commit()
     }
 
     fn delete_message(&self, id: MessageId) -> Result<()> {

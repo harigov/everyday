@@ -67,6 +67,8 @@ use jatayu_core::news::{BodyOrigin, Enclosure};
 use jiff::Timestamp;
 use serde::Serialize;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{Notify, watch};
 
 /// The supervisor key of the one refresher task.
 pub const TASK_KEY: &str = "news";
@@ -80,6 +82,9 @@ pub struct Listening {
     pub ranker: rank::Ranker,
     pub transcripts: transcribe::Transcripts,
     pub audio: audio::AudioJobs,
+    /// Somebody opening the Feed, for the tasks still waiting out their first
+    /// delay after an unlock. See [`first_wait`].
+    pub opened: FeedOpened,
 }
 
 impl Listening {
@@ -89,6 +94,57 @@ impl Listening {
         self.ranker.clear();
         self.transcripts.clear();
         self.audio.clear();
+    }
+}
+
+/// When somebody last opened the Feed, and a ring for whatever is waiting on
+/// that to start.
+#[derive(Default)]
+pub struct FeedOpened {
+    at: std::sync::Mutex<Option<tokio::time::Instant>>,
+    ring: Notify,
+}
+
+impl FeedOpened {
+    /// Somebody has opened the Feed: the tasks still waiting to start, start.
+    pub fn now(&self) {
+        *self.at.lock().unwrap() = Some(tokio::time::Instant::now());
+        self.ring.notify_waiters();
+    }
+}
+
+/// Wait `delay` before one of the Feed's tasks takes its first look after an
+/// unlock, so mail has the disk to itself for its own first look -- files,
+/// documents and backups wait for the same reason. Cut short by somebody
+/// opening the Feed, and by `also`, the task's own wake. Answers whether the
+/// task was told to stop meanwhile.
+pub(crate) async fn first_wait(
+    svc: &Service,
+    stop: &mut watch::Receiver<bool>,
+    delay: Duration,
+    also: Option<&Notify>,
+) -> bool {
+    let opened = &svc.listening.opened;
+    // Listening before looking, so an opening between the two is not lost.
+    let ring = opened.ring.notified();
+    tokio::pin!(ring);
+    ring.as_mut().enable();
+    // Opened just before this task began, as the window it was open in came
+    // back up with the vault.
+    if opened.at.lock().unwrap().is_some_and(|at| at.elapsed() < delay) {
+        return *stop.borrow();
+    }
+    let own = async {
+        match also {
+            Some(wake) => wake.notified().await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        () = tokio::time::sleep(delay) => false,
+        () = &mut ring => false,
+        () = own => false,
+        changed = stop.changed() => changed.is_err() || *stop.borrow(),
     }
 }
 
@@ -250,4 +306,61 @@ pub fn ensure_task(svc: &Arc<Service>, vault: &Arc<Vault>) {
             }
         })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LONG: Duration = Duration::from_secs(60);
+
+    /// Polls `waiting` for a second of paused time, failing if it finishes.
+    async fn still_waiting(
+        waiting: &mut std::pin::Pin<&mut impl std::future::Future<Output = bool>>,
+    ) {
+        tokio::select! {
+            stopped = waiting.as_mut() => panic!("finished before anything happened: {stopped}"),
+            () = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_first_wait_ends_when_the_feed_is_opened_and_not_before() {
+        let svc = Service::new();
+        let (_tx, mut stop) = watch::channel(false);
+        let started = tokio::time::Instant::now();
+        {
+            let waiting = first_wait(&svc, &mut stop, LONG, None);
+            tokio::pin!(waiting);
+            still_waiting(&mut waiting).await;
+            svc.listening.opened.now();
+            assert!(!waiting.await, "opened, not stopped");
+        }
+        assert!(started.elapsed() < LONG);
+        // Opened a moment before the task began: it does not wait at all.
+        let again = tokio::time::Instant::now();
+        assert!(!first_wait(&svc, &mut stop, LONG, None).await);
+        assert_eq!(again.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_first_wait_runs_its_course_or_ends_on_its_own_wake_or_a_stop() {
+        let svc = Service::new();
+        let (tx, mut stop) = watch::channel(false);
+        let started = tokio::time::Instant::now();
+        assert!(!first_wait(&svc, &mut stop, LONG, None).await);
+        assert!(started.elapsed() >= LONG, "nobody opened the Feed, so the whole delay");
+
+        let wake = Notify::new();
+        wake.notify_one();
+        let woken = tokio::time::Instant::now();
+        assert!(!first_wait(&svc, &mut stop, LONG, Some(&wake)).await);
+        assert!(woken.elapsed() < LONG, "an episode asked for does not wait");
+
+        let waiting = first_wait(&svc, &mut stop, LONG, None);
+        tokio::pin!(waiting);
+        still_waiting(&mut waiting).await;
+        tx.send(true).unwrap();
+        assert!(waiting.await, "told to stop, and says so");
+    }
 }

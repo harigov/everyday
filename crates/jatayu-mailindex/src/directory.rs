@@ -403,11 +403,9 @@ impl Directory for SealedDirectory {
             return Ok(Arc::new(OwnedBytes::new(bytes)));
         }
 
-        if let Some(cached) = {
-            let mut cache = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner());
-            cache.get(path)
-        } {
-            return Ok(Arc::new(OwnedBytes::new(cached)));
+        let cached = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner()).get(path);
+        if let Some(cached) = cached {
+            return Ok(cached);
         }
 
         let sealed = std::fs::read(&full).map_err(|e| {
@@ -422,12 +420,13 @@ impl Directory for SealedDirectory {
             .cipher
             .open(&file_aad(path), &sealed)
             .map_err(|_| decrypt_failed_err(path))?;
-        let plain: Arc<[u8]> = Arc::from(plain);
-        {
-            let mut cache = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner());
-            cache.insert(path.to_path_buf(), Arc::clone(&plain));
-        }
-        Ok(Arc::new(OwnedBytes::new(plain)))
+        drop(sealed);
+        // The plaintext `Vec` becomes the shared buffer as it is, rather
+        // than being copied into an `Arc<[u8]>` first: on a whole index that
+        // second copy was as large as the index itself.
+        let plain = OwnedBytes::new(plain);
+        let mut cache = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(cache.insert(path.to_path_buf(), plain))
     }
 
     fn delete(&self, path: &Path) -> Result<(), DeleteError> {

@@ -64,7 +64,8 @@ async fn save_profile(svc: Arc<Service>, _ctx: Ctx, args: SaveProfile) -> Comman
 }
 
 async fn status(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<VaultStatus> {
-    Ok(svc.require()?.status())
+    let vault = svc.require()?;
+    blocking(move || Ok(vault.status())).await
 }
 
 async fn unlock(svc: Arc<Service>, _ctx: Ctx, args: Unlock) -> CommandResult<VaultStatus> {
@@ -84,7 +85,14 @@ async fn unlock(svc: Arc<Service>, _ctx: Ctx, args: Unlock) -> CommandResult<Vau
         Ok::<_, CommandError>(())
     })
     .await?;
+    // Inline, as before: what it does is quick now that mail's index opens
+    // in the background, and the tasks it starts announce themselves in an
+    // order a reply that waited on another thread would no longer pin.
     svc.unlocked();
+    // Answered here rather than from the blocking pool: it is two counts
+    // now, and a reply that waited on another thread would let the tasks
+    // `unlocked` just started announce themselves before it, in no fixed
+    // order.
     Ok(vault.status())
 }
 

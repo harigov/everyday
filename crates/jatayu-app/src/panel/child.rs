@@ -63,7 +63,14 @@ pub const CHILD_FLAG: &str = "--panel";
 const READY_WAIT: Duration = Duration::from_secs(10);
 
 /// How long the child stays, hidden, after the last card goes.
-const KEEP_HIDDEN: Duration = Duration::from_secs(10 * 60);
+///
+/// A working day: new mail and the next meeting are usually more than a few
+/// minutes apart, and a child started afresh for each is most of a second --
+/// more when XWayland has to start too -- before the card is seen. Hidden
+/// with no cards it draws nothing and runs no timers; what it costs is the
+/// memory of a webview, which the system can page out. One that dies while
+/// hidden is started again with the next card, as one let go would be.
+const KEEP_HIDDEN: Duration = Duration::from_secs(8 * 60 * 60);
 
 /// How long the child outlives its stdin after a Copy button was pressed on
 /// it, holding the clipboard.

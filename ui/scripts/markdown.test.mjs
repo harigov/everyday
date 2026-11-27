@@ -18,7 +18,7 @@
 // face as the prose around it. Each of those is one regex away at all times.
 //
 // The streaming cases are third and are their own hazard. The panel renders
-// a reply on every chunk, so it renders half a document constantly -- a
+// a reply as it streams, so it renders half a document constantly -- a
 // fence that has not closed, a list mid-item. Well-formed HTML out of
 // malformed Markdown in is the contract.
 //
@@ -350,6 +350,134 @@ renders('if a <u and b> c', '<p>if a &lt;u and b&gt; c</p>', 'nor is an angle br
   assert.ok(html.includes('<code>Home</code>'), html)
   assert.ok(html.includes('<blockquote><p>You asked about this on Tuesday.</p></blockquote>'), html)
   assert.ok(html.includes('<pre><code class="language-sh">jatayu search rain</code></pre>'), html)
+}
+
+// ── A block at a time ─────────────────────────────────────────────────
+//
+// A streaming reply is drawn block by block, so finished paragraphs keep
+// their nodes. Joined, the blocks must be exactly the whole render, at every
+// length the stream passes through: a fence still open, a loose list, a
+// table arriving a line at a time, a lazy quote. And `MarkdownStream`, which
+// reads again only near the end of a growing text, must give exactly the
+// blocks a fresh read does -- whatever size the pieces arrive in.
+
+{
+  const { MarkdownStream, renderMarkdownBlocks } = markdown
+  const samples = [
+    [
+      "Here's what I found:",
+      '',
+      '1. **Three tasks** are overdue',
+      '2. One is in `Home`',
+      '',
+      '> You asked about this on Tuesday.',
+      'and again on Friday',
+      '',
+      '```sh',
+      'jatayu search rain',
+      '',
+      'jatayu list',
+      '```',
+      '',
+      '- first',
+      '',
+      '- second, after a gap',
+      '  continued under it',
+      '',
+      '| Day | Rain |',
+      '| --- | ---: |',
+      '| Mon | 4 mm |',
+      '| Tue | none |',
+      '',
+      '# Next',
+      '---',
+      '    indented code',
+      '',
+      '    more of it',
+      'A [link](https://example.com/a?b=1&c=2), *some* **emphasis** and',
+      'a [file](files:0e3f1c2a-1b2c-4d5e-8f90-123456789abc).',
+    ].join('\n'),
+    'foo\na | b\n|---|---\n| 1 | 2 |\nbar',
+    '* one\n* two\n\n\n1. three\n2) four',
+    // A list that turns loose items later, code that runs on past a blank
+    // line, a quote with a lazy line, a table under a paragraph, and the
+    // line endings and tabs `prepare` rewrites.
+    [
+      'Intro line',
+      '',
+      '- a',
+      '- b',
+      '',
+      '',
+      '- c, which makes it loose',
+      '',
+      'Between',
+      '',
+      '    code one',
+      '',
+      '',
+      '    code two',
+      'After the code',
+      '> quoted',
+      'lazily continued',
+      '',
+      'para',
+      'x | y',
+      '|---|---|',
+      '| 1 | 2 |',
+      '',
+      '1. one',
+      '   nested under it',
+      '   - deeper',
+      '2. two',
+      'end',
+    ].join('\n'),
+    'one\r\ntwo\r\n\r\n- a\r\n\tindented by a tab\r\n\r\nthree',
+  ]
+  for (const sample of samples) {
+    for (let n = 0; n <= sample.length; n++) {
+      const prefix = sample.slice(0, n)
+      const blocks = renderMarkdownBlocks(prefix)
+      assert.equal(blocks.join(''), renderMarkdown(prefix), `prefix ${n} of ${sample.slice(0, 20)}`)
+      assert.ok(
+        blocks.every((html) => html.startsWith('<')),
+        `every block is markup: ${blocks}`,
+      )
+    }
+  }
+  assert.deepEqual(renderMarkdownBlocks(''), [])
+  assert.deepEqual(renderMarkdownBlocks('one\n\ntwo'), ['<p>one</p>', '<p>two</p>'])
+
+  // A character at a time, and in pieces of any size: a small fixed-seed
+  // generator, so a failure names a size that can be run again.
+  let seed = 7
+  const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648)
+  for (const sample of samples) {
+    const one = new MarkdownStream()
+    for (let n = 0; n <= sample.length; n++) {
+      const prefix = sample.slice(0, n)
+      assert.deepEqual(one.render(prefix), renderMarkdownBlocks(prefix), `streamed to ${n}`)
+    }
+    for (let round = 0; round < 20; round++) {
+      const stream = new MarkdownStream()
+      let n = 0
+      while (n < sample.length) {
+        n = Math.min(sample.length, n + 1 + (next() % 40))
+        const prefix = sample.slice(0, n)
+        assert.deepEqual(stream.render(prefix), renderMarkdownBlocks(prefix), `pieces to ${n}`)
+      }
+    }
+  }
+
+  // Text that is not the last with more on the end -- a retry starting over,
+  // a reply cut to what was heard -- is read whole.
+  const stream = new MarkdownStream()
+  stream.render(samples[0])
+  assert.deepEqual(stream.render('Again: one\n\ntwo'), ['<p>Again: one</p>', '<p>two</p>'])
+  const head = samples[0].slice(0, 200)
+  assert.deepEqual(stream.render(head), renderMarkdownBlocks(head))
+  assert.deepEqual(stream.render(''), [])
+  assert.deepEqual(stream.render('back'), ['<p>back</p>'])
 }
 
 await close()

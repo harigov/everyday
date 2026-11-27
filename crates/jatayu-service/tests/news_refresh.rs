@@ -597,12 +597,41 @@ async fn eventually(what: &str, check: impl Fn() -> bool) {
     panic!("gave up waiting for {what}");
 }
 
+/// What the Feed asks for first when it opens. The loop waits a little after
+/// an unlock before its first pass, unless somebody does this; the loop's
+/// tests are about the passes, so each opens the Feed first. Locked or not:
+/// the asking is what counts.
+async fn open_the_feed(svc: &Arc<Service>) {
+    let _ = svc
+        .call(jatayu_service::ctx::Ctx::local(), "list_news_sources", serde_json::json!({}))
+        .await;
+}
+
+#[tokio::test]
+async fn the_loop_waits_after_an_unlock_until_somebody_opens_the_feed() {
+    let fx = fixture();
+    let server = Server::start(|_| rss(&THREE)).await;
+    fx.follow("Blog", server.url("/feed.xml"));
+
+    let (stop, stopped) = watch::channel(false);
+    let task = tokio::spawn(refresh::run(fx.svc.clone(), fx.vault.clone(), stopped));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(server.requests().is_empty(), "the first pass waits for mail's first look");
+
+    open_the_feed(&fx.svc).await;
+    eventually("the first refresh", || fx.events.count(Kind::Story, Op::Created) == 1).await;
+    assert_eq!(server.requests().len(), 1);
+    stop.send(true).unwrap();
+    task.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn the_loop_refreshes_what_is_due_and_stops_when_it_is_told_to() {
     let fx = fixture();
     let server = Server::start(|_| rss(&THREE)).await;
     let source = fx.follow("Blog", server.url("/feed.xml"));
 
+    open_the_feed(&fx.svc).await;
     let (stop, stopped) = watch::channel(false);
     let task = tokio::spawn(refresh::run(fx.svc.clone(), fx.vault.clone(), stopped));
 
@@ -628,6 +657,7 @@ async fn the_loop_does_not_ask_a_paused_source() {
     source.paused = true;
     fx.vault.save_news_source(&source).unwrap();
 
+    open_the_feed(&fx.svc).await;
     let (stop, stopped) = watch::channel(false);
     let task = tokio::spawn(refresh::run(fx.svc.clone(), fx.vault.clone(), stopped));
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -644,6 +674,7 @@ async fn a_failure_in_the_loop_reaches_a_person_who_may_not_be_looking() {
     let server = Server::start(|_| Reply::status(500)).await;
     fx.follow("Blog", server.url("/feed.xml"));
 
+    open_the_feed(&fx.svc).await;
     let (stop, stopped) = watch::channel(false);
     let task = tokio::spawn(refresh::run(fx.svc.clone(), fx.vault.clone(), stopped));
     eventually("the notification", || !fx.events.notices().is_empty()).await;
@@ -675,6 +706,8 @@ async fn a_locked_vault_is_a_reason_to_wait_and_not_to_fail() {
     let vault = svc.require().unwrap();
     vault.lock();
 
+    // Past the first wait, so it is the locked pass that waits.
+    open_the_feed(&svc).await;
     let (stop, stopped) = watch::channel(false);
     let task = tokio::spawn(refresh::run(svc.clone(), vault.clone(), stopped));
     tokio::time::sleep(Duration::from_millis(300)).await;

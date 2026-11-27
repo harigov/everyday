@@ -25,12 +25,13 @@ use jatayu_core::mail::{
 };
 use jatayu_core::packstore::PackRef;
 use jatayu_core::store::mail::{
-    CategoryCount, IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad,
+    CategoryCount, IngestMessage, LocalChange, MailStore, ThreadFilter, ThreadPage, body_aad,
     category_rules_aad, contacts_aad, draft_aad, draft_blob_refs_of, mail_sorting_aad,
     mail_writing_aad, mailbox_aad, message_aad, op_aad, remote_image_settings_aad,
     voice_learning_aad,
 };
 use jiff::Timestamp;
+use std::collections::HashSet;
 
 use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
 use crate::record::Record;
@@ -159,6 +160,51 @@ impl MailStore for SqlStore {
         write::update_flags(self, mailbox, uid, flags)
     }
 
+    fn update_flags_many(&self, mailbox: MailboxId, changes: &[(u32, MessageFlags)]) -> Result<()> {
+        write::update_flags_many(self, mailbox, changes)
+    }
+
+    fn stored_flags(
+        &self,
+        mailbox: MailboxId,
+        uids: &[u32],
+    ) -> Result<std::collections::HashMap<u32, MessageFlags>> {
+        // The clear `flags` column is `MessageFlags::bits`, written beside
+        // the sealed copy by every upsert, so nothing needs decrypting.
+        const SELECT: &str = "SELECT mm.uid, m.flags FROM message_mailboxes mm \
+             JOIN mail_messages m ON m.id = mm.message_id";
+        let mut out = std::collections::HashMap::with_capacity(uids.len());
+        let mut keep = |rows: Vec<crate::conn::Row>, wanted: Option<&HashSet<u32>>| -> Result<()> {
+            for r in rows {
+                let uid = r.i64(0)? as u32;
+                if wanted.is_none_or(|w| w.contains(&uid)) {
+                    let flags = MessageFlags::from_bits(r.i64(1)?);
+                    out.entry(uid).or_insert(flags);
+                }
+            }
+            Ok(())
+        };
+        if uids.len() > STORED_FLAGS_WHOLE_MAILBOX {
+            // Most of the mailbox, as a server without `CONDSTORE` reports
+            // it: one walk of it beats a hundred `IN` lists.
+            let wanted: HashSet<u32> = uids.iter().copied().collect();
+            let rows = self.read().query(
+                &format!("{SELECT} WHERE mm.mailbox_id = ?1"),
+                &vals![mailbox.to_string()],
+            )?;
+            keep(rows, Some(&wanted))?;
+        } else {
+            for chunk in uids.chunks(write::IN_CHUNK) {
+                let (where_sql, args) = Where::new()
+                    .eq("mm.mailbox_id", mailbox.to_string())
+                    .in_list("mm.uid", chunk.iter().map(|&uid| i64::from(uid)))
+                    .finish();
+                keep(self.read().query(&format!("{SELECT} WHERE {where_sql}"), &args)?, None)?;
+            }
+        }
+        Ok(out)
+    }
+
     fn update_labels(&self, mailbox: MailboxId, uid: u32, labels: Vec<String>) -> Result<()> {
         write::update_labels(self, mailbox, uid, labels)
     }
@@ -202,6 +248,28 @@ impl MailStore for SqlStore {
         threads::threads_listed(self, mailboxes, filter, threads)
     }
 
+    fn listed_unread(
+        &self,
+        lists: &[(MailboxId, ThreadFilter)],
+        limit: u32,
+    ) -> Result<Vec<Vec<(ThreadId, u32)>>> {
+        threads::listed_unread(self, lists, limit)
+    }
+
+    fn list_thread_keys(
+        &self,
+        mailbox: MailboxId,
+        filter: &ThreadFilter,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<jatayu_core::store::mail::ThreadKeyPage> {
+        threads::list_thread_keys(self, mailbox, filter, cursor, limit)
+    }
+
+    fn threads_by_ids(&self, ids: &[ThreadId]) -> Result<Vec<Thread>> {
+        threads::threads_by_ids(self, ids)
+    }
+
     fn threads_in_category(
         &self,
         account: AccountId,
@@ -230,6 +298,19 @@ impl MailStore for SqlStore {
 
     fn get_message(&self, id: MailMessageId) -> Result<Message> {
         self.get(id)
+    }
+
+    fn thread_of(&self, id: MailMessageId) -> Result<Option<ThreadId>> {
+        let row = self.read().query_opt(
+            "SELECT thread_id FROM mail_messages WHERE id = ?1",
+            &vals![id.to_string()],
+        )?;
+        row.map(|r| {
+            r.text(0)?.parse().map_err(|e: <ThreadId as std::str::FromStr>::Err| {
+                jatayu_core::error::Error::Invalid(e.to_string())
+            })
+        })
+        .transpose()
     }
 
     // ---- bodies ------------------------------------------------------------
@@ -309,6 +390,16 @@ impl MailStore for SqlStore {
             "SELECT id, data FROM drafts WHERE account_id = ?1 AND state IN ('editing', 'queued') \
              ORDER BY updated_us DESC",
             &vals![account.to_string()],
+        )?;
+        Ok(self.collect(rows, draft_aad)?.into_iter().map(current_scheme).collect())
+    }
+
+    fn list_live_drafts(&self, account: AccountId, sent_since: Timestamp) -> Result<Vec<Draft>> {
+        let rows = self.read().records(
+            "SELECT id, data FROM drafts WHERE account_id = ?1 \
+             AND (state IN ('editing', 'queued') OR (state = 'sent' AND updated_us >= ?2)) \
+             ORDER BY updated_us DESC",
+            &vals![account.to_string(), to_us(sent_since)],
         )?;
         Ok(self.collect(rows, draft_aad)?.into_iter().map(current_scheme).collect())
     }
@@ -541,6 +632,35 @@ impl MailStore for SqlStore {
         .transpose()
     }
 
+    fn keyed_thread(
+        &self,
+        account: AccountId,
+        key: &str,
+    ) -> Result<Option<(MailMessageId, Option<ThreadId>)>> {
+        let row = self.read().query_opt(
+            "SELECT k.message_id, m.thread_id FROM mail_message_keys k \
+             LEFT JOIN mail_messages m ON m.id = k.message_id \
+             WHERE k.account_id = ?1 AND k.key = ?2",
+            &vals![account.to_string(), key.to_string()],
+        )?;
+        let invalid = |e: String| jatayu_core::error::Error::Invalid(e);
+        row.map(|r| {
+            let message: MailMessageId = r
+                .text(0)?
+                .parse()
+                .map_err(|e: <MailMessageId as std::str::FromStr>::Err| invalid(e.to_string()))?;
+            let thread = r
+                .opt_text(1)?
+                .map(|t| {
+                    t.parse::<ThreadId>()
+                        .map_err(|e: <ThreadId as std::str::FromStr>::Err| invalid(e.to_string()))
+                })
+                .transpose()?;
+            Ok((message, thread))
+        })
+        .transpose()
+    }
+
     fn put_message_keys(&self, account: AccountId, keys: &[(String, MailMessageId)]) -> Result<()> {
         if keys.is_empty() {
             return Ok(());
@@ -559,6 +679,31 @@ impl MailStore for SqlStore {
             )?;
         }
         tx.commit()
+    }
+
+    fn forget_dead_message_key(&self, account: AccountId, key: &str) -> Result<()> {
+        self.write().execute(
+            "DELETE FROM mail_message_keys WHERE account_id = ?1 AND key = ?2 \
+             AND NOT EXISTS (SELECT 1 FROM mail_messages m \
+                             WHERE m.id = mail_message_keys.message_id)",
+            &vals![account.to_string(), key.to_string()],
+        )?;
+        Ok(())
+    }
+
+    fn prune_dead_message_keys(&self, account: AccountId, above: u64) -> Result<u64> {
+        const DEAD: &str = "FROM mail_message_keys WHERE account_id = ?1 \
+             AND NOT EXISTS (SELECT 1 FROM mail_messages m \
+                             WHERE m.id = mail_message_keys.message_id)";
+        let dead = self
+            .read()
+            .scalar_i64(&format!("SELECT COUNT(*) {DEAD}"), &vals![account.to_string()])?;
+        let dead = u64::try_from(dead).unwrap_or(0);
+        if dead <= above {
+            return Ok(0);
+        }
+        self.write().execute(&format!("DELETE {DEAD}"), &vals![account.to_string()])?;
+        Ok(dead)
     }
 
     fn account_keyed(&self, account: AccountId) -> Result<bool> {
@@ -658,9 +803,17 @@ impl MailStore for SqlStore {
         // docs name -- see `MailStore::pending_bodies` -- so this is a
         // query over `mail_messages`' clear columns, exactly like
         // `uid_set` above, not a decrypt of every row `mailbox` has.
+        //
+        // `CROSS JOIN` fixes the join order on SQLite: down the partial
+        // `mail_messages_pending_bodies` index, newest first, probing each
+        // pending message's membership here. Left to itself the planner walks
+        // every message the mailbox holds -- all of All Mail, on Gmail, on
+        // every pass -- and sorts what is left. A settled mailbox has nothing
+        // in that index, so asking costs nothing. Postgres reads it as the
+        // inner join it is and plans by its own statistics.
         let mut sql = "SELECT m.id, mm.uid, m.data FROM mail_messages m
-             JOIN message_mailboxes mm ON mm.message_id = m.id
-             WHERE mm.mailbox_id = ?1 AND m.pack_len = 0"
+             CROSS JOIN message_mailboxes mm
+             WHERE mm.message_id = m.id AND mm.mailbox_id = ?1 AND m.pack_len = 0"
             .to_string();
         self.page(&mut sql, "m.date_us DESC", Some(limit), 0);
         let rows = self.read().query(&sql, &vals![mailbox.to_string()])?;
@@ -778,6 +931,10 @@ impl MailStore for SqlStore {
 
     fn hide_and_enqueue(&self, mailbox: MailboxId, ops: &[Op]) -> Result<()> {
         write::hide_and_enqueue(self, mailbox, ops)
+    }
+
+    fn apply_and_enqueue(&self, changes: &[LocalChange], ops: &[Op]) -> Result<()> {
+        write::apply_and_enqueue(self, changes, ops)
     }
 
     fn set_thread_snoozed_until(&self, thread: ThreadId, until: Option<Timestamp>) -> Result<()> {
@@ -942,20 +1099,32 @@ impl MailStore for SqlStore {
     // ---- garbage collection --------------------------------------------------
 
     fn attachment_blob_refs(&self) -> Result<Vec<BlobId>> {
-        let rows = self.read().records("SELECT message_id, data FROM bodies", &[])?;
+        // A page of bodies at a time, by key, each dropped before the next is
+        // read: the table is gigabytes, and reading it whole held every body
+        // in memory at once.
         let mut out = Vec::new();
-        for (id, data) in rows {
-            let mid: MailMessageId =
-                id.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
-                    jatayu_core::error::Error::Invalid(e.to_string())
-                })?;
-            let body: Body = self.unseal(&body_aad(mid), &data)?;
-            out.extend(body.parts.into_iter().filter_map(|p| p.blob));
-            // A remote image cached the first time it was allowed is a blob
-            // held by this body and nothing else.
-            out.extend(body.remote_images.into_iter().filter_map(|r| r.cached_blob));
+        let mut after = String::new();
+        loop {
+            let mut sql = "SELECT message_id, data FROM bodies WHERE message_id > ?1".to_string();
+            self.page(&mut sql, "message_id ASC", Some(BLOB_REFS_PAGE), 0);
+            let rows = self.read().records(&sql, &vals![after.clone()])?;
+            let last_page = rows.len() < BLOB_REFS_PAGE as usize;
+            for (id, data) in rows {
+                let mid: MailMessageId =
+                    id.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                        jatayu_core::error::Error::Invalid(e.to_string())
+                    })?;
+                let body: Body = self.unseal(&body_aad(mid), &data)?;
+                out.extend(body.parts.into_iter().filter_map(|p| p.blob));
+                // A remote image cached the first time it was allowed is a blob
+                // held by this body and nothing else.
+                out.extend(body.remote_images.into_iter().filter_map(|r| r.cached_blob));
+                after = id;
+            }
+            if last_page {
+                return Ok(out);
+            }
         }
-        Ok(out)
     }
 
     fn draft_blob_refs(&self) -> Result<Vec<BlobId>> {
@@ -1073,6 +1242,18 @@ impl MailStore for SqlStore {
         write::correct_categories(self, account, corrections)
     }
 
+    fn message_ids(&self, account: AccountId) -> Result<Vec<MailMessageId>> {
+        write::message_ids(self, account)
+    }
+
+    fn correct_categories_in(
+        &self,
+        ids: &[MailMessageId],
+        corrections: &[(CategoryMatch, Category)],
+    ) -> Result<u32> {
+        write::correct_categories_in(self, ids, corrections)
+    }
+
     // ---- sorting by a decision model -------------------------------------
 
     fn mail_sorting(&self) -> Result<MailSorting> {
@@ -1134,6 +1315,13 @@ impl MailStore for SqlStore {
         write::sort_message(self, id, category, sorted_as)
     }
 }
+
+/// How many bodies [`MailStore::attachment_blob_refs`] holds at once.
+const BLOB_REFS_PAGE: u32 = 200;
+
+/// Past this many uids, [`MailStore::stored_flags`] reads the mailbox's whole
+/// list once rather than in `IN` chunks.
+const STORED_FLAGS_WHOLE_MAILBOX: usize = 2_000;
 
 /// A draft written before the rename names the old scheme in its HTML; every
 /// reader gets the current one. See `jatayu_core::legacy::current_scheme`.

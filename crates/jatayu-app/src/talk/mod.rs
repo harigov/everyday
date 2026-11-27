@@ -714,6 +714,7 @@ fn begin(app: &AppHandle, how: Begin) {
     queue_draw(app, &mut live);
     set_live(app, &mut inner, Some(live));
     drop(inner);
+    hurry_ready(app);
     tauri::async_runtime::spawn(open(app.clone(), seq, conversation, said));
     tauri::async_runtime::spawn(watch_idle(app.clone(), seq));
 }
@@ -1123,12 +1124,22 @@ pub fn on_lock_state(app: &AppHandle, locked: bool) {
     } else {
         let config = load_config();
         if config.enabled && config.keep_ready {
-            want_ready(app);
+            want_ready_after_unlock(app);
         }
     }
 }
 
 // ---- keeping the speech models ready -------------------------------------------
+
+/// How long after an unlock the speech models are left on disk before they are
+/// loaded without being asked for: by keeping them ready here, or by the wake
+/// word's listening ([`crate::wake`]). An unlock is when the first screen reads
+/// the vault, and a gigabyte of recogniser and voice read in beside it slows
+/// that down for something nobody is using yet. Not for a recogniser that is
+/// still in memory, which costs nothing to pick up, and never for the talk key
+/// itself: pressed sooner than this, it loads what it needs on the spot, and
+/// what is kept ready starts loading with it ([`hurry_ready`]).
+pub(crate) const SETTLE_AFTER_UNLOCK: Duration = Duration::from_secs(8);
 
 /// The models held ready, and which asking they answer.
 struct Ready {
@@ -1136,9 +1147,12 @@ struct Ready {
     /// that was still under way when it was given up is let go on arrival.
     generation: u64,
     held: Option<SpeechReady>,
+    /// Wanted, and put off for a moment after an unlock
+    /// ([`want_ready_after_unlock`]).
+    waiting: bool,
 }
 
-static READY: Mutex<Ready> = Mutex::new(Ready { generation: 0, held: None });
+static READY: Mutex<Ready> = Mutex::new(Ready { generation: 0, held: None, waiting: false });
 
 fn ready() -> MutexGuard<'static, Ready> {
     READY.lock().unwrap_or_else(|e| e.into_inner())
@@ -1151,6 +1165,7 @@ fn want_ready(app: &AppHandle) {
     let generation = {
         let mut ready = ready();
         ready.generation += 1;
+        ready.waiting = false;
         ready.generation
     };
     let app = app.clone();
@@ -1174,11 +1189,59 @@ fn want_ready(app: &AppHandle) {
     });
 }
 
+/// [`want_ready`], once the vault has been open for [`SETTLE_AFTER_UNLOCK`] --
+/// at once if the recogniser is still in memory. Given up if anything about
+/// readiness changed meanwhile: a lock, or Settings asking or letting go,
+/// whose word then stands.
+fn want_ready_after_unlock(app: &AppHandle) {
+    if jatayu_service::speech::ready::recogniser_resident() {
+        want_ready(app);
+        return;
+    }
+    let asked = {
+        let mut ready = ready();
+        ready.waiting = true;
+        ready.generation
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(SETTLE_AFTER_UNLOCK).await;
+        let now = {
+            let mut ready = ready();
+            if ready.generation == asked {
+                ready.waiting = false;
+            }
+            ready.generation
+        };
+        let unlocked = app.state::<AppState>().service().get().is_some_and(|v| v.is_unlocked());
+        if still_wanted(asked, now, &load_config(), unlocked) {
+            want_ready(&app);
+        }
+    });
+}
+
+/// Whether readiness asked for at generation `asked` is still wanted at `now`.
+fn still_wanted(asked: u64, now: u64, config: &Config, unlocked: bool) -> bool {
+    asked == now && config.enabled && config.keep_ready && unlocked
+}
+
+/// A conversation begun while what is kept ready waits out
+/// [`SETTLE_AFTER_UNLOCK`]: it is wanted now, beside what the conversation
+/// loads for itself -- the recogniser then loads while the voice does, rather
+/// than after it.
+fn hurry_ready(app: &AppHandle) {
+    let waiting = ready().waiting;
+    if waiting {
+        want_ready(app);
+    }
+}
+
 /// Let go of the models, and of any load still under way.
 fn drop_ready() {
     let held = {
         let mut ready = ready();
         ready.generation += 1;
+        ready.waiting = false;
         ready.held.take()
     };
     drop(held);
@@ -1301,6 +1364,19 @@ mod tests {
     use super::*;
     use crate::panel::Tone;
     use key::{Act, Posture};
+
+    #[test]
+    fn models_wanted_ready_after_an_unlock_are_given_up_on_a_lock_or_a_change_meanwhile() {
+        let on = Config { enabled: true, keep_ready: true, ..Config::default() };
+        assert!(still_wanted(4, 4, &on, true));
+        // Locked meanwhile: `drop_ready` moved the generation on, and the
+        // vault says so too.
+        assert!(!still_wanted(4, 5, &on, true));
+        assert!(!still_wanted(4, 4, &on, false));
+        // Switched off in Settings meanwhile.
+        assert!(!still_wanted(4, 4, &Config { keep_ready: false, ..on.clone() }, true));
+        assert!(!still_wanted(4, 4, &Config { enabled: false, ..on }, true));
+    }
 
     fn live(posture: Posture, now: Instant) -> Live {
         let mut card = card::State::new();

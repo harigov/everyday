@@ -305,7 +305,7 @@ async fn forget_deleted(
     })
     .await;
     match removed {
-        Ok(removed) => forget_removed(svc, &removed),
+        Ok(removed) => forget_removed(svc, removed).await,
         Err(e) => {
             tracing::warn!(error = %e, "deleted for good, but could not take it out of the vault yet");
         }
@@ -313,27 +313,33 @@ async fn forget_deleted(
 }
 
 /// What [`Vault::remove_mail_uids`](jatayu_core::Vault::remove_mail_uids)
-/// made dead, out of the pack store and the search index too.
-fn forget_removed(
+/// made dead, out of the pack store and the search index too -- on the
+/// blocking pool, since marking a frame dead syncs a file and an index
+/// commit writes a segment and reloads the reader.
+async fn forget_removed(
     svc: &Arc<Service>,
-    removed: &[(MailMessageId, jatayu_core::packstore::PackRef)],
+    removed: Vec<(MailMessageId, jatayu_core::packstore::PackRef)>,
 ) {
     if removed.is_empty() {
         return;
     }
     let (packs, index) = (svc.packs(), svc.mail_index());
-    if let Some(packs) = packs {
-        let refs: Vec<_> = removed.iter().map(|(_, r)| r.clone()).collect();
-        if let Err(e) = packs.mark_dead(&refs) {
-            tracing::warn!(error = %e, "could not mark a deleted message's pack frame dead");
+    let _ = blocking(move || {
+        if let Some(packs) = packs {
+            let refs: Vec<_> = removed.iter().map(|(_, r)| r.clone()).collect();
+            if let Err(e) = packs.mark_dead(&refs) {
+                tracing::warn!(error = %e, "could not mark a deleted message's pack frame dead");
+            }
         }
-    }
-    if let Some(index) = index {
-        let keys: Vec<String> = removed.iter().map(|(id, _)| id.to_string()).collect();
-        if let Err(e) = index.delete(&keys).and_then(|()| index.commit()) {
-            tracing::warn!(error = %e, "could not remove a deleted message from the search index");
+        if let Some(index) = index {
+            let keys: Vec<String> = removed.iter().map(|(id, _)| id.to_string()).collect();
+            if let Err(e) = index.delete(&keys).and_then(|()| index.commit()) {
+                tracing::warn!(error = %e, "could not remove a deleted message from the search index");
+            }
         }
-    }
+        Ok(())
+    })
+    .await;
 }
 
 /// Whether `op` can go to the server in one command with its neighbours:
@@ -744,7 +750,7 @@ async fn on_success(
                 Ok(removed)
             })
             .await?;
-            forget_removed(svc, &removed);
+            forget_removed(svc, removed).await;
             Ok(())
         }
     }
@@ -1031,7 +1037,7 @@ async fn forget_sent_copy(svc: &Arc<Service>, vault: &Arc<jatayu_core::Vault>, i
     })
     .await;
     match removed {
-        Ok(removed) => forget_removed(svc, &removed),
+        Ok(removed) => forget_removed(svc, removed).await,
         Err(e) => tracing::warn!(error = %e, draft = %id, "could not forget a sent draft's copy"),
     }
 }

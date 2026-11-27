@@ -51,13 +51,29 @@
   const suggestions = $derived(block.suggestions ?? [])
   const ready = $derived(draft.trim() !== '' && !locked)
 
-  // Grow with what is in the box. Read after the box has its new text.
+  /** What the box was last sized for. */
+  let fitted: { box: HTMLTextAreaElement | null; draft: string; width: number } = {
+    box: null,
+    draft: '',
+    width: 0,
+  }
+
+  // Grow with what is in the box. Read after the box has its new text. Text
+  // added at the end can only add lines, so the box is let go to measure its
+  // own height only when something was taken out or changed, or the box is
+  // new or another width -- not on every key.
   $effect(() => {
-    void draft
+    const text = draft
     const el = box
     if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(TALLEST, el.scrollHeight)}px`
+    const width = el.clientWidth
+    const was = fitted
+    fitted = { box: el, draft: text, width }
+    if (el !== was.box || width !== was.width || !text.startsWith(was.draft)) {
+      el.style.height = 'auto'
+    }
+    const height = `${Math.min(TALLEST, el.scrollHeight)}px`
+    if (el.style.height !== height) el.style.height = height
   })
 
   function keydown(event: KeyboardEvent) {

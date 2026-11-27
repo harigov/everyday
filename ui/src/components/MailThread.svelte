@@ -228,6 +228,55 @@
 
   type LoadedBody = { html: string; imagesHidden: boolean }
   let bodies = $state<Map<string, LoadedBody | 'loading' | 'error'>>(new Map())
+
+  /** How many bodies of messages no longer in the pane are kept, so `k` back
+   *  to the thread before draws at once. The rest go: this component lives as
+   *  long as Mail does, a whole day in a window of its own. */
+  const KEPT_BODIES = 24
+
+  // Bodies of threads left behind, beyond the last `KEPT_BODIES`, are let go
+  // -- the oldest first. `bodies` untracked: a load is no reason to look.
+  $effect(() => {
+    const here = new Set(messages.map((m) => m.id))
+    untrack(() => {
+      const others = [...bodies.keys()].filter((id) => !here.has(id))
+      if (others.length <= KEPT_BODIES) return
+      const drop = new Set(others.slice(0, others.length - KEPT_BODIES))
+      bodies = new Map([...bodies].filter(([id]) => !drop.has(id)))
+    })
+  })
+
+  /**
+   * Each body as drawn, by what drawing it depends on -- the theme, whether
+   * its history is open, the subject it is folded against -- so the thread
+   * read afresh after a sync pass, which hands over new copies of the same
+   * messages, does not run every open body through `renderBody` again. Kept
+   * with the loaded body itself, so it goes when that does; a few looks each.
+   * Anything `renderBody` comes to depend on belongs in the key.
+   */
+  const views = new WeakMap<LoadedBody, Map<string, RenderedBody>>()
+
+  function viewOf(loaded: LoadedBody, subject: string, showHistory: boolean): RenderedBody {
+    const frame = app.frame
+    const key = `${dark ? 1 : 0}|${frame.card}|${frame.text}|${showHistory ? 1 : 0}|${subject}`
+    let seen = views.get(loaded)
+    if (!seen) {
+      seen = new Map()
+      views.set(loaded, seen)
+    }
+    const drawn = seen.get(key)
+    if (drawn) return drawn
+    const view = renderBody(loaded.html, {
+      dark,
+      frame,
+      showHistory,
+      subject,
+      imagesHidden: loaded.imagesHidden,
+    })
+    if (seen.size >= 4) seen.delete(seen.keys().next().value as string)
+    seen.set(key, view)
+    return view
+  }
   /** The messages whose folded history has been opened by hand. */
   let historyOpen = $state<Set<string>>(new Set())
   /** The messages whose full addresses have been asked for. */
@@ -367,6 +416,9 @@
     return `${day} · ${formatInstantTime(invite.start)}–${formatInstantTime(invite.end)}`
   }
 
+  /** See `autoSize`'s `resized`. */
+  const RESIZE_EVERY_MS = 110
+
   /** Sizes the one iframe inside `node`, from its body string and never from
    *  what the iframe renders -- see the top of this file -- and again when the
    *  pane changes width, which rewraps everything in it, or a picture arrives,
@@ -378,19 +430,39 @@
     let heightAt = measureBody(view)
     const pictures: PictureSizes = new Map()
     let sizedAt = -1
+    let appliedAt = -Infinity
+    let trailing: ReturnType<typeof setTimeout> | null = null
     function apply() {
       const width = node.clientWidth
       if (!iframe || width === sizedAt) return
       sizedAt = width
+      appliedAt = performance.now()
       iframe.style.height = `${heightAt(width)}px`
     }
     function again() {
       sizedAt = -1
       apply()
     }
+    // A width change laid out at once, and then no more than every
+    // `RESIZE_EVERY_MS` while it keeps changing -- a divider dragged, a window
+    // resized -- with the width it ends on always laid out last. Working out a
+    // designed newsletter's height again is several milliseconds, and the
+    // pane moves every frame of a drag.
+    function resized() {
+      if (node.clientWidth === sizedAt) return
+      if (performance.now() - appliedAt > RESIZE_EVERY_MS) {
+        apply()
+        return
+      }
+      if (trailing) return
+      trailing = setTimeout(() => {
+        trailing = null
+        apply()
+      }, RESIZE_EVERY_MS)
+    }
     let stopReading = readPictures(heightAt, again, pictures)
     apply()
-    const ro = new ResizeObserver(apply)
+    const ro = new ResizeObserver(resized)
     ro.observe(node)
     return {
       update(next: RenderedBody) {
@@ -403,6 +475,7 @@
       },
       destroy() {
         ro.disconnect()
+        if (trailing) clearTimeout(trailing)
         stopReading()
       },
     }
@@ -417,13 +490,7 @@
     {@const own = accounts.ownAddresses(message.accountId)}
     {@const view =
       loaded && loaded !== 'loading' && loaded !== 'error'
-        ? renderBody(loaded.html, {
-            dark,
-            frame: app.frame,
-            showHistory: historyOpen.has(message.id),
-            subject: message.subject,
-            imagesHidden: loaded.imagesHidden,
-          })
+        ? viewOf(loaded, message.subject, historyOpen.has(message.id))
         : null}
     <article class="message" class:open={isOpen}>
       <div class="head">

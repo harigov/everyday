@@ -5543,3 +5543,46 @@ fn a_job_trusts_what_the_person_typed_where_it_was_asked_and_nothing_else() {
     assert!(words_that_asked_for(&vault, loose.id).is_empty(), "no thread, no one's words");
     assert!(words_that_asked_for(&vault, jatayu_core::JobId::new()).is_empty());
 }
+
+/// A finished turn is written in one go: the reply, then a result for each
+/// call that reported -- none for one the run abandoned -- and the thread
+/// moved on once, to the last of them.
+#[tokio::test]
+async fn a_turn_is_written_down_reply_first_then_what_it_ran() {
+    let (vault, _dir) = test_vault();
+    let conversation = Conversation::new();
+    vault.save_conversation(&conversation).unwrap();
+    vault.save_message(&VaultMessage::user(conversation.id, "Tidy up my week")).unwrap();
+    let reply = VaultMessage::assistant(conversation.id, String::new());
+    vault.save_message(&reply).unwrap();
+
+    let reported = |name: &str, outcome: std::result::Result<String, String>| Ran {
+        outcome: Some(outcome),
+        ..ran(name)
+    };
+    let ran = vec![
+        reported("list_tasks", Ok("three tasks".into())),
+        ran("abandoned"),
+        reported("complete_task", Err("no such task".into())),
+    ];
+    let finished = VaultMessage {
+        content: "Done.".into(),
+        tool_calls: ran.iter().map(|r| r.call.clone()).collect(),
+        kits: vec!["mail".into()],
+        ..reply.clone()
+    };
+    save_turn(&vault, &finished, &ran).await.unwrap();
+
+    let thread = vault.messages(conversation.id).unwrap();
+    let roles: Vec<Role> = thread.iter().map(|m| m.role).collect();
+    assert_eq!(roles, [Role::User, Role::Assistant, Role::Tool, Role::Tool]);
+    assert_eq!(thread[1].content, "Done.");
+    assert_eq!(thread[1].kits, ["mail"], "the kits it was given are kept with it");
+    assert_eq!(thread[2].tool_call_id.as_deref(), Some("list_tasks"));
+    assert!(!thread[2].failed);
+    assert_eq!(thread[3].tool_call_id.as_deref(), Some("complete_task"));
+    assert!(thread[3].failed);
+    let touched = vault.conversation(conversation.id).unwrap();
+    assert_eq!(touched.updated_at, thread[3].created_at, "moved on to the last of them");
+    assert!(touched.title.starts_with("Tidy up my week"), "named from what was asked");
+}

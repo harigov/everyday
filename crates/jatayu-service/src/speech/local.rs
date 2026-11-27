@@ -621,6 +621,11 @@ pub fn recogniser_loaded(model: LocalModel) -> bool {
     RECOGNISERS.is_loaded(&model)
 }
 
+/// Whether any recogniser is in memory right now, without loading one.
+pub fn any_recogniser_loaded() -> bool {
+    RECOGNISERS.any_loaded()
+}
+
 /// A [`Recogniser`] for `model`, loaded on first use and shared. See this
 /// module's doc on sharing.
 pub fn recogniser(model: LocalModel) -> CommandResult<Arc<Recogniser>> {

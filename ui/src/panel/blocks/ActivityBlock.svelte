@@ -151,19 +151,23 @@
     opacity: 0.6;
   }
 
-  /* Recording: the red dot, breathing. */
+  /* Recording: the red dot, breathing a few times and then steady -- a
+     recording runs for an hour, and a dot breathing all through it kept the
+     card composited every frame. It ends on a full breath, as it rests. */
   .sign[data-motion='rec'] .dot {
-    animation: pc-breathe 1.6s ease-in-out infinite;
+    animation: pc-breathe 1.6s ease-in-out 3.5;
   }
 
-  /* Waiting for the person: a ring spreading out from the dot. */
+  /* Waiting for the person: a ring spreading out from the dot, a few times
+     and then not -- an answer can be hours coming, and nothing is happening
+     meanwhile. At rest the ring is the dot's own size and colour, unseen. */
   .sign[data-motion='pulse'] .dot::after {
     content: '';
     position: absolute;
     inset: 0;
     border-radius: 50%;
     background: var(--mode);
-    animation: pc-ripple 1.8s ease-out infinite;
+    animation: pc-ripple 1.8s ease-out 5;
   }
 
   .tool {

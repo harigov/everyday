@@ -540,6 +540,13 @@
     }
   }
 
+  /** The media folder's size, counted once the page that shows it is shown
+   *  -- see `app.mediaBytes` -- and then kept while Settings is open. */
+  let mediaSize: Promise<number | null> | null = null
+  function media(): Promise<number | null> {
+    return (mediaSize ??= app.mediaBytes())
+  }
+
   async function setAutoLock(seconds: number) {
     await api.setAutoLock(seconds)
     app.status = await api.status()
@@ -1121,7 +1128,16 @@
                   <div>
                     <span>Entries</span><b>{plural(status.stats.entries, 'entry', 'entries')}</b>
                   </div>
-                  <div><span>Media</span><b>{humanBytes(status.stats.blobBytes)}</b></div>
+                  <div>
+                    <span>Media</span>
+                    <b>
+                      {#await media()}
+                        …
+                      {:then bytes}
+                        {bytes === null ? '—' : humanBytes(bytes)}
+                      {/await}
+                    </b>
+                  </div>
                 {/if}
               </div>
               <p class="path" title={status?.path}>{status?.path}</p>

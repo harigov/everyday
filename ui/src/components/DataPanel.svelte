@@ -31,7 +31,15 @@
   const chosen = $derived(parts.filter((p) => transfer.chosen.has(p.id)))
   const records = $derived(chosen.reduce((sum, p) => sum + p.records, 0))
   const anyMedia = $derived(chosen.some((p) => p.media))
-  const mediaBytes = $derived(app.status?.stats?.blobBytes ?? 0)
+  // How much the attachments come to, asked for once there is a reason to
+  // say it: counting walks the whole media folder (`app.mediaBytes`).
+  let mediaBytes = $state(0)
+  let mediaAsked = false
+  $effect(() => {
+    if (!anyMedia || mediaAsked) return
+    mediaAsked = true
+    void app.mediaBytes().then((n) => (mediaBytes = n ?? 0))
+  })
   const stage = $derived(transfer.stage)
   const incoming = $derived(transfer.incoming)
 

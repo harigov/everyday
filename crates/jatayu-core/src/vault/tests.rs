@@ -228,6 +228,127 @@ fn flushing_stops_the_integrity_check_rather_than_waiting_behind_it() {
 }
 
 #[test]
+fn a_clean_check_within_the_day_is_not_run_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (reg, probe) = crate::testing::registry_with_integrity_probe();
+    drop(Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap());
+    assert_eq!(probe.started(), 1);
+
+    let secs = |ago: u64| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+        (now.as_secs() - ago).to_string()
+    };
+    let stamp = dir.path().join(maintenance::INTEGRITY_STAMP_FILENAME);
+
+    std::fs::write(&stamp, secs(60 * 60)).unwrap();
+    let v = Vault::open(dir.path(), reg.clone()).unwrap();
+    v.unlock(Some("pw")).unwrap();
+    assert_eq!(probe.started(), 1, "checked clean an hour ago: not read through again");
+    drop(v);
+
+    std::fs::write(&stamp, secs(25 * 60 * 60)).unwrap();
+    let v = Vault::open(dir.path(), reg).unwrap();
+    v.unlock(Some("pw")).unwrap();
+    assert_eq!(probe.started(), 2, "a day and more since the last clean check");
+}
+
+#[test]
+fn status_counts_records_without_sizing_the_attachments() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+    let j = Journal::new("Daily");
+    v.save_journal(&j).unwrap();
+    v.save_entry(&Entry::new(j.id, "UTC"), None).unwrap();
+    v.put_blob(b"a picture").unwrap();
+
+    let counted = v.status().stats.unwrap();
+    assert_eq!((counted.journals, counted.entries), (1, 1));
+    assert_eq!((counted.blobs, counted.blob_bytes), (0, 0), "status leaves the media folder be");
+    let sized = v.stats().unwrap();
+    assert_eq!((sized.journals, sized.entries, sized.blobs), (1, 1, 1));
+    assert!(sized.blob_bytes > 0);
+}
+
+#[test]
+fn saving_an_entry_does_not_wait_for_a_reader() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let v = Arc::new(Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap());
+    let j = Journal::new("Daily");
+    v.save_journal(&j).unwrap();
+
+    // A long read, held until the save below has finished -- or, if the
+    // save waited for it, until the reader gives up.
+    let (holding, held) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
+    let reader = {
+        let v = v.clone();
+        std::thread::spawn(move || {
+            v.read(|_| {
+                holding.send(()).unwrap();
+                Ok(released.recv_timeout(Duration::from_secs(10)).is_ok())
+            })
+            .unwrap()
+        })
+    };
+    held.recv().unwrap();
+    let mut e = Entry::new(j.id, "UTC");
+    e.body = crate::RichDoc::from_plain_text("kingfisher");
+    v.save_entry(&e, None).unwrap();
+    assert_eq!(v.search("kingfisher", SearchScope::Everything, 10).unwrap().len(), 1);
+    release.send(()).unwrap();
+    assert!(reader.join().unwrap(), "the save waited for the reader to finish");
+}
+
+#[test]
+fn writing_through_the_raw_store_keeps_the_gated_writers_out_and_reading_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+    v.with_store_writing(|_| {
+        for gate in [&v.gates.text, &v.gates.screen, &v.gates.health, &v.gates.money] {
+            assert!(gate.try_lock().is_err(), "an import must hold every gate");
+        }
+        Ok(())
+    })
+    .unwrap();
+    v.with_store(|_| {
+        assert!(v.gates.text.try_lock().is_ok(), "reading an attachment waits on no write");
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn an_entry_saved_while_the_index_is_still_being_built_is_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = registry();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+    let j = Journal::new("Daily");
+    v.save_journal(&j).unwrap();
+    // Enough that the unlock files them on a thread of its own.
+    for i in 0..200 {
+        let mut e = Entry::new(j.id, "UTC");
+        e.body = crate::RichDoc::from_plain_text(&format!("heron number{i}"));
+        v.save_entry(&e, None).unwrap();
+    }
+    v.lock();
+    v.unlock(Some("pw")).unwrap();
+    let mut e = Entry::new(j.id, "UTC");
+    e.body = crate::RichDoc::from_plain_text("kingfisher");
+    v.save_entry(&e, None).unwrap();
+    assert_eq!(v.search("kingfisher", SearchScope::Everything, 10).unwrap().len(), 1);
+    assert_eq!(v.search("heron", SearchScope::Everything, 500).unwrap().len(), 200);
+
+    // Locked straight after an unlock: the build stops, and nothing answers.
+    v.lock();
+    v.unlock(Some("pw")).unwrap();
+    v.lock();
+    assert_eq!(v.search("heron", SearchScope::Everything, 5).unwrap_err().code(), "locked");
+}
+
+#[test]
 fn an_unencrypted_vault_opens_without_a_password() {
     let dir = tempfile::tempdir().unwrap();
     let reg = registry();

@@ -91,6 +91,27 @@ export function ordinalWeek(week: number): string {
 // Tuesday when it is read in Chennai. So the day a start falls on is asked
 // of that zone, and an all-day event's midnights are that zone's midnights.
 
+// The formatters those questions are asked through, kept per zone: building
+// one costs far more than asking it, and the event editor asks on every
+// keystroke. A fixed locale and an explicit zone, so nothing they resolve
+// can move under them. A zone the platform does not know throws on
+// construction and is never kept, so it reaches the caller's fallback.
+const dayFormats = new Map<string, Intl.DateTimeFormat>()
+const clockFormats = new Map<string, Intl.DateTimeFormat>()
+
+function zoneFormat(
+  kept: Map<string, Intl.DateTimeFormat>,
+  tz: string,
+  options: Intl.DateTimeFormatOptions,
+): Intl.DateTimeFormat {
+  let made = kept.get(tz)
+  if (!made) {
+    made = new Intl.DateTimeFormat('en-US', options)
+    kept.set(tz, made)
+  }
+  return made
+}
+
 /**
  * The `YYYY-MM-DD` that `at` falls on in `tz` -- the machine's own zone when
  * `tz` is missing or not one the platform knows. A bare day is its own
@@ -101,7 +122,7 @@ export function dayIn(at: string, tz?: string | null): string {
   const when = new Date(at)
   if (!tz) return isoDate(when)
   try {
-    const parts = new Intl.DateTimeFormat('en-US', {
+    const parts = zoneFormat(dayFormats, tz, {
       timeZone: tz,
       year: 'numeric',
       month: '2-digit',
@@ -137,7 +158,7 @@ export function midnightIn(day: string, tz?: string | null): string {
 
 /** How far `tz`'s wall clock is ahead of UTC at `ms`, in milliseconds. */
 function offsetAt(ms: number, tz: string): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
+  const parts = zoneFormat(clockFormats, tz, {
     timeZone: tz,
     hourCycle: 'h23',
     year: 'numeric',

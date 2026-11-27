@@ -194,6 +194,13 @@ pub trait Lookups {
 #[allow(async_fn_in_trait)]
 pub trait Sender {
     async fn send(&self, built: &Built) -> Result<SendReceipt>;
+
+    /// Open, and sign in on, the connection the next [`Self::send`] will use,
+    /// ahead of time: what a send about to come due -- an undo window running
+    /// out -- calls so the message does not wait on a TCP, TLS and `AUTH`
+    /// round of its own. Best-effort and infallible; a connection that will
+    /// not open is the send's to report. The default does nothing.
+    async fn warm(&self) {}
 }
 
 impl Sender for crate::smtp::SmtpTransport {

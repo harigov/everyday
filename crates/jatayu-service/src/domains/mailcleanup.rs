@@ -362,6 +362,21 @@ fn inbox_threads(
     let mut found = Vec::new();
     let mut cursor: Option<String> = None;
     let mut read = 0usize;
+    // With no sorted category to check, nothing sealed is needed: the same
+    // walk over ids and the dates they are listed by.
+    if sorted_as.is_none() {
+        loop {
+            let (page, next) =
+                vault.mail_thread_keys(inbox, &awake, cursor.as_deref(), INBOX_PAGE)?;
+            read += page.len();
+            let past_the_window = page.last().is_some_and(|(_, date)| *date < since);
+            found.extend(page.iter().map(|(id, _)| *id));
+            match next {
+                Some(next) if !past_the_window && read < MAX_INBOX_THREADS => cursor = Some(next),
+                _ => return Ok(found),
+            }
+        }
+    }
     loop {
         let page = vault.list_threads(inbox, &awake, cursor.as_deref(), INBOX_PAGE)?;
         read += page.threads.len();

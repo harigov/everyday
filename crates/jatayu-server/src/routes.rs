@@ -30,7 +30,7 @@ use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{MethodRouter, get, post};
 use axum::{Json, Router};
 use futures::stream::Stream;
 use jatayu_core::BlobId;
@@ -40,7 +40,8 @@ use jatayu_service::error::CommandError;
 use jatayu_service::{PROTOCOL, Service};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::auth::{Leniency, Registry, bearer};
 use crate::sse::Broadcaster;
@@ -191,13 +192,13 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         // access is the one a phone can reach. Bearer-token authenticated
         // even there; see `crate::health`.
         .route(path::HEALTH_PUSH_ROUTE, post(crate::health::push))
-        .route(path::CALL_ROUTE, post(call))
+        .route(path::CALL_ROUTE, over_the_wire(post(call), transport))
         .route(path::STREAM_ROUTE, post(stream))
         // Talking to the assistant from another device: see `crate::voice`.
         .route(path::VOICE, get(voice))
         .route(path::BLOB, post(put_blob))
         .route(path::BLOB_ROUTE, get(get_blob))
-        .route(path::MAIL_BODY_ROUTE, get(get_mail_body))
+        .route(path::MAIL_BODY_ROUTE, over_the_wire(get(get_mail_body), transport))
         .route(path::MAIL_PART_ROUTE, get(get_mail_part))
         .route(path::MAIL_IMAGE_ROUTE, get(get_mail_image))
         // The image address's first shape, with the message id in a query
@@ -205,7 +206,7 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         // `jatayu-mail::sanitize` started writing the new shape still
         // resolves. See `get_mail_image_legacy`'s own docs.
         .route(path::MAIL_IMAGE_LEGACY_ROUTE, get(get_mail_image_legacy))
-        .route(path::NEWS_BODY_ROUTE, get(get_news_body))
+        .route(path::NEWS_BODY_ROUTE, over_the_wire(get(get_news_body), transport))
         .route(path::NEWS_IMAGE_ROUTE, get(get_news_image))
         // A file in the files catalog, with ranges, and one chunk of an upload
         // to it. The chunk's body is raw bytes read by the handler after
@@ -221,6 +222,172 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
 }
 
 type Ctxt = State<(Arc<Server>, Transport)>;
+
+/// `route`, its answers compressed for a client on another machine: a
+/// command's JSON or a rendered body is five to ten times smaller, which is
+/// felt over a relayed tailnet or a phone's connection. Not over the socket,
+/// where the client is this machine and the work would buy nothing; and only
+/// on routes that answer whole -- never a turn's stream or the events, which
+/// compressing would hold back, nor media, already as small as it gets.
+fn over_the_wire(
+    route: MethodRouter<(Arc<Server>, Transport)>,
+    transport: Transport,
+) -> MethodRouter<(Arc<Server>, Transport)> {
+    match transport {
+        Transport::Socket => route,
+        Transport::Network | Transport::Web => {
+            route.layer(axum::middleware::from_fn_with_state(QUICKLY, compress))
+        }
+    }
+}
+
+/// How [`compress`] packs an answer.
+#[derive(Clone)]
+pub(crate) struct Packing {
+    /// gzip's level, 0 to 9.
+    pub(crate) level: u32,
+    /// Where an answer whose address names its bytes for good -- `immutable`,
+    /// as the interface's built files are -- is kept once packed, so it is
+    /// packed once rather than once for every browser that asks.
+    pub(crate) keep: Option<Arc<Packed>>,
+}
+
+/// How hard [`compress`] works on a command's answer: the quickest, since one
+/// is made for every call and most of the saving comes at the first level.
+const QUICKLY: Packing = Packing { level: 1, keep: None };
+
+/// The least worth compressing: under it, the header costs what is saved.
+const COMPRESS_FROM: usize = 1024;
+
+/// Most bytes [`Packed`] holds: the interface is about one megabyte packed,
+/// so this is room for a few builds of it; past it nothing more is kept.
+const PACKED_BYTES: usize = 16 * 1024 * 1024;
+
+/// Answers already packed, by path. See [`Packing::keep`].
+#[derive(Default)]
+pub(crate) struct Packed(Mutex<(HashMap<String, axum::body::Bytes>, usize)>);
+
+impl Packed {
+    fn get(&self, path: &str) -> Option<axum::body::Bytes> {
+        self.0.lock().unwrap().0.get(path).cloned()
+    }
+
+    fn put(&self, path: String, packed: axum::body::Bytes) {
+        let mut held = self.0.lock().unwrap();
+        if held.1 + packed.len() > PACKED_BYTES || held.0.contains_key(&path) {
+            return;
+        }
+        held.1 += packed.len();
+        held.0.insert(path, packed);
+    }
+}
+
+/// Compress, with gzip, an answer that is text, whole and worth it, for a
+/// client that said it reads gzip. Only on routes that answer whole -- the
+/// body is read into memory first -- so never the stream or the events.
+pub(crate) async fn compress(
+    State(how): State<Packing>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let accepted = accepts_gzip(request.headers());
+    let path = how.keep.as_ref().map(|_| request.uri().path().to_string());
+    let response = next.run(request).await;
+    if !accepted
+        || !text(response.status(), response.headers())
+        || response.headers().contains_key(header::CONTENT_ENCODING)
+    {
+        return response;
+    }
+    // Named for good by its address, so packed once and kept.
+    let lasting = how.keep.zip(path).filter(|_| {
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("immutable"))
+    });
+    let (mut parts, body) = response.into_parts();
+    let known = lasting.as_ref().and_then(|(keep, path)| keep.get(path));
+    let packed = match known {
+        Some(packed) => packed,
+        None => {
+            let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            };
+            if bytes.len() < COMPRESS_FROM {
+                return Response::from_parts(parts, axum::body::Body::from(bytes));
+            }
+            // A command's answer is usually small enough to pack where it is;
+            // the interface's scripts are megabytes, and go to the blocking
+            // pool.
+            let level = how.level;
+            let packed = if bytes.len() < 64 * 1024 {
+                jatayu_service::mail::view::gzip(&bytes, level)
+            } else {
+                let whole = bytes.clone();
+                tokio::task::spawn_blocking(move || jatayu_service::mail::view::gzip(&whole, level))
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            let Some(packed) = packed else {
+                return Response::from_parts(parts, axum::body::Body::from(bytes));
+            };
+            let packed = axum::body::Bytes::from(packed);
+            if let Some((keep, path)) = lasting {
+                keep.put(path, packed.clone());
+            }
+            packed
+        }
+    };
+    parts.headers.insert(header::CONTENT_ENCODING, header::HeaderValue::from_static("gzip"));
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts.headers.append(header::VARY, header::HeaderValue::from_static("accept-encoding"));
+    Response::from_parts(parts, axum::body::Body::from(packed))
+}
+
+/// Does a request's `Accept-Encoding` take gzip? Named (or `*`), and not
+/// with `q=0`, which is a refusal.
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|coding| {
+            let mut parts = coding.split(';');
+            let name = parts.next().unwrap_or("").trim();
+            let refused = parts.any(|p| {
+                p.trim()
+                    .strip_prefix("q=")
+                    .and_then(|q| q.trim().parse::<f32>().ok())
+                    .is_some_and(|q| q <= 0.0)
+            });
+            !refused && (name.eq_ignore_ascii_case("gzip") || name == "*")
+        })
+}
+
+/// Text worth compressing, and whole: a part of something (a `206`) is left
+/// as it is, and so is everything that is not one of these types.
+fn text(status: StatusCode, headers: &HeaderMap) -> bool {
+    if status == StatusCode::PARTIAL_CONTENT || headers.contains_key(header::CONTENT_RANGE) {
+        return false;
+    }
+    let kind = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let base = kind.split(';').next().unwrap_or("").trim();
+    matches!(
+        base,
+        "application/json"
+            | "text/html"
+            | "text/css"
+            | "text/javascript"
+            | "application/javascript"
+            | "text/plain"
+            | "image/svg+xml"
+            | "application/manifest+json"
+    )
+}
 
 // ---- errors --------------------------------------------------------------
 
@@ -640,7 +807,12 @@ async fn put_blob(
 }
 
 #[derive(Deserialize)]
-struct BlobQuery {}
+struct BlobQuery {
+    /// `?w=`: the picture made this wide, for a slot narrower than it -- one
+    /// of the widths on offer, or else the original (see
+    /// `jatayu_service::mail::view::scaled_blob`).
+    w: Option<String>,
+}
 
 /// Does this caller hold only scopes that write and never read?
 fn write_only(ctx: &Ctx) -> bool {
@@ -691,7 +863,7 @@ async fn get_blob(
     State((server, transport)): Ctxt,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Query(_q): Query<BlobQuery>,
+    Query(q): Query<BlobQuery>,
 ) -> Answer<Response> {
     let ctx = authenticate_media(&server, transport, &headers)?;
     // A write-only token -- a collector's heartbeats, a phone's health push
@@ -700,6 +872,25 @@ async fn get_blob(
     // the token most likely to leak.
     refuse_write_only(&ctx)?;
     let id = BlobId::parse(&id).map_err(|_| CommandError::new("invalid", "not a blob address"))?;
+
+    // A smaller copy is answered whole, whatever range was asked for: it is
+    // not the blob, and a range of the blob would not be a range of it.
+    if let Some(width) = q.w.as_deref().and_then(jatayu_service::mail::view::width_tier) {
+        let vault = server.service.require()?;
+        if let Some(bytes) = jatayu_service::mail::view::scaled_blob(&vault, id, width).await {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, jatayu_core::media::sniff_mime(&bytes))
+                .header(header::CONTENT_LENGTH, bytes.len().to_string())
+                // Named by the blob and the width, so as lasting as the blob's.
+                .header(
+                    header::CACHE_CONTROL,
+                    vault_cache_control(transport, "private, max-age=31536000, immutable"),
+                )
+                .body(axum::body::Body::from(bytes.to_vec()))
+                .map_err(|e| CommandError::new("internal", e.to_string()).into());
+        }
+    }
 
     let total = server.service.blob_len(id)?;
     let plan =
@@ -908,11 +1099,11 @@ async fn get_news_body(
     // A newsletter's body is a message's, drawn by mail, and what is kept of it
     // in Files -- its summary -- is made from that message. A client that may
     // read the Feed is not for that reason one that may read mail.
-    let mail_backed = {
+    let newsletter = {
         let vault = vault.clone();
-        jatayu_service::blocking(move || Ok(vault.story(story)?.mail_message.is_some())).await?
+        jatayu_service::blocking(move || Ok(vault.story(story)?.mail_message)).await?
     };
-    if mail_backed {
+    if newsletter.is_some() {
         ctx.require(Scope::Mail)?;
     }
     let doc = jatayu_service::blocking(move || {
@@ -920,7 +1111,7 @@ async fn get_news_body(
     })
     .await?;
 
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         // Decided fresh every time, as mail's is: whether pictures are hidden
@@ -929,7 +1120,14 @@ async fn get_news_body(
         .header("x-content-type-options", "nosniff")
         // Read by the interface's `fetch()` of this address, never by anything
         // inside the sandboxed frame. See `protocol.rs`'s `respond_news_body`.
-        .header("x-news-images-hidden", if doc.images_hidden { "1" } else { "0" })
+        .header("x-news-images-hidden", if doc.images_hidden { "1" } else { "0" });
+    // A newsletter's pictures are its message's -- `mail/img/{message}/..`
+    // addresses -- so a remote client that kept them while they were shown
+    // learns which message's to forget now that they are not.
+    if let Some(message) = newsletter.filter(|_| doc.images_hidden) {
+        response = response.header("x-news-message", message.to_string());
+    }
+    response
         .body(axum::body::Body::from(doc.html))
         .map_err(|e| CommandError::new("internal", e.to_string()).into())
 }

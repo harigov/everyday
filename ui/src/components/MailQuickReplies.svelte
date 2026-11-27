@@ -82,8 +82,15 @@
 
   /** Guards the async answer the same way `MailCompose`'s own
    *  `addressGeneration` does: a slow `suggest_replies` must not land after
-   *  `eligible` or the message have already moved on. */
+   *  `eligible` or the message have already moved on -- or after this has
+   *  gone, the thread left for the next one. */
   let generation = 0
+
+  /** How long a thread stays open before the decision model is asked whether
+   *  it wants a reply: `j` held down a list opens one after another, and
+   *  each of those it passes over would otherwise be a question for the
+   *  model that sorts new mail, and a reply written for nobody. */
+  const DWELL_MS = 500
 
   $effect(() => {
     const id = messageId
@@ -110,31 +117,41 @@
     // meanwhile: most mail -- newsletters, statements, pitches -- wants none,
     // and "Writing replies…" over one that will get none is a promise broken.
     const known = needed.get(id)
-    const asking =
-      known === undefined
-        ? mailApi.needsReply(thread).then((r) => r.needed)
-        : Promise.resolve(known)
-    void asking
-      .then(async (wanted) => {
-        if (gen !== generation) return
-        needed.set(id, wanted)
-        if (!wanted) {
-          suggestions = []
-          unneeded = true
-          return
-        }
-        loading = true
-        const r = await mailApi.suggestReplies(thread)
-        if (gen !== generation) return
-        const at = Date.now()
-        cache.set(id, { suggestions: r.suggestions, at })
-        writtenAt = at
-        suggestions = r.suggestions
-      })
-      .catch((e) => void quietly(e))
-      .finally(() => {
-        if (gen === generation) loading = false
-      })
+    const ask = () => {
+      const asking =
+        known === undefined
+          ? mailApi.needsReply(thread).then((r) => r.needed)
+          : Promise.resolve(known)
+      void asking
+        .then(async (wanted) => {
+          if (gen !== generation) return
+          needed.set(id, wanted)
+          if (!wanted) {
+            suggestions = []
+            unneeded = true
+            return
+          }
+          loading = true
+          const r = await mailApi.suggestReplies(thread)
+          if (gen !== generation) return
+          const at = Date.now()
+          cache.set(id, { suggestions: r.suggestions, at })
+          writtenAt = at
+          suggestions = r.suggestions
+        })
+        .catch((e) => void quietly(e))
+        .finally(() => {
+          if (gen === generation) loading = false
+        })
+    }
+    // Already answered for this message: no model to spare, so no wait.
+    const dwell = known === undefined ? setTimeout(ask, DWELL_MS) : null
+    if (!dwell) ask()
+    return () => {
+      if (dwell) clearTimeout(dwell)
+      // Gone, or asking again: whatever is still on its way is for nobody.
+      generation++
+    }
   })
 
   /** A timer does not count time a laptop spends asleep, so this also looks when

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use super::BackupError;
 use super::manifest::Manifest;
+use super::run::blocking;
 use super::target::{Target, TargetResult};
 
 /// What says a place holds a repository, and whose.
@@ -200,6 +201,8 @@ pub async fn chunks(target: &Target) -> TargetResult<HashSet<String>> {
 /// Sealed manifests kept on this computer between backups, so each run
 /// fetches only the ones it has not seen. Sealed as they are at the
 /// destination; a damaged or stale one is fetched again.
+///
+/// Read and written on the blocking pool: a manifest is megabytes.
 pub struct ManifestCache {
     dir: Option<PathBuf>,
 }
@@ -213,21 +216,38 @@ impl ManifestCache {
         self.dir.as_ref().map(|d| d.join(format!("{snapshot}{SNAPSHOT_SUFFIX}")))
     }
 
-    fn read(&self, snapshot: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.path(snapshot)?).ok()
+    async fn read(&self, snapshot: &str) -> Option<Vec<u8>> {
+        let path = self.path(snapshot)?;
+        blocking(move || Ok(std::fs::read(path).ok())).await.ok().flatten()
     }
 
-    fn write(&self, snapshot: &str, sealed: &[u8]) {
-        let (Some(dir), Some(path)) = (&self.dir, self.path(snapshot)) else { return };
-        if jatayu_core::fsutil::create_private_dir(dir).is_ok() {
-            let _ = std::fs::write(path, sealed);
-        }
+    async fn write(&self, snapshot: &str, sealed: Bytes) {
+        let (Some(dir), Some(path)) = (self.dir.clone(), self.path(snapshot)) else { return };
+        let _ = blocking(move || {
+            if jatayu_core::fsutil::create_private_dir(&dir).is_ok() {
+                let _ = std::fs::write(path, &sealed);
+            }
+            Ok(())
+        })
+        .await;
     }
 
     pub fn forget(&self, snapshot: &str) {
         if let Some(path) = self.path(snapshot) {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+/// The manifest sealed in `sealed`: opened here, which is quick, then
+/// inflated and parsed on the blocking pool, which for a large vault's tens
+/// of megabytes of JSON is not.
+async fn decode(sealed: &[u8], keys: &BackupKeys, snapshot: &str) -> Result<Manifest, String> {
+    let packed = Manifest::open(sealed, keys, snapshot)?;
+    let snapshot = snapshot.to_string();
+    match blocking(move || Ok(Manifest::unpack(&packed, &snapshot))).await {
+        Ok(manifest) => manifest,
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -238,8 +258,8 @@ pub async fn load_manifest(
     snapshot: &str,
     cache: &ManifestCache,
 ) -> Result<Manifest, BackupError> {
-    if let Some(sealed) = cache.read(snapshot)
-        && let Ok(m) = Manifest::decode(&sealed, keys, snapshot)
+    if let Some(sealed) = cache.read(snapshot).await
+        && let Ok(m) = decode(&sealed, keys, snapshot).await
     {
         return Ok(m);
     }
@@ -247,23 +267,31 @@ pub async fn load_manifest(
         .get(&snapshot_object(snapshot))
         .await?
         .ok_or_else(|| BackupError::Refused(format!("there is no backup called {snapshot}")))?;
-    let manifest = Manifest::decode(&sealed, keys, snapshot).map_err(BackupError::Refused)?;
-    cache.write(snapshot, &sealed);
+    let manifest = decode(&sealed, keys, snapshot).await.map_err(BackupError::Refused)?;
+    cache.write(snapshot, sealed).await;
     Ok(manifest)
 }
 
-/// Store `manifest` as `snapshot`, and keep a copy in the cache.
+/// Store `manifest` as `snapshot`, and keep a copy in the cache. Handed back
+/// once stored: it is packed on the blocking pool, and is large enough that
+/// a copy for that would cost more than the trip saves.
 pub async fn store_manifest(
     target: &Target,
     keys: &BackupKeys,
     snapshot: &str,
-    manifest: &Manifest,
+    manifest: Manifest,
     cache: &ManifestCache,
-) -> Result<(), BackupError> {
-    let sealed = manifest.encode(keys, snapshot).map_err(BackupError::Refused)?;
-    target.put(&snapshot_object(snapshot), Bytes::from(sealed.clone())).await?;
-    cache.write(snapshot, &sealed);
-    Ok(())
+) -> Result<Manifest, BackupError> {
+    let (manifest, packed) = blocking(move || {
+        let packed = manifest.pack().map_err(BackupError::Refused)?;
+        Ok((manifest, packed))
+    })
+    .await?;
+    let sealed =
+        Bytes::from(Manifest::seal(&packed, keys, snapshot).map_err(BackupError::Refused)?);
+    target.put(&snapshot_object(snapshot), sealed.clone()).await?;
+    cache.write(snapshot, sealed).await;
+    Ok(manifest)
 }
 
 /// Who is writing to a repository.

@@ -18,9 +18,10 @@
   // Colour never carries a day alone: hovering or focusing a square writes
   // the day out underneath -- what was earned, what was lost, and why.
 
-  import { weekdayShort } from '../lib/format'
+  import { dateFormat, weekdayShort } from '../lib/format'
   import { DEED_LABELS, karmaLevel, signed } from '../lib/karma'
-  import { addDays, todayIso } from '../lib/time'
+  import { addDays, startOfDay } from '../lib/time'
+  import { currentDay } from '../lib/today.svelte'
   import type { KarmaDay } from '../lib/types'
 
   interface Props {
@@ -55,8 +56,7 @@
    * the next three columns, where the two names would run into each other.
    */
   const months = $derived.by(() => {
-    const name = (iso: string) =>
-      new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: 'short' })
+    const name = (iso: string) => dateFormat({ month: 'short' }).format(startOfDay(iso))
     const firsts = columns.map((week) => week.find((d) => d.endsWith('-01')) ?? null)
     return columns.map((week, i) => {
       const first = firsts[i]
@@ -79,15 +79,16 @@
     if (scroller) scroller.scrollLeft = scroller.scrollWidth
   })
 
-  let picked = $state<string | null>(null)
-  const shown = $derived(picked ?? todayIso())
+  /** Today, followed across midnight; read once rather than per square. */
+  const today = $derived(currentDay())
 
+  let picked = $state<string | null>(null)
+  const shown = $derived(picked ?? today)
+
+  // Through the kept formatter: a year of squares, each with its own label,
+  // built a formatter apiece when they were dated with `toLocaleDateString`.
   function when(iso: string): string {
-    return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-    })
+    return dateFormat({ weekday: 'short', month: 'short', day: 'numeric' }).format(startOfDay(iso))
   }
 
   function title(iso: string): string {
@@ -123,14 +124,15 @@
           <span class="month" aria-hidden="true">{months[i]}</span>
           {#each week as iso (iso)}
             {@const inRange = iso >= from && iso <= to}
-            {@const counted = inRange && iso >= since && iso <= todayIso()}
+            {@const counted = inRange && iso >= since && iso <= today}
+            {@const label = inRange ? title(iso) : ''}
             <button
               class="cell"
               class:out={!counted}
-              class:today={iso === todayIso()}
+              class:today={iso === today}
               data-level={counted ? karmaLevel(byDate.get(iso)?.net ?? 0) : 0}
-              title={inRange ? title(iso) : ''}
-              aria-label={inRange ? title(iso) : undefined}
+              title={label}
+              aria-label={inRange ? label : undefined}
               tabindex={inRange ? 0 : -1}
               disabled={!inRange}
               onclick={() => (picked = iso)}

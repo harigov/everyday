@@ -100,6 +100,7 @@ import type {
   TaskStats,
   TaskStatus,
   ThreadFilter,
+  UnreadTarget,
   TimeBlock,
   Tracker,
   TrackerDay,
@@ -247,6 +248,7 @@ import {
   mockAllowRemoteImagesOnce,
   mockArchive,
   mockCategoryCounts,
+  mockUnreadBadges,
   mockDiscardDraft,
   mockDeleteThreadDraft,
   mockDismissFollowUp,
@@ -5475,6 +5477,10 @@ export const mockInvoke = async <T>(
     case 'status':
       return status() as T
 
+    case 'vault_stats':
+      requireUnlocked()
+      return status().stats as T
+
     case 'lock':
       unlocked = false
       return status() as T
@@ -5763,7 +5769,9 @@ export const mockInvoke = async <T>(
       if (q.unseen != null) rows = rows.filter((r) => r.seen === !q.unseen)
       if (q.outcomes?.length) rows = rows.filter((r) => q.outcomes!.includes(r.outcome))
       rows.sort((a, b) => b.startedAt.localeCompare(a.startedAt))
-      return rows.slice(0, q.limit ?? rows.length) as T
+      rows = rows.slice(0, q.limit ?? rows.length)
+      // `slim`: the runs pane never reads a brief, so the server leaves it out.
+      return (args.slim ? rows.map((r) => ({ ...r, brief: null })) : rows) as T
     }
 
     case 'get_run': {
@@ -8470,6 +8478,10 @@ export const mockInvoke = async <T>(
     case 'category_counts':
       requireUnlocked()
       return mockCategoryCounts(str(args.mailbox)) as T
+
+    case 'mail_unread_badges':
+      requireUnlocked()
+      return mockUnreadBadges((args.targets ?? []) as UnreadTarget[]) as T
 
     // ── Follow-ups at the top of the Inbox ────────────────────────────────
 

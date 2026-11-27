@@ -19,9 +19,11 @@
 //! # Read-modify-write
 //!
 //! A transaction is written by two hands -- sync and the person -- so every
-//! change that reads one before writing it back does so inside
-//! [`Vault::write`], which is exclusive. That is what lets a sync land while
-//! somebody is recategorising without either losing the other's work.
+//! change that reads one before writing it back does so inside one
+//! [`Vault::write_in`] under the money gate, which every write to money's
+//! tables takes. That is what lets a sync land while somebody is
+//! recategorising without either losing the other's work -- and without
+//! stopping every read elsewhere in the vault while it does.
 
 use super::Vault;
 use super::session::{Domain, pick_domain};
@@ -54,7 +56,7 @@ const MAX_SEARCH: usize = 200;
 /// The longest colour token a category may carry.
 const MAX_COLOR: usize = 64;
 /// The most transactions one call may change or delete. Far more than a
-/// screen can select; few enough that one exclusive section stays short.
+/// screen can select; few enough that one gated section stays short.
 const MAX_BATCH: usize = 10_000;
 /// The most lines one import may hold: decades of a busy account.
 const MAX_IMPORT_LINES: usize = 100_000;
@@ -202,7 +204,7 @@ impl Vault {
     }
 
     /// Store a link a person has just connected, with its access token, in
-    /// one exclusive section: a link with no token is a link that can never
+    /// one gated section: a link with no token is a link that can never
     /// sync, and a token with no link is a credential nobody can see.
     pub fn add_bank_link(&self, link: &BankLink, token: &AccessToken) -> Result<()> {
         self.writable()?;
@@ -215,7 +217,7 @@ impl Vault {
         if token.expose().len() > MAX_TOKEN_LEN {
             return Err(Error::Invalid("Plaid handed over something that is not a token".into()));
         }
-        self.write(|u| {
+        self.write_in(&self.gates.money, |u| {
             let store = u.store.as_ref();
             let secrets = pick_domain(store, Domain::Secrets, |s| s.secrets())?;
             let money = pick_domain(store, Domain::Money, |s| s.money())?;
@@ -250,7 +252,7 @@ impl Vault {
     pub fn save_bank_link(&self, link: &BankLink) -> Result<()> {
         self.writable()?;
         validate_link(link)?;
-        self.write(|u| {
+        self.write_in(&self.gates.money, |u| {
             let money = u.money()?;
             let mut stored = money.get_link(link.id)?;
             // Switched back on: due now, rather than whenever the refresher
@@ -279,7 +281,7 @@ impl Vault {
     /// who disconnected means it.
     pub fn delete_bank_link(&self, id: BankLinkId, keep_history: bool) -> Result<()> {
         self.writable()?;
-        self.write(|u| {
+        self.write_in(&self.gates.money, |u| {
             let store = u.store.as_ref();
             let money = pick_domain(store, Domain::Money, |s| s.money())?;
             // The token first: if forgetting it fails, the link is still
@@ -302,7 +304,7 @@ impl Vault {
     /// touched.
     pub fn save_bank_link_state(&self, state: &LinkState) -> Result<()> {
         self.writable()?;
-        self.with_money(|m| m.put_link_state(state))
+        self.write_in(&self.gates.money, |u| u.money()?.put_link_state(state))
     }
 
     pub fn due_bank_links(&self, now: Timestamp) -> Result<Vec<BankLinkId>> {
@@ -358,7 +360,7 @@ impl Vault {
         self.writable()?;
         let name = name_text("an account's name", &account.name)?;
         let today = today();
-        self.write(|u| {
+        self.write_in(&self.gates.money, |u| {
             let money = u.money()?;
             let mut stored = money.get_account(account.id)?;
             let now = Timestamp::now();
@@ -406,7 +408,7 @@ impl Vault {
         let name = name_text("an account's name", name)?;
         let currency = currency_code(currency)?;
         let account = BankAccount::manual(name, kind, currency);
-        self.with_money(|m| m.put_account(&account))?;
+        self.write_in(&self.gates.money, |u| u.money()?.put_account(&account))?;
         self.wrote(RecordKind::BankAccount, account.id);
         Ok(account)
     }
@@ -416,7 +418,7 @@ impl Vault {
     /// back. Hide it, or disconnect its bank.
     pub fn delete_bank_account(&self, id: BankAccountId) -> Result<()> {
         self.writable()?;
-        self.write(|u| {
+        self.write_in(&self.gates.money, |u| {
             let money = u.money()?;
             if !money.get_account(id)?.is_manual() {
                 return Err(Error::Invalid(
@@ -509,7 +511,7 @@ impl Vault {
     }
 
     /// Apply a person's change to many transactions at once, inside one
-    /// exclusive section. Setting a category makes it the person's
+    /// gated section. Setting a category makes it the person's
     /// ([`crate::money::CategorizedBy::Person`]); clearing it makes it
     /// nobody's. A category id that does not exist is refused. Returns the
     /// ids that actually changed.
@@ -531,7 +533,7 @@ impl Vault {
             .map(|p| person_text("a payee", p, MAX_NAME))
             .transpose()?;
         let note = patch.note.as_deref().map(|n| person_text("a note", n, MAX_NOTE)).transpose()?;
-        let changed = self.write(|u| {
+        let changed = self.write_in(&self.gates.money, |u| {
             let money = u.money()?;
             if let Some(Some(category)) = patch.category {
                 existing_category(money, category)?;
@@ -586,7 +588,7 @@ impl Vault {
         let payee = person_text("a payee", &new.payee, MAX_NAME)?;
         let note = person_text("a note", &new.note, MAX_NOTE)?;
         sane_amount("that amount", new.amount)?;
-        let txn = self.write(|u| {
+        let txn = self.write_in(&self.gates.money, |u| {
             let key = u.subkey(MONEY_KEY_LABEL);
             let money = u.money()?;
             let account = money.get_account(new.account_id)?;
@@ -642,7 +644,7 @@ impl Vault {
         if ids.is_empty() {
             return Ok(());
         }
-        let deleted = self.write(|u| {
+        let deleted = self.write_in(&self.gates.money, |u| {
             let money = u.money()?;
             let linked: HashSet<BankAccountId> = money
                 .list_accounts()?
@@ -693,7 +695,7 @@ impl Vault {
                 "a file can hold at most {MAX_IMPORT_LINES} transactions; split it"
             )));
         }
-        let (report, added) = self.write(|u| {
+        let (report, added) = self.write_in(&self.gates.money, |u| {
             let key = u.subkey(MONEY_KEY_LABEL);
             let money = u.money()?;
             let target = money.get_account(account)?;
@@ -762,7 +764,7 @@ impl Vault {
         Ok(report)
     }
 
-    /// Apply one sync of one link, inside one exclusive section:
+    /// Apply one sync of one link, inside one gated section:
     ///
     /// - each account is matched to a stored one of this link by
     ///   `provider_account_id`, or created; its bank half (official name,
@@ -797,7 +799,7 @@ impl Vault {
     pub fn apply_bank_sync(&self, link: BankLinkId, delta: &SyncDelta) -> Result<SyncOutcome> {
         self.writable()?;
         let today = today();
-        let applied = self.write(|u| {
+        let applied = self.write_in(&self.gates.money, |u| {
             // Derived here, not through `money_key`: that takes the state
             // lock this closure already holds.
             let key = u.subkey(MONEY_KEY_LABEL);
@@ -837,7 +839,13 @@ impl Vault {
     /// calls it before the first link or import.
     pub fn ensure_money_defaults(&self) -> Result<()> {
         self.writable()?;
-        let written = self.write(|u| {
+        // Asked first under the shared lock alone: this runs on every unlock,
+        // and a vault that has its categories -- every one after the first
+        // day -- needs nothing written.
+        if !self.with_money(|m| Ok(m.list_categories()?.is_empty()))? {
+            return Ok(());
+        }
+        let written = self.write_in(&self.gates.money, |u| {
             let money = u.money()?;
             if !money.list_categories()?.is_empty() {
                 return Ok(Vec::new());
@@ -880,7 +888,7 @@ impl Vault {
                 return Err(Error::Invalid("a budget cannot be negative".into()));
             }
         }
-        self.write(|u| {
+        self.write_in(&self.gates.money, |u| {
             let money = u.money()?;
             if !category.archived {
                 let folded = category.name.to_lowercase();
@@ -904,7 +912,7 @@ impl Vault {
 
     /// Delete a category. Every transaction in it loses its category
     /// (becoming [`crate::money::CategorizedBy::Nobody`]), and every rule
-    /// that set it stops setting one. One exclusive section.
+    /// that set it stops setting one. One gated section.
     ///
     /// The transactions and rules are cleared before the category goes, so
     /// a failure part-way leaves a category that still exists rather than
@@ -913,7 +921,7 @@ impl Vault {
     /// asks them to.
     pub fn delete_money_category(&self, id: MoneyCategoryId) -> Result<()> {
         self.writable()?;
-        let (txns, rule_ids) = self.write(|u| {
+        let (txns, rule_ids) = self.write_in(&self.gates.money, |u| {
             let money = u.money()?;
             let now = Timestamp::now();
             let mut txns: Vec<Txn> = money
@@ -976,20 +984,20 @@ impl Vault {
             }
         }
         let rule = &rule;
-        self.with_money(|m| m.put_rule(rule))?;
+        self.write_in(&self.gates.money, |u| u.money()?.put_rule(rule))?;
         self.wrote(RecordKind::MoneyRule, rule.id);
         Ok(())
     }
 
     pub fn delete_money_rule(&self, id: MoneyRuleId) -> Result<()> {
         self.writable()?;
-        self.with_money(|m| m.delete_rule(id))?;
+        self.write_in(&self.gates.money, |u| u.money()?.delete_rule(id))?;
         self.wrote(RecordKind::MoneyRule, id);
         Ok(())
     }
 
     /// Run the rules -- or only `only` -- over every stored transaction whose
-    /// category is still open. Returns how many changed. One exclusive
+    /// category is still open. Returns how many changed. One gated
     /// section.
     ///
     /// With `only`, that rule alone is run, ahead of any that would
@@ -997,7 +1005,7 @@ impl Vault {
     /// means that one. A rule that does not exist is `not_found`.
     pub fn apply_money_rules(&self, only: Option<MoneyRuleId>) -> Result<u32> {
         self.writable()?;
-        let changed = self.write(|u| {
+        let changed = self.write_in(&self.gates.money, |u| {
             let money = u.money()?;
             let rules = ordered_rules(money)?;
             if rules.is_empty() {

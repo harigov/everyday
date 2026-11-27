@@ -1042,6 +1042,82 @@ export function needsOf(list: Widget[]): Set<Need> {
 }
 
 /**
+ * The Inbox cards and the mail counts: what a mail sync moves, and the
+ * heaviest reads on the page -- every Inbox walked, every recent thread
+ * decrypted -- so the ones worth keeping apart from everything else.
+ */
+export const MAIL_NEEDS: ReadonlySet<Need> = new Set<Need>([
+  'importantMail',
+  'snoozedMail',
+  'mailFollowUps',
+  'mail',
+])
+
+/** The reads a derived tracker's source can move behind its back. */
+const TRACKED: readonly Need[] = ['trackerDays', 'karma']
+
+const NOT_MAIL: readonly Need[] = NEEDS.filter((need) => !MAIL_NEEDS.has(need))
+const ALL_MAIL: readonly Need[] = [...MAIL_NEEDS]
+
+/**
+ * What a change of each kind can leave stale, where that is narrower than
+ * "everything but the mail". A kind not named here gets that default: a
+ * purpose rides on projects, tasks, blocks, entries, items and trackers,
+ * and the figures are read off all of them, so for those the page cannot
+ * say which card a change moved. Named are the kinds that arrive often and
+ * touch one corner of the page, and the ones that touch none of it.
+ */
+const STALE_AFTER: Readonly<Record<string, readonly Need[]>> = {
+  thread: ALL_MAIL,
+  draft: ALL_MAIL,
+  mailbox: ALL_MAIL,
+  // An account can bring or take calendars as well as mail, and the
+  // vault's settings reach the mail rules and the weather's place.
+  account: NEEDS,
+  settings: NEEDS,
+  // Health's samples arrive hourly and feed derived trackers too.
+  healthSample: ['healthToday', ...TRACKED],
+  story: ['news'],
+  newsSource: ['news'],
+  consumption: ['news'],
+  bankLink: ['moneyMonth'],
+  bankAccount: ['moneyMonth'],
+  txn: ['moneyMonth'],
+  moneyCategory: ['moneyMonth'],
+  moneyRule: ['moneyMonth'],
+  // Nothing on the page draws these. The briefs and proposals stores keep
+  // themselves current, and a job's progress is not its writes: what a job
+  // writes announces itself under its own kind.
+  job: [],
+  conversation: [],
+  memory: [],
+  skill: [],
+  transcript: [],
+  queue: [],
+  routine: [],
+  routineRun: [],
+  proposal: [],
+  template: [],
+  recording: [],
+  voiceprint: [],
+  file: [],
+  album: [],
+  backgroundTask: [],
+}
+
+/**
+ * The needs a change of `kind` can leave stale on the Overview.
+ *
+ * Screen time is its own case: it arrives every half minute while anything
+ * is in use, so it moves the trackers only when one of them counts screen
+ * time -- `screenTrackers`, which a caller that cannot tell passes as true.
+ */
+export function staleAfter(kind: string, screenTrackers = true): readonly Need[] {
+  if (kind === 'screenSpan') return screenTrackers ? ['screenToday', ...TRACKED] : ['screenToday']
+  return Object.hasOwn(STALE_AFTER, kind) ? STALE_AFTER[kind]! : NOT_MAIL
+}
+
+/**
  * The longest window any *tracker* widget on the page asks for, in days.
  *
  * Restricted to the widgets that actually read `trackerDays`, and that is the

@@ -180,10 +180,18 @@ struct Listener {
     problem: Option<String>,
     /// Not tried again before this, after it could not listen.
     retry_at: Option<Instant>,
+    /// When the vault was first seen open since it was last seen locked:
+    /// listening starts [`crate::talk::SETTLE_AFTER_UNLOCK`] after it.
+    unlocked_since: Option<Instant>,
 }
 
-static LISTENER: Mutex<Listener> =
-    Mutex::new(Listener { task: None, hearing: false, problem: None, retry_at: None });
+static LISTENER: Mutex<Listener> = Mutex::new(Listener {
+    task: None,
+    hearing: false,
+    problem: None,
+    retry_at: None,
+    unlocked_since: None,
+});
 
 fn listener() -> MutexGuard<'static, Listener> {
     LISTENER.lock().unwrap_or_else(|e| e.into_inner())
@@ -214,7 +222,15 @@ fn look(app: &AppHandle) {
     let config = load_config();
     // Off, as it is unless somebody turned it on: nothing else to look at.
     let held_back = if config.enabled { hold_back(app, &config) } else { Some(Reason::Off) };
+    // Followed whether or not it is switched on, so that switching it on in
+    // Settings long after an unlock starts it at once.
+    let unlocked = app.state::<AppState>().service().get().is_some_and(|v| v.is_unlocked());
     let mut listener = listener();
+    listener.unlocked_since = match listener.unlocked_since {
+        _ if !unlocked => None,
+        None => Some(Instant::now()),
+        since => since,
+    };
     if listener.task.as_ref().is_some_and(|task| task.inner().is_finished()) {
         listener.task = None;
         listener.hearing = false;
@@ -225,11 +241,26 @@ fn look(app: &AppHandle) {
             if listener.retry_at.is_some_and(|at| Instant::now() < at) {
                 return;
             }
+            // Just unlocked: the recogniser, unless it is still in memory,
+            // waits for the first screen to have read the vault. See
+            // `talk::SETTLE_AFTER_UNLOCK`.
+            if settling(listener.unlocked_since, Instant::now())
+                && !jatayu_service::speech::ready::recogniser_resident()
+            {
+                return;
+            }
             listener.retry_at = None;
             listener.task = Some(tauri::async_runtime::spawn(listen(app.clone(), config)));
         }
         _ => {}
     }
+}
+
+/// Whether the vault, open since `unlocked_since`, was unlocked too lately at
+/// `now` for listening to start by itself.
+fn settling(unlocked_since: Option<Instant>, now: Instant) -> bool {
+    unlocked_since
+        .is_none_or(|since| now.saturating_duration_since(since) < crate::talk::SETTLE_AFTER_UNLOCK)
 }
 
 fn stop(listener: &mut Listener) {
@@ -385,6 +416,12 @@ async fn settings(app: &AppHandle) -> WakeSettings {
     let assistant_name = assistant_name(&app.state::<AppState>().service()).await;
     let waiting = hold_back(app, &config).and_then(Reason::waiting);
     let listener = listener();
+    // Switched on and free to listen, in the moment after an unlock.
+    let starting = config.enabled
+        && waiting.is_none()
+        && listener.task.is_none()
+        && settling(listener.unlocked_since, Instant::now());
+    let waiting = waiting.or(starting.then_some("Starting in a moment."));
     WakeSettings {
         enabled: config.enabled,
         names: config.names,
@@ -468,6 +505,15 @@ mod tests {
         let call = Now { others_have_microphone: true, ..free() };
         assert_eq!(reason(call), Some(Reason::Call));
         assert_eq!(reason(Now { pause_in_calls: false, ..call }), None);
+    }
+
+    #[test]
+    fn it_waits_a_moment_after_an_unlock_before_listening_by_itself() {
+        let unlocked = Instant::now();
+        assert!(settling(None, unlocked), "not seen unlocked yet");
+        assert!(settling(Some(unlocked), unlocked + Duration::from_secs(1)));
+        assert!(!settling(Some(unlocked), unlocked + crate::talk::SETTLE_AFTER_UNLOCK));
+        assert!(!settling(Some(unlocked), unlocked + Duration::from_secs(3600)));
     }
 
     #[test]

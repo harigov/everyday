@@ -35,7 +35,9 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use jatayu_core::id::{AccountId, BlobId, MailMessageId, MailboxId};
 use jatayu_core::mail::categorize::{self, CategorizeInput};
-use jatayu_core::mail::{Body, Category, CategorySource, MailboxRole, Message, PartRef};
+use jatayu_core::mail::{
+    Body, Category, CategorySource, MailboxRole, Message, MessageFlags, PartRef,
+};
 use jatayu_core::packstore::{PackRef, PackStore};
 use jatayu_core::store::mail::IngestMessage;
 use jatayu_core::{MailDoc, MailSearch, Vault};
@@ -216,13 +218,47 @@ pub async fn sync_once_with<S: MailSession>(
     threads: &mut ThreadIndex,
     between: &mut impl BetweenMailboxes<S>,
 ) -> SessionResult<Vec<SyncedMailbox>> {
+    sync_once_after(ctx, session, labels, threads, between, &[]).await
+}
+
+/// [`sync_once_with`], given what this account task's last pass came back
+/// with: what each mailbox's last look left the vault holding (see
+/// [`SyncedMailbox::listed_whole`]) is what lets a pass ask a mailbox only
+/// what changed rather than list it whole again. Empty on a task's first
+/// pass, which lists every mailbox that is not quiet.
+pub async fn sync_once_after<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    labels: &mut LabelMailboxes,
+    threads: &mut ThreadIndex,
+    between: &mut impl BetweenMailboxes<S>,
+    previous: &[SyncedMailbox],
+) -> SessionResult<Vec<SyncedMailbox>> {
     let mut mailboxes = discovery::discover(ctx.vault, ctx.account_id, session).await?;
+    for mailbox in &mut mailboxes {
+        if let Some(before) = previous.iter().find(|p| p.row.id == mailbox.row.id) {
+            mailbox.remember(before);
+        }
+    }
+    // A folder never selected yet -- just discovered, most often -- is one the
+    // mail list has not heard of.
+    if mailboxes.iter().any(|m| m.row.uidvalidity == 0) {
+        found_a_mailbox(ctx);
+    }
     let mut vanished_by_mailbox = Vec::with_capacity(mailboxes.len());
     let mut all_mail_read_whole = None;
     for mailbox in &mut mailboxes {
-        let pass = sync_headers(ctx, session, mailbox, labels, threads).await?;
+        let pass = sync_headers(ctx, session, mailbox, labels, threads).await;
+        // The same for a Gmail label first met since the last pass, whichever
+        // way it came -- asked after each mailbox, failed or not, since the
+        // row is saved the moment it is minted and the next attempt starts
+        // with it already known.
+        if labels.take_minted() {
+            found_a_mailbox(ctx);
+        }
+        let pass = pass?;
         if pass.stored_all && mailbox.row.role == MailboxRole::All {
-            all_mail_read_whole = Some(mailbox.row.id);
+            all_mail_read_whole = Some((mailbox.row.id, pass.listed || pass.labels_changed));
         }
         vanished_by_mailbox.push(pass.vanished);
         between.between(session).await;
@@ -231,7 +267,12 @@ pub async fn sync_once_with<S: MailSession>(
     for (mailbox, vanished) in mailboxes.iter().zip(&vanished_by_mailbox) {
         reap_vanished(ctx, mailbox, vanished);
     }
-    if let Some(all_mail) = all_mail_read_whole
+    // Only a listing of All Mail finds what left it, and only a label
+    // re-check moves a message between labels; with neither, there is nothing
+    // new for a label to be holding. A task's first pass asks regardless, for
+    // whatever earlier ones left behind.
+    if let Some((all_mail, moved)) = all_mail_read_whole
+        && (moved || previous.is_empty())
         && session.capabilities().gmail
     {
         reap_labels_off_all_mail(ctx, all_mail, &mailboxes);
@@ -240,11 +281,32 @@ pub async fn sync_once_with<S: MailSession>(
         bodies_pass(ctx, session, mailbox).await?;
         between.between(session).await;
     }
-    let _ = ctx.index.commit();
+    commit_index(&ctx.index).await;
     if let Some(contacts) = &ctx.contacts {
         contacts.persist_if_dirty(ctx.vault);
     }
     Ok(mailboxes)
+}
+
+/// Say that this pass found a mailbox the mail list has not heard of: as work
+/// in progress, which a pass with nothing new otherwise never shows (see
+/// [`ingest_new`]), so a list that sees it asks for its mailboxes again when
+/// the pass is over -- and through
+/// [`StatusRegistry::mark_mailboxes_changed`], for the account task to raise
+/// a mailbox change once it is.
+fn found_a_mailbox(ctx: &SyncContext<'_>) {
+    ctx.statuses.set_phase(ctx.account_id, Phase::Headers, 0, 0);
+    ctx.statuses.mark_mailboxes_changed(ctx.account_id);
+}
+
+/// Make what the index was handed searchable, on the blocking pool: a commit
+/// writes and syncs a segment and reloads the reader, a fraction of a second
+/// of disk and CPU that a runtime worker, with a command waiting behind it,
+/// should not sit through. Awaited, so what follows still finds it done. A
+/// no-op, and cheap, when nothing was indexed since the last.
+pub(crate) async fn commit_index(index: &Arc<dyn MailSearch>) {
+    let index = index.clone();
+    let _ = tokio::task::spawn_blocking(move || index.commit()).await;
 }
 
 /// The most new messages [`quick_pass`] takes on. Past this many at once it
@@ -314,19 +376,42 @@ pub async fn quick_pass<S: MailSession>(
         IngestMode { just_reset: false, mailbox_known: true },
     )
     .await?;
+    // A label first met: the row is saved, and the full pass after this one
+    // may not get as far as asking.
+    if labels.take_minted() {
+        ctx.statuses.mark_mailboxes_changed(ctx.account_id);
+    }
     if ingested.news > 0 {
         on_news();
     }
-    let stored: HashSet<Uid> = ingested.stored.into_iter().collect();
-    let pending: Vec<(Message, Uid)> = pending_messages(ctx.vault, mailbox.row.id)
-        .into_iter()
-        .filter(|(_, uid)| stored.contains(uid))
+    // Read one by one, the few just stored, rather than every row in the
+    // mailbox still waiting for a body -- which after an interrupted first
+    // sync is thousands, each decrypted only to be passed over. What
+    // `fetch_announced` already fetched is no longer pending.
+    let pending: Vec<(Message, Uid)> = ingested
+        .stored
+        .iter()
+        .filter_map(|&(id, uid)| Some((ctx.vault.mail_message(id).ok()?, uid)))
+        .filter(|(message, _)| ingest::is_pending(&message.pack))
         .collect();
-    if !pending.is_empty() {
-        fetch_bodies(ctx, session, mailbox, pending).await?;
-        let _ = ctx.index.commit();
+    let fetched = if pending.is_empty() {
+        Ok(())
+    } else {
+        let fetched = fetch_bodies(ctx, session, mailbox, pending).await;
+        // The rows now have their first words, which the list drew without
+        // if the mail was announced while these were still downloading.
+        if fetched.is_ok() {
+            ctx.statuses.mark_changed(ctx.account_id);
+        }
+        fetched
+    };
+    // Whether or not the rest came down: what `fetch_announced` indexed of
+    // the mail just announced is searchable from here, not lost with an
+    // attempt that ends on this error before a lock.
+    if !ingested.stored.is_empty() {
+        commit_index(&ctx.index).await;
     }
-    Ok(())
+    fetched
 }
 
 /// Ask of each message held by
@@ -362,6 +447,11 @@ pub struct HeadersPass {
     /// the pass logs and carries on past: the vault is then short of what the
     /// mailbox holds, and missing from it means nothing until the next pass.
     pub stored_all: bool,
+    /// Whether the mailbox was listed whole, which is the only way a pass
+    /// learns what left it.
+    pub listed: bool,
+    /// Whether a Gmail label re-check moved anything between labels.
+    pub labels_changed: bool,
 }
 
 /// `SELECT` `mailbox`, diff it against what the vault already has, and
@@ -458,6 +548,9 @@ pub async fn sync_headers<S: MailSession>(
         // `uidnext` over it.
         let _ = ctx.vault.save_mailbox(&mailbox.row);
     }
+    // What the row says as stored, for the save at the bottom to skip a write
+    // -- and its sync -- when the pass moved none of it.
+    let stored_row = mailbox.row.clone();
     if mailbox.row.uidvalidity == 0 {
         mailbox.row.uidvalidity = state.uidvalidity;
     }
@@ -485,10 +578,15 @@ pub async fn sync_headers<S: MailSession>(
         && state.uidnext == mailbox.row.uidnext
         && state.highestmodseq.is_some_and(|m| m == mailbox.row.highest_modseq)
         && known.len() == u64::from(state.exists);
-    let changes = if quiet {
-        jatayu_mail::session::Changes::default()
+    let (changes, listed) = if quiet {
+        (jatayu_mail::session::Changes::default(), false)
     } else {
-        session.changes_since(&cursor, &known).await?
+        match unlisted_changes(session, mailbox, &state, &cursor, &known, just_reset, mailbox_known)
+            .await?
+        {
+            Some(changes) => (changes, false),
+            None => (session.changes_since(&cursor, &known).await?, true),
+        }
     };
 
     // Reaping `changes.vanished` happens later, once every mailbox in this
@@ -508,21 +606,18 @@ pub async fn sync_headers<S: MailSession>(
     // real flag activity from paying for a full rewrite -- a decrypt, a
     // re-seal, an upsert and a thread recompute per message -- on every
     // single pass.
-    let mut any_flag_actually_changed = false;
-    for &(uid, flags, _modseq) in &changes.flag_changes {
-        let new_flags = ingest::mail_flags(flags);
-        let unchanged = ctx
-            .vault
-            .message_by_uid(mailbox.row.id, uid)
-            .ok()
-            .flatten()
-            .is_some_and(|m| m.flags == new_flags);
-        if unchanged {
-            continue;
-        }
-        any_flag_actually_changed = true;
-        let _ = ctx.vault.update_message_flags(mailbox.row.id, uid, new_flags);
-    }
+    //
+    // Compared against the clear `flags` column in one read, and written in
+    // one batch: a decrypt and a transaction per reported uid was seconds of
+    // work for a bulk change made in another client, or every pass without
+    // `CONDSTORE`. A uid the vault does not hold has nothing to update.
+    let flag_updates = flag_updates(ctx, mailbox.row.id, &changes.flag_changes);
+    let any_flag_actually_changed = !flag_updates.is_empty();
+    // A write that failed, even in part, keeps `HIGHESTMODSEQ` where it was
+    // below, so `CHANGEDSINCE` reports these changes again next pass rather
+    // than never.
+    let flags_failed = any_flag_actually_changed
+        && ctx.vault.update_message_flags_many(mailbox.row.id, &flag_updates).is_err();
 
     // Gmail labels, on All Mail: see `refresh_gmail_labels`'s own docs for
     // why a plain flag diff never notices a message archived, or
@@ -605,10 +700,24 @@ pub async fn sync_headers<S: MailSession>(
     let highest_known_uid = known.iter().max().into_iter().chain(highest_new_uid).max();
     mailbox.row.uidnext =
         highest_known_uid.map(|uid| uid.saturating_add(1)).unwrap_or(0).max(state.uidnext);
-    if let Some(modseq) = state.highestmodseq {
+    if let Some(modseq) = state.highestmodseq
+        && !flags_failed
+    {
         mailbox.row.highest_modseq = modseq;
     }
-    let _ = ctx.vault.save_mailbox(&mailbox.row);
+    if mailbox.row != stored_row {
+        let _ = ctx.vault.save_mailbox(&mailbox.row);
+    }
+    // What the next pass of this task may lean on -- see
+    // `SyncedMailbox::listed_whole`. A quiet pass learned nothing new either
+    // way; a pass that asked only what changed checked the counts first.
+    if listed {
+        mailbox.passes_since_listing = 0;
+        mailbox.listed_whole = stored_all;
+    } else if !quiet {
+        mailbox.passes_since_listing += 1;
+        mailbox.listed_whole = stored_all;
+    }
 
     // Any of these can move a thread across the read/unread line -- a new
     // message, a flag another client actually changed, one this account no
@@ -639,7 +748,204 @@ pub async fn sync_headers<S: MailSession>(
         ctx.statuses.mark_changed(ctx.account_id);
     }
 
-    Ok(HeadersPass { vanished: changes.vanished, stored_all })
+    Ok(HeadersPass {
+        vanished: changes.vanished,
+        stored_all,
+        listed,
+        labels_changed: gmail_labels_changed,
+    })
+}
+
+/// How many passes in a row [`unlisted_changes`] may stand in for listing a
+/// mailbox whole. The counts it trusts cannot be wrong on a server that keeps
+/// the rules, and this bounds what one that does not could hide.
+const LISTING_AT_LEAST_EVERY: u32 = 15;
+
+/// What changed in `mailbox` since the last pass, found without `UID SEARCH
+/// ALL` when the counts prove what it would say -- or `None`, for the caller
+/// to list the mailbox whole.
+///
+/// `UIDNEXT` moves on every message added, even one expunged straight after
+/// (RFC 3501 2.3.1.1). So once the last pass left the vault holding exactly
+/// the server's uids ([`SyncedMailbox::listed_whole`]), every uid added since
+/// is at or above where that pass left `uidnext`, and the server's count
+/// tells what went:
+///
+/// * `UIDNEXT` where it was and `EXISTS` the vault's own count: nothing came
+///   and nothing went, so only flags moved -- the case that follows each of
+///   the app's own actions, which bump `HIGHESTMODSEQ` and nothing else.
+/// * `UIDNEXT` past it: the uids from there up, less the ones the vault
+///   already holds, are what is new, and if the vault's count plus those is
+///   `EXISTS`, nothing went.
+///
+/// Anything else -- a count that disagrees, a reset, a server without
+/// `CONDSTORE`, a task's first pass, a refused search -- lists, as do the
+/// [`LISTING_AT_LEAST_EVERY`]th passes in a row.
+async fn unlisted_changes<S: MailSession>(
+    session: &mut S,
+    mailbox: &SyncedMailbox,
+    state: &jatayu_mail::session::MailboxState,
+    cursor: &SyncCursor,
+    known: &UidSet,
+    just_reset: bool,
+    mailbox_known: bool,
+) -> SessionResult<Option<jatayu_mail::session::Changes>> {
+    let trusted = !just_reset
+        && mailbox_known
+        && mailbox.listed_whole
+        && mailbox.passes_since_listing < LISTING_AT_LEAST_EVERY
+        && session.capabilities().condstore
+        && cursor.highestmodseq.is_some()
+        && state.highestmodseq.is_some()
+        && state.uidnext != 0;
+    if !trusted {
+        return Ok(None);
+    }
+    let exists = u64::from(state.exists);
+    let new_uids = if state.uidnext == mailbox.row.uidnext {
+        if known.len() != exists {
+            return Ok(None);
+        }
+        UidSet::new()
+    } else if state.uidnext > mailbox.row.uidnext {
+        let arrived = match session.uids_from(mailbox.row.uidnext).await {
+            Ok(arrived) => arrived,
+            Err(e @ (MailError::Network(_) | MailError::Auth(_))) => return Err(e),
+            Err(_) => return Ok(None),
+        };
+        let fresh: UidSet = arrived.iter().filter(|uid| !known.contains(*uid)).collect();
+        if known.len() + fresh.len() != exists {
+            return Ok(None);
+        }
+        fresh
+    } else {
+        return Ok(None);
+    };
+    let flag_changes = session.flag_changes_since(cursor, known).await?;
+    Ok(Some(jatayu_mail::session::Changes {
+        new_uids,
+        flag_changes,
+        vanished: UidSet::new(),
+        uidvalidity_reset: false,
+    }))
+}
+
+/// What moved in `mailbox`, the one `IDLE` is about to watch, since the last
+/// pass -- when the `SELECT` before `IDLE` (`state`) says only flags or
+/// labels did: what each of the app's own actions leaves behind, and a
+/// phone's reads while the task was draining them. Reconciled here, from
+/// `CHANGEDSINCE` and a Gmail label re-check of the uids it names, rather
+/// than by a full pass over every mailbox, which after each read, star or
+/// archive was seconds of `SELECT`s and searches for one flag. The session
+/// must have `mailbox` selected.
+///
+/// `Ok(false)`, having changed nothing the next pass would not redo, when the
+/// counts do not prove that nothing came or went -- the same proof
+/// [`unlisted_changes`] asks for -- or a step other than the connection
+/// failed: the caller runs the full pass instead. `HIGHESTMODSEQ` is moved
+/// on only once every change is written, so one missed is asked for again.
+///
+/// Mail that came or went while this ran was told of only inside its
+/// `FETCH`es' answers, which keep nothing but the fetched items, so after
+/// `Ok(true)` the caller `SELECT`s once more before `IDLE` rather than
+/// trusting `IDLE` to hear of it.
+pub async fn reconcile_selected<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &mut SyncedMailbox,
+    state: &jatayu_mail::session::MailboxState,
+    labels: &mut LabelMailboxes,
+) -> SessionResult<bool> {
+    let Some(modseq) = state.highestmodseq else { return Ok(false) };
+    let trusted = mailbox.listed_whole
+        && session.capabilities().condstore
+        && mailbox.row.highest_modseq != 0
+        && mailbox.row.uidvalidity == state.uidvalidity
+        && state.uidnext != 0
+        && state.uidnext == mailbox.row.uidnext
+        && state.uidnext == mailbox.seen_uidnext
+        && state.exists == mailbox.seen_exists;
+    if !trusted {
+        return Ok(false);
+    }
+    let Ok(known) = ctx.vault.mail_uid_set(mailbox.row.id) else { return Ok(false) };
+    let known: UidSet = known.into_iter().collect();
+    if known.len() != u64::from(state.exists) {
+        return Ok(false);
+    }
+    let cursor = SyncCursor {
+        uidvalidity: mailbox.row.uidvalidity,
+        highest_uid_seen: 0,
+        highestmodseq: Some(mailbox.row.highest_modseq),
+    };
+    let flag_changes = match session.flag_changes_since(&cursor, &known).await {
+        Ok(changes) => changes,
+        Err(e @ (MailError::Network(_) | MailError::Auth(_))) => return Err(e),
+        Err(_) => return Ok(false),
+    };
+    let updates = flag_updates(ctx, mailbox.row.id, &flag_changes);
+    if !updates.is_empty() {
+        let written = ctx.vault.update_message_flags_many(mailbox.row.id, &updates);
+        // Said as soon as anything may have been written, before a step below
+        // can hand this to the full pass: that pass finds these flags already
+        // stored, so it would tell nobody of them.
+        list_changed(ctx);
+        if written.is_err() {
+            return Ok(false);
+        }
+    }
+    if session.capabilities().gmail && mailbox.row.role == MailboxRole::All {
+        let changed: UidSet = flag_changes.iter().map(|&(uid, _, _)| uid).collect();
+        if !changed.is_empty() {
+            let refreshed = refresh_gmail_labels(ctx, session, mailbox, &changed, labels).await;
+            if labels.take_minted() {
+                ctx.statuses.mark_mailboxes_changed(ctx.account_id);
+            }
+            match refreshed {
+                Ok(true) => list_changed(ctx),
+                Ok(false) => {}
+                Err(e @ (MailError::Network(_) | MailError::Auth(_))) => return Err(e),
+                Err(_) => return Ok(false),
+            }
+        }
+    }
+    mailbox.row.highest_modseq = modseq;
+    let _ = ctx.vault.save_mailbox(&mailbox.row);
+    Ok(true)
+}
+
+/// What a reconcile that wrote something says: the unread counts are stale,
+/// and an open list is to be told.
+fn list_changed(ctx: &SyncContext<'_>) {
+    if let Some(cache) = &ctx.unread_cache {
+        cache.invalidate(ctx.account_id);
+    }
+    ctx.statuses.mark_changed(ctx.account_id);
+}
+
+/// The `(uid, flags)` of every reported change that differs from what the
+/// vault holds for a uid it has, read from the clear `flags` column. If that
+/// read fails, every reported change, as each was written before the read
+/// existed: a uid the vault lacks is a no-op to write.
+fn flag_updates(
+    ctx: &SyncContext<'_>,
+    mailbox: MailboxId,
+    reported: &[(Uid, jatayu_mail::session::Flags, Option<u64>)],
+) -> Vec<(Uid, MessageFlags)> {
+    if reported.is_empty() {
+        return Vec::new();
+    }
+    let uids: Vec<Uid> = reported.iter().map(|&(uid, _, _)| uid).collect();
+    match ctx.vault.mail_stored_flags(mailbox, &uids) {
+        Ok(stored) => reported
+            .iter()
+            .map(|&(uid, flags, _)| (uid, ingest::mail_flags(flags)))
+            .filter(|(uid, flags)| stored.get(uid).is_some_and(|now| now != flags))
+            .collect(),
+        Err(_) => {
+            reported.iter().map(|&(uid, flags, _)| (uid, ingest::mail_flags(flags))).collect()
+        }
+    }
 }
 
 /// How [`ingest_new`] treats what it stores: whether the mailbox is being
@@ -657,8 +963,9 @@ struct Ingested {
     stored_all: bool,
     /// A batch already told an open list it changed.
     marked_new: bool,
-    /// The uids of every header in a batch that was stored.
-    stored: Vec<Uid>,
+    /// The message and uid of every header in a batch that was stored, as
+    /// filed in the mailbox the headers came from.
+    stored: Vec<(MailMessageId, Uid)>,
     /// How many of those were news in an inbox -- see
     /// [`crate::arrivals::ingest_is_news`].
     news: usize,
@@ -678,6 +985,12 @@ async fn ingest_new<S: MailSession>(
     new_uids: Vec<Uid>,
     mode: IngestMode,
 ) -> SessionResult<Ingested> {
+    // Nothing new, which is nearly every mailbox on nearly every pass: no
+    // progress to say -- a quiet minute's pass is not "syncing" -- and no
+    // rules to read.
+    if new_uids.is_empty() {
+        return Ok(Ingested { stored_all: true, marked_new: false, stored: Vec::new(), news: 0 });
+    }
     let total = new_uids.len() as u64;
     let mut done = 0u64;
     let mut stored_all = true;
@@ -835,6 +1148,11 @@ async fn ingest_new<S: MailSession>(
             }
         }
         let stored_any = !ingest_batch.is_empty();
+        let filed_here: Vec<(MailMessageId, Uid)> = ingest_batch
+            .iter()
+            .filter(|m| m.mailbox == mailbox.row.id)
+            .map(|m| (m.message.id, m.uid))
+            .collect();
         match ctx.vault.ingest_mail(ctx.account_id, ingest_batch) {
             // Only a stored message is news. One that failed to store comes
             // back as new on the next pass, with a fresh id, and is noted
@@ -854,7 +1172,7 @@ async fn ingest_new<S: MailSession>(
                     marked_new = true;
                 }
                 ctx.statuses.mark_arrived(ctx.account_id, arrivals.iter().map(|a| a.message));
-                stored.extend(headers.iter().map(|h| h.uid));
+                stored.extend(filed_here);
                 news += arrivals.len();
                 // Before anything is noted: a note is announced at once, and
                 // its notification shows the first words. What could be said
@@ -1209,7 +1527,7 @@ async fn refresh_gmail_labels<S: MailSession>(
     uids: &UidSet,
     labels: &mut LabelMailboxes,
 ) -> SessionResult<bool> {
-    let headers = session.headers(uids).await?;
+    let headers = session.gmail_labels(uids).await?;
     let mut changed_anything = false;
     for header in &headers {
         let Some(gmail) = &header.gmail else { continue };
@@ -1425,11 +1743,12 @@ struct BodyFacts {
     invite: Option<jatayu_core::mail::Invite>,
 }
 
-/// [`fetch_bodies`], saying so in the account's progress only when `report`
-/// -- not for the few [`fetch_announced`] takes in the middle of the
-/// headers, which would make it jump to a finished bodies phase and back --
-/// and handing back what an announcement says of each message it stored, by
-/// id ([`BodyFacts`]).
+/// [`fetch_bodies`], saying so in the account's progress, and pacing the
+/// index's commits, only when `report` -- not for the few
+/// [`fetch_announced`] takes in the middle of the headers, which would make
+/// the progress jump to a finished bodies phase and back, and hold the
+/// announcement behind a commit -- and handing back what an announcement
+/// says of each message it stored, by id ([`BodyFacts`]).
 async fn store_bodies<S: MailSession>(
     ctx: &SyncContext<'_>,
     session: &mut S,
@@ -1461,8 +1780,9 @@ async fn store_bodies<S: MailSession>(
         let mailbox_id = mailbox.row.id;
         let attachment_cap = ctx.attachment_cap_bytes;
         let identities = ctx.identities.clone();
+        let index = ctx.index.clone();
         let batch_owned: Vec<(Message, Uid)> = batch.to_vec();
-        let (docs, stored) = tokio::task::spawn_blocking(move || {
+        let (indexed, stored) = tokio::task::spawn_blocking(move || {
             // Every message this batch actually got raw bytes for, in
             // order -- sealed in *one* `append_batch` call below rather
             // than one per message, which is the whole reason this batch
@@ -1477,7 +1797,7 @@ async fn store_bodies<S: MailSession>(
                 .collect();
             let raws: Vec<&[u8]> = present.iter().map(|(_, _, raw)| raw.as_slice()).collect();
             let Ok(sealed) = packs.append_batch(&account_id.to_string(), &raws) else {
-                return (Vec::new(), Vec::new());
+                return (0, Vec::new());
             };
 
             let mut processed = Vec::with_capacity(present.len());
@@ -1540,24 +1860,27 @@ async fn store_bodies<S: MailSession>(
                     (message.id, facts)
                 })
                 .collect();
-            (docs, stored)
+            // Indexed here, on the blocking pool with the rest: tokenising a
+            // hundred bodies is CPU a runtime worker should not spend.
+            if !docs.is_empty() {
+                let _ = index.index(&docs);
+            }
+            (docs.len() as u64, stored)
         })
         .await
         .unwrap_or_default();
         read.extend(stored);
 
-        let indexed = docs.len() as u64;
-        if !docs.is_empty() {
-            let _ = ctx.index.index(&docs);
-            // Paced rather than committed every batch: about every 2,000
-            // docs or every five seconds, whichever comes first, per the
-            // plan's own cadence -- see `CommitPacer`. `sync_once` commits
-            // once more, unconditionally, at the end of the whole pass, so
-            // nothing indexed here is ever left uncommitted for longer than
-            // that.
-            if ctx.index_commit.record(indexed) {
-                let _ = ctx.index.commit();
-            }
+        // Paced rather than committed every batch: about every 2,000 docs or
+        // every five seconds, whichever comes first, per the plan's own
+        // cadence -- see `CommitPacer`. `sync_once` commits once more at the
+        // end of the whole pass, and a quick pass at the end of its own, so
+        // nothing indexed here is ever left uncommitted for longer than that.
+        // Not for the few `fetch_announced` takes in the middle of the
+        // headers: a commit there stood between the mail being stored and
+        // its being announced.
+        if report && indexed > 0 && ctx.index_commit.record(indexed) {
+            commit_index(&ctx.index).await;
         }
 
         done += batch.len() as u64;
@@ -1769,8 +2092,8 @@ const MAX_STORED_PARTS: usize = 500;
 /// the order `domains::mail::fetch_attachment` indexes them by.
 ///
 /// A part gets a blob, through `put`, when it is among the first
-/// [`MAX_STORED_PARTS`] and within `attachment_cap_bytes`; any other part is
-/// listed with none. Every part's bytes come from one
+/// [`MAX_STORED_PARTS`], within `attachment_cap_bytes` and not the message's
+/// own text ([`is_body_text`]); any other part is listed with none. Every part's bytes come from one
 /// [`jatayu_mail::mime::PartReader`], not a parse per part -- see its own
 /// docs for what that cost. `put` is the vault's `put_blob` outside tests.
 fn part_refs(
@@ -1784,7 +2107,8 @@ fn part_refs(
     let reader = jatayu_mail::mime::PartReader::new(raw).ok();
     let mut refs = Vec::with_capacity(parts.len());
     for (index, part) in parts.iter().enumerate() {
-        let stored = index < MAX_STORED_PARTS
+        let stored = !is_body_text(part)
+            && index < MAX_STORED_PARTS
             && attachment_cap_bytes.is_none_or(|cap| (part.size as u64) <= cap);
         let blob = match &reader {
             Some(reader) if stored => reader.bytes(&part.part_id).ok().and_then(&mut put),
@@ -1800,6 +2124,25 @@ fn part_refs(
         });
     }
     refs
+}
+
+/// A part that is the message's own text rather than something sent with it:
+/// a nameless `text/plain`, `text/html` or `text/calendar` that is neither
+/// marked as an attachment nor named by a `Content-ID` for the HTML to show.
+/// Nothing reads such a part's blob -- the body is read into [`Body`], the
+/// invitation into [`Message::invite`], and `mail::view::is_attachment` never
+/// lists one as a file -- so storing it was a file written and synced twice
+/// for every message. Listed all the same, with no blob, so every other part
+/// keeps its index; `domains::mail::fetch_attachment` reads one out of the
+/// raw message should anything ever ask.
+fn is_body_text(part: &jatayu_mail::mime::Part) -> bool {
+    part.disposition != Disposition::Attachment
+        && part.filename.is_none()
+        && part.content_id.is_none()
+        && matches!(
+            part.content_type.trim().to_ascii_lowercase().as_str(),
+            "text/plain" | "text/html" | "text/calendar"
+        )
 }
 
 /// A [`MailDoc`] for `message`, filed under `mailbox_id`. Shared by
@@ -1872,15 +2215,17 @@ mod part_ref_tests {
         Some(BlobId::of(bytes))
     }
 
-    /// A message of `count` tiny text parts, the shape a sender uses to make
-    /// one message cost as many part reads as it likes.
+    /// A message of `count` tiny parts, the shape a sender uses to make one
+    /// message cost as many part reads as it likes.
     fn many_parts(count: usize) -> Vec<u8> {
         let mut raw = String::from(
             "From: a@example.com\r\nTo: b@example.com\r\nSubject: Many\r\nMIME-Version: 1.0\r\n\
              Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n",
         );
         for i in 0..count {
-            raw.push_str(&format!("--b\r\nContent-Type: text/plain\r\n\r\npart {i}\r\n"));
+            raw.push_str(&format!(
+                "--b\r\nContent-Type: application/octet-stream\r\n\r\npart {i}\r\n"
+            ));
         }
         raw.push_str("--b--\r\n");
         raw.into_bytes()
@@ -1910,10 +2255,15 @@ aGVsbG8=\r\n\
         assert_eq!(refs.len(), parsed.parts.len());
         assert!(refs.iter().any(|r| r.attached), "its picture was sent as an attachment");
         for (stored, part) in refs.iter().zip(&parsed.parts) {
-            let bytes = jatayu_mail::mime::part_bytes(raw, &part.part_id).unwrap();
-            assert_eq!(stored.blob, Some(BlobId::of(&bytes)), "part {}", part.part_id);
             assert_eq!(stored.mime_type, part.content_type);
             assert_eq!(stored.size, part.size as u64);
+            if part.content_type == "text/plain" {
+                // The message's own words: read into its body, never a file.
+                assert_eq!(stored.blob, None, "part {}", part.part_id);
+                continue;
+            }
+            let bytes = jatayu_mail::mime::part_bytes(raw, &part.part_id).unwrap();
+            assert_eq!(stored.blob, Some(BlobId::of(&bytes)), "part {}", part.part_id);
         }
 
         // The per-part size cap still holds: the five-byte picture is
@@ -1955,6 +2305,59 @@ aGVsbG8=\r\n\
             ),
             "marked as an attachment, and nothing to show for it"
         );
+    }
+
+    /// Only what is sent with a message is stored: a PDF, and a picture the
+    /// HTML shows by `Content-ID` -- not the plain and HTML text the body is
+    /// read from. Every part is still listed, in order.
+    #[test]
+    fn the_messages_own_text_is_listed_but_not_stored() {
+        let raw = b"From: a@example.com\r\n\
+To: b@example.com\r\n\
+Subject: Mixed\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"m\"\r\n\
+\r\n\
+--m\r\n\
+Content-Type: multipart/related; boundary=\"r\"\r\n\
+\r\n\
+--r\r\n\
+Content-Type: multipart/alternative; boundary=\"a\"\r\n\
+\r\n\
+--a\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+hello\r\n\
+--a\r\n\
+Content-Type: text/html\r\n\
+\r\n\
+<p>hello <img src=\"cid:pic@x\"></p>\r\n\
+--a--\r\n\
+--r\r\n\
+Content-Type: image/png\r\n\
+Content-ID: <pic@x>\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+aGVsbG8=\r\n\
+--r--\r\n\
+--m\r\n\
+Content-Type: application/pdf\r\n\
+Content-Disposition: attachment; filename=\"a.pdf\"\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+aGVsbG8=\r\n\
+--m--\r\n";
+        let parsed = jatayu_mail::mime::parse(raw).unwrap();
+        let mut puts = 0;
+        let refs = part_refs(raw, &parsed.parts, None, |bytes| {
+            puts += 1;
+            content_address(bytes)
+        });
+        let types: Vec<&str> = refs.iter().map(|r| r.mime_type.as_str()).collect();
+        assert_eq!(types, ["text/plain", "text/html", "image/png", "application/pdf"]);
+        assert_eq!(puts, 2, "the picture and the PDF");
+        let stored: Vec<bool> = refs.iter().map(|r| r.blob.is_some()).collect();
+        assert_eq!(stored, [false, false, true, true]);
     }
 
     #[test]

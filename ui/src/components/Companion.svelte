@@ -10,6 +10,10 @@
   //   - off screen, or in a hidden window, the loop stops, because a header
   //     ornament that kept a GPU busy behind a minimised window would be the
   //     most expensive thing in the application;
+  //   - with nothing to do -- idle, listening, asleep -- it settles and is
+  //     then held on one frame until something moves it (see `parks`), and
+  //     at once in a window that has lost the focus; a turn at work keeps
+  //     moving, since the bird is how that shows from across the room;
   //   - with reduced motion asked for, the bird is drawn once per act, still,
   //     in the pose that act ends up in, so it still says what it is doing
   //     without moving to say it;
@@ -19,6 +23,12 @@
   // petted -- a click, or Enter on it -- for a wiggle and some hearts.
   // Neither does anything else; the bird is not a button for anything but
   // itself.
+  //
+  // The scene is built once the window has drawn what it opened to and has a
+  // quiet moment, or as soon as the pointer comes onto the bird: three.js and
+  // a WebGL context are the heaviest thing a window starts, and an ornament
+  // can wait for the content. Until then the canvas is empty, as it always
+  // was while the scene loaded.
 
   import { onMount } from 'svelte'
   import type { Act, Look } from '../lib/companion'
@@ -44,36 +54,48 @@
 
   /** How far, in CSS pixels, counts as "all the way over there". */
   const REACH = 320
+  /** How long after the window loses the focus it counts as nobody there. */
+  const UNFOCUSED_MS = 3000
+  /** Where the webview offers no idle callback (WebKit), how long to wait instead. */
+  const QUIET_MS = 300
 
-  onMount(() => {
-    let alive = true
-    let onScreen = false
-    let observer: IntersectionObserver | null = null
-    let pending: PointerEvent | null = null
-    let raf = 0
+  /** Mounted, and not yet torn down. */
+  let alive = true
+  /** The scene has been asked for; see `begin`. */
+  let begun = false
+  /** In the viewport, by the IntersectionObserver. */
+  let onScreen = false
+  /** The window has the focus, or lost it only a moment ago. */
+  let focused = document.hasFocus()
+  let observer: IntersectionObserver | null = null
+  /** The wait for a quiet moment: frames, then an idle callback or a timer. */
+  let frames = 0
+  let idle = 0
+  let quiet: ReturnType<typeof setTimeout> | null = null
 
-    function run() {
-      if (!scene) return
-      if (still.matches) scene.still()
-      else if (onScreen && !document.hidden) scene.play()
-      else scene.pause()
-    }
+  /** Draw, hold still, or stop, for how things stand now. */
+  function run() {
+    if (!scene) return
+    scene.attend(focused)
+    if (still.matches) scene.still()
+    else if (onScreen && !document.hidden) scene.play()
+    else scene.pause()
+  }
 
-    // Where the pointer is, relative to the bird, read once a frame at most:
-    // a pointer moves far more often than the bird draws.
-    function onPointer(event: PointerEvent) {
-      pending = event
-      if (raf) return
-      raf = requestAnimationFrame(() => {
-        raf = 0
-        if (!pending || !canvas || !scene || still.matches) return
-        const box = canvas.getBoundingClientRect()
-        const x = (pending.clientX - (box.left + box.width / 2)) / REACH
-        const y = (pending.clientY - (box.top + box.height * 0.45)) / REACH
-        scene.lookAt(x, y)
-      })
-    }
+  function stopWaiting() {
+    cancelAnimationFrame(frames)
+    frames = 0
+    if (idle) cancelIdleCallback(idle)
+    idle = 0
+    if (quiet) clearTimeout(quiet)
+    quiet = null
+  }
 
+  /** Build the scene, now: see the note at the top for when. */
+  function begin() {
+    if (begun || !alive) return
+    begun = true
+    stopWaiting()
     void import('../lib/companion-scene').then(({ createCompanionScene }) => {
       if (!alive || !canvas) return
       const accent = getComputedStyle(canvas).getPropertyValue('--accent')
@@ -91,17 +113,75 @@
       observer.observe(canvas)
       run()
     })
+  }
+
+  onMount(() => {
+    let pending: PointerEvent | null = null
+    let raf = 0
+    let blurred: ReturnType<typeof setTimeout> | null = null
+
+    // Where the pointer is, relative to the bird, read once a frame at most:
+    // a pointer moves far more often than the bird draws. Not at all while it
+    // is stopped or still, when there is no head to turn.
+    function onPointer(event: PointerEvent) {
+      pending = event
+      if (raf || !scene?.playing) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        if (!pending || !canvas || !scene || still.matches) return
+        const box = canvas.getBoundingClientRect()
+        const x = (pending.clientX - (box.left + box.width / 2)) / REACH
+        const y = (pending.clientY - (box.top + box.height * 0.45)) / REACH
+        scene.lookAt(x, y)
+      })
+    }
+
+    // Losing the focus to a frame inside this window -- a mail's body -- is not
+    // losing it, which is why the window is asked again when the wait is up.
+    function onBlur() {
+      if (blurred) clearTimeout(blurred)
+      blurred = setTimeout(() => {
+        blurred = null
+        focused = document.hasFocus()
+        run()
+      }, UNFOCUSED_MS)
+    }
+    function onFocus() {
+      if (blurred) clearTimeout(blurred)
+      blurred = null
+      focused = true
+      run()
+    }
+
+    // Two frames, so what the window opened to has been drawn; then a quiet
+    // moment, or a short wait where there is no way to ask for one.
+    frames = requestAnimationFrame(() => {
+      frames = requestAnimationFrame(() => {
+        frames = 0
+        if (typeof requestIdleCallback === 'function') {
+          idle = requestIdleCallback(begin, { timeout: 1500 })
+        } else {
+          quiet = setTimeout(begin, QUIET_MS)
+        }
+      })
+    })
 
     document.addEventListener('visibilitychange', run)
     still.addEventListener('change', run)
     window.addEventListener('pointermove', onPointer, { passive: true })
+    window.addEventListener('blur', onBlur)
+    window.addEventListener('focus', onFocus)
     return () => {
       alive = false
+      stopWaiting()
+      if (blurred) clearTimeout(blurred)
       cancelAnimationFrame(raf)
       observer?.disconnect()
       document.removeEventListener('visibilitychange', run)
       still.removeEventListener('change', run)
       window.removeEventListener('pointermove', onPointer)
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('focus', onFocus)
       scene?.dispose()
       scene = null
     }
@@ -148,6 +228,7 @@
     title="Pet {name}"
     aria-label="Pet {name}"
     onclick={pet}
+    onpointerenter={begin}
   >
     <canvas bind:this={canvas} style="width: {width}px; height: {height}px"></canvas>
   </button>

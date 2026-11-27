@@ -22,6 +22,7 @@
 //! nothing else.
 
 use axum::extract::{ConnectInfo, Request, State};
+use axum::handler::Handler;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -84,6 +85,12 @@ const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsa
     connect-src 'self'; frame-src 'self'; worker-src 'self' blob:; \
     object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
 
+/// How hard the interface's own files are compressed: harder than a command's
+/// answer, since every built file is named after what is in it, and so is
+/// packed once and kept for as long as the router (the page itself is small,
+/// and asked for fresh).
+const ASSET_LEVEL: u32 = 6;
+
 /// What everything under `/v1/` is sent with unless its route said
 /// otherwise: the same sandbox the desktop's `jatayu:` responses carry.
 /// A blob's type is sniffed from its bytes, and a picture can be an SVG; a
@@ -120,7 +127,15 @@ pub(crate) fn app(state: Arc<WebState>) -> Router {
         .route("/web/login", post(login))
         .route("/web/logout", post(logout))
         .route("/web/events", get(events))
-        .fallback(asset)
+        // The interface's scripts and styles are four megabytes as built and
+        // one compressed: seconds, the first time after an update, over a
+        // phone's connection. Only here and on the API's own routes that
+        // answer whole (see `routes::over_the_wire`) -- never the sign-in,
+        // whose answer carries a secret beside what a stranger can choose.
+        .fallback(asset.layer(axum::middleware::from_fn_with_state(
+            crate::routes::Packing { level: ASSET_LEVEL, keep: Some(Arc::default()) },
+            crate::routes::compress,
+        )))
         .with_state(state.clone());
     let inner = api.merge(web);
     // Around the whole router, not as one of its layers: see the module doc.
@@ -279,7 +294,7 @@ async fn hello(
     Json(json!({
         // The vault open now, not the one open when the switch was thrown --
         // the desktop can open another underneath a running server.
-        "name": vault.as_ref().map(|v| v.status().name).unwrap_or_else(|| state.server.name.clone()),
+        "name": vault.as_ref().map(|v| v.name()).unwrap_or_else(|| state.server.name.clone()),
         "protocol": jatayu_service::PROTOCOL,
         "signedIn": media.is_some(),
         "mediaToken": media,
@@ -321,7 +336,7 @@ async fn login(
     let Some(vault) = state.server.service.get() else {
         return failure(CommandError::new(codes::NO_VAULT, "No vault is open on that computer."));
     };
-    if !vault.status().encrypted {
+    if !vault.is_encrypted() {
         return failure(CommandError::new(
             codes::FORBIDDEN,
             "This vault has no password, so it cannot be opened from a browser. Give it one in \

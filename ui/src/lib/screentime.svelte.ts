@@ -100,6 +100,14 @@ const SCREEN_ACCENT = 'var(--app-screentime)'
 const LIVE_EVERY_MS = 60_000
 
 /**
+ * How long a full read stays good enough to draw again on the way back into
+ * the app, unasked. A change made elsewhere meanwhile marks the store stale
+ * (`live.svelte.ts`, `spansArrived`), so this only has to cover writes
+ * nothing announces.
+ */
+const FRESH_MS = 60_000
+
+/**
  * Which pane was last open, the range the summary covers, and the devices
  * it is narrowed to -- remembered on this device: chrome, not a fact about
  * the vault. Read in the constructor, so the app does not draw the summary
@@ -174,6 +182,15 @@ class ScreenTimeState {
    *  pane opens and its form takes this as the cue to focus. Cleared by
    *  whoever acts on it. */
   wantsNewCategory = $state(false)
+
+  /**
+   * Set when a change arrived while Screen time was off screen, or changes
+   * may have been missed: the next `start` reads in full. See `markStale`.
+   */
+  stale = false
+  /** When the last full read began, and on what day. See `start`. */
+  #loadedAt = 0
+  #loadedOn = ''
 
   /** Which load is the current one, per thing loaded. */
   #basicsGen = latest()
@@ -274,11 +291,32 @@ class ScreenTimeState {
   // ── lifecycle ────────────────────────────────────────────────────────
 
   /** Called when the app is first opened. Loads what the pane needs, plus
-   *  categories, settings and this machine's status. */
+   *  categories, settings and this machine's status -- unless all that was
+   *  read in the last minute, today, and nothing has marked it stale since,
+   *  when what is here is simply drawn again. */
   async start(): Promise<void> {
     if (!app.supportsScreenTime) return
+    const now = Date.now()
+    const today = todayIso()
+    if (this.loaded && !this.stale && now - this.#loadedAt < FRESH_MS && this.#loadedOn === today) {
+      return
+    }
+    this.stale = false
     await Promise.all([this.reload(), this.refreshStatus()])
-    if (app.screen === 'main') this.loaded = true
+    if (app.screen === 'main') {
+      this.loaded = true
+      this.#loadedAt = now
+      this.#loadedOn = today
+    }
+  }
+
+  /**
+   * What the live router calls instead of reloading while Screen time is
+   * off screen: the next `start` reads in full rather than drawing what it
+   * has.
+   */
+  markStale(): void {
+    this.stale = true
   }
 
   /** Read again whatever is on screen. */
@@ -313,6 +351,9 @@ class ScreenTimeState {
     this.#loads = 0
     this.#liveAt = 0
     this.loaded = false
+    this.stale = false
+    this.#loadedAt = 0
+    this.#loadedOn = ''
     this.anchor = todayIso()
     this.timelineDate = todayIso()
     this.category = null
@@ -340,15 +381,22 @@ class ScreenTimeState {
    * Read again only if this would show anything new: the app open, and a
    * summary that covers today or today's timeline on screen -- a week last
    * month does not move because somebody is typing now. And at most once a
-   * minute, see `LIVE_EVERY_MS`.
+   * minute, see `LIVE_EVERY_MS`. With the app off screen, what it would
+   * show on the way back is behind, so the next `start` reads in full.
    */
   spansArrived(): Promise<void> | undefined {
-    if (!this.loaded || app.screen !== 'main' || app.section !== 'screentime') return undefined
+    if (!this.loaded || app.screen !== 'main') return undefined
     const today = todayIso()
     const showsToday =
       (this.view === 'summary' && this.from <= today && this.to >= today) ||
       (this.view === 'timeline' && this.timelineDate === today)
     if (!showsToday) return undefined
+    // Not on screen, or in a window hidden in the tray: read in full on the
+    // way back instead (`start`, or the live router's catch-up).
+    if (app.section !== 'screentime' || document.visibilityState === 'hidden') {
+      this.stale = true
+      return undefined
+    }
     const now = Date.now()
     if (now - this.#liveAt < LIVE_EVERY_MS) return undefined
     this.#liveAt = now

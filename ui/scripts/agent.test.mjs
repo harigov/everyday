@@ -33,6 +33,7 @@ const {
   activity,
   applyEvent,
   choicesOf,
+  DeltaBatch,
   elapsed,
   emptyTurn,
   gerund,
@@ -49,6 +50,7 @@ const {
   sitesCover,
   threadGroups,
   toolLabel,
+  waitingForAnswer,
   workSummary,
 } = agent
 
@@ -434,6 +436,94 @@ const {
   assert.equal(turns[1].text, '', 'mutating the pushed reference is exactly the bug')
 }
 
+// ── words held for a frame ────────────────────────────────────────────
+//
+// Streamed words are folded once a frame rather than once a fragment. What
+// must not change is what the turn ends up saying, or the order it was said
+// in against the cards around it -- the store flushes before anything else.
+{
+  const { proxy } = svelteInternal
+  /** A frame that comes only when the test says so. */
+  let frames = []
+  const schedule = (run) => {
+    frames.push(run)
+    return () => (frames = frames.filter((f) => f !== run))
+  }
+  const nextFrame = () => {
+    const due = frames
+    frames = []
+    for (const run of due) run()
+  }
+
+  const turns = proxy([liveTurn('local-1', 1000)])
+  const reply = turns[0]
+  const batch = new DeltaBatch(schedule)
+  const fold = (event) => {
+    if (event.type === 'delta' || event.type === 'thinking') return batch.add(reply, event)
+    batch.flush()
+    applyEvent(reply, event)
+  }
+
+  fold({ type: 'started', messageId: 'msg-1' })
+  const words = []
+  for (let n = 0; n < 200; n++) words.push(`w${n} `)
+  for (const text of words.slice(0, 100)) fold({ type: 'delta', text })
+  assert.equal(frames.length, 1, 'a hundred fragments ask for one frame')
+  assert.equal(turns[0].text, '', 'and nothing is drawn before it')
+  nextFrame()
+  assert.equal(turns[0].text, words.slice(0, 100).join(''), 'then all of them, in order')
+  assert.equal(turns[0].phase, 'writing')
+
+  for (const text of words.slice(100, 150)) fold({ type: 'delta', text })
+  fold({ type: 'toolStarted', callId: 'c1', name: 'list_tasks', arguments: {} })
+  assert.equal(
+    turns[0].text,
+    words.slice(0, 150).join(''),
+    'a card flushes the words before it, so they are drawn first',
+  )
+  assert.equal(frames.length, 0, 'and the frame it was waiting for is not wanted any more')
+  assert.equal(turns[0].phase, 'tool')
+
+  // Reasoning and prose in one frame come out as they would one at a time.
+  fold({ type: 'thinking', text: 'They want ' })
+  fold({ type: 'delta', text: words[150] })
+  fold({ type: 'thinking', text: 'the list.' })
+  nextFrame()
+  assert.equal(turns[0].thinking, 'They want the list.')
+  assert.equal(turns[0].phase, 'writing', 'any prose in the frame leaves it writing')
+
+  fold({ type: 'thinking', text: ' Again.' })
+  nextFrame()
+  assert.equal(turns[0].phase, 'writing', 'reasoning after prose does not take it back')
+
+  // A retry replaces what the deltas drew, held ones included.
+  for (const text of words.slice(151, 160)) fold({ type: 'delta', text })
+  fold({ type: 'retrying', text: 'Again: ' })
+  assert.equal(turns[0].text, 'Again: ')
+
+  for (const text of words.slice(160)) fold({ type: 'delta', text })
+  fold({ type: 'finished', messageId: 'msg-1' })
+  assert.equal(turns[0].text, `Again: ${words.slice(160).join('')}`, 'the end flushes the rest')
+  assert.equal(turns[0].id, 'msg-1')
+  assert.equal(frames.length, 0)
+
+  // Words for another turn flush the first turn's, so neither gets the other's.
+  const other = liveTurn('local-2', 2000)
+  batch.add(reply, { type: 'delta', text: ' tail' })
+  batch.add(other, { type: 'delta', text: 'next' })
+  assert.equal(turns[0].text.endsWith(' tail'), true)
+  batch.flush()
+  assert.equal(other.text, 'next')
+
+  // An empty fragment still marks the turn as writing, as one alone did.
+  const quiet = liveTurn('local-3', 3000)
+  batch.add(quiet, { type: 'delta', text: '' })
+  batch.flush()
+  assert.equal(quiet.phase, 'writing')
+  batch.flush()
+  assert.equal(quiet.text, '', 'flushing with nothing held does nothing')
+}
+
 // Local ids are unique, because the panel keys its `{#each}` on them and two
 // turns sharing a key is a runtime error that takes the render down. A turn
 // keeps its local id whenever a request fails before the backend names it.
@@ -741,6 +831,25 @@ assert.ok(!isLoopback(''), 'and an empty one is not an override at all')
     summary: '',
   })
   assert.equal(turn.cards[0].state, 'stopped', 'a late result does not overwrite the stop')
+}
+
+// A turn held on a question is still: the panel stops its motion then.
+{
+  const turn = liveTurn('t', 1000)
+  assert.equal(waitingForAnswer(turn), false)
+  applyEvent(turn, {
+    type: 'confirmationRequired',
+    callId: 'c9',
+    name: 'delete_task',
+    subject: 'Order the timber',
+    arguments: {},
+    kind: 'destructive',
+    canPark: true,
+  })
+  assert.equal(waitingForAnswer(turn), true)
+  assert.equal(activity(turn), 'Waiting for your answer')
+  applyEvent(turn, { type: 'toolStarted', callId: 'c9', name: 'delete_task', arguments: {} })
+  assert.equal(waitingForAnswer(turn), false, 'answered, it is running again')
 }
 
 // ── what a card calls itself ─────────────────────────────────────────

@@ -35,7 +35,33 @@ stubBrowser({
   createObjectURL: () => 'blob:stub',
 })
 
-const { module: live, close } = await load('/src/lib/live.svelte.ts', { svelte: true })
+const {
+  modules: [
+    live,
+    feedModule,
+    libraryModule,
+    moneyModule,
+    stateModule,
+    mailModule,
+    briefModule,
+    mockJobsModule,
+    appwindowModule,
+  ],
+  close,
+} = await load(
+  [
+    '/src/lib/live.svelte.ts',
+    '/src/lib/feed.svelte.ts',
+    '/src/lib/library.svelte.ts',
+    '/src/lib/money.svelte.ts',
+    '/src/lib/state.svelte.ts',
+    '/src/lib/mail.svelte.ts',
+    '/src/lib/brief.svelte.ts',
+    '/src/lib/mock-jobs.ts',
+    '/src/lib/appwindow.ts',
+  ],
+  { svelte: true },
+)
 const { RELOAD, RELOADS, targetsFor } = live
 
 // ── Every kind has an answer, and it is one that exists ───────────────
@@ -134,11 +160,16 @@ assert.deepEqual(targetsFor(['conversation', 'task']), ['todo'])
 assert.deepEqual(targetsFor(['transcript']), [])
 // A kind the service raises that no command declares, so the generated
 // `ChangeKind` and `RELOADS` do not name it: a supervised task's status when
-// the vault unlocks, a sync pass's mailbox. It reloads nothing, and it does
-// not stop the rest of the batch from reloading -- it used to come back as an
-// `undefined` target, called as a function.
-assert.deepEqual(targetsFor(['backgroundTask', 'mailbox']), [])
+// the vault unlocks, a sync pass's mailbox. It does not stop the rest of the
+// batch from reloading -- it used to come back as an `undefined` target,
+// called as a function. A supervised task's status reloads nothing; a folder
+// or label a pass met for the first time reads the mailboxes again, which no
+// list reload does.
+assert.deepEqual(targetsFor(['backgroundTask']), [])
+assert.deepEqual(targetsFor(['backgroundTask', 'mailbox']), ['mailboxes'])
 assert.deepEqual(targetsFor(['backgroundTask', 'task']), ['todo'])
+assert.deepEqual(new Set(targetsFor(['mailbox', 'thread'])), new Set(['mailboxes', 'mail']))
+assert.equal(RELOAD.mailboxes(), undefined, 'nothing read before Mail is opened')
 
 // What is followed and what it brought are one store's: a first refresh of a
 // new source raises both, and the sidebar's counts and the list move
@@ -294,6 +325,112 @@ assert.equal(appForItem({ kind: 'event', id: 'e' }), 'calendar')
 assert.equal(appForItem({ kind: 'constructor', id: 'x' }), null)
 assert.equal(appForItem({ kind: 'routine', id: 'x' }), null)
 assert.equal(appForItem(null), null)
+
+// ── An app off screen is marked stale, not read ──────────────────────
+//
+// A Feed pass lands about once a minute, and a list of hundreds read again
+// for a window showing something else is wasted: the app is marked stale and
+// reads in full when it comes back. The same for a window hidden in the
+// tray. Up Next's half of a story change still runs; it is guarded itself.
+{
+  const { feed } = feedModule
+  const { library } = libraryModule
+  const { money } = moneyModule
+  const { app } = stateModule
+  const read = []
+  feed.refreshSources = async () => void read.push('feed sources')
+  feed.reload = async () => void read.push('feed list')
+  library.refresh = async () => void read.push('library')
+  money.reload = async () => void read.push('money')
+
+  app.section = 'mail'
+  await RELOAD.feed()
+  await RELOAD.library()
+  await RELOAD.money()
+  assert.deepEqual(read, [], 'nothing off screen is read')
+  assert.equal(feed.stale, true, 'the Feed reads in full when it comes back')
+  assert.equal(library.stale, true, 'so does the Library')
+  assert.equal(money.stale, true, 'and Money')
+
+  app.section = 'feed'
+  await RELOAD.feed()
+  assert.deepEqual(read, ['feed sources', 'feed list'], 'on screen, both halves')
+
+  read.length = 0
+  globalThis.document.visibilityState = 'hidden'
+  await RELOAD.feed()
+  assert.deepEqual(read, [], 'not in a window hidden in the tray')
+  globalThis.document.visibilityState = 'visible'
+
+  app.section = 'library'
+  await RELOAD.library()
+  assert.deepEqual(read, ['library'])
+
+  // Changes made while the stream was down were never announced, so every
+  // held app reads in full on its way back.
+  feed.stale = false
+  library.stale = false
+  live.live.setStream(false)
+  live.live.setStream(true)
+  assert.equal(feed.stale, true, 'missed while the stream was down')
+  assert.equal(library.stale, true)
+  app.section = 'journal'
+}
+
+// A job's progress and a run finishing are their stores' own to patch: the
+// router does not reload the lists for them.
+{
+  const { planBatch } = live
+  const job = { kind: 'job', op: 'updated', id: 'job-1', origin: null }
+  const run = { kind: 'routineRun', op: 'updated', id: 'run-1', origin: null }
+  assert.deepEqual(planBatch([job]).refreshed, [], "a job change is its store's")
+  assert.deepEqual(planBatch([run]).refreshed, [], "a run change is the assistant's")
+  const mailbox = { kind: 'mailbox', op: 'updated', origin: null }
+  assert.deepEqual(planBatch([mailbox]).refreshed, ['mailboxes'], 'a new folder: the mailboxes')
+}
+
+// ── What arrives on the stream ───────────────────────────────────────
+//
+// Through the router itself rather than its tables: a sync pass's `mailbox`
+// change reaches the mail store past the kinds no command declares, and this
+// window's own routine writes -- a brief run removed from "What it did", a
+// brief switched on by this window's assistant -- reach the briefs, which a
+// visit no longer reads on a desktop window.
+{
+  const { mockRaiseChange } = mockJobsModule
+  const { briefs } = briefModule
+  const { mail } = mailModule
+  const { app } = stateModule
+  const { ownOrigin } = appwindowModule
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  let briefReads = 0
+  let mailboxReads = 0
+  briefs.refresh = async () => void briefReads++
+  mail.mailboxesChanged = () => void mailboxReads++
+  app.section = 'journal'
+  app.screen = 'main'
+  live.live.start()
+
+  mockRaiseChange({ kind: 'backgroundTask', op: 'updated', origin: null })
+  mockRaiseChange({ kind: 'mailbox', op: 'updated', origin: null })
+  mockRaiseChange({ kind: 'mailbox', op: 'updated', origin: null })
+  await wait(400)
+  assert.equal(mailboxReads, 1, "a pass's new folder reads the mailboxes again, once a batch")
+
+  const removed = { kind: 'routineRun', op: 'deleted', id: 'run-1', origin: ownOrigin }
+  mockRaiseChange(removed)
+  assert.equal(briefReads, 0, 'not before anything has read the briefs')
+  briefs.loaded = true
+  mockRaiseChange(removed)
+  assert.equal(briefReads, 1, "this window's own routine write reads the briefs again")
+  mockRaiseChange({ kind: 'task', op: 'updated', id: 'task-1', origin: ownOrigin })
+  assert.equal(briefReads, 1, 'and nothing else of its own does')
+
+  mockRaiseChange({ kind: 'mailbox', op: 'updated', origin: ownOrigin })
+  assert.equal(mailboxReads, 2, "a label this window's assistant made is read too")
+  briefs.loaded = false
+  app.screen = 'loading'
+}
 
 await close()
 console.log('live: all checks passed')

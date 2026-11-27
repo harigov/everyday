@@ -32,7 +32,7 @@
   import { appleKeyboard } from '../lib/platform'
   import { agent } from '../lib/agent.svelte'
   import { pinned } from '../lib/appwindow'
-  import { fileUrl, fileVersion } from '../lib/api'
+  import { fetchWhole, fileUrl, fileVersion } from '../lib/api'
   import { previewOf } from '../lib/files'
   import { isTyping, keysLabel } from '../lib/keys'
   import { menu } from '../lib/menu.svelte'
@@ -90,8 +90,8 @@
    *  a rename or a tag does not read it all again. */
   const pdfKey = $derived(isPdf && file && !reader.error ? `${file.id}:${fileVersion(file)}` : null)
 
-  // The file's address answers whole reads, as the file viewer's does: pdf.js
-  // wants all of its bytes.
+  // pdf.js wants all of a file's bytes, which a long one's address answers a
+  // piece at a time (see `fetchWhole`), as the file viewer's does.
   $effect(() => {
     const key = pdfKey
     pdfData = null
@@ -103,9 +103,7 @@
     let gone = false
     void (async () => {
       try {
-        const response = await fetch(fileUrl(f.id, fileVersion(f)))
-        if (!response.ok) throw new Error(String(response.status))
-        const bytes = new Uint8Array(await response.arrayBuffer())
+        const bytes = await fetchWhole(fileUrl(f.id, fileVersion(f)))
         if (!gone) pdfData = bytes
       } catch {
         if (!gone) pdfError = 'This PDF could not be read.'

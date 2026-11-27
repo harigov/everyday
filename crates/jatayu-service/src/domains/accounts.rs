@@ -357,19 +357,28 @@ fn check_acknowledgement(
 /// local pack files and search index documents, then the vault's own rows.
 async fn delete_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandResult<()> {
     crate::mail::sync::wiring::stop_account_task(&svc, args.id).await;
-    if let Some(packs) = svc.packs() {
-        // Best-effort: a pack store that fails to delete leaves orphaned
-        // files behind, not a wrong answer to any command -- the vault's
-        // own rows, deleted next, are what every reader actually trusts.
-        let _ = packs.delete_account(&args.id.to_string());
-    }
-    if let Some(index) = svc.mail_index() {
-        // Same best-effort reasoning as the pack store above: a search hit
-        // surviving a failed delete is a stale result, not a wrong answer
-        // any command trusts the index over the vault's own rows for.
-        let _ = index.delete_account(&args.id.to_string());
-        let _ = index.commit();
-    }
+    let (packs, index) = (svc.packs(), svc.mail_index());
+    let account = args.id.to_string();
+    // On the blocking pool: both delete files, and just after an unlock the
+    // index may still be opening, which these calls wait for.
+    let _ = blocking(move || {
+        if let Some(packs) = packs {
+            // Best-effort: a pack store that fails to delete leaves orphaned
+            // files behind, not a wrong answer to any command -- the vault's
+            // own rows, deleted next, are what every reader actually trusts.
+            let _ = packs.delete_account(&account);
+        }
+        if let Some(index) = index {
+            // Same best-effort reasoning as the pack store above: a search
+            // hit surviving a failed delete is a stale result, not a wrong
+            // answer any command trusts the index over the vault's own rows
+            // for.
+            let _ = index.delete_account(&account);
+            let _ = index.commit();
+        }
+        Ok(())
+    })
+    .await;
     svc.on_vault(move |vault| vault.delete_account(args.id)).await
 }
 

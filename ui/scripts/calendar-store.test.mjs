@@ -33,11 +33,18 @@ stubBrowser({
 })
 
 const {
-  modules: [calendarModule, stateModule, apiModule],
+  modules: [calendarModule, stateModule, apiModule, timeModule],
   close,
-} = await load(['/src/lib/calendar.svelte.ts', '/src/lib/state.svelte.ts', '/src/lib/api.ts'], {
-  svelte: true,
-})
+} = await load(
+  [
+    '/src/lib/calendar.svelte.ts',
+    '/src/lib/state.svelte.ts',
+    '/src/lib/api.ts',
+    '/src/lib/time.ts',
+  ],
+  { svelte: true },
+)
+const { offsetInDay } = timeModule
 const { calendar } = calendarModule
 const { app } = stateModule
 const { api } = apiModule
@@ -531,6 +538,68 @@ const lengthOf = (e) => (Date.parse(e.end) - Date.parse(e.start)) / 60_000
     minutesIn(lunch.start),
     'and cancelling the edit puts it back',
   )
+}
+
+{
+  // Typing in the editor of an own event: a title is no reason to lay the
+  // grid out again, a time is.
+  const [seeded] = await onWork('Lunch with Ana')
+  const lunch = await open(seeded)
+  await calendar.editEvent(lunch.id)
+  assert.equal(calendar.editing?.status, 'ready', 'the editor has it')
+  const before = calendar.shownEvents
+  assert.equal(before, calendar.events, 'with nothing moved, the grid draws the events as loaded')
+  calendar.patchEdit({ title: 'Lunch with Ana and Bea' })
+  assert.equal(calendar.shownEvents, before, 'a title typed leaves the list the grid draws alone')
+  const later = (ts) => new Date(Date.parse(ts) + 60 * 60_000).toISOString()
+  calendar.patchEdit({ start: later(lunch.start), end: later(lunch.end) })
+  assert.notEqual(calendar.shownEvents, before, 'a time typed is a new list')
+  assert.equal(
+    calendar.slotsOn(lunch.localDate).find((s) => s.event?.id === lunch.id)?.start,
+    minutesIn(lunch.start) + 60,
+    'with the slot an hour on',
+  )
+  assert.ok(calendar.canMove(lunch), 'still movable while timed in both')
+  calendar.patchEdit({ title: 'Lunch' })
+  assert.ok(calendar.canMove(lunch), 'and after another keystroke')
+  calendar.cancelEdit()
+  assert.equal(calendar.shownEvents, calendar.events, 'cancelling draws the events as loaded')
+}
+
+{
+  // A block running past midnight is drawn at the foot of one day and the
+  // head of the next, at the minutes the clock says -- on a day the clocks
+  // change too, which is where a minute counted from the wrong midnight
+  // shows.
+  const late = await calendar.book({
+    subject: { type: 'adhoc' },
+    day: calendar.anchor,
+    startMinutes: 23 * 60,
+    minutes: 120,
+    title: 'past midnight',
+  })
+  const next = plusDays(calendar.anchor, 1)
+  const tonight = calendar.slotsOn(calendar.anchor).find((s) => s.block?.id === late.id)
+  const tomorrow = calendar.slotsOn(next).find((s) => s.block?.id === late.id)
+  assert.equal(tonight?.start, 23 * 60, 'it starts at eleven')
+  assert.equal(tonight?.end, 24 * 60, 'and runs to the foot of the day')
+  assert.equal(tomorrow?.start, 0, 'then from the head of the next')
+  assert.equal(tomorrow?.end, offsetInDay(late.end, next), 'to where it ends')
+  await calendar.removeBlock(late.id)
+
+  for (const day of ['2026-03-08', '2026-11-01', '2026-03-29', '2026-10-25']) {
+    const block = await calendar.book({
+      subject: { type: 'adhoc' },
+      day,
+      startMinutes: 60,
+      minutes: 180,
+      title: `clocks ${day}`,
+    })
+    const slot = calendar.slotsOn(day).find((s) => s.block?.id === block.id)
+    assert.equal(slot?.start, offsetInDay(block.start, day), `the start on ${day}`)
+    assert.equal(slot?.end, offsetInDay(block.end, day), `the end on ${day}`)
+    await calendar.removeBlock(block.id)
+  }
 }
 
 await close()

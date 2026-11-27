@@ -84,7 +84,7 @@ jiff = { version = "0.2", features = ["serde"] }
 blake3 = "1"
 rand = "0.9"
 zeroize = { version = "1", features = ["derive"] }
-argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize", "parallel"] }
 chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 tracing = "0.1"
 

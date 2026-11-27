@@ -444,19 +444,22 @@
    *  until the person dismisses it themselves. */
   let aiNote = $state<{ previousHtml: string } | null>(null)
 
+  /**
+   * `syncBody()` first: `saver`'s write is `saveDraft($state.snapshot(working))`
+   * -- a snapshot taken whenever the debounce timer fires -- and without
+   * pulling the editor's own HTML into `working.bodyHtml` then, every autosave
+   * persisted whatever `working.bodyHtml` was seeded with when the sheet
+   * opened (blank, or a quoted reply) and never a keystroke typed since. Here
+   * rather than in `touch()`, which runs on every key: the whole document
+   * written out as HTML each time was the cost of typing in a long draft.
+   * After the sheet has gone `editor` is null, and the editor's own teardown
+   * has already left its last words in `working.bodyHtml`.
+   */
   const saver = new Autosave<string>(async () => {
+    syncBody()
     await mailApi.saveDraft($state.snapshot(working))
   })
 
-  /**
-   * `syncBody()` first: this is TipTap's `onUpdate` handler as well as every
-   * other field's, and `saver`'s write is `saveDraft($state.snapshot(working))`
-   * -- a snapshot taken whenever the debounce timer fires, not whenever this
-   * runs. Without pulling the editor's own HTML into `working.bodyHtml`
-   * *here*, every autosave persisted whatever `working.bodyHtml` was seeded
-   * with when the sheet opened (blank, or a quoted reply) and never a
-   * keystroke that had been typed since.
-   */
   /** Has anything been changed here -- what "Draft saved" waits for, so
    *  putting aside a draft somebody only looked at (the assistant's own,
    *  opened under its thread) says nothing. */
@@ -499,13 +502,17 @@
     checking = null
   }
 
+  /**
+   * Something here was changed: TipTap's `onUpdate` handler as well as every
+   * other field's. `working.bodyHtml` is not brought up to date by it -- see
+   * `saver` -- so anything that reads the body calls `syncBody()` first.
+   */
   function touch() {
     edited = true
     // What the model is reading is not what is written now, and its answer
     // would be about the old words. Send reads "Send" again; it is pressed
     // when they are ready.
     if (checking) dropChecks()
-    syncBody()
     working.updatedAt = new Date().toISOString()
     saver.touch(working.id)
   }

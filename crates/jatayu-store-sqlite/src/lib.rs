@@ -232,9 +232,23 @@ fn connect(db_path: &Path) -> Result<rusqlite::Connection> {
     // cleartext dates) in the free list.
     conn.pragma_update(None, "secure_delete", "ON").map_err(Error::backend)?;
     conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(Error::backend)?;
+    // A checkpoint leaves the log at its high-water mark, which one big
+    // first sync can push to hundreds of megabytes; this hands the space back.
+    conn.pragma_update(None, "journal_size_limit", JOURNAL_SIZE_LIMIT).map_err(Error::backend)?;
+    // rusqlite keeps sixteen prepared statements by default. A sync pass or a
+    // mail action interleaves more distinct ones than that -- an ingest's
+    // upserts and recomputes, a list's page queries -- and a statement pushed
+    // out is parsed and planned again the next time it is asked for.
+    conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
 
     Ok(conn)
 }
+
+/// How large the write-ahead log is left after a checkpoint, in bytes.
+const JOURNAL_SIZE_LIMIT: i64 = 64 * 1024 * 1024;
+
+/// How many prepared statements each connection keeps.
+const STATEMENT_CACHE: usize = 64;
 
 /// What SQLite answers that no other database does.
 pub struct SqliteDriver {
@@ -658,6 +672,9 @@ mod legacy_tests;
 
 #[cfg(test)]
 mod mail_scale;
+
+#[cfg(test)]
+mod mail_plans;
 
 #[cfg(test)]
 mod scale;

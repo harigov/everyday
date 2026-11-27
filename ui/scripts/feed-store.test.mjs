@@ -142,6 +142,27 @@ assert.equal(
   'the Feed tints the window with its own colour, the one its icon wears',
 )
 
+// ── coming back ──────────────────────────────────────────────────────
+
+{
+  // Counted, to tell a read from a list kept as it was.
+  let reads = 0
+  const stories = api.stories
+  api.stories = (query) => {
+    reads += 1
+    return stories(query)
+  }
+  const shown = feed.stories
+  await feed.start()
+  assert.equal(reads, 0, 'coming back a moment later keeps the list that is drawn')
+  assert.ok(feed.stories === shown, 'as it was')
+  feed.markStale()
+  await feed.start()
+  assert.equal(reads, 1, 'a change heard of while the Feed was away is read on the way back')
+  assert.equal(feed.stale, false)
+  api.stories = stories
+}
+
 // ── the chip, and remembering it ─────────────────────────────────────
 
 await feed.setFilter('all')

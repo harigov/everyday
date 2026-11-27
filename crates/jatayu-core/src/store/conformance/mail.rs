@@ -80,6 +80,13 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     a_thread_list_can_keep_to_threads_with_nothing_newer_than_a_date(store);
     deleting_forever_names_what_is_listed_and_hides_it_in_one_go(store);
     unhiding_one_mailbox_leaves_another_hidden(store);
+    unread_badges_add_up_what_the_lists_show(store);
+    listing_across_mailboxes_pages_like_one_merged_list(store);
+    flag_changes_in_bulk_land_as_one_at_a_time(store);
+    a_batch_of_local_changes_lands_as_each_alone_would(store);
+    the_reads_that_decrypt_nothing_agree_with_the_ones_that_do(store);
+    a_correction_over_some_messages_reaches_only_those(store);
+    blob_refs_reach_every_body_however_many_there_are(store);
 
     eprintln!("--- mail suite passed ---");
 }
@@ -898,6 +905,9 @@ fn a_message_key_finds_its_message_until_it_is_gone(store: &dyn JournalStore) {
 
     m.remove_uids(mailbox.id, &[1]).unwrap();
     assert_eq!(m.message_by_key(account, "k").unwrap(), None, "gone with its message");
+    // The key still names it, so threading can tell "since deleted" (a
+    // namesake stored unkeyed may be here) from "never stored".
+    assert_eq!(m.keyed_thread(account, "k").unwrap(), Some((first.id, None)));
     m.ingest(account, vec![IngestMessage { message: second.clone(), mailbox: mailbox.id, uid: 2 }])
         .unwrap();
     m.put_message_keys(account, &[("k".into(), second.id)]).unwrap();
@@ -910,6 +920,29 @@ fn a_message_key_finds_its_message_until_it_is_gone(store: &dyn JournalStore) {
     let mut seen = 0;
     m.each_message(account, &mut |_| seen += 1).unwrap();
     assert_eq!(seen, 1);
+
+    // Forgetting keeps a key whose message is still there...
+    m.forget_dead_message_key(account, "k").unwrap();
+    assert_eq!(m.keyed_thread(account, "k").unwrap(), Some((second.id, Some(second.thread_id))));
+    // ...and drops one whose message is gone.
+    m.remove_uids(mailbox.id, &[2]).unwrap();
+    assert_eq!(m.keyed_thread(account, "k").unwrap(), Some((second.id, None)));
+    m.forget_dead_message_key(account, "k").unwrap();
+    assert_eq!(m.keyed_thread(account, "k").unwrap(), None);
+    m.forget_dead_message_key(account, "never").unwrap();
+
+    // Dead keys are pruned only past the bound, and live ones never.
+    let third = message(account, ThreadId::new(), "Third", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: third.clone(), mailbox: mailbox.id, uid: 3 }])
+        .unwrap();
+    m.put_message_keys(account, &[("dead".into(), second.id), ("live".into(), third.id)]).unwrap();
+    let live_before = m.keyed_thread(account, "live").unwrap();
+    assert_eq!(live_before, Some((third.id, Some(third.thread_id))));
+    assert_eq!(m.prune_dead_message_keys(account, 1).unwrap(), 0, "one dead key is within it");
+    assert_eq!(m.keyed_thread(account, "dead").unwrap(), Some((second.id, None)));
+    assert_eq!(m.prune_dead_message_keys(account, 0).unwrap(), 1);
+    assert_eq!(m.keyed_thread(account, "dead").unwrap(), None);
+    assert_eq!(m.keyed_thread(account, "live").unwrap(), live_before);
 
     cleanup_account(store, account);
     assert!(!m.account_keyed(account).unwrap(), "forgotten with the account");
@@ -2851,6 +2884,611 @@ fn unhiding_one_mailbox_leaves_another_hidden(store: &dyn JournalStore) {
     assert_eq!(in_trash.threads.len(), 1, "back in Trash");
     let in_inbox = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
     assert!(in_inbox.threads.is_empty(), "still hidden from the Inbox");
+
+    cleanup_account(store, account);
+}
+
+// ---- the fast paths, against what they stand in for ------------------------
+//
+// Each of these asks a cheaper read or a batched write and the slower,
+// one-at-a-time way it replaced the same question, through the same trait, so
+// a backend cannot answer the two differently.
+
+/// [`crate::store::mail::unread_badges`] against the sum it replaced: each
+/// member's first `list_threads` page of [`UNREAD_BADGE_WINDOW`] threads,
+/// snoozed or not, a thread two members list counted once.
+///
+/// [`UNREAD_BADGE_WINDOW`]: crate::store::mail::UNREAD_BADGE_WINDOW
+fn unread_badges_add_up_what_the_lists_show(store: &dyn JournalStore) {
+    use crate::store::mail::{UNREAD_BADGE_WINDOW, UnreadBadge, UnreadTarget, unread_badges};
+    use std::collections::HashSet;
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let label = Mailbox::new(account, "Work", MailboxRole::Other);
+    m.put_mailbox(&inbox).unwrap();
+    m.put_mailbox(&label).unwrap();
+
+    // More threads than the window, a second apart, oldest first. Two in
+    // three are unread and every seventh has a second unread message; two
+    // of the newest are filed under the label too, and three are snoozed,
+    // one of them a shared one.
+    let count = UNREAD_BADGE_WINDOW as usize + 30;
+    let shared = [count - 3, count - 4];
+    let base = Timestamp::now() - SignedDuration::from_hours(2);
+    let mut threads = Vec::with_capacity(count);
+    let mut batch = Vec::new();
+    let mut uid = 0u32;
+    for i in 0..count {
+        let thread_id = ThreadId::new();
+        let date = base + SignedDuration::from_secs(i as i64);
+        let mut first = message(account, thread_id, &format!("thread {i}"), "a@example.com", date);
+        first.flags.seen = i % 3 == 0;
+        uid += 1;
+        batch.push(IngestMessage { message: first.clone(), mailbox: inbox.id, uid });
+        if i % 7 == 0 {
+            uid += 1;
+            let second = message(account, thread_id, "again", "b@example.com", date);
+            batch.push(IngestMessage { message: second, mailbox: inbox.id, uid });
+        }
+        if shared.contains(&i) {
+            batch.push(IngestMessage { message: first, mailbox: label.id, uid });
+        }
+        threads.push(thread_id);
+    }
+    // One only the label has, older than everything.
+    let lone = message(account, ThreadId::new(), "lone", "c@example.com", base);
+    batch.push(IngestMessage { message: lone, mailbox: label.id, uid: 1 });
+    m.ingest(account, batch).unwrap();
+    let until = Timestamp::now() + SignedDuration::from_hours(1);
+    for i in [4, count - 1, count - 3] {
+        m.set_thread_snoozed_until(threads[i], Some(until)).unwrap();
+    }
+
+    let target = |key: &str, mailboxes: &[MailboxId], snoozed: bool| UnreadTarget {
+        key: key.into(),
+        mailboxes: mailboxes.to_vec(),
+        snoozed,
+    };
+    let targets = [
+        target("inbox", &[inbox.id], false),
+        target("inbox snoozed", &[inbox.id], true),
+        target("label", &[label.id], false),
+        target("label snoozed", &[label.id], true),
+        target("both", &[inbox.id, label.id], false),
+        target("both snoozed", &[inbox.id, label.id], true),
+        target("twice", &[inbox.id, inbox.id], false),
+        target("none", &[], false),
+    ];
+    let listed = |targets: &[UnreadTarget]| -> Vec<UnreadBadge> {
+        targets
+            .iter()
+            .map(|t| {
+                let filter = ThreadFilter { snoozed: Some(t.snoozed), ..Default::default() };
+                let mut seen = HashSet::new();
+                let mut unread = 0u64;
+                for &mailbox in &t.mailboxes {
+                    let page = m.list_threads(mailbox, &filter, None, UNREAD_BADGE_WINDOW).unwrap();
+                    for thread in page.threads {
+                        if seen.insert(thread.id) {
+                            unread += u64::from(thread.unread_count);
+                        }
+                    }
+                }
+                UnreadBadge { key: t.key.clone(), unread }
+            })
+            .collect()
+    };
+
+    let expected = listed(&targets);
+    assert_eq!(unread_badges(m, &targets).unwrap(), expected);
+
+    // And the cases above are the ones they are meant to be.
+    let badge = |key: &str| expected.iter().find(|b| b.key == key).unwrap().unread;
+    let awake = ThreadFilter { snoozed: Some(false), ..Default::default() };
+    let every: u64 = m
+        .list_threads(inbox.id, &awake, None, 1_000)
+        .unwrap()
+        .threads
+        .iter()
+        .map(|t| u64::from(t.unread_count))
+        .sum();
+    assert!(badge("inbox") < every, "the window leaves the oldest out");
+    assert!(badge("both") < badge("inbox") + badge("label"), "a shared thread counts once");
+    assert_eq!(badge("both snoozed"), badge("inbox snoozed"), "the snoozed shared one too");
+    assert!(badge("label snoozed") > 0);
+    assert_eq!(badge("twice"), badge("inbox"));
+    assert_eq!(badge("none"), 0);
+
+    // A read message moves both the same way.
+    m.update_flags(inbox.id, uid, MessageFlags { seen: true, ..Default::default() }).unwrap();
+    assert_eq!(unread_badges(m, &targets).unwrap(), listed(&targets));
+
+    // The lists themselves, including the app badge's own (unread and
+    // snoozed), at a limit that cuts each short.
+    let lists = [
+        (inbox.id, ThreadFilter { unread: Some(true), snoozed: Some(true), ..Default::default() }),
+        (inbox.id, awake),
+        (label.id, ThreadFilter::default()),
+        (label.id, ThreadFilter { snoozed: Some(true), ..Default::default() }),
+    ];
+    for limit in [2, 7, UNREAD_BADGE_WINDOW] {
+        let slow: Vec<Vec<(ThreadId, u32)>> = lists
+            .iter()
+            .map(|(mailbox, filter)| {
+                let page = m.list_threads(*mailbox, filter, None, limit).unwrap();
+                page.threads.iter().map(|t| (t.id, t.unread_count)).collect()
+            })
+            .collect();
+        assert_eq!(m.listed_unread(&lists, limit).unwrap(), slow, "limit {limit}");
+    }
+    assert!(m.listed_unread(&[], UNREAD_BADGE_WINDOW).unwrap().is_empty());
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::list_threads_across`] pages several mailboxes exactly as one
+/// list of all their rows merged by date would page: ties on the date broken
+/// by thread id, a thread filed in two mailboxes at the same date or at
+/// different ones, a repeat skipped on its page but still moving the
+/// cursor, and a cursor whenever a page came back full. The same with
+/// hundreds of mailboxes named, as many as an account with that many
+/// labels or folders has: more than a SQL backend can merge one arm each.
+fn listing_across_mailboxes_pages_like_one_merged_list(store: &dyn JournalStore) {
+    use std::collections::HashSet;
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let boxes = [
+        Mailbox::new(account, "INBOX", MailboxRole::Inbox),
+        Mailbox::new(account, "Work", MailboxRole::Other),
+        Mailbox::new(account, "Later", MailboxRole::Other),
+    ];
+    for mailbox in &boxes {
+        m.put_mailbox(mailbox).unwrap();
+    }
+    let ids: Vec<MailboxId> = boxes.iter().map(|b| b.id).collect();
+    // The same three among 600 that hold nothing.
+    let wide: Vec<MailboxId> =
+        (0..600).map(|_| MailboxId::new()).chain(ids.iter().copied()).collect();
+
+    // Threads in pairs that share a date. Every fourth is also filed in the
+    // next mailbox at the same date; every fifth has a newer reply filed
+    // only in the one after, so it is listed there at a later date.
+    let base = Timestamp::now() - SignedDuration::from_hours(1);
+    let mut uids = [0u32; 3];
+    let mut next_uid = |slot: usize| {
+        uids[slot] += 1;
+        uids[slot]
+    };
+    let mut threads = Vec::new();
+    let mut batch = Vec::new();
+    for i in 0..17usize {
+        let thread_id = ThreadId::new();
+        let date = base + SignedDuration::from_secs((i / 2) as i64);
+        let mut first = message(account, thread_id, &format!("thread {i}"), "a@example.com", date);
+        first.flags.seen = i % 2 == 0;
+        let home = i % 3;
+        batch.push(IngestMessage {
+            message: first.clone(),
+            mailbox: ids[home],
+            uid: next_uid(home),
+        });
+        if i % 4 == 0 {
+            let other = (i + 1) % 3;
+            batch.push(IngestMessage { message: first, mailbox: ids[other], uid: next_uid(other) });
+        }
+        if i % 5 == 0 {
+            let later = (i + 2) % 3;
+            let reply = message(
+                account,
+                thread_id,
+                "reply",
+                "b@example.com",
+                date + SignedDuration::from_secs(30),
+            );
+            batch.push(IngestMessage { message: reply, mailbox: ids[later], uid: next_uid(later) });
+        }
+        threads.push(thread_id);
+    }
+    m.ingest(account, batch).unwrap();
+    m.set_thread_snoozed_until(threads[3], Some(Timestamp::now() + SignedDuration::from_hours(1)))
+        .unwrap();
+
+    let filters = [
+        ThreadFilter::default(),
+        ThreadFilter { snoozed: Some(false), ..Default::default() },
+        ThreadFilter { unread: Some(true), snoozed: Some(false), ..Default::default() },
+    ];
+    for filter in &filters {
+        // Every row each mailbox lists on its own, merged.
+        let mut rows: Vec<(Timestamp, ThreadId)> = Vec::new();
+        for &mailbox in &ids {
+            let page = m.list_threads(mailbox, filter, None, 1_000).unwrap();
+            rows.extend(page.threads.iter().map(|t| (t.last_date, t.id)));
+        }
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_string().cmp(&b.1.to_string())));
+        if filter.unread.is_none() {
+            assert!(rows.len() > 17, "some threads are listed twice");
+        }
+
+        let runs = [2u32, 3, 5, 100].into_iter().flat_map(|n| [(&ids, n), (&wide, n)]);
+        for (listed, limit) in runs {
+            // Each page is the rows strictly after the last one's key, so a
+            // thread listed twice at one date is not listed again when the
+            // first of the two ended a page.
+            let mut after: Option<(Timestamp, String)> = None;
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = m.list_threads_across(listed, filter, cursor.as_deref(), limit).unwrap();
+                let window: Vec<(Timestamp, ThreadId)> = rows
+                    .iter()
+                    .filter(|(date, id)| {
+                        after.as_ref().is_none_or(|(last_date, last_id)| {
+                            date < last_date || (date == last_date && id.to_string() > *last_id)
+                        })
+                    })
+                    .take(limit as usize)
+                    .copied()
+                    .collect();
+                let mut seen = HashSet::new();
+                let expected: Vec<(ThreadId, Timestamp)> = window
+                    .iter()
+                    .filter(|(_, id)| seen.insert(*id))
+                    .map(|&(date, id)| (id, date))
+                    .collect();
+                let got: Vec<(ThreadId, Timestamp)> =
+                    page.threads.iter().map(|t| (t.id, t.last_date)).collect();
+                assert_eq!(got, expected, "{} mailboxes, limit {limit}, {filter:?}", listed.len());
+                assert_eq!(page.next_cursor.is_some(), window.len() == limit as usize);
+                after = window.last().map(|(date, id)| (*date, id.to_string()));
+                match page.next_cursor {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+        }
+    }
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::stored_flags`] reads what [`MailStore::message_by_uid`]
+/// would, and [`MailStore::update_flags_many`] leaves the store as the same
+/// [`MailStore::update_flags`] calls one at a time would.
+fn flag_changes_in_bulk_land_as_one_at_a_time(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+    let (first, second) = (ThreadId::new(), ThreadId::new());
+    let now = Timestamp::now();
+    let mut batch = Vec::new();
+    for uid in 1..=5u32 {
+        let thread = if uid <= 3 { first } else { second };
+        let mut msg = message(account, thread, "bulk", "a@example.com", now);
+        msg.flags.seen = uid == 2;
+        msg.flags.answered = uid == 5;
+        batch.push(IngestMessage { message: msg, mailbox: inbox.id, uid });
+    }
+    m.ingest(account, batch).unwrap();
+
+    let held = |uids: &[u32]| {
+        let mut held = std::collections::HashMap::new();
+        for &uid in uids {
+            if let Some(msg) = m.message_by_uid(inbox.id, uid).unwrap() {
+                held.insert(uid, msg.flags);
+            }
+        }
+        held
+    };
+    let asked: Vec<u32> = (1..=5).chain([99]).collect();
+    let stored = m.stored_flags(inbox.id, &asked).unwrap();
+    assert_eq!(stored, held(&asked));
+    assert_eq!(stored.len(), 5, "a uid the mailbox does not hold is left out");
+    // Asked about most of a mailbox, as a server without CONDSTORE asks.
+    let many: Vec<u32> = (1..=2_500).collect();
+    assert_eq!(m.stored_flags(inbox.id, &many).unwrap(), stored);
+    assert!(m.stored_flags(inbox.id, &[]).unwrap().is_empty());
+
+    let seen = MessageFlags { seen: true, ..Default::default() };
+    let starred = MessageFlags { seen: true, flagged: true, ..Default::default() };
+    m.update_flags_many(inbox.id, &[(1, seen), (2, seen), (3, seen), (4, starred), (99, seen)])
+        .unwrap();
+    let (thread, messages) = m.thread(first).unwrap();
+    assert_eq!(thread.unread_count, 0);
+    assert!(messages.iter().all(|msg| msg.flags == seen));
+    let (thread, _) = m.thread(second).unwrap();
+    assert_eq!(thread.unread_count, 1, "uid 5 was not asked about");
+    assert!(thread.starred);
+    let after = m.stored_flags(inbox.id, &asked).unwrap();
+    assert_eq!(after, held(&asked));
+    assert_eq!(after[&4], starred);
+    assert_eq!(after[&5], MessageFlags { answered: true, ..Default::default() });
+    let unread = m.unread_counts(account).unwrap();
+    assert_eq!(unread.iter().find(|(id, _)| *id == inbox.id).map(|(_, n)| *n), Some(1));
+    m.update_flags_many(inbox.id, &[]).unwrap();
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::apply_and_enqueue`]: every change as the single-row method it
+/// names would make it, a change naming something gone skipped, and every op
+/// enqueued.
+fn a_batch_of_local_changes_lands_as_each_alone_would(store: &dyn JournalStore) {
+    use crate::store::mail::LocalChange;
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+    let now = Timestamp::now();
+    let (read, labelled, hidden, snoozed) =
+        (ThreadId::new(), ThreadId::new(), ThreadId::new(), ThreadId::new());
+    let mut batch = Vec::new();
+    let mut by_thread = Vec::new();
+    for (uid, thread) in [read, read, labelled, hidden, snoozed].into_iter().enumerate() {
+        let msg = message(account, thread, "batch", "a@example.com", now);
+        by_thread.push(msg.clone());
+        batch.push(IngestMessage { message: msg, mailbox: inbox.id, uid: uid as u32 + 1 });
+    }
+    m.ingest(account, batch).unwrap();
+
+    let seen = MessageFlags { seen: true, ..Default::default() };
+    let until = now + SignedDuration::from_hours(3);
+    let ops: Vec<Op> = [read, labelled, hidden, snoozed]
+        .into_iter()
+        .map(|t| Op::new(account, OpKind::MarkRead, OpTarget::Thread(t), Origin::Person))
+        .collect();
+    m.apply_and_enqueue(
+        &[
+            LocalChange::Flags(by_thread[0].id, seen),
+            LocalChange::Flags(by_thread[1].id, seen),
+            LocalChange::Labels(by_thread[2].id, vec!["Work".into()]),
+            LocalChange::Hide(hidden, inbox.id),
+            LocalChange::Snooze(snoozed, Some(until)),
+            LocalChange::Flags(MailMessageId::new(), seen),
+            LocalChange::Labels(MailMessageId::new(), Vec::new()),
+            LocalChange::Snooze(ThreadId::new(), Some(until)),
+        ],
+        &ops,
+    )
+    .unwrap();
+
+    let (thread, messages) = m.thread(read).unwrap();
+    assert_eq!(thread.unread_count, 0, "recomputed once both were read");
+    assert!(messages.iter().all(|msg| msg.flags.seen));
+    let (_, messages) = m.thread(labelled).unwrap();
+    assert_eq!(messages[0].labels, vec!["Work".to_string()]);
+    let (thread, _) = m.thread(snoozed).unwrap();
+    assert!(thread.snoozed_until.is_some());
+    let listed = inbox_threads(m, inbox.id);
+    assert!(!listed.contains(&hidden), "hidden from the Inbox");
+    assert_eq!(listed.len(), 3);
+    m.restore_thread_mailboxes(hidden).unwrap();
+    assert!(inbox_threads(m, inbox.id).contains(&hidden), "with the marker a hide leaves");
+    for op in &ops {
+        let stored = m.get_op(op.id).unwrap();
+        assert_eq!((stored.kind, stored.target), (op.kind.clone(), op.target));
+    }
+    m.apply_and_enqueue(&[], &[]).unwrap();
+
+    cleanup_account(store, account);
+}
+
+/// The reads that answer from clear columns, against the ones that decrypt:
+/// thread records by id, a list's keys and cursor, a message's thread and a
+/// key's, the account's message ids, and the drafts a thread view needs.
+fn the_reads_that_decrypt_nothing_agree_with_the_ones_that_do(store: &dyn JournalStore) {
+    use crate::mail::DraftState;
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+    let base = Timestamp::now() - SignedDuration::from_hours(1);
+    let mut threads = Vec::new();
+    let mut messages = Vec::new();
+    let mut batch = Vec::new();
+    for i in 0..5u32 {
+        let thread = ThreadId::new();
+        let date = base + SignedDuration::from_secs(i64::from(i / 2));
+        let msg = message(account, thread, &format!("thread {i}"), "a@example.com", date);
+        batch.push(IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: i + 1 });
+        threads.push(thread);
+        messages.push(msg);
+    }
+    m.ingest(account, batch).unwrap();
+
+    let asked = [threads[0], threads[2], threads[4], ThreadId::new()];
+    let mut found = m.threads_by_ids(&asked).unwrap();
+    found.sort_by_key(|t| t.id);
+    let mut expected: Vec<_> = asked[..3].iter().map(|&t| m.thread(t).unwrap().0).collect();
+    expected.sort_by_key(|t| t.id);
+    assert_eq!(found, expected);
+    assert!(m.threads_by_ids(&[]).unwrap().is_empty());
+
+    let filter = ThreadFilter::default();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = m.list_threads(inbox.id, &filter, cursor.as_deref(), 2).unwrap();
+        let (keys, next) = m.list_thread_keys(inbox.id, &filter, cursor.as_deref(), 2).unwrap();
+        let listed: Vec<_> = page.threads.iter().map(|t| (t.id, t.last_date)).collect();
+        assert_eq!(keys, listed);
+        assert_eq!(next, page.next_cursor);
+        pages += 1;
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3);
+
+    assert_eq!(m.thread_of(messages[1].id).unwrap(), Some(threads[1]));
+    assert_eq!(m.thread_of(MailMessageId::new()).unwrap(), None);
+    m.put_message_keys(account, &[("k".into(), messages[1].id)]).unwrap();
+    assert_eq!(m.keyed_thread(account, "k").unwrap(), Some((messages[1].id, Some(threads[1]))));
+    assert_eq!(m.keyed_thread(account, "never").unwrap(), None);
+    assert_eq!(m.keyed_thread(AccountId::new(), "k").unwrap(), None);
+
+    let mut ids = m.message_ids(account).unwrap();
+    let date_of = |id: &MailMessageId| messages.iter().find(|msg| msg.id == *id).unwrap().date;
+    assert!(ids.windows(2).all(|w| date_of(&w[0]) >= date_of(&w[1])), "newest first");
+    ids.sort();
+    let mut each = Vec::new();
+    m.each_message(account, &mut |msg| each.push(msg.id)).unwrap();
+    each.sort();
+    assert_eq!(ids, each);
+
+    let now = Timestamp::now();
+    let states = [
+        (DraftState::Editing, 1),
+        (DraftState::Queued { op: crate::id::OpId::new() }, 2),
+        (DraftState::Sent, 3),
+        (DraftState::Sent, 48),
+        (DraftState::Discarded, 4),
+    ];
+    for (state, hours) in states {
+        let mut draft = Draft::new(account, "me@example.com", Origin::Person);
+        draft.state = state;
+        draft.updated_at = now - SignedDuration::from_hours(hours);
+        m.put_draft(&draft).unwrap();
+    }
+    let since = now - SignedDuration::from_hours(24);
+    let live = m.list_live_drafts(account, since).unwrap();
+    let wanted: Vec<Draft> = m
+        .list_drafts(account)
+        .unwrap()
+        .into_iter()
+        .filter(|d| match d.state {
+            DraftState::Editing | DraftState::Queued { .. } => true,
+            DraftState::Sent => d.updated_at >= since,
+            DraftState::Discarded => false,
+        })
+        .collect();
+    assert_eq!(live, wanted);
+    assert_eq!(live.len(), 3);
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::correct_categories_in`]: only the messages it is handed,
+/// only the senders or domains it names, each written as a person's own mark
+/// with the category of the correction naming it (an address before a
+/// domain) and its thread recomputed; the same again changes nothing.
+fn a_correction_over_some_messages_reaches_only_those(store: &dyn JournalStore) {
+    use crate::mail::{Category, CategoryMatch};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+    let now = Timestamp::now();
+    let senders = [
+        "news@a.example",
+        "news@a.example",
+        "News@A.example",
+        "boss@b.example",
+        "boss@b.example",
+        "friend@c.example",
+    ];
+    let mut messages = Vec::new();
+    let mut batch = Vec::new();
+    for (i, from) in senders.into_iter().enumerate() {
+        let msg = message(account, ThreadId::new(), "correct", from, now);
+        batch.push(IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: i as u32 + 1 });
+        messages.push(msg);
+    }
+    m.ingest(account, batch).unwrap();
+
+    // Every message but the third.
+    let handed: Vec<MailMessageId> =
+        messages.iter().enumerate().filter(|(i, _)| *i != 2).map(|(_, msg)| msg.id).collect();
+    // The domain says Newsletter; the boss's own address, named after it,
+    // still wins for the boss: an address before a domain.
+    let corrections = [
+        (CategoryMatch::Sender("news@a.example".into()), Category::Newsletter),
+        (CategoryMatch::Domain("b.example".into()), Category::Newsletter),
+        (CategoryMatch::Sender("boss@b.example".into()), Category::Important),
+    ];
+    assert_eq!(m.correct_categories_in(&handed, &corrections).unwrap(), 4);
+    for (i, msg) in messages.iter().enumerate() {
+        let stored = m.get_message(msg.id).unwrap();
+        let wanted = match i {
+            0 | 1 => Some(Category::Newsletter),
+            3 | 4 => Some(Category::Important),
+            _ => None,
+        };
+        match wanted {
+            Some(category) => {
+                assert_eq!(stored.category, Some(category), "message {i}");
+                assert_eq!(stored.category_source, CategorySource::Person);
+                assert_eq!(m.thread(msg.thread_id).unwrap().0.category, Some(category));
+            }
+            None => assert_ne!(stored.category_source, CategorySource::Person, "message {i}"),
+        }
+    }
+    assert_eq!(m.correct_categories_in(&handed, &corrections).unwrap(), 0);
+    assert_eq!(m.correct_categories_in(&[], &corrections).unwrap(), 0);
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::attachment_blob_refs`] finds every blob a body holds -- its
+/// parts' and its cached remote images' -- however many pages of bodies it
+/// reads them in.
+fn blob_refs_reach_every_body_however_many_there_are(store: &dyn JournalStore) {
+    use crate::id::BlobId;
+    use crate::mail::RemoteImage;
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+    let now = Timestamp::now();
+    let mut batch = Vec::new();
+    let mut bodies = Vec::new();
+    let mut held = Vec::new();
+    for i in 0..450u32 {
+        let msg = message(account, ThreadId::new(), "body", "a@example.com", now);
+        let part = BlobId::of(format!("part {i} of {account}").as_bytes());
+        held.push(part);
+        let mut remote_images = Vec::new();
+        if i % 50 == 0 {
+            let cached = BlobId::of(format!("picture {i} of {account}").as_bytes());
+            held.push(cached);
+            remote_images.push(RemoteImage {
+                original_url: format!("https://example.com/{i}.png"),
+                token: format!("token-{i}"),
+                cached_blob: Some(cached),
+            });
+        }
+        bodies.push(Body {
+            message_id: msg.id,
+            html_sanitised: String::new(),
+            text: String::new(),
+            quoted_ranges: Vec::new(),
+            signature_range: None,
+            parts: vec![PartRef {
+                cid: None,
+                filename: Some(format!("{i}.pdf")),
+                mime_type: "application/pdf".into(),
+                size: 10,
+                blob: Some(part),
+                attached: true,
+            }],
+            remote_images,
+        });
+        batch.push(IngestMessage { message: msg, mailbox: inbox.id, uid: i + 1 });
+    }
+    m.ingest(account, batch).unwrap();
+    m.put_bodies(&bodies).unwrap();
+
+    let refs: std::collections::HashSet<BlobId> =
+        m.attachment_blob_refs().unwrap().into_iter().collect();
+    assert!(held.iter().all(|blob| refs.contains(blob)), "every page of bodies was read");
 
     cleanup_account(store, account);
 }

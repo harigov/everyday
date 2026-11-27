@@ -19,7 +19,16 @@
 // the moment the catalogue changed and nobody would notice.
 
 import { api, sendMessage } from './api'
-import { applyEvent, cutReply, emptyTurn, liveTurn, replay, settle, type Turn } from './agent'
+import {
+  applyEvent,
+  cutReply,
+  DeltaBatch,
+  emptyTurn,
+  liveTurn,
+  replay,
+  settle,
+  type Turn,
+} from './agent'
 import { models } from './models.svelte'
 import { pref } from './prefs'
 import { app, handle, isLocked, quietly } from './state.svelte'
@@ -81,6 +90,7 @@ class AgentState {
   }
 
   reset() {
+    this.#words.flush()
     this.threads = []
     this.conversationId = null
     this.turns = []
@@ -307,6 +317,7 @@ class AgentState {
       }
       reply.error = e instanceof Error ? e.message : String(e)
     } finally {
+      this.#words.flush()
       this.busy = false
       this.#reply = null
       // A card still open when the turn ends is stranded: the run has gone,
@@ -388,6 +399,8 @@ class AgentState {
 
   /** The person talked over reply `messageId`: it now reads what they heard. */
   cutSpoken(messageId: string, text: string) {
+    // What was held back was said before the cut, and the cut replaces it.
+    this.#words.flush()
     cutReply(this.turns, messageId, text)
   }
 
@@ -398,6 +411,7 @@ class AgentState {
   endSpoken() {
     const reply = this.#spoken
     if (!reply) return
+    this.#words.flush()
     this.#spoken = null
     // Not while a typed turn is running beside it: that one clears it.
     if (this.#reply === null) this.busy = false
@@ -465,6 +479,12 @@ class AgentState {
   }
 
   /**
+   * The words streaming in, drawn once a frame rather than once a fragment;
+   * see `DeltaBatch`. Flushed before anything else touches the turn.
+   */
+  #words = new DeltaBatch()
+
+  /**
    * Fold an event into the turn it belongs to -- and, when it is the end of a
    * call somebody answered "Always allow", read the settings. The service
    * saves the website as it takes that answer, and by the time the call has
@@ -472,6 +492,9 @@ class AgentState {
    * which, so this is the one read, and the card's note waits for it.
    */
   #fold(turn: Turn, event: AgentEvent) {
+    if (event.type === 'delta' || event.type === 'thinking') return this.#words.add(turn, event)
+    // Anything else lands after the words that came before it.
+    this.#words.flush()
     applyEvent(turn, event)
     if (event.type !== 'toolFinished') return
     // Told how to say a word: the list Settings draws is the store's.

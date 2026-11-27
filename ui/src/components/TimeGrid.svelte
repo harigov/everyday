@@ -1356,22 +1356,14 @@
     text-decoration: line-through;
   }
 
-  /* The one being timed right now: a soft pulse, so it is findable in a
-     full week without being a flashing light. */
+  /* The one being timed right now: ringed, so it is findable in a full week
+     without being a flashing light. Still, not breathing: a ring that
+     pulsed repainted the window sixty times a second for as long as a timer
+     ran with the calendar open, which can be all day. */
   .slot.live {
     border-left-style: solid;
     box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 55%, transparent);
-    animation: breathe 2.4s var(--ease) infinite;
     cursor: default;
-  }
-  @keyframes breathe {
-    0%,
-    100% {
-      box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--c) 50%, transparent);
-    }
-    50% {
-      box-shadow: 0 0 0 3.5px color-mix(in oklab, var(--c) 22%, transparent);
-    }
   }
 
   /* The bottom few pixels resize instead of moving. */

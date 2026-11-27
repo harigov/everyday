@@ -67,6 +67,10 @@
   const phoneHome = $derived(phone.on && home)
   const phoneDrawer = $derived(phone.on && !home)
 
+  /** The width a row's picture is asked for at: the server's smallest tier
+   *  that still fills the 36px square, cropped, on this screen. */
+  const thumbW = window.devicePixelRatio > 1 ? 200 : 96
+
   // Loaded when the sidebar appears rather than when the store is imported,
   // so a vault whose owner never opens this app never pays for the query.
   // Idempotent, so coming back refreshes instead of blanking. On a phone by
@@ -690,7 +694,14 @@
               </span>
             </span>
             {#if note.cover}
-              <img class="thumb" src={mediaUrl(note.cover)} alt="" loading="lazy" />
+              <!-- The picture scaled for a slot this size, not the original. -->
+              <img
+                class="thumb"
+                src={mediaUrl(note.cover, thumbW)}
+                alt=""
+                loading="lazy"
+                decoding="async"
+              />
             {:else if note.coverFile}
               <img class="thumb" src={fileUrl(note.coverFile)} alt="" loading="lazy" />
             {/if}

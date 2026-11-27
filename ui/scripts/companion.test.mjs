@@ -20,13 +20,16 @@ const {
   DEFAULT_LOOK,
   DROOP_MS,
   PLUMAGES,
+  SETTLE_S,
   actChangesIn,
   actOf,
   companionOf,
   headerAct,
   lookOf,
+  parks,
   plumageOf,
   sniffs,
+  working,
 } = companion
 const { emptyTurn, liveTurn } = agent
 
@@ -175,6 +178,42 @@ assert.equal(headerAct({ ready: true, composing: false, turn: undefined }, NOW),
 const writing = { ...liveTurn('w', NOW), phase: 'writing' }
 assert.equal(headerAct({ ready: true, composing: true, turn: writing }, NOW), 'type')
 assert.equal(headerAct({ ready: true, composing: true, turn: done }, NOW + 100), 'cheer')
+
+// ── when it is drawn ──────────────────────────────────────────────────
+
+// A turn at work, or the moment after one, is drawn for as long as it lasts;
+// a bird with nothing to do settles and is held.
+for (const act of ['think', 'sniff', 'type', 'ask', 'cheer', 'droop']) {
+  assert.equal(working(act), true, act)
+}
+for (const act of ['idle', 'sleep', 'listen']) assert.equal(working(act), false, act)
+
+// Sitting, settled, at rest and with nothing laid over it moving: held.
+const settled = {
+  act: 'idle',
+  blend: 1,
+  quietFor: SETTLE_S,
+  watched: true,
+  busy: false,
+  resting: true,
+}
+assert.equal(parks(settled), true)
+assert.equal(parks({ ...settled, act: 'sleep' }), true, 'asleep too')
+assert.equal(parks({ ...settled, act: 'listen' }), true, 'and watching the box')
+assert.equal(parks({ ...settled, quietFor: SETTLE_S - 1 }), false, 'not while it settles')
+assert.equal(parks({ ...settled, blend: 0.5 }), false, 'nor mid-way into the act')
+assert.equal(parks({ ...settled, busy: true }), false, 'nor during a pat, or watching the pointer')
+assert.equal(parks({ ...settled, resting: false }), false, 'nor mid-blink, or mid-stretch')
+for (const act of ['think', 'sniff', 'type', 'ask', 'cheer', 'droop']) {
+  assert.equal(parks({ ...settled, act }), false, `never at work: ${act}`)
+  assert.equal(parks({ ...settled, act, watched: false }), false, `watched or not: ${act}`)
+}
+
+// In a window nobody is at, it is held as soon as it has come to rest.
+const unwatched = { ...settled, watched: false, quietFor: 0 }
+assert.equal(parks(unwatched), true)
+assert.equal(parks({ ...unwatched, blend: 0.9 }), false, 'once the change into the act is over')
+assert.equal(parks({ ...unwatched, resting: false }), false)
 
 await close()
 console.log('companion: all checks passed')

@@ -95,6 +95,9 @@ struct Shared {
     /// Accounts whose sync has written something a thread list would show
     /// since the account task last asked -- see [`StatusRegistry::mark_changed`].
     changed: Mutex<HashSet<AccountId>>,
+    /// Accounts whose sync has found a mailbox the vault had no row for --
+    /// see [`StatusRegistry::mark_mailboxes_changed`].
+    mailboxes_changed: Mutex<HashSet<AccountId>>,
     /// Messages a pass has stored and not yet announced. Taken once, when
     /// the pass finishes, the same way [`Self::changed`] is.
     arrivals: Mutex<HashMap<AccountId, Arrivals>>,
@@ -113,6 +116,16 @@ struct Shared {
     /// The new inbox mail a pass has stored since its account's task last
     /// asked, oldest first -- see [`StatusRegistry::mark_arrived`].
     arrived: Mutex<HashMap<AccountId, Vec<MailMessageId>>>,
+    /// Each account's compaction clock -- see [`StatusRegistry::compaction`].
+    compaction: Mutex<HashMap<AccountId, Compaction>>,
+}
+
+/// When an account's packs may first be checked for compacting, and when they
+/// last were -- see [`StatusRegistry::compaction`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Compaction {
+    pub not_before: Instant,
+    pub last_attempt: Option<Instant>,
 }
 
 /// One account's [`Shared::arrivals`]: how many were noted, and the first few
@@ -224,6 +237,49 @@ impl StatusRegistry {
     /// forty threads announces once.
     pub fn take_changed(&self, account_id: AccountId) -> bool {
         self.0.changed.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id)
+    }
+
+    /// Note that a pass over `account_id` found a mailbox -- a folder, or a
+    /// Gmail label -- the mail list has not been told of, so the account task
+    /// says so once the pass is over. Apart from [`StatusRegistry::mark_changed`]
+    /// because a list reload does not ask for the mailboxes again.
+    pub fn mark_mailboxes_changed(&self, account_id: AccountId) {
+        self.0.mailboxes_changed.lock().unwrap_or_else(|e| e.into_inner()).insert(account_id);
+    }
+
+    /// Whether [`StatusRegistry::mark_mailboxes_changed`] was called for
+    /// `account_id` since the last time this was asked, clearing it.
+    pub fn take_mailboxes_changed(&self, account_id: AccountId) -> bool {
+        self.0.mailboxes_changed.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id)
+    }
+
+    /// `account_id`'s compaction clock, started -- `first_after` from `now` --
+    /// the first time its task asks since mail opened. Kept here, which lives
+    /// as long as the unlock, rather than in the task, whose every reconnect is
+    /// a fresh attempt: a laptop that drops its connection more often than
+    /// `first_after` would otherwise never compact at all, and one that drops
+    /// it less often would check again on every reconnect.
+    pub fn compaction(
+        &self,
+        account_id: AccountId,
+        now: Instant,
+        first_after: Duration,
+    ) -> Compaction {
+        *self
+            .0
+            .compaction
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(account_id)
+            .or_insert(Compaction { not_before: now + first_after, last_attempt: None })
+    }
+
+    /// Remember that `account_id`'s packs were checked for compacting `at`.
+    pub fn note_compaction_attempt(&self, account_id: AccountId, at: Instant) {
+        let mut map = self.0.compaction.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(account_id)
+            .or_insert(Compaction { not_before: at, last_attempt: None })
+            .last_attempt = Some(at);
     }
 
     /// Is this the first this session has said about `message_id`? A message

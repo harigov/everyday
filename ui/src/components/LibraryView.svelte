@@ -7,6 +7,7 @@
   // they only ever search. The list is one keystroke away for when a shelf has
   // grown past the point where pictures help.
 
+  import { untrack } from 'svelte'
   import { files } from '../lib/files.svelte'
   import { keysLabel } from '../lib/keys'
   import { userAgentMac } from '../lib/platform'
@@ -25,14 +26,28 @@
   import Icon from './Icon.svelte'
   import ItemCard from './ItemCard.svelte'
   import { rovingFocus } from '../lib/roving'
+  import {
+    CARD_MIN,
+    CARD_MIN_PHONE,
+    CARD_TEXT_H,
+    ROW_H,
+    ROW_H_PHONE,
+    frameHeight,
+    gridMetrics,
+    keepLine,
+    lineTop,
+    shelfLines,
+    shelfWindow,
+  } from '../lib/library-grid'
+  import { scrollFor } from '../lib/photos'
   import { proposals } from '../lib/proposals.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
   import ItemDetail from './ItemDetail.svelte'
   import Rating from './Rating.svelte'
 
   // Loaded when the view appears rather than when the store is imported, so
-  // a vault whose owner never opens this app never reads a shelf. `start` is
-  // idempotent, so coming back refreshes instead of blanking the grid.
+  // a vault whose owner never opens this app never reads a shelf. Coming back
+  // keeps what was drawn, or refreshes it, instead of blanking the grid.
   void library.start()
 
   const SORTS: { id: ItemSort; label: string }[] = [
@@ -177,10 +192,196 @@
   // One frame for the whole grid; see `coverRatio` for why that beats one
   // frame per card. The everything view has no shelf, so it gets portrait.
   const ratio = $derived(coverRatio(library.favouritesOnly ? null : shelf))
+
+  // ── Drawing a window of the shelf ────────────────────────────────────
+  //
+  // Only the lines near the viewport are drawn; padding stands for the rest
+  // (see `library-grid.ts`). What that is cut from is measured here: where
+  // the shelf sits against the pane that scrolls it, how tall that pane is,
+  // how wide the shelf is and the gaps between cards, and how tall a card or
+  // a row turned out to be. Scrolling is heard with a passive listener on the
+  // pane and never with a wheel listener, which would take WebKitGTK's
+  // scrolling off its own thread.
+
+  let mainEl = $state<HTMLElement | null>(null)
+  let bodyEl = $state<HTMLElement | null>(null)
+  let shelfEl = $state<HTMLElement | null>(null)
+
+  /** The pane that scrolls: the body, or on a phone held sideways, where the
+   *  heading and the bars scroll away too, the whole column. */
+  let scroller: HTMLElement | null = null
+  /** The top of the scrolling pane's viewport, against the window. */
+  let viewportTop = 0
+  let view = $state.raw({ top: 0, height: 0, width: 0, colGap: 0, rowGap: 0 })
+
+  /** Read where things are. `full` also reads what only a layout change
+   *  moves: which pane scrolls, its place, the shelf's width and gaps. */
+  function measure(full = false) {
+    const shelfNode = shelfEl
+    const body = bodyEl
+    const main = mainEl
+    if (!shelfNode || !body || !main) return
+    let { width, colGap, rowGap } = view
+    if (full || !scroller) {
+      scroller = getComputedStyle(body).overflowY === 'visible' ? main : body
+      viewportTop = scroller.getBoundingClientRect().top + scroller.clientTop
+      const style = getComputedStyle(shelfNode)
+      width = shelfNode.clientWidth
+      colGap = parseFloat(style.columnGap) || 0
+      rowGap = parseFloat(style.rowGap) || 0
+    }
+    const top = viewportTop - shelfNode.getBoundingClientRect().top
+    const height = scroller.clientHeight
+    const was = view
+    if (
+      top !== was.top ||
+      height !== was.height ||
+      width !== was.width ||
+      colGap !== was.colGap ||
+      rowGap !== was.rowGap
+    ) {
+      view = { top, height, width, colGap, rowGap }
+    }
+  }
+
+  // The panes' sizes -- the window, the detail panel opening beside the
+  // shelf -- and their scrolling.
+  $effect(() => {
+    const main = mainEl
+    const body = bodyEl
+    if (!main || !body) return
+    const resized = new ResizeObserver(() => measure(true))
+    resized.observe(main)
+    resized.observe(body)
+    const scrolled = () => measure()
+    main.addEventListener('scroll', scrolled, { passive: true })
+    body.addEventListener('scroll', scrolled, { passive: true })
+    return () => {
+      resized.disconnect()
+      main.removeEventListener('scroll', scrolled)
+      body.removeEventListener('scroll', scrolled)
+    }
+  })
+
+  // The shelf drawn, or something above it in the pane come or gone.
+  $effect(() => {
+    void shelfEl
+    void library.view
+    void library.items.length
+    void catchUps.length
+    void phone.on
+    untrack(() => measure(true))
+  })
+
+  const grid = $derived(library.view === 'grid')
+  const columns = $derived(
+    grid
+      ? gridMetrics(view.width, phone.on ? CARD_MIN_PHONE : CARD_MIN, view.colGap)
+      : { cols: 1, cell: view.width },
+  )
+  const frame = $derived(frameHeight(ratio, columns.cell))
+  /** What a card's or a row's height follows from. */
+  const shape = $derived(`${library.view}|${columns.cols}|${columns.cell}|${ratio}|${phone.on}`)
+  /** A card or a row as measured, for the shape it was measured at. */
+  let measured = $state.raw<{ shape: string; height: number } | null>(null)
+  const itemHeight = $derived(
+    measured && measured.shape === shape
+      ? measured.height
+      : grid
+        ? frame + CARD_TEXT_H
+        : phone.on
+          ? ROW_H_PHONE
+          : ROW_H,
+  )
+  const lines = $derived(
+    shelfLines(library.items.length, columns.cols, itemHeight, grid ? view.rowGap : 0),
+  )
+  const win = $derived(
+    view.width > 0
+      ? shelfWindow(lines, library.items.length, view.top, view.height || innerHeight)
+      : { from: 0, to: 0, before: 0, after: 0 },
+  )
+  /** Where each item is in the whole shelf, for the arrow keys. */
+  const indexOf = $derived(new Map(library.items.map((row, i) => [row.id, i])))
+  /** The card or row with focus, by id. Its line stays drawn wherever the
+   *  shelf is scrolled to (`keepLine`): unmounted, it would take focus with
+   *  it out of the shelf, and the arrow keys with it. */
+  let focusedId = $state<string | null>(null)
+  const kept = $derived(focusedId === null ? null : (indexOf.get(focusedId) ?? null))
+  const drawnShelf = $derived(keepLine(win, lines, library.items.length, kept))
+  // Numbers, so a scroll that stays within the same lines draws nothing new.
+  const from = $derived(drawnShelf.from)
+  const to = $derived(drawnShelf.to)
+  const before = $derived(drawnShelf.before)
+  const after = $derived(drawnShelf.after)
+  const thenFrom = $derived(drawnShelf.then.from)
+  const thenTo = $derived(drawnShelf.then.to)
+  const skip = $derived(drawnShelf.then.skip)
+  /** What is drawn, in shelf order: `null` is the space standing for the
+   *  lines between the window and the focused card's line apart from it. */
+  const shown = $derived<(Item | null)[]>(
+    thenFrom < thenTo
+      ? [...library.items.slice(from, to), null, ...library.items.slice(thenFrom, thenTo)]
+      : library.items.slice(from, to),
+  )
+  /** The cover's longer side in a card, for the scaled copy it asks for. */
+  const drawn = $derived(Math.max(columns.cell, frame))
+
+  // A card or a row is measured once it is drawn at a new shape: the window
+  // is cut by what the page actually laid out, so lines never drift.
+  const drawing = $derived(shown.length > 0)
+  $effect(() => {
+    void drawing
+    const now = shape
+    const first = shelfEl?.firstElementChild
+    if (!first) return
+    const height = first.getBoundingClientRect().height
+    untrack(() => {
+      if (height > 0 && (measured?.shape !== now || Math.abs(measured.height - height) > 0.01)) {
+        measured = { shape: now, height }
+      }
+    })
+  })
+
+  function focusIn(e: FocusEvent) {
+    const row = e.target instanceof Element ? e.target.closest('[data-row]') : null
+    focusedId = row?.getAttribute('data-row') ?? null
+  }
+
+  function focusOut(e: FocusEvent) {
+    // Gone elsewhere on the page, or nowhere. Not the window losing focus,
+    // which leaves it on the card to come back to.
+    const next = e.relatedTarget instanceof Node ? e.relatedTarget : document.activeElement
+    if (!bodyEl?.contains(next)) focusedId = null
+  }
+
+  /** Bring item `index`'s line into view; the scroll draws it. */
+  function scrollToIndex(index: number) {
+    measure(true)
+    const pane = scroller
+    const shelfNode = shelfEl
+    if (!pane || !shelfNode) return
+    const offset = shelfNode.getBoundingClientRect().top - viewportTop + pane.scrollTop
+    const line = { top: offset + lineTop(lines, index), height: itemHeight }
+    pane.scrollTop = scrollFor(line, pane.scrollTop, pane.clientHeight)
+    measure()
+  }
+
+  // One tab stop, and the arrow keys over the whole shelf rather than the
+  // lines drawn: a card not drawn is scrolled to and then focused.
+  const roving = $derived({
+    current: library.selected,
+    virtual: {
+      length: library.items.length,
+      idAt: (index: number) => library.items[index]?.id ?? null,
+      indexOf: (id: string) => indexOf.get(id) ?? -1,
+      scrollToIndex,
+    },
+  })
 </script>
 
 <div class="library" class:layered style="--tint: {library.accent}">
-  <div class="main">
+  <div class="main" bind:this={mainEl}>
     <header class="bar">
       <div class="pane-titles">
         <h1 class="pane-title">{heading}</h1>
@@ -312,8 +513,11 @@
          Down means the card below rather than the next card along. -->
     <div
       class="scroll body"
+      bind:this={bodyEl}
       oncontextmenu={(e) => menu.show(e, shelfMenu())}
-      use:rovingFocus={library.selected}
+      onfocusin={focusIn}
+      onfocusout={focusOut}
+      use:rovingFocus={roving}
     >
       {#each catchUps as p (p.id)}
         <div class="ghosts"><ProposalGhost proposal={p} /></div>
@@ -364,67 +568,90 @@
           </EmptyState>
         {/if}
       {:else if library.view === 'grid'}
-        <div class="grid">
-          {#each library.items as row (row.id)}
-            <ItemCard
-              item={row}
-              kind={library.kindOf(row)}
-              {ratio}
-              selected={library.selected === row.id}
-              onopen={() => void library.open(row.id)}
-              onmenu={(e: MouseEvent) => menu.show(e, rowMenu(row))}
-            />
+        <div
+          class="grid"
+          bind:this={shelfEl}
+          style:grid-template-columns="repeat({columns.cols}, minmax(0, 1fr))"
+          style:padding-top="{before}px"
+          style:padding-bottom="{after}px"
+        >
+          {#each shown as row (row?.id ?? '')}
+            {#if row}
+              <ItemCard
+                item={row}
+                kind={library.kindOf(row)}
+                {ratio}
+                {drawn}
+                selected={library.selected === row.id}
+                onopen={() => void library.open(row.id)}
+                onmenu={(e: MouseEvent) => menu.show(e, rowMenu(row))}
+              />
+            {:else}
+              <div class="skip" style:height="{skip}px"></div>
+            {/if}
           {/each}
         </div>
       {:else}
-        <div class="rows">
-          {#each library.items as row (row.id)}
-            {@const kind = library.kindOf(row)}
-            {@const due = library.dueOf(row.id)}
-            <button
-              class="row list-row"
-              class:sel={library.selected === row.id}
-              data-row={row.id}
-              onclick={() => void library.open(row.id)}
-              oncontextmenu={(e) => menu.show(e, rowMenu(row))}
-            >
-              <span class="thumb">
-                <Cover
-                  blob={row.cover}
-                  title={row.title}
-                  icon={kind?.icon ?? ''}
-                  color={kind?.color ?? 'var(--accent)'}
-                  ratio="1 / 1"
-                />
-              </span>
-              <span class="cell name">
-                <span class="t">
-                  {row.title}
-                  {#if row.files.length > 0}
-                    <!-- A file to read: Read opens it from the panel. -->
-                    <span class="filed" title="Has a file to read">
-                      <Icon name="file" size={12} />
-                    </span>
-                  {/if}
+        <div
+          class="rows"
+          bind:this={shelfEl}
+          style:padding-top="{before}px"
+          style:padding-bottom="{after}px"
+        >
+          {#each shown as row (row?.id ?? '')}
+            {#if row}
+              {@const kind = library.kindOf(row)}
+              {@const due = library.dueOf(row.id)}
+              <button
+                class="row list-row"
+                class:sel={library.selected === row.id}
+                data-row={row.id}
+                onclick={() => void library.open(row.id)}
+                oncontextmenu={(e) => menu.show(e, rowMenu(row))}
+              >
+                <span class="thumb">
+                  <!-- A jacket taller than wide fills the square by its width,
+                       so its longer side is drawn half as long again. -->
+                  <Cover
+                    blob={row.cover}
+                    title={row.title}
+                    icon={kind?.icon ?? ''}
+                    color={kind?.color ?? 'var(--accent)'}
+                    ratio="1 / 1"
+                    drawn={(phone.on ? 40 : 34) * 1.5}
+                  />
                 </span>
-                {#if due && due.daysOver >= -7}
-                  <span class="c">{lateness(due)}</span>
-                {:else if row.creator}<span class="c">{row.creator}</span>
-                {:else if kind}<span class="c phone-only">{kind.name}</span>{/if}
-              </span>
-              <span class="cell shelf">{kind?.name ?? ''}</span>
-              <!-- Side by side as columns; on a phone the state over the
-                   stars, in the one column there is room for. -->
-              <span class="aside">
-                <span class="cell state">{library.label(kind, row.status)}</span>
-                <span class="cell year">{row.year ?? ''}</span>
-                <span class="cell score">
-                  {#if row.rating !== null && row.rating !== undefined}
-                    <Rating value={row.rating} size={12} readonly />
-                  {/if}
+                <span class="cell name">
+                  <span class="t">
+                    {row.title}
+                    {#if row.files.length > 0}
+                      <!-- A file to read: Read opens it from the panel. -->
+                      <span class="filed" title="Has a file to read">
+                        <Icon name="file" size={12} />
+                      </span>
+                    {/if}
+                  </span>
+                  {#if due && due.daysOver >= -7}
+                    <span class="c">{lateness(due)}</span>
+                  {:else if row.creator}<span class="c">{row.creator}</span>
+                  {:else if kind}<span class="c phone-only">{kind.name}</span>{/if}
                 </span>
-              </span>
-            </button>
+                <span class="cell shelf">{kind?.name ?? ''}</span>
+                <!-- Side by side as columns; on a phone the state over the
+                     stars, in the one column there is room for. -->
+                <span class="aside">
+                  <span class="cell state">{library.label(kind, row.status)}</span>
+                  <span class="cell year">{row.year ?? ''}</span>
+                  <span class="cell score">
+                    {#if row.rating !== null && row.rating !== undefined}
+                      <Rating value={row.rating} size={12} readonly />
+                    {/if}
+                  </span>
+                </span>
+              </button>
+            {:else}
+              <div class="skip" style:height="{skip}px"></div>
+            {/if}
           {/each}
         </div>
       {/if}
@@ -677,11 +904,20 @@
 
   .grid {
     display: grid;
-    /* Auto-fill rather than a fixed column count: a wide window should show
-       more covers, not wider ones -- a stretched jacket is the one thing a
-       cover grid must never do. */
-    grid-template-columns: repeat(auto-fill, minmax(146px, 1fr));
+    flex: none;
+    /* As many columns as keep a card at least 146px wide, worked out in
+       script (`library-grid.ts`) the way `auto-fill` did, since the window
+       of lines drawn has to know: a wide window should show more covers, not
+       wider ones -- a stretched jacket is the one thing a cover grid must
+       never do. */
     gap: var(--sp-5) var(--sp-4);
+  }
+
+  /* The lines not drawn between the window and the focused card's own,
+     drawn apart from it (`keepLine`). */
+  .skip {
+    grid-column: 1 / -1;
+    flex: none;
   }
 
   /* Pulled out by exactly the inset `.list-row` gives each card (see
@@ -689,6 +925,7 @@
      grid view and the text inside it stays where it always was. */
   .rows {
     display: flex;
+    flex: none;
     flex-direction: column;
     /* Capped so the year and stars stay near the title on a wide window,
        instead of a column a metre from the name it belongs to. */
@@ -697,9 +934,15 @@
   }
   .row {
     display: flex;
+    flex: none;
     align-items: center;
     gap: var(--sp-3);
     padding: var(--sp-2) var(--sp-2);
+    /* Room for a title over a byline whether a row has one or not, so every
+       row is one height and the list can be drawn a window at a time. */
+    --name-line: calc(var(--text-base) * var(--leading-snug));
+    --byline-line: calc(var(--text-sm) * var(--leading-snug));
+    height: calc(2 * var(--sp-2) + var(--name-line) + 1px + var(--byline-line));
   }
   /* The hairline between rows, starting under the title rather than the
      cover -- the column of covers stays one unbroken edge -- and clear of
@@ -874,10 +1117,9 @@
     padding: var(--sp-1) var(--sp-3) var(--fab-clear);
   }
   /* Two covers across every phone held upright (the least a column can be is
-     140 px), more on its side: a third across a portrait screen is too small
-     to tell apart, one is a column of posters. */
+     140 px, `CARD_MIN_PHONE`), more on its side: a third across a portrait
+     screen is too small to tell apart, one is a column of posters. */
   :global([data-phone]) .grid {
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: var(--sp-4) var(--sp-3);
   }
 
@@ -885,6 +1127,7 @@
      stars. The shelf and the year are the cover's and the byline's to say. */
   :global([data-phone]) .row {
     min-height: 60px;
+    height: 60px;
     gap: var(--sp-3);
     padding: var(--sp-2);
   }

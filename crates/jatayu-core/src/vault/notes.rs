@@ -50,7 +50,7 @@ impl Vault {
         self.writable()?;
         note.validate()?;
         note.body.validate()?;
-        self.write(|u| {
+        self.write_in(&self.gates.text, |u| {
             let notes = u.notes()?;
             notes.put_note_if(note, expect)?;
             // Not `u.index.insert_note(note)`: a note that is a meeting note
@@ -72,7 +72,7 @@ impl Vault {
         self.writable()?;
         note.validate()?;
         note.body.validate()?;
-        self.write(|u| {
+        self.write_in(&self.gates.text, |u| {
             let notes = u.notes()?;
             notes.put_note(note)?;
             super::meetings::reindex_note(u, note.id);
@@ -90,6 +90,10 @@ impl Vault {
     /// unconditionally rather than only when one is expected; it is a no-op,
     /// two cheap lookups, on every note that never had a recording behind
     /// it.
+    ///
+    /// Exclusive, unlike the saves: the cascade rewrites recordings, which
+    /// the meeting pipeline saves under the shared lock, and a deletion is
+    /// rare enough not to be worth a gate of its own.
     pub fn delete_note(&self, id: NoteId) -> Result<()> {
         self.writable()?;
         self.write(|u| {

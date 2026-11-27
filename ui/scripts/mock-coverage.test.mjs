@@ -52,7 +52,6 @@ const UNMOCKED = new Set([
   'run_tool',
   'collect_garbage',
   'flush',
-  'vault_stats',
   'set_health_source_token',
 ])
 

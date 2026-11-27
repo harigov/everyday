@@ -632,6 +632,94 @@ async fn run_now_is_queued_and_carried_out_by_the_next_tick() {
 }
 
 #[tokio::test]
+async fn run_now_starts_at_once_rather_than_at_the_next_tick() {
+    let model = fake_model(says("Done at once.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let routine = Routine::new("On demand", "Do the thing.", Trigger::Manual);
+    vault.save_routine(&routine).unwrap();
+
+    let (stop, listen) = tokio::sync::watch::channel(false);
+    let scheduler = tokio::spawn(jatayu_service::scheduler::run(svc.clone(), listen));
+    svc.call(
+        jatayu_service::ctx::Ctx::local(),
+        "run_routine",
+        serde_json::json!({ "id": routine.id.to_string() }),
+    )
+    .await
+    .expect("run_routine");
+
+    // The loop's first tick is a minute away, so only the wake can start it.
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let runs = vault.runs(&RunQuery::for_routine(routine.id)).unwrap();
+            if let Some(run) = runs.into_iter().find(|r| r.outcome.is_finished()) {
+                return run;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the run is carried out well inside a minute");
+    assert_eq!(finished.outcome, Outcome::Done);
+    assert_eq!(finished.summary, "Done at once.");
+
+    stop.send(true).unwrap();
+    scheduler.await.unwrap();
+}
+
+#[tokio::test]
+async fn runs_left_open_long_ago_are_taken_up_on_the_first_tick() {
+    // A tick reads only the recent end of the log, but the first on a vault
+    // reads all of it: a run queued, or left running, hours ago by a process
+    // that is gone is still found.
+    let model = fake_model(says("Done late.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let routine = Routine::new("On demand", "Do the thing.", Trigger::Manual);
+    vault.save_routine(&routine).unwrap();
+    let hours_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(3);
+
+    let mut queued = jatayu_core::RoutineRun::new(&routine, None);
+    queued.started_at = hours_ago;
+    vault.save_run(&queued).unwrap();
+    let mut orphan = jatayu_core::RoutineRun::new(&routine, None);
+    orphan.begin();
+    orphan.started_at = hours_ago;
+    vault.save_run(&orphan).unwrap();
+
+    jatayu_service::scheduler::tick(&svc).await;
+
+    let swept = vault.run(orphan.id).unwrap();
+    assert_eq!(swept.outcome, Outcome::Failed);
+    assert!(swept.reason.contains("application stopped"), "got {:?}", swept.reason);
+    let ran = vault.run(queued.id).unwrap();
+    assert_eq!(ran.outcome, Outcome::Done, "{}", ran.reason);
+    assert_eq!(ran.summary, "Done late.");
+}
+
+#[tokio::test]
+async fn a_runs_change_names_the_run() {
+    let model = fake_model(says("Done.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+    let routine = due_now(&svc, "Say what is due.");
+
+    jatayu_service::scheduler::tick(&svc).await;
+
+    let run = svc.get().unwrap().runs(&RunQuery::for_routine(routine.id)).unwrap().remove(0);
+    let changes = events.changes.lock().unwrap();
+    let named: Vec<_> = changes
+        .iter()
+        .filter(|c| c.kind == jatayu_service::events::Kind::RoutineRun)
+        .map(|c| c.id.clone())
+        .collect();
+    assert!(!named.is_empty(), "the run raised its change");
+    assert!(named.iter().all(|id| id.as_deref() == Some(run.id.to_string().as_str())), "{named:?}");
+}
+
+#[tokio::test]
 async fn a_model_that_never_answers_fails_the_run_rather_than_the_loop() {
     let model = fake_model(Script::Hangs).await;
     let (svc, _dir) = service(&model.endpoint);

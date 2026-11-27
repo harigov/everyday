@@ -128,6 +128,21 @@ async fn keep(service: Weak<Service>, held: Arc<Mutex<Held>>) {
     }
 }
 
+/// Whether a recogniser on this computer is in memory now -- held, or not
+/// yet swept since its last use -- so that listening, or holding the models
+/// ready, would not have to read one from disk. What the desktop asks before
+/// putting that off for a moment after an unlock.
+pub fn recogniser_resident() -> bool {
+    #[cfg(feature = "speech")]
+    {
+        crate::speech::local::any_recogniser_loaded()
+    }
+    #[cfg(not(feature = "speech"))]
+    {
+        false
+    }
+}
+
 impl Service {
     /// Load the recogniser and the voice a conversation would use, and hold
     /// them until the answer is dropped. Refuses, as

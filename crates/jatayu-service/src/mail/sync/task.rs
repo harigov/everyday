@@ -78,7 +78,9 @@
 //! message's new uid is known only to a pass -- and whenever the `SELECT`
 //! before `IDLE` finds the inbox changed since the last pass (its
 //! `HIGHESTMODSEQ` or `EXISTS`), since `IDLE` hears only what changes after
-//! it starts.
+//! it starts. When only its flags or labels changed -- the trace each of the
+//! app's own actions leaves -- [`passes::reconcile_selected`] reads those on
+//! the inbox alone instead, and the turn goes on into `IDLE`.
 //!
 //! The pass can still be the slow thing between a send and the server, two
 //! ways, and both are closed: a pass about to start waits for an op due
@@ -124,7 +126,7 @@ use crate::events::{Change, Kind, Op};
 use crate::mail::sync::discovery::{LabelMailboxes, SyncedMailbox};
 use crate::mail::sync::ingest::ThreadIndex;
 use crate::mail::sync::sender::LazySmtpSender;
-use crate::mail::sync::status::Phase;
+use crate::mail::sync::status::{Phase, StatusRegistry};
 use crate::mail::sync::{credential, passes};
 use crate::service::Service;
 use crate::supervisor::{Outcome, TaskError, TaskResult};
@@ -323,11 +325,10 @@ where
         return Err(e.to_string().into());
     }
 
-    // `None` on every fresh task, which is what gives the first idle moment
-    // after an unlock its one attempt regardless of how recently some
-    // *earlier* task for this account last compacted -- see
-    // `maybe_compact`'s own docs for the whole of the rate limit.
-    let mut last_compaction_attempt: Option<Instant> = None;
+    // Started by this unlock's first attempt and kept by every later one: see
+    // `StatusRegistry::compaction`, and `maybe_compact`'s own docs for the
+    // whole of the rate limit.
+    statuses.compaction(account_id, svc.instant(), FIRST_COMPACTION_AFTER);
 
     // What the last full pass found -- the inbox `IDLE` waits on is one of
     // them -- kept across the turns that run none. See the module docs'
@@ -340,7 +341,7 @@ where
     // the outbox wakes the task meanwhile. Moved on as each pass ends.
     let mut next_pass_at = tokio::time::Instant::now();
 
-    loop {
+    'turn: loop {
         if *stop.borrow() {
             return Ok(Outcome::Done);
         }
@@ -375,7 +376,7 @@ where
         if passing {
             // An op about to come due -- a send whose undo window is running
             // out, nearly always -- goes before the pass, not after it.
-            match hold_for_imminent_op(&vault, account_id, &mut stop).await {
+            match hold_for_imminent_op(&vault, account_id, &sender, &mut stop).await {
                 Hold::Stop => return Ok(Outcome::Done),
                 Hold::Waited => {
                     if let Err(e) =
@@ -406,12 +407,13 @@ where
             let mut send_due = SendDueMail::new(&svc, account_id, &sender);
             let passed = {
                 let news = statuses.news(account_id);
-                let pass = passes::sync_once_with(
+                let pass = passes::sync_once_after(
                     &ctx,
                     &mut session,
                     &mut labels,
                     &mut threads,
                     &mut send_due,
+                    &mailboxes,
                 );
                 tokio::pin!(pass);
                 loop {
@@ -431,7 +433,11 @@ where
                     // And what it changed is told to an open list, banner or
                     // not: nothing else reloads it until a pass goes through.
                     announce_new_mail(&svc, &statuses, account_id);
+                    tell_mailboxes_changed(&svc, &statuses, account_id);
                     tell_changed(&svc, &statuses, account_id);
+                    // And what it indexed is made searchable: an attempt that
+                    // ends here may be the last before a lock.
+                    passes::commit_index(&ctx.index).await;
                     return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
                         .await;
                 }
@@ -448,7 +454,12 @@ where
             let synced_at = svc.now();
             credential::mark_ok(&vault, &account, synced_at);
             statuses.set_synced(account_id, synced_at);
+            // Before anything below tells a window to look: what it reads back
+            // after hearing of a change is a pass that is over, not one still
+            // syncing, which drew a spinner and a poll every two seconds.
+            statuses.set_phase(account_id, Phase::Idling, 0, 0);
             crate::trouble::mail_synced(&svc, &vault, account_id);
+            tell_mailboxes_changed(&svc, &statuses, account_id);
             // See the module docs' "telling an open window": a background
             // pass writes under no command, so this is the only announcement
             // its new mail ever gets. One batch change for the whole pass --
@@ -468,21 +479,12 @@ where
             // whether it is announced at all. Bodies are in by now, and the
             // model reads them.
             sort_arrivals(&svc, &statuses, account_id);
-            statuses.set_phase(account_id, Phase::Idling, 0, 0);
 
             // Between passes, with the bodies pass idle and the outbox
             // already drained above: see `packstore`'s own module docs for
             // why nowhere else is safe. Rate-limited internally; see
             // `maybe_compact`'s own docs.
-            maybe_compact(
-                &vault,
-                &ctx.packs,
-                account_id,
-                &stop,
-                &mut last_compaction_attempt,
-                svc.instant(),
-            )
-            .await;
+            maybe_compact(&vault, &ctx.packs, account_id, &stop, &statuses, svc.instant()).await;
 
             // Read as every pass ends rather than once when the task started,
             // so an interval changed in Settings applies from the very next
@@ -511,6 +513,13 @@ where
         if !passing && drained.attempted == 0 && next_wake == Some(Duration::ZERO) {
             next_wake = Some(DUE_BUT_NOT_DRAINED_RETRY);
         }
+        // A send whose undo window runs out while this turn waits: its SMTP
+        // connection is opened meanwhile, so it goes the moment it is due
+        // rather than after a handshake of its own. See `Sender::warm`.
+        let warm_sender = match next_wake {
+            Some(wait) if wait <= HOLD_PASS_FOR => send_due_within(&vault, account_id, wait).await,
+            _ => false,
+        };
         // What is left of the sync interval since the last pass: a turn
         // that only drained the outbox does not start it again.
         let poll = next_pass_at.saturating_duration_since(tokio::time::Instant::now());
@@ -523,7 +532,8 @@ where
         // cadence, not only when the inbox happens to change.
         let can_idle = session.capabilities().idle && idle_mailbox(&mut mailboxes).is_some();
         if !can_idle {
-            match wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll).await {
+            let wake = wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll);
+            match warming(wake, &sender, warm_sender).await {
                 Wake::Stop => return Ok(Outcome::Done),
                 Wake::OutboxNotify | Wake::Due => pass_due = false,
                 Wake::Nudge | Wake::Poll => {}
@@ -541,40 +551,70 @@ where
         // at all and this task would sit `IDLE` on some other mailbox until
         // the sync interval came back around.
         let remote_name = target.remote_name.clone();
-        let selected = match session.select(&remote_name).await {
-            Ok(state) => state,
-            Err(e) => {
-                return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
-                    .await;
+        // At most twice: once more after a reconcile, whose `FETCH`es are
+        // where the server tells of mail that came or went meanwhile -- an
+        // `EXISTS` or `EXPUNGE` the fetch drops, and that `IDLE`, begun after
+        // it, would never hear again.
+        let mut reconciled = false;
+        loop {
+            let selected = match session.select(&remote_name).await {
+                Ok(state) => state,
+                Err(e) => {
+                    return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                        .await;
+                }
+            };
+            // Mail that reached the inbox after the pass listed it, and before
+            // this `SELECT`, is in the count this `SELECT` just took, and
+            // `IDLE` only reports what changes after it starts: left alone, it
+            // would wait for the sync interval. A `UIDNEXT` past what the pass
+            // saw is that mail. A new `UIDVALIDITY` is a mailbox whose every
+            // uid now means something else, which only the full pass knows how
+            // to take back.
+            if selected.uidvalidity != target.row.uidvalidity {
+                continue 'turn;
             }
-        };
-        // Mail that reached the inbox after the pass listed it, and before this
-        // `SELECT`, is in the count this `SELECT` just took, and `IDLE` only
-        // reports what changes after it starts: left alone, it would wait for
-        // the sync interval. A `UIDNEXT` past what the pass saw is that mail.
-        // A new `UIDVALIDITY` is a mailbox whose every uid now means something
-        // else, which only the full pass knows how to take back.
-        if selected.uidvalidity != target.row.uidvalidity {
-            continue;
-        }
-        if target.seen_uidnext != 0 && selected.uidnext > target.seen_uidnext {
-            if let Err(e) =
-                arrived(&svc, &ctx, &mut session, target, &mut labels, &mut threads).await
+            if target.seen_uidnext != 0 && selected.uidnext > target.seen_uidnext {
+                if let Err(e) =
+                    arrived(&svc, &ctx, &mut session, target, &mut labels, &mut threads).await
+                {
+                    return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                        .await;
+                }
+                continue 'turn;
+            }
+            // Anything else that changed in the inbox since the last pass --
+            // read or deleted on a phone while this task was draining rather
+            // than in `IDLE`, or moved out of it by that drain -- is a pass
+            // owed now, not at the sync interval: a turn the outbox woke runs
+            // none of its own, and `IDLE` reports only what changes after it
+            // starts. Unless only flags or labels moved, which is what each of
+            // the app's own actions leaves: those are reconciled here, on the
+            // mailbox already selected, and the other mailboxes left to the
+            // sync interval. Something that moved again while reconciling is
+            // the full pass's, as any change was before reconciling existed.
+            let changed = selected.highestmodseq.is_some_and(|m| m != target.row.highest_modseq)
+                || selected.exists != target.seen_exists;
+            if !changed {
+                break;
+            }
+            if reconciled {
+                continue 'turn;
+            }
+            match passes::reconcile_selected(&ctx, &mut session, target, &selected, &mut labels)
+                .await
             {
-                return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
-                    .await;
+                Ok(true) => {
+                    tell_mailboxes_changed(&svc, &statuses, account_id);
+                    tell_changed(&svc, &statuses, account_id);
+                    reconciled = true;
+                }
+                Ok(false) => continue 'turn,
+                Err(e) => {
+                    return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                        .await;
+                }
             }
-            continue;
-        }
-        // Anything else that changed in the inbox since the last pass -- read
-        // or deleted on a phone while this task was draining rather than in
-        // `IDLE`, or moved out of it by that drain -- is a pass owed now,
-        // not at the sync interval: a turn the outbox woke runs none of its
-        // own, and `IDLE` reports only what changes after it starts.
-        let changed = selected.highestmodseq.is_some_and(|m| m != target.row.highest_modseq)
-            || selected.exists != target.seen_exists;
-        if changed {
-            continue;
         }
 
         // `IDLE`, watching a wake channel this loop turn owns for exactly
@@ -594,9 +634,10 @@ where
             let (wake_tx, wake_rx) = watch::channel(());
             let idle_call = session.idle(wake_rx);
             tokio::pin!(idle_call);
+            let wake = wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll);
             tokio::select! {
                 outcome = &mut idle_call => (outcome, None),
-                wake = wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll) => {
+                wake = warming(wake, &sender, warm_sender) => {
                     let _ = wake_tx.send(());
                     (idle_call.await, Some(wake))
                 }
@@ -693,18 +734,66 @@ enum Hold {
 /// or a nudge starts in those seconds held the send for as long as it took.
 /// Nothing else is listened to meanwhile, and the drain after it takes
 /// whatever came due.
-async fn hold_for_imminent_op(
+async fn hold_for_imminent_op<T: jatayu_mail::outbox::Sender>(
     vault: &Arc<Vault>,
     account_id: AccountId,
+    sender: &T,
     stop: &mut watch::Receiver<bool>,
 ) -> Hold {
     match next_pending_wake(vault, account_id).await {
-        Some(wait) if wait <= HOLD_PASS_FOR => tokio::select! {
-            _ = stop.changed() => Hold::Stop,
-            () = tokio::time::sleep(wait) => Hold::Waited,
-        },
+        Some(wait) if wait <= HOLD_PASS_FOR => {
+            let warm = send_due_within(vault, account_id, wait).await;
+            let held = async {
+                tokio::select! {
+                    _ = stop.changed() => Hold::Stop,
+                    () = tokio::time::sleep(wait) => Hold::Waited,
+                }
+            };
+            warming(held, sender, warm).await
+        }
         _ => Hold::Nothing,
     }
+}
+
+/// `wait`, with `sender`'s connection opened meanwhile when `warm` says a
+/// send is about to need it. The wait alone decides when this returns: a
+/// connection still opening when it ends is dropped, and the send opens its
+/// own as it always did.
+async fn warming<W, T: jatayu_mail::outbox::Sender>(
+    wait: impl Future<Output = W>,
+    sender: &T,
+    warm: bool,
+) -> W {
+    tokio::pin!(wait);
+    if !warm {
+        return wait.await;
+    }
+    let opening = sender.warm();
+    tokio::pin!(opening);
+    let mut opened = false;
+    loop {
+        tokio::select! {
+            woken = &mut wait => return woken,
+            () = &mut opening, if !opened => opened = true,
+        }
+    }
+}
+
+/// Whether one of `account_id`'s sends comes due within `within` -- what makes
+/// opening its SMTP connection ahead of time worth a handshake, where a flag
+/// change or a retry coming due would not be.
+async fn send_due_within(vault: &Arc<Vault>, account_id: AccountId, within: Duration) -> bool {
+    crate::service::blocking({
+        let vault = vault.clone();
+        move || {
+            let by = jiff::Timestamp::now()
+                + jiff::SignedDuration::from_secs(within.as_secs().saturating_add(1) as i64);
+            let due = vault.due_unthreaded_ops(account_id, by, 16)?;
+            Ok(due.iter().any(|op| matches!(op.kind, jatayu_core::mail::OpKind::Send)))
+        }
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Store what just arrived in the inbox -- see [`passes::quick_pass`] -- and
@@ -721,10 +810,23 @@ async fn arrived<S: MailSession>(
 ) -> jatayu_mail::session::Result<()> {
     let statuses = ctx.statuses;
     let account_id = ctx.account_id;
-    let passed =
-        passes::quick_pass(ctx, session, target, labels, threads, || svc.warm_decision_model())
-            .await;
+    // Announced the moment a batch of headers is stored, as the full pass
+    // does, rather than once every body is in: behind a big attachment that
+    // was seconds of a banner, and a list row, waiting on a download.
+    let passed = {
+        let news = statuses.news(account_id);
+        let pass =
+            passes::quick_pass(ctx, session, target, labels, threads, || svc.warm_decision_model());
+        tokio::pin!(pass);
+        loop {
+            tokio::select! {
+                passed = &mut pass => break passed,
+                () = news.notified() => announce_new_mail(svc, statuses, account_id),
+            }
+        }
+    };
     // Told even when the pass failed part way: what it stored is in the vault.
+    tell_mailboxes_changed(svc, statuses, account_id);
     tell_changed(svc, statuses, account_id);
     passed?;
     announce_new_mail(svc, statuses, account_id);
@@ -743,6 +845,17 @@ fn tell_changed(
 ) {
     if statuses.take_changed(account_id) {
         svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+    }
+}
+
+/// Tell an open window of a folder or label sync first met since the last
+/// time this was asked -- see [`StatusRegistry::mark_mailboxes_changed`]. Apart
+/// from [`tell_changed`] because a list reload does not ask for the mailboxes
+/// again. Before the thread change, so a window that hears both reads the
+/// mailboxes the threads are filed under.
+fn tell_mailboxes_changed(svc: &Arc<Service>, statuses: &StatusRegistry, account_id: AccountId) {
+    if statuses.take_mailboxes_changed(account_id) {
+        svc.events().changed(Change::new(Kind::Mailbox, Op::Updated));
     }
 }
 
@@ -955,11 +1068,19 @@ async fn drain_until_caught_up<S: MailSession, T: jatayu_mail::outbox::Sender>(
 }
 
 /// How often [`maybe_compact`] is willing to even attempt compaction for
-/// one account -- "at most once an hour", per the plan. Also what gives the
-/// first idle moment after an unlock its one attempt: `last_attempt` starts
-/// `None` on every freshly started task, and [`compaction_due`] treats
-/// `None` as due immediately.
+/// one account -- "at most once an hour", per the plan. The last attempt is
+/// `None` until the first of this unlock, and [`compaction_due`] treats
+/// `None` as due immediately: what gives an account its first attempt, once
+/// [`FIRST_COMPACTION_AFTER`] has passed.
 const COMPACTION_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// How long after its task first starts, this unlock, an account first checks
+/// whether its packs want compacting -- however often the task reconnects
+/// meanwhile. The check walks every pack's frames, which on a vault with
+/// gigabytes of mail is seconds of reads from a cold disk -- not something to
+/// add to the minutes after an unlock, when every account's first pass, the
+/// search index and the windows opening all want the same disk.
+const FIRST_COMPACTION_AFTER: Duration = Duration::from_secs(10 * 60);
 
 /// Is it time for [`maybe_compact`] to attempt compaction again, given the
 /// last time it did? A free function, tested directly against synthetic
@@ -982,22 +1103,24 @@ pub(crate) struct CompactionSummary {
 /// passed since the last attempt and doing so is actually worthwhile --
 /// see [`compact_account`] for the sequence this runs, and `packstore`'s
 /// own module docs for why nowhere but here, between an account's sync
-/// passes, is safe. `last_attempt` is a `run_account_with`-loop-local
-/// variable, stamped every time this runs whether or not it found anything
-/// to do, which is what makes the rate limit "at most once an hour" rather
-/// than "at most once an hour *that finds work*".
+/// passes, is safe. The attempt is stamped in `statuses` -- see
+/// [`StatusRegistry::compaction`], which outlives a reconnect -- every time
+/// this runs whether or not it found anything to do, which is what makes the
+/// rate limit "at most once an hour" rather than "at most once an hour *that
+/// finds work*".
 async fn maybe_compact(
     vault: &Arc<Vault>,
     packs: &Arc<dyn jatayu_core::packstore::PackStore>,
     account_id: AccountId,
     stop: &watch::Receiver<bool>,
-    last_attempt: &mut Option<Instant>,
+    statuses: &StatusRegistry,
     now: Instant,
 ) {
-    if !compaction_due(*last_attempt, now) {
+    let clock = statuses.compaction(account_id, now, FIRST_COMPACTION_AFTER);
+    if now < clock.not_before || !compaction_due(clock.last_attempt, now) {
         return;
     }
-    *last_attempt = Some(now);
+    statuses.note_compaction_attempt(account_id, now);
 
     match compact_account(vault, packs, account_id, stop).await {
         Ok(Some(summary)) => {
@@ -1014,7 +1137,27 @@ async fn maybe_compact(
             tracing::warn!(account = %account_id, error = %e, "mail pack compaction failed");
         }
     }
+
+    // Keys of expunged messages are kept for threading, but not for ever:
+    // see `MailStore::prune_dead_message_keys`. On the same slow clock.
+    let pruning = vault.clone();
+    match crate::service::blocking(move || {
+        Ok(pruning.prune_dead_mail_keys(account_id, DEAD_MESSAGE_KEYS_KEPT)?)
+    })
+    .await
+    {
+        Ok(0) => {}
+        Ok(pruned) => tracing::info!(account = %account_id, pruned, "dropped dead message keys"),
+        Err(e) => {
+            tracing::debug!(account = %account_id, error = %e.message, "could not prune dead message keys")
+        }
+    }
 }
+
+/// How many keys of expunged messages an account keeps before
+/// [`maybe_compact`] drops them all -- see
+/// [`jatayu_core::store::mail::MailStore::prune_dead_message_keys`].
+const DEAD_MESSAGE_KEYS_KEPT: u64 = 20_000;
 
 /// The compaction sequence itself, off the account task's own thread:
 /// snapshot, `compact`, `remap_packs`, `drop_packs`, in that order -- see

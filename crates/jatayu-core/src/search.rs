@@ -146,6 +146,44 @@ pub struct SearchHit {
     pub highlights: Vec<(usize, usize)>,
 }
 
+/// One record's text, made ready to file but not yet tokenised.
+///
+/// What [`SearchIndex::insert`] and [`SearchIndex::insert_note_with_extra`]
+/// work out from a record before they touch the index. Separate so a caller
+/// can do that part without holding the index, or hold the result until an
+/// index being built is there to take it.
+#[derive(Debug, Clone)]
+pub struct IndexDoc {
+    found: Found,
+    title: String,
+    body: String,
+}
+
+impl IndexDoc {
+    pub fn entry(entry: &Entry) -> Self {
+        Self {
+            found: Found::Entry {
+                id: entry.id,
+                journal_id: entry.journal_id,
+                local_date: entry.local_date,
+            },
+            title: entry.display_title(),
+            body: entry.searchable_text(),
+        }
+    }
+
+    /// A note, with `extra` -- a transcript's words, or nothing -- filed in
+    /// its body.
+    pub fn note(note: &Note, extra: &str) -> Self {
+        let mut body = note.searchable_text();
+        if !extra.is_empty() {
+            body.push('\n');
+            body.push_str(extra);
+        }
+        Self { found: Found::Note { id: note.id }, title: note.display_title(), body }
+    }
+}
+
 /// An in-memory inverted index over the entries of an unlocked vault.
 #[derive(Debug, Default)]
 pub struct SearchIndex {
@@ -169,14 +207,31 @@ impl SearchIndex {
     /// whole on unlock and a caller that forgot the second argument would get
     /// a vault whose notes were invisible to `/` with nothing to say so.
     pub fn build(entries: &[Entry], notes: &[Note]) -> Self {
+        Self::build_with_extras(entries, notes, &HashMap::new())
+    }
+
+    /// [`SearchIndex::build`], with each note in `extras` filed together with
+    /// the words given for it -- a meeting note's transcript -- so that note
+    /// is tokenised once rather than filed bare and then again with them.
+    pub fn build_with_extras(
+        entries: &[Entry],
+        notes: &[Note],
+        extras: &HashMap<NoteId, String>,
+    ) -> Self {
         let mut idx = Self::new();
         for e in entries {
             idx.insert(e);
         }
         for n in notes {
-            idx.insert_note(n);
+            idx.insert_note_with_extra(n, extras.get(&n.id).map_or("", String::as_str));
         }
         idx
+    }
+
+    /// File a document made by [`IndexDoc::entry`] or [`IndexDoc::note`],
+    /// replacing whatever the index held for the same record.
+    pub fn put_doc(&mut self, doc: IndexDoc) {
+        self.put(doc.found, doc.title, doc.body);
     }
 
     pub fn len(&self) -> usize {
@@ -189,15 +244,7 @@ impl SearchIndex {
 
     /// Add or replace an entry.
     pub fn insert(&mut self, entry: &Entry) {
-        self.put(
-            Found::Entry {
-                id: entry.id,
-                journal_id: entry.journal_id,
-                local_date: entry.local_date,
-            },
-            entry.display_title(),
-            entry.searchable_text(),
-        );
+        self.put_doc(IndexDoc::entry(entry));
     }
 
     /// Add or replace a note.
@@ -217,12 +264,7 @@ impl SearchIndex {
     /// [`searchable_text`](crate::meeting::Transcript::searchable_text) in
     /// here instead. `extra` empty is exactly [`SearchIndex::insert_note`].
     pub fn insert_note_with_extra(&mut self, note: &Note, extra: &str) {
-        let mut body = note.searchable_text();
-        if !extra.is_empty() {
-            body.push('\n');
-            body.push_str(extra);
-        }
-        self.put(Found::Note { id: note.id }, note.display_title(), body);
+        self.put_doc(IndexDoc::note(note, extra));
     }
 
     /// The body of both, which is the same body: tokenise the title, tokenise

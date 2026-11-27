@@ -5191,6 +5191,11 @@
           "name": "query",
           "required": false,
           "type": "RunQuery"
+        },
+        {
+          "name": "slim",
+          "required": false,
+          "type": "boolean"
         }
       ],
       "changes": null,
@@ -5681,6 +5686,23 @@
       "name": "mail_sorting",
       "orScope": null,
       "returns": "MailSortingView",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "targets",
+          "required": true,
+          "type": "UnreadTarget[]"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "mail_unread_badges",
+      "orScope": null,
+      "returns": "UnreadBadge[]",
       "scope": "mail",
       "sensitive": false,
       "streams": false

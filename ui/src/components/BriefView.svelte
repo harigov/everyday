@@ -65,7 +65,10 @@
   import Loading from './Loading.svelte'
 
   onMount(() => {
-    void briefs.start()
+    // Once, where the store keeps itself current from then on (a routine or
+    // a run changing reloads it): coming back to this page reads nothing
+    // again. See `visit`.
+    void briefs.visit()
     // Whether the podcast is already in Up Next is read from it.
     void upnext.load()
   })

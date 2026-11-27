@@ -184,6 +184,13 @@ const vitalsPref = pref<Metric>(
  * read the pane again for every batch.
  */
 const LIVE_EVERY_MS = 60_000
+/**
+ * How long a full read stays good enough to draw again on the way back into
+ * the app, unasked. A change made elsewhere meanwhile marks the store stale
+ * (`live.svelte.ts`, `samplesArrived`), so this only has to cover writes
+ * nothing announces -- and the doses due now, which move with the clock.
+ */
+const FRESH_MS = 60_000
 /** How often a running Apple import is asked how far it has got. */
 const IMPORT_POLL_MS = 2_000
 /** The days of doses and rule alerts the Medications pane looks back over. */
@@ -321,6 +328,13 @@ class HealthState {
   #loads = 0
   /** When samples arriving last caused a reload. See `LIVE_EVERY_MS`. */
   #liveAt = 0
+  /**
+   * Set when a change arrived while Health was off screen, or changes may
+   * have been missed: the next `start` reads in full. See `markStale`.
+   */
+  stale = false
+  /** When the last full read began. See `start`. */
+  #loadedAt = 0
   /** The day `date` and `anchor` were last put on, so a window left open past
    *  midnight moves them on when Health is opened again. */
   #today = todayIso()
@@ -472,16 +486,33 @@ class HealthState {
   // ── lifecycle ────────────────────────────────────────────────────────
 
   /** Called when the app is opened. Loads the catalogue, settings, sources
-   *  and the key's state, and whatever the pane on screen needs. */
+   *  and the key's state, and whatever the pane on screen needs -- unless all
+   *  that was read in the last minute, today, and nothing has marked it stale
+   *  since, when what is here is simply drawn again. */
   async start(): Promise<void> {
     if (!app.supportsHealth) return
     // A window left open past midnight: what was today moves on with it.
     const today = todayIso()
+    const newDay = today !== this.#today
     if (this.date === this.#today) this.date = today
     if (this.anchor === this.#today) this.anchor = today
     this.#today = today
+    const now = Date.now()
+    if (this.loaded && !this.stale && !newDay && now - this.#loadedAt < FRESH_MS) return
+    this.stale = false
     await Promise.all([this.reload(), this.#loadKeys(), this.#loadImport()])
-    if (app.screen === 'main') this.loaded = true
+    if (app.screen === 'main') {
+      this.loaded = true
+      this.#loadedAt = now
+    }
+  }
+
+  /**
+   * What the live router calls instead of reloading while Health is off
+   * screen: the next `start` reads in full rather than drawing what it has.
+   */
+  markStale(): void {
+    this.stale = true
   }
 
   /** Read again whatever is on screen. */
@@ -510,6 +541,8 @@ class HealthState {
     this.#liveAt = 0
     this.question = null
     this.loaded = false
+    this.stale = false
+    this.#loadedAt = 0
     this.busy = false
     this.error = null
     this.#today = todayIso()
@@ -560,16 +593,24 @@ class HealthState {
   /**
    * Samples arrived from the phone or an import: reload what shows them, at
    * most once a minute -- and only if what is on screen would show anything
-   * new: a window that reaches today, or today's own page.
+   * new: a window that reaches today, or today's own page. With the app off
+   * screen, what it would show on the way back is behind, so the next
+   * `start` reads in full.
    */
   samplesArrived(): Promise<void> | undefined {
-    if (!this.loaded || app.screen !== 'main' || app.section !== 'health') return undefined
+    if (!this.loaded || app.screen !== 'main') return undefined
     const today = todayIso()
     const showsToday =
       (this.view === 'today' && this.date === today) ||
       (HEALTH_RANGE_VIEWS.includes(this.view) && this.from <= today && this.to >= today) ||
       (this.view === 'conditions' && this.conditionId !== null)
     if (!showsToday) return undefined
+    // Not on screen, or in a window hidden in the tray: read in full on the
+    // way back instead (`start`, or the live router's catch-up).
+    if (app.section !== 'health' || document.visibilityState === 'hidden') {
+      this.stale = true
+      return undefined
+    }
     const now = Date.now()
     if (now - this.#liveAt < LIVE_EVERY_MS) return undefined
     this.#liveAt = now

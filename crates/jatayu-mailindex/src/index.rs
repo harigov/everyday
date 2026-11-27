@@ -105,6 +105,7 @@
 //! destroy data this process cannot prove is actually broken.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use jatayu_core::crypto::Cipher;
@@ -112,9 +113,10 @@ use jatayu_core::error::{Error, Result};
 use jatayu_core::{Hit, MailDoc, MailQuery, MailSearch, MessageKey, SearchCursor, SearchPage};
 use jiff::Timestamp;
 use tantivy::collector::TopDocs;
+use tantivy::collector::sort_key::{SortByStaticFastValue, SortByString};
 use tantivy::query::{BooleanQuery, Occur, Query};
 use tantivy::schema::{TantivyDocument, Term, Value};
-use tantivy::{DocId, Index, IndexReader, IndexWriter, ReloadPolicy, Score, SegmentReader};
+use tantivy::{Index, IndexReader, IndexWriter, Order, ReloadPolicy};
 
 use crate::directory::SealedDirectory;
 use crate::query;
@@ -170,6 +172,12 @@ struct Opened {
     index: Index,
     writer: Mutex<IndexWriter>,
     reader: IndexReader,
+    /// Whether anything was indexed or deleted since the last commit. Read
+    /// and written only with `writer` held. A sync pass commits at its end
+    /// whether or not it found anything, and an empty tantivy commit is
+    /// not free: it rewrites and fsyncs `meta.json`, and the reload after
+    /// it opens every segment again. See [`MailSearch::commit`] below.
+    dirty: AtomicBool,
 }
 
 /// Where, exactly, [`MailIndex::open_once`] failed to produce an
@@ -258,7 +266,12 @@ impl MailIndex {
         else {
             return Ok(OpenOutcome::WriterOrReaderUnavailable);
         };
-        Ok(OpenOutcome::Ready(Box::new(Opened { index, writer: Mutex::new(writer), reader })))
+        Ok(OpenOutcome::Ready(Box::new(Opened {
+            index,
+            writer: Mutex::new(writer),
+            reader,
+            dirty: AtomicBool::new(false),
+        })))
     }
 
     /// The actual open attempt, self-healing included: propagates a hard
@@ -341,34 +354,6 @@ impl MailIndex {
     }
 }
 
-/// The sort key [`MailIndex::search`]'s collector orders by: `date`
-/// descending, then `message_key` descending as the deterministic tiebreak.
-/// See the module docs' "ordering and the keyset cursor" for why that pair,
-/// and why `score` -- present on every `RankKey`, needed to fill in
-/// [`Hit::score`] once a document has been chosen -- plays no part in
-/// comparing two of them. That is exactly why `PartialOrd` is written by
-/// hand below rather than derived over all three fields: a derive would
-/// have silently put score back into the comparison the first time someone
-/// reordered the struct's fields.
-#[derive(Debug, Clone)]
-struct RankKey {
-    date: i64,
-    message_key: String,
-    score: Score,
-}
-
-impl PartialEq for RankKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.date == other.date && self.message_key == other.message_key
-    }
-}
-
-impl PartialOrd for RankKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        (self.date, &self.message_key).partial_cmp(&(other.date, &other.message_key))
-    }
-}
-
 impl MailSearch for MailIndex {
     fn index(&self, docs: &[MailDoc]) -> Result<()> {
         if docs.is_empty() {
@@ -377,6 +362,9 @@ impl MailSearch for MailIndex {
         let guard = self.require_opened()?;
         let opened = guard.as_ref().expect("require_opened checked this is Some");
         let writer = opened.writer.lock().unwrap_or_else(|e| e.into_inner());
+        // Before the writes rather than after: one that fails halfway has
+        // still changed what the next commit would write.
+        opened.dirty.store(true, Ordering::Release);
         for doc in docs {
             writer.delete_term(Term::from_field_text(self.fields.message_key, &doc.message_key));
             writer.add_document(self.build_document(doc)).map_err(wrap_tantivy)?;
@@ -391,6 +379,7 @@ impl MailSearch for MailIndex {
         let guard = self.require_opened()?;
         let opened = guard.as_ref().expect("require_opened checked this is Some");
         let writer = opened.writer.lock().unwrap_or_else(|e| e.into_inner());
+        opened.dirty.store(true, Ordering::Release);
         for key in message_ids {
             writer.delete_term(Term::from_field_text(self.fields.message_key, key));
         }
@@ -405,6 +394,7 @@ impl MailSearch for MailIndex {
         // whole lowercased value is one term, the same one `build_document`
         // indexed it as, and this single `delete_term` removes every
         // document that account ever had in one call.
+        opened.dirty.store(true, Ordering::Release);
         writer.delete_term(Term::from_field_text(self.fields.account, &account.to_lowercase()));
         Ok(())
     }
@@ -413,13 +403,27 @@ impl MailSearch for MailIndex {
         let guard = self.require_opened()?;
         let opened = guard.as_ref().expect("require_opened checked this is Some");
         let mut writer = opened.writer.lock().unwrap_or_else(|e| e.into_inner());
-        writer.commit().map_err(wrap_tantivy)?;
-        // See the module docs: reloading inline, rather than trusting the
-        // async `OnCommitWithDelay` machinery, is what makes this method's
-        // own promise -- visible to new searches -- true by the time it
-        // returns.
-        opened.reader.reload().map_err(wrap_tantivy)?;
-        Ok(())
+        // Nothing indexed or deleted since the last commit: every earlier
+        // write is already visible, so there is nothing to make visible. A
+        // background merge that finished since then shows up at the next
+        // real commit instead; the reader still holds the old segments'
+        // bytes, so nothing it can see has gone away.
+        if !opened.dirty.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let committed = writer.commit().map_err(wrap_tantivy).and_then(|_| {
+            // See the module docs: reloading inline, rather than trusting
+            // the async `OnCommitWithDelay` machinery, is what makes this
+            // method's own promise -- visible to new searches -- true by
+            // the time it returns.
+            opened.reader.reload().map_err(wrap_tantivy)
+        });
+        if committed.is_err() {
+            // Try again at the next commit rather than report the writes
+            // visible when they may not be.
+            opened.dirty.store(true, Ordering::Release);
+        }
+        committed
     }
 
     fn search(
@@ -442,47 +446,44 @@ impl MailSearch for MailIndex {
         };
 
         let searcher = opened.reader.searcher();
-        let date_field = self.fields.date;
-        let message_key_field = self.fields.message_key;
-        let collector =
-            TopDocs::with_limit(limit).tweak_score(move |segment_reader: &SegmentReader| {
-                let date_col = segment_reader
-                    .fast_fields()
-                    .i64(schema_field_name(segment_reader.schema(), date_field))
-                    .unwrap_or_else(|_| panic!("date field must be a fast field"));
-                // `message_key` is `STRING | STORED | FAST` (`schema.rs`'s
-                // own docs on why); the fast half is exactly what lets a
-                // page's own order be compared against without a second
-                // trip through the stored document for every candidate
-                // `tweak_score` considers, not only the ones that make the
-                // final page.
-                let message_key_col = segment_reader
-                    .fast_fields()
-                    .str(schema_field_name(segment_reader.schema(), message_key_field))
-                    .unwrap_or_else(|_| panic!("message_key field must be a fast field"))
-                    .unwrap_or_else(|| panic!("message_key field must be a string fast field"));
-                move |doc: DocId, score: Score| {
-                    let date = date_col.first(doc).unwrap_or(i64::MIN);
-                    let mut message_key = String::new();
-                    if let Some(ord) = message_key_col.term_ords(doc).next() {
-                        let _ = message_key_col.ord_to_str(ord, &mut message_key);
-                    }
-                    RankKey { date, message_key, score }
-                }
-            });
+        let schema = opened.index.schema();
+        // `(date, message_key)`, both descending -- see the module docs'
+        // "ordering and the keyset cursor". Both are fast fields, so tantivy
+        // computes no relevance score at all, and within a segment
+        // `message_key` is compared by its term ordinal, which follows the
+        // same byte order the cursor filters on. Only the documents a
+        // segment keeps for the page have their ordinal turned into a
+        // string; resolving it for every match decompressed a dictionary
+        // block per candidate, which on a common word was most of the
+        // search.
+        let collector = TopDocs::with_limit(limit).order_by((
+            (
+                SortByStaticFastValue::<i64>::for_field(schema_field_name(
+                    &schema,
+                    self.fields.date,
+                )),
+                Order::Desc,
+            ),
+            (
+                SortByString::for_field(schema_field_name(&schema, self.fields.message_key)),
+                Order::Desc,
+            ),
+        ));
 
         let results = searcher.search(full.as_ref(), &collector).map_err(wrap_tantivy)?;
 
         let mut hits = Vec::with_capacity(results.len());
-        for (rank, addr) in &results {
-            let doc: TantivyDocument = searcher.doc(*addr).map_err(wrap_tantivy)?;
+        for ((date, message_key), addr) in results {
+            let doc: TantivyDocument = searcher.doc(addr).map_err(wrap_tantivy)?;
             let thread_key = text_value(&doc, self.fields.thread_key)?;
-            let date = Timestamp::from_microsecond(rank.date)
+            let date = Timestamp::from_microsecond(date.unwrap_or(i64::MIN))
                 .map_err(|e| Error::Invalid(format!("indexed date out of range: {e}")))?;
             hits.push(Hit {
-                message_key: rank.message_key.clone(),
+                message_key: message_key.unwrap_or_default(),
                 thread_key,
-                score: rank.score,
+                // Not computed: nothing orders or filters by it, and see
+                // the collector above for what computing it cost.
+                score: 0.0,
                 date,
             });
         }

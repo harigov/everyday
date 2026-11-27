@@ -208,6 +208,20 @@ impl SmtpTransport {
             server_response: response.message().collect::<Vec<_>>().join(" "),
         })
     }
+
+    /// Takes a pooled connection -- opening and signing in on a fresh one
+    /// when the pool has none still open -- and says `NOOP` on it, as
+    /// [`connect`] does. What leaves a connection ready for a send about to
+    /// come due.
+    pub async fn check(&self) -> Result<()> {
+        match self.inner.test_connection().await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(MailError::Protocol(
+                "the server accepted authentication but refused a NOOP check".into(),
+            )),
+            Err(err) => Err(classify(err)),
+        }
+    }
 }
 
 /// A small pool per account — see the module docs.

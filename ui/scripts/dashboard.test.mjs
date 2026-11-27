@@ -39,7 +39,9 @@ const {
   importantThreads,
   introduce,
   INTRODUCED,
+  MAIL_NEEDS,
   moveWidget,
+  NEEDS,
   needsOf,
   nextId,
   NOW_SHELVES,
@@ -51,6 +53,7 @@ const {
   setSize,
   soonestBack,
   SPAN,
+  staleAfter,
   tasksForToday,
   trackerWindow,
   weatherIcon,
@@ -767,6 +770,50 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
     'every shelf card is a real widget',
     Object.keys(NOW_SHELVES).filter((t) => !WIDGET_TYPES.includes(t)),
     [],
+  )
+}
+
+// ── what a change leaves stale ─────────────────────────────────────────
+//
+// The Overview reads again on a visit only what a change made stale, so a
+// kind mapped too narrowly is a card that quietly stops moving. The default
+// is everything but the mail; these pin the exceptions and that default.
+
+{
+  const notMail = NEEDS.filter((need) => !MAIL_NEEDS.has(need))
+  const sorted = (list) => [...list].sort()
+  const mail = sorted([...MAIL_NEEDS])
+  check('a thread moves the mail cards and nothing else', sorted(staleAfter('thread')), mail)
+  check('so does a draft', sorted(staleAfter('draft')), mail)
+  check('a task moves everything but the mail', sorted(staleAfter('task')), sorted(notMail))
+  check('an event does too', sorted(staleAfter('event')), sorted(notMail))
+  check('a kind nobody named does too', sorted(staleAfter('somethingNew')), sorted(notMail))
+  check('a name off Object.prototype is no entry', sorted(staleAfter('toString')), sorted(notMail))
+  check('an account can move any card', sorted(staleAfter('account')), sorted(NEEDS))
+  check('so can the settings', sorted(staleAfter('settings')), sorted(NEEDS))
+  check('a job moves nothing on the page', staleAfter('job'), [])
+  check('nor does a brief arriving: its store keeps itself current', staleAfter('routineRun'), [])
+  check('a transaction moves the money card', staleAfter('txn'), ['moneyMonth'])
+  check('a story moves the reading card', staleAfter('story'), ['news'])
+  check(
+    'health samples move health and the trackers they feed',
+    sorted(staleAfter('healthSample')),
+    sorted(['healthToday', 'trackerDays', 'karma']),
+  )
+  check(
+    'screen time moves only its own card when no tracker counts it',
+    staleAfter('screenSpan', false),
+    ['screenToday'],
+  )
+  check(
+    'and the trackers too when one might',
+    sorted(staleAfter('screenSpan', true)),
+    sorted(['screenToday', 'trackerDays', 'karma']),
+  )
+  const kinds = ['thread', 'task', 'account', 'healthSample', 'screenSpan', 'txn', 'story']
+  ok(
+    'every need named is a real need',
+    kinds.every((kind) => staleAfter(kind).every((need) => NEEDS.includes(need))),
   )
 }
 

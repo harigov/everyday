@@ -228,7 +228,10 @@ pub use store::files::FilesStore;
 pub use store::health::HealthStore;
 pub use store::jobs::{JobQuery, JobStore};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
-pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
+pub use store::mail::{
+    IngestMessage, MailStore, ThreadFilter, ThreadPage, UNREAD_BADGE_WINDOW, UnreadBadge,
+    UnreadTarget,
+};
 pub use store::meetings::{MeetingStore, RecordingQuery};
 pub use store::money::MoneyStore;
 pub use store::news::{NewsStore, StoryCursor, StoryPage, StoryQuery};

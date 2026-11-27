@@ -416,6 +416,8 @@ screentime.setRange('day')
 await until('today again', () => screentime.report?.from === today)
 app.section = 'calendar'
 assert.equal(screentime.spansArrived(), undefined, 'not while another app is open')
+assert.equal(screentime.stale, true, 'but it reads in full on its way back')
+assert.equal(screentime.loaded, true)
 app.section = 'screentime'
 screentime.anchor = addDays(today, -7)
 assert.equal(screentime.spansArrived(), undefined, 'nor for a day that is over')

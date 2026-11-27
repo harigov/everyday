@@ -6,6 +6,7 @@ mod arrivals;
 mod categorisation;
 mod compaction;
 mod fixtures;
+mod incremental;
 mod notifications;
 mod sync;
 mod unsubscribe_header;

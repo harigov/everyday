@@ -31,11 +31,14 @@ stubBrowser({
 })
 
 const {
-  modules: [todoModule, stateModule],
+  modules: [todoModule, stateModule, apiModule],
   close,
-} = await load(['/src/lib/todo.svelte.ts', '/src/lib/state.svelte.ts'], { svelte: true })
+} = await load(['/src/lib/todo.svelte.ts', '/src/lib/state.svelte.ts', '/src/lib/api.ts'], {
+  svelte: true,
+})
 const { todo } = todoModule
 const { app } = stateModule
+const { api } = apiModule
 
 await app.start()
 assert.equal(app.screen, 'main', 'the mock vault should open unlocked')
@@ -97,6 +100,102 @@ await todo.flush()
   assert.ok(!todo.tasks.some((t) => t.id === child.id), 'its subtask went with it')
   assert.equal(todo.tasks.length, before - 2, 'both rows left the list')
   assert.equal(todo.selectedTask, null, 'removing the subtree closes a selection inside it')
+}
+
+// ── add: the row first, the save behind it ────────────────────────────
+//
+// A new task is drawn as soon as it has an id, before its save lands, and
+// nothing else that writes about it may reach the vault ahead of that save.
+
+{
+  const realSave = api.saveTask
+  const realSaveMany = api.saveTasks
+  const order = []
+  let land = null
+  let refuse = null
+  api.saveTask = (task) => {
+    order.push(`create ${task.title}`)
+    return new Promise((resolve, reject) => {
+      land = () => realSave(task).then(resolve, reject)
+      refuse = () => reject(new Error('the disk is full'))
+    })
+  }
+  api.saveTasks = (tasks) => {
+    order.push(`edit ${tasks.map((t) => t.title).join(', ')}`)
+    return realSaveMany(tasks)
+  }
+  const until = async (what, condition) => {
+    for (let i = 0; i < 100 && !condition(); i++) await new Promise((r) => setTimeout(r, 10))
+    assert.ok(condition(), what)
+  }
+
+  // Saved: on screen while the save is in the air, and an edit made then
+  // is written after it.
+  const adding = todo.add('drawn before it is saved')
+  await until('the row appears before its save lands', () =>
+    todo.tasks.some((t) => t.title === 'drawn before it is saved'),
+  )
+  const drawn = todo.tasks.find((t) => t.title === 'drawn before it is saved')
+  assert.deepEqual(order, ['create drawn before it is saved'])
+  todo.patch(drawn.id, { title: 'edited while saving' })
+  const flushed = todo.flush()
+  await new Promise((r) => setTimeout(r, 60))
+  assert.deepEqual(order, ['create drawn before it is saved'], 'the edit waits for the create')
+  land()
+  const added = await adding
+  await flushed
+  assert.equal(added?.id, drawn.id, 'add answers the task once its save has landed')
+  assert.deepEqual(order, ['create drawn before it is saved', 'edit edited while saving'])
+  assert.ok(
+    todo.tasks.some((t) => t.id === drawn.id),
+    'and it stays',
+  )
+
+  // Refused: the row comes off again and add answers nothing.
+  order.length = 0
+  const failing = todo.add('never saved')
+  await until('the row appears', () => todo.tasks.some((t) => t.title === 'never saved'))
+  const doomed = todo.tasks.find((t) => t.title === 'never saved')
+  todo.patch(doomed.id, { title: 'never saved, edited' })
+  const flushedToo = todo.flush()
+  refuse()
+  assert.equal(await failing, null, 'a refused save answers nothing')
+  await flushedToo
+  assert.ok(!todo.tasks.some((t) => t.id === doomed.id), 'and its row comes off')
+  assert.deepEqual(order, ['create never saved'], 'nor is the edit written behind it')
+  app.error = null
+
+  // Deleted while its save is in the air: the delete goes after the create,
+  // and not at all if the create was refused -- there is nothing to delete.
+  const realDelete = api.deleteTask
+  api.deleteTask = (id) => (order.push(`delete ${id}`), realDelete(id))
+  order.length = 0
+  const kept = todo.add('deleted while saving')
+  await until('the row appears', () => todo.tasks.some((t) => t.title === 'deleted while saving'))
+  const gone = todo.tasks.find((t) => t.title === 'deleted while saving')
+  const removing = todo.remove(gone.id)
+  await new Promise((r) => setTimeout(r, 60))
+  assert.deepEqual(order, ['create deleted while saving'], 'the delete waits for the create')
+  land()
+  await kept
+  await removing
+  assert.deepEqual(order, ['create deleted while saving', `delete ${gone.id}`])
+  assert.ok(!todo.tasks.some((t) => t.id === gone.id))
+
+  order.length = 0
+  const refusedToo = todo.add('deleted, never saved')
+  await until('the row appears', () => todo.tasks.some((t) => t.title === 'deleted, never saved'))
+  const never = todo.tasks.find((t) => t.title === 'deleted, never saved')
+  const removingToo = todo.remove(never.id)
+  refuse()
+  assert.equal(await refusedToo, null)
+  await removingToo
+  assert.deepEqual(order, ['create deleted, never saved'], 'no delete for a task never written')
+  app.error = null
+
+  api.saveTask = realSave
+  api.saveTasks = realSaveMany
+  api.deleteTask = realDelete
 }
 
 await close()

@@ -48,7 +48,8 @@
 
   // Loaded when the view appears rather than when the store is imported, so
   // a vault whose owner never opens this app never pays for the queries.
-  // `start` is idempotent, so coming back refreshes instead of blanking.
+  // `start` is idempotent: coming back reads again only what has gone stale
+  // since, and never blanks.
   void overview.start()
 
   let logging = $state(false)

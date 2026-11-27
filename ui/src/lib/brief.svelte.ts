@@ -12,6 +12,7 @@
 import { api } from './api'
 import { KIND_INFO, briefRoutineOf } from './brief'
 import { listening } from './listen.svelte'
+import { inShell } from './platform'
 import { app, handle, isLocked } from './state.svelte'
 import { latest } from './store/latest'
 import type { BriefKind, Routine, RoutineInfo, RoutineRun, RoutineRunId } from './types'
@@ -28,6 +29,10 @@ const POLL_MS = 3_000
 /** How long a brief being made is waited for before the page stops saying
  *  so: the scheduler's own ceiling, and then some. */
 const GIVE_UP_MS = 20 * 60_000
+
+/** The least time between two reads on the way into a page, where `visit`
+ *  reads on every one. The Overview's own floor. */
+const REVISIT_MS = 10_000
 
 class BriefState {
   /** What the briefs wrote, newest first. Finished runs, each with a brief. */
@@ -80,6 +85,27 @@ class BriefState {
     return this.routineOf(kind)?.enabled === true
   }
 
+  /**
+   * What a page drawing the briefs asks for on its way in. The first load,
+   * and then nothing in a desktop window over a vault in this process: a
+   * routine or a run changing reloads the list (the briefs' `apply` on the
+   * `assistant` target in `live.svelte.ts`, and its `#ownWrite` for this
+   * window's own writes), and a stream inside one process does not drop. A
+   * phone or a browser can miss changes while its stream is down, so it reads
+   * again on each visit, as every visit used to, unless the last read went
+   * out moments ago.
+   */
+  visit(): Promise<void> {
+    if (!this.loaded) return this.start()
+    if ((inShell && !app.remote) || Date.now() - this.#readAt < REVISIT_MS) {
+      return Promise.resolve()
+    }
+    return this.start()
+  }
+
+  /** When the last read went out, for `visit`. */
+  #readAt = 0
+
   /** Load once; asking again while loading waits for the first. */
   start(): Promise<void> {
     if (!this.enabled) return Promise.resolve()
@@ -101,6 +127,7 @@ class BriefState {
   async refresh(): Promise<void> {
     if (!this.enabled) return
     const token = this.#generation.next()
+    this.#readAt = Date.now()
     try {
       const [routines, briefs] = await Promise.all([api.routines(), api.briefs(null, HISTORY)])
       if (!this.#generation.isCurrent(token)) return
@@ -246,6 +273,7 @@ class BriefState {
     this.making = {}
     this.loaded = false
     this.error = null
+    this.#readAt = 0
   }
 }
 

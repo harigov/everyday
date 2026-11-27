@@ -38,16 +38,18 @@
 //! write claim has nothing to sync with, since every write a sync task makes
 //! -- a header ingested, a flag applied -- is a write to the vault.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
+use std::time::{Duration, Instant};
 
-use jatayu_core::Vault;
 use jatayu_core::crypto::{AeadCipher, Cipher};
-use jatayu_core::error::Result;
+use jatayu_core::error::{Error, Result};
 use jatayu_core::id::{AccountId, PackId};
 use jatayu_core::packstore::{
     CompactionResult, FilePackStore, PackRef, PackStore, ReferencedSnapshot,
 };
+use jatayu_core::{MailDoc, MailQuery, MailSearch, MessageKey, SearchCursor, SearchPage, Vault};
 use jatayu_mailindex::MailIndex;
 
 use crate::mail::sync::status::StatusRegistry;
@@ -59,9 +61,10 @@ const PACKSTORE_KEY_LABEL: &str = "everyday.mail.packstore.v1";
 const SEARCHINDEX_KEY_LABEL: &str = "everyday.mail.searchindex.v1";
 
 /// How much decrypted tantivy segment data [`MailIndex`] keeps warm in
-/// memory at once. See that crate's `cache` module for why a sealed segment
-/// is cached rather than re-decrypted on every read; 128 MiB is generous for
-/// a laptop without being a meaningful fraction of one.
+/// memory beyond what its open searcher already holds. See that crate's
+/// `cache` module for why a sealed segment is cached rather than
+/// re-decrypted on every read; 128 MiB is generous for a laptop without
+/// being a meaningful fraction of one.
 const INDEX_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
 /// What [`Service::packs`], [`Service::mail_index`] and
@@ -77,16 +80,28 @@ pub struct MailState {
 /// Open mail's storage against `vault`, and start its account tasks if this
 /// process may write to it. See the module docs.
 ///
-/// Never fails outright: a pack store or index that cannot be opened -- a
-/// permissions problem, a corrupt directory -- is logged and leaves
-/// [`Service::packs`]/[`Service::mail_index`] answering `None`, the same
-/// "derived structure, not the only copy of anything" tolerance
-/// [`jatayu_core::MailSearch::rebuild_needed`] already asks callers to
-/// have. Nothing about a vault's own records is at risk either way.
+/// The pack store is open by the time this returns; the search index is
+/// still opening. Opening it reads and decrypts every segment file -- the
+/// whole index, a few hundred megabytes for a large mailbox -- and this runs
+/// on the unlock path, so it happens on the blocking pool instead, behind a
+/// [`DeferredIndex`] that is installed at once: [`Service::mail_index`]
+/// answers `Some` immediately, and a call that reaches it before the open
+/// finishes waits for it. Without a tokio runtime (tests) the index opens
+/// here, as it always did.
 ///
-/// Returns the handle of the one-time reindex this call queues when
-/// [`jatayu_mailindex::MailIndex::healed_on_open`] comes back `true` --
-/// see [`reindex_after_self_heal`]'s own docs. Every real caller
+/// Never fails outright: a pack store that cannot be opened -- a
+/// permissions problem, a corrupt directory -- is logged and leaves
+/// [`Service::packs`]/[`Service::mail_index`] answering `None`, and an
+/// index that cannot be opened answers every call with an error and
+/// [`jatayu_core::MailSearch::rebuild_needed`] with `true` -- the same
+/// "derived structure, not the only copy of anything" tolerance that method
+/// already asks callers to have. Nothing about a vault's own records is at
+/// risk either way.
+///
+/// Returns the handle of the background open, which also runs the one-time
+/// reindex the open queues when
+/// [`jatayu_mailindex::MailIndex::healed_on_open`] comes back `true` -- see
+/// [`reindex_after_self_heal`]'s own docs. Every real caller
 /// (`Service::open_mail`) drops it, letting the work run detached exactly
 /// as intended; it is returned at all only so a test can await the very
 /// task a real unlock fires and forgets, rather than triggering a second,
@@ -100,49 +115,301 @@ pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) -> Option<tokio::task
             return None;
         }
     };
-    let index = match open_index(vault) {
-        Ok(i) => i,
-        Err(e) => {
-            tracing::error!(error = %e, "could not open the mail search index");
-            svc.set_mail_state(None);
-            return None;
-        }
-    };
-    // Read before `index` moves into the `Arc<dyn MailSearch>` below --
-    // `jatayu_mailindex::MailIndex::healed_on_open`'s own docs promise
-    // this is the one moment it is worth checking. See
-    // `reindex_after_self_heal`'s own docs for what a `true` here means and
-    // why it is answered only once, right here, rather than on every sync
-    // pass.
-    let healed_on_open = index.healed_on_open();
-    let index: Arc<dyn jatayu_core::MailSearch> = Arc::new(index);
+    let index = Arc::new(DeferredIndex::default());
+    let previous = succeed_index(&index_dir(vault), &index.released);
+    let opening = Opening { slot: Arc::downgrade(&index), vault: Arc::downgrade(vault), previous };
     // One small sealed row, read once here -- see `ContactIndex`'s own docs
     // on why this is not a scan of every message on unlock.
     let contacts = Arc::new(crate::mail::sync::contacts::ContactIndex::load(vault));
+    // Installed before the open starts, so the state this replaces -- and
+    // the index it held, with tantivy's writer lock -- is gone first.
     svc.set_mail_state(Some(MailState {
         packs,
-        index: index.clone(),
+        index,
         statuses: StatusRegistry::new(),
         unread_cache: Arc::new(crate::mail::sync::unread_cache::UnreadCache::new()),
         contacts: contacts.clone(),
     }));
+    let opened = opening.start();
 
     if vault.is_writable() {
         register_account_tasks(svc, vault);
         backfill_contacts(vault, contacts);
-        // Only when writable: reindexing writes nothing to the vault
-        // itself, only to `index`, but it is real disk-bound work (a full
-        // walk of every account's threads and bodies), and gating it the
-        // same way `register_account_tasks` already is keeps a second,
-        // read-only window (or `jatayu-server`) from redoing the exact
-        // same walk the writable process is already about to run. See
-        // `reindex_after_self_heal`'s own docs for the rest of the
-        // reasoning, including the one race this does not close.
-        if healed_on_open {
-            return Some(reindex_after_self_heal(vault, index));
+    }
+    opened
+}
+
+/// Serialises every open of the search index in this process, and the drop
+/// of one opened for a state that was replaced while it opened. Without it,
+/// a lock and a quick unlock could start the second open while the first
+/// still held tantivy's writer lock, and the second would come up dead
+/// until the next unlock. An index dropped by `close` itself needs no help:
+/// that drop is over before `close` returns. One something else still held
+/// when `close` let go of it is waited for -- see [`succeed_index`].
+static OPENS: Mutex<()> = Mutex::new(());
+
+/// The [`Released`] of the last [`DeferredIndex`] made for each index folder
+/// in this process -- see [`succeed_index`].
+static LATEST: Mutex<Option<HashMap<PathBuf, Weak<Released>>>> = Mutex::new(None);
+
+/// Note `released` as the newest index for `dir`, handing back the one it
+/// follows if that is still about: an index `close` let go of that a blocking
+/// job -- a batch of bodies being indexed, a commit, a search -- still holds,
+/// with tantivy's writer lock, past the lock that ended its pass. An open
+/// that does not wait for it finds the writer lock taken and comes up dead
+/// for the whole session.
+fn succeed_index(dir: &Path, released: &Arc<Released>) -> Option<Arc<Released>> {
+    let mut latest = LATEST.lock().unwrap_or_else(PoisonError::into_inner);
+    let latest = latest.get_or_insert_with(HashMap::new);
+    latest.retain(|_, held| held.strong_count() > 0);
+    latest.insert(dir.to_path_buf(), Arc::downgrade(released)).and_then(|held| held.upgrade())
+}
+
+/// The longest an open waits for the index it follows to be let go of -- a
+/// batch of bodies indexed and committed by a job that outlived its pass is
+/// a few seconds at worst. Past it, the open goes ahead as it always did.
+const PREVIOUS_INDEX_WAIT: Duration = Duration::from_secs(10);
+
+/// Raised once a [`DeferredIndex`] and the [`MailIndex`] in it are gone, and
+/// tantivy's writer lock with them -- see [`succeed_index`].
+#[derive(Default)]
+struct Released {
+    done: Mutex<bool>,
+    gone: Condvar,
+}
+
+impl Released {
+    fn raise(&self) {
+        *self.done.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.gone.notify_all();
+    }
+
+    /// Wait until raised, for at most `most`, and only while `wanted`.
+    fn wait(&self, most: Duration, wanted: impl Fn() -> bool) {
+        let until = Instant::now() + most;
+        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*done && wanted() {
+            let now = Instant::now();
+            if now >= until {
+                tracing::warn!("the last search index is still held; opening the next anyway");
+                return;
+            }
+            // Woken a little early now and then, to notice `wanted` turn.
+            let step = (until - now).min(Duration::from_millis(50));
+            done = self.gone.wait_timeout(done, step).unwrap_or_else(PoisonError::into_inner).0;
         }
     }
-    None
+}
+
+/// The open of one [`DeferredIndex`]'s [`MailIndex`], not yet run. See
+/// [`open`].
+struct Opening {
+    /// Weak, so a lock arriving first is noticed rather than outlived: once
+    /// the state holding the index is gone, there is nobody to open it for.
+    slot: Weak<DeferredIndex>,
+    /// Weak too: an open still waiting its turn when the vault is closed must
+    /// not keep it -- and its write lock -- alive past the close. Held strong
+    /// only for the open itself, which [`wait_for_opens`] lets a close wait
+    /// out.
+    vault: Weak<Vault>,
+    /// The index this one follows in the same folder, if something may still
+    /// hold it -- see [`succeed_index`].
+    previous: Option<Arc<Released>>,
+}
+
+impl Opening {
+    /// Run the open on the blocking pool, followed by the reindex a
+    /// self-heal asks for, and hand back the handle of the whole job.
+    /// Without a tokio runtime (tests) both run here and now, since there is
+    /// no async worker to keep free.
+    fn start(self) -> Option<tokio::task::JoinHandle<()>> {
+        let vault = self.vault.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            if let Some(index) = self.run()
+                && let Some(vault) = vault.upgrade()
+                && let Err(e) = reindex_all(&vault, index.as_ref())
+            {
+                tracing::error!(
+                    error = %e,
+                    "could not reindex mail after the search index self-healed"
+                );
+            }
+            return None;
+        };
+        // Started here rather than from inside the task below: a task is
+        // first polled whenever its runtime gets to it, and a caller already
+        // waiting on the index must not depend on that.
+        let opening = runtime.spawn_blocking(move || self.run());
+        Some(runtime.spawn(async move {
+            if let Ok(Some(index)) = opening.await
+                && let Some(vault) = vault.upgrade()
+            {
+                reindex_after_self_heal(vault, index).await;
+            }
+        }))
+    }
+
+    /// Open the index into the slot, unless the state it belongs to has
+    /// already been replaced. Returns the index when the open self-healed it
+    /// and this process should refill it -- see [`reindex_after_self_heal`].
+    fn run(&self) -> Option<Arc<DeferredIndex>> {
+        let _opening = OPENS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(previous) = &self.previous {
+            previous.wait(PREVIOUS_INDEX_WAIT, || self.slot.strong_count() > 0);
+        }
+        if self.slot.strong_count() == 0 {
+            // Locked, or opened again, before this got going.
+            return None;
+        }
+        // Closed before this got going: nothing to open it for.
+        let vault = self.vault.upgrade()?;
+        let opened = if vault_folder_gone(&vault) {
+            // Deleted while this waited its turn (a test's temporary vault,
+            // most likely): opening would create the folder all over again.
+            Err(Error::Invalid("the vault's folder is gone".into()))
+        } else {
+            open_index(&vault)
+        };
+        if let Err(e) = &opened {
+            tracing::error!(error = %e, "could not open the mail search index");
+        }
+        // Both of these are dropped before `_opening`: an index opened for a
+        // state that is gone, and this function's own hold on one that is
+        // not, which may be the last if the vault locked a moment ago.
+        let index = self.slot.upgrade()?;
+        // Read before `opened` moves into the slot --
+        // `jatayu_mailindex::MailIndex::healed_on_open`'s own docs promise
+        // this is the one moment it is worth checking. See
+        // `reindex_after_self_heal` for what a `true` here means.
+        let healed = matches!(&opened, Ok(opened) if opened.healed_on_open());
+        index.fill(opened);
+        // Only when writable: reindexing writes nothing to the vault itself,
+        // only to the index, but it is real disk-bound work (a full walk of
+        // every account's threads and bodies), and gating it the same way
+        // `register_account_tasks` already is keeps a second, read-only
+        // window (or `jatayu-server`) from redoing the exact same walk the
+        // writable process is already about to run.
+        (healed && vault.is_writable()).then_some(index)
+    }
+}
+
+/// Wait for an index open already under way to finish, and so to let go of
+/// its vault: what a close does after dropping mail's state, so the vault it
+/// closes is not kept open -- and locked for writing -- by an open that
+/// started a moment before. An open that has not started yet finds the state
+/// gone and does nothing.
+pub(crate) fn wait_for_opens() {
+    drop(OPENS.lock().unwrap_or_else(PoisonError::into_inner));
+}
+
+impl Drop for Opening {
+    /// Answers whoever is waiting with an error if the open never finished
+    /// -- it panicked, or a runtime shutting down dropped it unstarted --
+    /// rather than leaving them waiting for ever.
+    fn drop(&mut self) {
+        // Under the lock, for the same reason as the drops in `run`: the
+        // hold taken here may turn out to be the last.
+        let _opening = OPENS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(index) = self.slot.upgrade()
+            && index.opened.get().is_none()
+        {
+            index.fill(Err(Error::Invalid("opening the mail search index failed".into())));
+        }
+    }
+}
+
+/// The search index [`MailState`] holds from the moment the vault unlocks,
+/// while the [`MailIndex`] behind it is still opening. See [`open`].
+///
+/// Every method waits until the open has finished, then answers exactly as
+/// the [`MailIndex`] would; after a failed open, every call answers an error
+/// and [`MailSearch::rebuild_needed`] answers `true`. Waiting is fine where
+/// these are called: the trait already asks to be called on a blocking pool.
+#[derive(Default)]
+struct DeferredIndex {
+    opened: OnceLock<std::result::Result<MailIndex, String>>,
+    waiting: Mutex<()>,
+    ready: Condvar,
+    /// Raised as this is dropped -- see [`succeed_index`].
+    released: Arc<Released>,
+}
+
+impl Drop for DeferredIndex {
+    /// Commits what was indexed and not yet made searchable before the
+    /// writer goes, which would discard it: the mail of a pass a lock cut
+    /// short is stored, so nothing would index it again. A no-op when nothing
+    /// is waiting, which is every drop but that one; and never a wait, since
+    /// an index still opening has nothing in it.
+    fn drop(&mut self) {
+        if let Some(Ok(index)) = self.opened.take() {
+            let _ = index.commit();
+        }
+        self.released.raise();
+    }
+}
+
+impl DeferredIndex {
+    fn fill(&self, opened: Result<MailIndex>) {
+        if self.opened.set(opened.map_err(|e| e.to_string())).is_err() {
+            return;
+        }
+        // Taken so a waiter cannot check the cell and then miss this.
+        let _waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        self.ready.notify_all();
+    }
+
+    fn ready(&self) -> Result<&MailIndex> {
+        let opened = match self.opened.get() {
+            Some(opened) => opened,
+            None => {
+                let waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+                let _waiting = self
+                    .ready
+                    .wait_while(waiting, |()| self.opened.get().is_none())
+                    .unwrap_or_else(PoisonError::into_inner);
+                self.opened.get().expect("waited until the open had finished")
+            }
+        };
+        opened.as_ref().map_err(|_| Error::Invalid("the mail search index is not open".into()))
+    }
+}
+
+impl MailSearch for DeferredIndex {
+    fn index(&self, docs: &[MailDoc]) -> Result<()> {
+        self.ready()?.index(docs)
+    }
+
+    fn delete(&self, message_ids: &[MessageKey]) -> Result<()> {
+        self.ready()?.delete(message_ids)
+    }
+
+    fn delete_account(&self, account: &str) -> Result<()> {
+        self.ready()?.delete_account(account)
+    }
+
+    fn commit(&self) -> Result<()> {
+        self.ready()?.commit()
+    }
+
+    fn search(
+        &self,
+        query: &MailQuery,
+        limit: usize,
+        cursor: Option<SearchCursor>,
+    ) -> Result<SearchPage> {
+        self.ready()?.search(query, limit, cursor)
+    }
+
+    fn rebuild_needed(&self) -> bool {
+        match self.ready() {
+            Ok(index) => index.rebuild_needed(),
+            Err(_) => true,
+        }
+    }
+
+    fn rebuild_empty(&self) -> Result<()> {
+        self.ready()?.rebuild_empty()
+    }
 }
 
 /// Walk every account's threads and bodies back into a freshly self-healed
@@ -162,32 +429,26 @@ pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) -> Option<tokio::task
 /// which is not the fix `docs/plans/mail.md`'s search phase promises.
 /// `rebuild_account` (`crate::domains::mailsync`) already knows how to walk
 /// a vault's own storage back into an index -- this only decides *when* to
-/// call it automatically, the one moment `open` already knows the index
+/// call it automatically, the one moment the open already knows the index
 /// just went from `rebuild_needed() == true` to `false` by itself.
 ///
 /// # Once, not per pass
 ///
-/// Called exactly once from [`open`], itself called exactly once per
-/// process per vault unlock -- never from inside a sync pass, and never on
-/// a timer -- because `jatayu_mailindex::MailIndex::healed_on_open` is
-/// itself answered once, at construction, from the one `MailIndex` this
-/// call was handed. A later pass finding `rebuild_needed() == false` (which
-/// this reindex itself brings about) has no reason to call this again, and
-/// nothing in this module ever checks `healed_on_open` a second time for
-/// the same `MailIndex` to let it.
+/// Called exactly once per open of the index (see [`Opening::run`]), itself
+/// started exactly once per process per vault unlock -- never from inside a
+/// sync pass, and never on a timer -- because
+/// `jatayu_mailindex::MailIndex::healed_on_open` is itself answered once, at
+/// construction, from the one `MailIndex` that open produced. A later pass
+/// finding `rebuild_needed() == false` (which this reindex itself brings
+/// about) has no reason to call this again, and nothing in this module ever
+/// checks `healed_on_open` a second time for the same `MailIndex` to let it.
 ///
 /// # Off the calling thread
 ///
-/// [`open`] runs synchronously wherever `Service::unlocked` does -- today,
-/// directly on the async task the `unlock` command is already running on
-/// (see `domains::vault::unlock`), with no `blocking` wrapper around that
-/// call. A hundred-thousand-message vault's worth of `rebuild_account`
-/// walks is exactly the disk-bound work `service::blocking`'s own docs
-/// already warn would "stall every other task" run inline, so this hands
-/// the whole walk to `tokio::spawn` -- already this crate's pattern for
-/// fire-and-forget background work (see `mail/view.rs`, `signin.rs`) -- and
-/// the walk itself still goes through `blocking` underneath, exactly like
-/// `rebuild_mail_index`'s own command handler.
+/// A hundred-thousand-message vault's worth of `rebuild_account` walks is
+/// exactly the disk-bound work `service::blocking`'s own docs already warn
+/// would "stall every other task" run inline, so the walk goes through
+/// `blocking`, exactly like `rebuild_mail_index`'s own command handler.
 ///
 /// # What this does not close
 ///
@@ -200,30 +461,24 @@ pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) -> Option<tokio::task
 /// a moment earlier; both are pre-existing properties of "every process
 /// that unlocks the vault opens its own index" (see the module docs), not
 /// something this fix introduces or was asked to solve.
-///
-/// Returns the spawned task's handle so a test can await the exact work a
-/// real caller lets run detached -- see [`open`]'s own call site.
-fn reindex_after_self_heal(
-    vault: &Arc<Vault>,
-    index: Arc<dyn jatayu_core::MailSearch>,
-) -> tokio::task::JoinHandle<()> {
-    let vault = vault.clone();
-    tokio::spawn(async move {
-        let result = crate::service::blocking(move || {
-            let account_ids: Vec<AccountId> = vault.accounts()?.into_iter().map(|a| a.id).collect();
-            for account_id in account_ids {
-                crate::domains::mailsync::rebuild_account(&vault, index.as_ref(), account_id)?;
-            }
-            Ok(())
-        })
-        .await;
-        if let Err(e) = result {
-            tracing::error!(
-                error = %e,
-                "could not reindex mail after the search index self-healed"
-            );
-        }
-    })
+async fn reindex_after_self_heal(vault: Arc<Vault>, index: Arc<DeferredIndex>) {
+    let result = crate::service::blocking(move || Ok(reindex_all(&vault, index.as_ref())?)).await;
+    if let Err(e) = result {
+        tracing::error!(
+            error = %e,
+            "could not reindex mail after the search index self-healed"
+        );
+    }
+}
+
+/// The walk [`reindex_after_self_heal`] runs: every account, through
+/// `rebuild_account`.
+fn reindex_all(vault: &Vault, index: &dyn MailSearch) -> Result<()> {
+    let account_ids: Vec<AccountId> = vault.accounts()?.into_iter().map(|a| a.id).collect();
+    for account_id in account_ids {
+        crate::domains::mailsync::rebuild_account(vault, index, account_id)?;
+    }
+    Ok(())
 }
 
 /// Run [`crate::mail::sync::contacts::ContactIndex::backfill`] off the
@@ -249,13 +504,15 @@ fn backfill_contacts(vault: &Arc<Vault>, contacts: Arc<crate::mail::sync::contac
 
 /// Drop what [`open`] opened. See `Service::locked`/`Service::close` for the
 /// two moments this is called from -- always after the account tasks
-/// writing through it have already stopped.
+/// writing through it have already stopped, or been cut short, in which case
+/// the index commits what they left as it goes (see [`DeferredIndex`]'s
+/// `Drop`), here or in a blocking job still holding it.
 pub(crate) fn close(svc: &Service) {
     svc.set_mail_state(None);
 }
 
 fn open_packs(vault: &Arc<Vault>) -> Result<Arc<dyn PackStore>> {
-    if vault.status().backend == "postgres" {
+    if vault.backend() == "postgres" {
         return Ok(Arc::new(VaultPacks(vault.clone())));
     }
     let key = vault.derive_subkey(PACKSTORE_KEY_LABEL)?;
@@ -270,12 +527,18 @@ fn open_index(vault: &Vault) -> Result<MailIndex> {
     MailIndex::open(index_dir(vault), cipher, INDEX_CACHE_BYTES)
 }
 
+/// Whether the vault's own folder -- where its header lives, whatever the
+/// backend, and a local vault's index beside it -- no longer exists.
+fn vault_folder_gone(vault: &Vault) -> bool {
+    !vault.path().is_dir()
+}
+
 /// `<vault root>/mail-index` for a local backend -- beside the vault's own
 /// header, per the plan. For Postgres, a per-device cache directory: the
 /// index can always be rebuilt, so nothing about it belongs in a vault that
 /// might be opened from a different machine tomorrow.
 fn index_dir(vault: &Vault) -> PathBuf {
-    if vault.status().backend == "postgres" {
+    if vault.backend() == "postgres" {
         jatayu_vault::config_dir().join("mail-index").join(cache_key(vault))
     } else {
         vault.path().join("mail-index")
@@ -470,7 +733,134 @@ pub(crate) mod tests {
     /// A second handle on `vault`'s own index, holding its writer lock --
     /// standing in for another process that has the vault unlocked.
     pub(crate) fn hold_index(vault: &Vault) -> MailIndex {
+        // After any open still running in the background, which would
+        // otherwise be the one holding the lock.
+        let _opening = OPENS.lock().unwrap_or_else(PoisonError::into_inner);
         open_index(vault).unwrap()
+    }
+
+    /// Unlocking does not wait for the search index: the state is installed
+    /// at once, with the pack store open, and a search that arrives before
+    /// the index has opened waits for it rather than failing.
+    #[tokio::test]
+    async fn the_index_opens_in_the_background_and_calls_wait_for_it() {
+        let (_vdir, vault) = test_vault();
+        let svc = Arc::new(Service::new());
+        let vault = Arc::new(vault);
+
+        // Holding the open lock keeps the background open from starting.
+        let held = OPENS.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = open(&svc, &vault);
+        assert!(svc.packs().is_some(), "the pack store opens on the spot");
+        let index = svc.mail_index().expect("the index is installed before it opens");
+        let searching = std::thread::spawn(move || {
+            index.search(&MailQuery::parse("anything"), 10, None).map(|page| page.hits.len())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!searching.is_finished(), "a search waits for the open");
+        drop(held);
+        assert_eq!(searching.join().unwrap().unwrap(), 0);
+        assert!(!svc.mail_index().unwrap().rebuild_needed());
+    }
+
+    /// A lock that lands before the background open has finished, followed
+    /// at once by another unlock, must not leave the second open fighting
+    /// the first for tantivy's writer lock: that open would come up dead,
+    /// and search with it, until the next unlock.
+    #[tokio::test]
+    async fn a_quick_lock_and_unlock_never_leaves_the_index_dead() {
+        let (_vdir, vault) = test_vault();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        for _ in 0..5 {
+            close(&svc);
+            let _ = open(&svc, &vault);
+        }
+        assert!(!svc.mail_index().unwrap().rebuild_needed());
+
+        // Opening again over an open state, with no lock between: the old
+        // index goes before the new one opens.
+        let _ = open(&svc, &vault);
+        let _ = open(&svc, &vault);
+        assert!(!svc.mail_index().unwrap().rebuild_needed());
+
+        // And a lock before the open even started leaves nothing behind
+        // holding the writer lock.
+        let held = OPENS.lock().unwrap_or_else(PoisonError::into_inner);
+        close(&svc);
+        let _ = open(&svc, &vault);
+        close(&svc);
+        drop(held);
+        assert!(!hold_index(&vault).rebuild_needed(), "the writer lock must be free");
+    }
+
+    /// A job that outlived the lock -- a batch of bodies still being indexed
+    /// on the blocking pool when the account task was stopped -- holds the
+    /// index, and tantivy's writer lock with it, a moment past `close`. An
+    /// unlock in that moment waits for it to let go, rather than finding the
+    /// writer lock taken and coming up dead for the whole session.
+    #[tokio::test]
+    async fn an_unlock_waits_for_an_index_a_lock_left_held() {
+        let (_vdir, vault) = test_vault();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        let straggler = svc.mail_index().unwrap();
+        assert!(!straggler.rebuild_needed(), "the test's own index opened");
+        close(&svc);
+        let letting_go = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(straggler);
+        });
+        let _ = open(&svc, &vault);
+        assert!(!svc.mail_index().unwrap().rebuild_needed(), "the index came up dead");
+        letting_go.join().unwrap();
+    }
+
+    /// What was indexed and not yet committed when the vault locks -- by a
+    /// pass the lock cut short -- is committed as the index goes rather than
+    /// discarded with its writer: the mail is stored, so nothing would ever
+    /// index it again.
+    #[tokio::test]
+    async fn what_was_indexed_but_not_committed_survives_a_lock() {
+        let (_vdir, vault) = test_vault();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        let doc = MailDoc {
+            message_key: MailMessageId::new().to_string(),
+            thread_key: ThreadId::new().to_string(),
+            account: AccountId::new().to_string(),
+            mailboxes: Vec::new(),
+            from: "ada@example.com".into(),
+            to: String::new(),
+            cc: String::new(),
+            subject: "cut short by the lock".into(),
+            body_text: String::new(),
+            labels: Vec::new(),
+            date: Timestamp::now(),
+            has_attachment: false,
+            unread: true,
+            starred: false,
+        };
+        svc.mail_index().unwrap().index(&[doc]).unwrap();
+        close(&svc);
+        let _ = open(&svc, &vault);
+        let page = svc.mail_index().unwrap().search(&MailQuery::parse("cut short"), 10, None);
+        assert_eq!(page.unwrap().hits.len(), 1);
+    }
+
+    /// An open that never gets to run -- a runtime shutting down drops
+    /// blocking work it has not started -- must not leave a caller waiting
+    /// on the index for ever.
+    #[test]
+    fn an_open_that_never_runs_still_answers_whoever_waits() {
+        let (_vdir, vault) = test_vault();
+        let index = Arc::new(DeferredIndex::default());
+        let vault = Arc::new(vault);
+        let opening =
+            Opening { slot: Arc::downgrade(&index), vault: Arc::downgrade(&vault), previous: None };
+        drop(opening);
+        assert!(index.rebuild_needed());
+        assert!(index.search(&MailQuery::parse("anything"), 10, None).is_err());
     }
 
     /// End-to-end proof of the two halves this fix put together: a schema
@@ -551,8 +941,9 @@ pub(crate) mod tests {
         let queued = open(&svc, &vault);
         assert!(
             !svc.mail_index().unwrap().rebuild_needed(),
-            "self-healing happens synchronously inside `MailIndex::open`, so by the time \
-             `open` returns the index must already be reopened -- just empty, not dead"
+            "self-healing happens inside `MailIndex::open`, so once the background open has \
+             finished (which `rebuild_needed` waits for) the index must already be reopened \
+             -- just empty, not dead"
         );
         assert!(
             svc.mail_index()
@@ -570,7 +961,9 @@ pub(crate) mod tests {
         // -- a real caller lets it run detached, but this test has to wait
         // for that exact task before it can assert anything about the
         // result, which is exactly what `open` returning its `JoinHandle`
-        // is for.
+        // is for. The walk starts only when that task is first polled,
+        // which on this test's single-threaded runtime is the `await`
+        // below, so the search above saw the index empty.
         queued.expect("a self-heal on open must queue exactly one reindex").await.unwrap();
 
         let index = svc.mail_index().unwrap();

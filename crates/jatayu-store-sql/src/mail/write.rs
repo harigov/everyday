@@ -28,9 +28,9 @@ use jatayu_core::mail::{
 };
 use jatayu_core::packstore::PackRef;
 use jatayu_core::record::RecordDescriptor;
-use jatayu_core::store::mail::{IngestMessage, MailStore, message_aad, thread_aad};
+use jatayu_core::store::mail::{IngestMessage, LocalChange, MailStore, message_aad, thread_aad};
 
-use crate::conn::{Sql, SqlExt, Value};
+use crate::conn::{Sql, SqlExt, Value, Where};
 use crate::record::upsert_stmt;
 use crate::{SqlStore, from_us, placeholders, vals};
 
@@ -124,6 +124,62 @@ pub(super) fn update_flags(
     let (sql, args) = upsert_stmt(&message, sealed);
     tx.execute(&sql, &args)?;
     recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+    tx.commit()
+}
+
+/// See [`jatayu_core::store::mail::MailStore::update_flags_many`]:
+/// [`update_flags`] for each change, [`INGEST_BATCH_ROWS`] of them to a
+/// transaction, with each thread they touch recomputed once at the end of
+/// it rather than after every message.
+///
+/// A batch that fails (one row that will not unseal, or a database error
+/// part way) is rolled back and made again one change at a time, so only the
+/// changes that fail on their own are lost, as when every change was its own
+/// [`update_flags`]. The batches after it still run. The first error is
+/// returned once every change has been tried.
+pub(super) fn update_flags_many(
+    store: &SqlStore,
+    mailbox: MailboxId,
+    changes: &[(u32, MessageFlags)],
+) -> Result<()> {
+    let mut first_err = None;
+    for batch in changes.chunks(INGEST_BATCH_ROWS) {
+        // The failed batch's writer guard is gone by the time this returns,
+        // so `update_flags` can take the (non-reentrant) writer again.
+        if update_flags_batch(store, mailbox, batch).is_ok() {
+            continue;
+        }
+        for &(uid, flags) in batch {
+            if let Err(e) = update_flags(store, mailbox, uid, flags) {
+                first_err.get_or_insert(e);
+            }
+        }
+    }
+    first_err.map_or(Ok(()), Err)
+}
+
+/// One transaction of [`update_flags_many`].
+fn update_flags_batch(
+    store: &SqlStore,
+    mailbox: MailboxId,
+    batch: &[(u32, MessageFlags)],
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let mut touched: BTreeSet<ThreadId> = BTreeSet::new();
+    for &(uid, flags) in batch {
+        let Some((mid, mut message)) = message_at(store, tx.as_mut(), mailbox, uid)? else {
+            continue; // a uid this store never ingested: a no-op, as in `update_flags`
+        };
+        message.flags = flags;
+        let sealed = store.seal(&message_aad(mid), &message)?;
+        let (sql, args) = upsert_stmt(&message, sealed);
+        tx.execute(&sql, &args)?;
+        touched.insert(message.thread_id);
+    }
+    for thread_id in touched {
+        recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+    }
     tx.commit()
 }
 
@@ -415,6 +471,13 @@ pub(super) fn hide_thread_from_mailbox(
 ) -> Result<()> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
+    hide_in(tx.as_mut(), thread, mailbox)?;
+    tx.commit()
+}
+
+/// [`hide_thread_from_mailbox`]'s two statements, inside a transaction the
+/// caller holds.
+fn hide_in(tx: &mut dyn Sql, thread: ThreadId, mailbox: MailboxId) -> Result<()> {
     let (thread_s, mailbox_s) = (thread.to_string(), mailbox.to_string());
     tx.execute(
         "INSERT INTO hidden_thread_mailboxes (thread_id, mailbox_id) VALUES (?1, ?2)
@@ -425,7 +488,7 @@ pub(super) fn hide_thread_from_mailbox(
         "DELETE FROM thread_mailboxes WHERE thread_id = ?1 AND mailbox_id = ?2",
         &vals![thread_s, mailbox_s],
     )?;
-    tx.commit()
+    Ok(())
 }
 
 /// See [`jatayu_core::store::mail::MailStore::restore_thread_mailboxes`].
@@ -475,22 +538,66 @@ pub(super) fn hide_and_enqueue(store: &SqlStore, mailbox: MailboxId, ops: &[Op])
         .iter()
         .map(|op| Ok((op, store.seal(&Op::aad(op.id), op)?)))
         .collect::<Result<Vec<_>>>()?;
-    let mailbox_s = mailbox.to_string();
     let mut conn = store.write();
     let mut tx = conn.begin()?;
     for (op, data) in sealed {
         if let OpTarget::Thread(thread) = op.target {
-            let thread_s = thread.to_string();
-            tx.execute(
-                "INSERT INTO hidden_thread_mailboxes (thread_id, mailbox_id) VALUES (?1, ?2)
-                 ON CONFLICT (thread_id, mailbox_id) DO NOTHING",
-                &vals![thread_s.clone(), mailbox_s.clone()],
-            )?;
-            tx.execute(
-                "DELETE FROM thread_mailboxes WHERE thread_id = ?1 AND mailbox_id = ?2",
-                &vals![thread_s, mailbox_s.clone()],
-            )?;
+            hide_in(tx.as_mut(), thread, mailbox)?;
         }
+        let (sql, args) = upsert_stmt(op, data);
+        tx.execute(&sql, &args)?;
+    }
+    tx.commit()
+}
+
+/// See [`jatayu_core::store::mail::MailStore::apply_and_enqueue`]: each
+/// change as its own single-row function above makes it, every thread a
+/// message change touched recomputed once, then the ops -- one transaction.
+/// The ops are sealed before the writer is taken, as every batch here is; a
+/// message is sealed inside, because it is read afresh there first, as
+/// [`set_message_flags`] reads it.
+pub(super) fn apply_and_enqueue(
+    store: &SqlStore,
+    changes: &[LocalChange],
+    ops: &[Op],
+) -> Result<()> {
+    if changes.is_empty() && ops.is_empty() {
+        return Ok(());
+    }
+    let sealed = ops
+        .iter()
+        .map(|op| Ok((op, store.seal(&Op::aad(op.id), op)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let mut touched: BTreeSet<ThreadId> = BTreeSet::new();
+    for change in changes {
+        match change {
+            LocalChange::Flags(id, flags) => {
+                // Deleted since the caller last looked: nothing to write.
+                let Some(mut message) = message_by_id(store, tx.as_mut(), *id)? else { continue };
+                message.flags = *flags;
+                let sealed = store.seal(&message_aad(*id), &message)?;
+                let (sql, args) = upsert_stmt(&message, sealed);
+                tx.execute(&sql, &args)?;
+                touched.insert(message.thread_id);
+            }
+            LocalChange::Labels(id, labels) => {
+                let Some(mut message) = message_by_id(store, tx.as_mut(), *id)? else { continue };
+                message.labels.clone_from(labels);
+                let sealed = store.seal(&message_aad(*id), &message)?;
+                let (sql, args) = upsert_stmt(&message, sealed);
+                tx.execute(&sql, &args)?;
+                touched.insert(message.thread_id);
+            }
+            LocalChange::Hide(thread, mailbox) => hide_in(tx.as_mut(), *thread, *mailbox)?,
+            LocalChange::Snooze(thread, until) => snooze_in(store, tx.as_mut(), *thread, *until)?,
+        }
+    }
+    for thread_id in touched {
+        recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+    }
+    for (op, data) in sealed {
         let (sql, args) = upsert_stmt(op, data);
         tx.execute(&sql, &args)?;
     }
@@ -505,6 +612,18 @@ pub(super) fn set_thread_snoozed_until(
 ) -> Result<()> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
+    snooze_in(store, tx.as_mut(), thread, until)?;
+    tx.commit()
+}
+
+/// [`set_thread_snoozed_until`] inside a transaction the caller holds. A
+/// thread with no row is a no-op.
+fn snooze_in(
+    store: &SqlStore,
+    tx: &mut dyn Sql,
+    thread: ThreadId,
+    until: Option<jiff::Timestamp>,
+) -> Result<()> {
     let Some(row) =
         tx.query_opt("SELECT data FROM threads WHERE id = ?1", &vals![thread.to_string()])?
     else {
@@ -515,7 +634,7 @@ pub(super) fn set_thread_snoozed_until(
     let sealed = store.seal(&thread_aad(thread), &t)?;
     let (sql, args) = upsert_stmt(&t, sealed);
     tx.execute(&sql, &args)?;
-    tx.commit()
+    Ok(())
 }
 
 /// Read-modify-write `thread`'s sealed record through `patch`, on the exact
@@ -852,7 +971,14 @@ fn remove_uids_tx(
         // gone -- an `EXPUNGE`d message, or the last Gmail label removed.
         tx.execute(&format!("DELETE FROM bodies WHERE message_id IN ({holes})"), &args)?;
         tx.execute(&format!("DELETE FROM mail_messages WHERE id IN ({holes})"), &args)?;
-        tx.execute(&format!("DELETE FROM mail_message_keys WHERE message_id IN ({holes})"), &args)?;
+        // Its `mail_message_keys` row stays, naming a message now gone. That
+        // is how threading tells "never stored" from "stored, then deleted":
+        // a second row with the same `Message-ID` (a larger list copy, or a
+        // sent copy beside its draft) never got the key, since the first
+        // row held it, and is still there to be found by a scan. See
+        // `MailStore::keyed_thread`. Dedupe reads a dead key as absent,
+        // the next row stored under it takes it over, and threading drops it
+        // once a scan has found nothing (`forget_dead_message_key`).
     }
 
     for thread_id in orphan_threads {
@@ -1533,19 +1659,7 @@ pub(super) fn correct_categories(
     if corrections.is_empty() {
         return Ok(0);
     }
-    let pick = |email: &str| -> Option<Category> {
-        let named = |by_sender: bool| {
-            corrections
-                .iter()
-                .rev()
-                .find(|(target, _)| {
-                    matches!(target, CategoryMatch::Sender(_)) == by_sender
-                        && matches_target(target, email)
-                })
-                .map(|(_, category)| *category)
-        };
-        named(true).or_else(|| named(false))
-    };
+    let pick = |email: &str| picked_category(corrections, email);
     sweep_categories(
         store,
         account,
@@ -1554,6 +1668,59 @@ pub(super) fn correct_categories(
         // fallback is never reached.
         |message| (pick(&message.from.email).unwrap_or(Category::Other), CategorySource::Person),
     )
+}
+
+/// The category the correction naming `email` gives -- an exact address
+/// before a domain, and the last of either -- or `None` when none names it.
+fn picked_category(corrections: &[(CategoryMatch, Category)], email: &str) -> Option<Category> {
+    let named = |by_sender: bool| {
+        corrections
+            .iter()
+            .rev()
+            .find(|(target, _)| {
+                matches!(target, CategoryMatch::Sender(_)) == by_sender
+                    && matches_target(target, email)
+            })
+            .map(|(_, category)| *category)
+    };
+    named(true).or_else(|| named(false))
+}
+
+/// See [`jatayu_core::store::mail::MailStore::correct_categories_in`]:
+/// [`correct_categories`]'s sweep over `ids` alone.
+pub(super) fn correct_categories_in(
+    store: &SqlStore,
+    ids: &[MailMessageId],
+    corrections: &[(CategoryMatch, Category)],
+) -> Result<u32> {
+    if corrections.is_empty() {
+        return Ok(0);
+    }
+    let pick = |email: &str| picked_category(corrections, email);
+    sweep_ids(
+        store,
+        ids,
+        |message| pick(&message.from.email).is_some(),
+        |message| (pick(&message.from.email).unwrap_or(Category::Other), CategorySource::Person),
+    )
+}
+
+/// See [`jatayu_core::store::mail::MailStore::message_ids`]: newest first,
+/// straight down `mail_messages_by_account_date`.
+pub(super) fn message_ids(store: &SqlStore, account: AccountId) -> Result<Vec<MailMessageId>> {
+    store
+        .read()
+        .query(
+            "SELECT id FROM mail_messages WHERE account_id = ?1 ORDER BY date_us DESC",
+            &vals![account.to_string()],
+        )?
+        .into_iter()
+        .map(|row| {
+            row.text(0)?.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                Error::Invalid(e.to_string())
+            })
+        })
+        .collect()
 }
 
 /// Whether `email` is the one address or domain `target` names -- an exact
@@ -1628,28 +1795,56 @@ fn sweep_categories_with_hook(
     resolve: impl Fn(&Message) -> (Category, CategorySource),
     after_scan: impl FnOnce(),
 ) -> Result<u32> {
-    let ids: Vec<String> = store
-        .read()
-        .query("SELECT id FROM mail_messages WHERE account_id = ?1", &vals![account.to_string()])?
-        .into_iter()
-        .map(|row| row.text(0))
-        .collect::<Result<_>>()?;
+    let ids = message_ids(store, account)?;
     after_scan();
+    sweep_ids(store, &ids, eligible, resolve)
+}
 
-    let mut touched: BTreeSet<ThreadId> = BTreeSet::new();
+/// The batches of [`sweep_categories`], over `ids`.
+///
+/// Each batch is read on a reader first, and only the messages `eligible`
+/// accepts as they stand are read again, afresh, inside the batch's write
+/// transaction -- so a sweep for one sender holds the writer for that
+/// sender's mail, not for decrypting the whole account. What `eligible`
+/// passes over cannot become eligible meanwhile: nothing writes a message's
+/// sender, and nothing hands a category back to the rules once a model or a
+/// person has answered it. Every thread a batch changed is recomputed in the
+/// same transaction.
+fn sweep_ids(
+    store: &SqlStore,
+    ids: &[MailMessageId],
+    eligible: impl Fn(&Message) -> bool,
+    resolve: impl Fn(&Message) -> (Category, CategorySource),
+) -> Result<u32> {
     let mut changed = 0u32;
     for batch in ids.chunks(INGEST_BATCH_ROWS) {
-        let mut conn = store.write();
-        let mut tx = conn.begin()?;
-        for id in batch {
+        let (where_sql, args) =
+            Where::new().in_list("id", batch.iter().map(|id| id.to_string())).finish();
+        let rows = store
+            .read()
+            .records(&format!("SELECT id, data FROM mail_messages WHERE {where_sql}"), &args)?;
+        let mut candidates = Vec::new();
+        for (id, data) in rows {
             let mid: MailMessageId =
                 id.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
                     Error::Invalid(e.to_string())
                 })?;
-            // Fresh, from inside this transaction -- see this function's
+            let message: Message = store.unseal(&message_aad(mid), &data)?;
+            if eligible(&message) {
+                candidates.push(mid);
+            }
+        }
+        if candidates.is_empty() {
+            continue;
+        }
+
+        let mut conn = store.write();
+        let mut tx = conn.begin()?;
+        let mut touched: BTreeSet<ThreadId> = BTreeSet::new();
+        for mid in candidates {
+            // Fresh, from inside this transaction -- see `sweep_categories`'
             // own docs on why. `None` means a concurrent removal took the
-            // message between the id scan and this batch: nothing left to
-            // sweep.
+            // message since: nothing left to sweep.
             let Some(mut message) = message_by_id(store, tx.as_mut(), mid)? else {
                 continue;
             };
@@ -1667,13 +1862,9 @@ fn sweep_categories_with_hook(
                 changed += 1;
             }
         }
-        tx.commit()?;
-    }
-
-    for thread_id in touched {
-        let mut conn = store.write();
-        let mut tx = conn.begin()?;
-        recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+        for thread_id in touched {
+            recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+        }
         tx.commit()?;
     }
     Ok(changed)

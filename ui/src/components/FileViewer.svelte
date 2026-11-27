@@ -7,7 +7,8 @@
   // What differs from a mail part is that a file's address answers range
   // requests, so a film plays from where it is and seeks without being held
   // whole in memory first, and a very large text file is read for its first
-  // megabyte only. A PDF is still read whole: pdf.js wants its bytes.
+  // megabyte only. A PDF is still read whole, since pdf.js wants its bytes:
+  // a long one a piece at a time (`fetchWhole`).
   //
   // Which files, and which is open, are the caller's: it hands the list and a
   // place in it, and hears of every step (`onindex`) so what it keeps -- the
@@ -32,7 +33,7 @@
   // drawn here at all, so for one it is the only way on.
 
   import { untrack } from 'svelte'
-  import { fileUrl, fileVersion, mobileShell, thumbnailUrl } from '../lib/api'
+  import { fetchWhole, fileUrl, fileVersion, mobileShell, thumbnailUrl } from '../lib/api'
   import { isReadable } from '../lib/documents'
   import { formatSize, kindIcon, previewOf } from '../lib/files'
   import { files as store } from '../lib/files.svelte'
@@ -107,12 +108,6 @@
 
   const COULD_NOT = 'This file could not be shown here.'
 
-  async function bytes(url: string): Promise<ArrayBuffer> {
-    const response = await fetch(url)
-    if (!response.ok) throw new Error(`${response.status} ${await response.text()}`)
-    return response.arrayBuffer()
-  }
-
   /** The start of a text file: asked for with a range, and not read past the
    *  cap even if the server sends the whole of it. */
   async function head(url: string, size: number): Promise<{ text: string; truncated: boolean }> {
@@ -176,7 +171,7 @@
               next = { state: 'media', video: previewOf(f) === 'video' }
               break
             case 'pdf':
-              next = { state: 'pdf', data: new Uint8Array(await bytes(url)) }
+              next = { state: 'pdf', data: await fetchWhole(url) }
               break
             case 'text': {
               const { text, truncated } = await head(url, f.size)

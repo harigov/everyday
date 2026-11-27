@@ -25,7 +25,10 @@ use crate::mail::{
 };
 use crate::packstore::{PackRef, PackStore};
 use crate::record::RecordKind;
-use crate::store::mail::{CategoryCount, IngestMessage, MailStore, ThreadFilter, ThreadPage};
+use crate::store::mail::{
+    CategoryCount, IngestMessage, LocalChange, MailStore, ThreadFilter, ThreadPage, UnreadBadge,
+    UnreadTarget,
+};
 use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 
@@ -210,6 +213,30 @@ impl Vault {
         self.with_mail(|m| m.update_flags(mailbox, uid, flags))
     }
 
+    /// The stored flags of each of `uids` filed in `mailbox` that is known,
+    /// for the sync engine to skip the ones a server reports unchanged. A
+    /// uid the mailbox does not hold is left out of the map. Read from the
+    /// clear column -- see [`MailStore::stored_flags`].
+    pub fn mail_stored_flags(
+        &self,
+        mailbox: MailboxId,
+        uids: &[u32],
+    ) -> Result<std::collections::HashMap<u32, MessageFlags>> {
+        self.with_mail(|m| m.stored_flags(mailbox, uids))
+    }
+
+    /// [`Self::update_message_flags`] for many uids of one mailbox at once,
+    /// each change applied exactly as that applies one -- see
+    /// [`MailStore::update_flags_many`].
+    pub fn update_message_flags_many(
+        &self,
+        mailbox: MailboxId,
+        changes: &[(u32, MessageFlags)],
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.update_flags_many(mailbox, changes))
+    }
+
     pub fn update_message_labels(
         &self,
         mailbox: MailboxId,
@@ -259,6 +286,35 @@ impl Vault {
         limit: u32,
     ) -> Result<ThreadPage> {
         self.with_mail(|m| m.list_threads_across(mailboxes, filter, cursor, limit))
+    }
+
+    /// For each of `lists`, the threads its first page of `limit` would list,
+    /// with their unread counts, nothing decrypted -- see
+    /// [`MailStore::listed_unread`].
+    pub fn mail_listed_unread(
+        &self,
+        lists: &[(MailboxId, ThreadFilter)],
+        limit: u32,
+    ) -> Result<Vec<Vec<(ThreadId, u32)>>> {
+        self.with_mail(|m| m.listed_unread(lists, limit))
+    }
+
+    /// One mailbox's listing as thread ids and the dates they are listed by
+    /// -- see [`MailStore::list_thread_keys`].
+    pub fn mail_thread_keys(
+        &self,
+        mailbox: MailboxId,
+        filter: &ThreadFilter,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<crate::store::mail::ThreadKeyPage> {
+        self.with_mail(|m| m.list_thread_keys(mailbox, filter, cursor, limit))
+    }
+
+    /// The thread records named in `ids`, without their messages, in no
+    /// particular order -- see [`MailStore::threads_by_ids`].
+    pub fn mail_threads(&self, ids: &[ThreadId]) -> Result<Vec<Thread>> {
+        self.with_mail(|m| m.threads_by_ids(ids))
     }
 
     /// See [`crate::store::mail::MailStore::threads_listed`].
@@ -343,6 +399,12 @@ impl Vault {
     /// [`MailStore::list_open_drafts`].
     pub fn open_drafts(&self, account: AccountId) -> Result<Vec<Draft>> {
         self.with_mail(|m| m.list_open_drafts(account))
+    }
+
+    /// [`Vault::open_drafts`], and the sent ones touched since `sent_since`
+    /// -- see [`MailStore::list_live_drafts`].
+    pub fn live_drafts(&self, account: AccountId, sent_since: Timestamp) -> Result<Vec<Draft>> {
+        self.with_mail(|m| m.list_live_drafts(account, sent_since))
     }
 
     /// Take `ops` for running: each one still [`OpState::Pending`] *as
@@ -642,6 +704,57 @@ impl Vault {
         self.with_mail(|m| m.message_by_message_id_header(account, message_id_header))
     }
 
+    /// The thread of the message `account` has stored under this
+    /// `Message-ID`, or `None` -- what threading asks of each id a new
+    /// message's `References` names. One keyed lookup, nothing decrypted, once
+    /// the account's messages are keyed ([`Vault::key_existing_mail`]); the
+    /// full scan [`Vault::message_by_message_id_header`] makes before that,
+    /// for an id the keys cannot hold, and for a key still naming a message
+    /// since deleted, whose namesake may be stored unkeyed.
+    ///
+    /// That last scan runs once per dead key: what it finds takes the key
+    /// over, and when it finds nothing the key is dropped, so the next
+    /// lookup is keyed again, or "never stored".
+    pub fn mail_thread_by_header(
+        &self,
+        account: AccountId,
+        message_id_header: &str,
+    ) -> Result<Option<ThreadId>> {
+        let mut dead_key = None;
+        if keyable(message_id_header) {
+            let key = self.mail_message_key(message_id_header)?;
+            let keyed = self.with_mail(|m| {
+                if !m.account_keyed(account)? {
+                    return Ok(None);
+                }
+                m.keyed_thread(account, &key).map(Some)
+            })?;
+            match keyed {
+                // Not keyed yet: only a scan can say.
+                None => {}
+                Some(None) => return Ok(None),
+                Some(Some((_, Some(thread)))) => return Ok(Some(thread)),
+                // Its holder was deleted. Another row with this
+                // `Message-ID`, stored while the holder had the key, may
+                // still be here unkeyed.
+                Some(Some((_, None))) => dead_key = Some(key),
+            }
+        }
+        let found = self.message_by_message_id_header(account, message_id_header)?;
+        if let Some(key) = dead_key
+            && self.writable().is_ok()
+        {
+            // Best effort: on failure the next lookup scans again.
+            let _ = match &found {
+                Some(message) => {
+                    self.with_mail(|m| m.put_message_keys(account, &[(key, message.id)]))
+                }
+                None => self.with_mail(|m| m.forget_dead_message_key(account, &key)),
+            };
+        }
+        Ok(found.map(|m| m.thread_id))
+    }
+
     pub fn mail_uid_set(&self, mailbox: MailboxId) -> Result<Vec<u32>> {
         self.with_mail(|m| m.uid_set(mailbox))
     }
@@ -676,6 +789,20 @@ impl Vault {
 
     pub fn mail_unread_counts(&self, account: AccountId) -> Result<Vec<(MailboxId, u64)>> {
         self.with_mail(|m| m.unread_counts(account))
+    }
+
+    /// Drop `account`'s keys whose messages are gone once there are more than
+    /// `above` of them -- see [`MailStore::prune_dead_message_keys`].
+    pub fn prune_dead_mail_keys(&self, account: AccountId, above: u64) -> Result<u64> {
+        self.writable()?;
+        self.with_mail(|m| m.prune_dead_message_keys(account, above))
+    }
+
+    /// The mail sidebar's unread badges, one per target -- see
+    /// [`UnreadBadge`] for what each number counts, and
+    /// [`crate::store::mail::unread_badges`] for how, from clear columns.
+    pub fn mail_unread_badges(&self, targets: &[UnreadTarget]) -> Result<Vec<UnreadBadge>> {
+        self.with_mail(|m| crate::store::mail::unread_badges(m, targets))
     }
 
     /// `mailbox`'s threads counted by category -- see
@@ -817,13 +944,7 @@ impl Vault {
         sender: &str,
         category: Category,
     ) -> Result<u32> {
-        self.writable()?;
-        self.with_mail(|m| {
-            let mut rules = m.category_rules(account)?;
-            rules.set_sender(sender, category);
-            m.put_category_rules(account, &rules)?;
-            m.correct_category(account, CategoryMatch::Sender(sender.to_string()), category)
-        })
+        self.correct_mail_categories(account, &[(sender.to_string(), category)])
     }
 
     /// [`Self::correct_mail_category`] for several senders of `account` at
@@ -831,6 +952,15 @@ impl Vault {
     /// see [`crate::store::mail::MailStore::correct_categories`]. A sender
     /// named twice takes the last category given. An empty list changes
     /// nothing. Returns how many messages changed.
+    ///
+    /// The sweep goes a few hundred messages at a time, each chunk its own
+    /// read of the store, so a write waiting for the vault -- a person's own
+    /// action, most often -- goes in between chunks rather than after the
+    /// whole account. Mail that arrives meanwhile is categorised by the rules
+    /// already saved. The vault locking between two chunks ends the sweep
+    /// with [`Error::Locked`], the rules saved and the older part of the mail
+    /// not yet swept; the sweep goes newest first, so what is left is the
+    /// mail furthest down every list, and asking again sweeps it.
     pub fn correct_mail_categories(
         &self,
         account: AccountId,
@@ -840,20 +970,25 @@ impl Vault {
         if corrections.is_empty() {
             return Ok(0);
         }
-        self.with_mail(|m| {
+        let ids = self.with_mail(|m| {
             let mut rules = m.category_rules(account)?;
             for (sender, category) in corrections {
                 rules.set_sender(sender, *category);
             }
             m.put_category_rules(account, &rules)?;
-            let targets: Vec<(CategoryMatch, Category)> = corrections
-                .iter()
-                .map(|(sender, category)| {
-                    (CategoryMatch::Sender(sender.trim().to_ascii_lowercase()), *category)
-                })
-                .collect();
-            m.correct_categories(account, &targets)
-        })
+            m.message_ids(account)
+        })?;
+        let targets: Vec<(CategoryMatch, Category)> = corrections
+            .iter()
+            .map(|(sender, category)| {
+                (CategoryMatch::Sender(sender.trim().to_ascii_lowercase()), *category)
+            })
+            .collect();
+        let mut changed = 0;
+        for chunk in ids.chunks(CATEGORY_SWEEP_CHUNK) {
+            changed += self.with_mail(|m| m.correct_categories_in(chunk, &targets))?;
+        }
+        Ok(changed)
     }
 
     /// Set what message `id` keeps of its `List-Unsubscribe` header -- see
@@ -1101,9 +1236,9 @@ impl Vault {
     ///
     /// * [`OpKind::MarkRead`], `MarkUnread`, `Star`, `Unstar`, `Label` and
     ///   `Unlabel` — [`apply_optimistic`] applied to every message of the
-    ///   thread in turn, written back through
+    ///   thread in turn, and each one it changed written back as
     ///   [`MailStore::set_message_flags`] or
-    ///   [`MailStore::set_message_labels`].
+    ///   [`MailStore::set_message_labels`] would (see `flag_changes`).
     /// * [`OpKind::Archive`], `Trash` and `Move` — the thread is hidden from
     ///   the account's Inbox mailbox (see
     ///   [`MailStore::hide_thread_from_mailbox`]) if it is filed there. A
@@ -1112,6 +1247,9 @@ impl Vault {
     ///   op's eventual confirmation is what actually files it under its new
     ///   home.
     /// * [`OpKind::Snooze`] — [`MailStore::set_thread_snoozed_until`].
+    ///
+    /// Every local change and every op of the batch is one store write
+    /// ([`MailStore::apply_and_enqueue`]): all of it lands, or none of it.
     ///
     /// [`OpKind::DeleteForever`] is refused with [`Error::Invalid`]: it names
     /// the messages it deletes, which [`Vault::delete_forever`] and
@@ -1137,25 +1275,72 @@ impl Vault {
         self.writable()?;
         let ops = self.write(|u| {
             let mail = u.mail()?;
+            let mut changes = Vec::new();
             let mut ops = Vec::with_capacity(threads.len());
-            for &thread_id in threads {
-                let (thread, messages) = mail.thread(thread_id)?;
-                apply_local_effect(mail, &thread, &messages, &kind)?;
-                let op = Op::new(
-                    thread.account_id,
-                    kind.clone(),
-                    OpTarget::Thread(thread_id),
-                    origin.clone(),
-                );
-                mail.enqueue_op(&op)?;
-                ops.push(op);
+            let mut op_for = |account: AccountId, thread: ThreadId| {
+                ops.push(Op::new(account, kind.clone(), OpTarget::Thread(thread), origin.clone()));
+            };
+            if kind.is_flag_change() {
+                for &thread_id in threads {
+                    let (thread, messages) = mail.thread(thread_id)?;
+                    flag_changes(&messages, &kind, &mut changes);
+                    op_for(thread.account_id, thread_id);
+                }
+            } else {
+                // An archive or a snooze needs each thread's own row, for its
+                // account, and none of its messages.
+                let rows: std::collections::HashMap<ThreadId, Thread> =
+                    mail.threads_by_ids(threads)?.into_iter().map(|t| (t.id, t)).collect();
+                let mut inboxes: std::collections::HashMap<AccountId, Option<MailboxId>> =
+                    std::collections::HashMap::new();
+                for &thread_id in threads {
+                    let thread = rows.get(&thread_id).ok_or_else(|| {
+                        Error::not_found(RecordKind::Thread.not_found_noun(), thread_id)
+                    })?;
+                    match &kind {
+                        OpKind::Archive | OpKind::Trash | OpKind::Move { .. } => {
+                            let inbox = match inboxes.get(&thread.account_id) {
+                                Some(inbox) => *inbox,
+                                None => {
+                                    let inbox = inbox_mailbox(mail, thread.account_id)?;
+                                    inboxes.insert(thread.account_id, inbox);
+                                    inbox
+                                }
+                            };
+                            if let Some(inbox) = inbox {
+                                changes.push(LocalChange::Hide(thread_id, inbox));
+                            }
+                        }
+                        OpKind::Snooze { until } => {
+                            changes.push(LocalChange::Snooze(thread_id, Some(*until)));
+                        }
+                        // Flag changes took the branch above; the rest were
+                        // refused before this closure.
+                        OpKind::MarkRead
+                        | OpKind::MarkUnread
+                        | OpKind::Star
+                        | OpKind::Unstar
+                        | OpKind::Label { .. }
+                        | OpKind::Unlabel { .. }
+                        | OpKind::Send
+                        | OpKind::AppendDraft
+                        | OpKind::DiscardDraft
+                        | OpKind::DeleteForever { .. } => {
+                            unreachable!("handled above or refused before this is called")
+                        }
+                    }
+                    op_for(thread.account_id, thread_id);
+                }
             }
+            // The whole batch -- every local change and every op -- in one
+            // commit, rather than one or two per thread.
+            mail.apply_and_enqueue(&changes, &ops)?;
             Ok(ops)
         })?;
         // Each thread is what every command built on this announces --
         // `mark_read`, `star`, `archive` and the rest all declare
         // `Thread/Updated` with the same thread ids their own arguments
-        // named. The messages `apply_local_effect` rewrote underneath and
+        // named. The messages the batch rewrote underneath and
         // the `Op` each thread enqueued are exactly what `events.rs`'s
         // `Kind::Thread` is documented to fold both of into: recording them
         // here too would be truer to what was physically written, but would
@@ -1309,10 +1494,9 @@ impl Vault {
             match inverse_of(kind) {
                 Inverse::Flag(inverse) => {
                     let (_, messages) = mail.thread(thread)?;
-                    for mut message in messages {
-                        apply_local_effect_one(mail, &mut message, &inverse)?;
-                    }
-                    Ok(())
+                    let mut changes = Vec::new();
+                    flag_changes(&messages, &inverse, &mut changes);
+                    mail.apply_and_enqueue(&changes, &[])
                 }
                 // Only the Inbox marker the op set, never another op's:
                 // a thread split between Trash and the Inbox can have an
@@ -1712,6 +1896,10 @@ enum Inverse {
     None,
 }
 
+/// How many message ids [`Vault::correct_mail_categories`] hands the store
+/// at a time, letting other writes in between.
+const CATEGORY_SWEEP_CHUNK: usize = 500;
+
 /// The subkey [`Vault::mail_message_key`] hashes under.
 const MAIL_MESSAGE_KEY_LABEL: &str = "everyday.mail.message-id.v1";
 
@@ -1740,66 +1928,37 @@ fn inverse_of(kind: &OpKind) -> Inverse {
     }
 }
 
-/// [`Vault::apply_thread_ops`]'s per-thread dispatch: what a flag-changing
-/// kind does to every message, what an archive/trash/move kind does to the
-/// thread's place in the account's Inbox, what a snooze kind does to the
-/// thread itself.
-fn apply_local_effect(
-    mail: &dyn MailStore,
-    thread: &Thread,
-    messages: &[Message],
-    kind: &OpKind,
-) -> Result<()> {
-    if kind.is_flag_change() {
-        for message in messages {
-            let mut message = message.clone();
-            apply_local_effect_one(mail, &mut message, kind)?;
-        }
-        return Ok(());
-    }
-    match kind {
-        OpKind::Archive | OpKind::Trash | OpKind::Move { .. } => {
-            if let Some(inbox) = inbox_mailbox(mail, thread.account_id)? {
-                mail.hide_thread_from_mailbox(thread.id, inbox)?;
-            }
-        }
-        OpKind::Snooze { until } => {
-            mail.set_thread_snoozed_until(thread.id, Some(*until))?;
-        }
-        // `is_flag_change` above already took MarkRead/MarkUnread/Star/
-        // Unstar/Label/Unlabel; Send, AppendDraft and DiscardDraft never
-        // reach this function -- `apply_thread_ops` refuses them before its
-        // loop even starts.
-        OpKind::MarkRead
-        | OpKind::MarkUnread
-        | OpKind::Star
-        | OpKind::Unstar
-        | OpKind::Label { .. }
-        | OpKind::Unlabel { .. }
-        | OpKind::Send
-        | OpKind::AppendDraft
-        | OpKind::DiscardDraft
-        | OpKind::DeleteForever { .. } => {
-            unreachable!("handled above or refused before this is called")
-        }
-    }
-    Ok(())
-}
-
-/// [`apply_optimistic`], written back to storage -- the one-message half of
-/// [`apply_local_effect`], and the whole of what [`Vault::revert_thread_op`]
-/// needs for a flag-changing kind.
-fn apply_local_effect_one(
-    mail: &dyn MailStore,
-    message: &mut Message,
-    kind: &OpKind,
-) -> Result<()> {
-    let Some(_undo) = apply_optimistic(kind, message) else { return Ok(()) };
-    match kind {
+/// What `kind`, a flag or label change, writes for one thread's `messages`
+/// (oldest first): [`apply_optimistic`] for each, and a write for each one it
+/// changes -- none for a message it leaves as it was, which used to cost a
+/// commit each: opening a long conversation with one new reply rewrote every
+/// message in it.
+///
+/// A thread it changes nothing in still has its newest message written, as
+/// it stands, so the thread is recomputed as it always was by this action --
+/// what puts right a thread whose own counts had drifted from its messages.
+fn flag_changes(messages: &[Message], kind: &OpKind, out: &mut Vec<LocalChange>) {
+    let change = |m: &Message| match kind {
         OpKind::Label { .. } | OpKind::Unlabel { .. } => {
-            mail.set_message_labels(message.id, message.labels.clone())
+            LocalChange::Labels(m.id, m.labels.clone())
         }
-        _ => mail.set_message_flags(message.id, message.flags),
+        _ => LocalChange::Flags(m.id, m.flags),
+    };
+    let before = out.len();
+    for message in messages {
+        let mut changed = message.clone();
+        if apply_optimistic(kind, &mut changed).is_none() {
+            continue;
+        }
+        if changed.flags != message.flags || changed.labels != message.labels {
+            out.push(change(&changed));
+        }
+    }
+    if out.len() == before
+        && kind.is_flag_change()
+        && let Some(newest) = messages.last()
+    {
+        out.push(change(newest));
     }
 }
 

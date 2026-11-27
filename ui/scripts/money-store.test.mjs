@@ -148,6 +148,25 @@ assert.ok(
 )
 assert.deepEqual(money.cashFlow, [], 'a year of cash flow is not read until Reports asks')
 
+// ── coming back ──────────────────────────────────────────────────────
+//
+// Switching away and back within a minute draws what is here; a change that
+// arrived meanwhile (the live router's `markStale`) reads in full.
+{
+  let reads = 0
+  const realLinks = api.listBankLinks
+  api.listBankLinks = (...args) => (reads++, realLinks(...args))
+  await money.start()
+  assert.equal(reads, 0, 'back within a minute: nothing read again')
+  money.markStale()
+  await money.start()
+  assert.equal(reads, 1, 'marked stale: read in full')
+  assert.equal(money.stale, false)
+  await money.start()
+  assert.equal(reads, 1, 'and fresh again after')
+  api.listBankLinks = realLinks
+}
+
 // ── panes, and remembering the last ──────────────────────────────────
 
 money.setView('reports')

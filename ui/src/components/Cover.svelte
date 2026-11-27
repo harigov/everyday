@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { mediaUrl } from '../lib/api'
+  import { mediaUrl, scaledSet } from '../lib/api'
   import Icon from './Icon.svelte'
 
   let {
@@ -9,6 +9,7 @@
     color = 'var(--accent)',
     ratio = '2 / 3',
     rounded = true,
+    drawn,
   }: {
     /** A blob id. Covers live in the vault; nothing here loads a remote URL. */
     blob?: string | null
@@ -23,6 +24,14 @@
      */
     ratio?: string
     rounded?: boolean
+    /**
+     * The length in CSS pixels of the picture's longer side as drawn here,
+     * when that is small: a grid's card or a list's thumbnail. The webview
+     * then asks for a copy scaled down to fit (see `scaledSet`) rather than
+     * the stored cover, which is sized for the widest card on a sharp screen.
+     * Left out, the stored cover is drawn, as the detail panel's is.
+     */
+    drawn?: number
   } = $props()
 
   /**
@@ -34,14 +43,20 @@
    * image glyph in the middle of an otherwise finished grid.
    */
   let broken = $state(false)
+  /** Set when a scaled copy would not load: the stored cover is tried before
+   *  the placeholder is drawn. */
+  let unscaled = $state(false)
   // A new blob deserves a new attempt; without this, one failure would stick
   // to the card even after a cover was successfully re-fetched into it.
   $effect(() => {
     void blob
     broken = false
+    unscaled = false
   })
 
   const src = $derived(blob && !broken ? mediaUrl(blob) : null)
+  const srcset = $derived(blob && drawn && !unscaled ? scaledSet(blob) : undefined)
+  const sizes = $derived(drawn ? `${Math.ceil(drawn)}px` : undefined)
   /**
    * The first letter, for a cover that does not exist.
    *
@@ -54,7 +69,20 @@
 
 <div class="cover" class:rounded style="--ratio: {ratio}; --tint: {color}">
   {#if src}
-    <img {src} alt="" loading="lazy" decoding="async" onerror={() => (broken = true)} />
+    <!-- `sizes` and `srcset` before `src`, so the copy is chosen with the
+         frame's size already known rather than chosen twice. -->
+    <img
+      {sizes}
+      {srcset}
+      {src}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onerror={() => {
+        if (srcset) unscaled = true
+        else broken = true
+      }}
+    />
   {:else}
     <div class="blank" aria-hidden="true">
       <span class="initial">{initial}</span>

@@ -25,7 +25,6 @@
     recentActionLine,
     snippetText,
     snoozedUntilLabel,
-    syncInProgress,
     threadListDate,
     threadPeople,
     threadRowDate,
@@ -209,10 +208,10 @@
     scopeAccount ? [scopeAccount] : mailAccounts.map((a) => a.id),
   )
 
-  const syncing = $derived(
-    mail.syncRequested ||
-      mail.syncStatus.some((s) => syncScope.includes(s.accountId) && syncInProgress(s)),
-  )
+  /** A "Sync now" under way for the accounts this list is about -- only one
+   *  somebody asked for: the routine pass every minute or so goes on out of
+   *  sight, and a button turning by itself reads as something wrong. */
+  const syncing = $derived(mail.syncRequested || syncScope.some((id) => mail.userSyncing.has(id)))
   const syncTitle = $derived.by(() => {
     if (syncing) return 'Syncing…'
     const at = newestSyncedAt(syncScope, mail.syncStatus, accounts.list)
@@ -221,9 +220,12 @@
 
   // A slow status read for as long as Mail is on screen, so the "last
   // synced" in Sync now's title stays true while nothing is syncing --
-  // `MailNav`'s own two-second poll only runs while something is.
+  // `MailNav`'s own two-second poll only runs while something is. Not while
+  // the window is hidden, where nobody reads the title.
   $effect(() => {
-    const timer = setInterval(() => void mail.refreshSyncStatus(), 30_000)
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void mail.refreshSyncStatus()
+    }, 30_000)
     return () => clearInterval(timer)
   })
 
@@ -905,6 +907,9 @@
    *  with its way back, rather than the tap doing nothing for as long as
    *  the thread takes to arrive. */
   let opening = $state<ThreadId | null>(null)
+  /** The box whose rules read `--mail-list-w`: the pane-edge drag sets it
+   *  here, not on the document root, so a drag restyles Mail alone. */
+  let mailBox = $state<HTMLElement | null>(null)
   $effect(() => {
     if (opening !== null && (mail.openThread !== null || mail.selectedThread !== opening)) {
       opening = null
@@ -1176,13 +1181,13 @@
   }
 </script>
 
-<svelte:window onfocus={() => mail.seeOpenThread()} />
-<svelte:document onvisibilitychange={() => mail.seeOpenThread()} />
+<svelte:window onfocus={() => mail.windowShown()} />
+<svelte:document onvisibilitychange={() => mail.windowShown()} />
 
 <!-- The list and the reading pane, as one positioned box: the pane stands
      in it at a fixed place, out of the flow, so the list can widen under it
      while it goes -- see `slide`. -->
-<div class="mail">
+<div class="mail" bind:this={mailBox}>
   <section
     class="list"
     class:wide={!paneOpen}
@@ -1528,6 +1533,7 @@
     {#if paneOpen && !phone.on}
       <PaneResizer
         cssVar="--mail-list-w"
+        scope={() => mailBox}
         storageKey="pane-w:mail-list"
         defaultWidth={380}
         min={280}
@@ -2151,7 +2157,11 @@
      says "Syncing…" -- rather than left to the global rule, which would
      still play one very short turn. */
   .plus.spinning :global(svg) {
-    animation: spin 1s linear infinite;
+    /* Smooth for the first ten seconds, then a slower stepped turn, as on
+       JobCard: a long pass is not redrawn every frame to say it is going. */
+    animation:
+      spin 0.8s linear 12,
+      spin 1.2s steps(8) 9.6s infinite;
   }
   @keyframes spin {
     to {

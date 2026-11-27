@@ -10,6 +10,7 @@
     item,
     kind,
     ratio,
+    drawn,
     selected = false,
     onopen,
     onmenu,
@@ -24,6 +25,9 @@
      * `coverRatio`. One grid, one ratio, so the titles share a baseline.
      */
     ratio: string
+    /** The cover's longer side on screen, in CSS pixels, so a scaled-down
+     *  copy can be drawn: see `Cover`'s own `drawn`. */
+    drawn?: number
     selected?: boolean
     onopen: () => void
     /**
@@ -53,7 +57,7 @@
 <div class="card" class:selected style="--tint: {color}" oncontextmenu={onmenu}>
   <button class="hit" data-row={item.id} onclick={onopen} aria-label={item.title}>
     <div class="art">
-      <Cover blob={item.cover} title={item.title} icon={kind?.icon ?? ''} {color} {ratio} />
+      <Cover blob={item.cover} title={item.title} icon={kind?.icon ?? ''} {color} {ratio} {drawn} />
 
       {#if item.status !== 'wishlist'}
         <!-- The status rides on the cover rather than under the title,
@@ -221,6 +225,13 @@
     gap: 1px;
     padding: var(--sp-2) 2px 0;
     min-width: 0;
+    /* Room for two lines of title and a byline whether a card has them or
+       not, so every card in the grid is one height and the grid can be drawn
+       a window at a time (`library-grid.ts`). The byline inherits the body's
+       leading. */
+    --title-line: calc(var(--text-md) * var(--leading-tight));
+    --byline-line: calc(var(--text-sm) * var(--leading-snug));
+    height: calc(var(--sp-2) + 2 * var(--title-line) + 1px + var(--byline-line));
   }
   .title {
     font-family: var(--font-read);
@@ -239,6 +250,10 @@
   .due {
     font-size: var(--text-sm);
     color: var(--fg-subtle);
+    /* One line, as the byline it stands in for is. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .due.late {
     color: color-mix(in oklab, var(--tint) 70%, var(--fg));

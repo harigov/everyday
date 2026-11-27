@@ -146,6 +146,13 @@ const MAX_IMPORT_CHARS = 5 * 1024 * 1024
 const LINK_GIVE_UP_MS = 31 * 60_000
 
 /**
+ * How long a full read stays good enough to draw again on the way back into
+ * the app, unasked. A change made elsewhere meanwhile marks the store stale
+ * (`live.svelte.ts`), so this only has to cover writes nothing announces.
+ */
+const FRESH_MS = 60_000
+
+/**
  * Which pane was last open, remembered on this device: chrome, not a fact
  * about the vault, so kept locally the way the Feed's chip is. Read in the
  * constructor, so the app does not draw the overview and visibly flip.
@@ -226,6 +233,15 @@ class MoneyState {
   /** How often a sign-in in flight is asked about, in milliseconds. A test shortens it. */
   pollMs = 2_000
 
+  /**
+   * Set when a change arrived while Money was off screen, or changes may
+   * have been missed: the next `start` reads in full. See `markStale`.
+   */
+  stale = false
+  /** When the last full read began, and on what day. See `start`. */
+  #loadedAt = 0
+  #loadedOn = ''
+
   /** Which load is the current one, per thing loaded. See `feed.svelte.ts`'s `#load`. */
   #basicsGen = latest()
   #listGen = latest()
@@ -264,12 +280,32 @@ class MoneyState {
    * Load everything the first screen needs. Called when the app opens.
    *
    * Idempotent: mounting the view again reloads over what is there rather
-   * than from nothing, so nothing blanks out on the way in.
+   * than from nothing, so nothing blanks out on the way in -- unless what is
+   * there was read in the last minute, today, and nothing has marked it
+   * stale since, when it is simply drawn again.
    */
   async start(): Promise<void> {
     if (!app.supportsMoney) return
+    const now = Date.now()
+    const today = todayIso()
+    if (this.loaded && !this.stale && now - this.#loadedAt < FRESH_MS && this.#loadedOn === today) {
+      return
+    }
+    this.stale = false
     await Promise.all([this.reload(), this.loadPlaid()])
-    if (app.screen === 'main') this.loaded = true
+    if (app.screen === 'main') {
+      this.loaded = true
+      this.#loadedAt = now
+      this.#loadedOn = today
+    }
+  }
+
+  /**
+   * What the live router calls instead of reloading while Money is off
+   * screen: the next `start` reads in full rather than drawing what it has.
+   */
+  markStale(): void {
+    this.stale = true
   }
 
   /**
@@ -328,6 +364,9 @@ class MoneyState {
     this.linkError = null
     this.syncing = false
     this.loaded = false
+    this.stale = false
+    this.#loadedAt = 0
+    this.#loadedOn = ''
     this.note = null
     this.adding = false
     this.linkOpened = true

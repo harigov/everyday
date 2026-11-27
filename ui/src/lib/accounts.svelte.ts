@@ -34,6 +34,10 @@ class AccountsState {
   #generation = latest()
   #loaded = false
   #presetsLoaded = false
+  /** The load under way. A caller that only needs the list loaded waits for it
+   *  rather than starting a second, which would retire the first and leave
+   *  whoever awaited that one reading an empty list. */
+  #inFlight: Promise<void> | null = null
 
   constructor() {
     app.onLock(() => this.reset())
@@ -46,6 +50,7 @@ class AccountsState {
 
   reset() {
     this.#generation.next()
+    this.#inFlight = null
     this.list = []
     this.presets = []
     this.loading = false
@@ -53,19 +58,35 @@ class AccountsState {
     this.#presetsLoaded = false
   }
 
-  /** Load the list, once. Called when the Accounts tab is opened. */
-  async load(force = false) {
-    if (this.#loaded && !force) return
-    await guardedRefresh(
+  /**
+   * Load the list, once. Called when the Accounts tab is opened.
+   *
+   * `force` reads it again even if a load is under way, for a caller that has
+   * just written; that newer load is the one the others then wait for.
+   */
+  load(force = false): Promise<void> {
+    if (this.#loaded && !force) return Promise.resolve()
+    if (this.#inFlight && !force) return this.#inFlight
+    const run = guardedRefresh(
       this.#generation,
       async (isCurrent) => {
         const list = await api.accounts()
-        if (!isCurrent()) return
+        if (!isCurrent()) {
+          // Superseded: wait for the newer load, so a caller awaiting this
+          // one finds the list it asked for.
+          await this.#inFlight
+          return
+        }
         this.list = list
         this.#loaded = true
       },
       { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
     )
+    this.#inFlight = run
+    void run.finally(() => {
+      if (this.#inFlight === run) this.#inFlight = null
+    })
+    return run
   }
 
   /** Reload after a write, without the loading flag -- the list is already on screen. */

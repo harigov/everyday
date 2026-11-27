@@ -193,6 +193,7 @@ import type {
   TemplateId,
   TemplateUse,
   ThreadFilter,
+  UnreadTarget,
   InboxSendersArgs,
   SenderRef,
   ThreadId,
@@ -223,8 +224,8 @@ import type {
   ToolPolicy,
 } from './types'
 import { VaultError } from './types'
-import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
-import type { Commands } from './generated/commands'
+import { CHANGE_KINDS, COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
+import type { ChangeKind, Commands } from './generated/commands'
 import type { Section } from './apps'
 import { isIOS } from './longpress'
 import { inShell, schemeOrigin } from './platform'
@@ -868,7 +869,31 @@ function call<K extends keyof Commands>(
   args: Commands[K]['args'],
   requestId?: string,
 ): Promise<Commands[K]['result']> {
-  return invoke<Commands[K]['result']>(COMMAND_NAMES[name], args, requestId)
+  const wire = COMMAND_NAMES[name]
+  const answered = invoke<Commands[K]['result']>(wire, args, requestId)
+  const kind = (CHANGE_KINDS as Record<string, ChangeKind | undefined>)[wire]
+  if (kind && ownWriteHeard) {
+    const heard = ownWriteHeard
+    void answered.then(
+      () => heard(kind),
+      () => {},
+    )
+  }
+  return answered
+}
+
+/** Told of each write this window made, by the kind of change it raises. */
+let ownWriteHeard: ((kind: ChangeKind) => void) | null = null
+
+/**
+ * Hear this window's own successful writes. A server never sends a client the
+ * changes it made itself, so a phone or a web tab -- unlike a desktop window
+ * over its own vault -- learns of them only here; what keeps a view drawn
+ * from cached reads (the Overview's cards) from showing what was true before
+ * a write made in another view of the same window.
+ */
+export function onOwnWrite(heard: (kind: ChangeKind) => void): void {
+  ownWriteHeard = heard
 }
 
 /**
@@ -1419,7 +1444,12 @@ export const api = {
    * twice returns the same queued run rather than paying for two model calls.
    */
   runRoutine: (id: RoutineId) => call('runRoutine', { id }),
-  runs: (query: RunQuery = {}) => call('listRuns', { query }),
+  /**
+   * The run log. `slim` leaves each brief out: a list of runs never draws one,
+   * and a fortnight of them is most of what the answer would weigh. A server
+   * too old to know the flag ignores it and sends them anyway.
+   */
+  runs: (query: RunQuery = {}, slim = false) => call('listRuns', { query, slim }),
   run: (id: RoutineRunId) => call('getRun', { id }),
   deleteRun: (id: RoutineRunId) => call('deleteRun', { id }),
   /** Mark runs as looked at. An empty list means all of them. */
@@ -2315,6 +2345,8 @@ export const api = {
   thread: (id: ThreadId) => call('getThread', { id }),
   /** `mailbox`'s threads counted by category -- the inbox tabs' badges. */
   categoryCounts: (mailbox: MailboxId) => call('categoryCounts', { mailbox }),
+  /** Every unread badge the mail sidebar shows, in one call. */
+  mailUnreadBadges: (targets: UnreadTarget[]) => call('mailUnreadBadges', { targets }),
 
   // ── Mail writing: what writing help is told ──────────────────────────
 
@@ -3071,17 +3103,37 @@ export const api = {
 }
 
 /**
+ * The scaled copies a picture's blob address offers (`mediaUrl`'s `w`),
+ * smallest first, and the stored picture as the largest -- an `<img
+ * srcset>`. Each is described by its longer side, and `sizes` by the longer
+ * side as drawn, so the webview takes the smallest copy that fills the frame
+ * at the screen's density.
+ */
+export function scaledSet(blob: string): string {
+  return [
+    `${mediaUrl(blob, 96)} 96w`,
+    `${mediaUrl(blob, 200)} 200w`,
+    `${mediaUrl(blob, 400)} 400w`,
+    `${mediaUrl(blob)} 800w`,
+  ].join(', ')
+}
+
+/**
  * URL for an attachment.
  *
  * Media is served by a custom protocol handler in the Rust shell rather than
  * as a data: URL, so a 400 MB video streams and seeks instead of being
  * base64-encoded into the document.
  */
-export function mediaUrl(blob: string): string {
+export function mediaUrl(blob: string, w?: number): string {
   if (MOCK) return mockMediaUrl(blob)
-  if (WEB) return `${webMediaBase()}/v1/blob/${blob}`
+  // `w`: a picture scaled down to that width tier for a small slot (a cover
+  // in a grid, an icon in a list); anything that is not a picture, or a
+  // width the server does not offer, comes back as the original.
+  const scaled = w ? `?w=${w}` : ''
+  if (WEB) return `${webMediaBase()}/v1/blob/${blob}${scaled}`
   // Tauri maps custom schemes to an http origin on Windows and Android.
-  return `${schemeOrigin('localhost')}/${blob}`
+  return `${schemeOrigin('localhost')}/${blob}${scaled}`
 }
 
 /**
@@ -3099,6 +3151,59 @@ export function fileUrl(id: string, version = ''): string {
   if (MOCK) return mockFileUrl(id)
   if (WEB) return `${webMediaBase()}/v1/files/file/${id}${v}`
   return `${schemeOrigin('files')}/file/${id}${v}`
+}
+
+/** The most one ranged read asks for: as much as the server answers a range
+ *  with (`media::MAX_CHUNK`). */
+const WHOLE_PIECE = 8 * 1024 * 1024
+
+/** `Content-Range: bytes 0-8388607/70000000` as its first byte and the file's
+ *  length, or null when it says neither. */
+export function contentRange(value: string | null): { start: number; total: number } | null {
+  const m = /^bytes\s+(\d+)-\d+\/(\d+)\s*$/i.exec(value ?? '')
+  return m ? { start: Number(m[1]), total: Number(m[2]) } : null
+}
+
+/**
+ * All of a file's bytes, for what has to have them all at once -- pdf.js.
+ *
+ * A file past `WHOLE_FILE_BYTES` (64 MB) is answered with its first eight
+ * megabytes and a 206, since a response is a buffer in memory in the shell,
+ * and a 206 is `ok`: read as the whole file, a long PDF was its first few
+ * pages and then "could not be read". So the rest is asked for a range at a
+ * time, each piece checked to start where the last ended, into one buffer of
+ * the length the first answer gave. A smaller file is one read, as before.
+ */
+export async function fetchWhole(url: string): Promise<Uint8Array> {
+  const first = await fetch(url)
+  if (!first.ok) throw new Error(`${first.status} ${await first.text()}`)
+  const head = new Uint8Array(await first.arrayBuffer())
+  if (first.status !== 206) return head
+  const range = contentRange(first.headers.get('Content-Range'))
+  if (!range || range.start !== 0) throw new Error('a part of the file, without its length')
+  const { total } = range
+  if (head.length >= total) return head.subarray(0, total)
+  const whole = new Uint8Array(total)
+  whole.set(head)
+  let at = head.length
+  while (at < total) {
+    const end = Math.min(at + WHOLE_PIECE, total) - 1
+    const response = await fetch(url, { headers: { Range: `bytes=${at}-${end}` } })
+    const part =
+      response.status === 206 ? contentRange(response.headers.get('Content-Range')) : null
+    // The same file, from where the last piece ended: anything else is a file
+    // that changed while it was read, or an answer to some other question.
+    if (!part || part.start !== at || part.total !== total) {
+      throw new Error(`${response.status}: not bytes ${at}-${end} of ${total}`)
+    }
+    const piece = new Uint8Array(await response.arrayBuffer())
+    if (piece.length === 0 || at + piece.length > total) {
+      throw new Error(`${piece.length} bytes at ${at} of ${total}`)
+    }
+    whole.set(piece, at)
+    at += piece.length
+  }
+  return whole
 }
 
 /**

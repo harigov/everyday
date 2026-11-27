@@ -61,7 +61,11 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
 tower-service = "0.3"
 # The client half. Same version the service uses -- one reqwest in the tree, so
 # there is one TLS stack and one set of defaults to reason about.
-reqwest = { version = "0.13", features = ["json", "stream", "http2"] }
+# `gzip`: what the server's own answers may come compressed in (see
+# `routes::over_the_wire`). Already on for the one `reqwest` in the tree
+# through `jatayu-service`; said here so this crate's client never depends on
+# that.
+reqwest = { version = "0.13", features = ["json", "stream", "http2", "gzip"] }
 
 [dev-dependencies]
 tempfile = "3"

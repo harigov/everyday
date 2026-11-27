@@ -41,6 +41,7 @@ import type {
   Thread,
   ThreadFilter,
   ThreadId,
+  UnreadTarget,
 } from './types'
 
 // ── Previews ───────────────────────────────────────────────────────────
@@ -298,32 +299,66 @@ export interface DateSection {
 }
 
 export function dateSection(instant: string, now = new Date()): DateSection {
-  const d = startOfDay(isoDate(new Date(instant)))
-  const ago = daysBetween(d, now)
-  if (ago <= 0) return { key: 'today', label: 'Today' }
-  if (ago === 1) return { key: 'yesterday', label: 'Yesterday' }
+  return { ...sectioner(now)(instant) }
+}
 
+const TODAY: Readonly<DateSection> = Object.freeze({ key: 'today', label: 'Today' })
+const YESTERDAY: Readonly<DateSection> = Object.freeze({ key: 'yesterday', label: 'Yesterday' })
+const THIS_WEEK: Readonly<DateSection> = Object.freeze({
+  key: 'thisWeek',
+  label: 'Earlier this week',
+})
+const LAST_WEEK: Readonly<DateSection> = Object.freeze({ key: 'lastWeek', label: 'Last week' })
+const THIS_MONTH: Readonly<DateSection> = Object.freeze({
+  key: 'thisMonth',
+  label: 'Earlier this month',
+})
+const LAST_MONTH: Readonly<DateSection> = Object.freeze({ key: 'lastMonth', label: 'Last month' })
+
+/**
+ * `dateSection` for many instants against one `now`: the boundaries are
+ * worked out once, and each instant is then a handful of number compares. A
+ * list of a thousand rows is grouped again every time a row in it changes.
+ *
+ * Every boundary is a local midnight, so comparing the instant itself with
+ * one says the same as comparing the start of its day, which is what the
+ * calendar-day arithmetic used to work out per row.
+ */
+export function sectioner(now: Date): (instant: string) => Readonly<DateSection> {
   const today = startOfDay(isoDate(now))
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
   const mondayOffset = (now.getDay() + 6) % 7 // days since this week's own Monday
   const thisWeekStart = new Date(today)
   thisWeekStart.setDate(thisWeekStart.getDate() - mondayOffset)
-  if (d >= thisWeekStart) return { key: 'thisWeek', label: 'Earlier this week' }
-
   const lastWeekStart = new Date(thisWeekStart)
   lastWeekStart.setDate(lastWeekStart.getDate() - 7)
-  if (d >= lastWeekStart) return { key: 'lastWeek', label: 'Last week' }
-
-  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-  if (d >= thisMonthStart) return { key: 'thisMonth', label: 'Earlier this month' }
-
-  const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-  if (d >= lastMonthStart) return { key: 'lastMonth', label: 'Last month' }
-
-  const monthName = dateFormat({ month: 'long' }).format(d)
-  const key = `${d.getFullYear()}-${d.getMonth()}`
-  return d.getFullYear() === now.getFullYear()
-    ? { key, label: monthName }
-    : { key, label: `${monthName} ${d.getFullYear()}` }
+  const bounds: [number, Readonly<DateSection>][] = [
+    [today.getTime(), TODAY],
+    [yesterday.getTime(), YESTERDAY],
+    [thisWeekStart.getTime(), THIS_WEEK],
+    [lastWeekStart.getTime(), LAST_WEEK],
+    [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), THIS_MONTH],
+    [new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime(), LAST_MONTH],
+  ]
+  const months = new Map<string, Readonly<DateSection>>()
+  return (instant) => {
+    const at = new Date(instant)
+    const t = at.getTime()
+    for (const [from, section] of bounds) if (t >= from) return section
+    const key = `${at.getFullYear()}-${at.getMonth()}`
+    let month = months.get(key)
+    if (!month) {
+      const monthName = dateFormat({ month: 'long' }).format(at)
+      month = Object.freeze(
+        at.getFullYear() === now.getFullYear()
+          ? { key, label: monthName }
+          : { key, label: `${monthName} ${at.getFullYear()}` },
+      )
+      months.set(key, month)
+    }
+    return month
+  }
 }
 
 /** One row `MailView.svelte`'s list column actually draws: a thread, or a
@@ -359,12 +394,13 @@ export function withDateSections(
   now = new Date(),
 ): ListRow[] {
   const out: ListRow[] = []
+  const sectionOf = sectioner(now)
   let currentKey: string | null = null
   let openedAt = Infinity
   for (const thread of threads) {
     const instant = dateOf(thread)
-    const section = dateSection(instant, now)
-    const at = new Date(instant).getTime()
+    const section = sectionOf(instant)
+    const at = Date.parse(instant)
     if (section.key !== currentKey && at < openedAt) {
       out.push({ type: 'header', key: section.key, label: section.label })
       currentKey = section.key
@@ -1508,6 +1544,79 @@ export function listTarget(
   }
   const inbox = mailboxes.find((m) => m.accountId === mailbox.accountId && m.role === 'inbox')
   return { mailboxIds: [inbox?.id ?? mailbox.id], snoozed: true }
+}
+
+/**
+ * What `mail_unread_badges` is asked, one target per row the sidebar draws:
+ * keyed by the row's id, reading the mailboxes `listTarget` says that row
+ * lists -- so a unified row is its members and the synthetic Snoozed row its
+ * account's Inbox, snoozed threads only. A row with nothing to list asks
+ * nothing, and has no badge.
+ */
+export function unreadTargets(
+  rows: readonly Pick<Mailbox, 'id' | 'accountId' | 'pseudo'>[],
+  mailboxes: readonly Pick<Mailbox, 'id' | 'accountId' | 'role' | 'pseudo'>[],
+): UnreadTarget[] {
+  return rows.flatMap((row) => {
+    const target = listTarget(row, mailboxes)
+    return target ? [{ key: row.id, mailboxes: target.mailboxIds, snoozed: target.snoozed }] : []
+  })
+}
+
+/**
+ * Which accounts have mail, and how each stands -- what the mailbox list was
+ * last read for. The sidebar reads the mailboxes again only when this moves:
+ * an account added, removed or signed in again, not every visit.
+ */
+export function mailAccountKey(
+  accounts: readonly Pick<Account, 'id' | 'services' | 'status'>[],
+): string {
+  return accounts
+    .filter((a) => a.services.mail)
+    .map((a) => `${a.id}:${a.status.type}`)
+    .sort()
+    .join(',')
+}
+
+/**
+ * Do two values parsed from JSON say the same thing? What a reload compares
+ * before it replaces what is on screen, so a list read again and found the
+ * same draws nothing again. A key present on one side and missing on the
+ * other counts as a difference, which only ever costs a redraw.
+ */
+export function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false
+    return a.every((v, i) => sameJson(v, b[i]))
+  }
+  if (Array.isArray(b)) return false
+  const x = a as Record<string, unknown>
+  const y = b as Record<string, unknown>
+  const keys = Object.keys(x)
+  if (keys.length !== Object.keys(y).length) return false
+  return keys.every((k) => k in y && sameJson(x[k], y[k]))
+}
+
+/**
+ * `next`, with every row that says the same as the one already drawn under
+ * its id replaced by that one -- and `prev` itself when nothing at all has
+ * changed, order included. A keyed list then redraws only the rows that did.
+ */
+export function reuseRows<T extends HasId>(next: T[], prev: T[]): T[] {
+  const byId = new Map(prev.map((row): [string, T] => [row.id, row]))
+  let same = next.length === prev.length
+  const rows = next.map((row, i) => {
+    const old = byId.get(row.id)
+    if (old !== undefined && sameJson(old, row)) {
+      if (prev[i] !== old) same = false
+      return old
+    }
+    same = false
+    return row
+  })
+  return same ? prev : rows
 }
 
 /**

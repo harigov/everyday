@@ -17,7 +17,7 @@
   import { humanBytes } from '../lib/format'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
-  import { mobileShell } from '../lib/api'
+  import { fetchWhole, mobileShell } from '../lib/api'
   import { closesOnBack } from '../lib/phone.svelte'
   import {
     applyBodyTheme,
@@ -134,7 +134,7 @@
             break
           }
           case 'pdf':
-            next = { state: 'pdf', data: new Uint8Array(await bytes(address(messageId, a))) }
+            next = { state: 'pdf', data: await fetchWhole(address(messageId, a)) }
             break
           case 'page': {
             const { html } = await mailApi.previewAttachment(messageId, a.index)

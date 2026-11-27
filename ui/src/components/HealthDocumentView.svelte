@@ -16,7 +16,7 @@
   // been edited, so a background change never eats what was being typed.
 
   import { untrack } from 'svelte'
-  import { mediaUrl } from '../lib/api'
+  import { fetchWhole, mediaUrl } from '../lib/api'
   import { health } from '../lib/health.svelte'
   import { docKindName } from '../lib/health'
   import { dateFormat, humanBytes } from '../lib/format'
@@ -210,9 +210,7 @@
         if (how === 'image') {
           next = { state: 'image', url }
         } else if (how === 'pdf') {
-          const response = await fetch(url)
-          if (!response.ok) throw new Error(String(response.status))
-          next = { state: 'pdf', data: new Uint8Array(await response.arrayBuffer()) }
+          next = { state: 'pdf', data: await fetchWhole(url) }
         } else {
           next = { state: 'other' }
         }

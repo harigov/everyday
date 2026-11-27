@@ -25,6 +25,13 @@
 //! dropped when the connection is, never written to disk, and covers the case
 //! it exists for: scrubbing a video, and scrolling a shelf of forty covers.
 //!
+//! The pictures inside a message or a story, too, in memory and bounded: the
+//! frame and the window measuring it ask for each one together, and every
+//! open asks again. Never the transparent pixel a refused picture is answered
+//! with, so a refusal cannot stand in for the picture once it is allowed; and
+//! a message's or story's are forgotten when its body comes back with its
+//! pictures hidden, so hiding them again is seen at once.
+//!
 //! Nothing else is cached. There is no offline mode, and a client that could
 //! serve a list from memory while disconnected would be one edit away from
 //! being one.
@@ -35,7 +42,7 @@ use jatayu_service::news::view::BodyPart;
 use jatayu_service::{Ctx, PROTOCOL};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -79,6 +86,10 @@ const TURN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// small beside what a webview holds for the same content anyway.
 const BLOB_CACHE_BYTES: usize = 200 * 1024 * 1024;
 
+/// Most bytes of message and story pictures to keep in memory: a few
+/// newsletters' worth.
+const PICTURE_CACHE_BYTES: usize = 32 * 1024 * 1024;
+
 /// A server this client has paired with, as remembered between sessions.
 ///
 /// The token is deliberately absent: it is a bearer credential to an unlocked
@@ -111,7 +122,13 @@ pub struct RemoteClient {
     token: String,
     connection: Connection,
     blobs: Mutex<BlobCache>,
+    pictures: Mutex<PictureCache>,
+    /// A picture being fetched, shared with whoever else asks for it
+    /// meanwhile -- the frame and the window measuring it, together.
+    fetching: Mutex<HashMap<String, SharedPicture>>,
 }
+
+type SharedPicture = Arc<tokio::sync::OnceCell<CommandResult<MailBytes>>>;
 
 /// What [`RemoteClient::mail_body`] answers with -- see
 /// [`jatayu_service::mail::view::BodyDocument`], which this mirrors across
@@ -124,6 +141,7 @@ pub struct MailBody {
 /// What [`RemoteClient::mail_part`] and [`RemoteClient::mail_image`] answer
 /// with -- see [`jatayu_service::mail::view::PartResponse`], which this
 /// mirrors across the wire.
+#[derive(Clone)]
 pub struct MailBytes {
     pub content_type: String,
     pub attachment: bool,
@@ -243,7 +261,15 @@ impl RemoteClient {
     }
 
     fn new(http: reqwest::Client, base: String, token: String, connection: Connection) -> Self {
-        Self { http, base, token, connection, blobs: Mutex::new(BlobCache::default()) }
+        Self {
+            http,
+            base,
+            token,
+            connection,
+            blobs: Mutex::new(BlobCache::default()),
+            pictures: Mutex::new(PictureCache::default()),
+            fetching: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn connection(&self) -> &Connection {
@@ -333,6 +359,54 @@ impl RemoteClient {
         Ok(bytes)
     }
 
+    /// A picture made `width` across on the machine holding the vault, for a
+    /// slot narrower than it -- whole, and from memory when it was read
+    /// before. `None` when the server answered with part of the original
+    /// instead (a blob too large to be a picture it makes smaller), which
+    /// [`Self::blob_range`] then reads as it always has.
+    ///
+    /// That part is kept as the range it is, with the blob's length, so the
+    /// [`Self::blob_len`] and [`Self::blob_range`] that follow find both in
+    /// memory rather than asking for the same bytes again; and the answer is
+    /// remembered, so the next time goes straight to them.
+    pub async fn blob_scaled(&self, id: &str, width: u32) -> CommandResult<Option<Vec<u8>>> {
+        let key = format!("{id}?w={width}");
+        {
+            let blobs = self.blobs.lock().unwrap();
+            if blobs.is_original(&key) {
+                return Ok(None);
+            }
+            if let Some(bytes) = blobs.whole(&key) {
+                return Ok(Some(bytes));
+            }
+        }
+        let response = self
+            .request(reqwest::Method::GET, &format!("{}?w={width}", path::blob(id)))
+            .send()
+            .await
+            .map_err(transport)?
+            .error_for_body()
+            .await?;
+        if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            self.blobs.lock().unwrap().note_original(&key);
+            let range = response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_range);
+            // A part that could not be read is the ordinary path's to ask for.
+            if let (Some((start, total)), Ok(bytes)) = (range, response.bytes().await) {
+                let mut blobs = self.blobs.lock().unwrap();
+                blobs.note_len(id, total);
+                blobs.put(id, start, bytes.to_vec());
+            }
+            return Ok(None);
+        }
+        let bytes = response.bytes().await.map_err(transport)?.to_vec();
+        self.blobs.lock().unwrap().put_whole(&key, bytes.clone());
+        Ok(Some(bytes))
+    }
+
     /// Part of a file in the files catalog -- or all of it, for a small one --
     /// with its type and where it sits in the whole. `range` is a `Range`
     /// header's value, passed on as the webview sent it, so the server's
@@ -420,6 +494,9 @@ impl RemoteClient {
             .get("x-mail-images-hidden")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v == "true");
+        if images_hidden {
+            self.pictures.lock().unwrap().forget(&mail_picture(id, ""));
+        }
         let html = response.text().await.map_err(transport)?;
         Ok(MailBody { html, images_hidden })
     }
@@ -452,15 +529,11 @@ impl RemoteClient {
     /// there is nothing for this client to preserve by choosing one over
     /// the other. See `routes.rs`'s `get_mail_image_legacy` for why the
     /// server still keeps the older route at all.
+    ///
+    /// Kept in memory once fetched -- see the module doc for what is and is
+    /// not.
     pub async fn mail_image(&self, token: &str, message_id: &str) -> CommandResult<MailBytes> {
-        let response = self
-            .request(reqwest::Method::GET, &path::mail_image(message_id, token))
-            .send()
-            .await
-            .map_err(transport)?
-            .error_for_body()
-            .await?;
-        Self::mail_bytes_from(response).await
+        self.picture(mail_picture(message_id, token), path::mail_image(message_id, token)).await
     }
 
     /// A story's rendered body and whether its source holds pictures back:
@@ -485,20 +558,56 @@ impl RemoteClient {
             .get("x-news-images-hidden")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v == "1");
+        if images_hidden {
+            let mut pictures = self.pictures.lock().unwrap();
+            pictures.forget(&news_picture(story, ""));
+            // A newsletter's pictures are its message's, kept under its key.
+            let message = response.headers().get("x-news-message").and_then(|v| v.to_str().ok());
+            if let Some(message) = message {
+                pictures.forget(&mail_picture(message, ""));
+            }
+        }
         let html = response.text().await.map_err(transport)?;
         Ok(MailBody { html, images_hidden })
     }
 
-    /// One picture from a story's body, from `/v1/news/img/{story}/{token}`.
+    /// One picture from a story's body, from `/v1/news/img/{story}/{token}`,
+    /// kept in memory once fetched as a message's are.
     pub async fn news_image(&self, story: &str, token: &str) -> CommandResult<MailBytes> {
-        let response = self
-            .request(reqwest::Method::GET, &path::news_image(story, token))
-            .send()
+        self.picture(news_picture(story, token), path::news_image(story, token)).await
+    }
+
+    /// A message's or story's picture at `path`: from memory, from a fetch
+    /// already out for it, or fetched -- and kept, unless it is the pixel a
+    /// refused picture is answered with.
+    async fn picture(&self, key: String, path: String) -> CommandResult<MailBytes> {
+        if let Some(kept) = self.pictures.lock().unwrap().get(&key) {
+            return Ok(kept);
+        }
+        let shared = self.fetching.lock().unwrap().entry(key.clone()).or_default().clone();
+        let outcome = shared
+            .get_or_init(|| async {
+                let generation = self.pictures.lock().unwrap().generation;
+                let response = self
+                    .request(reqwest::Method::GET, &path)
+                    .send()
+                    .await
+                    .map_err(transport)?
+                    .error_for_body()
+                    .await?;
+                let picture = Self::mail_bytes_from(response).await?;
+                if !jatayu_service::mail::view::is_placeholder(&picture.bytes) {
+                    self.pictures.lock().unwrap().put(key.clone(), picture.clone(), generation);
+                }
+                Ok(picture)
+            })
             .await
-            .map_err(transport)?
-            .error_for_body()
-            .await?;
-        Self::mail_bytes_from(response).await
+            .clone();
+        let mut fetching = self.fetching.lock().unwrap();
+        if fetching.get(&key).is_some_and(|held| Arc::ptr_eq(held, &shared)) {
+            fetching.remove(&key);
+        }
+        outcome
     }
 
     async fn mail_bytes_from(response: reqwest::Response) -> CommandResult<MailBytes> {
@@ -525,6 +634,7 @@ impl RemoteClient {
     /// connection is dropped.
     pub fn clear_cache(&self) {
         self.blobs.lock().unwrap().clear();
+        self.pictures.lock().unwrap().clear();
     }
 
     /// Is the machine holding this vault answering?
@@ -699,6 +809,9 @@ impl RemoteClient {
 
 // ---- the cache -----------------------------------------------------------
 
+/// Where [`BlobCache`] keeps a whole answer: no range has it.
+const WHOLE: u64 = u64::MAX;
+
 #[derive(Default)]
 struct BlobCache {
     /// Keyed by address and range, because a range is what a video asks for and
@@ -708,6 +821,9 @@ struct BlobCache {
     /// that means anything for bytes that never change.
     order: Vec<(String, u64, u64)>,
     lengths: HashMap<String, u64>,
+    /// Smaller copies the server answered with the original instead: a
+    /// picture it does not make smaller, or a blob that is not one.
+    originals: HashSet<String>,
     bytes: usize,
 }
 
@@ -717,15 +833,31 @@ impl BlobCache {
     }
 
     fn put(&mut self, id: &str, offset: u64, bytes: Vec<u8>) {
+        let len = bytes.len() as u64;
+        self.insert((id.to_string(), offset, len), bytes);
+    }
+
+    /// The whole of what `key` answered -- a picture made smaller -- rather
+    /// than a range of a blob.
+    fn whole(&self, key: &str) -> Option<Vec<u8>> {
+        self.ranges.get(&(key.to_string(), WHOLE, WHOLE)).cloned()
+    }
+
+    fn put_whole(&mut self, key: &str, bytes: Vec<u8>) {
+        self.insert((key.to_string(), WHOLE, WHOLE), bytes);
+    }
+
+    fn insert(&mut self, key: (String, u64, u64), bytes: Vec<u8>) {
         // A single range larger than the whole budget would evict everything
         // and then not fit. Not worth caching at all.
         if bytes.len() > BLOB_CACHE_BYTES {
             return;
         }
-        let key = (id.to_string(), offset, bytes.len() as u64);
         self.bytes += bytes.len();
-        if self.ranges.insert(key.clone(), bytes).is_none() {
-            self.order.push(key);
+        match self.ranges.insert(key.clone(), bytes) {
+            // The same answer read twice at once: counted once.
+            Some(gone) => self.bytes -= gone.len(),
+            None => self.order.push(key),
         }
         while self.bytes > BLOB_CACHE_BYTES && !self.order.is_empty() {
             let oldest = self.order.remove(0);
@@ -743,10 +875,89 @@ impl BlobCache {
         self.lengths.insert(id.to_string(), len);
     }
 
+    fn is_original(&self, key: &str) -> bool {
+        self.originals.contains(key)
+    }
+
+    fn note_original(&mut self, key: &str) {
+        self.originals.insert(key.to_string());
+    }
+
     fn clear(&mut self) {
         self.ranges.clear();
         self.order.clear();
         self.lengths.clear();
+        self.originals.clear();
+        self.bytes = 0;
+    }
+}
+
+/// A message's picture's key in [`PictureCache`]; with no token, what every
+/// picture of the message's key starts with.
+fn mail_picture(message_id: &str, token: &str) -> String {
+    format!("mail/{message_id}/{token}")
+}
+
+/// A story's picture's key, as [`mail_picture`] is a message's.
+fn news_picture(story: &str, token: &str) -> String {
+    format!("news/{story}/{token}")
+}
+
+/// Pictures from messages and stories as the server answered them, oldest
+/// going first.
+#[derive(Default)]
+struct PictureCache {
+    pictures: HashMap<String, MailBytes>,
+    order: VecDeque<String>,
+    bytes: usize,
+    /// Moved on by every forgetting, so a fetch that was out across one cannot
+    /// put back what it forgot.
+    generation: u64,
+}
+
+impl PictureCache {
+    fn get(&self, key: &str) -> Option<MailBytes> {
+        self.pictures.get(key).cloned()
+    }
+
+    /// Keep `picture`, fetched when the cache was at `generation`.
+    fn put(&mut self, key: String, picture: MailBytes, generation: u64) {
+        if generation != self.generation || picture.bytes.len() > PICTURE_CACHE_BYTES {
+            return;
+        }
+        self.bytes += picture.bytes.len();
+        match self.pictures.insert(key.clone(), picture) {
+            Some(gone) => self.bytes -= gone.bytes.len(),
+            None => self.order.push_back(key),
+        }
+        while self.bytes > PICTURE_CACHE_BYTES {
+            let Some(oldest) = self.order.pop_front() else { break };
+            if let Some(gone) = self.pictures.remove(&oldest) {
+                self.bytes -= gone.bytes.len();
+            }
+        }
+    }
+
+    /// Forget every picture whose key starts with `prefix`.
+    fn forget(&mut self, prefix: &str) {
+        self.generation += 1;
+        let pictures = &mut self.pictures;
+        let bytes = &mut self.bytes;
+        self.order.retain(|key| {
+            if !key.starts_with(prefix) {
+                return true;
+            }
+            if let Some(gone) = pictures.remove(key) {
+                *bytes -= gone.bytes.len();
+            }
+            false
+        });
+    }
+
+    fn clear(&mut self) {
+        self.generation += 1;
+        self.pictures.clear();
+        self.order.clear();
         self.bytes = 0;
     }
 }
@@ -1150,6 +1361,229 @@ mod tests {
         assert_eq!(cache.get("abc", 0, 32), None);
         assert_eq!(cache.len_of("abc"), None);
         assert_eq!(cache.bytes, 0);
+    }
+
+    #[test]
+    fn a_whole_answer_is_kept_apart_from_the_ranges_of_its_blob() {
+        let mut cache = BlobCache::default();
+        cache.put_whole("abc?w=96", vec![1, 2, 3]);
+        cache.put_whole("abc?w=96", vec![1, 2, 3]);
+        assert_eq!(cache.whole("abc?w=96"), Some(vec![1, 2, 3]));
+        assert_eq!(cache.whole("abc?w=200"), None);
+        assert_eq!(cache.get("abc?w=96", 0, 3), None);
+        assert_eq!(cache.bytes, 3, "the same answer twice is counted once");
+    }
+
+    fn picture(bytes: &[u8]) -> MailBytes {
+        MailBytes {
+            content_type: "image/png".into(),
+            attachment: false,
+            filename: None,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn pictures_stay_within_their_budget_and_a_forgotten_one_is_not_put_back() {
+        let mut cache = PictureCache::default();
+        let big = vec![0u8; PICTURE_CACHE_BYTES / 3];
+        for n in 0..4 {
+            cache.put(mail_picture("m", &n.to_string()), picture(&big), 0);
+        }
+        assert!(cache.bytes <= PICTURE_CACHE_BYTES, "{} held", cache.bytes);
+        assert!(cache.get(&mail_picture("m", "0")).is_none(), "the oldest went first");
+        assert!(cache.get(&mail_picture("m", "3")).is_some());
+
+        cache.put(news_picture("s", "a"), picture(b"x"), 0);
+        cache.forget(&mail_picture("m", ""));
+        assert!(cache.get(&mail_picture("m", "3")).is_none());
+        assert!(cache.get(&news_picture("s", "a")).is_some(), "another's are kept");
+        assert_eq!(cache.bytes, 1);
+        // Fetched before the forgetting, put after it: not kept.
+        cache.put(mail_picture("m", "9"), picture(b"y"), 0);
+        assert!(cache.get(&mail_picture("m", "9")).is_none());
+
+        cache.clear();
+        assert!(cache.get(&news_picture("s", "a")).is_none());
+        assert_eq!(cache.bytes, 0);
+    }
+
+    /// The frame and the window measuring it ask for a message's picture
+    /// together, and every open asks again: one request to the server between
+    /// them, and none the next time -- except for the refusal pixel, which
+    /// must never stand in for a picture allowed later.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_picture_is_fetched_once_and_a_refusal_never_kept() {
+        use axum::extract::Path as UrlPath;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        let app = axum::Router::new()
+            .route(
+                "/v1/mail/img/{message}/{token}",
+                axum::routing::get(move |UrlPath((_, token)): UrlPath<(String, String)>| {
+                    let counted = counted.clone();
+                    async move {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        let bytes = if token == "refused" {
+                            // The pixel `mail::view` answers a refused picture with.
+                            use base64::Engine;
+                            base64::engine::general_purpose::STANDARD
+                                .decode(
+                                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII=",
+                                )
+                                .unwrap()
+                        } else {
+                            b"\x89PNG\r\n\x1a\nreal".to_vec()
+                        };
+                        ([("content-type", "image/png")], bytes)
+                    }
+                }),
+            )
+            .route(
+                "/v1/mail/body/{id}",
+                axum::routing::get(|| async {
+                    ([("x-mail-images-hidden", "true")], "<p>hidden</p>")
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let connection = Connection {
+            id: "device".into(),
+            name: "Test".into(),
+            host: addr.to_string(),
+            fingerprint: String::new(),
+            cert_pem: String::new(),
+            paired: jiff::Timestamp::now(),
+        };
+        let client = RemoteClient::new(
+            reqwest::Client::new(),
+            format!("http://{addr}"),
+            "token".into(),
+            connection,
+        );
+
+        let (a, b) = tokio::join!(client.mail_image("tok", "m1"), client.mail_image("tok", "m1"));
+        assert_eq!(a.unwrap().bytes, b.unwrap().bytes);
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "one request between the two");
+        client.mail_image("tok", "m1").await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "and none the next time");
+
+        client.mail_image("refused", "m1").await.unwrap();
+        client.mail_image("refused", "m1").await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 3, "a refusal is asked about every time");
+
+        // Its body came back with pictures hidden: what was kept of it goes.
+        assert!(client.mail_body("m1").await.unwrap().images_hidden);
+        client.mail_image("tok", "m1").await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 4);
+
+        client.clear_cache();
+        client.mail_image("tok", "m1").await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 5, "locking forgets pictures too");
+    }
+
+    /// A client for a server made of `app`, on a port of its own.
+    async fn client_of(app: axum::Router) -> RemoteClient {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let connection = Connection {
+            id: "device".into(),
+            name: "Test".into(),
+            host: addr.to_string(),
+            fingerprint: String::new(),
+            cert_pem: String::new(),
+            paired: jiff::Timestamp::now(),
+        };
+        RemoteClient::new(
+            reqwest::Client::new(),
+            format!("http://{addr}"),
+            "token".into(),
+            connection,
+        )
+    }
+
+    /// A newsletter's pictures are its message's. Shown once and kept, they
+    /// are forgotten when its story comes back with them hidden -- the
+    /// sender's pictures no longer allowed -- rather than shown from memory
+    /// under the bar that says they are not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_newsletter_with_its_pictures_hidden_forgets_its_messages_pictures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        let app = axum::Router::new()
+            .route(
+                "/v1/mail/img/{message}/{token}",
+                axum::routing::get(move || {
+                    let counted = counted.clone();
+                    async move {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        ([("content-type", "image/png")], b"\x89PNG\r\n\x1a\nreal".to_vec())
+                    }
+                }),
+            )
+            .route(
+                "/v1/news/body/{story}",
+                axum::routing::get(|| async {
+                    ([("x-news-images-hidden", "1"), ("x-news-message", "m1")], "<p>hidden</p>")
+                }),
+            );
+        let client = client_of(app).await;
+
+        client.mail_image("tok", "m1").await.unwrap();
+        client.mail_image("tok", "m2").await.unwrap();
+        client.mail_image("tok", "m1").await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "kept once fetched");
+
+        assert!(client.news_body("s1", BodyPart::Whole).await.unwrap().images_hidden);
+        client.mail_image("tok", "m1").await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 3, "the newsletter's message's asked about again");
+        client.mail_image("tok", "m2").await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 3, "another message's kept");
+    }
+
+    /// A smaller copy of a blob the server will not make smaller comes back
+    /// as the original's first part. That part answers the length and the
+    /// range the ordinary path asks for next, and the next smaller copy goes
+    /// straight to it: one request between all of them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_original_answered_for_a_smaller_copy_is_read_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        let app = axum::Router::new().route(
+            "/v1/blob/{id}",
+            axum::routing::get(move || {
+                let counted = counted.clone();
+                async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    (
+                        axum::http::StatusCode::PARTIAL_CONTENT,
+                        [("content-range", "bytes 0-3/10")],
+                        b"GIF8".to_vec(),
+                    )
+                }
+            }),
+        );
+        let client = client_of(app).await;
+
+        assert_eq!(client.blob_scaled("b1", 400).await.unwrap(), None);
+        assert_eq!(client.blob_len("b1").await.unwrap(), 10);
+        assert_eq!(client.blob_range("b1", 0, 4).await.unwrap(), b"GIF8");
+        assert_eq!(client.blob_scaled("b1", 400).await.unwrap(), None);
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "one request between them");
+
+        client.clear_cache();
+        assert_eq!(client.blob_scaled("b1", 400).await.unwrap(), None);
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "locking forgets that too");
     }
 }
 

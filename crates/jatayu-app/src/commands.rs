@@ -196,6 +196,9 @@ async fn bootstrap_local(
         .unwrap_or_else(jatayu_vault::default_vault_dir);
     let backends = jatayu_vault::available_backends();
 
+    // Whether the keychain held a key for the vault, when this call asked it
+    // -- the same lookup `autounlock::enabled` would make again below.
+    let mut recalled = None;
     // Open eagerly so an unencrypted vault is usable immediately and an
     // encrypted one can name itself on the lock screen.
     if service.get().is_none() && jatayu_vault::exists(&path) {
@@ -220,7 +223,7 @@ async fn bootstrap_local(
                 let was_locked = !vault.is_unlocked();
                 let unlocked = blocking(move || {
                     let Some(key) = jatayu_vault::autounlock::recall(&at) else {
-                        return Ok(());
+                        return Ok(false);
                     };
                     if !vault.is_unlocked() {
                         vault.unlock_with_key(key.as_str())?;
@@ -235,21 +238,35 @@ async fn bootstrap_local(
                     // locks it themselves. See
                     // `Vault::seconds_until_forget_key`.
                     vault.set_key_in_keychain(true);
-                    Ok(())
+                    Ok(true)
                 })
                 .await;
                 match unlocked {
-                    Ok(()) => {
+                    Ok(found) => {
+                        recalled = Some(found);
                         // `Service::set`, moments ago, saw this vault still
                         // locked and had nothing of mail's to open; the key
                         // the keychain just supplied is what makes it usable
                         // now, so mail's storage and its account tasks start
                         // here rather than waiting for a lock/unlock cycle
                         // nothing in this path will ever ask for.
-                        if was_locked {
-                            service.unlocked();
-                        } else {
-                            service.start_refreshers();
+                        //
+                        // Off the runtime, like the steps before it: opening
+                        // mail's index and starting every task is
+                        // synchronous work, and this window is still waiting
+                        // to draw. Not `blocking`, whose caller is a command
+                        // whose own writes it reports.
+                        let after = service.clone();
+                        let started = tauri::async_runtime::spawn_blocking(move || {
+                            if was_locked {
+                                after.unlocked();
+                            } else {
+                                after.start_refreshers();
+                            }
+                        })
+                        .await;
+                        if let Err(e) = started {
+                            tracing::warn!(error = %e, "could not start the vault's tasks");
                         }
                     }
                     Err(e) => {
@@ -323,9 +340,12 @@ async fn bootstrap_local(
 
     Ok(Bootstrap {
         vault_exists: jatayu_vault::exists(&path),
-        opens_itself: {
-            let at = path.clone();
-            blocking(move || Ok(jatayu_vault::autounlock::enabled(&at))).await?
+        opens_itself: match recalled {
+            Some(found) => found,
+            None => {
+                let at = path.clone();
+                blocking(move || Ok(jatayu_vault::autounlock::enabled(&at))).await?
+            }
         },
         default_path: path,
         backends,

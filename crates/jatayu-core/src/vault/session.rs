@@ -10,9 +10,42 @@
 //! so" lookup;
 //! [`Vault::with_domain`] is that lookup written once, and [`Domain`] is the
 //! label it is written once for.
+//!
+//! # Which writes are exclusive
+//!
+//! [`Vault::write`] takes the state lock exclusively, so it waits for every
+//! reader and every later reader waits for it. That is what the mail,
+//! account, model, profile and upkeep writers still use: their read-then-write
+//! sections share data with writers that run under the shared lock (sync's
+//! flag and body saves among them), and only the exclusive lock keeps those
+//! out.
+//!
+//! Four domains have no such writer, because every write to their tables
+//! goes through this module: writing (entries, notes, transcripts and the
+//! search index), screen time, health and money. Their writes take the
+//! shared lock plus that domain's own gate ([`Vault::write_in`]), so they are
+//! one at a time within the domain, as before, and still wait for -- and are
+//! waited for by -- every exclusive section, but no longer stop every read in
+//! the vault for an fsync. The one other way in for a writer,
+//! [`Vault::with_store_writing`] (an import), takes every gate, so it keeps
+//! the gated writers out just as its shared lock kept out the exclusive
+//! ones. So does [`Vault::with_store_quiet`] (an export), whose reads must
+//! agree with each other as they did when those writers were exclusive.
+//!
+//! A delete that cascades into another domain's rows -- a journal's, a
+//! note's -- stays exclusive, as does the meeting templates' move.
+//!
+//! # Lock order
+//!
+//! state lock (shared) -> domain gates, in [`Gates`]' field order -> the
+//! search index's mutex -> the store's own locks. A gated section never
+//! takes the state lock again (a second shared acquisition behind a queued
+//! writer is a deadlock), never takes another gate, and never calls back
+//! into a `Vault` method that locks; it works on the [`Unlocked`] it is
+//! handed. The header lock and the integrity check's slot are leaves, taken
+//! on their own.
 
 use crate::error::{Error, Result};
-use crate::search::SearchIndex;
 use crate::store::JournalStore;
 use crate::store::accounts::AccountStore;
 use crate::store::agent::AgentStore;
@@ -24,15 +57,44 @@ use crate::store::money::MoneyStore;
 use crate::store::notes::NoteStore;
 use crate::store::screentime::ScreenTimeStore;
 use crate::store::secrets::SecretStore;
-use std::sync::{Arc, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard};
 
 use super::Vault;
+use super::index::IndexSlot;
 use crate::crypto::{Cipher, SecretKey};
+
+/// One gate per domain whose writes no longer take the exclusive lock -- see
+/// the module doc.
+#[derive(Default)]
+pub(super) struct Gates {
+    /// Entries, notes, transcripts, and the search index over them.
+    pub(super) text: Mutex<()>,
+    pub(super) screen: Mutex<()>,
+    pub(super) health: Mutex<()>,
+    pub(super) money: Mutex<()>,
+}
+
+impl Gates {
+    /// Every gate, taken in field order -- the one order two gates are ever
+    /// held together in. For [`Vault::with_store_writing`].
+    pub(super) fn all(&self) -> [MutexGuard<'_, ()>; 4] {
+        [&self.text, &self.screen, &self.health, &self.money].map(take_gate)
+    }
+}
+
+/// Take `gate`. Poisoned only by a panic in another write of the same
+/// domain, which left nothing half-held: the store's own transaction is
+/// what made that write all or nothing.
+pub(super) fn take_gate(gate: &Mutex<()>) -> MutexGuard<'_, ()> {
+    gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Live state that exists only while unlocked.
 pub(super) struct Unlocked {
     pub(super) store: Box<dyn JournalStore>,
-    pub(super) index: SearchIndex,
+    /// Behind its own mutex, so the gated writers can keep it in step with
+    /// the store under the shared lock. See [`super::index`].
+    pub(super) index: IndexSlot,
     /// The same cipher the store was handed. Kept so the vault can reseal
     /// its backend settings -- a rotated database password -- without asking
     /// for the vault password a second time. Dropped, with the key inside
@@ -43,6 +105,10 @@ pub(super) struct Unlocked {
     /// Held here so the check costs nothing after the first read of a
     /// session, and set under the write lock the move itself runs under.
     pub(super) templates_moved: bool,
+    /// The integrity stamp, set aside while the store is open -- `None` in a
+    /// read-only process. Last, so it is put back only after the store has
+    /// closed. See [`super::maintenance::OpenStamp`].
+    pub(super) _stamp: Option<super::maintenance::OpenStamp>,
 }
 
 impl Unlocked {
@@ -183,10 +249,9 @@ impl std::fmt::Display for Domain {
 /// Borrow the store `domain` names out of `store`, or explain that this
 /// backend does not carry it.
 ///
-/// Split out of [`Vault::with_domain`] because [`Vault::save_note`] and its
-/// two neighbours need the same lookup inside [`Vault::write`], which hands
-/// them the mutable half of [`Unlocked`] that `with_domain`'s `read` cannot
-/// reach.
+/// Split out of [`Vault::with_domain`] for the sections that already hold
+/// the lock and have the whole [`Unlocked`] in hand -- [`Vault::write`]'s and
+/// [`Vault::write_in`]'s.
 pub(super) fn pick_domain<'u, S: ?Sized>(
     store: &'u dyn JournalStore,
     domain: Domain,
@@ -276,6 +341,24 @@ impl Vault {
         let mut guard = self.state_write();
         let unlocked = guard.as_mut().ok_or(Error::Locked)?;
         let out = f(unlocked);
+        drop(guard);
+        out
+    }
+
+    /// Run a write of one gated domain: the shared lock, then `gate`. One
+    /// writer of that domain at a time, as under [`Vault::write`], while
+    /// readers -- and the other domains' writers -- carry on. See the module
+    /// doc for which domains, and for what `f` must not do.
+    pub(super) fn write_in<T>(
+        &self,
+        gate: &Mutex<()>,
+        f: impl FnOnce(&Unlocked) -> Result<T>,
+    ) -> Result<T> {
+        let guard = self.state_read();
+        let unlocked = guard.as_ref().ok_or(Error::Locked)?;
+        let held = take_gate(gate);
+        let out = f(unlocked);
+        drop(held);
         drop(guard);
         out
     }
