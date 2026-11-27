@@ -452,7 +452,7 @@
     fit()
   })
 
-  // The dog listens while something is typed and not yet sent. Cleared on
+  // The bird listens while something is typed and not yet sent. Cleared on
   // the way out, so a rail closed mid-sentence does not leave it listening.
   $effect(() => {
     agent.composing = draft.trim() !== ''
@@ -838,8 +838,8 @@
   /** Chips for the open app, in the rail; the page has its own, larger set. */
   const railStarts = $derived(askExamples(app.section))
 
-  /** A dog floats over the top of the thread, and is its face: no sparkle. */
-  const dog = $derived(agent.settings !== null && lookOf(agent.settings.companion) !== null)
+  /** A bird floats over the top of the thread, and is its face: no sparkle. */
+  const bird = $derived(agent.settings !== null && lookOf(agent.settings.companion) !== null)
 
   /**
    * Somewhere to start, on the page. Each is a thing it can actually do in
@@ -884,7 +884,7 @@
       {#if agent.turns.length === 0}
         {#if variant === 'page'}
           <div class="hello">
-            {#if !dog}
+            {#if !bird}
               <span class="glyph"><Icon name="sparkle" size={30} weight={1.4} /></span>
             {/if}
             <h2>What can I do for you?</h2>
@@ -906,7 +906,7 @@
             {/if}
           </div>
         {:else}
-          <EmptyState lead="Ask about anything in Jatayu" icon={dog ? undefined : sparkle}>
+          <EmptyState lead="Ask about anything in Jatayu" icon={bird ? undefined : sparkle}>
             {#snippet note()}
               {reachNote}
             {/snippet}
@@ -1376,7 +1376,7 @@
     cursor: auto;
   }
   /* `--thread-top` is room for whatever floats over the top of the thread
-     -- the dog and its name -- which the conversation scrolls under. */
+     -- the bird and its name -- which the conversation scrolls under. */
   .column {
     display: flex;
     flex-direction: column;
@@ -1400,8 +1400,8 @@
     flex-direction: column;
     align-items: center;
     gap: var(--sp-3);
-    /* The same drop from the top of the page with a dog over it or not: the
-       dog's room counts towards it, so the greeting sits under the dog. */
+    /* The same drop from the top of the page with a bird over it or not: the
+       bird's room counts towards it, so the greeting sits under the bird. */
     margin-top: max(var(--sp-4), calc(12vh - var(--thread-top, 0px)));
     text-align: center;
   }

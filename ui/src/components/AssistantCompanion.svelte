@@ -1,6 +1,6 @@
 <script lang="ts">
-  // The assistant's dog, over the conversation, doing whatever the assistant
-  // is doing.
+  // Young Jatayu, over the conversation, doing whatever the assistant is
+  // doing.
   //
   // Drawn by the rail and by the Assistant app, which show the same thread,
   // so it reads the same store both do: `agent.turns`, and the act the
@@ -10,8 +10,8 @@
   // with nothing having happened in between, so one timer is set for that
   // moment rather than the act being re-read every frame.
   //
-  // Nothing until the settings have loaded. The choice of no dog is in them,
-  // and a default dog that appeared for a moment and then vanished would be
+  // Nothing until the settings have loaded. The choice of no bird is in them,
+  // and a default bird that appeared for a moment and then vanished would be
   // the one thing worse than none.
 
   import { agent } from '../lib/agent.svelte'

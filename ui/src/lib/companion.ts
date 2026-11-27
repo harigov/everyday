@@ -1,25 +1,26 @@
-// The dog in the assistant's header: which dogs there are, and what the dog
+// Young Jatayu in the assistant's header: what it can look like, and what it
 // is doing.
 //
-// Two lists and two rules, kept apart from the scene that draws them
+// One list and two rules, kept apart from the scene that draws them
 // (`companion-scene.ts`) for the reason `agent.ts` sits beside its store:
-// the drawing is checked by looking at it, and these are not. A breed list
-// that drifted from what Settings offers, or a stored word that no longer
-// names anything, fails quietly -- the header just draws a different dog
-// than the one somebody chose.
+// the drawing is checked by looking at it, and these are not. A list that
+// drifted from what Settings offers, or a stored word that no longer names
+// anything, fails quietly -- the header just draws a different bird than the
+// one somebody chose.
 //
-// The first rule is reading a stored choice. The vault keeps three words (see
-// `Companion` in `jatayu-core`'s `agent.rs`) and a build is free to meet
-// one it has never heard of -- a breed a later build added, on a vault that
-// came from there. A word this list does not know is drawn as the default,
-// rather than refused, so the worst case is a different dog and never no
-// settings at all.
+// The first rule is reading a stored choice. The vault keeps one word (see
+// `Companion` in `jatayu-core`'s `agent/records.rs`) and a build is free
+// to meet one it has never heard of -- a plumage a later build added, on a
+// vault that came from there, or what an earlier build stored when this was a
+// dog with a breed and a coat. A word this list does not know is drawn as the
+// default, rather than refused, so the worst case is a different colour and
+// never no settings at all.
 //
-// The second is what to act out. The dog is not decoration: it is the one
+// The second is what to act out. The bird is not decoration: it is the one
 // thing in the rail's header that shows, at a glance and from across the
-// room, that a turn is still working and roughly what at -- nose down while
+// room, that a turn is still working and roughly what at -- head down while
 // it looks things up, at a keyboard while it writes, head tilted while it
-// thinks, paw raised while it waits for an answer. Like `activity` in
+// thinks, a wing raised while it waits for an answer. Like `activity` in
 // `agent.ts`, that is read from the turn as the stream has left it, and
 // like `toolLabel` it is derived from a tool's name rather than a table of
 // them, so a tool added to the catalogue next month already does something
@@ -28,15 +29,16 @@
 import type { Turn } from './agent'
 import type { Companion } from './types'
 
-export type Breed = 'shiba' | 'corgi' | 'beagle' | 'pug' | 'poodle'
-export type Coat = 'honey' | 'apricot' | 'cream' | 'cocoa' | 'charcoal' | 'silver' | 'snow'
-export type Markings = 'solid' | 'socks' | 'spots' | 'patches' | 'mask'
+/**
+ * The colour of its feathers: the one thing about young Jatayu that can be
+ * changed. It is one character, not a kennel -- the shape, the crest and the
+ * wings are the same bird whatever it is painted in.
+ */
+export type Plumage = 'gold' | 'ember' | 'bronze' | 'snow' | 'dusk'
 
-/** One dog, fully decided: what the scene is handed. */
+/** One bird, fully decided: what the scene is handed. */
 export interface Look {
-  breed: Breed
-  coat: Coat
-  markings: Markings
+  plumage: Plumage
 }
 
 interface Choice<T extends string> {
@@ -44,80 +46,101 @@ interface Choice<T extends string> {
   label: string
 }
 
-/** The shapes, in the order Settings offers them. The first is the default. */
-export const BREEDS: Choice<Breed>[] = [
-  { id: 'shiba', label: 'Shiba' },
-  { id: 'corgi', label: 'Corgi' },
-  { id: 'beagle', label: 'Beagle' },
-  { id: 'pug', label: 'Pug' },
-  { id: 'poodle', label: 'Poodle' },
-]
-
 /**
- * The coats. `base` is the fur; `mark` is what spots and patches are painted
- * in, chosen per coat so they show -- dark on a light coat, light on a dark
- * one, which is why a charcoal dog's spots are cream.
+ * The plumages, in the order Settings offers them. The first is the default.
+ *
+ * `base` is the down of the head and body, and what a swatch is painted in;
+ * `pale` is the face and chest; `wing` is the stack of flight feathers, from
+ * the one in front to the one at the back -- the same step of tones the
+ * application's icon is drawn in; `deep` is the crest's tips and the tail.
  */
-export const COATS: (Choice<Coat> & { base: string; mark: string })[] = [
-  { id: 'honey', label: 'Honey', base: '#dd9a5b', mark: '#5b3a26' },
-  { id: 'apricot', label: 'Apricot', base: '#efc08e', mark: '#7a4f33' },
-  { id: 'cream', label: 'Cream', base: '#f3e2c4', mark: '#8a6248' },
-  { id: 'cocoa', label: 'Cocoa', base: '#7d5038', mark: '#f1e1c8' },
-  { id: 'charcoal', label: 'Charcoal', base: '#3d3839', mark: '#efe4d2' },
-  { id: 'silver', label: 'Silver', base: '#b4b2b6', mark: '#4a474d' },
-  { id: 'snow', label: 'Snow', base: '#f7f4ef', mark: '#3a3536' },
+export const PLUMAGES: (Choice<Plumage> & {
+  base: string
+  pale: string
+  wing: [string, string]
+  deep: string
+})[] = [
+  {
+    id: 'gold',
+    label: 'Gold',
+    base: '#f6bb45',
+    pale: '#fff1d2',
+    wing: ['#fff0bd', '#ff7a24'],
+    deep: '#f08a1f',
+  },
+  {
+    id: 'ember',
+    label: 'Ember',
+    base: '#f08a4a',
+    pale: '#ffe9d2',
+    wing: ['#ffd9a3', '#e2452f'],
+    deep: '#d9482c',
+  },
+  {
+    id: 'bronze',
+    label: 'Bronze',
+    base: '#9a6a44',
+    pale: '#f3e1c6',
+    wing: ['#edc58a', '#6a3f24'],
+    deep: '#6f4226',
+  },
+  {
+    id: 'snow',
+    label: 'Snow',
+    base: '#f7f4ee',
+    pale: '#ffffff',
+    wing: ['#ffffff', '#8fbdf0'],
+    deep: '#a9cdf3',
+  },
+  {
+    id: 'dusk',
+    label: 'Dusk',
+    base: '#7388b6',
+    pale: '#e8eefa',
+    wing: ['#d3dff6', '#3c4f8c'],
+    deep: '#44578f',
+  },
 ]
 
-/** What is painted on the coat. */
-export const MARKINGS: Choice<Markings>[] = [
-  { id: 'socks', label: 'Bib and socks' },
-  { id: 'solid', label: 'Solid' },
-  { id: 'spots', label: 'Spots' },
-  { id: 'patches', label: 'Patches' },
-  { id: 'mask', label: 'Mask' },
-]
-
-/** The dog nobody chose: a honey shiba with a white bib and socks. */
-export const DEFAULT_LOOK: Look = { breed: 'shiba', coat: 'honey', markings: 'socks' }
+/** The bird nobody chose: gold, the colour of the icon. */
+export const DEFAULT_LOOK: Look = { plumage: 'gold' }
 
 function known<T extends string>(list: Choice<T>[], word: string | undefined, fallback: T): T {
   return list.find((c) => c.id === word)?.id ?? fallback
 }
 
 /**
- * The dog to draw for a stored choice, or `null` for none.
+ * The bird to draw for a stored choice, or `null` for none.
  *
  * `undefined` -- settings that have not loaded, or a backend older than the
- * field -- is the default dog, the same as the vault's own reading of a
- * record with no key. Only an explicit `null` is no dog.
+ * field -- is the default bird, the same as the vault's own reading of a
+ * record with no key. Only an explicit `null` is no bird.
  */
 export function lookOf(companion: Companion | null | undefined): Look | null {
   if (companion === null) return null
   const c = companion ?? {}
-  return {
-    breed: known(BREEDS, c.breed, DEFAULT_LOOK.breed),
-    coat: known(COATS, c.coat, DEFAULT_LOOK.coat),
-    markings: known(MARKINGS, c.markings, DEFAULT_LOOK.markings),
-  }
+  return { plumage: known(PLUMAGES, c.plumage, DEFAULT_LOOK.plumage) }
 }
 
-/** A look as the vault stores it. Every word is written, default or not. */
+/** A look as the vault stores it. The word is written, default or not. */
 export function companionOf(look: Look): Companion {
-  return { breed: look.breed, coat: look.coat, markings: look.markings }
+  return { plumage: look.plumage }
 }
 
-export function coatOf(coat: Coat): (typeof COATS)[number] {
-  return COATS.find((c) => c.id === coat) ?? COATS[0]!
+export function plumageOf(plumage: Plumage): (typeof PLUMAGES)[number] {
+  return PLUMAGES.find((p) => p.id === plumage) ?? PLUMAGES[0]!
 }
 
 // ── What it is doing ──────────────────────────────────────────────────
 
 /**
- * Everything the dog can act out.
+ * Everything the bird can act out.
  *
- * `sniff` is looking something up -- the vault or the web -- and `type` is
- * writing, whether that is the reply or a record. `listen` is the person
- * writing to it: ears up, watching the box. `cheer` and `droop` are the
+ * `sniff` is looking something up -- the vault or the web: head down, peering
+ * and pecking about. (The word is from when this was a dog; it is kept
+ * because it is only ever a name.) `type` is writing, whether that is the
+ * reply or a record. `listen` is the person writing to it: crest up,
+ * watching the box. `cheer` and `droop` are the
  * moment after a turn ends, well or badly; `sleep` is an assistant that is
  * not set up, and is also where a long `idle` drifts on its own (see the
  * scene).
@@ -147,10 +170,10 @@ export function sniffs(tool: string): boolean {
 }
 
 /**
- * What the dog should be doing for the newest turn in the thread, at `now`.
+ * What the bird should be doing for the newest turn in the thread, at `now`.
  *
  * Read from the turn's own phase and cards -- the same state `activity`
- * reads for the sentence under the turn -- so the dog and the sentence can
+ * reads for the sentence under the turn -- so the bird and the sentence can
  * never disagree about whether something is still running.
  */
 export function actOf(turn: Turn | undefined, now: number): Act {
@@ -180,13 +203,13 @@ export function actOf(turn: Turn | undefined, now: number): Act {
 }
 
 /**
- * What the dog in a header does: `actOf`, with the two things around a turn
+ * What the bird in a header does: `actOf`, with the two things around a turn
  * that the turn itself cannot know.
  *
  * An assistant that is not set up has nothing to do, so it sleeps. And one
  * with nothing to do while somebody is typing to it listens -- but only
  * then: a question typed while a reply is still being written does not stop
- * the dog writing it.
+ * the bird writing it.
  */
 export function headerAct(
   state: { ready: boolean; composing: boolean; turn: Turn | undefined },

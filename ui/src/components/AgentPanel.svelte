@@ -38,20 +38,18 @@
   import { app } from '../lib/state.svelte'
   import { assistant } from '../lib/assistant.svelte'
   import {
-    BREEDS,
-    COATS,
     DEFAULT_LOOK,
-    MARKINGS,
+    PLUMAGES,
     companionOf,
     lookOf,
     type Act,
     type Look,
+    type Plumage,
   } from '../lib/companion'
   import { PROPOSAL_KIND_LABELS } from '../lib/dream'
   import { models } from '../lib/models.svelte'
   import { panels } from '../lib/panels.svelte'
   import { PROPOSAL_KINDS } from '../lib/types'
-  import type { Painter } from '../lib/companion-scene'
   import type {
     AgentSettings,
     EventReminders,
@@ -62,7 +60,6 @@
     SearchSite,
   } from '../lib/types'
   import Companion from './Companion.svelte'
-  import Icon from './Icon.svelte'
   import Loading from './Loading.svelte'
   import MailActionsList from './MailActionsList.svelte'
   import SubTabs from './SubTabs.svelte'
@@ -174,33 +171,41 @@
     clearInterval(showTimer)
   })
 
-  // ── The dog ──────────────────────────────────────────────────────────
+  // ── Young Jatayu ─────────────────────────────────────────────────────
   //
   // Chosen on the draft like everything else here, so the preview changes
   // as somebody clicks and the header only once they press Save.
 
   const look = $derived(draft ? lookOf(draft.companion) : null)
 
-  // The breed, coat and markings are a lot of buttons for something most
-  // people set once: they stay folded behind a line saying which dog this is
-  // until "Change" is pressed.
-  let changingDog = $state(false)
-  const dogLine = $derived.by(() => {
-    if (!look) return 'No dog'
-    const breed = BREEDS.find((b) => b.id === look.breed)?.label
-    const coat = COATS.find((c) => c.id === look.coat)?.label
-    return [coat, breed].filter(Boolean).join(' ')
-  })
+  // One bird, and one thing about it to choose: the colour of its feathers.
+  // Five swatches and a switch are few enough to show at once, so nothing
+  // here is folded away behind a button.
 
-  function pick(part: Partial<Look>) {
+  /**
+   * The plumage to come back in when the bird is switched on again. Kept so
+   * that hiding it and thinking better of it, in one sitting, does not also
+   * repaint it; a bird that was already hidden when this pane opened has no
+   * colour to remember, and comes back as the default.
+   */
+  let lastLook: Look = DEFAULT_LOOK
+
+  function pick(plumage: Plumage) {
     if (!draft) return
-    draft.companion = companionOf({ ...(lookOf(draft.companion) ?? DEFAULT_LOOK), ...part })
+    lastLook = { plumage }
+    draft.companion = companionOf(lastLook)
+  }
+
+  function show(on: boolean) {
+    if (!draft) return
+    if (!on && look) lastLook = look
+    draft.companion = on ? companionOf(lastLook) : null
   }
 
   /**
    * What the preview acts out, in turn, with what each one means beneath it.
    *
-   * A dog in Settings that only sat there would sell the one thing it is for:
+   * A bird in Settings that only sat there would sell the one thing it is for:
    * that the header shows, at a glance, what the assistant is doing.
    */
   const SHOW: { act: Act; caption: string }[] = [
@@ -216,41 +221,6 @@
   ]
   let showing = $state(0)
   const showTimer = setInterval(() => (showing = (showing + 1) % SHOW.length), 3800)
-
-  /**
-   * Each breed in the coat and markings chosen, as a picture for its card --
-   * drawn by the same scene as the dog, so the card is the dog you get.
-   * Redrawn only when the coat or markings change, and a moment after, so
-   * clicking along the swatches does not draw five dogs per click.
-   */
-  let portraits = $state<Record<string, string>>({})
-  const paint = $derived(
-    `${look?.coat ?? DEFAULT_LOOK.coat}/${look?.markings ?? DEFAULT_LOOK.markings}`,
-  )
-  let painter: Promise<Painter | null> | null = null
-  $effect(() => {
-    const [coat, markings] = paint.split('/') as [Look['coat'], Look['markings']]
-    let stale = false
-    const timer = setTimeout(async () => {
-      painter ??= import('../lib/companion-scene').then((m) => m.createPainter())
-      const pictures = await (
-        await painter
-      )?.paint(
-        BREEDS.map((b) => ({ breed: b.id, coat, markings })),
-        PORTRAIT_W,
-        PORTRAIT_H,
-      )
-      if (stale || !pictures) return
-      portraits = Object.fromEntries(BREEDS.map((b, i) => [b.id, pictures[i] ?? '']))
-    }, 120)
-    return () => {
-      stale = true
-      clearTimeout(timer)
-    }
-  })
-  onDestroy(() => void painter?.then((p) => p?.dispose()))
-  const PORTRAIT_W = 76
-  const PORTRAIT_H = 68
 
   // The dialog loads the settings; this waits for them. Both are needed: the
   // tab can be opened before the round trip has come back.
@@ -481,8 +451,8 @@
       </section>
 
       <section>
-        <span class="eyebrow">Dog</span>
-        <div class="dog">
+        <span class="eyebrow">Young Jatayu</span>
+        <div class="bird">
           <div class="stage">
             {#if look}
               <Companion
@@ -490,93 +460,48 @@
                 act={SHOW[showing]!.act}
                 width={200}
                 height={170}
-                name={draft.name.trim() || 'the dog'}
+                name={draft.name.trim() || 'Jatayu'}
               />
               <span class="caption">{SHOW[showing]!.caption}</span>
             {:else}
-              <span class="caption">No dog</span>
+              <span class="caption">Hidden</span>
             {/if}
           </div>
 
-          {#if !changingDog}
-            <div class="dog-line">
-              <span>{dogLine}</span>
-              <button class="btn btn-sm" onclick={() => (changingDog = true)}>Change</button>
-            </div>
-          {:else}
-            <div class="choices">
-              <div class="breeds" role="group" aria-label="Breed">
-                {#each BREEDS as breed (breed.id)}
+          <div class="choices">
+            <label class="check-row">
+              <input
+                type="checkbox"
+                checked={look !== null}
+                onchange={(e) => show(e.currentTarget.checked)}
+              />
+              <span>
+                <b>Show young Jatayu</b>
+                <small>Over the conversation, in the rail and in the Assistant app.</small>
+              </span>
+            </label>
+
+            {#if look}
+              <div class="swatches" role="group" aria-label="Plumage">
+                {#each PLUMAGES as plumage (plumage.id)}
                   <button
-                    class="breed"
-                    class:on={look?.breed === breed.id}
-                    aria-pressed={look?.breed === breed.id}
-                    onclick={() => pick({ breed: breed.id })}
-                  >
-                    {#if portraits[breed.id]}
-                      <img
-                        src={portraits[breed.id]}
-                        alt=""
-                        width={PORTRAIT_W}
-                        height={PORTRAIT_H}
-                      />
-                    {:else}
-                      <span class="blank"></span>
-                    {/if}
-                    {breed.label}
-                  </button>
+                    class="swatch"
+                    class:on={look.plumage === plumage.id}
+                    style="--plumage: {plumage.base}"
+                    aria-pressed={look.plumage === plumage.id}
+                    aria-label={plumage.label}
+                    title={plumage.label}
+                    onclick={() => pick(plumage.id)}
+                  ></button>
                 {/each}
-                <button
-                  class="breed"
-                  class:on={!look}
-                  aria-pressed={!look}
-                  onclick={() => draft && (draft.companion = null)}
-                >
-                  <span class="blank"><Icon name="close" size={18} /></span>
-                  No dog
-                </button>
               </div>
-
-              {#if look}
-                <div class="swatches" role="group" aria-label="Coat">
-                  {#each COATS as coat (coat.id)}
-                    <button
-                      class="swatch"
-                      class:on={look.coat === coat.id}
-                      style="--coat: {coat.base}"
-                      aria-pressed={look.coat === coat.id}
-                      aria-label={coat.label}
-                      title={coat.label}
-                      onclick={() => pick({ coat: coat.id })}
-                    ></button>
-                  {/each}
-                </div>
-
-                <div class="presets" role="group" aria-label="Markings">
-                  {#each MARKINGS as markings (markings.id)}
-                    <button
-                      class="chip"
-                      class:on={look.markings === markings.id}
-                      aria-pressed={look.markings === markings.id}
-                      onclick={() => pick({ markings: markings.id })}
-                    >
-                      {markings.label}
-                    </button>
-                  {/each}
-                </div>
-              {/if}
-
-              <div>
-                <button class="btn btn-sm" onclick={() => (changingDog = false)}>Done</button>
-              </div>
-            </div>
-          {/if}
+            {/if}
+          </div>
         </div>
         <p class="hint">
-          It sits over the conversation, in the rail and in the Assistant app, and acts out what the
-          assistant is doing: nose down while it looks something up, at a laptop while it writes,
-          head tilted while it thinks, a paw up while it waits for your answer. It watches the
-          pointer, and it likes being petted — click it.
+          A young eagle that acts out what the assistant is doing: head down while it looks
+          something up, at a laptop while it writes, head tilted while it thinks, a wing up while it
+          waits for your answer. It watches the pointer, and it likes being petted — click it.
         </p>
       </section>
 
@@ -1232,44 +1157,13 @@
     font-size: var(--text-sm);
   }
 
-  .presets {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--sp-2);
-  }
-  .chip {
-    height: 30px;
-    padding: 0 var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-pill);
-    background: var(--bg);
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    font-weight: 550;
-  }
-  .chip.on {
-    border-color: var(--accent);
-    background: var(--bg-selected);
-    color: var(--fg);
-  }
-
-  /* The dog: a stage to watch it on, and the choices beside it -- or under
-     it, in a dialog too narrow for both. */
-  .dog {
+  /* The bird: a stage to watch it on, and its two choices beside it -- or
+     under it, in a pane too narrow for both. */
+  .bird {
     display: flex;
     flex-wrap: wrap;
     gap: var(--sp-4);
     align-items: flex-start;
-  }
-  .dog-line {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--sp-2);
-    min-width: 12rem;
-    font-size: var(--text-base);
-    font-weight: 550;
   }
   .stage {
     display: flex;
@@ -1284,40 +1178,6 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg-sunken);
-  }
-  .breeds {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--sp-2);
-  }
-  /* A card per breed, with its portrait: picking a dog by its face. */
-  .breed {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    width: 88px;
-    padding: var(--sp-1) var(--sp-1) var(--sp-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg);
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    cursor: pointer;
-  }
-  .breed.on {
-    border-color: var(--accent);
-    background: var(--bg-selected);
-    color: var(--fg);
-  }
-  .breed img,
-  .blank {
-    display: grid;
-    place-items: center;
-    width: 76px;
-    height: 68px;
-    color: var(--fg-faint);
   }
   .caption {
     font-size: var(--text-xs);
@@ -1341,7 +1201,7 @@
     padding: 0;
     border: 1px solid color-mix(in oklab, var(--fg) 18%, transparent);
     border-radius: 50%;
-    background: var(--coat);
+    background: var(--plumage);
     cursor: pointer;
   }
   .swatch.on {
@@ -1411,16 +1271,13 @@
   }
 
   /* A phone: a label over its field rather than squeezed beside it, and the
-     chips and colour swatches a finger wide. */
+     colour swatches a finger wide. */
   :global([data-phone]) .pairs {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--sp-1);
   }
   :global([data-phone]) .pairs > :global(:nth-child(even)) {
     margin-bottom: var(--sp-2);
-  }
-  :global([data-phone]) .chip {
-    height: 40px;
   }
   :global([data-phone]) .swatches {
     gap: var(--sp-3);

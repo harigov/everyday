@@ -4323,13 +4323,12 @@ export interface QuickPolicy {
 }
 
 /**
- * Which dog the assistant is. Words from the lists in `companion.ts`; one
- * this build does not know, or one left out, is drawn as the default.
+ * What young Jatayu, the bird beside the assistant, looks like: one word from
+ * the list in `companion.ts`. One this build does not know, or one left out,
+ * is drawn as the default. Mirrors `karmayoga_core::agent::Companion`.
  */
 export interface Companion {
-  breed?: string
-  coat?: string
-  markings?: string
+  plumage?: string
 }
 
 /**
@@ -4355,8 +4354,8 @@ export interface AgentSettings {
    */
   name: string
   /**
-   * The dog in the header, or `null` for none. A record from before there
-   * was a dog arrives as `{}`, the default dog. Optional only because a
+   * The bird in the header, or `null` for none. A record from before there
+   * was one arrives as `{}`, the default bird. Optional only because a
    * backend older than the field leaves it out, which reads the same way.
    */
   companion?: Companion | null

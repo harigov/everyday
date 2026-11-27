@@ -228,8 +228,8 @@ long enough to fling, and a CPU throttle of 20x
 hid the journal's jank that the emulator found.
 
 The mock's clock is stopped at one moment and its shuffles are seeded, so two
-runs show the same screens; the assistant's dog is animated and is the one
-thing that always differs.
+runs show the same screens; young Jatayu, the assistant's bird, is animated
+and is the one thing that always differs.
 
 Then on the emulator, the real Android webview: build, install, pair with the
 test vault, and `node scripts/phone/android-sweep.mjs` goes through every app

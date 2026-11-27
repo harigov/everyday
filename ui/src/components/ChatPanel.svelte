@@ -32,30 +32,30 @@
   import { macPlatform } from '../lib/platform'
   import { pref } from '../lib/prefs'
   import { app } from '../lib/state.svelte'
-  import AssistantDog from './AssistantDog.svelte'
+  import AssistantCompanion from './AssistantCompanion.svelte'
   import ChatThread from './ChatThread.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
 
   let showHistory = $state(false)
 
-  // ── The dog ─────────────────────────────────────────────────────────
+  // ── The bird ────────────────────────────────────────────────────────
   //
   // Not in a title bar. It floats over the top of the conversation, centred,
   // sitting on a pill with its name in it, and what was said scrolls up
   // underneath it and fades -- so it reads as somebody in the room with the
   // thread rather than an icon in its chrome. The buttons keep to the
-  // corners either side. With no dog, the header is the plain row it was.
+  // corners either side. With no bird, the header is the plain row it was.
   //
-  // Floating while the settings are still loading, because a dog is the
+  // Floating while the settings are still loading, because a bird is the
   // default: the one person who chose none sees the row settle in once,
   // rather than everybody else seeing it jump.
 
-  const dog = $derived(agent.settings === null || lookOf(agent.settings.companion) !== null)
-  /** The dog's canvas, in CSS pixels. */
-  const DOG_W = 124
-  const DOG_H = 104
-  /** How far down the conversation starts: below the dog and its name. */
+  const bird = $derived(agent.settings === null || lookOf(agent.settings.companion) !== null)
+  /** The bird's canvas, in CSS pixels. */
+  const BIRD_W = 124
+  const BIRD_H = 104
+  /** How far down the conversation starts: below the bird and its name. */
   const STAGE_H = 124
 
   // ── How wide the rail is ─────────────────────────────────────────────
@@ -168,8 +168,8 @@
 <aside
   class="panel shell-card"
   class:dragging
-  class:floating={dog}
-  style="--panel-w: {applied}px; --thread-top: {dog ? (phone.on ? 98 : STAGE_H) : 0}px"
+  class:floating={bird}
+  style="--panel-w: {applied}px; --thread-top: {bird ? (phone.on ? 98 : STAGE_H) : 0}px"
   aria-label={agent.displayName}
 >
   <!-- The rail's own left edge, as a control. `separator` with an
@@ -203,9 +203,9 @@
     >
       <Icon name="layers" size={16} />
     </button>
-    {#if dog}
+    {#if bird}
       <div class="stage">
-        <AssistantDog width={phone.on ? 88 : DOG_W} height={phone.on ? 74 : DOG_H} />
+        <AssistantCompanion width={phone.on ? 88 : BIRD_W} height={phone.on ? 74 : BIRD_H} />
         <span class="pill">{agent.displayName}</span>
       </div>
       <span class="spacer"></span>
@@ -256,7 +256,7 @@
                 void agent.openThread(thread.id)
                 // Dropped down over the thread, it is in the way of the
                 // thread just chosen.
-                if (dog) showHistory = false
+                if (bird) showHistory = false
               }}
             >
               <span class="threadtitle">{thread.title || 'Untitled'}</span>
@@ -284,8 +284,8 @@
          what is missing and where to fix it, rather than presenting a box
          that fails on the first message. -->
     <div class="unset">
-      <!-- No sparkle under a dog: the dog, asleep, is the picture. -->
-      <EmptyState lead="{agent.displayName} is not set up yet." icon={dog ? undefined : sparkle}>
+      <!-- No sparkle under a bird: the bird, asleep, is the picture. -->
+      <EmptyState lead="{agent.displayName} is not set up yet." icon={bird ? undefined : sparkle}>
         {#snippet note()}
           Choose a model and add a key in Settings. A model running on this machine — Ollama or LM
           Studio — needs only its address, and nothing you write leaves the machine.
@@ -378,9 +378,9 @@
   }
 
   /* Over the conversation rather than above it: the panel's colour at the
-     top, fading out, so a reply scrolled up goes under the dog and is gone
+     top, fading out, so a reply scrolled up goes under the bird and is gone
      by the time it reaches its name. Clicks fall through the fade to the
-     thread; only the buttons and the dog itself take them. */
+     thread; only the buttons and the bird itself take them. */
   .panel.floating .head {
     position: absolute;
     inset: 0 0 auto;
@@ -403,9 +403,9 @@
     align-items: center;
     transform: translateX(-50%);
   }
-  /* The dog sits on it: tucked up under its paws, and behind it, so a
-     laptop or a raised paw comes out in front of the name. */
-  .stage :global(.dog) {
+  /* The bird sits on it: tucked up under its feet, and behind it, so a
+     laptop or a raised wing comes out in front of the name. */
+  .stage :global(.companion) {
     position: relative;
     z-index: 1;
   }
@@ -463,7 +463,7 @@
     padding: var(--sp-1);
     border-bottom: 1px solid var(--border);
   }
-  /* Under the dog, there is no row for the list to push down, so it drops
+  /* Under the bird, there is no row for the list to push down, so it drops
      down over the conversation instead. */
   .panel.floating .history {
     position: absolute;

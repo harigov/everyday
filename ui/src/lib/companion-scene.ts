@@ -1,29 +1,30 @@
-// The dog itself: a small three.js scene, built and animated in code.
+// Young Jatayu itself: a small three.js scene, built and animated in code.
 //
-// Built rather than downloaded. The open models that exist -- Quaternius's
-// CC0 Shiba Inu is the good one -- come with a walk, a gallop and an attack,
-// one breed and one painted coat, and what this dog has to do is sniff, type,
-// tilt its head and fall asleep, in any of five shapes and thirty-five coats.
-// That is a rig nobody has published, so the dog is made of three.js's own
-// spheres, capsules and lathes, every part a mesh of its own so a marking is
-// a colour on a part rather than a texture to paint.
+// Built rather than downloaded. What this bird has to do is peer about, type,
+// tilt its head, raise a wing and fall asleep, in any of five plumages, and
+// that is a rig nobody has published -- so it is made of three.js's own
+// spheres, capsules and lathes, every part a mesh of its own so a colour is a
+// material on a part rather than a texture to paint.
 //
-// What makes it cute is mostly not the shapes. It is drawn as a toy rather
-// than an animal: a head bigger than the body, eyes wide apart and low, a
-// small snout, and fur that is velvet -- a sheen that catches the light at
-// the edges -- lit by a soft studio rather than a lamp, so it reads as
-// something you could pick up. And it is alive in the small ways a toy is
-// not: it blinks on its own clock, its ears lag a beat behind its head and
-// wobble when it stops, it watches the pointer, and it is pleased to be
-// petted.
+// Jatayu is the great eagle of the Ramayana; this is him young. What makes
+// him endearing is mostly not the shapes. He is drawn as a toy rather than
+// an animal: a head bigger than the body, eyes wide apart and low, a small
+// hooked beak, and down that is velvet -- a sheen that catches the light at
+// the edges -- lit by a soft studio rather than a lamp, so he reads as
+// something you could pick up. What makes him Jatayu is the wings: each is
+// the application's icon, a stack of sickle feathers stepping from pale gold
+// to deep, folded at his sides until there is a reason to open them. And he
+// is alive in the small ways a toy is not: he blinks on his own clock, his
+// crest lags a beat behind his head and wobbles when it stops, he watches
+// the pointer, and he is pleased to be petted.
 //
 // The animation is poses, not keyframes. Each act is a function from time to
 // a `Pose` -- a couple of dozen numbers: how far the body leans, where the
-// head points, how fast the tail goes -- and moving from one act to the next
-// blends from wherever the dog was to wherever the new act puts it, so an act
-// that changes mid-wag does not snap. Everything that is not an act -- the
-// blinking, the ears' wobble, where it is looking, being petted -- is laid
-// on top, so it carries on whatever the act.
+// head points, how high each wing is -- and moving from one act to the next
+// blends from wherever the bird was to wherever the new act puts it, so an
+// act that changes mid-flap does not snap. Everything that is not an act --
+// the blinking, the crest's wobble, where it is looking, being petted -- is
+// laid on top, so it carries on whatever the act.
 //
 // Loaded on demand (see `Companion.svelte`), so the rest of the interface
 // does not carry three.js for a header that might be switched off.
@@ -32,7 +33,6 @@ import {
   BoxGeometry,
   CanvasTexture,
   CapsuleGeometry,
-  CatmullRomCurve3,
   Color,
   ConeGeometry,
   CylinderGeometry,
@@ -46,8 +46,11 @@ import {
   MeshPhysicalMaterial,
   NeutralToneMapping,
   OctahedronGeometry,
+  PCFShadowMap,
   PerspectiveCamera,
   PlaneGeometry,
+  RepeatWrapping,
+  ClampToEdgeWrapping,
   PMREMGenerator,
   Quaternion,
   Scene,
@@ -55,7 +58,6 @@ import {
   SphereGeometry,
   SRGBColorSpace,
   TorusGeometry,
-  TubeGeometry,
   Vector2,
   Vector3,
   WebGLRenderer,
@@ -64,11 +66,11 @@ import {
   type Object3D,
 } from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
-import { coatOf, type Act, type Breed, type Look } from './companion'
+import { plumageOf, type Act, type Look } from './companion'
 
 // ── The scene's public face ─────────────────────────────────────────────
 
-export interface DogScene {
+export interface CompanionScene {
   setLook(look: Look): void
   setAct(act: Act): void
   /** The canvas's size in CSS pixels. */
@@ -77,26 +79,30 @@ export interface DogScene {
   play(): void
   /** Stop drawing, keeping everything for `play` to pick up. */
   pause(): void
-  /** Draw the current act once, standing still: for reduced motion. */
-  still(): void
   /**
-   * Where the pointer is from the dog, roughly -1 to 1 each way (right and
+   * Draw the current act once, standing still: for reduced motion. `at` is
+   * how many seconds into the act to draw it -- far enough, left alone, that
+   * the act has arrived.
+   */
+  still(at?: number): void
+  /**
+   * Where the pointer is from the bird, roughly -1 to 1 each way (right and
    * down are positive). It looks there for a while, then loses interest.
    */
   lookAt(x: number, y: number): void
-  /** A pat: hearts, a wiggle, happy eyes. */
+  /** A pat: hearts, a wiggle, happy eyes, a chirp. */
   pet(): void
   dispose(): void
 }
 
-export interface DogOptions {
+export interface CompanionOptions {
   look: Look
   act: Act
   /** For the thought, the question mark and the Zs: the app's accent. */
   accent: string
 }
 
-/** How long an act may idle before the dog lies down for a nap. */
+/** How long an act may idle before the bird settles down for a nap. */
 const DOZE_AFTER_S = 180
 /** How long a change of act takes to blend through. */
 const BLEND_S = 0.45
@@ -104,10 +110,10 @@ const BLEND_S = 0.45
 const FPS = 30
 /**
  * Asleep, half that: it is only breathing, and a rail left open all day on
- * an assistant nobody has set up is a dog asleep all day.
+ * an assistant nobody has set up is a bird asleep all day.
  */
 const SLEEP_FPS = 15
-/** Which way the dog faces at rest: a touch to one side, so it reads as 3D. */
+/** Which way the bird faces at rest: a touch to one side, so it reads as 3D. */
 const FACING = 0.24
 /** How long a pat lasts. */
 const PET_S = 1.7
@@ -117,10 +123,13 @@ const ATTENTION_S = 3.5
 /**
  * Make the scene, or `null` where WebGL is not available -- a webview with
  * hardware acceleration switched off, a context the browser refused. The
- * header then has no dog, which is the honest failure: nothing else depends
+ * header then has no bird, which is the honest failure: nothing else depends
  * on it.
  */
-export function createDogScene(canvas: HTMLCanvasElement, options: DogOptions): DogScene | null {
+export function createCompanionScene(
+  canvas: HTMLCanvasElement,
+  options: CompanionOptions,
+): CompanionScene | null {
   const renderer = makeRenderer(canvas)
   if (!renderer) return null
   const scene = studio(renderer)
@@ -130,11 +139,11 @@ export function createDogScene(canvas: HTMLCanvasElement, options: DogOptions): 
   scene.add(props.group)
 
   let shown = options.look
-  let rig = buildDog(shown)
+  let rig = buildBird(shown)
   scene.add(rig.root)
 
   let act: Act = options.act
-  /** What is being acted out: `act`, unless an idle dog has nodded off. */
+  /** What is being acted out: `act`, unless an idle bird has nodded off. */
   let current: Act = act
   let actStart = 0
   let from: Pose | null = null
@@ -152,7 +161,7 @@ export function createDogScene(canvas: HTMLCanvasElement, options: DogOptions): 
   function step(dt: number) {
     clock += dt
     const u = clock - actStart
-    // Left alone long enough, an idle dog lies down. Any new act wakes it.
+    // Left alone long enough, an idle bird settles down. Any new act wakes it.
     const acting: Act = act === 'idle' && u > DOZE_AFTER_S ? 'sleep' : act
     if (acting !== current) {
       from = { ...pose }
@@ -176,6 +185,11 @@ export function createDogScene(canvas: HTMLCanvasElement, options: DogOptions): 
     renderer!.render(scene, camera)
   }
 
+  // Posed before anything can draw it. A bird as it comes out of
+  // `buildBird` has its wings straight up and every prop showing, and the
+  // first `resize` draws whatever is there -- a frame ahead of the loop.
+  step(0)
+
   function loop(ms: number) {
     frame = requestAnimationFrame(loop)
     if (last === 0) last = ms
@@ -196,17 +210,11 @@ export function createDogScene(canvas: HTMLCanvasElement, options: DogOptions): 
 
   return {
     setLook(look) {
-      if (
-        look.breed === shown.breed &&
-        look.coat === shown.coat &&
-        look.markings === shown.markings
-      ) {
-        return
-      }
+      if (look.plumage === shown.plumage) return
       shown = look
       scene.remove(rig.root)
       dispose(rig.root)
-      rig = buildDog(look)
+      rig = buildBird(look)
       scene.add(rig.root)
       refresh()
     },
@@ -221,7 +229,7 @@ export function createDogScene(canvas: HTMLCanvasElement, options: DogOptions): 
       width = w
       height = h
       // Drawn at twice the size even on a 1x display: at this size the edge
-      // of an ear is a handful of pixels, and supersampling is what keeps it
+      // of a feather is a handful of pixels, and supersampling is what keeps it
       // from crawling. The cost, at under 200 pixels square, is nothing.
       renderer.setPixelRatio(Math.min(3, Math.max(2, window.devicePixelRatio || 1)))
       renderer.setSize(w, h, false)
@@ -237,15 +245,15 @@ export function createDogScene(canvas: HTMLCanvasElement, options: DogOptions): 
       cancelAnimationFrame(frame)
       frame = 0
     },
-    still() {
+    still(at = 1.2) {
       cancelAnimationFrame(frame)
       frame = 0
       // Far enough into the act that it has arrived, and not blinking. A
       // pat still shows, as a happy face, for as long as it lasts.
-      clock = Math.max(clock, actStart + 1.2)
+      clock = Math.max(clock, actStart + at)
       from = null
       current = act
-      const live = life.over(poseFor(act, clock, 1.2), act, clock, 0, true)
+      const live = life.over(poseFor(act, clock, at), act, clock, 0, true)
       apply(rig, live, clock, 1)
       props.animate(clock, live, rig)
       draw()
@@ -272,64 +280,6 @@ export function createDogScene(canvas: HTMLCanvasElement, options: DogOptions): 
   }
 }
 
-/** Draws dogs to pictures, for the breed picker's cards. */
-export interface Painter {
-  /**
-   * Each dog as a data URL, one a frame, so a row of them never holds the
-   * window up for longer than one dog takes to draw.
-   */
-  paint(looks: Look[], width: number, height: number): Promise<string[]>
-  dispose(): void
-}
-
-/**
- * A painter, or `null` without WebGL. One renderer for as long as the
- * picker is open: making one, lighting it and compiling its shaders is most
- * of the cost of a portrait, and the cards are repainted every time the
- * coat changes.
- */
-export function createPainter(): Painter | null {
-  const canvas = document.createElement('canvas')
-  const renderer = makeRenderer(canvas)
-  if (!renderer) return null
-  renderer.setPixelRatio(2)
-  const scene = studio(renderer)
-  const camera = new PerspectiveCamera(24, 1, 0.1, 40)
-  const props = buildProps(new Color('#d0782f'))
-  scene.add(props.group)
-  let disposed = false
-  return {
-    async paint(looks, width, height) {
-      renderer.setSize(width, height, false)
-      frameCamera(camera, width, height, 1.3)
-      const out: string[] = []
-      for (const look of looks) {
-        if (disposed) break
-        const rig = buildDog(look)
-        scene.add(rig.root)
-        const pose = poseFor('idle', 0, 0)
-        pose.headYaw = -0.12
-        pose.headRoll = 0.12
-        apply(rig, pose, 0, 1)
-        props.animate(0, pose, rig)
-        renderer.render(scene, camera)
-        out.push(canvas.toDataURL('image/png'))
-        scene.remove(rig.root)
-        dispose(rig.root)
-        await new Promise((resolve) => requestAnimationFrame(resolve))
-      }
-      return out
-    },
-    dispose() {
-      disposed = true
-      dispose(scene)
-      scene.environment?.dispose()
-      renderer.dispose()
-      renderer.forceContextLoss()
-    },
-  }
-}
-
 function makeRenderer(canvas: HTMLCanvasElement): WebGLRenderer | null {
   try {
     const renderer = new WebGLRenderer({
@@ -339,10 +289,16 @@ function makeRenderer(canvas: HTMLCanvasElement): WebGLRenderer | null {
       powerPreference: 'low-power',
     })
     renderer.outputColorSpace = SRGBColorSpace
-    // Neutral rather than filmic: a honey coat should come out honey, not
+    // Neutral rather than filmic: gold plumage should come out gold, not
     // the orange a film curve would push it to.
     renderer.toneMapping = NeutralToneMapping
     renderer.setClearColor(0x000000, 0)
+    // Soft shadows between its own parts -- the head's on the chest, a
+    // wing's on the body -- are most of what makes it read as a solid thing
+    // in a room rather than shapes laid on a page. One small map, from the
+    // key light only.
+    renderer.shadowMap.enabled = true
+    renderer.shadowMap.type = PCFShadowMap
     return renderer
   } catch {
     return null
@@ -350,7 +306,7 @@ function makeRenderer(canvas: HTMLCanvasElement): WebGLRenderer | null {
 }
 
 /**
- * The room it is lit in: a soft studio for the fur to pick up, a warm key
+ * The room it is lit in: a soft studio for the down to pick up, a warm key
  * from the front left, and a cool rim behind that the velvet catches.
  */
 function studio(renderer: WebGLRenderer): Scene {
@@ -360,24 +316,45 @@ function studio(renderer: WebGLRenderer): Scene {
   // Small: it only has to be soft, and at this size a sharper one is a
   // quarter of a second spent on reflections nobody can see.
   scene.environment = pmrem.fromScene(room, 0.04, 0.1, 100, { size: 64 }).texture
-  scene.environmentIntensity = 0.55
+  scene.environmentIntensity = 0.48
   room.dispose()
   pmrem.dispose()
 
-  scene.add(new HemisphereLight(0xfff6ec, 0x9a8b80, 0.55))
-  const key = new DirectionalLight(0xfff0dc, 1.7)
+  // Lit the way a soft toy is photographed: a warm key from above left that
+  // casts the only shadows, a fill from the other side so nothing goes
+  // black, a cool rim behind that the velvet catches, and warm light
+  // bounced up off the floor into the underside of the head.
+  scene.add(new HemisphereLight(0xfff6ec, 0xc89a6a, 0.4))
+  const key = new DirectionalLight(0xfff0dc, 2.05)
   key.position.set(-2.2, 3.4, 3.2)
+  key.castShadow = true
+  key.shadow.mapSize.set(512, 512)
+  key.shadow.radius = 5
+  key.shadow.blurSamples = 12
+  key.shadow.bias = -0.0006
+  key.shadow.normalBias = 0.012
+  const box = key.shadow.camera
+  box.left = box.bottom = -1.2
+  box.right = box.top = 1.2
+  box.near = 1
+  box.far = 9
   scene.add(key)
-  const rim = new DirectionalLight(0xe4ecff, 1.6)
+  const fill = new DirectionalLight(0xffe9d6, 0.45)
+  fill.position.set(3, 1.2, 2.4)
+  scene.add(fill)
+  const rim = new DirectionalLight(0xe4ecff, 1.9)
   rim.position.set(2.0, 2.6, -2.8)
   scene.add(rim)
+  const bounce = new DirectionalLight(0xffc98a, 0.35)
+  bounce.position.set(0, -2, 1.5)
+  scene.add(bounce)
   return scene
 }
 
 /**
- * Fitted to a box around the dog and what floats about it, whatever the
+ * Fitted to a box around the bird and what floats about it, whatever the
  * canvas's shape: the header's and the settings preview's both show the
- * whole dog. `zoom` above 1 crops in, for a portrait.
+ * whole bird, wings up. `zoom` above 1 crops in.
  */
 function frameCamera(camera: PerspectiveCamera, width: number, height: number, zoom = 1) {
   const aspect = width / Math.max(1, height)
@@ -408,8 +385,8 @@ function dispose(root: Object3D) {
     if (mesh.geometry) mesh.geometry.dispose()
     const material = mesh.material as Material | Material[] | undefined
     for (const m of Array.isArray(material) ? material : material ? [material] : []) {
-      const map = (m as MeshBasicMaterial).map
-      if (map) map.dispose()
+      const maps = m as MeshPhysicalMaterial
+      for (const map of [maps.map, maps.bumpMap, maps.roughnessMap, maps.alphaMap]) map?.dispose()
       m.dispose()
     }
   })
@@ -417,39 +394,48 @@ function dispose(root: Object3D) {
 
 // ── Poses ────────────────────────────────────────────────────────────────
 
-/** Everything an act decides about the dog, at one moment. */
+/** Everything an act decides about the bird, at one moment. */
 interface Pose {
-  /** The whole dog, turned towards the laptop (+) or the viewer. */
+  /** The whole bird, turned towards the laptop (+) or the viewer. */
   yaw: number
-  /** The whole dog, shuffled sideways while it sniffs around. */
+  /** The whole bird, shuffled sideways while it hunts about. */
   shift: number
-  /** Up for a hop, down for lying flat. */
+  /** Up for a hop, down for settling onto the ground. */
   lift: number
   /** The body's height, for breathing and landing. */
   squash: number
-  /** The body, leaning forward from the hips. */
+  /** The body, leaning forward from the feet. */
   lean: number
   headPitch: number
   headYaw: number
   headRoll: number
-  /** Up and forward (+), flat and back (-). */
-  earL: number
-  earR: number
+  /** The crest: standing and fanned (+), laid flat back (-). */
+  crest: number
+  /** The crest, tipped to one side. */
+  crestTilt: number
   tailWag: number
-  /** 0 is tucked down, 1 is up and proud. */
+  /** 0 is down, 1 is up and proud. */
   tailLift: number
-  /** How far each front leg reaches forward, in radians. */
-  pawL: number
-  pawR: number
+  /** How far each wing is raised: 0 folded at its side, 1 up and open. Below 0 it hangs. */
+  wingL: number
+  wingR: number
+  /** How far each wing reaches forward and down, for the keys. */
+  tapL: number
+  tapR: number
+  /** The feathers spread apart without the wing being lifted: a ruffle. */
+  fan: number
+  /** The wings drawn round the front, like a blanket. */
+  wrap: number
   /** 1 is open, 0 shut. Blinking is applied on top. */
   eyes: number
   /** The eyes drawn as happy arcs, past one half. */
   happy: number
   /** The eyes drawn shut, asleep, past one half. */
   shut: number
-  /** The nose's twitch. */
-  sniff: number
-  tongue: number
+  /** The beak, open: a chirp. */
+  beak: number
+  /** The brows: inner ends down, concentrating (+); inner ends up, soft and open (-). */
+  brow: number
   laptop: number
   thought: number
   question: number
@@ -457,7 +443,7 @@ interface Pose {
   puff: number
   /** A drop of worry on the side of the head. */
   sweat: number
-  /** A bubble from the nose, asleep. */
+  /** A bubble at the beak, asleep. */
   bubble: number
   sparkle: number
 }
@@ -489,7 +475,7 @@ function envelope(local: number, length: number, edge: number): number {
   return ease(Math.max(0, Math.min(1, local / edge, (length - local) / edge)))
 }
 
-/** Sitting, breathing, looking a little towards whoever is looking at it. */
+/** Perched, breathing, looking a little towards whoever is looking at it. */
 function rest(t: number): Pose {
   const breath = Math.sin(t * 2.2)
   return {
@@ -501,17 +487,21 @@ function rest(t: number): Pose {
     headPitch: 0.02 + breath * 0.015,
     headYaw: -0.1,
     headRoll: 0,
-    earL: 0,
-    earR: 0,
-    tailWag: Math.sin(t * 3.1) * 0.18,
-    tailLift: 0.75,
-    pawL: 0,
-    pawR: 0,
+    crest: 0,
+    crestTilt: 0,
+    tailWag: Math.sin(t * 1.7) * 0.08,
+    tailLift: 0.55,
+    wingL: breath * 0.012,
+    wingR: breath * 0.012,
+    tapL: 0,
+    tapR: 0,
+    fan: 0,
+    wrap: 0,
     eyes: 1,
     happy: 0,
     shut: 0,
-    sniff: 0,
-    tongue: 0,
+    beak: 0,
+    brow: -0.2,
     laptop: 0,
     thought: 0,
     question: 0,
@@ -527,10 +517,10 @@ function rest(t: number): Pose {
  * The pose for an act, `t` seconds into the scene and `u` into the act.
  *
  * Idle is the only one with a mind of its own: every few seconds it picks
- * something small to do -- tilt its head, look round, wag, twitch an ear,
- * bounce -- from a slot of time hashed to a number, so it is never the same
- * loop twice in a row and never needs a random generator to remember
- * anything.
+ * something small to do -- tilt its head, look round, ruffle its feathers,
+ * stretch a wing, bounce -- from a slot of time hashed to a number, so it is
+ * never the same loop twice in a row and never needs a random generator to
+ * remember anything.
  */
 function poseFor(act: Act, t: number, u: number): Pose {
   const p = rest(t)
@@ -541,78 +531,94 @@ function poseFor(act: Act, t: number, u: number): Pose {
       const r = hash(slot)
       const side = hash(slot + 17) < 0.5 ? -1 : 1
       const w = envelope(t - slot * LENGTH, LENGTH, 0.7)
-      if (r < 0.24) {
+      if (r < 0.22) {
         // Sit.
-      } else if (r < 0.44) {
-        p.headRoll += 0.32 * side * w
-        if (side > 0) p.earL += 0.3 * w
-        else p.earR += 0.3 * w
-      } else if (r < 0.6) {
+      } else if (r < 0.42) {
+        // The quick, sideways tilt a bird gives something it is curious about.
+        p.headRoll += 0.34 * side * w
+        p.crestTilt = 0.5 * side * w
+        p.crest += 0.25 * w
+      } else if (r < 0.58) {
         p.headYaw += 0.5 * side * w
         p.headPitch -= 0.06 * w
-      } else if (r < 0.78) {
-        p.tailWag = p.tailWag * (1 - w) + Math.sin(t * 15) * 0.55 * w
-        p.earL += 0.2 * w
-        p.earR += 0.2 * w
-        p.tongue = 0.7 * w
-        p.lift = Math.abs(Math.sin(t * 7.5)) * 0.014 * w
-      } else if (r < 0.9) {
-        // A happy little bounce on the spot.
+      } else if (r < 0.74) {
+        // A ruffle: every feather stands out and shakes, then settles.
+        const shake = Math.sin(t * 22)
+        p.fan = 0.75 * w
+        p.wingL += 0.1 * w + shake * 0.035 * w
+        p.wingR += 0.1 * w - shake * 0.035 * w
+        p.crest += 0.7 * w
+        p.tailWag = p.tailWag * (1 - w) + Math.sin(t * 17) * 0.4 * w
+        p.squash += 0.035 * w
+        p.eyes = 1 - 0.5 * w
+      } else if (r < 0.88) {
+        // One wing stretched right out, slowly, and folded away again.
+        const reach = 0.72 * w
+        if (side > 0) p.wingL = reach
+        else p.wingR = reach
+        p.headRoll += 0.12 * side * w
+        p.headYaw += 0.22 * side * w
+      } else {
+        // A happy little bounce on the spot, wings out for balance.
         const bounce = Math.abs(Math.sin(t * 6))
         p.lift = bounce * 0.05 * w
         p.squash += (bounce - 0.5) * 0.05 * w
         p.headRoll += Math.sin(t * 6) * 0.08 * w
-        p.tailWag = p.tailWag * (1 - w) + Math.sin(t * 12) * 0.4 * w
-      } else {
-        const twitch = pulse(t, 1.1, 0.18) * w
-        if (side > 0) p.earL += 0.45 * twitch
-        else p.earR += 0.45 * twitch
+        p.wingL += (0.18 + bounce * 0.14) * w
+        p.wingR += (0.18 + bounce * 0.14) * w
+        p.crest += 0.4 * w
+        p.tailWag = p.tailWag * (1 - w) + Math.sin(t * 12) * 0.3 * w
       }
       return p
     }
     case 'listen': {
-      // Ears up, head cocked down towards where the words are being typed.
+      // Crest up, head cocked down towards where the words are being typed.
       p.headPitch = 0.16 + Math.sin(u * 1.1) * 0.03
-      p.headRoll = 0.16 * Math.sin(u * 0.6)
+      p.headRoll = 0.18 * Math.sin(u * 0.6)
       p.headYaw = -0.05
-      p.earL += 0.42
-      p.earR += 0.42
-      p.tailWag = Math.sin(u * 9) * 0.32
-      p.tailLift = 0.95
+      p.lean = 0.05
+      p.crest = 0.85
+      p.crestTilt = 0.25 * Math.sin(u * 0.6)
+      p.brow = -0.3
+      p.tailWag = Math.sin(u * 7) * 0.16
+      p.tailLift = 0.9
       return p
     }
     case 'think': {
-      // Head up and to one side, ears uneven, tail slowing; thought dots.
+      // Head up and to one side, crest askew, a wingtip to its chin; dots.
       p.headPitch = -0.2 + Math.sin(u * 0.9) * 0.04
       p.headRoll = 0.24 + Math.sin(u * 0.7) * 0.05
       p.headYaw = 0.05 + Math.sin(u * 0.5) * 0.12
-      p.earL += 0.25
-      p.earR -= 0.12
-      p.tailWag = Math.sin(t * 1.6) * 0.1
+      p.crest = 0.35
+      p.crestTilt = -0.55
+      p.brow = 0.2
+      p.wingR = 0.3 + Math.sin(u * 1.3) * 0.03
+      p.tapR = 0.34
+      p.tailWag = Math.sin(t * 1.6) * 0.06
       p.thought = 1
       return p
     }
     case 'sniff': {
-      // Turned side-on, so the nose can be seen going to the ground, and
-      // sweeping along it in bursts of sniffs.
-      p.lean = 0.42
-      p.headPitch = 0.46 + Math.sin(u * 2.4) * 0.05
+      // Turned side-on, so the beak can be seen going to the ground, and
+      // working along it: a look, a peck, a look somewhere else.
+      const peck = pulse(u, 0.92, 0.3)
+      p.lean = 0.4
+      p.headPitch = 0.34 + peck * 0.2 + Math.sin(u * 2.4) * 0.03
       p.headYaw = Math.sin(u * 1.5) * 0.3
       p.headRoll = Math.sin(u * 1.5) * -0.08
       p.shift = Math.sin(u * 0.75) * 0.08
       p.yaw = 0.78 + Math.sin(u * 0.75) * 0.1
-      const burst = pulse(u, 1.25, 0.6)
-      p.sniff = burst * (0.5 + 0.5 * Math.sin(u * 34))
-      p.earL += 0.28
-      p.earR += 0.28
-      p.tailWag = Math.sin(u * 10) * 0.42
-      p.tailLift = 0.95
-      p.puff = 1
+      p.crest = 0.45
+      p.wingL = 0.1
+      p.wingR = 0.1
+      p.tailWag = Math.sin(u * 8) * 0.2
+      p.tailLift = 1
+      p.puff = peck
       return p
     }
     case 'type': {
-      // Turned to the laptop, paws tapping in turn, a pause now and then to
-      // read what it wrote -- and the tongue out, concentrating.
+      // Turned to the laptop, wingtips tapping in turn, a pause now and then
+      // to read what it wrote.
       const reading = pulse(u, 3.4, 0.8, 2.6)
       const typing = 1 - reading
       const k = u * 12
@@ -621,76 +627,79 @@ function poseFor(act: Act, t: number, u: number): Pose {
       p.headPitch = 0.22 + Math.sin(u * 6) * 0.02 * typing - reading * 0.06
       p.headYaw = -0.05 + reading * 0.12
       p.headRoll = reading * 0.12
-      p.pawL = 0.5 + 0.28 * Math.max(0, Math.sin(k)) * typing
-      p.pawR = 0.5 + 0.28 * Math.max(0, Math.sin(k + Math.PI)) * typing
-      p.earL -= 0.08
-      p.earR -= 0.08
-      p.tailWag = Math.sin(u * 2.2) * 0.12
-      p.tongue = 0.45 * typing
+      p.tapL = 0.78 + 0.2 * Math.max(0, Math.sin(k)) * typing
+      p.tapR = 0.78 + 0.2 * Math.max(0, Math.sin(k + Math.PI)) * typing
+      p.crest = -0.1 + reading * 0.5
+      p.tailWag = Math.sin(u * 2.2) * 0.08
       p.laptop = 1
       return p
     }
     case 'ask': {
-      // Looking straight at you, head cocked, a paw up -- toe beans out:
-      // well?
+      // Looking straight at you, head cocked, a wing up like a hand: well?
       p.headYaw = -0.2
-      p.headRoll = -0.32 + Math.sin(u * 1.4) * 0.04
+      p.headRoll = -0.3 + Math.sin(u * 1.4) * 0.04
       p.headPitch = -0.06
-      p.earL += 0.35
-      p.earR += 0.35
-      p.pawR = 1.15 + Math.sin(u * 5) * 0.14
-      p.tailWag = Math.sin(u * 13) * 0.45
+      p.crest = 0.7
+      p.crestTilt = -0.3
+      p.brow = -0.45
+      p.wingR = 0.96 + Math.sin(u * 5) * 0.06
+      p.tailWag = Math.sin(u * 9) * 0.2
       p.question = 1
       return p
     }
     case 'cheer': {
       const hop = Math.abs(Math.sin(u * Math.PI * 2.3))
+      const flap = Math.sin(u * Math.PI * 4.6)
       p.lift = hop * 0.12
       p.squash = 0.94 + hop * 0.1
       p.headYaw = -0.15
       p.headPitch = -0.1
-      p.earL += 0.25 + hop * 0.2
-      p.earR += 0.25 + hop * 0.2
-      p.pawL = 0.4 * hop
-      p.pawR = 0.4 * hop
-      p.tailWag = Math.sin(u * 19) * 0.62
+      p.crest = 1
+      p.wingL = 0.86 + flap * 0.14
+      p.wingR = 0.86 + flap * 0.14
+      p.tailWag = Math.sin(u * 19) * 0.4
       p.tailLift = 1
       p.happy = 1
-      p.tongue = 1
+      p.beak = 0.6 + 0.4 * hop
+      p.brow = -0.35
       p.sparkle = 1
       return p
     }
     case 'droop': {
-      p.lean = 0.06
+      p.lean = 0.07
       p.squash = 0.97 + Math.sin(t * 1.3) * 0.01
       p.headPitch = 0.34
       p.headYaw = -0.12
-      p.earL -= 0.7
-      p.earR -= 0.7
+      p.crest = -1
+      p.wingL = -0.7
+      p.wingR = -0.7
       p.tailWag = 0
-      p.tailLift = 0.08
+      p.tailLift = 0
       p.eyes = 0.55
+      p.brow = -1
       p.sweat = 1
       return p
     }
     case 'sleep': {
-      // Lying down: lower, leaning onto front legs stretched out, head on
-      // them, breathing slowly; a bubble at the nose, and the Zs.
+      // Settled onto the ground, head turned and sunk into its own feathers,
+      // wings drawn round, breathing slowly; a bubble at the beak, and the Zs.
       const breath = Math.sin(t * 1.25)
-      p.lift = -0.08
-      p.lean = 0.36
+      p.lift = -0.07
+      p.lean = 0.1
       p.squash = 0.9 + breath * 0.03
       p.headPitch = 0.3 + breath * 0.02
-      p.headYaw = -0.18
-      p.headRoll = 0.26
-      p.pawL = 1.05
-      p.pawR = 1.05
-      p.earL -= 0.3
-      p.earR -= 0.3
+      p.headYaw = -0.34
+      p.headRoll = 0.3
+      p.wrap = 1
+      p.wingL = 0
+      p.wingR = 0
+      p.fan = 0.2 + breath * 0.05
+      p.crest = -0.75
       p.tailWag = 0
-      p.tailLift = 0.15
+      p.tailLift = 0.1
       p.eyes = 0
       p.shut = 1
+      p.brow = -0.15
       p.zzz = 1
       p.bubble = 0.5 + 0.5 * breath
       return p
@@ -734,14 +743,14 @@ const ATTENTIVE: Partial<Record<Act, number>> = {
 
 /**
  * What is laid over an act: where it is looking, and being petted -- and,
- * after the pose is on the dog, the ears catching up with the head.
+ * after the pose is on the bird, the crest catching up with the head.
  */
 class Life {
   #look = new Vector2()
   #gaze = new Vector2()
   #lookedAt = -Infinity
   #petAt = -Infinity
-  #ears = [new Spring(), new Spring()]
+  #crest = new Spring()
   #head = new Vector3()
   #lift = 0
 
@@ -774,11 +783,13 @@ class Life {
       p.shut = p.shut * (1 - w)
       p.headRoll = p.headRoll * (1 - w) + wiggle * 0.18 * w
       p.headPitch = p.headPitch * (1 - w) - 0.08 * w
-      p.earL -= 0.25 * w
-      p.earR -= 0.25 * w
-      p.tailWag = p.tailWag * (1 - w) + Math.sin(since * 20) * 0.6 * w
+      // Under a hand the crest goes flat, and everything else fluffs up.
+      p.crest = p.crest * (1 - w) - 0.6 * w
+      p.fan = Math.max(p.fan, 0.6 * w)
+      p.tailWag = p.tailWag * (1 - w) + Math.sin(since * 20) * 0.4 * w
       p.squash += Math.abs(wiggle) * 0.04 * w
-      p.tongue = Math.max(p.tongue, 0.8 * w)
+      p.beak = Math.max(p.beak, 0.7 * w)
+      p.brow *= 1 - w
       p.zzz *= 1 - w
       p.bubble *= 1 - w
     }
@@ -786,9 +797,9 @@ class Life {
   }
 
   /**
-   * The ears, a beat behind the head: each one a spring pushed by how fast
-   * the head turned and how hard the body landed, so a nod makes them flap
-   * and a hop makes them bounce.
+   * The crest, a beat behind the head: a spring pushed by how fast the head
+   * turned and how hard the body landed, so a nod makes it flick and a hop
+   * makes it bounce.
    */
   settle(rig: Rig, pose: Pose, dt: number) {
     if (dt <= 0) return
@@ -797,13 +808,9 @@ class Life {
     const lift = (pose.lift - this.#lift) / dt
     this.#head.copy(head)
     this.#lift = pose.lift
-    rig.ears.forEach((ear, i) => {
-      const side = i === 0 ? -1 : 1
-      const spring = this.#ears[i]!
-      spring.step(dt, turn.x * 0.06 - lift * 0.5 + side * (turn.z + turn.y) * 0.04)
-      ear.rotation.x += spring.x * (rig.earKind === 'pointy' ? 0.6 : 1)
-      ear.rotation.z += side * spring.x * (rig.earKind === 'floppy' ? 1.2 : 0.5)
-    })
+    this.#crest.step(dt, turn.x * 0.06 - lift * 0.5 + (turn.z + turn.y) * 0.04)
+    rig.crest.rotation.x += this.#crest.x * 0.9
+    rig.crest.rotation.z += this.#crest.x * 0.5
   }
 }
 
@@ -820,74 +827,12 @@ class Spring {
   }
 }
 
-// ── The dog ──────────────────────────────────────────────────────────────
+// ── The bird ─────────────────────────────────────────────────────────────
 
-/** What makes a corgi a corgi, as numbers. */
-interface Anatomy {
-  ears: 'pointy' | 'floppy' | 'button' | 'fluffy'
-  earSize: number
-  /** Muzzle length; a pug's is half a shiba's. */
-  snout: number
-  tail: 'curl' | 'stub' | 'plume' | 'pompom'
-  /** Body width. */
-  chubby: number
-  /** Leg length: a corgi sits lower. */
-  legs: number
-  cheeks: boolean
-  topknot: boolean
-}
-
-const SHAPES: Record<Breed, Anatomy> = {
-  shiba: {
-    ears: 'pointy',
-    earSize: 1,
-    snout: 1,
-    tail: 'curl',
-    chubby: 1,
-    legs: 1,
-    cheeks: true,
-    topknot: false,
-  },
-  corgi: {
-    ears: 'pointy',
-    earSize: 1.4,
-    snout: 1.05,
-    tail: 'stub',
-    chubby: 1.1,
-    legs: 0.75,
-    cheeks: true,
-    topknot: false,
-  },
-  beagle: {
-    ears: 'floppy',
-    earSize: 1,
-    snout: 1.2,
-    tail: 'plume',
-    chubby: 1,
-    legs: 1,
-    cheeks: false,
-    topknot: false,
-  },
-  pug: {
-    ears: 'button',
-    earSize: 1,
-    snout: 0.55,
-    tail: 'curl',
-    chubby: 1.16,
-    legs: 0.9,
-    cheeks: true,
-    topknot: false,
-  },
-  poodle: {
-    ears: 'fluffy',
-    earSize: 1,
-    snout: 1.1,
-    tail: 'pompom',
-    chubby: 0.96,
-    legs: 1.05,
-    cheeks: false,
-    topknot: true,
-  },
+/** One wing: the shoulder it turns about, and its feathers, front one first. */
+interface Wing {
+  arm: Group
+  feathers: Mesh[]
 }
 
 /** The parts that move, and where they started. */
@@ -897,49 +842,396 @@ interface Rig {
   chest: Group
   neck: Group
   neckY: number
-  ears: [Group, Group]
-  earBase: [number, number]
-  earKind: Anatomy['ears']
+  crest: Group
+  crestFeathers: Mesh[]
+  wings: [Wing, Wing]
   tail: Group
-  legs: [Group, Group]
+  tailFeathers: Mesh[]
   eyes: [Group, Group]
+  brows: [Mesh, Mesh]
   happy: [Mesh, Mesh]
   shut: [Mesh, Mesh]
-  nose: Mesh
-  tongue: Mesh
+  /** The tip of the beak, for whatever comes off it. */
+  beakTip: Object3D
+  jaw: Group
   sweat: Group
   bubble: Mesh
   laptop: Group
   screen: CanvasTexture
 }
 
-const WHITE = '#fbf6ee'
-const NOSE = '#2b2325'
 const EYE = '#191415'
-const PINK = '#f4aeb0'
-const BEANS = '#f39aa3'
-const TONGUE = '#f27a86'
+const BEAK = '#f6a31c'
+const CERE = '#ffd76a'
+const FEET = '#f39a1b'
+const INSIDE = '#d9566a'
 
 /**
- * Velvet: the fur's sheen is what makes it read as a soft toy rather than a
+ * Velvet: the down's sheen is what makes it read as a soft toy rather than a
  * painted figure -- a pale glow at the edges, where the light grazes it.
  */
-function fur(hex: string): MeshPhysicalMaterial {
+function down(hex: string, surface?: Surface): MeshPhysicalMaterial {
   return new MeshPhysicalMaterial({
     color: hex,
-    roughness: 0.78,
+    roughness: 0.8,
     metalness: 0,
-    sheen: 0.8,
-    sheenRoughness: 0.45,
-    sheenColor: new Color(hex).lerp(new Color('#ffffff'), 0.4),
+    sheen: 0.9,
+    sheenRoughness: 0.42,
+    sheenColor: new Color(hex).lerp(new Color('#ffffff'), 0.45),
+    map: surface?.map ?? null,
+    bumpMap: surface?.bump ?? null,
+    bumpScale: surface ? 0.6 : 1,
   })
 }
 
-/** Wet and glossy, with a clear coat: eyes and noses. */
-function glossy(hex: string): MeshPhysicalMaterial {
+/**
+ * A flight feather: smoother than down, with a little of the lacquer the
+ * icon's feathers have, so the wing reads as made of separate blades.
+ */
+function vane(hex: string, surface?: Surface): MeshPhysicalMaterial {
   return new MeshPhysicalMaterial({
     color: hex,
-    roughness: 0.25,
+    roughness: 0.55,
+    metalness: 0,
+    clearcoat: 0.3,
+    clearcoatRoughness: 0.45,
+    sheen: 0.6,
+    sheenRoughness: 0.45,
+    sheenColor: new Color(hex).lerp(new Color('#ffffff'), 0.5),
+    map: surface?.map ?? null,
+    bumpMap: surface?.bump ?? null,
+    bumpScale: surface ? 2 : 1,
+  })
+}
+
+// ── Surfaces ─────────────────────────────────────────────────────────────
+//
+// Painted once per bird into small canvases, in grey, so one picture serves
+// every colour: the material's colour tints it. What they add is what a
+// smooth sphere lacks -- the grain of down and the vanes of a feather -- and
+// they are kept faint, because from across the room it is still a toy.
+
+/** A colour picture to tint and a height picture to light, for one surface. */
+interface Surface {
+  map: CanvasTexture
+  bump: CanvasTexture
+}
+
+/** A pseudo-random number for `n`, the same every time: the bird never changes. */
+function seeded(n: number): number {
+  const x = Math.sin(n * 91.345 + 47.853) * 43758.5453
+  return x - Math.floor(x)
+}
+
+function paper(
+  width: number,
+  height: number,
+  fill: string,
+): [HTMLCanvasElement, CanvasRenderingContext2D] {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const g = canvas.getContext('2d')!
+  g.fillStyle = fill
+  g.fillRect(0, 0, width, height)
+  return [canvas, g]
+}
+
+function texture(canvas: HTMLCanvasElement, colour: boolean, repeat = 1): CanvasTexture {
+  const t = new CanvasTexture(canvas)
+  if (colour) t.colorSpace = SRGBColorSpace
+  t.wrapS = t.wrapT = RepeatWrapping
+  t.repeat.set(repeat, repeat)
+  t.anisotropy = 4
+  return t
+}
+
+/**
+ * Down, as felt: a fine, even grain of fibres -- the nap of a tennis ball --
+ * with no tufts or clumps in it, because at this size anything bigger than
+ * a fibre reads as blemishes rather than fur. A faint, broad mottle under it
+ * keeps a large surface from looking printed.
+ */
+function downSurface(): Surface {
+  const S = 256
+  const [colourCanvas, c] = paper(S, S, '#ffffff')
+  const [bumpCanvas, b] = paper(S, S, '#808080')
+  const colour = c.getImageData(0, 0, S, S)
+  const bump = b.getImageData(0, 0, S, S)
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = (y * S + x) * 4
+      const grain = seeded(x * 0.0137 + y * 1.731) - 0.5
+      // Broad and soft: two waves that repeat with the tile.
+      const mottle =
+        Math.sin((x / S) * Math.PI * 4 + Math.sin((y / S) * Math.PI * 2) * 1.5) *
+        Math.cos((y / S) * Math.PI * 6)
+      const tone = 252 + grain * 2.5 + mottle * 2
+      colour.data[i] = colour.data[i + 1] = colour.data[i + 2] = tone
+      const height = 128 + grain * 10
+      bump.data[i] = bump.data[i + 1] = bump.data[i + 2] = height
+    }
+  }
+  c.putImageData(colour, 0, 0)
+  b.putImageData(bump, 0, 0)
+  return { map: texture(colourCanvas, true, 2), bump: texture(bumpCanvas, false, 4) }
+}
+
+/**
+ * Felt fibres seen end on, for the shells: one texel per fibre, its
+ * brightness how far out it reaches, so a shell `k` of the way out keeps
+ * only the fibres at least that long -- which is how a stack of shells
+ * becomes a nap that thins towards its tips. Fine and dense, so what shows
+ * is a soft, even halo round the outline rather than separate strands.
+ */
+function strandTexture(): CanvasTexture {
+  const S = 128
+  const [canvas, g] = paper(S, S, '#000000')
+  const image = g.getImageData(0, 0, S, S)
+  for (let i = 0; i < S * S; i++) {
+    // Most fibres are short; a few reach the whole way.
+    const reach = Math.pow(seeded(i * 0.618 + 0.11), 0.7)
+    image.data[i * 4] = image.data[i * 4 + 1] = image.data[i * 4 + 2] = Math.round(reach * 255)
+  }
+  g.putImageData(image, 0, 0)
+  // Softened by a hair, so a fibre is a little round tip rather than a hard
+  // square texel that twinkles as the bird moves. Drawn three by three so
+  // the blur wraps round the tile's edges too.
+  const [soft, h] = paper(S, S, '#000000')
+  h.filter = 'blur(0.7px)'
+  for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) h.drawImage(canvas, ox, oy)
+  const t = new CanvasTexture(soft)
+  t.wrapS = t.wrapT = RepeatWrapping
+  t.repeat.set(7, 5)
+  return t
+}
+
+/** How many shells the fur is drawn in, and how far out the last one is. */
+const FUR_SHELLS = 6
+const FUR_LENGTH = 0.007
+
+/**
+ * Fur on a ball of down: thin shells round it, each a little further out,
+ * each cut to the strands that reach it. It is what gives the head and body
+ * a soft, fuzzy edge against whatever is behind them -- the thing a smooth
+ * sphere can never have, however it is lit.
+ *
+ * Cut rather than blended (`alphaTest`, smoothed by `alphaToCoverage`), so
+ * the shells need no sorting and cost no more than drawing the ball again
+ * a few times; children of the ball, so they move, squash and turn with it.
+ */
+function furOn(ball: Mesh, hex: string, strands: CanvasTexture) {
+  const geometry = ball.geometry as SphereGeometry
+  const radius = geometry.parameters.radius
+  for (let i = 1; i <= FUR_SHELLS; i++) {
+    const k = i / FUR_SHELLS
+    const out = FUR_LENGTH * k
+    const shell = new Mesh(
+      geometry,
+      new MeshPhysicalMaterial({
+        // The same velvet as the down under it, so a fibre differs from the
+        // surface only in standing a hair proud of it. A shell lit any other
+        // way shows every fibre as a dot of another colour -- glitter.
+        color: hex,
+        roughness: 0.8,
+        sheen: 0.9,
+        sheenRoughness: 0.42,
+        sheenColor: new Color(hex).lerp(new Color('#ffffff'), 0.45),
+        alphaMap: strands,
+        // Nearly whole close in, which reads as velvet; sparse only at the
+        // tips, where the fibres soften the outline. Half-covered shells
+        // all the way out are what read as grain.
+        alphaTest: 0.04 + 0.86 * k * k,
+        alphaToCoverage: true,
+      }),
+    )
+    // Each axis grown by the same distance, whatever the ball's proportions.
+    shell.scale.set(
+      1 + out / (radius * ball.scale.x),
+      1 + out / (radius * ball.scale.y),
+      1 + out / (radius * ball.scale.z),
+    )
+    shell.userData.fur = true
+    ball.add(shell)
+  }
+}
+
+/**
+ * A flight feather's vanes: a pale shaft down its middle, following the same
+ * curve the feather does, fine barbs sweeping from it towards the tip, and a
+ * little shade at the root where it tucks under the one in front.
+ *
+ * Laid out in the feather's own unit square -- across is `u`, root to tip
+ * is `v` -- which `featherGeometry` maps its faces onto. `spine` says where
+ * across the square the shaft is, at each point along it.
+ */
+function featherSurface(spine: (k: number) => number): Surface {
+  const W = 128
+  const H = 256
+  const [colourCanvas, c] = paper(W, H, '#ffffff')
+  const [bumpCanvas, b] = paper(W, H, '#808080')
+  // Darker towards the root, the way a stack of real ones is.
+  const shade = c.createLinearGradient(0, 0, 0, H)
+  shade.addColorStop(0, 'rgba(255, 255, 255, 0)')
+  shade.addColorStop(0.7, 'rgba(70, 40, 10, 0.05)')
+  shade.addColorStop(1, 'rgba(70, 40, 10, 0.22)')
+  c.fillStyle = shade
+  c.fillRect(0, 0, W, H)
+  c.lineCap = b.lineCap = 'round'
+  // Canvas rows run from the tip (top) to the root (bottom).
+  const at = (k: number) => [spine(k) * W, (1 - k) * H] as const
+  for (let i = 0; i < 70; i++) {
+    const k = 0.04 + (i / 70) * 0.92
+    const [x, y] = at(k)
+    for (const side of [-1, 1]) {
+      const reach = W * 0.5
+      const barb = (g: CanvasRenderingContext2D, style: string, width: number, shift: number) => {
+        g.strokeStyle = style
+        g.lineWidth = width
+        g.beginPath()
+        g.moveTo(x, y + shift)
+        g.quadraticCurveTo(
+          x + side * reach * 0.4,
+          y - reach * 0.12 + shift,
+          x + side * reach,
+          y - reach * 0.55 + shift,
+        )
+        g.stroke()
+      }
+      barb(c, 'rgba(70, 40, 10, 0.1)', 1.4, 0)
+      barb(b, 'rgba(0, 0, 0, 0.3)', 1.6, 0.8)
+      barb(b, 'rgba(255, 255, 255, 0.22)', 1, -0.6)
+    }
+  }
+  // The shaft: a pale line, raised, from the root almost to the tip.
+  const shaft = (g: CanvasRenderingContext2D, style: string, width: number) => {
+    g.strokeStyle = style
+    g.lineWidth = width
+    g.beginPath()
+    for (let i = 0; i <= 40; i++) {
+      const [x, y] = at((i / 40) * 0.9)
+      if (i === 0) g.moveTo(x, y)
+      else g.lineTo(x, y)
+    }
+    g.stroke()
+  }
+  shaft(c, 'rgba(255, 255, 255, 0.9)', 3.5)
+  shaft(b, 'rgba(255, 255, 255, 0.5)', 4)
+  const map = texture(colourCanvas, true)
+  const bump = texture(bumpCanvas, false)
+  for (const t of [map, bump]) t.wrapS = t.wrapT = ClampToEdgeWrapping
+  return { map, bump }
+}
+
+/**
+ * An eye, seen from the front, painted at a size that stays sharp however
+ * close the camera is: a big round pupil; an iris of fine radial fibres,
+ * dark at the pupil and warmer towards its edge; a darker rim round it; a
+ * crescent of light glowing up through the lower iris, the way it does in a
+ * real one lit from above; and the dark of the eye round all of that. No
+ * catchlight is painted: those are separate, so they stay where the light
+ * is whichever way the eye turns.
+ */
+function eyeTexture(): CanvasTexture {
+  const S = 512
+  const C = S / 2
+  const [canvas, g] = paper(S, S, '#140d0a')
+  const IRIS = S * 0.43
+  // Large, for a young and gentle look; a small pupil in a big iris stares.
+  const PUPIL = S * 0.28
+  // The iris, warm brown, darker in towards the pupil.
+  const base = g.createRadialGradient(C, C, PUPIL * 0.8, C, C, IRIS)
+  base.addColorStop(0, '#2a140a')
+  base.addColorStop(0.55, '#5e3215')
+  base.addColorStop(0.9, '#7a4519')
+  base.addColorStop(1, '#4a260f')
+  g.fillStyle = base
+  g.beginPath()
+  g.arc(C, C, IRIS, 0, Math.PI * 2)
+  g.fill()
+  // Its fibres: fine strokes from the pupil out, lighter and darker by turns.
+  g.lineCap = 'round'
+  for (let i = 0; i < 360; i++) {
+    const a = (i / 360) * Math.PI * 2 + (seeded(i + 0.4) - 0.5) * 0.02
+    const r0 = PUPIL * (0.95 + seeded(i + 0.2) * 0.15)
+    const r1 = IRIS * (0.78 + seeded(i + 0.9) * 0.2)
+    const light = seeded(i + 0.66) > 0.5
+    g.strokeStyle = light ? 'rgba(214, 150, 80, 0.22)' : 'rgba(20, 8, 2, 0.28)'
+    g.lineWidth = 1 + seeded(i + 0.33) * 1.6
+    g.beginPath()
+    g.moveTo(C + Math.cos(a) * r0, C + Math.sin(a) * r0)
+    g.lineTo(C + Math.cos(a) * r1, C + Math.sin(a) * r1)
+    g.stroke()
+  }
+  // Light coming up through the lower half: a soft warm crescent.
+  const glow = g.createRadialGradient(
+    C,
+    C + IRIS * 0.55,
+    IRIS * 0.1,
+    C,
+    C + IRIS * 0.4,
+    IRIS * 0.75,
+  )
+  glow.addColorStop(0, 'rgba(232, 160, 80, 0.55)')
+  glow.addColorStop(1, 'rgba(232, 160, 80, 0)')
+  g.save()
+  g.beginPath()
+  g.arc(C, C, IRIS, 0, Math.PI * 2)
+  g.clip()
+  g.fillStyle = glow
+  g.fillRect(0, 0, S, S)
+  // And the top of the iris in the shade of the lid.
+  const lid = g.createLinearGradient(0, C - IRIS, 0, C)
+  lid.addColorStop(0, 'rgba(10, 4, 2, 0.5)')
+  lid.addColorStop(1, 'rgba(10, 4, 2, 0)')
+  g.fillStyle = lid
+  g.fillRect(0, 0, S, S)
+  g.restore()
+  // The dark rim round the iris, soft on both sides.
+  const rim = g.createRadialGradient(C, C, IRIS * 0.86, C, C, IRIS * 1.04)
+  rim.addColorStop(0, 'rgba(18, 9, 5, 0)')
+  rim.addColorStop(0.6, 'rgba(18, 9, 5, 0.85)')
+  rim.addColorStop(1, 'rgba(20, 13, 10, 1)')
+  g.fillStyle = rim
+  g.beginPath()
+  g.arc(C, C, IRIS * 1.06, 0, Math.PI * 2)
+  g.fill()
+  // The pupil, with an edge a fraction soft so it is not cut out of paper.
+  const pupil = g.createRadialGradient(C, C, PUPIL * 0.9, C, C, PUPIL * 1.06)
+  pupil.addColorStop(0, '#040303')
+  pupil.addColorStop(1, 'rgba(4, 3, 3, 0)')
+  g.fillStyle = pupil
+  g.beginPath()
+  g.arc(C, C, PUPIL * 1.06, 0, Math.PI * 2)
+  g.fill()
+  const t = new CanvasTexture(canvas)
+  t.colorSpace = SRGBColorSpace
+  t.anisotropy = 8
+  return t
+}
+
+/**
+ * A ball for an eye, its front painted by looking straight at it: each point
+ * takes the picture at its own x and y, so the pupil is perfectly round and
+ * sharp. (A sphere's own mapping gathers to a point in the middle of the
+ * front, which is exactly where the pupil goes.)
+ */
+function eyeGeometry(radius: number): BufferGeometry {
+  const geometry = new SphereGeometry(radius, 64, 48)
+  const position = geometry.getAttribute('position')
+  const uv = geometry.getAttribute('uv')
+  for (let i = 0; i < position.count; i++) {
+    uv.setXY(i, 0.5 + position.getX(i) / (2 * radius), 0.5 + position.getY(i) / (2 * radius))
+  }
+  uv.needsUpdate = true
+  return geometry
+}
+
+/** Wet and glossy, with a clear coat: eyes, and the beak. */
+function glossy(hex: string, roughness = 0.25): MeshPhysicalMaterial {
+  return new MeshPhysicalMaterial({
+    color: hex,
+    roughness,
     metalness: 0,
     clearcoat: 1,
     clearcoatRoughness: 0.06,
@@ -964,16 +1256,12 @@ function place<T extends Object3D>(
   return mesh
 }
 
-/**
- * A colour's brightness scaled by `k`, as it looks rather than as the light
- * adds up: `Color` holds linear values, where halving the number is nowhere
- * near half as dark, so the factor is taken through the display's gamma.
- */
-function shade(hex: string, k: number): string {
-  return `#${new Color(hex).multiplyScalar(Math.pow(k, 2.2)).getHexString()}`
+/** The colour `k` of the way from one to another, as a hex string. */
+function between(from: string, to: string, k: number): string {
+  return `#${new Color(from).lerp(new Color(to), k).getHexString()}`
 }
 
-/** Is this coat light enough that its mask should be much darker than it? */
+/** Is this plumage light enough that a line drawn on it should be dark? */
 function isLight(hex: string): boolean {
   const n = parseInt(hex.slice(1), 16)
   const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
@@ -981,8 +1269,8 @@ function isLight(hex: string): boolean {
 }
 
 /**
- * A point on an ellipsoid's surface, and which way is out, for laying a spot
- * or an eye onto a body that is not a sphere.
+ * A point on an ellipsoid's surface, and which way is out, for laying an eye
+ * or a cheek onto a head that is not a sphere.
  */
 function onEllipsoid(
   centre: Vector3,
@@ -1008,21 +1296,6 @@ function facing<T extends Object3D>(mesh: T, normal: Vector3): T {
   return mesh
 }
 
-/** A flat oval patch lying on a surface: a spot, a patch, a brow. */
-function patch(
-  material: Material,
-  at: Vector3,
-  normal: Vector3,
-  size: number,
-  stretch = 1,
-  depth = 0.32,
-): Mesh {
-  const mesh = facing(sphere(size, material, 18), normal)
-  mesh.scale.set(stretch, 1, depth)
-  mesh.position.copy(at).addScaledVector(normal, -size * 0.12)
-  return mesh
-}
-
 /** A soft round glow, for blush: a gradient rather than a disc. */
 function glowTexture(colour: string): CanvasTexture {
   const canvas = document.createElement('canvas')
@@ -1039,22 +1312,91 @@ function glowTexture(colour: string): CanvasTexture {
 }
 
 /**
- * A cone with a rounded tip and a soft base, for an ear: a plain cone's
- * point is sharp, and nothing sharp is cute.
+ * One feather, a unit long: the sickle the application's icon is made of,
+ * cut from a sheet and softened at its edges.
+ *
+ * It runs from its root at the origin to its tip at (0, 1), bowed towards
+ * +x, in the xy plane, so a wing is this one shape turned about its root and
+ * shrunk a little each time -- which is exactly how the icon is drawn. The
+ * root comes to a point, because a stack of them has to close to one; the
+ * tip is round, because nothing sharp is cute.
  */
-function earGeometry(radius: number, height: number): LatheGeometry {
+function featherGeometry(): { geometry: BufferGeometry; surface: Surface } {
+  const STEPS = 30
+  const BOW = 0.19
+  const HALF = 0.125
+  // The circle through the root and the tip whose arc stands BOW off the
+  // straight line between them.
+  const radius = (0.25 + BOW * BOW) / (2 * BOW)
+  const centreX = BOW - radius
+  const sweep = Math.asin(0.5 / radius)
+  const outer: Vector2[] = []
+  const inner: Vector2[] = []
+  for (let i = 0; i <= STEPS; i++) {
+    const k = i / STEPS
+    const angle = -sweep + 2 * sweep * k
+    const out = new Vector2(Math.cos(angle), Math.sin(angle))
+    const spine = new Vector2(centreX + radius * out.x, 0.5 + radius * out.y)
+    // Widest a little past the middle; a point at the root, a curve at the tip.
+    const width = HALF * Math.pow(Math.sin(Math.PI * Math.pow(k, 0.9)), k < 0.55 ? 0.85 : 0.5)
+    outer.push(spine.clone().addScaledVector(out, width))
+    inner.push(spine.clone().addScaledVector(out, -width))
+  }
+  const shape = new Shape([...outer, ...inner.reverse().slice(1, -1)])
+  const DEPTH = 0.03
+  const geometry = new ExtrudeGeometry(shape, {
+    depth: DEPTH,
+    bevelEnabled: true,
+    bevelThickness: 0.022,
+    bevelSize: 0.02,
+    bevelSegments: 4,
+    curveSegments: 1,
+  })
+  geometry.translate(0, 0, -DEPTH / 2)
+  // Faces mapped onto the unit square across and along the feather, so its
+  // vanes can be painted once in `featherSurface`.
+  const xs = [...inner, ...outer].map((p) => p.x)
+  const minX = Math.min(...xs) - 0.02
+  const maxX = Math.max(...xs) + 0.02
+  const position = geometry.getAttribute('position')
+  const uv = geometry.getAttribute('uv')
+  for (let i = 0; i < position.count; i++) {
+    const v = Math.max(0, Math.min(1, position.getY(i)))
+    uv.setXY(i, (position.getX(i) - minX) / (maxX - minX), v)
+  }
+  uv.needsUpdate = true
+  const spine = (k: number) => {
+    const angle = -sweep + 2 * sweep * k
+    return (centreX + radius * Math.cos(angle) - minX) / (maxX - minX)
+  }
+  return { geometry, surface: featherSurface(spine) }
+}
+
+/**
+ * A beak: a cone with a rounded tip, laid forward along +z and bent down
+ * over its length, so even a short one is unmistakably hooked.
+ */
+function beakGeometry(radius: number, length: number, droop: number): BufferGeometry {
   const points: Vector2[] = []
   const STEPS = 14
   for (let i = 0; i <= STEPS; i++) {
     const k = i / STEPS
-    // Fat at the base, tapering, and rounding off over the last stretch.
     const r =
       radius *
-      Math.pow(1 - k, 0.8) *
-      (k > 0.82 ? Math.sqrt(Math.max(0, 1 - ((k - 0.82) / 0.18) ** 2)) : 1)
-    points.push(new Vector2(Math.max(0.0001, r), height * k))
+      Math.pow(1 - k, 0.62) *
+      (k > 0.8 ? Math.sqrt(Math.max(0, 1 - ((k - 0.8) / 0.2) ** 2)) : 1)
+    points.push(new Vector2(Math.max(0.0001, r), length * k))
   }
-  return new LatheGeometry(points, 24)
+  const geometry = new LatheGeometry(points, 24)
+  geometry.rotateX(Math.PI / 2)
+  const position = geometry.getAttribute('position')
+  for (let i = 0; i < position.count; i++) {
+    const k = Math.max(0, Math.min(1, position.getZ(i) / length))
+    position.setY(i, position.getY(i) - droop * Math.pow(k, 2.6))
+  }
+  position.needsUpdate = true
+  geometry.computeVertexNormals()
+  return geometry
 }
 
 function heartGeometry(): BufferGeometry {
@@ -1076,158 +1418,119 @@ function heartGeometry(): BufferGeometry {
   return geometry
 }
 
-function buildDog(look: Look): Rig {
-  const shape = SHAPES[look.breed]
-  const coat = coatOf(look.coat)
-  const marks = look.markings
-  const base = fur(coat.base)
-  const white = fur(WHITE)
-  const mark = fur(coat.mark)
-  // A mask is always darker than the coat it sits on -- on a charcoal dog,
-  // the cream that `mark` would give is a mask drawn the wrong way round.
-  const maskHex = isLight(coat.base) ? shade(coat.base, 0.48) : shade(coat.base, 0.62)
-  const maskTone = fur(maskHex)
-  const pale = marks === 'socks' || marks === 'patches' ? white : base
-  const muzzleMat = marks === 'mask' ? maskTone : pale
-  const earMat = marks === 'mask' ? maskTone : base
-  const innerEar = fur(PINK)
-  const beans = fur(BEANS)
+/** How many feathers a wing has, and how each one shrinks from the last. */
+const WING_FEATHERS = 5
+const WING_SHRINK = 0.86
+/** The first feather's length, and how far it stands off straight up, raised. */
+const WING_LENGTH = 0.66
+const WING_LEAD = 0.42
+/** A folded wing is a shorter one: the feathers slide over each other as it closes. */
+const WING_FOLDED = 0.6
+/** The angle between one feather and the next: folded, and fully open. */
+const WING_CLOSED = 0.16
+const WING_OPEN = 0.4
+
+/**
+ * A fan of feathers about one point, the first in front: a wing, the crest,
+ * the tail. Each is a step further along `tones` and a little further back,
+ * so they overlap like the icon's.
+ */
+function fan(
+  geometry: BufferGeometry,
+  count: number,
+  length: number,
+  shrink: number,
+  tones: [string, string],
+  surface?: Surface,
+): Mesh[] {
+  const feathers: Mesh[] = []
+  for (let i = 0; i < count; i++) {
+    const size = length * Math.pow(shrink, i)
+    const feather = new Mesh(
+      geometry,
+      vane(between(tones[0], tones[1], i / Math.max(1, count - 1)), surface),
+    )
+    feather.scale.set(size, size, 0.62)
+    feather.position.z = -i * 0.017
+    feathers.push(feather)
+  }
+  return feathers
+}
+
+function buildBird(look: Look): Rig {
+  const plumage = plumageOf(look.plumage)
+  const downy = downSurface()
+  const base = down(plumage.base, downy)
+  const pale = down(plumage.pale, downy)
+  const beakMat = glossy(BEAK, 0.34)
+  const feetMat = glossy(FEET, 0.5)
+  const { geometry: feather, surface: vanes } = featherGeometry()
 
   const root = new Group()
   root.rotation.y = FACING
   const hips = new Group()
   root.add(hips)
 
-  // How much lower a short-legged dog sits: everything above the ground
-  // comes down by it, and the front legs are that much shorter.
-  const drop = (1 - shape.legs) * 0.22
-  const w = shape.chubby
-
-  // ---- body: a small bean, mostly hidden behind a big head ------------
+  // ---- body: a small, round chick's body, mostly hidden behind a big head ---
   const chest = new Group()
   hips.add(chest)
-  const torsoCentre = new Vector3(0, 0.32 - drop * 0.6, -0.03)
-  const torsoRadii = new Vector3(0.33 * w, 0.33 - drop * 0.2, 0.3)
-  chest.add(
-    place(
-      sphere(1, base, 36),
-      torsoCentre.x,
-      torsoCentre.y,
-      torsoCentre.z,
-      torsoRadii.x,
-      torsoRadii.y,
-      torsoRadii.z,
-    ),
-  )
-  // The bib: white on a dog with socks or patches, the coat otherwise --
-  // and there either way, so the chest has the same soft swell.
-  chest.add(place(sphere(1, pale, 28), 0, torsoCentre.y + 0.03, 0.12, 0.22 * w, 0.25, 0.18))
+  chest.add(place(sphere(1, base, 36), 0, 0.33, -0.03, 0.34, 0.34, 0.31))
+  // The bib: the pale down of the chest, and its soft swell.
+  chest.add(place(sphere(1, pale, 28), 0, 0.35, 0.115, 0.235, 0.265, 0.19))
 
-  if (marks === 'spots') {
-    // Fixed places rather than random ones, so the same dog has the same
-    // spots every time it is drawn.
-    const SPOTS: [number, number, number][] = [
-      [0.9, 0.35, 0.065],
-      [-1.1, 0.1, 0.06],
-      [2.3, 0.4, 0.07],
-      [-2.4, 0.15, 0.065],
-      [3.0, -0.2, 0.055],
-      [1.6, -0.35, 0.05],
-      [-1.7, -0.4, 0.055],
-    ]
-    for (const [theta, phi, size] of SPOTS) {
-      const { at, normal } = onEllipsoid(torsoCentre, torsoRadii, theta, phi)
-      chest.add(patch(mark, at, normal, size))
-    }
-  }
-  if (marks === 'patches') {
-    // A saddle over the back.
-    chest.add(
-      place(
-        sphere(1, mark, 32),
-        0,
-        torsoCentre.y + 0.06,
-        torsoCentre.z - 0.05,
-        torsoRadii.x * 1.03,
-        torsoRadii.y * 0.78,
-        torsoRadii.z * 1.02,
-      ),
-    )
-  }
-
-  // Hind legs: round haunches, and little feet poking out in front.
+  // Feathered thighs, and feet: three round toes each, the colour of the beak.
   for (const side of [-1, 1]) {
-    hips.add(place(sphere(0.16, base), side * 0.2 * w, 0.15 - drop * 0.3, -0.04, 0.8, 0.95, 1.15))
-    const foot = marks === 'socks' || marks === 'patches' ? white : base
-    hips.add(place(sphere(0.08, foot), side * 0.22 * w, 0.045, 0.14, 1, 0.65, 1.4))
-  }
-
-  // Front legs, short and round, from the shoulder to a mitten of a paw --
-  // with toe beans underneath, for when a paw is raised.
-  const shoulderY = 0.4 - drop
-  const legLength = shoulderY - 0.06
-  const legs: Group[] = []
-  for (const side of [-1, 1]) {
-    const leg = new Group()
-    leg.position.set(side * 0.13 * w, shoulderY, 0.14)
-    const limb = new Mesh(new CapsuleGeometry(0.075, Math.max(0.02, legLength - 0.1), 8, 16), base)
-    limb.position.y = -legLength / 2 + 0.02
-    leg.add(limb)
-    const paw = marks === 'socks' || marks === 'patches' ? white : base
-    leg.add(place(sphere(0.088, paw), 0, -legLength, 0.03, 1, 0.78, 1.2))
-    const down = new Vector3(0, -1, 0.25).normalize()
-    const pad = patch(beans, new Vector3(0, -legLength - 0.062, 0.025), down, 0.04, 1.15, 0.35)
-    leg.add(pad)
-    for (const [x, z] of [
-      [-0.04, 0.075],
-      [0, 0.092],
-      [0.04, 0.075],
-    ] as const) {
-      leg.add(patch(beans, new Vector3(x, -legLength - 0.052, z), down, 0.018, 1, 0.45))
+    hips.add(place(sphere(0.15, base), side * 0.17, 0.15, 0.0, 0.85, 0.95, 1.05))
+    const foot = new Group()
+    foot.position.set(side * 0.155, 0.032, 0.17)
+    foot.rotation.y = side * 0.16
+    for (const splay of [-0.5, 0, 0.5]) {
+      const toe = new Mesh(new CapsuleGeometry(0.03, 0.09, 6, 12), feetMat)
+      toe.rotation.set(Math.PI / 2, 0, -splay)
+      toe.position.set(Math.sin(splay) * 0.06, 0, Math.cos(splay) * 0.06)
+      foot.add(toe)
     }
-    if (shape.topknot) leg.add(place(sphere(0.1, base, 18), 0, -legLength + 0.1, 0.01, 1, 0.8, 1))
-    hips.add(leg)
-    legs.push(leg)
+    foot.add(place(sphere(0.045, feetMat, 14), 0, 0.004, -0.005, 1, 0.75, 1))
+    hips.add(foot)
   }
 
-  // ---- tail ----------------------------------------------------------------
+  // ---- tail: three feathers fanned out behind ------------------------------
   const tail = new Group()
-  tail.position.set(0, 0.2 - drop * 0.5, -0.3)
+  tail.position.set(0, 0.2, -0.27)
   hips.add(tail)
-  const tip = marks === 'socks' || marks === 'patches' ? white : base
-  switch (shape.tail) {
-    case 'curl': {
-      // A doughnut of fur curled over the back.
-      const curl = new Mesh(new TorusGeometry(0.1, 0.058, 14, 28, Math.PI * 1.55), base)
-      curl.rotation.set(0, Math.PI / 2, -0.4)
-      curl.position.set(0, 0.11, -0.05)
-      tail.add(curl)
-      tail.add(place(sphere(0.064, tip, 18), 0, 0.2, 0.02))
-      break
-    }
-    case 'stub':
-      tail.add(place(sphere(0.09, base, 18), 0, 0.02, -0.02, 1, 0.9, 0.8))
-      break
-    case 'plume': {
-      const stalk = new Mesh(new CapsuleGeometry(0.048, 0.24, 8, 14), base)
-      stalk.position.set(0, 0.15, -0.07)
-      stalk.rotation.x = -0.45
-      tail.add(stalk)
-      tail.add(place(sphere(0.058, tip, 18), 0, 0.3, -0.14))
-      break
-    }
-    case 'pompom': {
-      const stalk = new Mesh(new CapsuleGeometry(0.028, 0.16, 6, 10), base)
-      stalk.position.set(0, 0.1, -0.05)
-      stalk.rotation.x = -0.45
-      tail.add(stalk)
-      tail.add(place(sphere(0.11, base, 20), 0, 0.23, -0.12))
-      break
-    }
+  const tailFeathers = fan(feather, 3, 0.36, 0.9, [plumage.deep, plumage.wing[1]], vanes)
+  tailFeathers.forEach((f, i) => {
+    // Middle one on top, the others either side of it, mirrored.
+    const side = i === 0 ? 0 : i === 1 ? -1 : 1
+    if (side !== 0) f.scale.x *= side
+    f.rotation.z = -side * 0.5 + (side === 0 ? 0.18 : 0)
+    f.position.z = -Math.abs(side) * 0.012
+    tail.add(f)
+  })
+
+  // ---- wings: the icon, one each side -----------------------------------------
+  //
+  // Built for the wing that is raised to the viewer's right, in a frame
+  // where +x is "away from the body"; the other is the same thing mirrored
+  // by its parent, so one set of angles moves both.
+  const wings: Wing[] = []
+  for (const side of [-1, 1]) {
+    const shoulder = new Group()
+    shoulder.position.set(side * 0.33, 0.44, 0.03)
+    shoulder.scale.x = side
+    const arm = new Group()
+    arm.rotation.order = 'YXZ'
+    shoulder.add(arm)
+    const feathers = fan(feather, WING_FEATHERS, WING_LENGTH, WING_SHRINK, plumage.wing, vanes)
+    for (const f of feathers) arm.add(f)
+    // The shoulder itself: a tuft of down over where the feathers meet.
+    arm.add(place(sphere(0.07, base, 18), 0.0, 0.01, -0.02, 1, 1, 0.7))
+    hips.add(shoulder)
+    wings.push({ arm, feathers })
   }
 
   // ---- head: as big as everything else put together ---------------------
-  const neckY = 0.6 - drop
+  const neckY = 0.6
   const neck = new Group()
   neck.position.set(0, neckY, 0.05)
   hips.add(neck)
@@ -1248,95 +1551,68 @@ function buildDog(look: Look): Rig {
       skullRadii.z,
     ),
   )
-  const cheekRadii = new Vector3(0.216, 0.164, 0.176)
-  const cheekAt = (side: number) => new Vector3(side * 0.25, 0.18, 0.16)
-  if (shape.cheeks) {
-    for (const side of [-1, 1]) {
-      const c = cheekAt(side)
-      head.add(place(sphere(1, pale, 24), c.x, c.y, c.z, cheekRadii.x, cheekRadii.y, cheekRadii.z))
-    }
-  }
-  if (shape.topknot) {
-    for (const [x, y, z, r] of [
-      [0, 0.76, 0.0, 0.17],
-      [-0.14, 0.71, -0.06, 0.13],
-      [0.14, 0.71, -0.06, 0.13],
-      [0, 0.7, 0.14, 0.13],
-    ] as const) {
-      head.add(place(sphere(r, base, 20), x, y, z))
-    }
+  // The pale down of the face, as two soft cheeks either side of the beak.
+  const cheekRadii = new Vector3(0.225, 0.17, 0.176)
+  const cheekAt = (side: number) => new Vector3(side * 0.235, 0.185, 0.165)
+  for (const side of [-1, 1]) {
+    const c = cheekAt(side)
+    head.add(place(sphere(1, pale, 24), c.x, c.y, c.z, cheekRadii.x, cheekRadii.y, cheekRadii.z))
   }
 
-  // A mask runs from the muzzle up round both eyes as one dark shape --
-  // flatter than a spot, so the eyes still sit on top of it.
-  if (marks === 'mask') {
-    const face = onEllipsoid(skullCentre, skullRadii, 0, -0.1)
-    head.add(patch(maskTone, face.at, face.normal, 0.19, 1.6, 0.17))
-  }
-
-  // The muzzle: small, so the face stays a baby's.
-  const snout = shape.snout
-  const muzzleZ = 0.36 + 0.04 * snout
-  head.add(place(sphere(1, muzzleMat, 28), 0, 0.18, muzzleZ, 0.17, 0.12, 0.13 * snout))
-  const noseZ = muzzleZ + 0.13 * snout - 0.004
-  const nose = place(sphere(0.047, glossy(NOSE), 18), 0, 0.225, noseZ, 1.4, 0.88, 0.9)
-  head.add(nose)
-
-  // A small "ω" of a mouth under the nose.
-  const mouth = new Mesh(
-    new TubeGeometry(
-      new CatmullRomCurve3([
-        new Vector3(-0.04, 0.006, -0.008),
-        new Vector3(-0.031, -0.008, -0.002),
-        new Vector3(-0.018, -0.013, 0.001),
-        new Vector3(-0.006, -0.007, 0.003),
-        new Vector3(0, 0, 0.004),
-        new Vector3(0.006, -0.007, 0.003),
-        new Vector3(0.018, -0.013, 0.001),
-        new Vector3(0.031, -0.008, -0.002),
-        new Vector3(0.04, 0.006, -0.008),
-      ]),
-      32,
-      0.0075,
-      6,
-    ),
-    glossy('#3a2a2b'),
+  // The beak: short, so the face stays a baby's, and hooked, so it stays an
+  // eagle's. The lower half is hinged, for a chirp.
+  const beakZ = 0.4
+  const upper = new Mesh(beakGeometry(0.112, 0.25, 0.12), beakMat)
+  upper.position.set(0, 0.245, beakZ)
+  upper.scale.set(1, 0.84, 1)
+  head.add(upper)
+  // The cere: the soft yellow saddle a raptor's beak grows out of.
+  head.add(place(sphere(0.082, glossy(CERE, 0.45), 18), 0, 0.283, beakZ + 0.045, 1.12, 0.6, 0.85))
+  const beakTip = new Group()
+  beakTip.position.set(0, 0.245 - 0.1, beakZ + 0.24)
+  head.add(beakTip)
+  const jaw = new Group()
+  jaw.position.set(0, 0.2, beakZ - 0.01)
+  const lower = new Mesh(
+    beakGeometry(0.074, 0.14, 0.02),
+    glossy(between(BEAK, '#b9520a', 0.35), 0.4),
   )
-  // On the muzzle's surface at that height, wherever a longer snout puts it.
-  const mouthY = 0.138
-  const mouthZ = muzzleZ + 0.13 * snout * Math.sqrt(1 - ((0.18 - mouthY) / 0.12) ** 2)
-  mouth.position.set(0, mouthY, mouthZ - 0.004)
-  mouth.rotation.x = -0.35
-  head.add(mouth)
-  const tongue = place(sphere(0.05, fur(TONGUE), 16), 0, 0.1, noseZ - 0.026, 1, 0.55, 0.6)
-  head.add(tongue)
+  lower.scale.set(1, 0.6, 1)
+  lower.position.y = -0.022
+  jaw.add(lower)
+  // What shows when it opens.
+  jaw.add(place(sphere(0.045, down(INSIDE), 14), 0, 0.0, 0.03, 1, 0.5, 1.2))
+  head.add(jaw)
 
   // Eyes: big, glossy, wide apart and low on the face, each with a
   // highlight. Laid onto the skull so they sit on its surface whatever its
   // proportions.
   const eyes: Group[] = []
+  const brows: Mesh[] = []
   const happy: Mesh[] = []
   const shut: Mesh[] = []
-  const eyeMat = glossy(EYE)
+  const eyeMat = glossy('#ffffff', 0.12)
+  eyeMat.map = eyeTexture()
+  const eyeBall = eyeGeometry(0.09)
   const shine = new MeshBasicMaterial({ color: '#ffffff' })
-  // A shut or happy eye is a line, and a dark line on a dark face is no eye
-  // at all: on a black dog, or inside a mask, it is drawn light instead.
-  const arcMat = glossy(isLight(marks === 'mask' ? maskHex : coat.base) ? EYE : '#efe6da')
+  // A shut or happy eye is a line, and a dark line on dark plumage is no eye
+  // at all: there it is drawn light instead.
+  const arcMat = glossy(isLight(plumage.base) ? EYE : '#efe6da')
   const blush = glowTexture('rgba(255, 128, 140, 0.75)')
+  const browMat = down(between(plumage.base, plumage.deep, 0.6))
+  // An arc of a thin ring, its top at the origin, bulging upwards.
+  const BROW_ARC = Math.PI * 0.62
+  const browArch = new TorusGeometry(0.07, 0.011, 8, 20, BROW_ARC)
+    .rotateZ(Math.PI / 2 - BROW_ARC / 2)
+    .translate(0, -0.07, 0)
   for (const side of [-1, 1]) {
-    const { at, normal } = onEllipsoid(skullCentre, skullRadii, side * 0.44, -0.05)
-    if (marks === 'mask') head.add(patch(maskTone, at, normal, 0.13, 1.1, 0.2))
-    if (marks === 'patches' && side > 0) {
-      // Up and out towards the ear, the way a real one runs, rather than a
-      // ring around the eye -- which reads as a monocle.
-      const over = onEllipsoid(skullCentre, skullRadii, 0.78, 0.26)
-      head.add(patch(mark, over.at, over.normal, 0.15, 1.15))
-    }
+    const { at, normal } = onEllipsoid(skullCentre, skullRadii, side * 0.46, -0.08)
     const eye = facing(new Group(), normal)
-    eye.position.copy(at).addScaledVector(normal, -0.014)
-    eye.add(place(sphere(0.074, eyeMat, 24), 0, 0, 0, 1, 1.14, 0.55))
-    eye.add(place(sphere(0.026, shine, 12), 0.022 * -side, 0.032, 0.038))
-    eye.add(place(sphere(0.012, shine, 10), -0.022 * -side, -0.028, 0.038))
+    // Out past the fur, which would otherwise grow over it.
+    eye.position.copy(at).addScaledVector(normal, FUR_LENGTH - 0.012)
+    eye.add(place(new Mesh(eyeBall, eyeMat), 0, 0, 0, 1, 1.08, 0.55))
+    eye.add(place(sphere(0.03, shine, 32), 0.026 * -side, 0.036, 0.046, 1.1, 0.95, 0.4))
+    eye.add(place(sphere(0.013, shine, 24), -0.03 * -side, -0.032, 0.046, 1, 1, 0.4))
     head.add(eye)
     eyes.push(eye)
 
@@ -1347,19 +1623,29 @@ function buildDog(look: Look): Rig {
     up.visible = false
     head.add(up)
     happy.push(up)
-    const down = facing(new Mesh(new TorusGeometry(0.052, 0.013, 8, 18, Math.PI), arcMat), normal)
-    down.rotateZ(Math.PI)
-    down.position.copy(eye.position).addScaledVector(normal, 0.034)
-    down.position.y += 0.01
-    down.visible = false
-    head.add(down)
-    shut.push(down)
+    const lid = facing(new Mesh(new TorusGeometry(0.052, 0.013, 8, 18, Math.PI), arcMat), normal)
+    lid.rotateZ(Math.PI)
+    lid.position.copy(eye.position).addScaledVector(normal, 0.034)
+    lid.position.y += 0.01
+    lid.visible = false
+    head.add(lid)
+    shut.push(lid)
 
-    // Rosy cheeks, just under and outside each eye: a soft glow, not a
-    // disc -- on the fluff of the cheek where there is some.
-    const cheek = shape.cheeks
-      ? onEllipsoid(cheekAt(side), cheekRadii, side * 0.5, 0.3)
-      : onEllipsoid(skullCentre, skullRadii, side * 0.62, -0.2)
+    // A brow over each eye: a thin, soft arch set well above it. An arch
+    // reads as friendly on its own, and it is lifted at its inner end at
+    // rest; brought down there, the same face looks cross.
+    const over = onEllipsoid(skullCentre, skullRadii, side * 0.42, 0.34)
+    // In a group that faces out of the head, so turning the brow is one
+    // number whichever side it is on.
+    const socket = facing(new Group(), over.normal)
+    socket.position.copy(over.at).addScaledVector(over.normal, FUR_LENGTH * 0.9)
+    const brow = new Mesh(browArch, browMat)
+    socket.add(brow)
+    head.add(socket)
+    brows.push(brow)
+
+    // Rosy cheeks, just under and outside each eye: a soft glow, not a disc.
+    const cheek = onEllipsoid(cheekAt(side), cheekRadii, side * 0.5, 0.3)
     const glow = facing(
       new Mesh(
         new PlaneGeometry(0.2, 0.13),
@@ -1367,73 +1653,18 @@ function buildDog(look: Look): Rig {
       ),
       cheek.normal,
     )
-    glow.position.copy(cheek.at).addScaledVector(cheek.normal, 0.008)
+    glow.position.copy(cheek.at).addScaledVector(cheek.normal, FUR_LENGTH + 0.004)
     head.add(glow)
-
-    // A shiba's "maro" eyebrows, on a dog with a white bib.
-    if (marks === 'socks') {
-      const brow = onEllipsoid(skullCentre, skullRadii, side * 0.34, 0.34)
-      head.add(patch(white, brow.at, brow.normal, 0.036, 1.3))
-    }
   }
 
-  // Ears.
-  const ears: Group[] = []
-  const earBase: number[] = []
-  const s = shape.earSize
-  for (const side of [-1, 1]) {
-    const ear = new Group()
-    const thisEar = marks === 'patches' && side < 0 ? mark : earMat
-    // A shade darker than the head on a floppy-eared dog, or a solid one's
-    // ears vanish into it and it looks like it has a haircut.
-    const flop = thisEar === base ? fur(shade(coat.base, 0.84)) : thisEar
-    switch (shape.ears) {
-      case 'pointy': {
-        ear.position.set(side * 0.25, 0.64, -0.02)
-        const outer = new Mesh(earGeometry(0.13 * s, 0.26 * s), thisEar)
-        outer.scale.z = 0.45
-        ear.add(outer)
-        const inner = new Mesh(earGeometry(0.08 * s, 0.18 * s), innerEar)
-        inner.scale.z = 0.25
-        inner.position.set(0, 0.02, 0.035)
-        ear.add(inner)
-        ear.rotation.set(-0.12, 0, -side * 0.36)
-        earBase.push(-side * 0.36)
-        break
-      }
-      case 'floppy': {
-        ear.position.set(side * 0.43, 0.52, -0.02)
-        ear.add(place(sphere(0.14, flop, 24), 0, -0.17, 0, 0.5, 1.45, 0.95))
-        ear.rotation.set(0, 0, side * 0.22)
-        earBase.push(side * 0.22)
-        break
-      }
-      case 'button': {
-        ear.position.set(side * 0.33, 0.62, 0.04)
-        const fold = place(sphere(0.13, flop, 18), 0, -0.02, 0.03, 1.1, 0.72, 0.42)
-        fold.rotation.x = 0.7
-        ear.add(fold)
-        ear.rotation.set(0, 0, -side * 0.38)
-        earBase.push(-side * 0.38)
-        break
-      }
-      case 'fluffy': {
-        ear.position.set(side * 0.43, 0.5, -0.02)
-        for (const [y, r] of [
-          [-0.06, 0.1],
-          [-0.18, 0.11],
-          [-0.3, 0.1],
-        ] as const) {
-          ear.add(place(sphere(r, thisEar, 18), side * 0.02, y, 0))
-        }
-        ear.rotation.set(0, 0, side * 0.14)
-        earBase.push(side * 0.14)
-        break
-      }
-    }
-    head.add(ear)
-    ears.push(ear)
-  }
+  // The crest: the icon again, small, worn like a quiff. It does what a
+  // dog's ears would -- stands when something has its attention, lies flat
+  // when things have gone wrong, and wobbles after the head stops.
+  const crest = new Group()
+  crest.position.set(-0.05, 0.715, 0.03)
+  const crestFeathers = fan(feather, 3, 0.36, 0.8, [plumage.wing[0], plumage.deep], vanes)
+  for (const f of crestFeathers) crest.add(f)
+  head.add(crest)
 
   // A drop of worry, for when it went wrong.
   const sweat = new Group()
@@ -1448,7 +1679,7 @@ function buildDog(look: Look): Rig {
   sweat.visible = false
   head.add(sweat)
 
-  // And a bubble from the nose, asleep.
+  // And a bubble at the beak, asleep.
   const film = new MeshPhysicalMaterial({
     color: '#cfe9ff',
     roughness: 0.05,
@@ -1457,16 +1688,16 @@ function buildDog(look: Look): Rig {
     clearcoat: 1,
   })
   const bubble = sphere(0.07, film, 20)
-  bubble.position.set(0.05, 0.19, noseZ + 0.05)
+  bubble.position.set(0.07, 0.24, beakZ + 0.2)
   bubble.visible = false
   head.add(bubble)
 
   // ---- the laptop ------------------------------------------------------------
   //
-  // Part of the dog rather than the scene, so it turns with it. Kept hidden
+  // Part of the bird rather than the scene, so it turns with it. Kept hidden
   // at scale zero until it types.
   const laptop = new Group()
-  laptop.position.set(0, 0, 0.44)
+  laptop.position.set(0, 0, 0.46)
   const shell = new MeshPhysicalMaterial({ color: '#cdc6e6', roughness: 0.4, clearcoat: 0.6 })
   laptop.add(place(new Mesh(new BoxGeometry(0.5, 0.032, 0.3), shell), 0, 0.016, 0))
   laptop.add(
@@ -1498,22 +1729,47 @@ function buildDog(look: Look): Rig {
   laptop.scale.setScalar(0)
   root.add(laptop)
 
+  // Fur on the big round parts -- head, cheeks, body, bib, thighs -- and
+  // not on the small ones, where it would only blur them.
+  const strands = strandTexture()
+  const balls: [Mesh, string][] = []
+  root.traverse((node) => {
+    const mesh = node as Mesh
+    if (!mesh.isMesh || !(mesh.geometry instanceof SphereGeometry)) return
+    const size =
+      mesh.geometry.parameters.radius * Math.min(mesh.scale.x, mesh.scale.y, mesh.scale.z)
+    if (size < 0.1) return
+    if (mesh.material === base) balls.push([mesh, plumage.base])
+    else if (mesh.material === pale) balls.push([mesh, plumage.pale])
+  })
+  for (const [ball, hex] of balls) furOn(ball, hex, strands)
+
+  root.traverse((node) => {
+    const mesh = node as Mesh
+    if (!mesh.isMesh) return
+    if (mesh.userData.fur) return
+    const solid = !(mesh.material as Material).transparent
+    mesh.castShadow = solid
+    mesh.receiveShadow = solid
+  })
+
   return {
     root,
     hips,
     chest,
     neck,
     neckY,
-    ears: [ears[0]!, ears[1]!],
-    earBase: [earBase[0]!, earBase[1]!],
-    earKind: shape.ears,
+    crest,
+    crestFeathers,
+    wings: [wings[0]!, wings[1]!],
     tail,
-    legs: [legs[0]!, legs[1]!],
+    tailFeathers,
     eyes: [eyes[0]!, eyes[1]!],
+    brows: [brows[0]!, brows[1]!],
     happy: [happy[0]!, happy[1]!],
     shut: [shut[0]!, shut[1]!],
-    nose,
-    tongue,
+    beakTip,
+    jaw,
     sweat,
     bubble,
     laptop,
@@ -1559,7 +1815,7 @@ function buildProps(accent: Color): Props {
   // Three dots, rising in a bubble's arc above and to the right of the head.
   const thought = [0.035, 0.05, 0.068].map((r, i) => {
     const dot = sphere(r, ink, 16)
-    dot.position.set(0.46 + i * 0.13, 1.28 + i * 0.09, 0.2)
+    dot.position.set(0.5 + i * 0.13, 1.3 + i * 0.09, 0.2)
     group.add(dot)
     return dot
   })
@@ -1574,7 +1830,7 @@ function buildProps(accent: Color): Props {
   stem.position.set(0, 0.06, 0)
   question.add(stem)
   question.add(place(sphere(0.03, ink, 12), 0, -0.03, 0))
-  question.position.set(0.66, 1.28, 0.15)
+  question.position.set(0.7, 1.32, 0.15)
   group.add(question)
 
   // Zs, each three bars.
@@ -1593,7 +1849,7 @@ function buildProps(accent: Color): Props {
     return z
   })
 
-  // Little puffs of breath when it sniffs.
+  // Little puffs of dust where it pecks.
   const puffs = [0, 1, 2].map(() => {
     const m = sphere(
       0.045,
@@ -1624,10 +1880,10 @@ function buildProps(accent: Color): Props {
   // Sparkles round the head when it is pleased with itself.
   const star = new MeshBasicMaterial({ color: '#ffcf4a' })
   const sparkles = [
-    [-0.55, 1.2],
-    [0.6, 1.36],
-    [0.5, 0.78],
-    [-0.5, 0.72],
+    [-0.82, 1.36],
+    [0.86, 1.46],
+    [0.78, 0.5],
+    [-0.76, 0.46],
   ].map(([x, y]) => {
     const m = new Mesh(new OctahedronGeometry(0.05), star)
     m.scale.set(0.6, 1.3, 0.3)
@@ -1671,7 +1927,7 @@ function buildProps(accent: Color): Props {
 
       question.visible = pose.question > 0.02
       question.scale.setScalar(Math.max(0.0001, pose.question))
-      question.position.y = 1.28 + Math.sin(t * 3) * 0.03
+      question.position.y = 1.32 + Math.sin(t * 3) * 0.03
       question.rotation.z = Math.sin(t * 2) * 0.12
 
       // Zs drift up and out from the head, one after another, and fade.
@@ -1682,15 +1938,15 @@ function buildProps(accent: Color): Props {
         z.scale.setScalar(Math.max(0.0001, pose.zzz * (0.5 + age * 0.7) * Math.sin(age * Math.PI)))
       })
 
-      // Puffs start at the nose wherever it has got to.
-      rig.nose.getWorldPosition(scratch)
+      // Dust starts at the tip of the beak, wherever it has got to.
+      rig.beakTip.getWorldPosition(scratch)
       puffs.forEach((puff, i) => {
         const age = (t * 1.6 + i / 3) % 1
         const material = puff.material as MeshBasicMaterial
         puff.visible = pose.puff > 0.02
         puff.position.set(
           scratch.x + (i - 1) * 0.06 + age * 0.08,
-          scratch.y - 0.04 + age * 0.12,
+          scratch.y - 0.02 + age * 0.12,
           scratch.z + age * 0.1,
         )
         puff.scale.setScalar(0.6 + age)
@@ -1704,7 +1960,7 @@ function buildProps(accent: Color): Props {
         h.mesh.visible = age >= 0 && age < 1
         if (!h.mesh.visible) continue
         const material = h.mesh.material
-        h.mesh.position.set(h.x + Math.sin(age * 9) * 0.03, 1.32 + age * 0.4, 0.3)
+        h.mesh.position.set(h.x + Math.sin(age * 9) * 0.03, 1.36 + age * 0.36, 0.3)
         h.mesh.scale.setScalar(0.13 * Math.min(1, age * 6) * (1 + 0.15 * Math.sin(age * 20)))
         h.mesh.rotation.z = Math.sin(age * 7) * 0.25
         material.opacity = age > 0.65 ? 1 - (age - 0.65) / 0.35 : 1
@@ -1723,7 +1979,22 @@ function buildProps(accent: Color): Props {
   }
 }
 
-// ── Putting a pose on the dog ───────────────────────────────────────────
+// ── Putting a pose on the bird ──────────────────────────────────────────
+
+function lerp(a: number, b: number, k: number): number {
+  return a + (b - a) * k
+}
+
+/**
+ * A wing's three turns at each end of what it can do, in its own frame (+x
+ * away from the body): swung down its side and wrapped back round the body,
+ * folded; stood up flat to whoever is looking, raised; brought forward and
+ * down onto the keys; and drawn round the front, asleep.
+ */
+const FOLDED = { x: 0.12, y: 0.5, z: -2.2 }
+const RAISED = { x: -0.05, y: -0.12, z: -0.07 }
+const TAPPING = { x: -0.95, y: -0.62, z: -2.5 }
+const WRAPPED = { x: -0.5, y: -0.5, z: -2.45 }
 
 function apply(rig: Rig, pose: Pose, t: number, blink: number) {
   rig.root.rotation.y = FACING + pose.yaw
@@ -1735,28 +2006,48 @@ function apply(rig: Rig, pose: Pose, t: number, blink: number) {
 
   rig.neck.rotation.set(pose.headPitch - pose.lean * 0.6, pose.headYaw, pose.headRoll, 'YXZ')
 
-  // Ears: a perk tips a pointed ear forward and up, a droop lays it back;
-  // a floppy ear swings out instead, which is how a beagle perks.
-  const pointed = rig.earKind === 'pointy' || rig.earKind === 'button'
-  rig.ears.forEach((ear, i) => {
-    const side = i === 0 ? -1 : 1
-    const amount = i === 0 ? pose.earL : pose.earR
-    if (pointed) {
-      // Rotating about z by -side tips an ear outwards.
-      ear.rotation.x = -0.12 + amount * (amount < 0 ? 0.85 : 0.35)
-      ear.rotation.z = rig.earBase[i]! - side * Math.max(0, -amount) * 0.4
-    } else {
-      ear.rotation.x = amount * -0.25
-      ear.rotation.z = rig.earBase[i]! + side * amount * 0.35
-    }
+  // The crest: up, it stands and its three feathers part; down, it lies back
+  // along the head and they close.
+  const up = Math.max(0, pose.crest)
+  const flat = Math.max(0, -pose.crest)
+  rig.crest.rotation.set(-0.16 - flat * 1.05 + up * 0.1, 0, pose.crestTilt * 0.3 - 0.06)
+  rig.crestFeathers.forEach((feather, i) => {
+    feather.rotation.z = -(0.06 + i * (0.5 + up * 0.22 - flat * 0.34))
   })
 
-  rig.tail.rotation.set(-0.5 + pose.tailLift * 0.5, 0, pose.tailWag)
+  // The tail: lifted when it is pleased, wagged from side to side.
+  rig.tail.rotation.set(-2.05 + pose.tailLift * 0.62, pose.tailWag, 0, 'YXZ')
 
-  // The front legs are children of the hips, so a lean would swing them
-  // back under the body; taking the lean off keeps the paws on the ground.
-  rig.legs[0].rotation.x = -(pose.pawL + pose.lean)
-  rig.legs[1].rotation.x = -(pose.pawR + pose.lean)
+  rig.wings.forEach((wing, i) => {
+    const raise = i === 0 ? pose.wingL : pose.wingR
+    const tap = Math.max(0, Math.min(1, i === 0 ? pose.tapL : pose.tapR))
+    const lifted = ease(Math.max(0, Math.min(1, raise)))
+    const hang = Math.max(0, -raise)
+    const wrap = ease(Math.max(0, Math.min(1, pose.wrap)))
+    let x = lerp(FOLDED.x, RAISED.x, lifted)
+    let y = lerp(FOLDED.y, RAISED.y, lifted)
+    let z = lerp(FOLDED.z, RAISED.z, lifted)
+    x = lerp(x, TAPPING.x, tap)
+    y = lerp(y, TAPPING.y, tap)
+    z = lerp(z, TAPPING.z, tap)
+    x = lerp(x, WRAPPED.x, wrap)
+    y = lerp(y, WRAPPED.y, wrap)
+    z = lerp(z, WRAPPED.z, wrap)
+    // Hanging: let go of, so it falls a little away from the body and forward.
+    wing.arm.rotation.set(x - hang * 0.3, y - hang * 0.34, z + hang * 0.2 - pose.lean * 0.2)
+    const open = lerp(WING_CLOSED, WING_OPEN, Math.max(0, Math.min(1, lifted + pose.fan * 0.42)))
+    // Raised, the long feather is in front, as on the icon. Folded, the
+    // short ones are, so they show as a row of tips down its side instead of
+    // hiding behind the long one.
+    const reach = lerp(WING_FOLDED, 1, lifted)
+    const stack = 0.017 * (1 - 2 * lifted)
+    wing.feathers.forEach((feather, j) => {
+      const size = WING_LENGTH * Math.pow(WING_SHRINK, j) * reach
+      feather.scale.set(size, size, 0.62)
+      feather.position.z = j * stack
+      feather.rotation.z = -(WING_LEAD + j * open)
+    })
+  })
 
   const showHappy = pose.happy > 0.5
   const showShut = !showHappy && pose.shut > 0.5
@@ -1767,10 +2058,15 @@ function apply(rig: Rig, pose: Pose, t: number, blink: number) {
     rig.shut[i]!.visible = showShut
   }
 
-  rig.nose.scale.set(1.4 * (1 + pose.sniff * 0.18), 0.88 * (1 + pose.sniff * 0.1), 0.9)
-  rig.tongue.scale.set(pose.tongue, 0.55 * pose.tongue, 0.6 * pose.tongue)
-  rig.tongue.visible = pose.tongue > 0.03
-  rig.tongue.position.y = 0.1 - pose.tongue * 0.035
+  // Concentrating, the inner end of each brow comes down; soft and open, it
+  // goes up.
+  rig.brows.forEach((brow, i) => {
+    const side = i === 0 ? -1 : 1
+    brow.rotation.z = side * pose.brow * 0.45
+    brow.position.y = pose.brow < 0 ? pose.brow * -0.012 : 0
+  })
+
+  rig.jaw.rotation.x = Math.max(0, pose.beak) * 0.5
 
   rig.sweat.visible = pose.sweat > 0.05
   rig.sweat.scale.setScalar(Math.max(0.0001, pose.sweat))

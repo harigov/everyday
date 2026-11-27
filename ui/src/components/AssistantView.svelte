@@ -22,7 +22,7 @@
   import { splitDigest } from '../lib/dream'
   import { panels } from '../lib/panels.svelte'
   import { details, phone } from '../lib/phone.svelte'
-  import AssistantDog from './AssistantDog.svelte'
+  import AssistantCompanion from './AssistantCompanion.svelte'
   import AssistantNav from './AssistantNav.svelte'
   import AssistantPanes from './AssistantPanes.svelte'
   import ChatThread from './ChatThread.svelte'
@@ -39,12 +39,12 @@
   // It does not change which conversation is open.
   void agent.load()
 
-  // The dog floats over the top of the conversation, centred on a pill with
+  // The bird floats over the top of the conversation, centred on a pill with
   // its name, the way it does in the rail -- see `ChatPanel` -- with the
   // conversation's title to its left and the buttons to its right. Floating
-  // while the settings load, because a dog is the default.
-  const dog = $derived(agent.settings === null || lookOf(agent.settings.companion) !== null)
-  /** How far down the conversation starts: below the dog and its name. */
+  // while the settings load, because a bird is the default.
+  const bird = $derived(agent.settings === null || lookOf(agent.settings.companion) !== null)
+  /** How far down the conversation starts: below the bird and its name. */
   const STAGE_H = 154
 
   // ── On a phone ──────────────────────────────────────────────────────
@@ -53,7 +53,7 @@
   // (see `details` in `lib/phone.svelte.ts`): the app opens on the list --
   // with what happened while you were away at the top of it, the thing the
   // number on the bar of apps counts -- and a conversation chosen from it
-  // is shown over it, with a way back. The dog is a small face in the
+  // is shown over it, with a way back. The bird is a small face in the
   // header's row rather than a figure over the thread: the thread is what
   // the screen is for.
 
@@ -66,8 +66,8 @@
    * selected and the way back is one press.
    */
   const pane = $derived(listing ? null : assistant.pane)
-  /** The dog floats over the thread; on a phone it sits in the header's row. */
-  const floats = $derived(dog && !phone.on && pane === null)
+  /** The bird floats over the thread; on a phone it sits in the header's row. */
+  const floats = $derived(bird && !phone.on && pane === null)
 
   /** The tabs this vault can fill, as Settings offers them. */
   const paneTabs = $derived(
@@ -149,9 +149,9 @@
         </h1>
       </div>
     </div>
-    {#if dog && pane === null}
+    {#if bird && pane === null}
       <div class="stage">
-        <AssistantDog width={phone.on ? 64 : 156} height={phone.on ? 54 : 132} />
+        <AssistantCompanion width={phone.on ? 64 : 156} height={phone.on ? 54 : 132} />
         <span class="pill desktop-only">{agent.displayName}</span>
       </div>
     {/if}
@@ -212,8 +212,8 @@
          what is missing and where to fix it, rather than presenting a box
          that fails on the first message. -->
     <div class="wait">
-      <!-- No sparkle under a dog: the dog, asleep, is the picture. -->
-      <EmptyState lead="{agent.displayName} is not set up yet." icon={dog ? undefined : sparkle}>
+      <!-- No sparkle under a bird: the bird, asleep, is the picture. -->
+      <EmptyState lead="{agent.displayName} is not set up yet." icon={bird ? undefined : sparkle}>
         {#snippet note()}
           Choose a model and add a key in Settings. A model running on this machine — Ollama or LM
           Studio — needs only its address, and nothing you write leaves the machine.
@@ -265,8 +265,8 @@
   }
 
   /* Over the conversation: the page's colour at the top, fading out, so a
-     reply scrolled up goes under the dog. Clicks fall through the fade to
-     the thread; only the title, the buttons and the dog take them. */
+     reply scrolled up goes under the bird. Clicks fall through the fade to
+     the thread; only the title, the buttons and the bird take them. */
   .main.floating .head {
     position: absolute;
     inset: 0 0 auto;
@@ -283,7 +283,7 @@
   .main.floating .side {
     height: var(--header-h);
   }
-  /* The title keeps to its half, clear of the dog. */
+  /* The title keeps to its half, clear of the bird. */
   .main.floating .side.left {
     flex: 0 1 auto;
     max-width: calc(50% - 90px);
@@ -297,9 +297,9 @@
     align-items: center;
     transform: translateX(-50%);
   }
-  /* The dog sits on it: tucked up under its paws, and behind it, so a
-     laptop or a raised paw comes out in front of the name. */
-  .stage :global(.dog) {
+  /* The bird sits on it: tucked up under its feet, and behind it, so a
+     laptop or a raised wing comes out in front of the name. */
+  .stage :global(.companion) {
     position: relative;
     z-index: 1;
   }
@@ -364,7 +364,7 @@
   }
 
   /* ── A phone ────────────────────────────────────────────────────────
-     One row of header -- back, the conversation's name, the dog's face, New
+     One row of header -- back, the conversation's name, the bird's face, New
      and Settings, each a thumb's width -- over either the list or the
      thread. */
   .list {
@@ -395,7 +395,7 @@
   :global([data-phone]) .pane-title {
     font-size: var(--text-md);
   }
-  /* The dog is one of the row's own items rather than over it. */
+  /* The bird is one of the row's own items rather than over it. */
   :global([data-phone]) .stage {
     position: static;
     flex: none;
