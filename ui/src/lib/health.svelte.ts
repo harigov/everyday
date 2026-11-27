@@ -163,17 +163,17 @@ export const HEALTH_RANGE_VIEWS: readonly HealthView[] = [
  * and visibly flip.
  */
 const viewPref = pref<HealthView>(
-  'karmayoga.health.view',
+  'jatayu.health.view',
   (raw) => HEALTH_VIEWS.find((v) => v === raw) ?? 'today',
   'today',
 )
 const rangePref = pref<HealthRange>(
-  'karmayoga.health.range',
+  'jatayu.health.range',
   (raw) => HEALTH_RANGES.find((r) => r === raw) ?? 'week',
   'week',
 )
 const vitalsPref = pref<Metric>(
-  'karmayoga.health.vitals',
+  'jatayu.health.vitals',
   (raw) => METRICS.find((m) => m === raw) ?? 'resting_heart_rate',
   'resting_heart_rate',
 )

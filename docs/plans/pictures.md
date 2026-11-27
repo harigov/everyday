@@ -1,9 +1,9 @@
 # Pictures for the assistant
 
 > **Delivered.** This is the record of what was decided and why; the code is
-> `karmayoga_service::pictures`, `Turn::pictures` and `replay` in
-> `karmayoga_service::agent`, `Incoming::Showed` and the worker's picture
-> hold in `karmayoga-chat`, and the composer in
+> `jatayu_service::pictures`, `Turn::pictures` and `replay` in
+> `jatayu_service::agent`, `Incoming::Showed` and the worker's picture
+> hold in `jatayu-chat`, and the composer in
 > `ui/src/components/ChatThread.svelte`.
 
 Somebody can send the assistant a picture -- a receipt, a plant, a
@@ -80,7 +80,7 @@ photo sent "as a file" (`m.file` with an image type) counts.
   written.
 - The conformance suite: a picture in a conversation survives garbage
   collection, and goes once the conversation does.
-- `karmayoga-chat`: routing and gathering as pure functions, the relay end to
+- `jatayu-chat`: routing and gathering as pure functions, the relay end to
   end with a fake connector, and `make test-matrix` sending an encrypted
   picture with and without a caption through a real Conduit.
 

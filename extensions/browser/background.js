@@ -1,4 +1,4 @@
-// Karma Yoga Screen time, the browser extension: the background page.
+// Jatayu Screen time, the browser extension: the background page.
 //
 // Chrome runs this as a service worker, Firefox as an event page. Either
 // may be stopped whenever it has been quiet for a while and started again
@@ -184,7 +184,7 @@ function record(hint) {
 
 function where(config) {
   return L.isLoopback(config.endpoint)
-    ? "the Karma Yoga app on this computer"
+    ? "the Jatayu app on this computer"
     : config.endpoint;
 }
 
@@ -211,7 +211,7 @@ function explain(config, res) {
     case 403:
       return "This connection code is not allowed to send screen time. Make a new one in Settings → Screen time.";
     case 409:
-      return "Karma Yoga is locked. What was seen is kept and sent once it is unlocked.";
+      return "Jatayu is locked. What was seen is kept and sent once it is unlocked.";
     case 413:
       return "The app refused a delivery as too large.";
     case 400:
@@ -240,10 +240,10 @@ async function hello(config) {
   try {
     answer = await res.json();
   } catch (_) {
-    throw new Error(where(config) + " did not answer like Karma Yoga.");
+    throw new Error(where(config) + " did not answer like Jatayu.");
   }
   if (!answer || typeof answer !== "object") {
-    throw new Error(where(config) + " did not answer like Karma Yoga.");
+    throw new Error(where(config) + " did not answer like Jatayu.");
   }
   return answer;
 }

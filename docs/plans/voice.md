@@ -6,7 +6,7 @@ goes into the same thread as what is typed.
 
 ## Decisions
 
-- **One session, any transport.** `karmayoga_service::voice` takes 16 kHz mono
+- **One session, any transport.** `jatayu_service::voice` takes 16 kHz mono
   audio and gives back audio and events. The desktop app's microphone and
   speakers are the first transport; a Matrix call is the second (see
   `calls.md`, through `Service::voice_open_via`). WebRTC in a browser and XMPP
@@ -238,7 +238,7 @@ meeting notes use them today. Dictation, controlling the app by voice, live
 meeting transcripts, reading an article or email aloud and voice messages are
 meant to be built on them without new plumbing.
 
-`karmayoga_service::speech`:
+`jatayu_service::speech`:
 
 | Module | What it is for |
 |---|---|
@@ -262,7 +262,7 @@ meant to be built on them without new plumbing.
 A recogniser hears a name it does not know as the nearest everyday word:
 "Carma" for an assistant called Karma, "Priya Sha" for Priya Shah. So every
 recogniser that can be told is told the words it is likely to hear.
-`karmayoga_core::speech::words` decides which words, how many and in what form,
+`jatayu_core::speech::words` decides which words, how many and in what form,
 and `speech::expect` gathers them from the vault.
 
 - **What the listening is for decides the words** (`Occasion`). Talking to the
@@ -271,7 +271,7 @@ and `speech::expect` gathers them from the vault.
   day and a half of events, then their circles, closest first; those events'
   places and titles; active projects, goals and areas; routines; the apps they
   use most this week and the connected services; and the app's own words
-  (Karma Yoga, Siddhis). Listening for the wake word: only the names it answers
+  (Jatayu, Siddhis). Listening for the wake word: only the names it answers
   to and the person's, since any other boosted name ("Jamie", a contact) could
   be written in place of the assistant's at the start of an utterance, the one
   place the wake word looks. Writing by voice (voice typing, dictation): the
@@ -311,7 +311,7 @@ at every load, scored from each piece's place in the BPE order. sherpa-onnx's
 cutter is not BPE; it agrees with Parakeet's own cut for about three names in
 four, and a word cut differently is boosted only as far as the cuts agree.
 
-`karmayoga-app`'s `audio` module is the same idea for the devices: `input` and
+`jatayu-app`'s `audio` module is the same idea for the devices: `input` and
 `resample` serve meeting capture and the engine alike, and `AudioEngine` runs a
 microphone, a speaker or both, with echo cancellation when it has both. Every
 microphone, the engine's and meeting capture's, is cleaned of rumble, mains hum
@@ -494,7 +494,7 @@ tasks. Nothing the loop awaits may block it from hearing `Stop`.
     through the conversation's typist, with no line break when the wake word
     opened it.
 
-## The desktop transport (`karmayoga-app/src/voice`)
+## The desktop transport (`jatayu-app/src/voice`)
 
 Streams are opened and dropped on one audio thread, as in `capture.rs`. The
 microphone is resampled to 16 kHz, cleaned by `sonora` in 10 ms frames with what

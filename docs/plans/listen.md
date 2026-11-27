@@ -65,14 +65,14 @@ See `voice.md`, item 11.
 
 | Where | What |
 |---|---|
-| `karmayoga_service::speech::listen` | The session: `Piece` stream → `SentenceSplitter` → `speakable` → `Narrator` → `ListenOutput::Play` |
-| `karmayoga_service::speech::dictate` | The session: microphone → `LiveTranscription` (`Tuning::DICTATION`) → words so far, with the silence and time limits |
-| `karmayoga_service::textstream` | A model's plain-text reply, streamed |
-| `karmayoga_service::listen` | `ListenSource` and `Service::listen_open`: picks the text, builds the voice, starts the session |
-| `karmayoga_service::mailai::listen_pieces` | The spoken briefing of a thread |
-| `karmayoga_service::news::listen::open` | An article made fit to hear, or as written |
-| `karmayoga_service::mailwrite::draft_with_ai` | `spoken` instructions |
-| `karmayoga-app` `listen`, `dictation` | The transports: an `AudioEngine` with only the speaker, or only the microphone |
+| `jatayu_service::speech::listen` | The session: `Piece` stream → `SentenceSplitter` → `speakable` → `Narrator` → `ListenOutput::Play` |
+| `jatayu_service::speech::dictate` | The session: microphone → `LiveTranscription` (`Tuning::DICTATION`) → words so far, with the silence and time limits |
+| `jatayu_service::textstream` | A model's plain-text reply, streamed |
+| `jatayu_service::listen` | `ListenSource` and `Service::listen_open`: picks the text, builds the voice, starts the session |
+| `jatayu_service::mailai::listen_pieces` | The spoken briefing of a thread |
+| `jatayu_service::news::listen::open` | An article made fit to hear, or as written |
+| `jatayu_service::mailwrite::draft_with_ai` | `spoken` instructions |
+| `jatayu-app` `listen`, `dictation` | The transports: an `AudioEngine` with only the speaker, or only the microphone |
 | `ui` `listen.svelte.ts`, `dictation.svelte.ts` | The stores; `ListenPlayer.svelte` in the top bar |
 
 ## The desktop commands

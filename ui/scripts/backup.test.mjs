@@ -39,7 +39,7 @@ assert.deepEqual(b.blankDestination('folder'), { type: 'folder', path: '' })
 assert.deepEqual(b.blankDestination('s3'), {
   type: 's3',
   bucket: '',
-  prefix: 'karmayoga',
+  prefix: 'jatayu',
   region: null,
   endpoint: null,
   profile: null,
@@ -67,7 +67,7 @@ assert.deepEqual(
   b.normalizeDestination({
     type: 's3',
     bucket: ' my-backups ',
-    prefix: '/karmayoga/hari/ ',
+    prefix: '/jatayu/hari/ ',
     region: '  ',
     endpoint: 'https://acct.r2.cloudflarestorage.com/',
     credentials: 'thisComputer',
@@ -75,7 +75,7 @@ assert.deepEqual(
   {
     type: 's3',
     bucket: 'my-backups',
-    prefix: 'karmayoga/hari',
+    prefix: 'jatayu/hari',
     region: null,
     endpoint: 'https://acct.r2.cloudflarestorage.com',
     profile: null,
@@ -93,7 +93,7 @@ const saved = {
   destination: {
     type: 's3',
     bucket: 'my-backups',
-    prefix: 'karmayoga',
+    prefix: 'jatayu',
     region: null,
     endpoint: null,
     profile: null,
@@ -107,7 +107,7 @@ assert.ok(
   b.sameSettings(
     {
       ...saved,
-      destination: { ...saved.destination, prefix: 'karmayoga/', region: '', profile: undefined },
+      destination: { ...saved.destination, prefix: 'jatayu/', region: '', profile: undefined },
     },
     saved,
   ),
@@ -133,7 +133,7 @@ assert.ok(!b.usesStoredKey(null))
 // ── the restore command ──────────────────────────────────────────────
 
 assert.equal(b.destinationUrl({ type: 'folder', path: '/mnt/backups' }), '/mnt/backups')
-assert.equal(b.destinationUrl(saved.destination), 's3://my-backups/karmayoga')
+assert.equal(b.destinationUrl(saved.destination), 's3://my-backups/jatayu')
 assert.equal(
   b.destinationUrl({ type: 'gcs', bucket: 'b', prefix: '', credentialsFile: null }),
   'gs://b',
@@ -141,7 +141,7 @@ assert.equal(
 )
 assert.equal(
   b.destinationUrl({ ...saved.destination, endpoint: 'https://minio.local:9000' }),
-  's3://my-backups/karmayoga',
+  's3://my-backups/jatayu',
   'not the label: the endpoint is a flag of its own on the command line',
 )
 
@@ -150,8 +150,8 @@ assert.equal(b.shellWord('/media/you/Backup Disk'), "'/media/you/Backup Disk'")
 assert.equal(b.shellWord("it's"), "'it'\\''s'")
 
 assert.equal(
-  b.restoreCommand({ type: 'folder', path: '/media/you/Backup Disk/Karma Yoga' }),
-  "karmayoga restore '/media/you/Backup Disk/Karma Yoga' ~/karmayoga-restored",
+  b.restoreCommand({ type: 'folder', path: '/media/you/Backup Disk/Jatayu' }),
+  "jatayu restore '/media/you/Backup Disk/Jatayu' ~/jatayu-restored",
 )
 assert.equal(
   b.restoreCommand(
@@ -163,7 +163,7 @@ assert.equal(
     },
     { snapshot: '2026-11-14T030512Z', config: true },
   ),
-  'karmayoga restore s3://my-backups/karmayoga ~/karmayoga-restored --region eu-west-1 ' +
+  'jatayu restore s3://my-backups/jatayu ~/jatayu-restored --region eu-west-1 ' +
     '--endpoint https://acct.r2.cloudflarestorage.com --profile work ' +
     '--snapshot 2026-11-14T030512Z --config',
 )
@@ -180,7 +180,7 @@ assert.equal(
     prefix: 'kv',
     credentialsFile: '/home/you/key file.json',
   }),
-  "karmayoga restore gs://b/kv ~/karmayoga-restored --credentials-file '/home/you/key file.json'",
+  "jatayu restore gs://b/kv ~/jatayu-restored --credentials-file '/home/you/key file.json'",
 )
 
 // ── the vault's messages, as sentences ───────────────────────────────

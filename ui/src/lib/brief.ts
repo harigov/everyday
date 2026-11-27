@@ -7,7 +7,7 @@
 // that puts two meetings in one lane draws one over the other and nothing
 // throws. They are pinned in `scripts/brief.test.mjs`.
 //
-// The section titles mirror `karmayoga_core::brief::BriefSection::title`,
+// The section titles mirror `jatayu_core::brief::BriefSection::title`,
 // which is what the model is asked to write under: the page and the brief
 // must call a section the same thing. See `docs/plans/briefs.md`.
 

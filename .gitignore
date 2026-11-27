@@ -7,6 +7,6 @@
 # Tauri's generated schemas are rebuilt on every build. The Android project
 # beside them is committed: its manifest and activity are ours to edit, and
 # its own .gitignore keeps the build output out. See docs/mobile.md.
-/crates/karmayoga-app/gen/schemas
+/crates/jatayu-app/gen/schemas
 *.log
 .DS_Store

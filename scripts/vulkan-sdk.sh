@@ -5,7 +5,7 @@
 #   export VULKAN_SDK=$(scripts/vulkan-sdk.sh <dir>)
 #
 # The desktop app builds llama.cpp with its Vulkan backend on Linux (see
-# `crates/karmayoga-service/Cargo.toml`), which needs the Vulkan headers,
+# `crates/jatayu-service/Cargo.toml`), which needs the Vulkan headers,
 # SPIRV-Headers and the `glslc` shader compiler at build time. A
 # distribution that packages them needs none of this: `scripts/setup-linux.sh`
 # installs them. Ubuntu 22.04, which releases are built on, has no `glslc`,

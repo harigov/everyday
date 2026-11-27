@@ -231,7 +231,7 @@
       case 'wayland':
         return (
           what +
-          ' The desktop asks once which key to use and once whether Karma Yoga may paste; change ' +
+          ' The desktop asks once which key to use and once whether Jatayu may paste; change ' +
           'the key in its own keyboard settings. Switched off, the key stays reserved there and ' +
           'does nothing.'
         )
@@ -318,7 +318,7 @@
       case 'wayland':
         return (
           what +
-          ' The desktop asks once which key to use and once whether Karma Yoga may paste; change ' +
+          ' The desktop asks once which key to use and once whether Jatayu may paste; change ' +
           'the key in its own keyboard settings.'
         )
       case 'macos':

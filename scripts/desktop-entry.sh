@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Register (or with --remove, unregister) Karma Yoga with the desktop, for the
+# Register (or with --remove, unregister) Jatayu with the desktop, for the
 # current user only. Pass a binary's path to register that build rather than
 # the one found under the target directory.
 #
@@ -20,24 +20,74 @@ APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONS="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 # Matches the binary name, which is what GTK reports as the Wayland app id
 # (it defaults to the process name), and what the packaged .desktop file uses.
-ID="karmayoga-app"
+ID="jatayu-app"
 # The bundle identifier. The desktop portals (global shortcuts, pasting into
 # other apps for writing help) only register an app id some desktop file is
-# named after, and `karmayoga-app` is not a valid one -- see `portal.rs`. So a
+# named after, and `jatayu-app` is not a valid one -- see `portal.rs`. So a
 # second, hidden entry carries this name for them; it never shows in a menu.
-BUNDLE_ID="app.karmayogi.KarmaYoga"
-# What Every Day, before the rename, was registered as: removed whichever way
-# this runs, so the old name's launcher, icons and portal entry go with it.
-OLD_IDS=("everyday-app" "app.everyday.journal")
+BUNDLE_ID="app.jatayu.Jatayu"
+# What the app was registered as under its former names -- Karma Yoga, and
+# Every Day before it -- each launcher id and bundle id: removed whichever way
+# this runs, so an old name's launcher, icons and portal entry go with it.
+OLD_IDS=("karmayoga-app" "app.karmayogi.KarmaYoga" "everyday-app" "app.everyday.journal")
 
 remove_old() {
   for old in "${OLD_IDS[@]}"; do
     if [ -e "$APPS/$old.desktop" ]; then
       rm -f "$APPS/$old.desktop"
-      echo "Removed $APPS/$old.desktop (Every Day, before the rename)."
+      echo "Removed $APPS/$old.desktop (the app under a former name)."
     fi
     find "$ICONS" -name "$old.png" -delete 2>/dev/null || true
   done
+}
+
+# A dock pin of a former name's launcher points at a desktop file that is gone
+# now, so GNOME would drop the app from the dock. Put this launcher in its
+# place instead, where it was pinned. Only under GNOME's settings, and only
+# when an old one is pinned; a pin of this launcher already there is kept and
+# the old one just goes.
+repin() {
+  command -v gsettings >/dev/null 2>&1 || return 0
+  local current
+  current="$(gsettings get org.gnome.shell favorite-apps 2>/dev/null)" || return 0
+  # `['a.desktop', 'b.desktop']`, or `@as []` when empty. Desktop ids hold no
+  # quotes or commas.
+  current="${current#@as }"
+  current="${current#[}"
+  current="${current%]}"
+  local -a pins=() kept=()
+  IFS=',' read -r -a pins <<< "$current"
+  local i pin old changed=0 have_new=0
+  for i in ${pins[@]+"${!pins[@]}"}; do
+    pin="${pins[$i]}"
+    pin="${pin#"${pin%%[![:space:]]*}"}"
+    pin="${pin%"${pin##*[![:space:]]}"}"
+    pin="${pin#\'}"
+    pins[$i]="${pin%\'}"
+    if [ "${pins[$i]}" = "$ID.desktop" ]; then have_new=1; fi
+  done
+  for pin in ${pins[@]+"${pins[@]}"}; do
+    [ -n "$pin" ] || continue
+    for old in "${OLD_IDS[@]}"; do
+      if [ "$pin" = "$old.desktop" ]; then
+        changed=1
+        if [ "$have_new" = 0 ]; then
+          echo "Moved the dock's pin of $old.desktop to $ID.desktop."
+          pin="$ID.desktop"
+          have_new=1
+        else
+          echo "Took $old.desktop out of the dock; $ID.desktop is pinned already."
+          pin=""
+        fi
+        break
+      fi
+    done
+    if [ -n "$pin" ]; then kept+=("'$pin'"); fi
+  done
+  [ "$changed" = 1 ] || return 0
+  local joined
+  joined="$(IFS=','; echo "${kept[*]-}")"
+  gsettings set org.gnome.shell favorite-apps "[${joined//,/, }]" || true
 }
 
 if [ "${1:-}" = "--remove" ]; then
@@ -83,7 +133,7 @@ else
   cat > "$APPS/$ID.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=Karma Yoga
+Name=Jatayu
 Comment=A private journal
 Exec=$bin
 Icon=$ID
@@ -96,7 +146,7 @@ DESKTOP
   cat > "$APPS/$BUNDLE_ID.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=Karma Yoga
+Name=Jatayu
 Comment=A private journal
 Exec=$bin
 Icon=$ID
@@ -105,8 +155,9 @@ NoDisplay=true
 Terminal=false
 DESKTOP
   remove_old
+  repin
 
-  for png in "$root/crates/karmayoga-app/icons"/*.png; do
+  for png in "$root/crates/jatayu-app/icons"/*.png; do
     case "$(basename "$png")" in
       # Skip the Windows Store tiles and the @2x variant; only square icons
       # named for their own pixel size belong in the icon theme.

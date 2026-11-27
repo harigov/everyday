@@ -2,7 +2,7 @@
 //
 // The real service gathers a brief from the invite, the Contacts shelf, mail,
 // notes and the last meeting with the same people, and has the medium model
-// write it up (`crates/karmayoga-service/src/meeting/brief.rs`). The mock has
+// write it up (`crates/jatayu-service/src/meeting/brief.rs`). The mock has
 // none of that, so it writes one from what it can see -- the calendar event
 // it is handed and the tasks that name somebody to raise them with -- plus a
 // few lines of invented background for the people the mock calendar already

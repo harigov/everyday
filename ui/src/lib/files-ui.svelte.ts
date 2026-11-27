@@ -107,7 +107,7 @@ export function targetsFor(file: FileEntry): FileEntry[] {
 // ---- dragging ---------------------------------------------------------------------
 
 /** What a drag of files already in the catalog carries. */
-export const FILES_DRAG = 'application/x-karmayoga-files'
+export const FILES_DRAG = 'application/x-jatayu-files'
 
 function typesOf(e: DragEvent): string[] {
   return e.dataTransfer ? Array.from(e.dataTransfer.types) : []

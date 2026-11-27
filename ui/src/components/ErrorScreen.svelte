@@ -18,7 +18,7 @@
 <div class="wrap">
   <div class="card frost">
     <div class="mark"><Icon name="alert" size={28} weight={1.7} /></div>
-    <h1>{mobileShell ? 'Your computer could not be reached' : 'Karma Yoga could not start'}</h1>
+    <h1>{mobileShell ? 'Your computer could not be reached' : 'Jatayu could not start'}</h1>
 
     {#if app.error}<p class="detail">{app.error}</p>{/if}
 
@@ -27,8 +27,8 @@
            way to the computer that holds the vault. -->
       <p class="reassure">
         Nothing has changed on this phone or on your computer. Check that the computer is on, that
-        Karma Yoga is running there with Share on the network switched on, and that both are on the
-        same network or tailnet.
+        Jatayu is running there with Share on the network switched on, and that both are on the same
+        network or tailnet.
       </p>
     {:else}
       <p class="reassure">

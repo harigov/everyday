@@ -370,7 +370,7 @@
 
   /** Absent is on, as the service has it. */
   const desktopOn = $derived(draft?.desktop ?? true)
-  /** The service's own list (`BUILT_IN` in `karmayoga_core::agent::desk`), as a sentence. */
+  /** The service's own list (`BUILT_IN` in `jatayu_core::agent::desk`), as a sentence. */
   const BUILT_IN_SITES = listedNames(BUILT_IN_SEARCH_SITES)
   const EXAMPLE_ADDRESS = `https://www.amazon.in/s?k=${SEARCH_QUERY}`
   const ownSites = $derived(draft?.searchSites ?? [])

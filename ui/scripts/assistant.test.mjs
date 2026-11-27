@@ -42,7 +42,7 @@ assert.equal(PANES[0], 'runs')
 
 const { mockInvoke } = mock
 // The demo vault starts locked, as a real one does.
-await mockInvoke('unlock', { password: 'karmayoga' })
+await mockInvoke('unlock', { password: 'jatayu' })
 
 // The wording is not exported, so it is exercised through the command it backs.
 const routines = await mockInvoke('list_routines', {})

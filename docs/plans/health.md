@@ -198,7 +198,7 @@ TSH and free T4 over time with dose changes marked.
 Laid down and compiled before the build. Read the code for the exact
 shapes; this is the map.
 
-### Core (`karmayoga_core::health`)
+### Core (`jatayu_core::health`)
 
 - `mod.rs` -- every record and DTO. Records (each a `RecordKind`, sealed,
   `everyday.<word>.v1:<id>`): `HealthSource`, `Workout`, `Medication`,
@@ -302,7 +302,7 @@ names and a device's name reach the model as untrusted text.
 | `meal_response` | read | | `id` | `MealResponse` |
 | `health_visit_brief` | read | | `conditionId?`, `since`, `tz` | `VisitBrief` |
 
-Shell commands (`karmayoga-app/src/health.rs`): `health_push_setup
+Shell commands (`jatayu-app/src/health.rs`): `health_push_setup
 {sourceId}` → `PushSetup`, `health_push_revoke {sourceId}` → boolean,
 `health_import_apple` → `ImportStatus | null`.
 
@@ -327,6 +327,6 @@ Shell commands (`karmayoga-app/src/health.rs`): `health_push_setup
 - Drug interactions, dose advice, alarms.
 - Karma for health deeds: Karma is not built yet. Imported watch data will
   need its own rule, since the Karma design refuses imported records.
-- Importing samples and workouts from a Karma Yoga export: their keys are
+- Importing samples and workouts from a Jatayu export: their keys are
   keyed by the vault's own key, which an import does not hold, and the phone
   and the Apple export bring them back anyway.

@@ -142,7 +142,7 @@
   // The cache is the load-bearing part -- without it this card bills somebody
   // every time they reopen the window.
 
-  const weekKey = $derived(`karmayoga:week-words:${overview.weekStart}`)
+  const weekKey = $derived(`jatayu:week-words:${overview.weekStart}`)
   let composing = $state(false)
   // Writable-derived: it re-reads when the week changes, and `writeTheWeek`
   // assigns straight into it after a run. A `$state` plus an `$effect` would

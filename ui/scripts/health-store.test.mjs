@@ -208,7 +208,7 @@ assert.equal(health.readingOpen, false)
 {
   const [weight] = await api.healthLatest(['weight'], today)
   assert.ok(Math.abs(weight.value - 81.6466) < 0.01, `180 lb is 81.65 kg: ${weight.value}`)
-  assert.equal(weight.source, 'Karma Yoga')
+  assert.equal(weight.source, 'Jatayu')
 }
 assert.equal(
   await health.addReading({
@@ -242,7 +242,7 @@ assert.equal(
 // ── activity ─────────────────────────────────────────────────────────
 
 health.setView('activity')
-assert.equal(stored.get('karmayoga.health.view'), 'activity', 'the pane is remembered here')
+assert.equal(stored.get('jatayu.health.view'), 'activity', 'the pane is remembered here')
 await until(
   'the week loads',
   () => health.activity.length === 7 && health.activity[0].date === week.from,
@@ -268,7 +268,7 @@ assert.ok(
 )
 
 health.setRange('month')
-assert.equal(stored.get('karmayoga.health.range'), 'month')
+assert.equal(stored.get('jatayu.health.range'), 'month')
 health.goToday()
 health.step(-1)
 assert.equal(health.from, lastMonth.from, 'one month back from this one')
@@ -328,7 +328,7 @@ assert.ok(health.latest.some((l) => l.metric === 'resting_heart_rate'))
 assert.ok(health.latest.every((l) => VITALS_METRICS.includes(l.metric)))
 assert.equal(health.seriesSecond, null)
 health.setVitalsMetric('blood_pressure_systolic')
-assert.equal(stored.get('karmayoga.health.vitals'), 'blood_pressure_systolic')
+assert.equal(stored.get('jatayu.health.vitals'), 'blood_pressure_systolic')
 await until('blood pressure loads', () => health.series?.metric === 'blood_pressure_systolic')
 await until('and its other half', () => health.seriesSecond?.metric === 'blood_pressure_diastolic')
 {

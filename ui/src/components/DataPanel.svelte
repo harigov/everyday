@@ -68,8 +68,8 @@
   <h3 class="eyebrow">Export</h3>
   <p class="hint">
     A zip of plain files: your journal and notes as Markdown, your calendars as
-    <code>.ics</code>, your shelves and your tracking as CSV. Nothing in it needs Karma Yoga to
-    open, and nothing in it is encrypted — keep it where you would keep the diary itself.
+    <code>.ics</code>, your shelves and your tracking as CSV. Nothing in it needs Jatayu to open,
+    and nothing in it is encrypted — keep it where you would keep the diary itself.
   </p>
 
   {#if transfer.parts === null}
@@ -137,8 +137,8 @@
 <section>
   <h3 class="eyebrow">Import</h3>
   <p class="hint">
-    An archive Karma Yoga exported, or a folder of Markdown zipped up by anything else. You will be
-    told what is in it before anything is read.
+    An archive Jatayu exported, or a folder of Markdown zipped up by anything else. You will be told
+    what is in it before anything is read.
   </p>
 
   <!-- The browser's own picker, for a window with no shell behind it. Hidden

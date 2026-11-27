@@ -188,7 +188,7 @@ export async function mockImproveWriting(opts: {
 
 // ── What it has learned from the replies sent ──────────────────────────
 
-/** `MAX_NOTES_CHARS` in `crates/karmayoga-core/src/mail/learning.rs`. */
+/** `MAX_NOTES_CHARS` in `crates/jatayu-core/src/mail/learning.rs`. */
 const MAX_NOTES_CHARS = 2_000
 
 /** Nothing learned yet, as a vault starts. */

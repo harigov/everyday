@@ -1,4 +1,4 @@
-# Karma Yoga
+# Jatayu
 
 A private journal, a notebook, a todo app, a calendar, a library, a reader
 for the sites and newsletters you follow, a place where they all add up, and an assistant that works while you are not looking —
@@ -12,36 +12,88 @@ iCalendar and CSV you can walk away with.
 
 <!-- Screenshots live in docs/ once you have run the app. -->
 
-## Coming from Every Day
+## Coming from Karma Yoga or Every Day
 
-This application used to be called Every Day. The first time a Karma Yoga
-build starts, it carries an existing installation across by itself; nothing
-inside the vault is rewritten. Quit Every Day first: while it, or anything
-else, still has the old folders open, Karma Yoga leaves them where they are,
-uses them in place, and tries again next launch.
+This application was called Every Day until 14 November 2026, then Karma
+Yoga, and is Jatayu now. The first time a Jatayu build starts, it carries an
+existing installation across by itself, from whichever name it has — straight
+to Jatayu, newest name first, never one rename after the other — and nothing
+inside the vault is rewritten. Quit the old app first: while it, or anything
+else, still has the old folders open, Jatayu leaves them where they are, uses
+them in place, and tries again next launch. `jatayu migrate --dry-run` shows
+what would move without moving it; `jatayu migrate` moves it now.
+
+**What moves on first launch**
 
 - **Folders.** The settings and data folders are renamed in place, from
-  `~/.config/everyday` and `~/.local/share/everyday` to
-  `~/.config/karmayoga` and `~/.local/share/karmayoga` (the same move on
-  macOS and Windows, under each platform's own names). A link is left at
-  each old path, and the pointer to the last vault is updated.
-  `karmayoga migrate --dry-run` shows what would move without moving it.
-- **Inside the vault.** `store/everyday.db` becomes `store/karmayoga.db`
-  once nothing has it open, with a link left at the old name. A Postgres
-  vault that named no schema keeps its tables in `everyday`, where they are:
-  another machine may share the database. Records are untouched: their
-  encryption labels still say `everyday`, and always will, because those are
-  inputs to the cipher, not names.
-- **Everything else.** The keychain entry for opening the vault by itself,
-  the interface's remembered preferences, the GNOME Shell extension and the
-  Matrix bot's device name all move across on first use. `make
-  desktop-entry` replaces the old launcher. Old export archives, `.ics`
-  files and Markdown sidecars still import.
-- **What changes for you.** The command line is `karmayoga` (it was
-  `everyday`), environment variables start `KARMAYOGA_` (one still set under
-  the old prefix is named in a warning at startup), and an MCP client
-  configured with `everyday mcp` needs `karmayoga mcp` instead. Paired
-  devices stay paired.
+  `~/.config/karmayoga` and `~/.local/share/karmayoga` (or the `everyday`
+  ones, on a machine that never ran Karma Yoga) to `~/.config/jatayu` and
+  `~/.local/share/jatayu` — the same move on macOS and Windows, under each
+  platform's own names. A link is left at each old path, and the pointer to
+  the last vault is updated. The `everyday` links the first rename left
+  behind are never moved themselves (that would leave Jatayu pointing back at
+  Karma Yoga); they go on working through the new link.
+- **The database file.** `store/karmayoga.db` (or `store/everyday.db`)
+  becomes `store/jatayu.db` once nothing has it open, its log folded in first,
+  with a link left at the old name.
+- **Remembered preferences.** The webview's folder moves to the new bundle id
+  and the interface renames its own preferences, so the theme, the layout and
+  the rest come back as they were. When both old names hold one, Karma Yoga's
+  wins.
+- **The keychain.** The entry that opens the vault by itself is filed again
+  under Jatayu's name and the old one removed.
+- **The GNOME Shell extension.** `screentime@karmayogi.app` (or
+  `screentime@everyday.journal`) is replaced by `screentime@jatayu.app`.
+- **The files folder.** It stays where it is, under the name it has — its
+  path is a setting, and a sync tool or a backup may know it by that name —
+  but the application's own folder inside it, `.karmayoga`, becomes `.jatayu`,
+  and `.stignore` is rewritten to match. To rename the folder itself, move it
+  with your file manager and choose its new place in Settings → Files.
+- **Backups.** A backup destination Karma Yoga made is recognised as the same
+  repository; new copies join it, and `jatayu restore` reads the old ones.
+- **Smaller things.** The Matrix bot's device name, the hours screen time
+  counted under the old app's ids, and pictures in mail and Feed stories
+  stored with the old address scheme all carry across on first use. Old export
+  archives (`karmayoga.json`, `everyday.json`), `.ics` files and Markdown
+  sidecars still import. The server keeps its certificate, so the GNOME
+  collector, MCP clients and computers paired with this one stay paired.
+
+**What is kept on purpose**
+
+- **Encryption labels.** Records are sealed under labels that still say
+  `everyday.` and `karmayoga.`, and always will: they are inputs to the
+  cipher, not names, and changing one would mean decrypting and resealing
+  every record to change bytes nobody reads.
+- **Search indexes.** The mail and documents indexes registered their
+  tokenizers as `everyday_*` and `karmayoga_docs`; the names are part of a
+  schema already written into each index.
+- **Calendar event ids.** Events written to `.ics` keep the `@everyday`
+  suffix on their uids, because other calendars already know them by it; a
+  new suffix would make every event a duplicate.
+- **A Postgres schema.** A Postgres vault that named no schema keeps its
+  tables in `karmayoga` or `everyday`, wherever they are, and is read there:
+  another machine may share the database.
+
+**What you redo by hand**
+
+- **Global keys on GNOME.** The desktop knows the shortcuts by app id, and
+  the id changed, so GNOME asks once more to bind the command palette, writing
+  help, voice typing and the talk key. Writing help and voice typing may ask
+  once more for the desktop's permission to read a selection or type.
+- **macOS permissions.** The bundle id changed, so macOS asks again for the
+  microphone and anything else Karma Yoga had been allowed.
+- **The phone app.** It is a new app as far as the phone is concerned:
+  install it, and pair it again from Settings → Vault → Share on the network.
+  Its preferences start afresh.
+- **The browser extension.** If the browser installs the renamed add-on as a
+  new one (Firefox does: its id changed), paste a new connection code from
+  Settings → Screen time.
+- **The launcher.** Run `make desktop-entry` to replace the old launcher and
+  icons, and pin the new one to the dock if the old pin went with it.
+- **Names you type.** The command line is `jatayu` (it was `karmayoga`, and
+  before that `everyday`). Environment variables start `JATAYU_`; one still
+  set under an old prefix is named in a warning at startup. An MCP client
+  configured with `karmayoga mcp` or `everyday mcp` needs `jatayu mcp`.
 
 ## Why this stack
 
@@ -395,11 +447,11 @@ Some care went into a feed's parts that are easy to get wrong:
 The network. This application has no telemetry, no update check, no crash
 reporter and no analytics. Two features from the very first version open a
 socket — refreshing a subscribed calendar, and looking up what a book is
-called — and both do it through one client in `crates/karmayoga-service/src/http.rs`,
+called — and both do it through one client in `crates/jatayu-service/src/http.rs`,
 so the timeout, the redirect limit and the size cap are decided once. Every
 feature that has since joined that client — a calendar account's own sync,
 a remote image, sending a call's speech to a transcriber you configured — is
-decided by the same settings, and named below. `karmayoga-core` still has no
+decided by the same settings, and named below. `jatayu-core` still has no
 async runtime, no TLS stack and no way to reach the network at all, which is
 what keeps the difficult halves — RFC 5545, recurrence and zones on one
 side, five reply formats and five rating scales on the other — testable
@@ -497,7 +549,7 @@ before you save it.
 
 Recording is native — the webview is never given microphone access — which
 is also why this is **desktop only**: there is nothing to record from a
-browser tab or a headless `karmayoga serve`, though a paired desktop client
+browser tab or a headless `jatayu serve`, though a paired desktop client
 records the same way the machine holding the vault does. **Linux** needs a
 running PipeWire session for the call's own track (the microphone still
 works without one, just not the other side of the call); **macOS** needs
@@ -778,11 +830,11 @@ Four rules hold this together, and the last two are the ones worth stating:
   them. The rule lives in `websearch::apply`, in Rust, where it is tested.
 - **A cover is downloaded, never linked.** It goes into the same
   content-addressed, chunk-encrypted blob store that holds photographs in a
-  journal entry, and is drawn through the `karmayoga://` protocol. An
+  journal entry, and is drawn through the `jatayu://` protocol. An
   `<img src="https://covers…">` would have been less code and would have told
   a stranger's server which books are on your shelf every time you opened the
   app. It is also not possible: the webview's content security policy allows
-  images from `'self'` and `karmayoga:` and from nowhere else, which is the
+  images from `'self'` and `jatayu:` and from nowhere else, which is the
   check that outlives the reason. On the way in it is made a cover's size —
   no more than 800 pixels on its longer side, turned the right way up, and
   re-encoded as a JPEG at quality 85 — however it came: a lookup, a picked
@@ -798,10 +850,10 @@ Nothing above is private to the library. Searching the web is a core
 capability that any part of the app can reach for, in three layers:
 
 ```
-  karmayoga_core::websearch     builds every URL, parses all five reply
+  jatayu_core::websearch       builds every URL, parses all five reply
                                formats, ranks and merges — and cannot open a
                                socket, which is why it is all under test
-  karmayoga_service::websearch  opens the socket. Timeout, redirect limit and
+  jatayu_service::websearch    opens the socket. Timeout, redirect limit and
                                size cap shared with the calendar fetcher
   ui/src/lib/websearch.ts      the `web` object components hold: debouncing,
                                cancellation, caching, and an error you can
@@ -1133,7 +1185,7 @@ nothing left. Three kinds of source, and one that is not:
 
 **The refresher lives in the service**, not a window — one supervised task
 for every source, stopped when the vault locks and started again when it
-opens, and running under `karmayoga serve` too. Each request is conditional
+opens, and running under `jatayu serve` too. Each request is conditional
 (`If-None-Match`, `If-Modified-Since`), so a feed that has not changed costs
 a `304`. How often a source is asked is a pure function with a table of cases
 beside it: an hour by default, stretched towards half the gap between its
@@ -1486,8 +1538,8 @@ over a window nobody has read yet gets a reflex "no" that then sticks.
 
 **The Rust shell can raise one too.** It does work the interface never sees —
 refreshing subscribed calendars on a timer — and before this the only thing it
-could say about a result was a log line. `karmayoga_app::notify` emits a
-`karmayoga://notify` event; the interface consumes it and applies exactly the
+could say about a result was a log line. `jatayu_app::notify` emits a
+`jatayu://notify` event; the interface consumes it and applies exactly the
 routing above. That is the point of one service rather than two: the rule
 about not putting a banner over a focused window is written once.
 
@@ -1839,7 +1891,7 @@ with a thin bar in it, because every row is a name worth reading and carries
 two or three figures. A sender or a person opens the mail app on a search
 for them.
 
-The counting is in Rust (`karmayoga_core::insights`) and not a query, because
+The counting is in Rust (`jatayu_core::insights`) and not a query, because
 everything it hangs on is sealed: who a message is from, what a meeting is
 called, who was invited. The window's records are decrypted and walked once.
 The window keeps that bounded, and each distinct window on the page is one
@@ -1919,36 +1971,36 @@ area `91c0…` and took three hours on Tuesday. It cannot say that `91c0…` is
 
 ```
 crates/
-  karmayoga-core/            domain model, crypto, storage traits, search,
+  jatayu-core/              domain model, crypto, storage traits, search,
                             iCalendar, web search
-  karmayoga-store-sql/       the SQL backend: schema, queries, cascades --
+  jatayu-store-sql/         the SQL backend: schema, queries, cascades --
                             written once, run on every dialect below
-  karmayoga-store-sqlite/    SQLite driver (default)
-  karmayoga-store-postgres/  Postgres driver, including Supabase
-  karmayoga-vault/           wires core to backends; platform paths; media
+  jatayu-store-sqlite/      SQLite driver (default)
+  jatayu-store-postgres/    Postgres driver, including Supabase
+  jatayu-vault/             wires core to backends; platform paths; media
                             serving; the keychain, when a vault opens itself
-  karmayoga-mail/            IMAP, SMTP, MIME, sanitising, OAuth, the sync
+  jatayu-mail/              IMAP, SMTP, MIME, sanitising, OAuth, the sync
                             engine — everything that speaks a mail protocol
-  karmayoga-mailindex/       tantivy behind a sealed `Directory`, kept apart
+  jatayu-mailindex/         tantivy behind a sealed `Directory`, kept apart
                             so its build cost is paid once
-  karmayoga-service/         the command surface: everything a client can ask a
+  jatayu-service/           the command surface: everything a client can ask a
                             vault to do, with no window in sight — and the one
                             loop that runs the assistant's routines and syncs
                             every account
-  karmayoga-server/          serving a vault to other machines, and the client
+  jatayu-server/            serving a vault to other machines, and the client
                             that talks to one
-  karmayoga-cli/             `karmayoga` — scripted capture, export, inspection,
+  jatayu-cli/               `jatayu` — scripted capture, export, inspection,
                             and `serve`
-  karmayoga-app/             Tauri desktop shell (window, media, tray, sharing)
+  jatayu-app/               Tauri desktop shell (window, media, tray, sharing)
 ui/                         Svelte 5 + TipTap interface
 scripts/                    capped test runner, dev runner, Linux setup
 ```
 
-`karmayoga-core` has no UI, no platform and no async runtime. That is what lets
+`jatayu-core` has no UI, no platform and no async runtime. That is what lets
 the same logic back a desktop shell today and a mobile one later, and it is
 why the whole test suite runs on a machine that cannot build a GUI.
 
-`karmayoga-service` is the middle. Every one of the 212 things a vault
+`jatayu-service` is the middle. Every one of the 212 things a vault
 can be asked to do is an entry in one table there, run by name from JSON, and
 the desktop shell registers nine commands rather than 212. That is what
 lets the same command bodies back this window, a server answering three
@@ -2202,7 +2254,7 @@ asked for something current, and where to turn it on, rather than answering
 from a memory of the world that ended when it was trained.
 
 They live in the service rather than the core for the reason the calendar and
-the library features are both built on: `karmayoga-core` has no async runtime,
+the library features are both built on: `jatayu-core` has no async runtime,
 no TLS stack and no way to open a socket, and that stays true. What can be
 pure is: the forecast's URLs, its parsing and the words for a weather code
 are in the core, under test, offline.
@@ -2364,10 +2416,10 @@ suggested is indistinguishable from one you typed, and there is no second
 write path to drift.
 
 ```
-  karmayoga_core::quick      builds every prompt, declares every schema,
+  jatayu_core::quick        builds every prompt, declares every schema,
                             clamps every answer -- and cannot open a socket,
                             which is why all of it is under test
-  karmayoga_service::quick   owns the socket. One `submit` tool carrying the
+  jatayu_service::quick     owns the socket. One `submit` tool carrying the
                             job's schema, two turns, twelve seconds, no retry
   ui/src/lib/quick.svelte.ts  the switch check, the cancellation, and a
                             failure that is silence rather than a banner
@@ -2480,7 +2532,7 @@ scanned off the QR code beside it. There is a headless shape too, for a
 machine under a desk or in a container:
 
 ```sh
-karmayoga --vault ~/vault serve --pair       # prints a link and a QR code
+jatayu --vault ~/vault serve --pair          # prints a link and a QR code
 ```
 
 It starts **locked** unless given a password, so an unattended server need not
@@ -2489,7 +2541,7 @@ keep one in an environment file: the first client to connect unlocks it.
 ### What the link is, and why a self-signed certificate is stronger here
 
 ```
-karmayoga://pair?host=100.64.0.12:7397&fp=<sha256 of the cert>&code=<one-time>&name=Journal
+jatayu://pair?host=100.64.0.12:7397&fp=<sha256 of the cert>&code=<one-time>&name=Journal
 ```
 
 There is no certificate authority in this story and there should not be. A
@@ -2547,7 +2599,7 @@ the vault is unreachable. The connect screen says that too.
 ### Adding an app does not mean touching any of this
 
 Every one of the 212 things a vault can be asked to do is an entry in
-one table in `karmayoga-service`, and a domain contributes its own slice of it.
+one table in `jatayu-service`, and a domain contributes its own slice of it.
 An entry declares the scope it needs, the effect it has and the change it
 emits, so authorisation, live refresh and the generated client are all *data*
 rather than code somebody has to remember to extend.
@@ -2564,7 +2616,7 @@ is to keep that true for the sixth app.
 TLS over TCP for other machines, and a **local socket** for processes
 belonging to the same user, always on while a vault is open. The second is not
 an afterthought: the operating system already vouches for the peer, so there
-is no token and no certificate, and it is how `karmayoga` will write through a
+is no token and no certificate, and it is how `jatayu` will write through a
 running app instead of coming up read-only beside it — and how a browser
 extension will reach a vault that is not shared on any network at all.
 
@@ -2621,7 +2673,7 @@ nothing installed there. Turn it on in **Settings → Vault → Open in a
 browser**, or start a headless server with `--web`:
 
 ```sh
-karmayoga --vault ~/vault serve --web        # prints the address to open
+jatayu --vault ~/vault serve --web           # prints the address to open
 ```
 
 The vault password is the login. Typing it unlocks a locked vault, or proves
@@ -2680,17 +2732,17 @@ is the same act.
 **In Claude Code:**
 
 ```sh
-claude mcp add --transport http karmayoga http://127.0.0.1:7398/mcp \
+claude mcp add --transport http jatayu http://127.0.0.1:7398/mcp \
   --header "Authorization: Bearer <the token>"
 ```
 
 **In a client that only launches a command:**
 
 ```json
-{ "mcpServers": { "karmayoga": { "command": "karmayoga", "args": ["mcp"] } } }
+{ "mcpServers": { "jatayu": { "command": "jatayu", "args": ["mcp"] } } }
 ```
 
-`karmayoga mcp` is a pipe, not a second server: it forwards to the port above
+`jatayu mcp` is a pipe, not a second server: it forwards to the port above
 and holds no vault of its own. That is not tidiness — the second process to
 open a vault opens it *read-only*, so a server that opened one beside a
 running app could list your tasks and never add one.
@@ -2740,7 +2792,7 @@ rather than a coffee-shop wifi.
 
 ### On a machine with no screen
 
-`karmayoga serve` takes `--mcp`, which serves the same endpoint beside the
+`jatayu serve` takes `--mcp`, which serves the same endpoint beside the
 vault server. The port and the token come from `mcp.json`; the *decision*
 does not. A switch thrown in a settings panel, by somebody at a keyboard, for
 a listener that answers only to that machine is not the same act as starting
@@ -2752,8 +2804,8 @@ one set rather than ignoring it quietly.
 A machine that has never issued a token is given one, printed once:
 
 ```sh
-karmayoga serve --mcp                      # loopback, from mcp.json
-karmayoga serve --mcp --mcp-listen 0.0.0.0 # reachable, and it will say so
+jatayu serve --mcp                      # loopback, from mcp.json
+jatayu serve --mcp --mcp-listen 0.0.0.0 # reachable, and it will say so
 ```
 
 The second of those is plaintext on a network — there is no TLS on this
@@ -2923,7 +2975,7 @@ the door is not locked from the inside: an application that can only be read
 by itself is one you are trapped in, however good its cipher.
 
 **Settings → Data** writes your vault out as a folder of files other programs
-already read, and reads such a folder back. There is no Karma Yoga format
+already read, and reads such a folder back. There is no Jatayu format
 anywhere in it.
 
 | App | What you get |
@@ -2940,7 +2992,7 @@ anywhere in it.
 
 The whole is a zip, because that is what all three desktops open by
 double-clicking, with a `README.md` at the root explaining itself to whoever
-finds it in ten years and an `karmayoga.json` saying what is in it. Attachments
+finds it in ten years and an `jatayu.json` saying what is in it. Attachments
 are a switch, and the dialog says what they weigh before you throw it.
 
 ### An app declares its own
@@ -2952,7 +3004,7 @@ are a switch, and the dialog says what they weigh before you throw it.
            ── import()  read them back
 ```
 
-One trait, in `karmayoga-transfer`, implemented once per app and registered in
+One trait, in `jatayu-transfer`, implemented once per app and registered in
 one list. Nothing else learns that an app exists: the chooser in settings is
 drawn from the specs, so is the archive's manifest, so is its README, and the
 commands take a list of part ids they never interpret. The sixth app becomes
@@ -2971,14 +3023,14 @@ app that will one day hold passwords.
 An entry is a rich document, and Markdown cannot say quite everything one
 contains — an embedded video, a table, a highlight. So each is written twice:
 as the `.md` everything else reads, and as the exact tree in a hidden
-`.karmayoga/` folder beside it.
+`.jatayu/` folder beside it.
 
 On the way back in the sidecar is preferred **unless the Markdown has been
 edited since**, which is what the digest inside it is for. Editing an exported
 entry in a text editor is one of the two reasons anybody exports one; a
 sidecar that silently overrode that edit would make the feature a trap.
 
-A folder with no `.karmayoga` at all — somebody's own notes, a folder from
+A folder with no `.jatayu` at all — somebody's own notes, a folder from
 another program, an archive rezipped by a tool that dropped the
 dot-directory — imports from the Markdown alone. That path is not a fallback
 that happens to work: it is the one that has to work, because it is the only
@@ -3016,7 +3068,7 @@ credential in the vault: the models' API keys, the tokens paired devices
 hold, and the wrapped data key itself. A credential in an export is a
 credential leaked.
 
-A backup is the other job. **Settings → Backup** (or `karmayoga backup` for
+A backup is the other job. **Settings → Backup** (or `jatayu backup` for
 one plain copy by hand) copies the vault *sealed*, opens with the same
 password, and keeps the things an export drops -- see
 [Backups](#backups). Two verbs, two jobs — which is also why the assistant's part exports
@@ -3043,13 +3095,13 @@ as it is for a video being scrubbed. The one path with no ceiling at all is
 the command line, which writes as it goes:
 
 ```sh
-karmayoga export --list                 # what there is, and how much of it
-karmayoga export ~/journal.zip          # an archive
-karmayoga export ~/journal              # the same files, as a folder
-karmayoga export ~/j.zip --part notes --part journal --no-media
-karmayoga import ~/journal.zip          # says what it found, changes nothing
-karmayoga import ~/journal.zip --yes    # does it
-karmayoga import ~/some-markdown-folder --yes
+jatayu export --list                    # what there is, and how much of it
+jatayu export ~/journal.zip             # an archive
+jatayu export ~/journal                 # the same files, as a folder
+jatayu export ~/j.zip --part notes --part journal --no-media
+jatayu import ~/journal.zip             # says what it found, changes nothing
+jatayu import ~/journal.zip --yes       # does it
+jatayu import ~/some-markdown-folder --yes
 ```
 
 ## Backups
@@ -3102,16 +3154,16 @@ not plugged in is never mistaken for a new, empty destination: once a folder
 has held backups, finding nothing there is a failure, not a fresh start.
 
 ```sh
-karmayoga backups status                      # where, how often, how it went
-karmayoga backups run                         # now, to the destination Settings chose
-karmayoga backups run --to s3://bucket/kyoga  # or somewhere else, once
-karmayoga backups list                        # the copies kept
-karmayoga backups verify --read               # every piece there, and the newest read back
-karmayoga restore gs://bucket/kyoga ~/restored --config
+jatayu backups status                         # where, how often, how it went
+jatayu backups run                            # now, to the destination Settings chose
+jatayu backups run --to s3://bucket/kyoga     # or somewhere else, once
+jatayu backups list                           # the copies kept
+jatayu backups verify --read                  # every piece there, and the newest read back
+jatayu restore gs://bucket/kyoga ~/restored --config
 ```
 
 `restore` needs no vault -- it is for the day there is none -- and lays the
-copy down as a vault folder that opens in Karma Yoga with the same password,
+copy down as a vault folder that opens in Jatayu with the same password,
 into a folder that must be empty. `--snapshot` picks an older copy; `--config`
 puts this computer's settings back, never over a file already there. A vault
 on Postgres is not backed up from here: its database is the host's to back up.
@@ -3134,7 +3186,7 @@ questions — a Postgres vault is *storage two machines reach*, and a served
 vault is *one machine's storage, reached remotely* — and they compose: a
 server can sit on either backend.
 
-Both are the *same backend*. `karmayoga-store-sql` holds the schema, every
+Both are the *same backend*. `jatayu-store-sql` holds the schema, every
 query, every cascade and the whole clear/sealed split; the two crates beside
 it are drivers of a hundred lines each. That is not tidiness for its own
 sake — it is what makes the Postgres vault trustworthy, because it runs the
@@ -3142,7 +3194,7 @@ same code the SQLite tests are about rather than a reimplementation of it.
 The shared conformance suite runs against both.
 
 Where the two genuinely differ is written down in one file,
-`karmayoga-store-sql/src/dialect.rs`: placeholders (`?1` versus `$1`), how to
+`jatayu-store-sql/src/dialect.rs`: placeholders (`?1` versus `$1`), how to
 spell an unlimited `OFFSET`, the greater-of-two function, the column type
 names, and where the schema version is kept. Everything else that *could*
 have differed was written out of the queries instead — `INSERT OR IGNORE`
@@ -3172,21 +3224,21 @@ Two things worth knowing before pointing it at Supabase. Use the **session**
 connection string (port 5432), not the transaction pooler (6543): the driver
 prepares its statements and a transaction-mode pooler cannot carry them, and
 it says so at connect time rather than failing later mid-save. And the tables
-go in their own `karmayoga` schema rather than in `public`, so a project can
+go in their own `jatayu` schema rather than in `public`, so a project can
 hold a vault and an application, or two vaults, without collision.
 
 The connection URL has a password in it, so it is **sealed under the vault
 key** rather than written into the plaintext header beside the salt. Setting
-`KARMAYOGA_DATABASE_URL` overrides what is stored, for a deployment that would
+`JATAYU_DATABASE_URL` overrides what is stored, for a deployment that would
 rather keep the credential in whatever it already uses for secrets.
 
 ```sh
-karmayoga --vault ~/hosted init --backend postgres \
+jatayu --vault ~/hosted init --backend postgres \
   --set url=postgresql://user:password@host:5432/database \
-  --set schema=karmayoga
+  --set schema=jatayu
 
-karmayoga --vault ~/hosted backend                       # what it is set to
-karmayoga --vault ~/hosted backend --set url=postgresql://…  # a rotated password
+jatayu --vault ~/hosted backend                           # what it is set to
+jatayu --vault ~/hosted backend --set url=postgresql://…  # a rotated password
 ```
 
 `backend` never prints a secret back, and a change takes effect the next time
@@ -3269,7 +3321,7 @@ The parts of the design that exist only to keep data:
 
 * **One writer at a time.** Opening a vault takes an exclusive OS lock on the
   directory (`vault.lock`). Whoever has it may write; anyone else — a second
-  copy of the app, or `karmayoga` on the command line — gets the vault
+  copy of the app, or `jatayu` on the command line — gets the vault
   **read-only** rather than being turned away, so listing, searching, `check`
   and `backup` all still work and only the writes are refused. The lock is
   the kernel's, held on an open file handle, so a crash releases it; a
@@ -3284,7 +3336,7 @@ The parts of the design that exist only to keep data:
   *discard mine*.
 
 **Every backend must pass the same conformance suite**
-(`karmayoga_core::store::conformance`), so backends do not write their own CRUD
+(`jatayu_core::store::conformance`), so backends do not write their own CRUD
 tests — they inherit ~15 shared behaviours covering round-tripping, filtering,
 pagination, blob dedup, range reads, cascade deletes, GC and Unicode. That is
 what makes "swap the backend" a real claim rather than an aspiration. A
@@ -3303,8 +3355,8 @@ make test-postgres      # starts a throwaway Postgres in Docker and removes it
 or point it at a server you already have:
 
 ```sh
-KARMAYOGA_TEST_DATABASE_URL=postgresql://user:password@host:5432/scratch \
-  cargo test -p karmayoga-store-postgres
+JATAYU_TEST_DATABASE_URL=postgresql://user:password@host:5432/scratch \
+  cargo test -p jatayu-store-postgres
 ```
 
 Without that variable the Postgres tests say why they did nothing and pass —
@@ -3369,7 +3421,7 @@ tampered with, since the checksum list sits next to the installers.
 
 ```sh
 make test                          # whole workspace
-make test ARGS="-p karmayoga-core"  # one crate
+make test ARGS="-p jatayu-core"    # one crate
 make lint                          # fmt, clippy, and the interface typecheck
 make fix                           # apply what `make lint` can fix on its own
 ```
@@ -3399,31 +3451,31 @@ make ui
 
 The interface detects the absence of a Tauri host and falls back to a complete
 in-memory backend with sample content. Lock screen, journals, editor, search
-and media all work in a plain browser. The demo password is `karmayoga`.
+and media all work in a plain browser. The demo password is `jatayu`.
 
 ## The CLI
 
-`karmayoga` drives the same core, which makes it useful for scripted capture
+`jatayu` drives the same core, which makes it useful for scripted capture
 and for verifying the stack where a GUI cannot be built.
 
 ```sh
-cargo run -p karmayoga-cli -- init --name "My Journal"
-echo "It rained all afternoon." | karmayoga new --journal Daily --tag weather
-karmayoga list
-karmayoga search rain
-karmayoga export ~/journal.zip      # Markdown, iCalendar and CSV; no Karma Yoga format
-karmayoga import ~/journal.zip      # and back again, after saying what it found
-karmayoga backup ~/vault-copy       # the vault itself, still sealed
-karmayoga backups run               # a backup to where Settings → Backup says
-karmayoga restore s3://bucket/kyoga ~/restored   # and back from one
-karmayoga backend                   # what the storage backend is set to
-karmayoga check                     # look for storage-level damage
-karmayoga serve --pair              # serve this vault to other machines
-karmayoga serve --web               # and to a browser on your tailnet
-karmayoga do list_tools --list      # the assistant's verbs, without a model
+cargo run -p jatayu-cli -- init --name "My Journal"
+echo "It rained all afternoon." | jatayu new --journal Daily --tag weather
+jatayu list
+jatayu search rain
+jatayu export ~/journal.zip         # Markdown, iCalendar and CSV; no Jatayu format
+jatayu import ~/journal.zip         # and back again, after saying what it found
+jatayu backup ~/vault-copy          # the vault itself, still sealed
+jatayu backups run                  # a backup to where Settings → Backup says
+jatayu restore s3://bucket/kyoga ~/restored      # and back from one
+jatayu backend                      # what the storage backend is set to
+jatayu check                        # look for storage-level damage
+jatayu serve --pair                 # serve this vault to other machines
+jatayu serve --web                  # and to a browser on your tailnet
+jatayu do list_tools --list         # the assistant's verbs, without a model
 ```
 
-`--help` on any subcommand. Password comes from a prompt, or `KARMAYOGA_PASSWORD`
+`--help` on any subcommand. Password comes from a prompt, or `JATAYU_PASSWORD`
 for scripts.
 
 `backup` and `export` are different things and you probably want both.
@@ -3583,7 +3635,7 @@ means. That is a feature, not a detail.
 ### The assistant's verbs, without the assistant
 
 The sixty-six tools the assistant can run are also runnable directly, with
-no model in the loop — `karmayoga do <tool>`, or `list_tools` and `run_tool`
+no model in the loop — `jatayu do <tool>`, or `list_tools` and `run_tool`
 over the command surface. A destructive one is refused unless the caller says,
 in that call, that it means it: there is no undo in this application, so a
 script that deletes a project has to be a script that asked to.
@@ -3618,8 +3670,8 @@ area (Windows) or the system tray (Linux), without going to the window first:
   Record a reading
   Goals
   ─────────────────
-  Open Karma Yoga
-  Quit Karma Yoga
+  Open Jatayu
+  Quit Jatayu
 ```
 
 "Add to library" is the one this is really for: something was recommended to
@@ -3651,7 +3703,7 @@ re-run whenever anything it reads changes, which is what keeps the menu
 honest: an action that has become impossible disappears or greys out rather
 than failing when it is chosen. Handlers never leave the interface; what
 crosses to Rust is labels and ids, and what comes back is the id that was
-picked (`crates/karmayoga-app/src/tray.rs`).
+picked (`crates/jatayu-app/src/tray.rs`).
 
 The last two entries are the shell's own, appended after whatever the
 interface sent. A tray whose only route back to the application is a menu
@@ -3671,7 +3723,7 @@ that appears to do nothing.
 
 ## A number on the icon
 
-Settings → General → Icon badge puts a count on Karma Yoga's icon in the Dock
+Settings → General → Icon badge puts a count on Jatayu's icon in the Dock
 or taskbar. Choose what it adds up:
 
 - **Tasks**: none, those due today or overdue (the number beside Today), or
@@ -3686,7 +3738,7 @@ one. The setting is off by default and is remembered on this machine, like
 the tray's switches. Nothing is shown while the vault is locked.
 
 The shell does the counting, not the window
-(`crates/karmayoga-app/src/badge.rs`), so the number keeps up while the window
+(`crates/jatayu-app/src/badge.rs`), so the number keeps up while the window
 is hidden. It recounts when a task, a thread or a proposal changes, when the
 vault locks or unlocks, and once a minute. The minute also catches midnight,
 and mail a background sync wrote without announcing it.
@@ -3782,8 +3834,8 @@ Supabase-specific parts are the connection string and the pooler warning.
 
 The CLI covers journals only. It is a capture-and-export tool for the journal
 and has not been taught about notes, tasks, calendars, the library, tracking,
-areas and goals, or routines — though `karmayoga do` runs any of the
-assistant's tools, and `karmayoga serve --keychain` opens a vault on a machine
+areas and goals, or routines — though `jatayu do` runs any of the
+assistant's tools, and `jatayu serve --keychain` opens a vault on a machine
 that rebooted.
 
 Calendar subscriptions are the one part not exercised against a real server
@@ -3856,12 +3908,12 @@ does at runtime can change that.
 Installing the package fixes it:
 
     make dist
-    sudo dpkg -i "target/dist/bundle/deb/Karma Yoga_0.1.0_amd64.deb"
+    sudo dpkg -i "target/dist/bundle/deb/Jatayu_0.1.0_amd64.deb"
 
 To keep a locally built binary and still get the icon and the right name in
 the dock and the overview:
 
-    make desktop-entry      # writes ~/.local/share/applications/karmayoga-app.desktop
+    make desktop-entry      # writes ~/.local/share/applications/jatayu-app.desktop
     make undesktop-entry    # to undo it
 
 The entry it writes points `Exec` at the binary in `target/`, so re-run it

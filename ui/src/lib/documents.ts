@@ -8,7 +8,7 @@
 //
 // # What counts as a document
 //
-// `docFormatOf` is `DocFormat::of_file` in `karmayoga-core/src/documents.rs`
+// `docFormatOf` is `DocFormat::of_file` in `jatayu-core/src/documents.rs`
 // written out again: the file's extension first, then its type. The two must
 // agree, because a file this offers to read and the service refuses is a
 // button that ends in an error, and one this does not offer and the service

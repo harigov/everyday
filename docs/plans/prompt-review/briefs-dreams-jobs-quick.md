@@ -22,9 +22,9 @@ Contents
 
 ## 0. How these prompts reach a model
 
-Briefs, dreams, research, project and task jobs, watch looks and acts, and job follow-ups are all ordinary assistant turns (`karmayoga_service::agent::run_turn`, agent.rs:6989). In every one of them the model sees the following.
+Briefs, dreams, research, project and task jobs, watch looks and acts, and job follow-ups are all ordinary assistant turns (`jatayu_service::agent::run_turn`, agent.rs:6989). In every one of them the model sees the following.
 
-- **The system prompt.** First `karmayoga_core::agent::system_prompt` (agent.rs core:1264). It holds the soul with its clause "where anything after it speaks to tone, length or style, this wins", the name, the house rules, `<about_the_person>`, the skill index, and the told, inferred and rejected memories. Then `Guidance` (service agent.rs:3797), worded for the tools that were offered. Last comes one paragraph, which depends on the kind of turn:
+- **The system prompt.** First `jatayu_core::agent::system_prompt` (agent.rs core:1264). It holds the soul with its clause "where anything after it speaks to tone, length or style, this wins", the name, the house rules, `<about_the_person>`, the skill index, and the told, inferred and rejected memories. Then `Guidance` (service agent.rs:3797), worded for the tools that were offered. Last comes one paragraph, which depends on the kind of turn:
   - `unattended_context(&reach)` (agent.rs:4639) for briefs and dreams, plus `OWN_PAGE_TODAY` when the assistant's own journal has a page for today;
   - the job's `JobTurn.context` for jobs, chosen at agent.rs:7207–7217.
 - **The user message.** It starts with `<application_note>\nIt is Tuesday 24 November 2026, 07:00 in America/Los_Angeles.\n</application_note>\n\n` (core agent.rs:1540). Then comes the feature's own prompt:
@@ -68,7 +68,7 @@ Quick asks are separate one-shots. Their system prompt is `ask.system + "\n\n" +
 ## 1. Daily briefs: morning, evening, weekly
 
 ### 1.1 Where
-- **The prompt text** is in `karmayoga_core::brief`:
+- **The prompt text** is in `jatayu_core::brief`:
   - `instructions()` at brief.rs:1889–1959;
   - each section's guidance in `BriefSection::guidance()` at 397–498;
   - `PRINCIPLES` at 2060–2077 and `SPOKEN_RULES` at 2080–2087;
@@ -1138,7 +1138,7 @@ In every case below:
 
 ## 11. Routine templates, and `routine.rs`
 
-- **`karmayoga-core/src/routine.rs`** has no LLM prompt text. It holds kinds, triggers, `Routine::brief` and `Routine::dream`, the defaults and validation.
+- **`jatayu-core/src/routine.rs`** has no LLM prompt text. It holds kinds, triggers, `Routine::brief` and `Routine::dream`, the defaults and validation.
 - **`domains/routines.rs:206–265`** has four starter routines, which are the person's own words once picked: "Weekly review", "Weekend planner", "Something to read" and "Meeting prep". They are fine as first-person instructions.
   - "Weekly review" (Friday 17:00) now overlaps the weekly brief (Sunday) and the weekly dream. Point it at decisions: add `…and end with the three things that would make next week better.`
   - "Meeting prep" predates the per-occurrence meeting briefs (the panel, Nov 23). Consider dropping it, or pointing it at `meeting_brief`.

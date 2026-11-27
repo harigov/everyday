@@ -18,7 +18,7 @@
   // What is on screen is the store's `importStatus`, which it keeps current
   // while an import runs: how far through the file it is, what has been
   // added so far, and, at the end, the whole report. Nothing is dropped
-  // quietly: the kinds of record Karma Yoga does not know are counted and
+  // quietly: the kinds of record Jatayu does not know are counted and
   // listed. Importing the same file twice is harmless -- a reading already
   // here is recognised and skipped.
 
@@ -256,8 +256,8 @@
           {plural(skipped.length, 'kind')} of record skipped ({skippedTotal.toLocaleString()} in all)
         </summary>
         <p class="hint">
-          Karma Yoga doesn’t know these yet, so they were counted and left out, not lost: they are
-          still in the export file.
+          Jatayu doesn’t know these yet, so they were counted and left out, not lost: they are still
+          in the export file.
         </p>
         <ul>
           {#each skipped as [name, count] (name)}

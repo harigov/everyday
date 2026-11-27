@@ -53,26 +53,24 @@ export const userAgentMac: boolean = nav?.userAgent?.includes('Mac') ?? false
 export const userAgentWindows: boolean = nav?.userAgent?.includes('Windows') ?? false
 
 /**
- * The webview serves the shell's custom scheme as `http://karmayoga.localhost`
- * rather than as `karmayoga://localhost`: Tauri does this on Windows (WebView2)
- * and on Android. `crates/karmayoga-app/src/protocol.rs` accepts both shapes.
+ * The webview serves the shell's custom scheme as `http://jatayu.localhost`
+ * rather than as `jatayu://localhost`: Tauri does this on Windows (WebView2)
+ * and on Android. `crates/jatayu-app/src/protocol.rs` accepts both shapes.
  */
 export const schemeOverHttp: boolean =
   (nav?.userAgent?.includes('Windows') ?? false) || (nav?.userAgent?.includes('Android') ?? false)
 
 /**
  * The origin the shell's custom scheme answers on, for one of its hosts:
- * `karmayoga://<host>` where the webview allows a custom scheme, and
- * `http://karmayoga.localhost/<host>` where it maps custom schemes onto an
+ * `jatayu://<host>` where the webview allows a custom scheme, and
+ * `http://jatayu.localhost/<host>` where it maps custom schemes onto an
  * http origin (see {@link schemeOverHttp}) -- there the scheme's own host has
  * nowhere to ride but the first path segment. `host` is `localhost` for
  * blobs, which is the one host that keeps no path segment of its own.
  */
 export function schemeOrigin(host: string): string {
   if (schemeOverHttp) {
-    return host === 'localhost'
-      ? 'http://karmayoga.localhost'
-      : `http://karmayoga.localhost/${host}`
+    return host === 'localhost' ? 'http://jatayu.localhost' : `http://jatayu.localhost/${host}`
   }
-  return `karmayoga://${host}`
+  return `jatayu://${host}`
 }

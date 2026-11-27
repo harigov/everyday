@@ -115,9 +115,7 @@ function between(d, from, to) {
 // reads them as written.
 
 const fixture = JSON.parse(
-  readFileSync(
-    new URL('../../crates/karmayoga-core/tests/fixtures/markdown.json', import.meta.url),
-  ),
+  readFileSync(new URL('../../crates/jatayu-core/tests/fixtures/markdown.json', import.meta.url)),
 )
 for (const { name, doc: content, markdown } of fixture.cases) {
   assert.equal(all(schema.nodeFromJSON({ type: 'doc', content })), markdown, name)

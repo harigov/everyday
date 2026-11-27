@@ -189,9 +189,9 @@
           Shell extension does the watching. Install it from Settings → Screen time, then log out
           and back in. Websites count once a browser is connected too.
         {:else}
-          This computer records which app is in front of you by itself while Karma Yoga is open,
-          leaving out time away from the keyboard. Websites count as their own apps once a browser
-          is connected. Nothing is ever blocked.
+          This computer records which app is in front of you by itself while Jatayu is open, leaving
+          out time away from the keyboard. Websites count as their own apps once a browser is
+          connected. Nothing is ever blocked.
         {/if}
       {/snippet}
       {#snippet action()}

@@ -16,7 +16,7 @@ stubBrowser({ window: globalThis, location: new URL('http://localhost/') })
 const { module: mock, close } = await load('/src/lib/mock.ts')
 const { mockInvoke } = mock
 
-await mockInvoke('unlock', { password: 'karmayoga' })
+await mockInvoke('unlock', { password: 'jatayu' })
 
 const ACCOUNT = 'acct-google'
 

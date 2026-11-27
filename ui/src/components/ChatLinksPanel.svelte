@@ -2,7 +2,7 @@
   // Settings → Chat: the assistant, reached from a chat app on another device.
   //
   // A link is a bot account on a Matrix server the person runs themselves,
-  // and the one Matrix ID it answers -- see `karmayoga_core::chat`'s module
+  // and the one Matrix ID it answers -- see `jatayu_core::chat`'s module
   // doc and `docs/plans/chat.md`. This is where one is added, edited and
   // removed. It is not a chat window: the conversations themselves happen in
   // whichever Matrix client the person already uses, and show up in the
@@ -34,7 +34,7 @@
   // The poll is also how a verification shows up. When the owner verifies
   // the bot from Element, the bot has no screen to show its seven emoji on,
   // so they appear here under its row, with the answer buttons; see
-  // `karmayoga_service::chat`'s "Verifying the owner". The emoji never go into
+  // `jatayu_service::chat`'s "Verifying the owner". The emoji never go into
   // the chat itself: that is the channel the comparison is there to check.
 
   import { chat } from '../lib/chat.svelte'
@@ -498,7 +498,7 @@
         <input
           id="chat-bot"
           class="field"
-          placeholder="@karmayoga:example.org"
+          placeholder="@jatayu:example.org"
           autocomplete="off"
           autocapitalize="off"
           spellcheck="false"

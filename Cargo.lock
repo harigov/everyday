@@ -4598,7 +4598,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-app"
+name = "jatayu-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -4615,13 +4615,13 @@ dependencies = [
  "gtk",
  "hound",
  "jiff",
- "karmayoga-chat",
- "karmayoga-core",
- "karmayoga-focus",
- "karmayoga-mail",
- "karmayoga-server",
- "karmayoga-service",
- "karmayoga-vault",
+ "jatayu-chat",
+ "jatayu-core",
+ "jatayu-focus",
+ "jatayu-mail",
+ "jatayu-server",
+ "jatayu-service",
+ "jatayu-vault",
  "keyring",
  "ndk-context",
  "objc2",
@@ -4646,7 +4646,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-chat"
+name = "jatayu-chat"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -4654,9 +4654,9 @@ dependencies = [
  "futures",
  "if-addrs",
  "jiff",
- "karmayoga-core",
- "karmayoga-service",
- "karmayoga-vault",
+ "jatayu-core",
+ "jatayu-service",
+ "jatayu-vault",
  "matrix-sdk",
  "matrix-sdk-crypto",
  "mime",
@@ -4679,18 +4679,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-cli"
+name = "jatayu-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
  "jiff",
- "karmayoga-chat",
- "karmayoga-core",
- "karmayoga-mcp",
- "karmayoga-server",
- "karmayoga-service",
- "karmayoga-transfer",
- "karmayoga-vault",
+ "jatayu-chat",
+ "jatayu-core",
+ "jatayu-mcp",
+ "jatayu-server",
+ "jatayu-service",
+ "jatayu-transfer",
+ "jatayu-vault",
  "mime_guess",
  "qrcode",
  "reqwest",
@@ -4701,7 +4701,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-connect"
+name = "jatayu-connect"
 version = "0.1.0"
 dependencies = [
  "axum",
@@ -4720,7 +4720,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-core"
+name = "jatayu-core"
 version = "0.1.0"
 dependencies = [
  "argon2",
@@ -4744,18 +4744,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-docindex"
+name = "jatayu-docindex"
 version = "0.1.0"
 dependencies = [
- "karmayoga-core",
- "karmayoga-mailindex",
+ "jatayu-core",
+ "jatayu-mailindex",
  "tantivy",
  "tempfile",
  "tracing",
 ]
 
 [[package]]
-name = "karmayoga-focus"
+name = "jatayu-focus"
 version = "0.1.0"
 dependencies = [
  "objc2",
@@ -4774,7 +4774,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-mail"
+name = "jatayu-mail"
 version = "0.1.0"
 dependencies = [
  "ammonia",
@@ -4790,7 +4790,7 @@ dependencies = [
  "html2text",
  "imap-proto",
  "jiff",
- "karmayoga-core",
+ "jatayu-core",
  "lettre",
  "lol_html",
  "mail-builder 1.0.0",
@@ -4816,11 +4816,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-mailindex"
+name = "jatayu-mailindex"
 version = "0.1.0"
 dependencies = [
  "jiff",
- "karmayoga-core",
+ "jatayu-core",
  "lru",
  "serde",
  "serde_json",
@@ -4831,14 +4831,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-mcp"
+name = "jatayu-mcp"
 version = "0.1.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
-name = "karmayoga-server"
+name = "jatayu-server"
 version = "0.1.0"
 dependencies = [
  "axum",
@@ -4849,11 +4849,11 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jiff",
- "karmayoga-core",
- "karmayoga-mail",
- "karmayoga-mcp",
- "karmayoga-service",
- "karmayoga-vault",
+ "jatayu-core",
+ "jatayu-mail",
+ "jatayu-mcp",
+ "jatayu-service",
+ "jatayu-vault",
  "qrcode",
  "rand 0.9.5",
  "rcgen",
@@ -4872,7 +4872,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-service"
+name = "jatayu-service"
 version = "0.1.0"
 dependencies = [
  "audioadapter-buffers",
@@ -4901,13 +4901,13 @@ dependencies = [
  "jiff",
  "jpeg-encoder",
  "kamadak-exif",
- "karmayoga-connect",
- "karmayoga-core",
- "karmayoga-docindex",
- "karmayoga-mail",
- "karmayoga-mailindex",
- "karmayoga-transfer",
- "karmayoga-vault",
+ "jatayu-connect",
+ "jatayu-core",
+ "jatayu-docindex",
+ "jatayu-mail",
+ "jatayu-mailindex",
+ "jatayu-transfer",
+ "jatayu-vault",
  "libc",
  "libdav",
  "llama-cpp-sys-2",
@@ -4950,12 +4950,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-store-postgres"
+name = "jatayu-store-postgres"
 version = "0.1.0"
 dependencies = [
  "jiff",
- "karmayoga-core",
- "karmayoga-store-sql",
+ "jatayu-core",
+ "jatayu-store-sql",
  "postgres",
  "rustls",
  "rustls-platform-verifier",
@@ -4965,13 +4965,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-store-sql"
+name = "jatayu-store-sql"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
  "jiff",
- "karmayoga-core",
+ "jatayu-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -4979,26 +4979,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-store-sqlite"
+name = "jatayu-store-sqlite"
 version = "0.1.0"
 dependencies = [
  "jiff",
- "karmayoga-core",
- "karmayoga-store-sql",
+ "jatayu-core",
+ "jatayu-store-sql",
  "rusqlite",
  "tempfile",
  "tracing",
 ]
 
 [[package]]
-name = "karmayoga-transfer"
+name = "jatayu-transfer"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
  "flate2",
  "jiff",
- "karmayoga-core",
- "karmayoga-vault",
+ "jatayu-core",
+ "jatayu-vault",
  "serde",
  "serde_json",
  "tempfile",
@@ -5007,15 +5007,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "karmayoga-vault"
+name = "jatayu-vault"
 version = "0.1.0"
 dependencies = [
  "directories",
  "jiff",
- "karmayoga-core",
- "karmayoga-mail",
- "karmayoga-store-postgres",
- "karmayoga-store-sqlite",
+ "jatayu-core",
+ "jatayu-mail",
+ "jatayu-store-postgres",
+ "jatayu-store-sqlite",
  "keyring",
  "serde",
  "serde_json",

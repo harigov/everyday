@@ -1,4 +1,4 @@
-// Karma Yoga Screen time, the browser extension: the pure part.
+// Jatayu Screen time, the browser extension: the pure part.
 //
 // Nothing in this file touches `chrome.*`, storage or the network, so the
 // same file is loaded three ways:
@@ -47,7 +47,16 @@
 
   // What a connection code starts with. The rest is base64url (no padding)
   // of `{"endpoint": "...", "token": "...", "device": "..."}`.
-  const CODE_PREFIX = "karmayoga-screentime:";
+  const CODE_PREFIX = "jatayu-screentime:";
+
+  // What a code started with when the app had a former name -- Karma Yoga,
+  // and Every Day before it -- newest first. A code copied before a rename
+  // and pasted after it still names the same endpoint and token, so it is
+  // read the same way.
+  const FORMER_CODE_PREFIXES = [
+    "karmayoga-screentime:",
+    "everyday-screentime:",
+  ];
 
   // Two observations of the same host further apart than this are two runs.
   // The background page looks at least every thirty seconds while anything
@@ -125,7 +134,10 @@
   function parseConnectionCode(code) {
     const text = String(code == null ? "" : code).replace(/\s+/g, "");
     if (!text) throw new Error("Paste the connection code first.");
-    if (!text.startsWith(CODE_PREFIX)) {
+    const prefix = [CODE_PREFIX]
+      .concat(FORMER_CODE_PREFIXES)
+      .find((p) => text.startsWith(p));
+    if (!prefix) {
       throw new Error(
         'That is not a screen time connection code. It starts with "' +
           CODE_PREFIX +
@@ -134,7 +146,7 @@
     }
     let value;
     try {
-      value = JSON.parse(decodeBase64Url(text.slice(CODE_PREFIX.length)));
+      value = JSON.parse(decodeBase64Url(text.slice(prefix.length)));
     } catch (_) {
       throw new Error(
         "The connection code is damaged. Copy it again from Settings.",
@@ -438,6 +450,7 @@
 
   return {
     CODE_PREFIX,
+    FORMER_CODE_PREFIXES,
     GAP_MS,
     MAX_RUN_MS,
     QUEUE_CAP,

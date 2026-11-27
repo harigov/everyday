@@ -310,7 +310,7 @@ export function settle(turn: Turn, now = Date.now()): void {
 /**
  * Whether `host` is one of `sites` or a name under one -- `wikipedia.org`
  * covers `en.wikipedia.org`, `notwikipedia.org` is not covered by it.
- * `karmayoga_core::agent::sites::covers`, for the places that must say
+ * `jatayu_core::agent::sites::covers`, for the places that must say
  * whether a website is safe the way the service decides it: a card's note
  * that "Always allow" took.
  */
@@ -1069,7 +1069,7 @@ export function isLoopback(baseUrl: string | null): boolean {
 
 // ── The search sites somebody adds ──────────────────────────────────────
 //
-// `validate_sites` in `karmayoga_core::agent::desk` is what refuses a save;
+// `validate_sites` in `jatayu_core::agent::desk` is what refuses a save;
 // this is the same rules, said beside the row they are about so that the
 // refusal is never a surprise. The backend decides for real -- a site that
 // passes here and not there is a bug here, not a way round it.
@@ -1078,7 +1078,7 @@ export function isLoopback(baseUrl: string | null): boolean {
 export const SEARCH_QUERY = '{query}'
 /**
  * The sites the assistant can search without being told how: the names in
- * `BUILT_IN` in `karmayoga_core::agent::desk`, in its order. Kept to it by a
+ * `BUILT_IN` in `jatayu_core::agent::desk`, in its order. Kept to it by a
  * test that reads the Rust (`scripts/agent.test.mjs`), so Settings never says
  * it knows a site it doesn't.
  */

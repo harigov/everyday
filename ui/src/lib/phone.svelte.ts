@@ -50,7 +50,7 @@ export const phone = new Phone()
 // How far in from each edge is clear of the status bar, the gesture bar and
 // a notch is CSS's `env(safe-area-inset-*)`, which iOS gives in full. The
 // Android shell measures them itself and says so -- its webview leaves some
-// out -- through `window.KarmaYogaInsets` and a `karmayoga:insets` event
+// out -- through `window.JatayuInsets` and a `jatayu:insets` event
 // (`MainActivity.kt`); they become `--edge-*` here, and app.css's
 // `--safe-*` takes whichever is larger. `data-keyboard` on <html> is set
 // while the on-screen keyboard is up, so what a phone keeps along the bottom
@@ -73,14 +73,14 @@ function applyEdges(edges: Edges) {
 }
 
 if (typeof window !== 'undefined') {
-  const bridge = (window as { KarmaYogaInsets?: { get(): string } }).KarmaYogaInsets
+  const bridge = (window as { JatayuInsets?: { get(): string } }).JatayuInsets
   if (bridge) {
     try {
       applyEdges(JSON.parse(bridge.get()) as Edges)
     } catch {
       // A shell too old to say: env() is all there is.
     }
-    window.addEventListener('karmayoga:insets', (e) => applyEdges((e as CustomEvent<Edges>).detail))
+    window.addEventListener('jatayu:insets', (e) => applyEdges((e as CustomEvent<Edges>).detail))
   } else if (window.visualViewport) {
     // Elsewhere -- iOS, a phone's browser -- the keyboard is noticed by the
     // visible part of the page shrinking well short of the window.
@@ -242,7 +242,7 @@ export function closesOnBack(open: () => boolean, close: () => void) {
  */
 export function tellShellTheme(dark: boolean) {
   if (typeof window === 'undefined') return
-  ;(window as { KarmaYogaWindow?: { setDark(dark: boolean): void } }).KarmaYogaWindow?.setDark(dark)
+  ;(window as { JatayuWindow?: { setDark(dark: boolean): void } }).JatayuWindow?.setDark(dark)
 }
 
 // ── An app's list, and what was opened from it ───────────────────────────

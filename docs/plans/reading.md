@@ -72,16 +72,16 @@ as his.
 
 | Layer | Files | Owner |
 |---|---|---|
-| Types, navigation, per-document search | `karmayoga-core/src/documents.rs` | C |
-| Assistant tools | `karmayoga-core/src/agent/tools/documents.rs` | C |
-| Screen context | `karmayoga-core/src/agent/onscreen.rs` (`reading`) | C |
+| Types, navigation, per-document search | `jatayu-core/src/documents.rs` | C |
+| Assistant tools | `jatayu-core/src/agent/tools/documents.rs` | C |
+| Screen context | `jatayu-core/src/agent/onscreen.rs` (`reading`) | C |
 | Settings | `FilesSettings.index_documents/index_folders/skip_folders`, `FilesSettings::indexes` | contract |
-| Parsers | `karmayoga-service/src/documents/parse/` | A |
-| Cache, state, index task | `karmayoga-service/src/documents/{mod,cache,task}.rs` | B |
-| Search index | `crates/karmayoga-docindex` | B |
-| Commands | `karmayoga-service/src/domains/documents.rs` | B |
-| Library: `Item.files`, Articles, item from a file, Crossref | `karmayoga-core/src/library.rs`, `vault/library*`, `vault/files.rs` (`RefKind::Item`), `agent/tools/library.rs`, `websearch`, `domains/library.rs` | D |
-| Wiring into turns (taint, handed-over tools, cards) | `karmayoga-service/src/agent.rs`, `domains/meta.rs` | contract |
+| Parsers | `jatayu-service/src/documents/parse/` | A |
+| Cache, state, index task | `jatayu-service/src/documents/{mod,cache,task}.rs` | B |
+| Search index | `crates/jatayu-docindex` | B |
+| Commands | `jatayu-service/src/domains/documents.rs` | B |
+| Library: `Item.files`, Articles, item from a file, Crossref | `jatayu-core/src/library.rs`, `vault/library*`, `vault/files.rs` (`RefKind::Item`), `agent/tools/library.rs`, `websearch`, `domains/library.rs` | D |
+| Wiring into turns (taint, handed-over tools, cards) | `jatayu-service/src/agent.rs`, `domains/meta.rs` | contract |
 | UI data: store, api, mock, screen context, links | `ui/src/lib/reader.svelte.ts`, `documents.ts`, `mock-documents.ts`, `mock.ts`, `screen.svelte.ts`, `markdown.ts`, `library.svelte.ts`, `files.svelte.ts` | E |
 | UI reader | `ReaderView.svelte`, `ReaderFlow.svelte`, `ReaderOutline.svelte`, `ReaderSearch.svelte`, `PdfView.svelte`, `App.svelte` | F |
 | UI in Files, Library, Settings | `FilesView`, `FileViewer`, `FileInspector`, `ItemDetail`, `FilesSettingsPanel` | G |

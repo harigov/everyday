@@ -154,7 +154,7 @@
   /**
    * Every level any endpoint takes, in order. No per-model list: model names
    * are free text, and one that does not take a level says so when it is
-   * next asked -- see `ReasoningEffort` in `crates/karmayoga-core/src/llm.rs`.
+   * next asked -- see `ReasoningEffort` in `crates/jatayu-core/src/llm.rs`.
    */
   const EFFORTS: { value: ReasoningEffort; label: string }[] = [
     { value: 'none', label: 'None' },
@@ -168,7 +168,7 @@
 
   /**
    * Small's levels: Low and below. The save refuses more
-   * (`SMALL_MAX_EFFORT` in `crates/karmayoga-core/src/llm.rs`), because a quick
+   * (`SMALL_MAX_EFFORT` in `crates/jatayu-core/src/llm.rs`), because a quick
    * ask spends its few tokens and seconds thinking and never answers.
    */
   const SMALL_EFFORTS = EFFORTS.filter((e) => ['none', 'minimal', 'low'].includes(e.value))
@@ -478,8 +478,8 @@
 
   /** Phonon's speakers, as people see them: a name and how it sounds, listed
    *  under their accent. The order is
-   *  `karmayoga_core::speech::PHONON_SPEAKERS`'s -- a test in
-   *  `karmayoga-service` (`speech::synth::local`) holds this list to it --
+   *  `jatayu_core::speech::PHONON_SPEAKERS`'s -- a test in
+   *  `jatayu-service` (`speech::synth::local`) holds this list to it --
    *  and `value` is the index the voice is asked for by. */
   const PHONON_SPEAKERS: Speaker[] = (
     [
@@ -515,7 +515,7 @@
     label: `${name} · ${sounds}`,
   }))
 
-  /** Kokoro's speakers, in `karmayoga_core::speech::KOKORO_SPEAKERS`' order,
+  /** Kokoro's speakers, in `jatayu_core::speech::KOKORO_SPEAKERS`' order,
    *  which the same test holds this list to. The prefix of each name says who
    *  it is (`af` an American woman, `bm` a British man); the last column is
    *  hexgrad's own grade of how good each sounds, in words -- blank for the
@@ -996,7 +996,7 @@
           {#if here}
             {#if !models.localDecisions}
               <p class="hint">
-                This copy of Karma Yoga cannot run a decision model itself. Choose a provider above.
+                This copy of Jatayu cannot run a decision model itself. Choose a provider above.
               </p>
             {/if}
             {#each models.local as m (m.id)}
@@ -1208,7 +1208,7 @@
           {#if t.type === 'local'}
             {#if !models.localSpeech}
               <p class="hint">
-                This copy of Karma Yoga cannot run a recogniser itself. Choose a provider above.
+                This copy of Jatayu cannot run a recogniser itself. Choose a provider above.
               </p>
             {/if}
             {#each LOCAL_RECOGNISERS.filter((m) => !m.llama || models.localDecisions || t.model === m.id) as m (m.id)}
@@ -1438,7 +1438,7 @@
           {#if t.type === 'local'}
             {#if !models.localVoice}
               <p class="hint">
-                This copy of Karma Yoga cannot make a voice itself. Choose a provider above.
+                This copy of Jatayu cannot make a voice itself. Choose a provider above.
               </p>
             {/if}
             {#each models.voiceModels as m (m.id)}

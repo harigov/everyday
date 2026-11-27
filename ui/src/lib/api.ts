@@ -1,7 +1,7 @@
 // The single boundary between the interface and the Rust core.
 //
 // Everything the UI can do to a vault goes through here, which means the
-// mock backend below is a complete substitute: `KARMAYOGA_MOCK=1 npm run dev`
+// mock backend below is a complete substitute: `JATAYU_MOCK=1 npm run dev`
 // runs the entire interface in a browser with no Rust, no vault and no
 // native dependencies. That is what makes the design workable on its own.
 
@@ -258,7 +258,7 @@ const MOCK = import.meta.env.DEV && !SHELL
  */
 const WEB = !SHELL && !MOCK
 /**
- * The phone shell (`crates/karmayoga-app/src/mobile.rs`): Tauri's Android or
+ * The phone shell (`crates/jatayu-app/src/mobile.rs`): Tauri's Android or
  * iOS build. Always a remote client in one full-screen window, so it answers
  * only the shell commands in `PHONE_SHELL_COMMANDS` below and has none of
  * the desktop's furniture -- no tray, no OS-wide keys, no windows of one
@@ -282,7 +282,7 @@ type Invoke = <T>(cmd: string, args?: InvokeArgs, requestId?: string) => Promise
 let invoke: Invoke = async () => {
   throw new VaultError(
     'unavailable',
-    'Karma Yoga could not reach its storage backend. Your journal has not been ' +
+    'Jatayu could not reach its storage backend. Your journal has not been ' +
       'touched; this is a problem with the application, not with your data.',
   )
 }
@@ -385,7 +385,7 @@ export let onShowInMain: (handler: (asked: ShowInMain) => void) => void = () => 
 /**
  * Register the main window's handler for a conversation started from the talk
  * key beginning (`true`) or ending (`false`) -- see
- * `crates/karmayoga-app/src/talk/mod.rs`'s `TALK_EVENT`. The player pauses for
+ * `crates/jatayu-app/src/talk/mod.rs`'s `TALK_EVENT`. The player pauses for
  * it, as it does for voice mode in the window. Outside Tauri there is no key,
  * so this is a no-op.
  */
@@ -573,31 +573,31 @@ if (SHELL) {
     // On this window, not `listen`'s every window: the shell asks each
     // window by name, and a window of one app closing must not take the
     // main window with it. See `windows.rs`.
-    void getCurrentWebviewWindow().listen('karmayoga://save-and-close', () => void handler())
+    void getCurrentWebviewWindow().listen('jatayu://save-and-close', () => void handler())
   }
   onShellNotification = (handler) => {
-    void listen<ShellNotification>('karmayoga://notify', (event) => handler(event.payload))
+    void listen<ShellNotification>('jatayu://notify', (event) => handler(event.payload))
   }
   onTrayAction = (handler) => {
-    void listen<string>('karmayoga://tray-action', (e) => handler(e.payload))
+    void listen<string>('jatayu://tray-action', (e) => handler(e.payload))
   }
   onChange = (handler) => {
-    void listen<ChangeEvent>('karmayoga://changed', (e) => handler(e.payload))
+    void listen<ChangeEvent>('jatayu://changed', (e) => handler(e.payload))
   }
   onLockState = (handler) => {
-    void listen<boolean>('karmayoga://lock-state', (e) => handler(e.payload))
+    void listen<boolean>('jatayu://lock-state', (e) => handler(e.payload))
   }
   onPalette = (handler) => {
-    void listen('karmayoga://palette', () => handler())
+    void listen('jatayu://palette', () => handler())
   }
   onOpenCalendar = (handler) => {
-    void listen('karmayoga://open-calendar', () => handler())
+    void listen('jatayu://open-calendar', () => handler())
   }
   onShowInMain = (handler) => {
-    void listen<ShowInMain>('karmayoga://show-in-main', (e) => handler(e.payload))
+    void listen<ShowInMain>('jatayu://show-in-main', (e) => handler(e.payload))
   }
   onTalk = (handler) => {
-    void listen<boolean>('karmayoga://talk', (e) => handler(e.payload))
+    void listen<boolean>('jatayu://talk', (e) => handler(e.payload))
   }
   onMeetingStatus = (handler) => {
     void listen<CaptureStatus | null>('meeting-status', (e) => handler(e.payload))
@@ -788,7 +788,7 @@ if (MOBILE_SHELL) {
     const answer = PHONE_ANSWERS[cmd]
     if (answer) return answer() as T
     if (MOCK) console.warn(`the phone shell has no ${cmd}`)
-    throw new VaultError('unsupported', 'That needs the Karma Yoga app on a computer.')
+    throw new VaultError('unsupported', 'That needs the Jatayu app on a computer.')
   }
 }
 
@@ -876,7 +876,7 @@ function call<K extends keyof Commands>(
  * "not yet" case: Phase 2-4 of `docs/plans/mail.md` name a couple of
  * commands other agents are still landing, and `gen-api.mjs` cannot
  * generate a typed method for one that does not exist in
- * `crates/karmayoga-service/surface.json` yet -- once it does, that call
+ * `crates/jatayu-service/surface.json` yet -- once it does, that call
  * site becomes a one-line typed method here instead, the same way every
  * meeting-notes command did when the pipeline landed. `meetings.svelte.ts`'s
  * "Dev-only mock triggers" are the other case, and never graduate: no
@@ -1013,7 +1013,7 @@ export const api = {
   /**
    * Raise a desktop notification. By name, not through `call`: it is the
    * shell's to post, and only `notify.svelte.ts` should be deciding to. See
-   * `crates/karmayoga-app/src/notice.rs` for why the plugin does not do it.
+   * `crates/jatayu-app/src/notice.rs` for why the plugin does not do it.
    */
   postNotification: (title: string, body: string | null, key: string | null) =>
     invoke<void>('post_notification', { title, body, key }),
@@ -1027,7 +1027,7 @@ export const api = {
    * a paste of a screenshot no files at all, and this is the shell reading
    * the clipboard on the page's behalf. Asked only after a paste that looked
    * like a picture (`clipboard-picture.ts`). See
-   * `crates/karmayoga-app/src/clipboard.rs`.
+   * `crates/jatayu-app/src/clipboard.rs`.
    *
    * The shell answers raw bytes, which arrive as an `ArrayBuffer`; the array
    * of numbers is the slow path `put_blob` also keeps for a webview that
@@ -1061,7 +1061,7 @@ export const api = {
   /**
    * Writing help: a second OS-wide key, over text selected in any
    * application. Per machine, like the palette's key, and kept by the shell
-   * rather than the vault -- see `crates/karmayoga-app/src/writing/mod.rs`.
+   * rather than the vault -- see `crates/jatayu-app/src/writing/mod.rs`.
    * Unanswered in mock mode, where the pane leaves the row out.
    */
   writingSettings: () => invoke<WritingSettings>('writing_settings'),
@@ -1071,7 +1071,7 @@ export const api = {
   /**
    * Voice typing: a third OS-wide key, over the microphone instead of a
    * selection. Per machine, kept by the shell -- see
-   * `crates/karmayoga-app/src/voicetyping/mod.rs`. Unanswered in mock mode,
+   * `crates/jatayu-app/src/voicetyping/mod.rs`. Unanswered in mock mode,
    * where the pane leaves the section out. `null` leaves a field as it is.
    */
   voiceTypingSettings: () => invoke<VoiceTypingSettings>('voice_typing_settings'),
@@ -1093,7 +1093,7 @@ export const api = {
   /**
    * The talk key: a fourth OS-wide key, for a spoken conversation with the
    * assistant from anywhere. Per machine, kept by the shell -- see
-   * `crates/karmayoga-app/src/talk/mod.rs`. Unanswered in mock mode, where
+   * `crates/jatayu-app/src/talk/mod.rs`. Unanswered in mock mode, where
    * the pane leaves the section out. `null` leaves a field as it is.
    */
   talkSettings: () => invoke<TalkSettings>('talk_settings'),
@@ -1118,7 +1118,7 @@ export const api = {
    * The panel in the corner of the screen: which things become a card on it
    * and which stay the desktop's own notifications, and how long its cards
    * stay up. Per machine, kept by the shell -- see
-   * `crates/karmayoga-app/src/panel/settings.rs`. Refused on a phone and on
+   * `crates/jatayu-app/src/panel/settings.rs`. Refused on a phone and on
    * web access, which have no panel; the pane leaves the section out there.
    */
   panelSettings: () => invoke<PanelSettings>('panel_settings'),
@@ -1137,7 +1137,7 @@ export const api = {
   /**
    * The wake word: calling the assistant by name instead of pressing the
    * talk key. Per machine, kept by the shell -- see
-   * `crates/karmayoga-app/src/wake.rs`. Unanswered in mock mode. `null`
+   * `crates/jatayu-app/src/wake.rs`. Unanswered in mock mode. `null`
    * leaves a field as it is.
    */
   wakeSettings: () => invoke<WakeSettings>('wake_settings'),
@@ -1150,7 +1150,7 @@ export const api = {
   /**
    * The microphone: hearing only the person's voice, taking other voices out
    * of it, and the stronger noise filter. Per machine, kept by the shell --
-   * see `crates/karmayoga-app/src/microphone.rs`. `null` leaves a switch as
+   * see `crates/jatayu-app/src/microphone.rs`. `null` leaves a switch as
    * it is.
    */
   microphoneSettings: () => invoke<MicrophoneSettings>('microphone_settings'),
@@ -1569,7 +1569,7 @@ export const api = {
   /**
    * Choose what the number on the application's icon counts; nothing chosen
    * takes it off. The shell does the counting, and keeps it current with the
-   * window hidden -- see `crates/karmayoga-app/src/badge.rs`.
+   * window hidden -- see `crates/jatayu-app/src/badge.rs`.
    */
   setBadge: (sources: BadgeSources) => invoke<void>('set_badge', { sources }),
 
@@ -1793,7 +1793,7 @@ export const api = {
    * on its longer side, as a JPEG -- and return its blob id.
    *
    * Nothing in the interface ever loads a remote image directly: the content
-   * security policy allows images from `'self'` and `karmayoga:` and nowhere
+   * security policy allows images from `'self'` and `jatayu:` and nowhere
    * else, so a cover has to come home before it can be drawn.
    */
   fetchImage: (url: string) => call('fetchImage', { url }),
@@ -1923,7 +1923,7 @@ export const api = {
   /**
    * Karma: every day from `from` to `to` that came to anything, and the
    * total since Karma started. Worked out from the other records on each
-   * call -- see `karmayoga_core::karma`.
+   * call -- see `jatayu_core::karma`.
    */
   karma: (from: string, to: string) => call('karma', { from, to }),
 
@@ -2458,7 +2458,7 @@ export const api = {
   // `news` is the domain -- `feed` already meant a subscribed calendar in the
   // Rust -- so the wire names say news and these say what the screen does.
   // Available only when `status.capabilities.news` is true. A story's body is
-  // not a command: it is served at `karmayoga://news/body/{id}`, which
+  // not a command: it is served at `jatayu://news/body/{id}`, which
   // `feed.svelte.ts` fetches the way `mailview.ts` fetches a message. With
   // `?part=notes|transcript|summary` it is one document of the story's pane
   // (the tabs of `StoryTabs.svelte`) instead of the whole body.
@@ -2932,7 +2932,7 @@ export const api = {
   // ── Accounts ───────────────────────────────────────────────────────
   //
   // A mailbox provider signed in to -- not owned by the mail app, see
-  // `karmayoga_core::account`'s module doc. `AccountView` never carries a
+  // `jatayu_core::account`'s module doc. `AccountView` never carries a
   // secret; `hasPassword` and `signedIn` are the only things this interface
   // is ever told about one.
 
@@ -2980,7 +2980,7 @@ export const api = {
    * Wait for that sign-in to land. Resolves once the browser has come back
    * and the code has been exchanged, or rejects with a `CommandError` whose
    * `code` is one of `invalidGrant`, `invalidClient`, `provider`,
-   * `timedOut` or `cancelled` -- see `crates/karmayoga-service/src/signin.rs`.
+   * `timedOut` or `cancelled` -- see `crates/jatayu-service/src/signin.rs`.
    * Safe to call again after a dropped connection; it does not consume
    * anything.
    */
@@ -2989,7 +2989,7 @@ export const api = {
   cancelOauthSignIn: (signInId: string) => call('cancelOauthSignIn', { signInId }),
   /**
    * Move a finished sign-in's tokens onto an account, sealed. The last step
-   * of the flow above -- see `crates/karmayoga-service/src/domains/
+   * of the flow above -- see `crates/jatayu-service/src/domains/
    * accounts.rs`'s module doc for the hand-off this closes.
    */
   /**
@@ -3061,7 +3061,7 @@ export function mediaUrl(blob: string): string {
 }
 
 /**
- * URL for a file in the files catalog: `karmayoga://files/file/{id}` in the
+ * URL for a file in the files catalog: `jatayu://files/file/{id}` in the
  * desktop window, answered with ranges from the folder (or the vault, for a
  * sealed file); `/v1/files/file/{id}` over web access.
  *
@@ -3079,8 +3079,8 @@ export function fileUrl(id: string, version = ''): string {
 
 /**
  * Where the player plays a file from. On Linux the shell's own loopback
- * address (`media_address`, see `crates/karmayoga-app/src/player.rs`):
- * WebKitGTK plays no media from `karmayoga://`, and refuses it with "The
+ * address (`media_address`, see `crates/jatayu-app/src/player.rs`):
+ * WebKitGTK plays no media from `jatayu://`, and refuses it with "The
  * operation is not supported". Elsewhere, and if the shell has none to give,
  * the same address as `fileUrl`. Both answer `Range`, so a long episode seeks
  * without being read whole. The mock has no sound to serve and answers a
@@ -3126,7 +3126,7 @@ async function uploadChunk(upload: string, offset: number, bytes: Uint8Array): P
   const mod = await import('@tauri-apps/api/core')
   try {
     return await mod.invoke<number>('upload_chunk', bytes, {
-      headers: { 'x-karmayoga-upload': upload, 'x-karmayoga-offset': String(offset) },
+      headers: { 'x-jatayu-upload': upload, 'x-jatayu-offset': String(offset) },
     })
   } catch (raw) {
     if (raw && typeof raw === 'object' && 'code' in raw && 'message' in raw) {

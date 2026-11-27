@@ -129,7 +129,7 @@ export interface LoadedBody {
  * list would otherwise draw once as Unread and visibly flip.
  */
 const filterPref = pref<FeedFilter>(
-  'karmayoga.feed.filter',
+  'jatayu.feed.filter',
   (raw) => FEED_FILTERS.find((f) => f === raw) ?? 'unread',
   'unread',
 )
@@ -140,7 +140,7 @@ const filterPref = pref<FeedFilter>(
  * at their feeds, not a fact about the vault.
  */
 const kindPref = pref<KindChoice>(
-  'karmayoga.feed.kind',
+  'jatayu.feed.kind',
   (raw) => FEED_KINDS.find((k) => k === raw) ?? 'all',
   'all',
 )
@@ -153,7 +153,7 @@ const kindPref = pref<KindChoice>(
  * a news setting: another device may offer it once more.
  */
 const newslettersPref = pref<boolean>(
-  'karmayoga.feed.newsletters',
+  'jatayu.feed.newsletters',
   (raw) => raw === 'followed',
   false,
   () => 'followed',
@@ -175,7 +175,7 @@ function plural(n: number, one: string, many: string): string {
  * on every platform.
  *
  * The same reasoning as `mailview.ts`'s `mailOrigin`: Tauri maps a custom
- * scheme onto `http://karmayoga.localhost` on Windows and Android, where the
+ * scheme onto `http://jatayu.localhost` on Windows and Android, where the
  * scheme's own host has nowhere to ride but the first path segment. Under
  * server mode the shell's protocol handler forwards to `/v1/news/body/{id}`
  * on the machine holding the vault, so the interface never builds that
@@ -187,7 +187,7 @@ function newsOrigin(): string {
 }
 
 /**
- * Point a stored body's own `karmayoga://news/img/…` addresses at the origin
+ * Point a stored body's own `jatayu://news/img/…` addresses at the origin
  * this platform actually resolves.
  *
  * A body is sanitised once, when it is fetched, long before anybody knows
@@ -197,9 +197,9 @@ function newsOrigin(): string {
  */
 function applyNewsOrigin(html: string): string {
   const origin = newsOrigin()
-  return origin === 'karmayoga://news'
+  return origin === 'jatayu://news'
     ? html
-    : allowWebOrigin(html.split('karmayoga://news/').join(`${origin}/`))
+    : allowWebOrigin(html.split('jatayu://news/').join(`${origin}/`))
 }
 
 class FeedState {
@@ -1195,7 +1195,7 @@ class FeedState {
   /**
    * A story's body as a whole document for the sandboxed frame, and whether
    * its pictures were held back. Works against the mock backend too, which
-   * has no `karmayoga://` protocol to fetch from. `null` when it could not be
+   * has no `jatayu://` protocol to fetch from. `null` when it could not be
    * loaded (the reason is shown the usual way).
    *
    * The document is already drawn for the window's light or dark theme and

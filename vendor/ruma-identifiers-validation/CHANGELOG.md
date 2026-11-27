@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.12.1, patched for Karma Yoga
+## 0.12.1, patched for Jatayu
 
 Vendored and patched while matrix-sdk 0.19 pins this line (see the workspace
 `Cargo.toml`). Backports, keeping 0.12's signatures:

@@ -1,7 +1,7 @@
 // The panel's half of its contract with the shell, and the only file of the
-// panel's page that names a shell command: `crates/karmayoga-app/src/acl.rs`
+// panel's page that names a shell command: `crates/jatayu-app/src/acl.rs`
 // reads this file to check the window's capability grants exactly what the
-// page calls. Mirrors `crates/karmayoga-app/src/panel/mod.rs` field for field:
+// page calls. Mirrors `crates/jatayu-app/src/panel/mod.rs` field for field:
 // camelCase, an optional field absent (never null), an empty list absent.
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -240,9 +240,9 @@ export interface PanelLevel {
 }
 
 /** The events the shell sends this page. */
-export const STATE_EVENT = 'karmayoga://panel/state'
-export const LEVEL_EVENT = 'karmayoga://panel/level'
-export const THEME_EVENT = 'karmayoga://panel/theme'
+export const STATE_EVENT = 'jatayu://panel/state'
+export const LEVEL_EVENT = 'jatayu://panel/level'
+export const THEME_EVENT = 'jatayu://panel/theme'
 
 /** The stack as it is now, for a page that has only just loaded. */
 export function panelState(): Promise<Panel[]> {

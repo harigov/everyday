@@ -854,7 +854,7 @@ export function mockSaveStories(ids: StoryId[], saved: boolean): void {
 
 /**
  * A story's body, and whether its pictures were held back -- the mock's
- * stand-in for `karmayoga://news/body/{id}` and its `X-News-Images-Hidden`
+ * stand-in for `jatayu://news/body/{id}` and its `X-News-Images-Hidden`
  * header, neither of which a plain browser tab can answer.
  *
  * A story with no stored body is drawn from its summary, as the real route
@@ -1388,7 +1388,7 @@ export function mockExportOpml(): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<opml version="2.0">',
-    '  <head><title>Karma Yoga subscriptions</title></head>',
+    '  <head><title>Jatayu subscriptions</title></head>',
     '  <body>',
     ...unfiled,
     ...folders,

@@ -55,7 +55,7 @@
 
 <!--
   The same Konark wheel as the application icon
-  (crates/karmayoga-app/icons/icon.svg), redrawn on a 24-unit grid: a rim of
+  (crates/jatayu-app/icons/icon.svg), redrawn on a 24-unit grid: a rim of
   frosted glass ruled with the hours, slim ice-white spokes, and the sun
   with its amber rays. It is not a scaled-down copy: at 18px the icon's
   spokes and rays thin to nothing and its shadows are a smudge, so here they

@@ -1,47 +1,47 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/karmayoga-core",
-    "crates/karmayoga-store-sql",
-    "crates/karmayoga-store-sqlite",
-    "crates/karmayoga-store-postgres",
-    "crates/karmayoga-vault",
-    "crates/karmayoga-transfer",
-    "crates/karmayoga-mcp",
-    "crates/karmayoga-service",
-    "crates/karmayoga-server",
-    "crates/karmayoga-cli",
-    "crates/karmayoga-mail",
-    "crates/karmayoga-mailindex",
-    "crates/karmayoga-docindex",
-    "crates/karmayoga-chat",
-    "crates/karmayoga-focus",
-    "crates/karmayoga-connect",
-    "crates/karmayoga-app",
+    "crates/jatayu-core",
+    "crates/jatayu-store-sql",
+    "crates/jatayu-store-sqlite",
+    "crates/jatayu-store-postgres",
+    "crates/jatayu-vault",
+    "crates/jatayu-transfer",
+    "crates/jatayu-mcp",
+    "crates/jatayu-service",
+    "crates/jatayu-server",
+    "crates/jatayu-cli",
+    "crates/jatayu-mail",
+    "crates/jatayu-mailindex",
+    "crates/jatayu-docindex",
+    "crates/jatayu-chat",
+    "crates/jatayu-focus",
+    "crates/jatayu-connect",
+    "crates/jatayu-app",
 ]
 
-# `karmayoga-app` is a workspace member -- it shares the lockfile and can be
-# built with `-p karmayoga-app` -- but it is not a *default* member, because
+# `jatayu-app` is a workspace member -- it shares the lockfile and can be
+# built with `-p jatayu-app` -- but it is not a *default* member, because
 # it links the platform webview (WebKitGTK on Linux) and would otherwise make
 # a plain `cargo test` fail on any machine without those headers installed.
 # Everything except the shell is portable Rust and always builds.
 default-members = [
-    "crates/karmayoga-core",
-    "crates/karmayoga-store-sql",
-    "crates/karmayoga-store-sqlite",
-    "crates/karmayoga-store-postgres",
-    "crates/karmayoga-vault",
-    "crates/karmayoga-transfer",
-    "crates/karmayoga-mcp",
-    "crates/karmayoga-service",
-    "crates/karmayoga-server",
-    "crates/karmayoga-cli",
-    "crates/karmayoga-mail",
-    "crates/karmayoga-mailindex",
-    "crates/karmayoga-docindex",
-    "crates/karmayoga-chat",
-    "crates/karmayoga-focus",
-    "crates/karmayoga-connect",
+    "crates/jatayu-core",
+    "crates/jatayu-store-sql",
+    "crates/jatayu-store-sqlite",
+    "crates/jatayu-store-postgres",
+    "crates/jatayu-vault",
+    "crates/jatayu-transfer",
+    "crates/jatayu-mcp",
+    "crates/jatayu-service",
+    "crates/jatayu-server",
+    "crates/jatayu-cli",
+    "crates/jatayu-mail",
+    "crates/jatayu-mailindex",
+    "crates/jatayu-docindex",
+    "crates/jatayu-chat",
+    "crates/jatayu-focus",
+    "crates/jatayu-connect",
 ]
 
 # Patched copies of other people's crates (see `[patch.crates-io]` below).
@@ -54,24 +54,24 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
-authors = ["Karma Yoga contributors"]
+authors = ["Jatayu contributors"]
 
 [workspace.dependencies]
-karmayoga-core = { path = "crates/karmayoga-core" }
-karmayoga-store-sql = { path = "crates/karmayoga-store-sql" }
-karmayoga-store-sqlite = { path = "crates/karmayoga-store-sqlite" }
-karmayoga-store-postgres = { path = "crates/karmayoga-store-postgres" }
-karmayoga-vault = { path = "crates/karmayoga-vault" }
-karmayoga-transfer = { path = "crates/karmayoga-transfer" }
-karmayoga-mcp = { path = "crates/karmayoga-mcp" }
-karmayoga-service = { path = "crates/karmayoga-service" }
-karmayoga-server = { path = "crates/karmayoga-server" }
-karmayoga-mail = { path = "crates/karmayoga-mail" }
-karmayoga-mailindex = { path = "crates/karmayoga-mailindex" }
-karmayoga-docindex = { path = "crates/karmayoga-docindex" }
-karmayoga-chat = { path = "crates/karmayoga-chat" }
-karmayoga-focus = { path = "crates/karmayoga-focus" }
-karmayoga-connect = { path = "crates/karmayoga-connect" }
+jatayu-core = { path = "crates/jatayu-core" }
+jatayu-store-sql = { path = "crates/jatayu-store-sql" }
+jatayu-store-sqlite = { path = "crates/jatayu-store-sqlite" }
+jatayu-store-postgres = { path = "crates/jatayu-store-postgres" }
+jatayu-vault = { path = "crates/jatayu-vault" }
+jatayu-transfer = { path = "crates/jatayu-transfer" }
+jatayu-mcp = { path = "crates/jatayu-mcp" }
+jatayu-service = { path = "crates/jatayu-service" }
+jatayu-server = { path = "crates/jatayu-server" }
+jatayu-mail = { path = "crates/jatayu-mail" }
+jatayu-mailindex = { path = "crates/jatayu-mailindex" }
+jatayu-docindex = { path = "crates/jatayu-docindex" }
+jatayu-chat = { path = "crates/jatayu-chat" }
+jatayu-focus = { path = "crates/jatayu-focus" }
+jatayu-connect = { path = "crates/jatayu-connect" }
 
 tauri = "2"
 tauri-build = "2"
@@ -163,7 +163,7 @@ strip = true
 # What a release ships: `make dist`, and `.github/workflows/release.yml`.
 # Thin LTO over every crate and one codegen unit each -- what `release`
 # itself used to be, for a binary a little smaller and faster, at several
-# times the build. Under it, `karmayoga-service` alone took four minutes on
+# times the build. Under it, `jatayu-service` alone took four minutes on
 # one core, and the app crate (whose cdylib is an LTO link of its own) and
 # the final LTO link two to three more each, on every rebuild.
 [profile.dist]

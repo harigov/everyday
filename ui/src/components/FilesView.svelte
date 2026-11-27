@@ -167,7 +167,7 @@
     },
     encrypted: {
       lead: 'Nothing is encrypted.',
-      note: 'A file you encrypt, and the files of an app set to keep them encrypted in Settings → Files, are kept inside the vault, and listed here. Only Karma Yoga can open them.',
+      note: 'A file you encrypt, and the files of an app set to keep them encrypted in Settings → Files, are kept inside the vault, and listed here. Only Jatayu can open them.',
     },
     unused: {
       lead: 'Every file is in use.',
@@ -276,9 +276,9 @@
     <EmptyState lead="Choose where your files live.">
       {#snippet icon()}<Icon name="folder" size={30} weight={1.3} />{/snippet}
       {#snippet note()}
-        Karma Yoga keeps your files in an ordinary folder, so a photo viewer, a file manager or a
-        sync tool such as Syncthing can use them where they lie. Pictures, films and documents you
-        add from any app land there, in order, and you can move the whole folder later and point
+        Jatayu keeps your files in an ordinary folder, so a photo viewer, a file manager or a sync
+        tool such as Syncthing can use them where they lie. Pictures, films and documents you add
+        from any app land there, in order, and you can move the whole folder later and point
         Settings at it. Whatever you mark as private is the exception: it is kept encrypted inside
         the vault instead.
       {/snippet}

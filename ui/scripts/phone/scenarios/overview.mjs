@@ -66,8 +66,8 @@ const forgetting = (scenario) => ({
   run: async (ctx) => {
     await scenario.run?.(ctx)
     await ctx.page.evaluate(() => {
-      localStorage.removeItem('karmayoga.overview.page')
-      localStorage.removeItem('karmayoga.overview.layout')
+      localStorage.removeItem('jatayu.overview.page')
+      localStorage.removeItem('jatayu.overview.layout')
     })
   },
 })

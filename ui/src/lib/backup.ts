@@ -8,7 +8,7 @@
 // Two things here are the Rust's rules said again, and both say where:
 // `normalizeDestination` is `Destination::normalized`, so the pane can tell
 // an edit from the same place typed differently, and `destinationUrl` is how
-// `karmayoga restore` names a destination, so the command the pane offers is
+// `jatayu restore` names a destination, so the command the pane offers is
 // one the command line takes.
 
 import { dateFormat, humanBytes, plural, pluralWord, relativeTime } from './format'
@@ -33,7 +33,7 @@ export const DESTINATION_KINDS: readonly { value: DestinationKind; label: string
 /** What `BackupSettings.keep` starts at, and what a blank field means. */
 export const DEFAULT_KEEP = 7
 
-/** `MAX_KEEP` in `crates/karmayoga-core/src/backup.rs`. */
+/** `MAX_KEEP` in `crates/jatayu-core/src/backup.rs`. */
 export const MAX_KEEP = 100
 
 /**
@@ -45,7 +45,7 @@ export const MAX_KEEP = 100
  * they need it. Unquoted, so the shell expands the `~`; no spaces, so it
  * needs no quotes.
  */
-export const RESTORE_INTO = '~/karmayoga-restored'
+export const RESTORE_INTO = '~/jatayu-restored'
 
 /** How often, as the select says it. */
 export function frequencyLabel(hours: number): string {
@@ -87,7 +87,7 @@ export function phaseLabel(phase: BackupPhase): string {
  * bucket already and only picked the wrong tab. A folder path means nothing
  * to either, and neither means anything to a folder.
  *
- * The folder inside a bucket starts as `karmayoga` rather than empty, so a
+ * The folder inside a bucket starts as `jatayu` rather than empty, so a
  * bucket that holds other things too keeps them apart from these.
  */
 export function blankDestination(
@@ -95,7 +95,7 @@ export function blankDestination(
   from: Destination | null = null,
 ): Destination {
   const bucket = from && from.type !== 'folder' ? from.bucket : ''
-  const prefix = from && from.type !== 'folder' ? from.prefix : 'karmayoga'
+  const prefix = from && from.type !== 'folder' ? from.prefix : 'jatayu'
   switch (kind) {
     case 'folder':
       return { type: 'folder', path: '' }
@@ -183,7 +183,7 @@ export function usesStoredKey(d: Destination | null | undefined): boolean {
 }
 
 /**
- * How `karmayoga restore` names a destination: the folder's path,
+ * How `jatayu restore` names a destination: the folder's path,
  * `s3://bucket/prefix` or `gs://bucket/prefix`.
  *
  * Not `Destination::label`, which adds an S3 endpoint in brackets for
@@ -216,7 +216,7 @@ export function restoreCommand(
   opts: { snapshot?: string | null; config?: boolean; into?: string } = {},
 ): string {
   const n = normalizeDestination(d)
-  const words = ['karmayoga', 'restore', shellWord(destinationUrl(n)), opts.into ?? RESTORE_INTO]
+  const words = ['jatayu', 'restore', shellWord(destinationUrl(n)), opts.into ?? RESTORE_INTO]
   if (n.type === 's3') {
     if (n.region) words.push('--region', shellWord(n.region))
     if (n.endpoint) words.push('--endpoint', shellWord(n.endpoint))

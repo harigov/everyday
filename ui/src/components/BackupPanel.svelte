@@ -16,7 +16,7 @@
   // drafted, so its tab has no Save -- it used to sit under one, in a column
   // so tall the Save landed in the middle of the scroll.
   //
-  // Restoring is the command line's for now -- see `karmayoga restore` -- so
+  // Restoring is the command line's for now -- see `jatayu restore` -- so
   // the last section is the exact command for the destination saved here,
   // rather than instructions to assemble one on the worst day to be doing it.
 
@@ -328,8 +328,7 @@
 {:else if !view.supported}
   <p class="hint lead">
     This vault’s database is on a server, so it is backed up where that server is — by whoever runs
-    it, with Postgres’s own backups or Supabase’s. There is nothing for Karma Yoga to copy from
-    here.
+    it, with Postgres’s own backups or Supabase’s. There is nothing for Jatayu to copy from here.
   </p>
 {:else}
   {@const d = draft.destination}
@@ -387,7 +386,7 @@
               <input
                 id="backup-folder"
                 bind:value={d.path}
-                placeholder="/media/you/Backup Disk/Karma Yoga"
+                placeholder="/media/you/Backup Disk/Jatayu"
                 spellcheck="false"
                 autocomplete="off"
               />
@@ -424,7 +423,7 @@
               <span class="caption">Folder inside the bucket</span>
               <input
                 bind:value={d.prefix}
-                placeholder="karmayoga"
+                placeholder="jatayu"
                 spellcheck="false"
                 autocomplete="off"
               />
@@ -557,7 +556,7 @@
               <span class="caption">Folder inside the bucket</span>
               <input
                 bind:value={d.prefix}
-                placeholder="karmayoga"
+                placeholder="jatayu"
                 spellcheck="false"
                 autocomplete="off"
               />
@@ -804,7 +803,7 @@
               <b>To restore, run this in a terminal on the computer that holds your vault.</b> It
               lays
               {chosenCopy ? 'the copy chosen above' : 'the newest copy'} down as a vault in a new folder,
-              and that folder opens in Karma Yoga with this vault’s password:
+              and that folder opens in Jatayu with this vault’s password:
             </p>
             <div class="command">
               <code>{command}</code>

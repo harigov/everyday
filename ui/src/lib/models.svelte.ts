@@ -1,7 +1,7 @@
 // Which model each size of work runs on: Settings → Models, and what the
 // rest of the interface asks about it.
 //
-// Application settings rather than the assistant's -- `karmayoga_core::llm`.
+// Application settings rather than the assistant's -- `jatayu_core::llm`.
 // Large writes up research, Medium is the assistant, Small does the quick
 // asks. Each has its own endpoint and model; a key belongs to an endpoint,
 // so two tiers at one endpoint share one, and `keyed` lists endpoints rather
@@ -17,7 +17,7 @@
 //
 // And the speech card's: the recognisers and the speech kit, which meeting
 // notes used to list and poll for themselves when how speech becomes text was
-// theirs to choose. It is the platform's now (`karmayoga_core::speech`), so
+// theirs to choose. It is the platform's now (`jatayu_core::speech`), so
 // the list lives here, once, and meeting notes read the speech model from
 // their own view rather than keeping a second copy of the catalogue.
 //
@@ -93,7 +93,7 @@ class ModelsState {
     this.#imageTimer = null
   }
 
-  /** Whether this copy of Karma Yoga can run a decision model itself. */
+  /** Whether this copy of Jatayu can run a decision model itself. */
   get localDecisions(): boolean {
     return this.view?.localDecisions === true
   }

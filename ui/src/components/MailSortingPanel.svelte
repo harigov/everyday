@@ -6,7 +6,7 @@
   // the model is shown -- they are the options it picks between -- so the
   // description is where somebody says what should and should not count.
   // The tab is what the rest of the app understands: Priority, Important,
-  // Other, Newsletters, Notifications. See `karmayoga_core::mail::sorting`.
+  // Other, Newsletters, Notifications. See `jatayu_core::mail::sorting`.
   //
   // Recent mail is sorted unasked; older mail only from the button on its own
   // tab, because sorting somebody's whole archive on a settings change is a
@@ -16,7 +16,7 @@
   //
   // Follow-ups are here too, rather than a pane of their own: the same model,
   // under the same per-account switch, reading the same mail, decides which
-  // threads wait at the top of the Inbox -- `karmayoga_core::mail::follow_up`.
+  // threads wait at the top of the Inbox -- `jatayu_core::mail::follow_up`.
   // With no decision model it is the Small model that decides, and the card
   // says which, per account how far it has got, and what holds one back: the
   // pass runs in the background and used to say nothing when it could not.

@@ -149,7 +149,7 @@
     <div class="mast">
       <span class="brand" title="Drag to move the panel · double-click to put it back">
         <Logo size={14} />
-        <span>Karma Yoga</span>
+        <span>Jatayu</span>
       </span>
       <span class="kicker">
         {#if mark === 'dot'}

@@ -1,0 +1,686 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		09AB55FF0754820E2D1631A0 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F5EE0C822299103DFB4492F4 /* CoreGraphics.framework */; };
+		35A87CD3470844E35C76992F /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 0296C0BCCB2E1C8E5FF133BC /* assets */; };
+		3D3B3D7D73F583C9E1C9EF41 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CDB7C10B22A790257B92829E /* WebKit.framework */; };
+		516C9F11705DA2A49D92B3CF /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 355D9C3AF69CF7A0F549B964 /* libapp.a */; };
+		5586C9C9F124FF53468C6F4E /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BC4076F519EE1AAAEAA5915D /* Security.framework */; };
+		5D0FE32AF4D7BF25ECB4A279 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F1833358D59F9C502E6B4107 /* UIKit.framework */; };
+		C14C5A5613F0678485D734E8 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A7745E3F4124EBCA94BD15BF /* Metal.framework */; };
+		C27C091FFF1A7823866EDF00 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = E9BDE85738003286BCF2DC80 /* LaunchScreen.storyboard */; };
+		D40531B05CFC2A11A75598B2 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BD2A3002331D630E2531BF73 /* QuartzCore.framework */; };
+		D448A5D884887659E7DFFFE2 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 13300A974BEB601FFAFB4DE7 /* MetalKit.framework */; };
+		FBAB5EF52F49A1567BF349C2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7E03FDD0B2619C6A8D56FD28 /* Assets.xcassets */; };
+		FF3771A470065EDBFD5F1992 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 768270BFA0C8F82C05C92B12 /* main.mm */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		00D465D29F6DFEA59343808E /* web.rs */ = {isa = PBXFileReference; path = web.rs; sourceTree = "<group>"; };
+		0296C0BCCB2E1C8E5FF133BC /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		0363AFC61DD451562F3E33BD /* microphone.rs */ = {isa = PBXFileReference; path = microphone.rs; sourceTree = "<group>"; };
+		041C1B97759D871D1FFF26CB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		12D8E9FA4F1F4D6C680D4182 /* acl.rs */ = {isa = PBXFileReference; path = acl.rs; sourceTree = "<group>"; };
+		12FDC67D875B63FC115F1115 /* transfer.rs */ = {isa = PBXFileReference; path = transfer.rs; sourceTree = "<group>"; };
+		13300A974BEB601FFAFB4DE7 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		14969280BFFA5B01938AF567 /* lock.rs */ = {isa = PBXFileReference; path = lock.rs; sourceTree = "<group>"; };
+		162FD0EA76D4A5A28A715953 /* media.rs */ = {isa = PBXFileReference; path = media.rs; sourceTree = "<group>"; };
+		17189B3695C64A48AA8DBFAD /* state.rs */ = {isa = PBXFileReference; path = state.rs; sourceTree = "<group>"; };
+		182DE6697F81C18730167AC2 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		19A2792FB1B666FD5202D74D /* pill.rs */ = {isa = PBXFileReference; path = pill.rs; sourceTree = "<group>"; };
+		1C4A8EA203E6C8E530A492C9 /* machine_config.rs */ = {isa = PBXFileReference; path = machine_config.rs; sourceTree = "<group>"; };
+		1D48A348C73EC8AD8FC077CF /* wayland.rs */ = {isa = PBXFileReference; path = wayland.rs; sourceTree = "<group>"; };
+		22CDB6C8245DD2422E65A347 /* player.rs */ = {isa = PBXFileReference; path = player.rs; sourceTree = "<group>"; };
+		252213FE3EBB47D0720D1C13 /* legacy.rs */ = {isa = PBXFileReference; path = legacy.rs; sourceTree = "<group>"; };
+		2C6F92B13F8E50EFEA0A249D /* listen.rs */ = {isa = PBXFileReference; path = listen.rs; sourceTree = "<group>"; };
+		2CBA353911EC7F0BD1A5CDBB /* paste.rs */ = {isa = PBXFileReference; path = paste.rs; sourceTree = "<group>"; };
+		2DD047EC038BA37F8D7B4C5D /* guard.rs */ = {isa = PBXFileReference; path = guard.rs; sourceTree = "<group>"; };
+		2E7202EBBB595A17670574FB /* capture.rs */ = {isa = PBXFileReference; path = capture.rs; sourceTree = "<group>"; };
+		3095A13ADCA724218B78B4D1 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		30CD3CC38FAAA4726968C482 /* resample.rs */ = {isa = PBXFileReference; path = resample.rs; sourceTree = "<group>"; };
+		346D3749CD4743B7B0F79DA5 /* conversation.rs */ = {isa = PBXFileReference; path = conversation.rs; sourceTree = "<group>"; };
+		355D9C3AF69CF7A0F549B964 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		40B5A424320F33111F77610D /* apps.rs */ = {isa = PBXFileReference; path = apps.rs; sourceTree = "<group>"; };
+		48D6B11AB648D8096D7A1C63 /* lock.rs */ = {isa = PBXFileReference; path = lock.rs; sourceTree = "<group>"; };
+		4A9522CB9D23955920332155 /* hotkey.rs */ = {isa = PBXFileReference; path = hotkey.rs; sourceTree = "<group>"; };
+		4B2D36B5569C2863F852CD3A /* badge.rs */ = {isa = PBXFileReference; path = badge.rs; sourceTree = "<group>"; };
+		4ED2092F2E99D2FB675CF6F7 /* card.rs */ = {isa = PBXFileReference; path = card.rs; sourceTree = "<group>"; };
+		4F3DBFF007C2FE8333C13C73 /* wake.rs */ = {isa = PBXFileReference; path = wake.rs; sourceTree = "<group>"; };
+		505AFA67F2353D1D5FDDE489 /* topcard.rs */ = {isa = PBXFileReference; path = topcard.rs; sourceTree = "<group>"; };
+		51B360E00D28CABE6CE1359E /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		5E09CA8DA53C6D467308CC2C /* micwatch.rs */ = {isa = PBXFileReference; path = micwatch.rs; sourceTree = "<group>"; };
+		6A61E494B041F80A26121F65 /* windows.rs */ = {isa = PBXFileReference; path = windows.rs; sourceTree = "<group>"; };
+		711E776FD79849E958A2AC98 /* drive.rs */ = {isa = PBXFileReference; path = drive.rs; sourceTree = "<group>"; };
+		768270BFA0C8F82C05C92B12 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		7E03FDD0B2619C6A8D56FD28 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		7E204B5952A579A912A48E19 /* sharing.rs */ = {isa = PBXFileReference; path = sharing.rs; sourceTree = "<group>"; };
+		801272067D317F3C39808BAD /* listener.rs */ = {isa = PBXFileReference; path = listener.rs; sourceTree = "<group>"; };
+		8015A2FAFF0021A2FEC0EA7F /* media.rs */ = {isa = PBXFileReference; path = media.rs; sourceTree = "<group>"; };
+		802CFA2CE7A5DCE69AC54C99 /* no_models.rs */ = {isa = PBXFileReference; path = no_models.rs; sourceTree = "<group>"; };
+		8874E4D630A55210FAEAE9D1 /* navigation.rs */ = {isa = PBXFileReference; path = navigation.rs; sourceTree = "<group>"; };
+		8E06621D250BB401DBCD9B28 /* meeting.rs */ = {isa = PBXFileReference; path = meeting.rs; sourceTree = "<group>"; };
+		8F536318F0136549431536D7 /* engine.rs */ = {isa = PBXFileReference; path = engine.rs; sourceTree = "<group>"; };
+		96383D52766DACB5991330E4 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		97FCC8B6AD07DFF405BBD2B6 /* mcp.rs */ = {isa = PBXFileReference; path = mcp.rs; sourceTree = "<group>"; };
+		986F57D904AE4A8543069D30 /* files.rs */ = {isa = PBXFileReference; path = files.rs; sourceTree = "<group>"; };
+		9DDF540BCC57F696A48FEC23 /* settings.rs */ = {isa = PBXFileReference; path = settings.rs; sourceTree = "<group>"; };
+		9FDF0EDA87412C7F77028A84 /* remotes.rs */ = {isa = PBXFileReference; path = remotes.rs; sourceTree = "<group>"; };
+		A1A1BE3A533A5F670E589702 /* desktop.rs */ = {isa = PBXFileReference; path = desktop.rs; sourceTree = "<group>"; };
+		A576D1475270F930AFBF9D65 /* gnome.rs */ = {isa = PBXFileReference; path = gnome.rs; sourceTree = "<group>"; };
+		A6EB9341CA7D46BAD5871B00 /* words.rs */ = {isa = PBXFileReference; path = words.rs; sourceTree = "<group>"; };
+		A7745E3F4124EBCA94BD15BF /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		ACA7357B30029B21E941E1F5 /* echo.rs */ = {isa = PBXFileReference; path = echo.rs; sourceTree = "<group>"; };
+		B2DAC7A658216CC7F558FEF5 /* jatayu-app_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "jatayu-app_iOS.entitlements"; sourceTree = "<group>"; };
+		B885F02740835272F7A1549B /* jatayu-app_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "jatayu-app_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		BA612C7E67740D0C07E2036D /* fanout.rs */ = {isa = PBXFileReference; path = fanout.rs; sourceTree = "<group>"; };
+		BAD041AC0D30873C658F5EEF /* playback.rs */ = {isa = PBXFileReference; path = playback.rs; sourceTree = "<group>"; };
+		BC4076F519EE1AAAEAA5915D /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		BD2A3002331D630E2531BF73 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		BE87D2D8C2EF9051BFE4A6FD /* commands.rs */ = {isa = PBXFileReference; path = commands.rs; sourceTree = "<group>"; };
+		BFAD4437067FA3282566F530 /* window.rs */ = {isa = PBXFileReference; path = window.rs; sourceTree = "<group>"; };
+		C01BA3F5A65BDA6ED307B006 /* settings.rs */ = {isa = PBXFileReference; path = settings.rs; sourceTree = "<group>"; };
+		C23AE2A9AE5F8F39D1EDFC56 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		C31421BC2702BC0128EEC58C /* offers.rs */ = {isa = PBXFileReference; path = offers.rs; sourceTree = "<group>"; };
+		C47CB41B3065BB9682E2281B /* volume.rs */ = {isa = PBXFileReference; path = volume.rs; sourceTree = "<group>"; };
+		C5E95C471B12ECA97B527683 /* notice.rs */ = {isa = PBXFileReference; path = notice.rs; sourceTree = "<group>"; };
+		C66F3BA9431473F96B6F7361 /* dictation.rs */ = {isa = PBXFileReference; path = dictation.rs; sourceTree = "<group>"; };
+		C95D77F83B482C69F8529EFA /* level.rs */ = {isa = PBXFileReference; path = level.rs; sourceTree = "<group>"; };
+		CA3828A7492C0355728607FC /* screentime.rs */ = {isa = PBXFileReference; path = screentime.rs; sourceTree = "<group>"; };
+		CAB8A21E44E0565376C7DB24 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		CCD1A3A1859ED4B76D0440CC /* protocol.rs */ = {isa = PBXFileReference; path = protocol.rs; sourceTree = "<group>"; };
+		CDB7C10B22A790257B92829E /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		D24139F394C685DBE0AC4DEA /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		D4E91607E4E21BA52F6D5404 /* mobile.rs */ = {isa = PBXFileReference; path = mobile.rs; sourceTree = "<group>"; };
+		D6BEC56D7C7A88982D9FC8A9 /* key.rs */ = {isa = PBXFileReference; path = key.rs; sourceTree = "<group>"; };
+		D8569DE8A678059393AA3C12 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		DD7EE1C687DB290317860F47 /* input.rs */ = {isa = PBXFileReference; path = input.rs; sourceTree = "<group>"; };
+		E02155A98CA41C1CD022F570 /* tray.rs */ = {isa = PBXFileReference; path = tray.rs; sourceTree = "<group>"; };
+		E182A642F04D6BEB0981363E /* environment.rs */ = {isa = PBXFileReference; path = environment.rs; sourceTree = "<group>"; };
+		E2109F022E19E0147E19BB74 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		E4570AD9115281CB9823D215 /* events.rs */ = {isa = PBXFileReference; path = events.rs; sourceTree = "<group>"; };
+		E82B442E378F78705093F74A /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		E8AC10E958B9EF64C0F96587 /* remote.rs */ = {isa = PBXFileReference; path = remote.rs; sourceTree = "<group>"; };
+		E9BDE85738003286BCF2DC80 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		EB9A3444FDB95983839B1B20 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		EC49D18742633FF1618D3245 /* test_microphone.rs */ = {isa = PBXFileReference; path = test_microphone.rs; sourceTree = "<group>"; };
+		EF675F6AF0D1BC1FFA3A08B2 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		F0BC9F3F5F2355FE7D83C5F7 /* portal.rs */ = {isa = PBXFileReference; path = portal.rs; sourceTree = "<group>"; };
+		F1833358D59F9C502E6B4107 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		F1DA175A7CAEE3AC1606581D /* apps.rs */ = {isa = PBXFileReference; path = apps.rs; sourceTree = "<group>"; };
+		F213CD14FF4A4114BA208B3E /* clipboard.rs */ = {isa = PBXFileReference; path = clipboard.rs; sourceTree = "<group>"; };
+		F5EE0C822299103DFB4492F4 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		F935DDCA7093DC5155150E3A /* volume.rs */ = {isa = PBXFileReference; path = volume.rs; sourceTree = "<group>"; };
+		F99A30F4DBF0A6FB9659B5E7 /* health.rs */ = {isa = PBXFileReference; path = health.rs; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		6329577D7FD71A1182A2DD49 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				516C9F11705DA2A49D92B3CF /* libapp.a in Frameworks */,
+				09AB55FF0754820E2D1631A0 /* CoreGraphics.framework in Frameworks */,
+				C14C5A5613F0678485D734E8 /* Metal.framework in Frameworks */,
+				D448A5D884887659E7DFFFE2 /* MetalKit.framework in Frameworks */,
+				D40531B05CFC2A11A75598B2 /* QuartzCore.framework in Frameworks */,
+				5586C9C9F124FF53468C6F4E /* Security.framework in Frameworks */,
+				5D0FE32AF4D7BF25ECB4A279 /* UIKit.framework in Frameworks */,
+				3D3B3D7D73F583C9E1C9EF41 /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		01230E21D17F8C45F17A2279 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				BD984C4BABD1A6DCABE0EEA6 /* jatayu-app */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		0BAB108D5DD2E97F63C73DA9 /* desk */ = {
+			isa = PBXGroup;
+			children = (
+				E182A642F04D6BEB0981363E /* environment.rs */,
+				3095A13ADCA724218B78B4D1 /* mod.rs */,
+				A6EB9341CA7D46BAD5871B00 /* words.rs */,
+				62E0CF9863F8F5B94FC74BA1 /* linux */,
+				C7B274D167968227FE1AE1E6 /* macos */,
+			);
+			path = desk;
+			sourceTree = "<group>";
+		};
+		1A7F270B29CA1F2A939FDB95 /* bindings */ = {
+			isa = PBXGroup;
+			children = (
+				C23AE2A9AE5F8F39D1EDFC56 /* bindings.h */,
+			);
+			path = bindings;
+			sourceTree = "<group>";
+		};
+		29778EC963E838A723027CEB /* writing */ = {
+			isa = PBXGroup;
+			children = (
+				A1A1BE3A533A5F670E589702 /* desktop.rs */,
+				E82B442E378F78705093F74A /* mod.rs */,
+				1D48A348C73EC8AD8FC077CF /* wayland.rs */,
+			);
+			path = writing;
+			sourceTree = "<group>";
+		};
+		588F6CBB6B5D25B4973B7DF5 /* jatayu-app_iOS */ = {
+			isa = PBXGroup;
+			children = (
+				041C1B97759D871D1FFF26CB /* Info.plist */,
+				B2DAC7A658216CC7F558FEF5 /* jatayu-app_iOS.entitlements */,
+			);
+			path = "jatayu-app_iOS";
+			sourceTree = "<group>";
+		};
+		62E0CF9863F8F5B94FC74BA1 /* linux */ = {
+			isa = PBXGroup;
+			children = (
+				40B5A424320F33111F77610D /* apps.rs */,
+				48D6B11AB648D8096D7A1C63 /* lock.rs */,
+				8015A2FAFF0021A2FEC0EA7F /* media.rs */,
+				D24139F394C685DBE0AC4DEA /* mod.rs */,
+				9DDF540BCC57F696A48FEC23 /* settings.rs */,
+				F935DDCA7093DC5155150E3A /* volume.rs */,
+			);
+			path = linux;
+			sourceTree = "<group>";
+		};
+		6B9C519799122D622DB9BB74 /* voice */ = {
+			isa = PBXGroup;
+			children = (
+				182DE6697F81C18730167AC2 /* mod.rs */,
+				EC49D18742633FF1618D3245 /* test_microphone.rs */,
+			);
+			path = voice;
+			sourceTree = "<group>";
+		};
+		6E72725BA559A9DB8EC4A072 /* voicetyping */ = {
+			isa = PBXGroup;
+			children = (
+				CAB8A21E44E0565376C7DB24 /* mod.rs */,
+				2CBA353911EC7F0BD1A5CDBB /* paste.rs */,
+				19A2792FB1B666FD5202D74D /* pill.rs */,
+			);
+			path = voicetyping;
+			sourceTree = "<group>";
+		};
+		6F0A1A99B7F4C729100CD343 = {
+			isa = PBXGroup;
+			children = (
+				0296C0BCCB2E1C8E5FF133BC /* assets */,
+				7E03FDD0B2619C6A8D56FD28 /* Assets.xcassets */,
+				E9BDE85738003286BCF2DC80 /* LaunchScreen.storyboard */,
+				B3D658A50D71DCCAF3794100 /* Externals */,
+				588F6CBB6B5D25B4973B7DF5 /* jatayu-app_iOS */,
+				01230E21D17F8C45F17A2279 /* Sources */,
+				7373F4AF078323DC67BA9F80 /* src */,
+				E6EBA4F5F8972011A59BE87A /* Frameworks */,
+				940CBC0C76022B5EC2EA9DD6 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		7373F4AF078323DC67BA9F80 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				12D8E9FA4F1F4D6C680D4182 /* acl.rs */,
+				4B2D36B5569C2863F852CD3A /* badge.rs */,
+				2E7202EBBB595A17670574FB /* capture.rs */,
+				F213CD14FF4A4114BA208B3E /* clipboard.rs */,
+				BE87D2D8C2EF9051BFE4A6FD /* commands.rs */,
+				C66F3BA9431473F96B6F7361 /* dictation.rs */,
+				711E776FD79849E958A2AC98 /* drive.rs */,
+				E4570AD9115281CB9823D215 /* events.rs */,
+				BA612C7E67740D0C07E2036D /* fanout.rs */,
+				986F57D904AE4A8543069D30 /* files.rs */,
+				A576D1475270F930AFBF9D65 /* gnome.rs */,
+				2DD047EC038BA37F8D7B4C5D /* guard.rs */,
+				F99A30F4DBF0A6FB9659B5E7 /* health.rs */,
+				4A9522CB9D23955920332155 /* hotkey.rs */,
+				252213FE3EBB47D0720D1C13 /* legacy.rs */,
+				96383D52766DACB5991330E4 /* lib.rs */,
+				2C6F92B13F8E50EFEA0A249D /* listen.rs */,
+				801272067D317F3C39808BAD /* listener.rs */,
+				1C4A8EA203E6C8E530A492C9 /* machine_config.rs */,
+				EF675F6AF0D1BC1FFA3A08B2 /* main.rs */,
+				97FCC8B6AD07DFF405BBD2B6 /* mcp.rs */,
+				8E06621D250BB401DBCD9B28 /* meeting.rs */,
+				0363AFC61DD451562F3E33BD /* microphone.rs */,
+				5E09CA8DA53C6D467308CC2C /* micwatch.rs */,
+				D4E91607E4E21BA52F6D5404 /* mobile.rs */,
+				8874E4D630A55210FAEAE9D1 /* navigation.rs */,
+				C5E95C471B12ECA97B527683 /* notice.rs */,
+				C31421BC2702BC0128EEC58C /* offers.rs */,
+				22CDB6C8245DD2422E65A347 /* player.rs */,
+				F0BC9F3F5F2355FE7D83C5F7 /* portal.rs */,
+				CCD1A3A1859ED4B76D0440CC /* protocol.rs */,
+				E8AC10E958B9EF64C0F96587 /* remote.rs */,
+				9FDF0EDA87412C7F77028A84 /* remotes.rs */,
+				CA3828A7492C0355728607FC /* screentime.rs */,
+				7E204B5952A579A912A48E19 /* sharing.rs */,
+				17189B3695C64A48AA8DBFAD /* state.rs */,
+				12FDC67D875B63FC115F1115 /* transfer.rs */,
+				E02155A98CA41C1CD022F570 /* tray.rs */,
+				4F3DBFF007C2FE8333C13C73 /* wake.rs */,
+				00D465D29F6DFEA59343808E /* web.rs */,
+				6A61E494B041F80A26121F65 /* windows.rs */,
+				C79929CD77E61FBEA09D1E74 /* audio */,
+				0BAB108D5DD2E97F63C73DA9 /* desk */,
+				8C20D35E66EEE45A1672108B /* panel */,
+				745E388B16E0901CF355BCDD /* talk */,
+				6B9C519799122D622DB9BB74 /* voice */,
+				6E72725BA559A9DB8EC4A072 /* voicetyping */,
+				29778EC963E838A723027CEB /* writing */,
+			);
+			name = src;
+			path = ../../src;
+			sourceTree = "<group>";
+		};
+		745E388B16E0901CF355BCDD /* talk */ = {
+			isa = PBXGroup;
+			children = (
+				4ED2092F2E99D2FB675CF6F7 /* card.rs */,
+				346D3749CD4743B7B0F79DA5 /* conversation.rs */,
+				D6BEC56D7C7A88982D9FC8A9 /* key.rs */,
+				C95D77F83B482C69F8529EFA /* level.rs */,
+				EB9A3444FDB95983839B1B20 /* mod.rs */,
+			);
+			path = talk;
+			sourceTree = "<group>";
+		};
+		8C20D35E66EEE45A1672108B /* panel */ = {
+			isa = PBXGroup;
+			children = (
+				51B360E00D28CABE6CE1359E /* mod.rs */,
+				505AFA67F2353D1D5FDDE489 /* topcard.rs */,
+				BFAD4437067FA3282566F530 /* window.rs */,
+			);
+			path = panel;
+			sourceTree = "<group>";
+		};
+		940CBC0C76022B5EC2EA9DD6 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B885F02740835272F7A1549B /* jatayu-app_iOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B3D658A50D71DCCAF3794100 /* Externals */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Externals;
+			sourceTree = "<group>";
+		};
+		BD984C4BABD1A6DCABE0EEA6 /* jatayu-app */ = {
+			isa = PBXGroup;
+			children = (
+				768270BFA0C8F82C05C92B12 /* main.mm */,
+				1A7F270B29CA1F2A939FDB95 /* bindings */,
+			);
+			path = "jatayu-app";
+			sourceTree = "<group>";
+		};
+		C79929CD77E61FBEA09D1E74 /* audio */ = {
+			isa = PBXGroup;
+			children = (
+				ACA7357B30029B21E941E1F5 /* echo.rs */,
+				8F536318F0136549431536D7 /* engine.rs */,
+				DD7EE1C687DB290317860F47 /* input.rs */,
+				E2109F022E19E0147E19BB74 /* mod.rs */,
+				802CFA2CE7A5DCE69AC54C99 /* no_models.rs */,
+				BAD041AC0D30873C658F5EEF /* playback.rs */,
+				30CD3CC38FAAA4726968C482 /* resample.rs */,
+			);
+			path = audio;
+			sourceTree = "<group>";
+		};
+		C7B274D167968227FE1AE1E6 /* macos */ = {
+			isa = PBXGroup;
+			children = (
+				F1DA175A7CAEE3AC1606581D /* apps.rs */,
+				14969280BFFA5B01938AF567 /* lock.rs */,
+				162FD0EA76D4A5A28A715953 /* media.rs */,
+				D8569DE8A678059393AA3C12 /* mod.rs */,
+				C01BA3F5A65BDA6ED307B006 /* settings.rs */,
+				C47CB41B3065BB9682E2281B /* volume.rs */,
+			);
+			path = macos;
+			sourceTree = "<group>";
+		};
+		E6EBA4F5F8972011A59BE87A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				F5EE0C822299103DFB4492F4 /* CoreGraphics.framework */,
+				355D9C3AF69CF7A0F549B964 /* libapp.a */,
+				A7745E3F4124EBCA94BD15BF /* Metal.framework */,
+				13300A974BEB601FFAFB4DE7 /* MetalKit.framework */,
+				BD2A3002331D630E2531BF73 /* QuartzCore.framework */,
+				BC4076F519EE1AAAEAA5915D /* Security.framework */,
+				F1833358D59F9C502E6B4107 /* UIKit.framework */,
+				CDB7C10B22A790257B92829E /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C7EC2554A33F2D7EC409E9C4 /* jatayu-app_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9933F69BA9062A57CF88F9B2 /* Build configuration list for PBXNativeTarget "jatayu-app_iOS" */;
+			buildPhases = (
+				272DE045D70BFC0FB785F0AB /* Build Rust Code */,
+				32080A780CE6BAD348C9AB88 /* Sources */,
+				161892AA5A75E088F0BC1C86 /* Resources */,
+				6329577D7FD71A1182A2DD49 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "jatayu-app_iOS";
+			packageProductDependencies = (
+			);
+			productName = "jatayu-app_iOS";
+			productReference = B885F02740835272F7A1549B /* jatayu-app_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		88D0BBE7855D1C942D276599 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 4B9849FF4EF2E0E1749ACE58 /* Build configuration list for PBXProject "jatayu-app" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 6F0A1A99B7F4C729100CD343;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 940CBC0C76022B5EC2EA9DD6 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C7EC2554A33F2D7EC409E9C4 /* jatayu-app_iOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		161892AA5A75E088F0BC1C86 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FBAB5EF52F49A1567BF349C2 /* Assets.xcassets in Resources */,
+				C27C091FFF1A7823866EDF00 /* LaunchScreen.storyboard in Resources */,
+				35A87CD3470844E35C76992F /* assets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		272DE045D70BFC0FB785F0AB /* Build Rust Code */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Code";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a",
+				"$(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "cargo tauri ios xcode-script -v --platform \"${PLATFORM_DISPLAY_NAME:?}\" --sdk-root \"${SDKROOT:?}\" --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration \"${CONFIGURATION:?}\" ${FORCE_COLOR} ${ARCHS:?}\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		32080A780CE6BAD348C9AB88 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FF3771A470065EDBFD5F1992 /* main.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		2922D19E0216541F4DE9EBFF /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "jatayu-app_iOS/jatayu-app_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "jatayu-app_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = app.jatayu.Jatayu;
+				PRODUCT_NAME = "Jatayu";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = debug;
+		};
+		3607C1863AB6C765CE5EAFAE /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = debug;
+		};
+		BCC60175CC35B57584D6FB18 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = release;
+		};
+		C5D03A5BB4C8C836546EB491 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "jatayu-app_iOS/jatayu-app_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "jatayu-app_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = app.jatayu.Jatayu;
+				PRODUCT_NAME = "Jatayu";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		4B9849FF4EF2E0E1749ACE58 /* Build configuration list for PBXProject "jatayu-app" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3607C1863AB6C765CE5EAFAE /* debug */,
+				BCC60175CC35B57584D6FB18 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		9933F69BA9062A57CF88F9B2 /* Build configuration list for PBXNativeTarget "jatayu-app_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2922D19E0216541F4DE9EBFF /* debug */,
+				C5D03A5BB4C8C836546EB491 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 88D0BBE7855D1C942D276599 /* Project object */;
+}

@@ -166,22 +166,22 @@ const SORTS: readonly FileSort[] = ['when', 'added', 'name', 'size']
  * Browse and visibly flip.
  */
 const viewPref = pref<FilesView>(
-  'karmayoga.files.view',
+  'jatayu.files.view',
   (raw) => FILES_VIEWS.find((v) => v === raw) ?? 'browse',
   'browse',
 )
 const layoutPref = pref<FilesLayout>(
-  'karmayoga.files.layout',
+  'jatayu.files.layout',
   (raw) => (raw === 'list' ? 'list' : 'grid'),
   'grid',
 )
 const sortPref = pref<FileSort>(
-  'karmayoga.files.sort',
+  'jatayu.files.sort',
   (raw) => SORTS.find((s) => s === raw) ?? 'when',
   'when',
 )
 const descendingPref = pref<boolean>(
-  'karmayoga.files.descending',
+  'jatayu.files.descending',
   (raw) => raw !== '0',
   true,
   (on) => (on ? '1' : '0'),

@@ -127,7 +127,7 @@ export async function openApp(page, url, section) {
   await page.goto(`${url}/?${params}`)
   const password = page.locator('input[type=password]')
   await password.waitFor({ timeout: 15000 })
-  await password.fill('karmayoga')
+  await password.fill('jatayu')
   await password.press('Enter')
   await page.locator('.shell').waitFor({ timeout: 15000 })
   await settle(page)

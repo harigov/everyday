@@ -1,4 +1,4 @@
-# Karma Yoga -- one place for the commands you actually run.
+# Jatayu -- one place for the commands you actually run.
 #
 # `make` on its own lists the targets. Nothing here reimplements the scripts
 # or the toolchains; it only spares you remembering which of the four command
@@ -10,11 +10,11 @@
 # resolve here even with the CLI installed.
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
-APP_DIR := crates/karmayoga-app
+APP_DIR := crates/jatayu-app
 UI_DIR  := ui
 
 # Extra arguments for the targets that forward them, e.g.
-#   make test ARGS="-p karmayoga-core"
+#   make test ARGS="-p jatayu-core"
 #   make cli  ARGS="search rain"
 ARGS ?=
 
@@ -22,12 +22,12 @@ ARGS ?=
 .PHONY: help setup app-deps run dev ui build dist test test-speech test-postgres test-imap test-smtp test-mail test-caldav test-matrix test-livekit test-call lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
-	@echo "Karma Yoga -- make <target>"
+	@echo "Jatayu -- make <target>"
 	@echo
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[1m%-10s\033[0m %s\n", $$1, $$2}'
 	@echo
-	@echo "  Pass arguments with ARGS, e.g. make test ARGS=\"-p karmayoga-core\""
+	@echo "  Pass arguments with ARGS, e.g. make test ARGS=\"-p jatayu-core\""
 
 setup: ## Install prerequisites: system headers, Tauri CLI, npm packages
 	@if [ "$$(uname -s)" = Linux ]; then ./scripts/setup-linux.sh; fi
@@ -52,7 +52,7 @@ run: $(UI_DIR)/node_modules app-deps ## Run the desktop app in development, with
 dev: run ## Alias for `run`
 
 ui: $(UI_DIR)/node_modules ## Run the interface alone in a browser, on its mock backend
-	@echo "The interface falls back to an in-memory backend. Demo password: karmayoga"
+	@echo "The interface falls back to an in-memory backend. Demo password: jatayu"
 	npm --prefix $(UI_DIR) run dev
 
 # Where cargo puts what it builds -- CARGO_TARGET_DIR moves it out of the
@@ -61,7 +61,7 @@ TARGET_DIR := $(or $(CARGO_TARGET_DIR),target)
 
 # What building the desktop shell needs on Linux beyond Rust and a C++
 # compiler: the WebKitGTK headers, and -- for the llama.cpp it builds with
-# Vulkan, see crates/karmayoga-service/Cargo.toml -- the Vulkan headers,
+# Vulkan, see crates/jatayu-service/Cargo.toml -- the Vulkan headers,
 # SPIRV-Headers and `glslc`, from the distribution or from a Vulkan SDK named
 # by VULKAN_SDK (scripts/vulkan-sdk.sh fetches one). APP_MISSING names what
 # is not here; it is empty when nothing is missing, and off Linux. `make
@@ -97,7 +97,7 @@ app-deps:
 # is for the builds that run under a memory ceiling (`run`, `test`); these
 # do not, and most of a rebuild is a chain of three crates -- core, service,
 # the app -- each of whose sixteen codegen units waits on a free job. With
-# eight, a rebuild after a change to karmayoga-core took 160 s rather than
+# eight, a rebuild after a change to jatayu-core took 160 s rather than
 # 223 s, and peaked at 5.6 GB, under what four jobs had needed under the
 # old profile. `make build JOBS=4` on a machine with less to spare.
 JOBS ?= 8
@@ -105,7 +105,7 @@ JOBS ?= 8
 build: $(UI_DIR)/node_modules app-deps ## Build the desktop app to run on this machine
 	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build --no-bundle -- --locked
 	@echo
-	@echo "Built $(TARGET_DIR)/release/karmayoga-app"
+	@echo "Built $(TARGET_DIR)/release/jatayu-app"
 
 dist: $(UI_DIR)/node_modules app-deps ## Build the installers the way a release does (slow)
 	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build -- --profile dist --locked
@@ -122,7 +122,7 @@ test: ## Run the test suite under a memory cap
 	@# build it is missing (APP_MISSING); CI installs it and runs it
 	@# unconditionally.
 	@if [ -z "$(ARGS)" ] && [ -z "$(APP_MISSING)" ]; then \
-		./scripts/test.sh -p karmayoga-app; \
+		./scripts/test.sh -p jatayu-app; \
 	fi
 	@# Not the `speech` feature -- see `test-speech` below for why that is a
 	@# separate, opt-in target rather than folded in here.
@@ -132,22 +132,22 @@ test: ## Run the test suite under a memory cap
 # runs the same suite against a service container on every push; this is the
 # way to run it before pushing. The container is removed when it stops.
 test-postgres: ## Run the storage suite against a throwaway Postgres in Docker
-	@docker rm -f karmayoga-pgtest >/dev/null 2>&1 || true
-	docker run -d --rm --name karmayoga-pgtest \
-		-e POSTGRES_PASSWORD=test -e POSTGRES_DB=karmayoga_test \
+	@docker rm -f jatayu-pgtest >/dev/null 2>&1 || true
+	docker run -d --rm --name jatayu-pgtest \
+		-e POSTGRES_PASSWORD=test -e POSTGRES_DB=jatayu_test \
 		-p 55432:5432 postgres:16-alpine
 	@echo "waiting for Postgres..."
 	@for i in $$(seq 1 60); do \
-		docker exec karmayoga-pgtest pg_isready -q && break; \
+		docker exec jatayu-pgtest pg_isready -q && break; \
 		sleep 1; \
 	done
-	@KARMAYOGA_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/karmayoga_test \
-		cargo test -p karmayoga-store-postgres; \
+	@JATAYU_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/jatayu_test \
+		cargo test -p jatayu-store-postgres; \
 	status=$$?; \
-	docker rm -f karmayoga-pgtest >/dev/null; \
+	docker rm -f jatayu-pgtest >/dev/null; \
 	exit $$status
 
-# The IMAP adapter's suite (crates/karmayoga-mail/tests/imap_dovecot.rs),
+# The IMAP adapter's suite (crates/jatayu-mail/tests/imap_dovecot.rs),
 # against a throwaway Dovecot -- the official image, confined and rootless,
 # which authenticates any username against the one password in
 # USER_PASSWORD and auto-creates that user's mailbox, so nothing here seeds
@@ -158,8 +158,8 @@ test-postgres: ## Run the storage suite against a throwaway Postgres in Docker
 # exists and why it is never on by default. The container is removed when
 # it stops.
 test-imap: ## Run the IMAP adapter's suite against a throwaway Dovecot in Docker
-	@docker rm -f karmayoga-imaptest >/dev/null 2>&1 || true
-	docker run -d --rm --name karmayoga-imaptest \
+	@docker rm -f jatayu-imaptest >/dev/null 2>&1 || true
+	docker run -d --rm --name jatayu-imaptest \
 		-e USER_PASSWORD=testpass \
 		-p 15993:31993 -p 15143:31143 \
 		dovecot/dovecot:latest >/dev/null
@@ -168,20 +168,20 @@ test-imap: ## Run the IMAP adapter's suite against a throwaway Dovecot in Docker
 		(exec 3<>/dev/tcp/127.0.0.1/15993) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
 		sleep 1; \
 	done; exit 1'
-	@KARMAYOGA_TEST_IMAP=1 \
-		KARMAYOGA_TEST_IMAP_HOST=127.0.0.1 \
-		KARMAYOGA_TEST_IMAP_TLS_PORT=15993 \
-		KARMAYOGA_TEST_IMAP_STARTTLS_PORT=15143 \
-		KARMAYOGA_TEST_IMAP_USER=karmayoga \
-		KARMAYOGA_TEST_IMAP_PASS=testpass \
-		cargo test -p karmayoga-mail --features insecure-test-tls --test imap_dovecot; \
+	@JATAYU_TEST_IMAP=1 \
+		JATAYU_TEST_IMAP_HOST=127.0.0.1 \
+		JATAYU_TEST_IMAP_TLS_PORT=15993 \
+		JATAYU_TEST_IMAP_STARTTLS_PORT=15143 \
+		JATAYU_TEST_IMAP_USER=jatayu \
+		JATAYU_TEST_IMAP_PASS=testpass \
+		cargo test -p jatayu-mail --features insecure-test-tls --test imap_dovecot; \
 	status=$$?; \
-	docker rm -f karmayoga-imaptest >/dev/null; \
+	docker rm -f jatayu-imaptest >/dev/null; \
 	exit $$status
 
-# The SMTP client's suite (crates/karmayoga-mail/tests/smtp_mailpit.rs),
+# The SMTP client's suite (crates/jatayu-mail/tests/smtp_mailpit.rs),
 # against a throwaway Mailpit -- the official image, which is given exactly
-# one SMTP credential (MP_SMTP_AUTH=karmayoga:testpass) so the suite can
+# one SMTP credential (MP_SMTP_AUTH=jatayu:testpass) so the suite can
 # prove both that the right password is accepted and that a wrong one comes
 # back as this crate's own auth error, and exposes an HTTP API the test
 # reads delivered messages back through, so nothing here needs its own
@@ -192,9 +192,9 @@ test-imap: ## Run the IMAP adapter's suite against a throwaway Dovecot in Docker
 # against Dovecot's TLS, and `smtp.rs`'s `connect` uses the identical
 # `tokio1-rustls` configuration. The container is removed when it stops.
 test-smtp: ## Run the SMTP client's suite against a throwaway Mailpit in Docker
-	@docker rm -f karmayoga-smtptest >/dev/null 2>&1 || true
-	docker run -d --rm --name karmayoga-smtptest \
-		-e MP_SMTP_AUTH=karmayoga:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
+	@docker rm -f jatayu-smtptest >/dev/null 2>&1 || true
+	docker run -d --rm --name jatayu-smtptest \
+		-e MP_SMTP_AUTH=jatayu:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
 		-p 11025:1025 -p 18025:8025 \
 		axllent/mailpit:latest >/dev/null
 	@echo "waiting for Mailpit..."
@@ -202,16 +202,16 @@ test-smtp: ## Run the SMTP client's suite against a throwaway Mailpit in Docker
 		(exec 3<>/dev/tcp/127.0.0.1/18025) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
 		sleep 1; \
 	done; exit 1'
-	@KARMAYOGA_TEST_SMTP=1 \
-		KARMAYOGA_TEST_SMTP_HOST=127.0.0.1 \
-		KARMAYOGA_TEST_SMTP_PORT=11025 \
-		KARMAYOGA_TEST_SMTP_API=http://127.0.0.1:18025 \
-		cargo test -p karmayoga-mail --features insecure-test-tls --test smtp_mailpit; \
+	@JATAYU_TEST_SMTP=1 \
+		JATAYU_TEST_SMTP_HOST=127.0.0.1 \
+		JATAYU_TEST_SMTP_PORT=11025 \
+		JATAYU_TEST_SMTP_API=http://127.0.0.1:18025 \
+		cargo test -p jatayu-mail --features insecure-test-tls --test smtp_mailpit; \
 	status=$$?; \
-	docker rm -f karmayoga-smtptest >/dev/null; \
+	docker rm -f jatayu-smtptest >/dev/null; \
 	exit $$status
 
-# `accountcal::caldav`'s suite (crates/karmayoga-service/tests/caldav_docker.rs),
+# `accountcal::caldav`'s suite (crates/jatayu-service/tests/caldav_docker.rs),
 # against a throwaway Radicale -- Kozea's own image, GPL-3.0 licensed, which
 # is fine for a container this application never links: nothing here ships
 # Radicale, it only talks CalDAV to a copy of it that is deleted when the
@@ -224,10 +224,10 @@ test-smtp: ## Run the SMTP client's suite against a throwaway Mailpit in Docker
 # doc for why -- so nothing here does more than start the server and wait for
 # it to answer. The container is removed when it stops.
 test-caldav: ## Run the CalDAV adapter's suite against a throwaway Radicale in Docker
-	@docker rm -f karmayoga-caldavtest >/dev/null 2>&1 || true
+	@docker rm -f jatayu-caldavtest >/dev/null 2>&1 || true
 	@tmp_htpasswd=$$(mktemp); \
-	printf 'karmayoga:testpass\n' > $$tmp_htpasswd; \
-	docker run -d --rm --name karmayoga-caldavtest \
+	printf 'jatayu:testpass\n' > $$tmp_htpasswd; \
+	docker run -d --rm --name jatayu-caldavtest \
 		-v $$tmp_htpasswd:/etc/radicale/users:ro \
 		-p 15232:5232 \
 		kozea/radicale:latest --hosts 0.0.0.0:5232 \
@@ -238,19 +238,19 @@ test-caldav: ## Run the CalDAV adapter's suite against a throwaway Radicale in D
 		curl -sf -o /dev/null http://127.0.0.1:15232/ && break; \
 		sleep 1; \
 	done; \
-	KARMAYOGA_TEST_CALDAV=1 \
-		KARMAYOGA_TEST_CALDAV_URL=http://127.0.0.1:15232 \
-		KARMAYOGA_TEST_CALDAV_USER=karmayoga \
-		KARMAYOGA_TEST_CALDAV_PASS=testpass \
-		cargo test -p karmayoga-service --test caldav_docker; \
+	JATAYU_TEST_CALDAV=1 \
+		JATAYU_TEST_CALDAV_URL=http://127.0.0.1:15232 \
+		JATAYU_TEST_CALDAV_USER=jatayu \
+		JATAYU_TEST_CALDAV_PASS=testpass \
+		cargo test -p jatayu-service --test caldav_docker; \
 	status=$$?; \
-	docker rm -f karmayoga-caldavtest >/dev/null; \
+	docker rm -f jatayu-caldavtest >/dev/null; \
 	rm -f $$tmp_htpasswd; \
 	exit $$status
 
 test-matrix: ## Run the chat bot end to end against a throwaway Conduit in Docker
-	@docker rm -f karmayoga-matrixtest >/dev/null 2>&1 || true
-	@docker run -d --rm --name karmayoga-matrixtest \
+	@docker rm -f jatayu-matrixtest >/dev/null 2>&1 || true
+	@docker run -d --rm --name jatayu-matrixtest \
 		-p 127.0.0.1:16167:6167 \
 		-e CONDUIT_SERVER_NAME=chat-test.localhost \
 		-e CONDUIT_DATABASE_PATH=/var/lib/matrix-conduit/ \
@@ -266,19 +266,19 @@ test-matrix: ## Run the chat bot end to end against a throwaway Conduit in Docke
 		curl -sf -o /dev/null http://127.0.0.1:16167/_matrix/client/versions && break; \
 		sleep 1; \
 	done; \
-	KARMAYOGA_TEST_MATRIX_URL=http://127.0.0.1:16167 \
-		cargo test -p karmayoga-chat --test matrix_live -- --nocapture; \
+	JATAYU_TEST_MATRIX_URL=http://127.0.0.1:16167 \
+		cargo test -p jatayu-chat --test matrix_live -- --nocapture; \
 	status=$$?; \
-	docker rm -f karmayoga-matrixtest >/dev/null; \
+	docker rm -f jatayu-matrixtest >/dev/null; \
 	exit $$status
 
-# A call's media against a real LiveKit server (crates/karmayoga-chat/tests/
+# A call's media against a real LiveKit server (crates/jatayu-chat/tests/
 # sfu_live.rs). Host networking, on loopback and ports of its own, so the
 # media's ICE candidates are 127.0.0.1 and nothing is published; a throwaway
 # API key signs the test's tokens.
 test-livekit: ## Run a call's media end to end against a throwaway LiveKit server in Docker
-	@docker rm -f karmayoga-livekittest >/dev/null 2>&1 || true
-	@docker run -d --rm --name karmayoga-livekittest --network host \
+	@docker rm -f jatayu-livekittest >/dev/null 2>&1 || true
+	@docker run -d --rm --name jatayu-livekittest --network host \
 		-e LIVEKIT_KEYS="testkey: throwaway-secret-for-tests-only-0123456789" -e NODE_IP=127.0.0.1 \
 		-e LIVEKIT_CONFIG="$$(printf 'port: 17880\nbind_addresses: [127.0.0.1]\nrtc:\n  tcp_port: 17881\n  udp_port: 17882\n  use_external_ip: false\n')" \
 		livekit/livekit-server:v1.13.11 >/dev/null; \
@@ -287,33 +287,35 @@ test-livekit: ## Run a call's media end to end against a throwaway LiveKit serve
 		curl -sf -o /dev/null http://127.0.0.1:17880/ && break; \
 		sleep 1; \
 	done; \
-	KARMAYOGA_TEST_LIVEKIT_URL=ws://127.0.0.1:17880 \
-	KARMAYOGA_TEST_LIVEKIT_KEY=testkey \
-	KARMAYOGA_TEST_LIVEKIT_SECRET=throwaway-secret-for-tests-only-0123456789 \
-		cargo test -p karmayoga-chat --test sfu_live -- --ignored --nocapture $(ARGS); \
+	JATAYU_TEST_LIVEKIT_URL=ws://127.0.0.1:17880 \
+	JATAYU_TEST_LIVEKIT_KEY=testkey \
+	JATAYU_TEST_LIVEKIT_SECRET=throwaway-secret-for-tests-only-0123456789 \
+		cargo test -p jatayu-chat --test sfu_live -- --ignored --nocapture $(ARGS); \
 	status=$$?; \
-	docker logs karmayoga-livekittest > target/livekit-test.log 2>&1 || true; \
-	docker rm -f karmayoga-livekittest >/dev/null; \
+	docker logs jatayu-livekittest > target/livekit-test.log 2>&1 || true; \
+	docker rm -f jatayu-livekittest >/dev/null; \
 	exit $$status
 
-# A call to the assistant end to end (crates/karmayoga-chat/tests/call_live.rs):
+# A call to the assistant end to end (crates/jatayu-chat/tests/call_live.rs):
 # the real runner and speech models answering a MatrixRTC call. Four
 # throwaway servers, all on loopback with host networking: Conduit with
 # federation on, nginx in front of it with a self-signed certificate (the
 # token service checks OpenID tokens over the federation API, which is HTTPS
 # only), LiveKit, and lk-jwt-service. The server name carries the proxy's
 # port, so federation goes straight to it. Speech models come from
-# MODELS_DIR, linked into a scratch data folder.
+# MODELS_DIR, linked into a scratch data folder: by default this user's own
+# installation's, under the newest name it has -- Jatayu's, or a former
+# name's (Karma Yoga, Every Day) until a Jatayu build has carried it across.
 CALLTEST := target/calltest
-MODELS_DIR ?= $(HOME)/.local/share/everyday/models
+MODELS_DIR ?= $(or $(firstword $(wildcard $(foreach name,jatayu karmayoga everyday,$(HOME)/.local/share/$(name)/models))),$(HOME)/.local/share/jatayu/models)
 test-call: ## Run a call to the assistant end to end: throwaway Conduit, LiveKit and token service, real speech
-	@docker rm -f karmayoga-calltest-conduit karmayoga-calltest-tls karmayoga-calltest-livekit karmayoga-calltest-jwt >/dev/null 2>&1 || true
-	@mkdir -p $(CALLTEST)/data/karmayoga/models
-	@for m in parakeetV3 speechKit phonon; do ln -sfn $(MODELS_DIR)/$$m $(CALLTEST)/data/karmayoga/models/$$m; done
+	@docker rm -f jatayu-calltest-conduit jatayu-calltest-tls jatayu-calltest-livekit jatayu-calltest-jwt >/dev/null 2>&1 || true
+	@mkdir -p $(CALLTEST)/data/jatayu/models
+	@for m in parakeetV3 speechKit phonon; do ln -sfn $(MODELS_DIR)/$$m $(CALLTEST)/data/jatayu/models/$$m; done
 	@openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=rtc-test.localhost \
 		-keyout $(CALLTEST)/key.pem -out $(CALLTEST)/cert.pem 2>/dev/null
 	@printf 'events {}\nhttp { server { listen 127.0.0.1:18448 ssl; ssl_certificate /tls/cert.pem; ssl_certificate_key /tls/key.pem;\n  location / { proxy_pass http://127.0.0.1:16168; proxy_set_header Host $$host; } } }\n' > $(CALLTEST)/nginx.conf
-	@docker run -d --rm --name karmayoga-calltest-conduit --network host \
+	@docker run -d --rm --name jatayu-calltest-conduit --network host \
 		-e CONDUIT_SERVER_NAME=rtc-test.localhost:18448 \
 		-e CONDUIT_DATABASE_PATH=/var/lib/matrix-conduit/ -e CONDUIT_DATABASE_BACKEND=rocksdb \
 		-e CONDUIT_PORT=16168 -e CONDUIT_ADDRESS=127.0.0.1 \
@@ -321,14 +323,14 @@ test-call: ## Run a call to the assistant end to end: throwaway Conduit, LiveKit
 		-e CONDUIT_ALLOW_CHECK_FOR_UPDATES=false -e CONDUIT_TRUSTED_SERVERS='[]' -e CONDUIT_CONFIG='' \
 		--tmpfs /var/lib/matrix-conduit:rw,size=512m \
 		matrixconduit/matrix-conduit:v0.10.12 >/dev/null
-	@docker run -d --rm --name karmayoga-calltest-tls --network host \
+	@docker run -d --rm --name jatayu-calltest-tls --network host \
 		-v $(CURDIR)/$(CALLTEST)/nginx.conf:/etc/nginx/nginx.conf:ro -v $(CURDIR)/$(CALLTEST):/tls:ro \
 		nginx:alpine >/dev/null
-	@docker run -d --rm --name karmayoga-calltest-livekit --network host \
+	@docker run -d --rm --name jatayu-calltest-livekit --network host \
 		-e LIVEKIT_KEYS="testkey: throwaway-secret-for-tests-only-0123456789" -e NODE_IP=127.0.0.1 \
 		-e LIVEKIT_CONFIG="$$(printf 'port: 17880\nbind_addresses: [127.0.0.1]\nrtc:\n  tcp_port: 17881\n  udp_port: 17882\n  use_external_ip: false\n')" \
 		livekit/livekit-server:v1.13.11 >/dev/null
-	@docker run -d --rm --name karmayoga-calltest-jwt --network host \
+	@docker run -d --rm --name jatayu-calltest-jwt --network host \
 		--add-host rtc-test.localhost:127.0.0.1 \
 		-e LIVEKIT_JWT_BIND=127.0.0.1:18080 -e LIVEKIT_URL=ws://127.0.0.1:17880 \
 		-e LIVEKIT_KEY=testkey -e LIVEKIT_SECRET=throwaway-secret-for-tests-only-0123456789 \
@@ -342,30 +344,30 @@ test-call: ## Run a call to the assistant end to end: throwaway Conduit, LiveKit
 			&& curl -sf -o /dev/null http://127.0.0.1:18080/healthz && break; \
 		sleep 1; \
 	done; \
-	XDG_DATA_HOME=$(CURDIR)/$(CALLTEST)/data KARMAYOGA_TEST_SPEECH=1 \
-	KARMAYOGA_TEST_MATRIX_URL=http://127.0.0.1:16168 \
-	KARMAYOGA_TEST_LIVEKIT_JWT_URL=http://127.0.0.1:18080 \
-		cargo test -p karmayoga-chat --features speech --test call_live -- --ignored --nocapture $(ARGS); \
+	XDG_DATA_HOME=$(CURDIR)/$(CALLTEST)/data JATAYU_TEST_SPEECH=1 \
+	JATAYU_TEST_MATRIX_URL=http://127.0.0.1:16168 \
+	JATAYU_TEST_LIVEKIT_JWT_URL=http://127.0.0.1:18080 \
+		cargo test -p jatayu-chat --features speech --test call_live -- --ignored --nocapture $(ARGS); \
 	status=$$?; \
-	for c in conduit tls livekit jwt; do docker logs karmayoga-calltest-$$c > $(CALLTEST)/$$c.log 2>&1 || true; done; \
-	docker rm -f karmayoga-calltest-conduit karmayoga-calltest-tls karmayoga-calltest-livekit karmayoga-calltest-jwt >/dev/null; \
+	for c in conduit tls livekit jwt; do docker logs jatayu-calltest-$$c > $(CALLTEST)/$$c.log 2>&1 || true; done; \
+	docker rm -f jatayu-calltest-conduit jatayu-calltest-tls jatayu-calltest-livekit jatayu-calltest-jwt >/dev/null; \
 	exit $$status
 
-# `karmayoga-service`'s own end-to-end suite
-# (crates/karmayoga-service/tests/mailsync_dovecot.rs) needs both servers at
+# `jatayu-service`'s own end-to-end suite
+# (crates/jatayu-service/tests/mailsync_dovecot.rs) needs both servers at
 # once -- a real IMAP account to sync, act on and read back from, and a real
 # SMTP relay to send through -- so this starts both throwaway containers
 # together rather than asking for two separate `make` invocations. Same
 # images, same credentials, same ports as `test-imap` and `test-smtp` above;
 # both are removed when either half of the suite finishes.
 test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dovecot and Mailpit
-	@docker rm -f karmayoga-imaptest karmayoga-smtptest >/dev/null 2>&1 || true
-	docker run -d --rm --name karmayoga-imaptest \
+	@docker rm -f jatayu-imaptest jatayu-smtptest >/dev/null 2>&1 || true
+	docker run -d --rm --name jatayu-imaptest \
 		-e USER_PASSWORD=testpass \
 		-p 15993:31993 -p 15143:31143 \
 		dovecot/dovecot:latest >/dev/null
-	docker run -d --rm --name karmayoga-smtptest \
-		-e MP_SMTP_AUTH=karmayoga:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
+	docker run -d --rm --name jatayu-smtptest \
+		-e MP_SMTP_AUTH=jatayu:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
 		-p 11025:1025 -p 18025:8025 \
 		axllent/mailpit:latest >/dev/null
 	@echo "waiting for Dovecot and Mailpit..."
@@ -377,19 +379,19 @@ test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dove
 		(exec 3<>/dev/tcp/127.0.0.1/18025) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
 		sleep 1; \
 	done; exit 1'
-	@KARMAYOGA_TEST_IMAP=1 \
-		KARMAYOGA_TEST_IMAP_HOST=127.0.0.1 \
-		KARMAYOGA_TEST_IMAP_TLS_PORT=15993 \
-		KARMAYOGA_TEST_IMAP_STARTTLS_PORT=15143 \
-		KARMAYOGA_TEST_IMAP_USER=karmayoga \
-		KARMAYOGA_TEST_IMAP_PASS=testpass \
-		KARMAYOGA_TEST_SMTP=1 \
-		KARMAYOGA_TEST_SMTP_HOST=127.0.0.1 \
-		KARMAYOGA_TEST_SMTP_PORT=11025 \
-		KARMAYOGA_TEST_SMTP_API=http://127.0.0.1:18025 \
-		cargo test -p karmayoga-service --test mailsync_dovecot; \
+	@JATAYU_TEST_IMAP=1 \
+		JATAYU_TEST_IMAP_HOST=127.0.0.1 \
+		JATAYU_TEST_IMAP_TLS_PORT=15993 \
+		JATAYU_TEST_IMAP_STARTTLS_PORT=15143 \
+		JATAYU_TEST_IMAP_USER=jatayu \
+		JATAYU_TEST_IMAP_PASS=testpass \
+		JATAYU_TEST_SMTP=1 \
+		JATAYU_TEST_SMTP_HOST=127.0.0.1 \
+		JATAYU_TEST_SMTP_PORT=11025 \
+		JATAYU_TEST_SMTP_API=http://127.0.0.1:18025 \
+		cargo test -p jatayu-service --test mailsync_dovecot; \
 	status=$$?; \
-	docker rm -f karmayoga-imaptest karmayoga-smtptest >/dev/null; \
+	docker rm -f jatayu-imaptest jatayu-smtptest >/dev/null; \
 	exit $$status
 
 # The `speech` feature (`local::files`, `meeting::speech`,
@@ -397,7 +399,7 @@ test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dove
 # sherpa-onnx, whose build script downloads a ~20 MB prebuilt native library
 # the first time it builds, unless `SHERPA_ONNX_LIB_DIR` or
 # `SHERPA_ONNX_ARCHIVE_DIR` is already set -- see
-# `crates/karmayoga-service/Cargo.toml`'s own comment on that dependency.
+# `crates/jatayu-service/Cargo.toml`'s own comment on that dependency.
 # The `decisions` feature (`local::decide`; see docs/plans/mail-sorting.md)
 # compiles llama.cpp from source, which needs CMake (point `CMAKE` at one
 # that is not on PATH) and a C++ compiler -- and on Linux, where it is built
@@ -413,8 +415,8 @@ test-speech: ## Clippy and test the local-model features (downloads sherpa-onnx,
 		echo '$(VULKAN_HINT)' >&2; \
 		exit 1; \
 	fi
-	cargo clippy -p karmayoga-service --all-targets --features speech,decisions -- -D warnings
-	cargo test -p karmayoga-service --features speech,decisions
+	cargo clippy -p jatayu-service --all-targets --features speech,decisions -- -D warnings
+	cargo test -p jatayu-service --features speech,decisions
 
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.
 # They are the same tools in the same order, so anything `fix` silences is
@@ -437,9 +439,9 @@ lint: $(UI_DIR)/node_modules ## Format check, clippy and interface typecheck -- 
 	@# member and cannot be linted on a machine without those headers, or
 	@# the Vulkan ones (APP_MISSING).
 	@if [ -z "$(APP_MISSING)" ]; then \
-		cargo clippy -p karmayoga-app --all-targets -- -D warnings; \
+		cargo clippy -p jatayu-app --all-targets -- -D warnings; \
 	else \
-		echo "skipping karmayoga-app: $(APP_MISSING) headers missing, run make setup"; \
+		echo "skipping jatayu-app: $(APP_MISSING) headers missing, run make setup"; \
 	fi
 	npm --prefix $(UI_DIR) run check
 	@# The generated client must be what the Rust command table says. The
@@ -462,7 +464,7 @@ fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 	@# stash first if you want the changes separable.
 	cargo clippy --fix --all-targets --allow-dirty --allow-staged
 	@if [ -z "$(APP_MISSING)" ]; then \
-		cargo clippy --fix -p karmayoga-app --all-targets --allow-dirty --allow-staged; \
+		cargo clippy --fix -p jatayu-app --all-targets --allow-dirty --allow-staged; \
 	fi
 	@# Formatting a Rust file can leave it in a shape clippy reads differently
 	@# and vice versa, so settle on the formatter.
@@ -470,7 +472,7 @@ fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 	@# Then the two generated artefacts, in the order they depend on: the
 	@# surface snapshot is written from the Rust table, and the client is
 	@# generated from the snapshot.
-	UPDATE_SURFACE=1 cargo test -p karmayoga-service --test surface
+	UPDATE_SURFACE=1 cargo test -p jatayu-service --test surface
 	npm --prefix $(UI_DIR) run gen:api
 	@# Same order on this side: lint fixes first, formatter last.
 	npm --prefix $(UI_DIR) run lint:fix
@@ -479,14 +481,14 @@ fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 fmt: ## Format Rust sources
 	cargo fmt --all
 
-cli: ## Run the karmayoga CLI, e.g. make cli ARGS="list"
-	cargo run -p karmayoga-cli -- $(ARGS)
+cli: ## Run the jatayu CLI, e.g. make cli ARGS="list"
+	cargo run -p jatayu-cli -- $(ARGS)
 
 # The PNG/ICO/ICNS set beside the master is generated, not hand-drawn: edit
 # icons/icon.svg and re-run this. The Tauri CLI rasterises the SVG itself
 # (resvg), which is the point -- ImageMagick's built-in SVG renderer silently
 # drops the gradient and hands back a black tile.
-icons: ## Regenerate the app icons from crates/karmayoga-app/icons/icon.svg
+icons: ## Regenerate the app icons from crates/jatayu-app/icons/icon.svg
 	cd $(APP_DIR) && cargo tauri icon icons/icon.svg -o icons
 	@# Android's set goes into the Android project's resources. See docs/mobile.md.
 	cp -r $(APP_DIR)/icons/android/* $(APP_DIR)/gen/android/app/src/main/res/

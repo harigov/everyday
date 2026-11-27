@@ -289,8 +289,8 @@ labels.push(
   label({ id: 'screen-app-hn', key: 'site:ycombinator.com', kind: 'site', name: 'Hacker News' }),
   label({ id: 'screen-app-shell', key: 'app:gnome-shell', kind: 'app', ignored: true }),
   label({
-    id: 'screen-app-karmayoga',
-    key: 'app:karmayoga',
+    id: 'screen-app-jatayu',
+    key: 'app:jatayu',
     kind: 'app',
     category: categoryIdOf('work'),
   }),
@@ -342,7 +342,7 @@ const THINGS: Thing[] = [
   app(
     'dev.zed.Zed',
     'Zed',
-    ['screentime.svelte.ts — karmayoga', 'report.rs — karmayoga', 'mock-screentime.ts — karmayoga'],
+    ['screentime.svelte.ts — jatayu', 'report.rs — jatayu', 'mock-screentime.ts — jatayu'],
     8,
     45,
     { work: 9, evening: 2, weekend: 1 },
@@ -351,7 +351,7 @@ const THINGS: Thing[] = [
   app(
     'code',
     'Visual Studio Code',
-    ['money.rs — karmayoga', 'vault.rs — karmayoga', 'Cargo.toml — karmayoga'],
+    ['money.rs — jatayu', 'vault.rs — jatayu', 'Cargo.toml — jatayu'],
     10,
     50,
     { work: 10 },
@@ -360,7 +360,7 @@ const THINGS: Thing[] = [
   app(
     'org.gnome.Ptyxis',
     '',
-    ['~/projects/karmayoga', 'cargo test — karmayoga', 'htop', 'ssh nas'],
+    ['~/projects/jatayu', 'cargo test — jatayu', 'htop', 'ssh nas'],
     2,
     15,
     { work: 7, evening: 1, weekend: 1 },
@@ -373,12 +373,12 @@ const THINGS: Thing[] = [
   app(
     'com.slack.Slack',
     'Slack',
-    ['#karmayoga — Slack', '#general — Slack', 'Direct messages — Slack'],
+    ['#jatayu — Slack', '#general — Slack', 'Direct messages — Slack'],
     2,
     12,
     { work: 6, morning: 1 },
   ),
-  app('karmayoga', 'Karma Yoga', ['Journal', 'Mail', 'Todo', 'Calendar'], 3, 20, {
+  app('jatayu', 'Jatayu', ['Journal', 'Mail', 'Todo', 'Calendar'], 3, 20, {
     work: 3,
     morning: 3,
     evening: 3,
@@ -400,7 +400,7 @@ const THINGS: Thing[] = [
   }),
   site(
     'github.com',
-    ['Pull requests · karmayoga', 'Issues · karmayoga', 'karmayoga/crates at main · karmayoga'],
+    ['Pull requests · jatayu', 'Issues · jatayu', 'jatayu/crates at main · jatayu'],
     3,
     20,
     { work: 7, evening: 1, weekend: 1 },

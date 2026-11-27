@@ -2,7 +2,7 @@
 # What building the desktop shell needs on macOS beyond Rust: Xcode (its
 # command line tools build the C and C++ the app links, and the iOS target
 # needs the whole of Xcode), and CMake, which builds llama.cpp -- with Metal
-# on Apple Silicon, see crates/karmayoga-service/Cargo.toml -- and libopus.
+# on Apple Silicon, see crates/jatayu-service/Cargo.toml -- and libopus.
 #
 # The webview is the system's own WKWebView, so there are no webview headers
 # to install, and CoreAudio needs nothing either. Nothing here uses sudo:

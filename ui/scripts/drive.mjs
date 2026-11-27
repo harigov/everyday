@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Run JavaScript in a window of a Karma Yoga build made with `--features drive`
+// Run JavaScript in a window of a Jatayu build made with `--features drive`
 // -- the Mac app or the iOS simulator, where no WebDriver reaches. See
-// `crates/karmayoga-app/src/drive.rs` for the other end and `docs/mobile.md`.
+// `crates/jatayu-app/src/drive.rs` for the other end and `docs/mobile.md`.
 //
-//   KARMAYOGA_DRIVE=/path/to.sock node scripts/drive.mjs 'return document.title'
+//   JATAYU_DRIVE=/path/to.sock node scripts/drive.mjs 'return document.title'
 //   echo 'return location.href' | node scripts/drive.mjs --window main -
 //
 // The script is the body of an async function: `return` what you want back,
@@ -17,11 +17,11 @@ import { fileURLToPath } from 'node:url'
 
 export function drive(
   script,
-  { socket = process.env.KARMAYOGA_DRIVE, window = 'main', timeout = 75_000 } = {},
+  { socket = process.env.JATAYU_DRIVE, window = 'main', timeout = 75_000 } = {},
 ) {
   return new Promise((resolve, reject) => {
     if (!socket) {
-      reject(new Error('KARMAYOGA_DRIVE names no socket'))
+      reject(new Error('JATAYU_DRIVE names no socket'))
       return
     }
     const conn = createConnection(socket)

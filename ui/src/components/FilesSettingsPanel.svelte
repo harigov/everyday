@@ -511,8 +511,8 @@
         <span class="fact-label">Keep these encrypted</span>
         <p class="hint">
           Files from the apps ticked here are kept encrypted inside the vault, readable only by
-          Karma Yoga, instead of in the folder. Other programs and sync tools cannot see them. Any
-          file can be switched either way later, from its own details.
+          Jatayu, instead of in the folder. Other programs and sync tools cannot see them. Any file
+          can be switched either way later, from its own details.
         </p>
       </div>
       {#each ORIGINS as o (o.id)}

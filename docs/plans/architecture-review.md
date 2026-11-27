@@ -45,7 +45,7 @@ the way, each small, each with a test:
 | Service runtime | `agent.rs` at 15k lines; the public-only network guard copied in up to ten places; seven `reqwest` builders and five spellings of the user agent; 73 flat modules |
 | Mail and calendar | ten flat `mail*` modules; `mailai.rs` holding three features; two copies of the judge picker; calendar token refresh drifted from mail's; a trait and an enum both called `CalendarProvider` |
 | Media and speech | the network guard again, and the `Route` enum copied between two podcast modules; generated pictures in a world-readable folder |
-| Desktop and phone shell | platform code inline in feature modules (201 `target_os` sites) where `desk/` and `karmayoga-focus` already show a per-OS layout; three copies of the floating-window builder; the main window's label spelled out 41 times |
+| Desktop and phone shell | platform code inline in feature modules (201 `target_os` sites) where `desk/` and `jatayu-focus` already show a per-OS layout; three copies of the floating-window builder; the main window's label spelled out 41 times |
 | Network surfaces | the handshake types written twice, once for each side; route paths and headers as string literals on both sides; four bearer-token extractors with different leniency; three SSE readers; `relay.rs` at 4k lines |
 | Interface data | platform sniffing in 22 places with three different meanings of "Mac"; 145 mock commands listed twice; a few utility copies |
 | Interface components | 34 hand-rolled modal skeletons; a 24-way `{#if}` for Settings pages; the Health sidebar carrying its own copy of the symbol renderer; three copies of a secondary window's bootstrap |
@@ -87,13 +87,13 @@ are unchanged apart from doc comments naming moved modules.
 - `VaultConfig` and `BackendSettings` print their secrets redacted.
 
 **Network surfaces**
-- `karmayoga_server::wire`: `Hello`, `PairRequest`, `Paired` and
+- `jatayu_server::wire`: `Hello`, `PairRequest`, `Paired` and
   `ServerEvent` once for the router and the client, with the `/v1` paths and
   header names as constants -- the interface the phone apps depend on.
 - `auth::bearer(headers, Leniency)`: one reader of `Authorization`, each route
   keeping its own strictness; `Registry::authenticate_for` for the
   scope-named routes.
-- `karmayoga-chat`'s `relay.rs` is `relay/`; `routes.rs`' tests moved out.
+- `jatayu-chat`'s `relay.rs` is `relay/`; `routes.rs`' tests moved out.
 
 **Desktop and phone shell**
 - One `MAIN_WINDOW` label for both shells; Linux's notification and
@@ -116,7 +116,7 @@ are unchanged apart from doc comments naming moved modules.
   relative path would ship. `badge.rs`, `hotkey.rs`, `writing/` and the
   `device_name` trio are the candidates, for a session with a Mac or a
   cross-compiling check.
-- **Trimming the phone build's dependencies** (`karmayoga-vault`'s backends
+- **Trimming the phone build's dependencies** (`jatayu-vault`'s backends
   and keychain on Android/iOS): a Cargo feature change that wants a phone
   build to prove it.
 - **The three SSE readers** stay apart: the client's reads each `data:` line
@@ -144,21 +144,21 @@ one build lock), two interface refactors in the branch's own. No two owned
 the same file. The shared pieces were laid first, on the branch:
 
 - the service's `mail/` module tree (a pure move of the eleven flat modules);
-- `karmayoga_service::http`'s `USER_AGENT`, `BROWSER_USER_AGENT`,
+- `jatayu_service::http`'s `USER_AGENT`, `BROWSER_USER_AGENT`,
   `PublicOnly`, `public_redirect_policy`, `RedirectSchemes`, `literal_ip`
   and `names_forbidden_literal`;
-- empty `karmayoga_core::{hex, markup, text, urlenc, zone}` modules;
+- empty `jatayu_core::{hex, markup, text, urlenc, zone}` modules;
 - `ui/src/lib/platform.ts`.
 
 | Worker | Owns |
 |---|---|
-| net | `karmayoga-service`: `http.rs`, `connections/`, `webpage.rs`, `news/{mod,fetch,downloads,transcribe,extract,directory}.rs`, `browser/`, `local/files.rs`, `money/plaid.rs`, `images/local.rs`; `karmayoga-chat`: `relay.rs` |
-| agentrs | `karmayoga-service`: `agent.rs`, `agent/` |
-| mail | `karmayoga-service`: `mail/`, `accountcal/`, and the trait rename's call sites |
-| corestore | `karmayoga-core`: `record.rs`, `crypto.rs`, `hex.rs`, `blobstore.rs`, `store.rs`, `id.rs`, `vault/`, `tests/pinned_strings.rs`; `karmayoga-store-sql`; `karmayoga-vault` |
-| coredomain | the rest of `karmayoga-core/src` |
-| server | `karmayoga-server`, `karmayoga-mcp`, `karmayoga-connect/src/sse.rs`, `karmayoga-cli/src/mcp_pipe.rs` |
-| app | `karmayoga-app`, `karmayoga-focus` |
+| net | `jatayu-service`: `http.rs`, `connections/`, `webpage.rs`, `news/{mod,fetch,downloads,transcribe,extract,directory}.rs`, `browser/`, `local/files.rs`, `money/plaid.rs`, `images/local.rs`; `jatayu-chat`: `relay.rs` |
+| agentrs | `jatayu-service`: `agent.rs`, `agent/` |
+| mail | `jatayu-service`: `mail/`, `accountcal/`, and the trait rename's call sites |
+| corestore | `jatayu-core`: `record.rs`, `crypto.rs`, `hex.rs`, `blobstore.rs`, `store.rs`, `id.rs`, `vault/`, `tests/pinned_strings.rs`; `jatayu-store-sql`; `jatayu-vault` |
+| coredomain | the rest of `jatayu-core/src` |
+| server | `jatayu-server`, `jatayu-mcp`, `jatayu-connect/src/sse.rs`, `jatayu-cli/src/mcp_pipe.rs` |
+| app | `jatayu-app`, `jatayu-focus` |
 | ui-data | `ui/src/lib` (not the three files below), and the platform checks in the components that sniff |
 | ui-components | `Sheet.svelte` and the dialogs moved onto it, `SettingsView.svelte`, `HealthNav.svelte`, `lib/symbols.ts`, `lib/settings-pages.ts`, `lib/window-boot.ts`, the secondary windows' `main.ts` |
 
@@ -177,15 +177,15 @@ feature/
   windows.rs
 ```
 
-`karmayoga-focus` (`Watcher`/`Backend`, one `detect()`) and the app's
+`jatayu-focus` (`Watcher`/`Backend`, one `detect()`) and the app's
 `desk/{linux,macos}` already work this way. A platform with no
 implementation gets a fallback in `mod.rs` that says so, rather than a
 compile error. Code that only runs on one platform but is tested everywhere
 keeps its `cfg(any(target_os = "...", test))`.
 
 The phone apps are remote clients: everything they need from the computer
-crosses `karmayoga-server`'s `/v1` API, whose request and response types
-now live once, in `karmayoga_server::wire`, for the router and the client
+crosses `jatayu-server`'s `/v1` API, whose request and response types
+now live once, in `jatayu_server::wire`, for the router and the client
 both.
 
 In the interface, what the page is running on is answered by

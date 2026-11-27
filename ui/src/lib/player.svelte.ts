@@ -61,7 +61,7 @@ import { upnext } from './upnext.svelte'
 export const PLAYER_SPEEDS = [0.8, 1, 1.2, 1.5, 1.75, 2, 2.5] as const
 
 /** Where the chosen speed is kept, on this device. See `listen.svelte.ts`. */
-const SPEED_KEY = 'karmayoga.player.speed'
+const SPEED_KEY = 'jatayu.player.speed'
 
 /** How much playing passes between two reports, in real time. */
 const REPORT_EVERY_MS = 15_000

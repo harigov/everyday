@@ -1,7 +1,7 @@
 # Three models, as application settings
 
 > **Delivered.** This is the record of what was decided and why; the code is
-> `karmayoga_core::llm`, `Vault::model_settings` / `model_access`, the
+> `jatayu_core::llm`, `Vault::model_settings` / `model_access`, the
 > `models` command domain and `ui/src/components/ModelsPanel.svelte`.
 
 The vault used to hold one endpoint and one key in the assistant's settings,
@@ -124,7 +124,7 @@ How speech becomes text used to be meeting notes' own setting: a
 `TranscriberConfig` and a language in `MeetingSettings`, a key of its own
 under the `transcriber` secret, and `use_assistant_key` to borrow the models'
 OpenAI key instead. It is the fifth card now -- `ModelSettings.speech`, a
-`SpeechConfig` (`karmayoga_core::speech`) of the transcriber and the
+`SpeechConfig` (`jatayu_core::speech`) of the transcriber and the
 recogniser's language -- because a choice kept inside the first feature that
 needed it is one every later listener would copy, key and all.
 `MeetingSettings.vocabulary` stays with meetings: it is about what is said in
@@ -174,7 +174,7 @@ them.
 - **A second wire protocol.** `Provider` still has one variant, OpenAI's chat
   completions, which is what OpenRouter, Ollama, LM Studio and most gateways
   speak. A native Anthropic client is a new `Provider` variant and an arm in
-  `karmayoga_service::llm::client`.
+  `jatayu_service::llm::client`.
 - **Temperature and token limits in the pane.** Carried and honoured, not
   shown -- as before. The reasoning effort is the one request setting the
   pane shows.

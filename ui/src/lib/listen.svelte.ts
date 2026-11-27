@@ -18,7 +18,7 @@ export const LISTEN_SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2] as const
  * Where the chosen speed is kept, on this device. Written out here rather than
  * through `prefs.ts`, whose keys are a closed list of their own.
  */
-const SPEED_KEY = 'karmayoga.listen.speed'
+const SPEED_KEY = 'jatayu.listen.speed'
 
 /** How long a Stop waits for the session to say it has ended before the
  *  player goes anyway. The shell answers Stop after the session is wound up,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the Karma Yoga test suite inside a resource-capped cgroup.
+# Run the Jatayu test suite inside a resource-capped cgroup.
 #
 # Compiling and testing should never be able to destabilise the machine it
 # runs on. This wraps cargo in a transient systemd scope with a hard memory
@@ -7,17 +7,17 @@
 # rather than pushing the whole system into swap thrash.
 #
 #   ./scripts/test.sh                 # whole workspace
-#   ./scripts/test.sh -p karmayoga-core
+#   ./scripts/test.sh -p jatayu-core
 #
 # Environment:
-#   KARMAYOGA_TEST_MEM   hard memory cap for the scope   (default 6G)
-#   KARMAYOGA_TEST_JOBS  parallel rustc jobs             (default 4)
-#   KARMAYOGA_TEST_CPU   CPU quota, % of one core        (default 400%)
+#   JATAYU_TEST_MEM   hard memory cap for the scope   (default 6G)
+#   JATAYU_TEST_JOBS  parallel rustc jobs             (default 4)
+#   JATAYU_TEST_CPU   CPU quota, % of one core        (default 400%)
 set -euo pipefail
 
-MEM="${KARMAYOGA_TEST_MEM:-6G}"
-JOBS="${KARMAYOGA_TEST_JOBS:-4}"
-CPU="${KARMAYOGA_TEST_CPU:-400%}"
+MEM="${JATAYU_TEST_MEM:-6G}"
+JOBS="${JATAYU_TEST_JOBS:-4}"
+CPU="${JATAYU_TEST_CPU:-400%}"
 
 cd "$(dirname "$0")/.."
 

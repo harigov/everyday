@@ -57,7 +57,7 @@ const STATES: Record<ChatState, { label: string; tone: StatusPill['tone']; fallb
  * A `ChatStatus` as a word, a tone and a sentence.
  *
  * The detail is the connector's own sentence, verbatim -- "Signed in as
- * @karmayoga:example.org. Talking to @me:example.org." -- and only when it
+ * @jatayu:example.org. Talking to @me:example.org." -- and only when it
  * has none (a link that is off, a connector that has not reported yet) does
  * this say what the state means instead.
  */
@@ -72,7 +72,7 @@ export function statusPill(status: ChatStatus): StatusPill {
  * Is this Matrix link fit to save? `null` means yes, otherwise the reason.
  *
  * The same checks, in the same order and in the same words, as
- * `MatrixLink::validate` in `crates/karmayoga-core/src/chat.rs`: a person
+ * `MatrixLink::validate` in `crates/jatayu-core/src/chat.rs`: a person
  * gets the answer before a round trip rather than after one, and the two
  * sides do not give different reasons for the same mistake. Whitespace round
  * the fields is the caller's business -- the form trims before it asks --
@@ -251,7 +251,7 @@ export function quietNote(minutes: number): string {
 //
 // The owner verifies the bot the way they verify anybody in Element: both
 // sides show seven emoji, and a person says whether they are the same. The
-// bot has no screen, so its seven are shown here -- see `karmayoga_service::
+// bot has no screen, so its seven are shown here -- see `jatayu_service::
 // chat`'s "Verifying the owner".
 
 /** A verification that has finished, one way or the other, and wants no
@@ -315,7 +315,7 @@ export function canStartVerification(view: ChatLinkView): boolean {
 // it. So the bot answers only an encrypted message sent from a device picked
 // here by hand, and only those devices can read its replies. Being verified,
 // or cross-signed, does not make a device trusted -- only this list does. The
-// list is `MatrixLink.trustedDevices`; see `karmayoga_core::chat`.
+// list is `MatrixLink.trustedDevices`; see `jatayu_core::chat`.
 
 /** A device as a person would name it: the name its owner gave it, or its id. */
 export function deviceName(device: { deviceId: string; displayName: string | null }): string {
@@ -375,7 +375,7 @@ export function trustChanged(devices: readonly ChatDevice[], chosen: readonly st
 
 // ── Naming a link ────────────────────────────────────────────────────────
 
-/** "@karmayoga:example.org → @me:example.org": the bot, and who it answers. */
+/** "@jatayu:example.org → @me:example.org": the bot, and who it answers. */
 export function linkTitle(link: ChatLink): string {
   return `${link.service.userId || 'New bot'} → ${link.service.owner || '…'}`
 }

@@ -91,7 +91,7 @@ for (const row of menuRows) {
     `${row.id} should be prefixed with the app it belongs to, as todo:add`,
   )
   assert.ok(
-    !row.id.startsWith('karmayoga:'),
+    !row.id.startsWith('jatayu:'),
     `${row.id} uses the prefix the shell keeps for its own two entries`,
   )
 }

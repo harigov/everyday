@@ -121,7 +121,7 @@ const ON_TIME_MIN = 60
 const WATCH = "Hari's Apple Watch"
 const PHONE = 'iPhone'
 const DEXCOM = 'Dexcom G7'
-const TYPED = 'Karma Yoga'
+const TYPED = 'Jatayu'
 
 /** A copy through JSON, which is what the real bridge does to every answer. */
 function wire<T>(value: T): T {

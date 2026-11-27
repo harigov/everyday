@@ -111,7 +111,7 @@ const PAGE = 50
 const NOTHING_ONLY: ReadonlySet<MailOnly> = new Set()
 
 const onlyPref = pref(
-  'karmayoga.mail.list.only',
+  'jatayu.mail.list.only',
   parseOnlyPref,
   new Map<MailboxId, ReadonlySet<MailOnly>>(),
   serializeOnlyPref,
@@ -121,7 +121,7 @@ const onlyPref = pref(
  *  coming back to an inbox shows Priority again rather than All. Absent
  *  means All; a key that is no longer a tab reads as All too. */
 const categoryPref = pref<MailCategory | null>(
-  'karmayoga.mail.category',
+  'jatayu.mail.category',
   (raw) => CATEGORY_TABS.find((t) => t.key === raw)?.key ?? null,
   null,
 )

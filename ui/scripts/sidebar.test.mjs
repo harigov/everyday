@@ -28,16 +28,16 @@ check('nothing is folded to begin with', sidebar.folded('mail'), false)
 sidebar.toggle('mail')
 check('folding one app folds that app', sidebar.folded('mail'), true)
 check('and no other', sidebar.folded('notes'), false)
-check('and is remembered', localStorage.getItem('karmayoga.sidebar.folded'), '["mail"]')
+check('and is remembered', localStorage.getItem('jatayu.sidebar.folded'), '["mail"]')
 sidebar.toggle('mail')
-check('unfolding forgets it', localStorage.getItem('karmayoga.sidebar.folded'), '[]')
+check('unfolding forgets it', localStorage.getItem('jatayu.sidebar.folded'), '[]')
 
 // Health is an app like the rest: its sidebar folds on its own, and the
 // choice is kept.
 sidebar.toggle('health')
 check('Health folds its own sidebar', sidebar.folded('health'), true)
 check('and not the app beside it', sidebar.folded('screentime'), false)
-check('Health is remembered', localStorage.getItem('karmayoga.sidebar.folded'), '["health"]')
+check('Health is remembered', localStorage.getItem('jatayu.sidebar.folded'), '["health"]')
 sidebar.toggle('health')
 
 sidebar.reach()

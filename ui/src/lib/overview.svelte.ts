@@ -124,7 +124,7 @@ interface WeatherOutcome {
 const NO_WEATHER: WeatherOutcome = { report: null, noLocation: false, error: null }
 
 const layoutPref = pref<Widget[]>(
-  'karmayoga.overview.layout',
+  'jatayu.overview.layout',
   (raw) => parseLayout(raw) ?? defaultLayout(),
   defaultLayout(),
   (widgets) => JSON.stringify($state.snapshot(widgets)),
@@ -144,7 +144,7 @@ export type OverviewPage = (typeof OVERVIEW_PAGES)[number]
  * rather than through `prefs.ts`, whose keys are a closed list of their own
  * -- the same arrangement `listen.svelte.ts` keeps its speed under.
  */
-const PAGE_KEY = 'karmayoga.overview.page'
+const PAGE_KEY = 'jatayu.overview.page'
 
 /** The page kept from last time, or Home. */
 function savedPage(): OverviewPage {
@@ -158,7 +158,7 @@ function savedPage(): OverviewPage {
 
 /** Which of `INTRODUCED` this page has already been shown -- see `introduce`. */
 const introducedPref = pref<string[]>(
-  'karmayoga.overview.introduced',
+  'jatayu.overview.introduced',
   (raw) => {
     const parsed: unknown = raw ? JSON.parse(raw) : []
     return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : []

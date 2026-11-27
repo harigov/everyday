@@ -1,0 +1,33 @@
+[package]
+name = "jatayu-mailindex"
+description = "Mail search: tantivy behind a sealed Directory, kept apart so its build cost is paid once"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+jatayu-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+
+# The search engine itself. Pinned exactly, per house rule for a library this
+# large: `rust-version = "1.88"` on 0.27.0, under the 1.96 this tree
+# declares. 0.27 rather than 0.26 for the `lru` it brings: 0.16's
+# `LruCache::pop` is not panic-safe (RUSTSEC-2026-0253), and tantivy 0.27
+# fixes unsound code of its own in the doc store and memory arena. The index
+# format is the same version 7, so an existing index still opens. See `lib.rs` for why
+# tantivy rather than the in-memory index `jatayu-core::search` already has.
+tantivy = "=0.27.0"
+
+# Backs `cache.rs`'s decrypted-segment cache. Already in the dependency tree
+# transitively (tantivy uses it internally), so depending on it directly adds
+# no new code to compile -- only a name for what was already being built.
+lru = "=0.18.5"
+
+[dev-dependencies]
+tempfile = "3"

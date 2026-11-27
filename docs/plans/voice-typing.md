@@ -17,19 +17,19 @@ where the selection was, listening through the same dictation session as
 mail's write-by-voice ([listen.md](listen.md)), and it reuses all of it.
 Called *voice typing* in the code (`voicetyping`, `voice_typing_*`, the
 `voice-typing` window) so that it is never mistaken for that in-window
-dictation (`karmayoga-app/src/dictation.rs`); a single use is still "a
+dictation (`jatayu-app/src/dictation.rs`); a single use is still "a
 dictation", and its record is `WritingAction::Dictate`.
 
 ## Where it lives
 
 | Half | Code | Does |
 |---|---|---|
-| Record | `WritingAction::Dictate` in `karmayoga-core/src/writing.rs` | One `WritingAssist` per dictation: `original` is what the speech model heard, `result` what was typed. Same table, same history, same feedback pass later. No schema change: the action is sealed JSON. |
-| Service | `dictate` in `karmayoga-service/src/domains/writing.rs` | The medium model writes the transcript up (`clean: true`), or the transcript is kept as heard (`clean: false`, no model). Scope `Quick`, unlocked vault, failures kept, as for a rewrite. |
+| Record | `WritingAction::Dictate` in `jatayu-core/src/writing.rs` | One `WritingAssist` per dictation: `original` is what the speech model heard, `result` what was typed. Same table, same history, same feedback pass later. No schema change: the action is sealed JSON. |
+| Service | `dictate` in `jatayu-service/src/domains/writing.rs` | The medium model writes the transcript up (`clean: true`), or the transcript is kept as heard (`clean: false`, no model). Scope `Quick`, unlocked vault, failures kept, as for a rewrite. |
 | Speech | `speech::dictate` (`Service::dictation_open`) | Mail's write-by-voice session: voice mode's detector and recogniser, cut at pauses so most of it is worked out while the person is still talking; it ends on Stop, after 15 s of quiet or after 3 minutes, and feeds silence after somebody cut off mid-sentence so their last words are kept. |
-| Shell | `karmayoga-app/src/voicetyping/{mod,pill,paste}.rs`, `hotkey.rs`, `portal.rs` | The key (press and release), the work (mic → dictation session → `dictate` → paste), the card in the panel, the paste window, the paste. |
+| Shell | `jatayu-app/src/voicetyping/{mod,pill,paste}.rs`, `hotkey.rs`, `portal.rs` | The key (press and release), the work (mic → dictation session → `dictate` → paste), the card in the panel, the paste window, the paste. |
 | Paste window | `ui/voice-typing.html`, `ui/src/voicetyping/` | A page that draws nothing, in a window shown only for the moment of a paste on Wayland. |
-| Setting | `~/.config/karmayoga/voice-typing.json` | On/off, the shortcut, toggle or hold, write-up on or off, the pause that finishes it (`finishAfterPause`, seconds, 0 = the key only). Per machine. The RemoteDesktop restore token stays in `writing.json` and is shared. |
+| Setting | `~/.config/jatayu/voice-typing.json` | On/off, the shortcut, toggle or hold, write-up on or off, the pause that finishes it (`finishAfterPause`, seconds, 0 = the key only). Per machine. The RemoteDesktop restore token stays in `writing.json` and is shared. |
 
 ## A dictation, start to finish
 
@@ -229,12 +229,12 @@ Known limits:
   phrase begun just before Stop (the trailing silence was fed only once the
   detector had reported the phrase starting, which it does a moment behind
   the audio); the silence is now always fed, which mail's write-by-voice
-  gets too (`KARMAYOGA_TEST_SPEECH=1`, ignored by default).
+  gets too (`JATAYU_TEST_SPEECH=1`, ignored by default).
 
 ## Not done
 
 - The application being typed into is not passed to the model yet
-  (`karmayoga-focus` knows it everywhere but GNOME Wayland).
+  (`jatayu-focus` knows it everywhere but GNOME Wayland).
 - No personal vocabulary or voice-learning in the write-up.
 - The tray icon does not change while dictating; the card is the indicator.
 - Windows and macOS share the X11 path's code and have not been run.

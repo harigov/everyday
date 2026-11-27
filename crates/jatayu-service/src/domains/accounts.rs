@@ -1,0 +1,753 @@
+//! Accounts: the mailbox providers this vault has been signed in to.
+//!
+//! Seven commands, and the rule that shapes half of them: **nothing here ever
+//! returns a secret**. [`Account`] itself has nothing sensitive on it --
+//! see `jatayu_core::account` for why -- so `list_accounts` and
+//! `get_account` can hand the record back whole. What they cannot hand back
+//! is the credential, which is why both answer with [`AccountView`] instead
+//! of the bare record: two booleans, computed here from whether a secret is
+//! stored and what shape it is, so the interface can say "signed in" or draw
+//! a password field as filled without ever being told what is in it.
+//!
+//! `save_account_password` and `set_agent_access` are the two mutators that
+//! are not "save the record the caller already has": the first writes into
+//! the sealed secret table rather than the account row, and the second is a
+//! narrow read-modify-write so that ticking one switch in Settings → Accounts
+//! is one call rather than a round trip that hands a whole account back to
+//! the interface first. `attach_oauth_sign_in` is the third: it is where a
+//! finished browser sign-in (`domains::signin`) stops being tokens held in
+//! memory and becomes an account's sealed secret.
+
+use super::Nothing;
+use crate::command;
+use crate::ctx::Ctx;
+use crate::error::{CommandError, CommandResult, codes};
+use crate::service::{Service, blocking};
+use jatayu_core::account::{
+    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, AuthMethod, Preset,
+    Provider,
+};
+use jatayu_core::id::AccountId;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+/// An account, plus what the interface is allowed to know about its secret.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountView {
+    #[serde(flatten)]
+    pub account: Account,
+    /// A password secret is stored for this account -- meaningful for a
+    /// `Password`-authenticated account, always `false` for an OAuth one,
+    /// which never has a password to show a field for.
+    pub has_password: bool,
+    /// Is there a credential this account could actually connect with? An
+    /// OAuth account asks whether a refresh token is stored; a password
+    /// account asks whether a password is. Independent of
+    /// [`Account::status`](jatayu_core::account::Account): a revoked
+    /// refresh token is still "signed in" by this measure until a sync
+    /// attempt notices and moves the status to `NeedsSignIn`.
+    pub signed_in: bool,
+}
+
+impl AccountView {
+    fn new(account: Account, secret: Option<&AccountSecret>) -> Self {
+        let has_password = secret.is_some_and(|s| s.password.is_some());
+        let signed_in = match &account.auth {
+            jatayu_core::account::AuthMethod::OAuth { .. } => {
+                secret.is_some_and(|s| s.refresh_token.is_some())
+            }
+            jatayu_core::account::AuthMethod::Password { .. } => has_password,
+        };
+        Self { account, has_password, signed_in }
+    }
+}
+
+/// One provider's label and preset, for the add-account picker.
+///
+/// Named `MailProviderInfo` rather than plain `ProviderInfo` -- the calendar
+/// domain already has one of those, for its own, unrelated, four-provider
+/// picker -- so the two do not collide on the wire, where every type name is
+/// global.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailProviderInfo {
+    pub provider: Provider,
+    pub label: &'static str,
+    #[serde(flatten)]
+    pub preset: Preset,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRef {
+    pub id: AccountId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAccount {
+    pub account: Account,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAccountPassword {
+    pub id: AccountId,
+    pub password: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachOAuthSignIn {
+    pub id: AccountId,
+    /// What `await_oauth_sign_in` answered with.
+    pub sign_in_id: String,
+    /// Google's "desktop" clients have one and must present it on every
+    /// refresh; Microsoft's public clients do not. Given again here rather
+    /// than remembered from `begin_oauth_sign_in`, so the sign-in flow never
+    /// has to outlive the moment it hands its tokens over.
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    /// The scopes the sign-in asked for, recorded on the account once it
+    /// succeeds -- what tells "signed in to read calendars" apart from
+    /// "signed in to write them" afterwards. Empty leaves them as they were.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAgentAccess {
+    pub id: AccountId,
+    pub caller: AgentCaller,
+    pub access: AgentMailAccess,
+}
+
+async fn list_accounts(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<Vec<AccountView>> {
+    let vault = svc.require()?;
+    blocking(move || {
+        let mut out = Vec::new();
+        for account in vault.accounts()? {
+            let secret = vault.account_secret(account.id)?;
+            out.push(AccountView::new(account, secret.as_ref()));
+        }
+        Ok(out)
+    })
+    .await
+}
+
+async fn get_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandResult<AccountView> {
+    let vault = svc.require()?;
+    blocking(move || {
+        let account = vault.account(args.id)?;
+        let secret = vault.account_secret(account.id)?;
+        Ok(AccountView::new(account, secret.as_ref()))
+    })
+    .await
+}
+
+/// Save `args.account`, then start or stop its sync task to match
+/// `services.mail` immediately -- not on the next unlock. Covers every way
+/// this field can change: switching mail on or off, and any other edit,
+/// since `ensure_account_task`/`stop_account_task` are idempotent on a task
+/// that is already in the state asked for.
+///
+/// A task that was already running is nudged as well. It re-reads the
+/// account's sync interval at the top of every wait, but a wait already in
+/// progress was started under the old one: without the nudge, shortening an
+/// hourly interval to a minute would still sit out the rest of the hour
+/// before the new setting did anything at all.
+///
+/// Where an existing account's credential is sent is not a thing a paired
+/// device or a browser session may change -- see [`retargets_credential`].
+async fn save_account(svc: Arc<Service>, ctx: Ctx, args: SaveAccount) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let mut account = args.account;
+    let account_id = account.id;
+    let mail_on = account.services.mail;
+    let now = svc.now();
+    let local = ctx.is_local();
+    let (signatures_changed, reconnect) = blocking({
+        let vault = vault.clone();
+        move || {
+            check_acknowledgement(&vault, &account)?;
+            for endpoint in [&mut account.imap, &mut account.smtp] {
+                endpoint.host = endpoint.host.trim().to_string();
+            }
+            if let jatayu_core::account::AuthMethod::Password { username } = &mut account.auth {
+                *username = username.trim().to_string();
+            }
+            let stored = vault.account(account_id).ok();
+            if !local && stored.as_ref().is_some_and(|old| retargets_credential(old, &account)) {
+                return Err(CommandError::new(codes::FORBIDDEN, SERVERS_ARE_LOCAL));
+            }
+            check_servers(&account, stored.as_ref())?;
+            account.check_signatures(stored.as_ref())?;
+            let changed =
+                stored.as_ref().is_some_and(|old| !old.signatures().eq(account.signatures()));
+            let reconnect = stored.as_ref().is_some_and(|old| {
+                old.imap != account.imap
+                    || old.smtp != account.smtp
+                    || old.caldav != account.caldav
+                    || old.auth != account.auth
+            });
+            if reconnect {
+                // Whatever was refused was refused with the old settings.
+                account.status = AccountStatus::Ok;
+                account.updated_at = now;
+            }
+            vault.save_account(&account)?;
+            Ok((changed, reconnect))
+        }
+    })
+    .await?;
+    // Suggestions are written around the signature, and what was measured of
+    // this account's writing may have it in as their sign-off.
+    if signatures_changed {
+        svc.mail_voice_cache_forget(account_id);
+        svc.mail_replies_cache_clear();
+    }
+    if mail_on {
+        // A running task holds the settings it started with -- and its
+        // sender the old outgoing server -- so new ones mean a new task.
+        if reconnect {
+            crate::mail::sync::wiring::stop_account_task(&svc, account_id).await;
+            // With no task left to be mid-send, sends waiting out a retry's
+            // backoff go at once: what they failed with is gone.
+            let vault = vault.clone();
+            blocking(move || Ok(vault.retry_sends_now(account_id, now)?)).await?;
+        }
+        crate::mail::sync::wiring::ensure_account_task(&svc, &vault, account_id);
+        if let Some(statuses) = svc.mail_statuses() {
+            statuses.nudge(account_id);
+        }
+    } else {
+        crate::mail::sync::wiring::stop_account_task(&svc, account_id).await;
+    }
+    Ok(())
+}
+
+const SERVERS_ARE_LOCAL: &str = "the servers an account signs in to can be changed only from \
+    the computer that holds the vault: from anywhere else the stored password or sign-in \
+    would be sent to whatever address was typed. Change it there";
+
+/// The address a sign-in is begun at and exchanged with, for an OAuth
+/// account; nothing for a password one, which has no such address.
+fn oauth_endpoints(auth: &AuthMethod) -> Option<(&str, &str)> {
+    match auth {
+        AuthMethod::OAuth { auth_url, token_url, .. } => Some((auth_url, token_url)),
+        AuthMethod::Password { .. } => None,
+    }
+}
+
+/// Does saving `new` over `old` change where `old`'s stored credential is
+/// sent?
+///
+/// The sealed password or refresh token is sent by the sync task to whatever
+/// the record says: the IMAP and SMTP host and port, the CalDAV address, and
+/// -- for an OAuth account -- the token endpoint its refresh token is
+/// presented at. `Scope::Accounts` is held by every paired device and every
+/// web-access session, and `save_account` takes the whole record, so without
+/// this a device that was only ever meant to tick a switch could point an
+/// account at a server of its own, wait for the next sync, and be handed the
+/// credential -- one that outlives revoking the device, because it is the
+/// mailbox's and not the device's.
+///
+/// Only a change to an account that exists counts. A new account has no
+/// credential yet; it is the person at the keyboard typing one in. And only
+/// where the credential goes: the sync interval, the signature, the
+/// switches and a changed client id do not move it.
+fn retargets_credential(old: &Account, new: &Account) -> bool {
+    old.imap.host != new.imap.host
+        || old.imap.port != new.imap.port
+        || old.smtp.host != new.smtp.host
+        || old.smtp.port != new.smtp.port
+        || old.caldav != new.caldav
+        || oauth_endpoints(&old.auth) != oauth_endpoints(&new.auth)
+}
+
+/// A server this save changes needs a host and a port. `save_account` trims
+/// hosts first, so a stray space pasted with one is not refused. One left as
+/// it was is not judged here: a Custom account starts with blank ones.
+fn check_servers(account: &Account, stored: Option<&Account>) -> jatayu_core::Result<()> {
+    for (what, endpoint, before) in [
+        ("incoming", &account.imap, stored.map(|s| &s.imap)),
+        ("outgoing", &account.smtp, stored.map(|s| &s.smtp)),
+    ] {
+        if before.is_none_or(|b| b == endpoint) {
+            continue;
+        }
+        let host = endpoint.host.trim();
+        if host.is_empty() || host.contains(char::is_whitespace) || endpoint.port == 0 {
+            return Err(jatayu_core::Error::Invalid(format!(
+                "the {what} server needs a host name and a port"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Connect to the account's outgoing server and sign in, sending nothing:
+/// `Ok` or the server's own words. A send that keeps failing names why only
+/// after it has been tried; this asks now.
+///
+/// A write, not a read, though it changes no record a person sees: it signs
+/// in to somebody's mail server with their credential on demand, and for an
+/// OAuth account resolving that credential can rotate and store a refresh
+/// token.
+async fn check_sending(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let account = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.account(args.id)?)
+    })
+    .await?;
+    let sender = crate::mail::sync::sender::LazySmtpSender::new(account, svc.clone(), vault);
+    sender.check().await.map_err(|e| CommandError::new(codes::INVALID, e.to_string()))
+}
+
+/// Refuse an assistant acknowledgement this save gives that does not name
+/// the model endpoints configured right now.
+///
+/// The mail gate offers the assistant an account's mail only when
+/// [`Account::assistant_provider_acknowledged`] equals
+/// `ModelSettings::acknowledgement_name` exactly, and the interface writes
+/// that string itself -- taken from `model_settings`'s own answer, now, so
+/// the two are made in one place. It used to write the provider's display name
+/// instead -- "OpenAI" where the gate compared `https://api.openai.com/v1` --
+/// so every acknowledgement anybody gave was stored, shown ticked, and
+/// silently matched nothing: the assistant was never offered mail at all.
+/// Refusing here turns any such disagreement into an error at the moment of
+/// ticking, where somebody can see it. It also catches a form opened before
+/// the provider changed, whose tick would otherwise name a provider nobody
+/// is talking to any more.
+///
+/// Only an acknowledgement this save *gives*: one already stored, saved
+/// back unchanged alongside some other edit, is left to the gate to judge,
+/// so changing an account's sync interval is never refused over it.
+fn check_acknowledgement(
+    vault: &jatayu_core::vault::Vault,
+    account: &Account,
+) -> jatayu_core::Result<()> {
+    let Some(given) = account.assistant_provider_acknowledged.as_deref() else {
+        return Ok(());
+    };
+    let stored = vault.account(account.id).ok().and_then(|a| a.assistant_provider_acknowledged);
+    if stored.as_deref() == Some(given) {
+        return Ok(());
+    }
+    let current = vault.model_settings()?.acknowledgement_name();
+    if given == current {
+        return Ok(());
+    }
+    Err(jatayu_core::Error::Invalid(format!(
+        "the models are now at {current}, not {given}: open the account again and tick the \
+         box for the assistant's provider once more"
+    )))
+}
+
+/// Delete the account: stop its sync task first (a task still writing
+/// through `Vault::delete_account`'s own cascade partway through it is
+/// exactly the ordering `Service::close`'s own docs rule out), delete its
+/// local pack files and search index documents, then the vault's own rows.
+async fn delete_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandResult<()> {
+    crate::mail::sync::wiring::stop_account_task(&svc, args.id).await;
+    if let Some(packs) = svc.packs() {
+        // Best-effort: a pack store that fails to delete leaves orphaned
+        // files behind, not a wrong answer to any command -- the vault's
+        // own rows, deleted next, are what every reader actually trusts.
+        let _ = packs.delete_account(&args.id.to_string());
+    }
+    if let Some(index) = svc.mail_index() {
+        // Same best-effort reasoning as the pack store above: a search hit
+        // surviving a failed delete is a stale result, not a wrong answer
+        // any command trusts the index over the vault's own rows for.
+        let _ = index.delete_account(&args.id.to_string());
+        let _ = index.commit();
+    }
+    svc.on_vault(move |vault| vault.delete_account(args.id)).await
+}
+
+/// Every well-known provider's preset, for the add-account sheet to draw
+/// before anybody has typed an address. Pure data; needs an open vault only
+/// so this cannot be called from the lock screen, the same gate `new_area`
+/// and every other minting command sits behind.
+async fn account_presets(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<Vec<MailProviderInfo>> {
+    let _ = svc.require()?;
+    Ok(Provider::ALL
+        .into_iter()
+        .map(|provider| MailProviderInfo {
+            provider,
+            label: provider.label(),
+            preset: provider.preset(),
+        })
+        .collect())
+}
+
+/// Store a password secret for an account authenticated by one.
+///
+/// Reads whatever secret is already there -- an OAuth account passing
+/// through here would be unusual but is not refused, since a client secret
+/// can already share the row -- and replaces only the password field, so a
+/// refresh token or client secret saved alongside it is not clobbered.
+async fn save_account_password(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SaveAccountPassword,
+) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let now = svc.now();
+    let account = blocking({
+        let vault = vault.clone();
+        move || {
+            let mut account = vault.account(args.id)?;
+            let mut secret = vault.account_secret(args.id)?.unwrap_or_default();
+            secret.password = Some(args.password);
+            vault.save_account_secret(args.id, &secret)?;
+            // A credential is now stored, which is what `Ok` means for a
+            // freshly signed-in OAuth account too (`attach_oauth_sign_in`),
+            // before anything has synced. The first sync that is refused
+            // moves it back.
+            account.status = AccountStatus::Ok;
+            account.updated_at = now;
+            vault.save_account(&account)?;
+            Ok(account)
+        }
+    })
+    .await?;
+    // A working credential just landed -- start syncing now rather than
+    // waiting for the next unlock, the same immediacy `save_account` gives
+    // switching `services.mail` on. Idempotent either way: a task already
+    // running is left alone.
+    if account.services.mail {
+        crate::mail::sync::wiring::ensure_account_task(&svc, &vault, account.id);
+    }
+    Ok(())
+}
+
+/// Move a finished sign-in's tokens onto an account, sealed.
+///
+/// `claim_tokens` removes them from memory as it hands them over, so a second
+/// call with the same `sign_in_id` finds nothing and says so -- the tokens
+/// live in exactly one place at any moment, and after this that place is the
+/// vault. A refresh token already stored is kept when the provider did not
+/// send a new one, which is how a second sign-in to the same account behaves
+/// with providers that only issue a refresh token on first consent.
+async fn attach_oauth_sign_in(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: AttachOAuthSignIn,
+) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let tokens = svc.sign_ins().claim_tokens(&args.sign_in_id).ok_or_else(|| {
+        CommandError::new(codes::NOT_FOUND, "that sign-in has no tokens waiting to be saved")
+    })?;
+    let now = svc.now();
+    let fresh_refresh_token = tokens.refresh_token.is_some();
+    let account = blocking({
+        let vault = vault.clone();
+        move || {
+            let mut account = vault.account(args.id)?;
+            let mut secret = vault.account_secret(args.id)?.unwrap_or_default();
+            if tokens.refresh_token.is_some() {
+                secret.refresh_token = tokens.refresh_token.clone();
+            }
+            secret.access_token = Some((tokens.access_token.clone(), tokens.expires_at));
+            if args.client_secret.is_some() {
+                secret.client_secret = args.client_secret;
+            }
+            vault.save_account_secret(args.id, &secret)?;
+            // A fresh consent is the only moment the account's grant can
+            // have widened -- "sign in again to allow calendar access" asks
+            // for more than the account had -- so this is where the record
+            // learns it. See `record_granted_scopes` for why Google's own
+            // answer is believed over what was asked for.
+            account.record_granted_scopes(&args.scopes, tokens.scope.as_deref());
+            account.status = AccountStatus::Ok;
+            account.updated_at = now;
+            vault.save_account(&account)?;
+            Ok(account)
+        }
+    })
+    .await?;
+    // A fresh consent that brought its own refresh token supersedes any
+    // rotation an earlier refresh could not save: the vault now holds the
+    // new one, and a pending one would otherwise be presented in its place.
+    // One that brought none (a re-consent often does not) left the stored
+    // token as it was, so a pending rotation of it is still the live one.
+    if fresh_refresh_token {
+        svc.token_cache().clear_pending_refresh_token(&account.id.to_string());
+    }
+    // See `save_account_password`'s own comment: a working credential just
+    // landed, so this is the other moment a task should start immediately
+    // rather than wait for the next unlock.
+    if account.services.mail {
+        crate::mail::sync::wiring::ensure_account_task(&svc, &vault, account.id);
+    }
+    Ok(())
+}
+
+/// Flip one caller's switches on one account.
+async fn set_agent_access(svc: Arc<Service>, _ctx: Ctx, args: SetAgentAccess) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let now = svc.now();
+    blocking(move || {
+        let mut account = vault.account(args.id)?;
+        match args.caller {
+            AgentCaller::Assistant => account.assistant_access = args.access,
+            AgentCaller::Mcp => account.mcp_access = args.access,
+        }
+        account.updated_at = now;
+        Ok(vault.save_account(&account)?)
+    })
+    .await
+}
+
+pub static COMMANDS: &[crate::command::Command] = &[
+    command! {
+        name: "list_accounts", scope: Accounts, effect: Read,
+        args: Nothing, returns: "AccountView[]", signature: &[],
+        run: list_accounts,
+    },
+    command! {
+        name: "get_account", scope: Accounts, effect: Read,
+        args: AccountRef, returns: "AccountView",
+        signature: &[("id", "AccountId", true)],
+        run: get_account,
+    },
+    command! {
+        name: "save_account", scope: Accounts, effect: Write,
+        change: Account / Updated,
+        id: |a: &SaveAccount| Some(a.account.id.to_string()),
+        args: SaveAccount, returns: "void",
+        signature: &[("account", "Account", true)],
+        run: save_account,
+    },
+    command! {
+        name: "delete_account", scope: Accounts, effect: Destructive,
+        change: Account / Deleted,
+        id: |a: &AccountRef| Some(a.id.to_string()),
+        args: AccountRef, returns: "void",
+        signature: &[("id", "AccountId", true)],
+        run: delete_account,
+    },
+    command! {
+        name: "account_presets", scope: Accounts, effect: Read,
+        args: Nothing, returns: "MailProviderInfo[]", signature: &[],
+        run: account_presets,
+    },
+    command! {
+        name: "check_sending", scope: Accounts, effect: Write,
+        args: AccountRef, returns: "void",
+        signature: &[("id", "AccountId", true)],
+        run: check_sending,
+    },
+    command! {
+        name: "save_account_password", scope: Accounts, effect: Write,
+        change: Account / Updated,
+        id: |a: &SaveAccountPassword| Some(a.id.to_string()),
+        args: SaveAccountPassword, returns: "void",
+        signature: &[("id", "AccountId", true), ("password", "string", true)],
+        run: save_account_password,
+    },
+    command! {
+        name: "attach_oauth_sign_in", scope: Accounts, effect: Write,
+        change: Account / Updated,
+        id: |a: &AttachOAuthSignIn| Some(a.id.to_string()),
+        args: AttachOAuthSignIn, returns: "void",
+        signature: &[
+            ("id", "AccountId", true),
+            ("signInId", "string", true),
+            ("clientSecret", "string", false),
+            ("scopes", "string[]", false),
+        ],
+        run: attach_oauth_sign_in,
+    },
+    command! {
+        name: "set_agent_access", scope: Accounts, effect: Write,
+        change: Account / Updated,
+        id: |a: &SetAgentAccess| Some(a.id.to_string()),
+        args: SetAgentAccess, returns: "void",
+        signature: &[
+            ("id", "AccountId", true),
+            ("caller", "AgentCallerKind", true),
+            ("access", "AgentMailAccess", true),
+        ],
+        run: set_agent_access,
+    },
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::Caller;
+    use crate::ctx::Scope;
+    use jatayu_core::account::Endpoint;
+    use serde_json::json;
+
+    fn password_account() -> Account {
+        let mut account = Account::new(Provider::Custom, "me@example.com");
+        account.imap = Endpoint::tls("imap.example.com", 993);
+        account.smtp = Endpoint::tls("smtp.example.com", 465);
+        account.caldav = Some("https://dav.example.com/".into());
+        account.services.mail = false;
+        account
+    }
+
+    fn oauth_account() -> Account {
+        let mut account = password_account();
+        account.auth = AuthMethod::OAuth {
+            client_id: "client".into(),
+            auth_url: "https://accounts.example.com/auth".into(),
+            token_url: "https://accounts.example.com/token".into(),
+            scopes: vec!["mail".into()],
+        };
+        account
+    }
+
+    #[test]
+    fn what_moves_a_credential_is_the_servers_and_not_the_settings() {
+        let old = oauth_account();
+
+        let mut same = old.clone();
+        same.sync_minutes = Some(5);
+        same.signature_html = "<p>Thanks</p>".into();
+        same.display_name = "Me".into();
+        same.services.mail = true;
+        same.imap.security = jatayu_core::account::EndpointSecurity::StartTls;
+        if let AuthMethod::OAuth { client_id, scopes, .. } = &mut same.auth {
+            *client_id = "another client".into();
+            scopes.push("calendar".into());
+        }
+        assert!(!retargets_credential(&old, &same));
+
+        type Edit = fn(&mut Account);
+        let moves: [(&str, Edit); 7] = [
+            ("imap host", |a| a.imap.host = "imap.evil.example".into()),
+            ("imap port", |a| a.imap.port = 143),
+            ("smtp host", |a| a.smtp.host = "smtp.evil.example".into()),
+            ("smtp port", |a| a.smtp.port = 25),
+            ("caldav address", |a| a.caldav = Some("https://evil.example/".into())),
+            ("caldav removed", |a| a.caldav = None),
+            ("token endpoint", |a| {
+                if let AuthMethod::OAuth { token_url, .. } = &mut a.auth {
+                    *token_url = "https://evil.example/token".into();
+                }
+            }),
+        ];
+        for (what, edit) in moves {
+            let mut moved = old.clone();
+            edit(&mut moved);
+            assert!(retargets_credential(&old, &moved), "{what}");
+        }
+
+        let mut auth_url = old.clone();
+        if let AuthMethod::OAuth { auth_url: url, .. } = &mut auth_url.auth {
+            *url = "https://evil.example/auth".into();
+        }
+        assert!(retargets_credential(&old, &auth_url), "auth endpoint");
+
+        // A password account made into an OAuth one names a token endpoint
+        // where it had none, and the other way round drops one.
+        let password = password_account();
+        let mut oauth = password.clone();
+        oauth.auth = oauth_account().auth;
+        assert!(retargets_credential(&password, &oauth));
+        assert!(retargets_credential(&oauth, &password));
+    }
+
+    fn device() -> Ctx {
+        Ctx {
+            caller: Caller::Device("phone".into()),
+            scopes: vec![Scope::Accounts],
+            proved_at: None,
+            request_id: None,
+        }
+    }
+
+    fn service() -> (Arc<Service>, Arc<jatayu_core::Vault>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = jatayu_vault::create(dir.path(), jatayu_core::VaultConfig::default()).unwrap();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        (svc, vault, dir)
+    }
+
+    async fn save(svc: &Arc<Service>, ctx: Ctx, account: &Account) -> CommandResult<()> {
+        svc.call(ctx, "save_account", json!({ "account": account })).await.map(|_| ())
+    }
+
+    /// The whole command, from each kind of caller: a device or a browser
+    /// session that edits only settings is saved; the same one pointing the
+    /// account at a server of its own is refused and the record is as it
+    /// was; the window on the vault's own computer may.
+    #[tokio::test]
+    async fn only_the_computer_holding_the_vault_may_point_an_account_at_another_server() {
+        let (svc, vault, _dir) = service();
+        let account = password_account();
+        vault.save_account(&account).unwrap();
+        vault
+            .save_account_secret(
+                account.id,
+                &AccountSecret { password: Some("hunter2".into()), ..Default::default() },
+            )
+            .unwrap();
+
+        let mut tidied = account.clone();
+        tidied.sync_minutes = Some(30);
+        save(&svc, device(), &tidied).await.unwrap();
+        assert_eq!(vault.account(account.id).unwrap().sync_minutes, Some(30));
+
+        let web = Ctx {
+            caller: Caller::Device("web:session".into()),
+            scopes: vec![Scope::All],
+            proved_at: None,
+            request_id: None,
+        };
+        type Edit = fn(&mut Account);
+        let attacks: [(&str, Edit); 3] = [
+            ("imap", |a| a.imap.host = "imap.evil.example".into()),
+            ("smtp", |a| a.smtp.port = 25),
+            ("caldav", |a| a.caldav = Some("https://evil.example/".into())),
+        ];
+        for (what, edit) in attacks {
+            for caller in [device(), web.clone(), Ctx { caller: Caller::Socket, ..Ctx::local() }] {
+                let mut moved = tidied.clone();
+                edit(&mut moved);
+                let refused = save(&svc, caller.clone(), &moved).await.unwrap_err();
+                assert_eq!(refused.code, codes::FORBIDDEN, "{what} from {:?}", caller.caller);
+                assert!(refused.message.contains("computer that holds the vault"), "{refused}");
+                let kept = vault.account(account.id).unwrap();
+                assert_eq!(
+                    (&kept.imap, &kept.smtp, &kept.caldav),
+                    (&tidied.imap, &tidied.smtp, &tidied.caldav),
+                    "{what} was saved"
+                );
+            }
+        }
+
+        let mut moved = tidied.clone();
+        moved.imap.host = "imap.new-host.example".into();
+        for caller in [Ctx::local(), Ctx::window("app-mail")] {
+            save(&svc, caller, &moved).await.unwrap();
+        }
+        assert_eq!(vault.account(account.id).unwrap().imap.host, "imap.new-host.example");
+    }
+
+    #[tokio::test]
+    async fn a_device_may_add_an_account_it_gives_the_servers_for() {
+        let (svc, vault, _dir) = service();
+        let account = password_account();
+        save(&svc, device(), &account).await.unwrap();
+        assert_eq!(vault.account(account.id).unwrap().imap.host, "imap.example.com");
+    }
+}
