@@ -73,7 +73,7 @@
   import ContextMenu from './components/ContextMenu.svelte'
   import ChoiceDialog from './components/ChoiceDialog.svelte'
   import ChatPanel from './components/ChatPanel.svelte'
-  import Icon from './components/Icon.svelte'
+  import Symbol from './components/Symbol.svelte'
   import MeetingOfferBanner from './components/MeetingOfferBanner.svelte'
   import PlayerHost from './components/PlayerHost.svelte'
   import SettingsView from './components/SettingsView.svelte'
@@ -639,7 +639,9 @@
             title="Assistant ({keysLabel(hintFor('assistant:open') ?? 'a', appleKeyboard)})"
             aria-label="Open the assistant"
           >
-            <Icon name="sparkle" size={20} weight={1.7} />
+            <!-- The assistant is Jatayu: its wing, filled, reads at this size where
+                 the line drawing reads as a leaf. -->
+            <Symbol name="wing" size={22} />
           </button>
         {/if}
       </div>

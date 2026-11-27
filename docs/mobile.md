@@ -275,6 +275,26 @@ Not yet known, or not done:
   deeper screens on their side are untested (the journal with its month
   unfolded leaves little room for the list).
 
+## Icons
+
+Every icon comes from the SVGs in `crates/jatayu-app/icons/` and `make icons`
+(see the Makefile for what goes where). For the phones:
+
+- **Android** has an adaptive icon in three layers, named in `icons.json`:
+  `icon-android-background.svg` (the midnight, filling the 108dp canvas),
+  `icon-android-foreground.svg` (the wing alone, inside the 66dp circle no
+  launcher's mask cuts into) and `icon-android-monochrome.svg` (the wing as
+  one flat shape, which Android 13 tints for themed icons). The legacy
+  square and round icons are made from the same layers. Android 12's splash
+  screen draws the launcher icon on `@color/jatayu_midnight`
+  (`res/values-v31` and `values-night-v31`).
+- **iOS** is above, under iOS.
+- **The web version** (over the tailnet) has `ui/public/`: `icon-192.png`
+  and `icon-512.png` come from `make icons`; `favicon.ico` is the 48px
+  render saved at 16, 32 and 48, and `apple-touch-icon.png` (180px) and
+  `icon-maskable-512.png` are `icon-ios.svg` flattened onto `#161a4d`, made
+  once by hand the way the iOS set is.
+
 ## Voice
 
 Talking to the assistant on the phone is the desktop's own voice transport
@@ -353,8 +373,10 @@ What is the iPhone's own:
   has finished sliding in; iOS scrolls the field into sight itself.
 - **Long press**: WKWebView fires no `contextmenu`, so `lib/longpress.ts`
   raises one from a half-second hold.
-- **The icon** is the tile alone, flattened onto the sky's blue (iOS draws the
-  corners; the App Store refuses alpha). `make icons` makes it, on a Mac.
+- **The icon** is `icons/icon-ios.svg`, the tile alone and full bleed,
+  flattened onto its midnight (iOS draws the corners; the App Store refuses
+  alpha). `make icons` makes it, on a Mac. The launch screen is the same
+  midnight.
 
 ### Building and running in the simulator
 

@@ -1,12 +1,13 @@
 <script lang="ts">
   // What is happening right now, as a pill with a sign that lives the way the
-  // mode does -- bars moving with a voice while listening, dots while a
-  // thought is on its way, a wave while speaking, the red dot of a recording,
+  // mode does -- bars moving with a voice while listening, the wing
+  // breathing while a thought is on its way, a wave while speaking, the red dot of a recording,
   // a slow ripple while waiting for the person -- and under it the tool at
   // work, with the symbol of the app it touches: the mail symbol and
   // "Searching your mail…". The motion is CSS on transform and opacity, and
   // stops under reduced motion, where the word alone says it.
   import Symbol from '../../components/Symbol.svelte'
+  import WingPulse from '../../components/WingPulse.svelte'
   import Glyph from '../Glyph.svelte'
   import { modeLook, toolLook } from '../cards'
   import type { PanelBlock } from '../panel'
@@ -25,7 +26,7 @@
       {:else if look.motion === 'wave'}
         <i></i><i></i><i></i><i></i><i></i>
       {:else if look.motion === 'dots'}
-        <span class="pc-dots"><i></i><i></i><i></i></span>
+        <WingPulse size={16} />
       {:else if look.motion === 'rec' || look.motion === 'pulse'}
         <span class="dot"></span>
       {:else if look.glyph}

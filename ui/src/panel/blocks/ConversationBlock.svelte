@@ -7,6 +7,7 @@
   // which it is. The newest is at the bottom, and a screen reader hears each
   // as it comes.
   import Symbol from '../../components/Symbol.svelte'
+  import WingPulse from '../../components/WingPulse.svelte'
   import Glyph from '../Glyph.svelte'
   import { lastTurns, showsName } from '../cards'
   import type { PanelBlock } from '../panel'
@@ -30,13 +31,13 @@
       <li class="assistant" class:named>
         {#if named}
           <span class="who pc-ink" style:--ink="var(--app-assistant)">
-            <Symbol name="sparkle" size={12} />
+            <Symbol name="wing" size={12} />
             {turn.name ?? 'Assistant'}
           </span>
         {/if}
         <p class="said">
           {#if turn.text.trim() === ''}
-            <span class="pc-dots" role="img" aria-label="Writing"><i></i><i></i><i></i></span>
+            <span class="writing" role="img" aria-label="Writing"><WingPulse size={16} /></span>
           {:else}
             {turn.text}{#if turn.pending}<span class="pc-caret" aria-hidden="true"></span>{/if}
           {/if}
@@ -109,8 +110,9 @@
     white-space: pre-wrap;
   }
 
-  .said .pc-dots {
-    color: var(--fg-subtle);
+  .said .writing {
+    display: inline-flex;
+    vertical-align: middle;
   }
 
   /* Heard, or typed elsewhere: the earlier lines quieter, the newest in ink. */

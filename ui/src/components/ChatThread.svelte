@@ -60,6 +60,7 @@
   import JobCard from './JobCard.svelte'
   import ToolCardView from './ToolCard.svelte'
   import VoiceBar from './VoiceBar.svelte'
+  import WingPulse from './WingPulse.svelte'
 
   let {
     variant,
@@ -1163,7 +1164,7 @@
               <!-- Always the last thing in a running turn, whatever else it
                    has drawn: this is the line that says it is still going. -->
               <div class="status" role="status" aria-live="polite">
-                <span class="pulse" aria-hidden="true"><i></i><i></i><i></i></span>
+                <WingPulse size={18} />
                 <span class="doing">{status}…</span>
                 {#if turn.startedAt !== null}
                   <span class="clock">{elapsed(now - turn.startedAt)}</span>
@@ -1813,35 +1814,7 @@
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
   }
-  .pulse {
-    display: flex;
-    flex: none;
-    gap: 3px;
-  }
-  .pulse i {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--accent);
-    animation: blink 1.2s ease-in-out infinite;
-  }
-  .pulse i:nth-child(2) {
-    animation-delay: 0.15s;
-  }
-  .pulse i:nth-child(3) {
-    animation-delay: 0.3s;
-  }
-  @keyframes blink {
-    0%,
-    100% {
-      opacity: 0.25;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
   @media (prefers-reduced-motion: reduce) {
-    .pulse i,
     .spin {
       animation: none;
       opacity: 0.6;

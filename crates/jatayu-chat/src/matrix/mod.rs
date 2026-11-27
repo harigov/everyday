@@ -23,6 +23,7 @@
 //! - `rules` and `errors`: the decisions that need no network, so they
 //!   can be tested without a server.
 
+mod avatar;
 mod devices;
 mod errors;
 mod hearing;
@@ -118,6 +119,7 @@ impl MatrixConnector {
             format!("Signed in as {bot}. Setting up encryption\u{2026}"),
         );
         let encryption_problem = identity::set_up(&client, &bot, &mut secret).await;
+        avatar::give_if_missing(&client);
 
         // One write for everything that changed: the new session, the recovery
         // key if one was made, and the password gone -- it has done its job,

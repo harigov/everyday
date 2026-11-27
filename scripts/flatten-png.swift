@@ -1,6 +1,6 @@
 // Composite PNGs onto one colour and write them back with no alpha channel.
 //
-//   swift scripts/flatten-png.swift '#1a7cf5' icon1.png icon2.png ...
+//   swift scripts/flatten-png.swift '#161a4d' icon1.png icon2.png ...
 //
 // For the iOS app icon (`make icons`): iOS draws its own rounded corners
 // over a square, and the App Store refuses an icon with an alpha channel.

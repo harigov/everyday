@@ -83,6 +83,7 @@ oldest dropped first) and is gone when the browser quits.
 | `options.html`, `options.js`, `options.css` | Connect, status, disconnect.                                                                                               |
 | `popup.html`, `popup.js`                    | What is being counted right now.                                                                                           |
 | `ui.js`                                     | What the options page and the popup share.                                                                                 |
+| `icons/`                                    | The Jatayu mark at 16, 32, 48 and 128 px, made from the app's icon by `make icons`.                                        |
 | `test/lib.test.mjs`                         | Tests for `lib.js`: `node --test extensions/browser/test/lib.test.mjs`.                                                    |
 | `package.json`                              | Not a package: only tells node to load `lib.js` as a script.                                                               |
 

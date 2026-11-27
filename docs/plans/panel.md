@@ -369,7 +369,7 @@ times, the recording card switch, and "Put the panel back in its corner"
 
 ## Owners and their cards
 
-Every card shows the app's mark (the Konark wheel) and the kind's app symbol;
+Every card shows the app's mark (Jatayu's wing) and the kind's app symbol;
 ids and actions below are the contract between the owner and the page only
 through the generic blocks -- the page has no per-owner code.
 

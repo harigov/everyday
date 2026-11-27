@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { BOX, FEATHERS, GOLD, MARK, along } from '../lib/wing'
+
   let {
     size = 20,
     tile = false,
@@ -19,174 +21,84 @@
     'c-3.02 0-4.54 0-5.69-.59a5.4 5.4 0 0 1-2.36-2.36c-.59-1.16-.59-2.67-.59-5.69L0 8.64' +
     'c0-3.02 0-4.54.59-5.69a5.4 5.4 0 0 1 2.36-2.36c1.16-.59 2.67-.59 5.69-.59Z'
 
-  // A point `r` out from the wheel's centre, `angle` degrees clockwise from
-  // straight up.
-  const at = (angle: number, r: number) => {
-    const a = (angle * Math.PI) / 180
-    return { x: r * Math.sin(a), y: -r * Math.cos(a) }
-  }
+  // Back feather first, so the long one in front is drawn last.
+  const STACK = FEATHERS.map((d, i) => ({
+    d,
+    i,
+    fill: along(GOLD, i / (FEATHERS.length - 1)),
+  })).reverse()
 
-  // Four lines through the centre make the eight spokes, stopping at the
-  // glass; eight amber rays float between them.
-  const SPOKES = [0, 45, 90, 135].map((angle) => ({
-    angle,
-    from: at(angle, -8.5),
-    to: at(angle, 8.5),
-  }))
-  const RAYS = Array.from({ length: 8 }, (_, k) => {
-    const angle = 22.5 + k * 45
-    return { angle, from: at(angle, 4.77), to: at(angle, 7.19) }
-  })
+  // Bare, the wing fills the box with a hair of room; on the tile it keeps
+  // the icon's place, which the feather data is already drawn in.
+  const side = Math.max(BOX.width, BOX.height) * 1.04
+  const fit = `translate(12 12) scale(${24 / side}) translate(${-(BOX.x + BOX.width / 2)} ${-(BOX.y + BOX.height / 2)})`
 
-  // The bezel's marks are dashes along the rim's middle, radius 9.75. A
-  // circle's stroke starts at three o'clock, an hour mark, and half a dash of
-  // offset centres each mark on its hour.
-  const RIM = 9.75
-  const around = 2 * Math.PI * RIM
-  const HOURS = `0.32 ${around / 24 - 0.32}`
-  const BETWEEN = `0.13 ${around / 72 - 0.13}`
-
-  // The wheel is drawn 11 in radius. On the tile it keeps the icon's
-  // proportion, 300 of an 824 tile; bare, it fills the box. The fine marks
-  // and the glass's lit edges only show from 40px up.
-  const scale = $derived(tile ? 8.74 / 11 : 1)
-  const fine = $derived(size >= 40)
+  // Under about 32px the nine feathers merge into a smudge, and one flat
+  // shape with channels between them reads better.
+  const fine = $derived(size >= 32)
 </script>
 
 <!--
-  The same Konark wheel as the application icon
-  (crates/jatayu-app/icons/icon.svg), redrawn on a 24-unit grid: a rim of
-  frosted glass ruled with the hours, slim ice-white spokes, and the sun
-  with its amber rays. It is not a scaled-down copy: at 18px the icon's
-  spokes and rays thin to nothing and its shadows are a smudge, so here they
-  are a little heavier and there are no shadows.
+  Jatayu's wing, the application icon (crates/jatayu-app/icons/icon.svg),
+  drawn from the same geometry (src/lib/wing.ts) on a 24-unit grid. On the
+  tile: the midnight squircle with its sheen and a warm glow, and the nine
+  feathers stepping from pale gold to deep orange -- or, at the top bar's
+  18px, the one flat shape in gold, since nine fills that small are a blur.
+  The icon's shadows and lit edges are left out; at these sizes they are a
+  smudge.
 
-  Bare, in currentColor, the glass is the ink at low strength with the hour
-  marks at full strength on it, the rays are softer than the spokes, and a
-  groove round the hub keeps it from reading as a plain dot.
+  Bare, in currentColor: the feathers in steps of the ink's strength, front
+  strongest, or the flat shape when small.
 -->
 <svg
   class="logo"
   width={size}
   height={size}
   viewBox="0 0 24 24"
-  fill="none"
   aria-hidden="true"
   focusable="false"
 >
-  <defs>
-    {#if tile}
-      <linearGradient id="sky-{uid}" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#3fd2ff" />
-        <stop offset=".55" stop-color="#1a7cf5" />
-        <stop offset="1" stop-color="#0b4fd6" />
+  {#if tile}
+    <defs>
+      <linearGradient id="night-{uid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#2a2f7a" />
+        <stop offset=".5" stop-color="#161a4d" />
+        <stop offset="1" stop-color="#080a26" />
       </linearGradient>
-      <radialGradient id="sheen-{uid}" cx="12" cy="1.1" r="16.3" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#fff" stop-opacity=".28" />
+      <radialGradient id="sheen-{uid}" cx="12" cy="1.2" r="16.3" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#fff" stop-opacity=".26" />
         <stop offset="1" stop-color="#fff" stop-opacity="0" />
       </radialGradient>
-      <linearGradient id="ice-{uid}" x1="0" y1="-10" x2="0" y2="10" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#f3f8ff" />
-        <stop offset="1" stop-color="#d6e5fa" />
+      <radialGradient id="glow-{uid}" cx="11.65" cy="10.8" r="12.5" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#ff9a3d" stop-opacity=".24" />
+        <stop offset="1" stop-color="#ff9a3d" stop-opacity="0" />
+      </radialGradient>
+      <linearGradient id="gold-{uid}" x1="0" y1="3" x2="0" y2="21" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#ffe9a6" />
+        <stop offset="1" stop-color="#ff8a2c" />
       </linearGradient>
-      <linearGradient
-        id="amber-{uid}"
-        x1="0"
-        y1="-7.5"
-        x2="0"
-        y2="7.5"
-        gradientUnits="userSpaceOnUse"
-      >
-        <stop offset="0" stop-color="#ffd25a" />
-        <stop offset="1" stop-color="#ff9a2a" />
-      </linearGradient>
-      <linearGradient
-        id="glass-{uid}"
-        x1="0"
-        y1="-11"
-        x2="0"
-        y2="11"
-        gradientUnits="userSpaceOnUse"
-      >
-        <stop offset="0" stop-color="#fff" stop-opacity=".55" />
-        <stop offset="1" stop-color="#fff" stop-opacity=".22" />
-      </linearGradient>
-      <linearGradient id="sun-{uid}" x1="0" y1="-2" x2="0" y2="2" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#ffd25a" />
-        <stop offset="1" stop-color="#ff8a1f" />
-      </linearGradient>
-    {:else}
-      <mask id="groove-{uid}">
-        <rect x="-12" y="-12" width="24" height="24" fill="#fff" />
-        <circle r="2.65" stroke="#000" stroke-width=".55" />
-      </mask>
-    {/if}
-  </defs>
-  {#if tile}
-    <path d={TILE} fill="url(#sky-{uid})" />
+    </defs>
+    <path d={TILE} fill="url(#night-{uid})" />
     <path d={TILE} fill="url(#sheen-{uid})" />
-  {/if}
-  <g transform="translate(12 12) scale({scale})">
-    <g
-      mask={tile ? undefined : `url(#groove-${uid})`}
-      stroke={tile ? `url(#ice-${uid})` : 'currentColor'}
-      fill={tile ? `url(#ice-${uid})` : 'currentColor'}
-    >
-      {#each SPOKES as spoke (spoke.angle)}
-        <line
-          x1={spoke.from.x}
-          y1={spoke.from.y}
-          x2={spoke.to.x}
-          y2={spoke.to.y}
-          stroke-width="1.05"
-        />
-      {/each}
-      <circle r="3.08" stroke="none" />
-    </g>
-
-    <circle
-      r={RIM}
-      stroke={tile ? `url(#glass-${uid})` : 'currentColor'}
-      stroke-opacity={tile ? 1 : 0.3}
-      stroke-width="2.5"
-    />
-    {#if tile && fine}
-      <circle r="10.95" stroke="#fff" stroke-opacity=".85" stroke-width=".1" />
-      <circle r="8.55" stroke="#fff" stroke-opacity=".5" stroke-width=".1" />
-    {/if}
+    <path d={TILE} fill="url(#glow-{uid})" />
     {#if fine}
-      <circle
-        r={RIM}
-        stroke={tile ? '#fff' : 'currentColor'}
-        stroke-opacity=".6"
-        stroke-width=".73"
-        stroke-dasharray={BETWEEN}
-        stroke-dashoffset=".065"
-      />
-    {/if}
-    <circle
-      r={RIM}
-      stroke={tile ? '#fff' : 'currentColor'}
-      stroke-opacity=".95"
-      stroke-width="1.32"
-      stroke-dasharray={HOURS}
-      stroke-dashoffset=".16"
-    />
-
-    <g
-      stroke={tile ? `url(#amber-${uid})` : 'currentColor'}
-      stroke-opacity={tile ? 1 : 0.6}
-      stroke-width=".6"
-      stroke-linecap="round"
-    >
-      {#each RAYS as ray (ray.angle)}
-        <line x1={ray.from.x} y1={ray.from.y} x2={ray.to.x} y2={ray.to.y} />
+      {#each STACK as feather (feather.i)}
+        <path d={feather.d} fill={feather.fill} />
       {/each}
-    </g>
-    {#if tile}
-      <circle r="1.98" fill="url(#sun-{uid})" />
+    {:else}
+      <path d={MARK} fill="url(#gold-{uid})" />
     {/if}
-  </g>
+  {:else}
+    <g transform={fit} fill="currentColor">
+      {#if fine}
+        {#each STACK as feather (feather.i)}
+          <path d={feather.d} opacity={1 - 0.55 * (feather.i / (FEATHERS.length - 1))} />
+        {/each}
+      {:else}
+        <path d={MARK} />
+      {/if}
+    </g>
+  {/if}
 </svg>
 
 <style>

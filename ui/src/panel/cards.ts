@@ -306,7 +306,7 @@ export function kindLook(kind: PanelKind): Look {
     case 'notes':
       return { symbol: 'note', colour: 'var(--app-notes)' }
     case 'assistant':
-      return { symbol: 'sparkle', colour: 'var(--app-assistant)' }
+      return { symbol: 'wing', colour: 'var(--app-assistant)' }
     case 'voiceTyping':
       return { symbol: 'mic', colour: 'var(--app-assistant)' }
     default:
