@@ -118,7 +118,7 @@ const EXPECTED_APPS = {
   screentime: { label: 'Screen time', icon: 'hourglass' },
   files: { label: 'Files', icon: 'folder' },
   health: { label: 'Health', icon: 'heart-pulse' },
-  assistant: { label: 'Assistant', icon: 'sparkle' },
+  assistant: { label: 'Assistant', icon: 'wing' },
   journal: { label: 'Journal', icon: 'quote' },
 }
 for (const [section, want] of Object.entries(EXPECTED_APPS)) {

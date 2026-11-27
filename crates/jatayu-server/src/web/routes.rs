@@ -434,9 +434,9 @@ async fn asset(State(state): State<Arc<WebState>>, method: Method, uri: Uri) -> 
         (!last.contains('.')).then(|| state.assets.get("index.html").map(|a| ("index.html", a)))?
     });
     let Some((served, asset)) = found else {
-        // Every browser asks for this whether the page names one or not, and
-        // the interface has none: an empty answer rather than an error in
-        // the console of every page load.
+        // Every browser asks for this whether the page names one or not. The
+        // interface ships one, but a folder built without it answers empty
+        // rather than with an error in the console of every page load.
         if path == "favicon.ico" {
             return StatusCode::NO_CONTENT.into_response();
         }

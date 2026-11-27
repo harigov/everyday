@@ -378,8 +378,8 @@ export const APPS: Record<Section, AppModule> = {
   assistant: {
     section: 'assistant',
     label: 'Assistant',
-    icon: 'sparkle',
-    symbol: 'sparkle',
+    icon: 'wing',
+    symbol: 'wing',
     supported: (app) => app.supportsAssistant,
     accent: () => CONSTANT_ACCENT,
     // A new conversation. It was a new routine, back when routines were

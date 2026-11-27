@@ -60,6 +60,7 @@
   import JobCard from './JobCard.svelte'
   import ToolCardView from './ToolCard.svelte'
   import VoiceBar from './VoiceBar.svelte'
+  import WingPulse from './WingPulse.svelte'
 
   let {
     variant,
@@ -452,7 +453,7 @@
     fit()
   })
 
-  // The dog listens while something is typed and not yet sent. Cleared on
+  // The bird listens while something is typed and not yet sent. Cleared on
   // the way out, so a rail closed mid-sentence does not leave it listening.
   $effect(() => {
     agent.composing = draft.trim() !== ''
@@ -838,8 +839,8 @@
   /** Chips for the open app, in the rail; the page has its own, larger set. */
   const railStarts = $derived(askExamples(app.section))
 
-  /** A dog floats over the top of the thread, and is its face: no sparkle. */
-  const dog = $derived(agent.settings !== null && lookOf(agent.settings.companion) !== null)
+  /** A bird floats over the top of the thread, and is its face: no sparkle. */
+  const bird = $derived(agent.settings !== null && lookOf(agent.settings.companion) !== null)
 
   /**
    * Somewhere to start, on the page. Each is a thing it can actually do in
@@ -884,7 +885,7 @@
       {#if agent.turns.length === 0}
         {#if variant === 'page'}
           <div class="hello">
-            {#if !dog}
+            {#if !bird}
               <span class="glyph"><Icon name="sparkle" size={30} weight={1.4} /></span>
             {/if}
             <h2>What can I do for you?</h2>
@@ -906,7 +907,7 @@
             {/if}
           </div>
         {:else}
-          <EmptyState lead="Ask about anything in Jatayu" icon={dog ? undefined : sparkle}>
+          <EmptyState lead="Ask about anything in Jatayu" icon={bird ? undefined : sparkle}>
             {#snippet note()}
               {reachNote}
             {/snippet}
@@ -1163,7 +1164,7 @@
               <!-- Always the last thing in a running turn, whatever else it
                    has drawn: this is the line that says it is still going. -->
               <div class="status" role="status" aria-live="polite">
-                <span class="pulse" aria-hidden="true"><i></i><i></i><i></i></span>
+                <WingPulse size={18} />
                 <span class="doing">{status}…</span>
                 {#if turn.startedAt !== null}
                   <span class="clock">{elapsed(now - turn.startedAt)}</span>
@@ -1376,7 +1377,7 @@
     cursor: auto;
   }
   /* `--thread-top` is room for whatever floats over the top of the thread
-     -- the dog and its name -- which the conversation scrolls under. */
+     -- the bird and its name -- which the conversation scrolls under. */
   .column {
     display: flex;
     flex-direction: column;
@@ -1400,8 +1401,8 @@
     flex-direction: column;
     align-items: center;
     gap: var(--sp-3);
-    /* The same drop from the top of the page with a dog over it or not: the
-       dog's room counts towards it, so the greeting sits under the dog. */
+    /* The same drop from the top of the page with a bird over it or not: the
+       bird's room counts towards it, so the greeting sits under the bird. */
     margin-top: max(var(--sp-4), calc(12vh - var(--thread-top, 0px)));
     text-align: center;
   }
@@ -1813,35 +1814,7 @@
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
   }
-  .pulse {
-    display: flex;
-    flex: none;
-    gap: 3px;
-  }
-  .pulse i {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--accent);
-    animation: blink 1.2s ease-in-out infinite;
-  }
-  .pulse i:nth-child(2) {
-    animation-delay: 0.15s;
-  }
-  .pulse i:nth-child(3) {
-    animation-delay: 0.3s;
-  }
-  @keyframes blink {
-    0%,
-    100% {
-      opacity: 0.25;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
   @media (prefers-reduced-motion: reduce) {
-    .pulse i,
     .spin {
       animation: none;
       opacity: 0.6;

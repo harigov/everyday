@@ -69,7 +69,7 @@ class AgentState {
   focusTick = $state(0)
   /**
    * Whether somebody has something typed in the composer and not yet sent.
-   * Only the dog reads it -- it listens while you write to it.
+   * Only the bird reads it -- it listens while you write to it.
    */
   composing = $state(false)
 

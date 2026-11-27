@@ -275,7 +275,7 @@ check(
     'calendar var(--app-calendar)',
     'mail var(--app-mail)',
     'note var(--app-notes)',
-    'sparkle var(--app-assistant)',
+    'wing var(--app-assistant)',
     'mic var(--app-assistant)',
     'compass var(--app-overview)',
   ],

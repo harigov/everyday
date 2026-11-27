@@ -1,27 +1,28 @@
 <script lang="ts">
-  // One dog, drawn into a canvas: the header's, or the preview in Settings.
+  // Young Jatayu, drawn into a canvas: the header's, or the preview in
+  // Settings.
   //
-  // What this owns is the canvas's life rather than the dog's -- the scene is
-  // `companion-scene.ts`, loaded the first time a dog is drawn so the rest of
-  // the interface does not carry three.js for a header that might have no
-  // dog in it. The rest is not drawing when nobody can see it:
+  // What this owns is the canvas's life rather than the bird's -- the scene
+  // is `companion-scene.ts`, loaded the first time a bird is drawn so the
+  // rest of the interface does not carry three.js for a header that might
+  // have no bird in it. The rest is not drawing when nobody can see it:
   //
   //   - off screen, or in a hidden window, the loop stops, because a header
   //     ornament that kept a GPU busy behind a minimised window would be the
   //     most expensive thing in the application;
-  //   - with reduced motion asked for, the dog is drawn once per act, still,
+  //   - with reduced motion asked for, the bird is drawn once per act, still,
   //     in the pose that act ends up in, so it still says what it is doing
   //     without moving to say it;
   //   - with no WebGL at all, nothing is drawn and the space closes up.
   //
   // And two ways it answers back: it watches the pointer, and it can be
   // petted -- a click, or Enter on it -- for a wiggle and some hearts.
-  // Neither does anything else; the dog is not a button for anything but
+  // Neither does anything else; the bird is not a button for anything but
   // itself.
 
   import { onMount } from 'svelte'
   import type { Act, Look } from '../lib/companion'
-  import type { DogScene } from '../lib/companion-scene'
+  import type { CompanionScene } from '../lib/companion-scene'
 
   interface Props {
     look: Look
@@ -33,10 +34,10 @@
     name?: string
   }
 
-  let { look, act, width, height, name = 'the dog' }: Props = $props()
+  let { look, act, width, height, name = 'Jatayu' }: Props = $props()
 
   let canvas = $state<HTMLCanvasElement | null>(null)
-  let scene = $state<DogScene | null>(null)
+  let scene = $state<CompanionScene | null>(null)
   let failed = $state(false)
 
   const still = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -58,8 +59,8 @@
       else scene.pause()
     }
 
-    // Where the pointer is, relative to the dog, read once a frame at most:
-    // a pointer moves far more often than the dog draws.
+    // Where the pointer is, relative to the bird, read once a frame at most:
+    // a pointer moves far more often than the bird draws.
     function onPointer(event: PointerEvent) {
       pending = event
       if (raf) return
@@ -73,10 +74,10 @@
       })
     }
 
-    void import('../lib/companion-scene').then(({ createDogScene }) => {
+    void import('../lib/companion-scene').then(({ createCompanionScene }) => {
       if (!alive || !canvas) return
       const accent = getComputedStyle(canvas).getPropertyValue('--accent')
-      const made = createDogScene(canvas, { look, act, accent })
+      const made = createCompanionScene(canvas, { look, act, accent })
       if (!made) {
         failed = true
         return
@@ -118,9 +119,9 @@
   }
 
   $effect(() => {
-    // Read out of `look` field by field, so changing one of them is noticed
+    // Read out of `look` by its field, so a change of plumage is noticed
     // whether the caller hands in a new object or edits the old one.
-    const next = { breed: look.breed, coat: look.coat, markings: look.markings }
+    const next = { plumage: look.plumage }
     scene?.setLook(next)
     if (still.matches) scene?.still()
   })
@@ -141,7 +142,7 @@
 
 {#if !failed}
   <button
-    class="dog"
+    class="companion"
     style="width: {width}px; height: {height}px"
     data-act={act}
     title="Pet {name}"
@@ -153,7 +154,7 @@
 {/if}
 
 <style>
-  .dog {
+  .companion {
     display: block;
     flex: none;
     padding: 0;
@@ -162,7 +163,7 @@
     background: none;
     cursor: pointer;
   }
-  .dog:focus-visible {
+  .companion:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
   }

@@ -1588,7 +1588,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'New conversation',
     group: 'Assistant',
     keywords: ['chat', 'new chat', 'start', 'ask', 'assistant'],
-    icon: 'sparkle',
+    icon: 'wing',
     when: () => app.screen === 'main' && !pinned && agent.supported,
     run: async () => {
       // In its own app the thread is the page; elsewhere it is the rail.
@@ -1601,7 +1601,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'Talk to the assistant',
     group: 'Assistant',
     keywords: ['voice', 'speak', 'say', 'dictate', 'listen', 'chat'],
-    icon: 'sparkle',
+    icon: 'wing',
     // Only where there is a microphone to hold: not a browser on web access.
     when: () => app.screen === 'main' && !pinned && agent.supported && voice.available,
     run: () => void voice.start(),
@@ -1611,7 +1611,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'Ask about this',
     group: 'Assistant',
     keywords: ['assistant', 'what am i looking at', 'explain', 'help with', 'chat'],
-    icon: 'sparkle',
+    icon: 'wing',
     // Not in the Assistant's own app, where there is nothing else on screen
     // to ask about. The rail sends what is showing with the next message.
     when: () =>

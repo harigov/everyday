@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Android 12 and later draw a splash screen from the launcher icon. Its
+         background is the icon's own midnight, light or dark, so the wing
+         opens onto the colour it sits on in the launcher. -->
+    <style name="Theme.jatayu_app" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:windowSplashScreenBackground">@color/jatayu_midnight</item>
+    </style>
+</resources>

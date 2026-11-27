@@ -1,0 +1,6 @@
+<!--
+  Jatayu: Android adaptive icon, background layer. The midnight of icon.svg's
+  tile, with its sheen and the warm glow behind the wing, filling the whole
+  108dp canvas: the launcher's mask decides the shape.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2a2f7a"/><stop offset=".5" stop-color="#161a4d"/><stop offset="1" stop-color="#080a26"/></linearGradient><radialGradient id="sheen" cx="512" cy="80" r="640" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff" stop-opacity=".26"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#sheen)"/></svg>

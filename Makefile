@@ -484,26 +484,36 @@ fmt: ## Format Rust sources
 cli: ## Run the jatayu CLI, e.g. make cli ARGS="list"
 	cargo run -p jatayu-cli -- $(ARGS)
 
-# The PNG/ICO/ICNS set beside the master is generated, not hand-drawn: edit
-# icons/icon.svg and re-run this. The Tauri CLI rasterises the SVG itself
+# The PNG/ICO/ICNS set beside the masters is generated, not hand-drawn: edit
+# the SVGs in icons/ (icon.svg and its siblings for iOS and Android) and
+# re-run this. The Tauri CLI rasterises the SVG itself
 # (resvg), which is the point -- ImageMagick's built-in SVG renderer silently
 # drops the gradient and hands back a black tile.
-icons: ## Regenerate the app icons from crates/jatayu-app/icons/icon.svg
-	cd $(APP_DIR) && cargo tauri icon icons/icon.svg -o icons
-	@# Android's set goes into the Android project's resources. See docs/mobile.md.
-	cp -r $(APP_DIR)/icons/android/* $(APP_DIR)/gen/android/app/src/main/res/
-	rm -rf $(APP_DIR)/icons/android $(APP_DIR)/icons/ios
-	@# iOS draws its own rounded corners over a square, so its set is the tile
-	@# alone -- cut out of the Mac's grid, 100 of margin round an 824 tile --
-	@# flattened onto the sky's blue: the App Store refuses an icon with alpha,
-	@# and `--ios-color` leaves it in. On a Mac only (the flattening is Swift).
-	@# Nothing is copied unless every icon was flattened, and the scratch
-	@# folder goes either way.
+icons: ## Regenerate every icon from the masters in crates/jatayu-app/icons
+	@# One run over icons.json makes the desktop set (PNGs, .icns, .ico, the
+	@# Windows tiles) from icon.svg, and Android's adaptive icon from its three
+	@# layers, icon-android-{background,foreground,monochrome}.svg. Then the
+	@# browser extension's icons and the web version's, from icon.svg again.
+	@# The web's favicon.ico, apple-touch-icon.png and icon-maskable-512.png
+	@# are not remade here; docs/mobile.md says how they were made.
+	t=$$(mktemp -d) && trap 'rm -rf "$$t"' EXIT && root=$$(pwd) && cd $(APP_DIR) && \
+	cargo tauri icon icons/icons.json -o $$t/app >/dev/null && \
+	cp $$t/app/*.png $$t/app/icon.icns $$t/app/icon.ico icons/ && \
+	cp -r $$t/app/android/* gen/android/app/src/main/res/ && \
+	cargo tauri icon icons/icon.svg -o $$t/png --png 16,32,48,128,192,512 >/dev/null && \
+	for s in 16 32 48 128; do cp $$t/png/$${s}x$${s}.png $$root/extensions/browser/icons/icon-$$s.png; done && \
+	cp $$t/png/192x192.png $$root/$(UI_DIR)/public/icon-192.png && \
+	cp $$t/png/512x512.png $$root/$(UI_DIR)/public/icon-512.png
+	@# iOS draws its own rounded corners over a square, so its set comes from
+	@# icon-ios.svg -- the tile alone, full bleed -- flattened onto the tile's
+	@# midnight: the App Store refuses an icon with alpha, and `--ios-color`
+	@# leaves it in. On a Mac only (the flattening is Swift). Nothing is
+	@# copied unless every icon was flattened, and the scratch folder goes
+	@# either way.
 	@if [ "$$(uname -s)" = Darwin ]; then \
 		t=$$(mktemp -d) && trap 'rm -rf "$$t"' EXIT && \
-		sed 's/viewBox="0 0 1024 1024"/viewBox="100 100 824 824"/' $(APP_DIR)/icons/icon.svg > $$t/icon.svg && \
-		(cd $(APP_DIR) && cargo tauri icon $$t/icon.svg -o $$t/out >/dev/null) && \
-		swift scripts/flatten-png.swift '#1a7cf5' $$t/out/ios/*.png && \
+		(cd $(APP_DIR) && cargo tauri icon icons/icon-ios.svg -o $$t/out >/dev/null) && \
+		swift scripts/flatten-png.swift '#161a4d' $$t/out/ios/*.png && \
 		cp $$t/out/ios/*.png $(APP_DIR)/gen/apple/Assets.xcassets/AppIcon.appiconset/; \
 	else \
 		echo "iOS icons not regenerated: that needs a Mac (scripts/flatten-png.swift)"; \

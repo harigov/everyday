@@ -134,7 +134,7 @@ export const ORIGINS: NoteOrigin[] = ['own', 'assistant', 'meeting']
  *  out from. */
 export const ORIGIN_ICONS: Record<NoteOrigin, IconName> = {
   own: 'pencil',
-  assistant: 'sparkle',
+  assistant: 'wing',
   meeting: 'mic',
 }
 

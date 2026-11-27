@@ -1,12 +1,12 @@
-// Behaviour checks for the assistant's dog: which dog a stored choice means,
-// and what the dog is doing.
+// Behaviour checks for young Jatayu, the assistant's bird: which bird a stored
+// choice means, and what the bird is doing.
 //
 // Same reasoning as `agent.test.mjs`: the scene is checked by looking at it,
 // and these are the rules beside it, whose failures are quiet. A stored word
-// read as "no dog" takes the dog away from somebody who chose one; a `null`
-// read as "the default" brings back a dog somebody sent away. A turn that has
+// read as "no bird" takes the bird away from somebody who chose one; a `null`
+// read as "the default" brings back a bird somebody sent away. A turn that has
 // finished but is still drawn as typing is a header that says the assistant
-// is busy when it is not -- the one thing the dog is for getting wrong.
+// is busy when it is not -- the one thing the bird is for getting wrong.
 
 import assert from 'node:assert/strict'
 import { load } from './harness.mjs'
@@ -16,56 +16,70 @@ const {
   close,
 } = await load(['/src/lib/companion.ts', '/src/lib/agent.ts'])
 const {
-  BREEDS,
   CHEER_MS,
-  COATS,
   DEFAULT_LOOK,
   DROOP_MS,
-  MARKINGS,
+  PLUMAGES,
   actChangesIn,
   actOf,
   companionOf,
   headerAct,
   lookOf,
+  plumageOf,
   sniffs,
 } = companion
 const { emptyTurn, liveTurn } = agent
 
 // ── reading a stored choice ───────────────────────────────────────────
 
-// `null` is somebody who chose no dog, and only that.
+// `null` is somebody who chose no bird, and only that.
 assert.equal(lookOf(null), null)
 
 // Missing -- a backend older than the field, or nothing chosen yet -- is the
-// default dog, as the vault reads a record with no key.
+// default bird, as the vault reads a record with no key.
 assert.deepEqual(lookOf(undefined), DEFAULT_LOOK)
 assert.deepEqual(lookOf({}), DEFAULT_LOOK)
+assert.deepEqual(DEFAULT_LOOK, { plumage: 'gold' })
 
-// A word this build does not know is drawn as the default for that word
-// alone: the rest of the choice still stands.
-assert.deepEqual(lookOf({ breed: 'bernese-mountain', coat: 'cocoa', markings: 'spots' }), {
-  breed: DEFAULT_LOOK.breed,
-  coat: 'cocoa',
-  markings: 'spots',
-})
+// A plumage this build knows is the one drawn.
+assert.deepEqual(lookOf({ plumage: 'dusk' }), { plumage: 'dusk' })
 
-// What is written back is every word, so a later change of default does not
-// quietly change somebody's dog.
-assert.deepEqual(companionOf({ breed: 'pug', coat: 'charcoal', markings: 'mask' }), {
-  breed: 'pug',
-  coat: 'charcoal',
-  markings: 'mask',
-})
+// A word this build does not know -- one a later build added -- is drawn as
+// the default rather than refused.
+assert.deepEqual(lookOf({ plumage: 'morning-mist' }), { plumage: 'gold' })
 
-// The default is one of the choices, so Settings can show it as chosen.
-assert.ok(BREEDS.some((b) => b.id === DEFAULT_LOOK.breed))
-assert.ok(COATS.some((c) => c.id === DEFAULT_LOOK.coat))
-assert.ok(MARKINGS.some((m) => m.id === DEFAULT_LOOK.markings))
+// The companion was a dog first, stored as a breed, a coat and its markings.
+// A vault that chose one still hands those words over; none of them names a
+// plumage, so it is the default bird, not an error and not no bird.
+assert.deepEqual(lookOf({ breed: 'pug', coat: 'charcoal', markings: 'mask' }), DEFAULT_LOOK)
+
+// What is written back is the word itself, default or not, so a later change
+// of default does not quietly repaint somebody's bird -- and it reads back
+// as the look that was written.
+assert.deepEqual(companionOf({ plumage: 'ember' }), { plumage: 'ember' })
+assert.deepEqual(companionOf(DEFAULT_LOOK), { plumage: 'gold' })
+for (const { id } of PLUMAGES) {
+  assert.deepEqual(lookOf(companionOf({ plumage: id })), { plumage: id })
+}
+
+// The default is one of the choices, and the first, so Settings can show it
+// as chosen and offers it first.
+assert.equal(PLUMAGES[0].id, DEFAULT_LOOK.plumage)
 
 // Every word fits what the vault accepts: lower case, digits, hyphens, and
-// short. A word the core refuses is a Save that fails for a click on a chip.
-for (const word of [...BREEDS, ...COATS, ...MARKINGS].map((c) => c.id)) {
+// short. A word the core refuses is a Save that fails for a click on a
+// swatch. And no two swatches are the same word.
+for (const word of PLUMAGES.map((p) => p.id)) {
   assert.match(word, /^[a-z0-9-]{1,24}$/, `${word} must be a word the vault accepts`)
+}
+assert.equal(new Set(PLUMAGES.map((p) => p.id)).size, PLUMAGES.length)
+
+// Every plumage carries the colours the scene paints with, as colours.
+for (const p of PLUMAGES) {
+  for (const colour of [p.base, p.pale, p.deep, ...p.wing]) {
+    assert.match(colour, /^#[0-9a-f]{6}$/, `${p.id} has a colour the scene can read`)
+  }
+  assert.equal(plumageOf(p.id), p)
 }
 
 // ── which tools are sniffing ──────────────────────────────────────────
@@ -80,7 +94,7 @@ for (const name of ['create_task', 'update_plan', 'delete_note', 'log_reading', 
   assert.ok(!sniffs(name), `${name} writes something`)
 }
 
-// ── what the dog is doing ─────────────────────────────────────────────
+// ── what the bird is doing ────────────────────────────────────────────
 
 const NOW = 1_000_000
 
@@ -138,7 +152,7 @@ assert.equal(actOf(stopped, NOW + 100), 'idle')
 assert.equal(actChangesIn(stopped, NOW + 100), null)
 
 // A turn replayed from the vault has no end time, and is never celebrated
-// -- opening last week's conversation is not something the dog did.
+// -- opening last week's conversation is not something the bird did.
 const replayed = { ...emptyTurn('assistant', 'a3', 'Old answer') }
 assert.equal(actOf(replayed, NOW), 'idle')
 assert.equal(actChangesIn(replayed, NOW), null)
@@ -147,7 +161,7 @@ assert.equal(actChangesIn(replayed, NOW), null)
 // still cheers rather than missing the moment.
 assert.equal(actOf(done, NOW - 5000), 'cheer')
 
-// ── what the header's dog does ────────────────────────────────────────
+// ── what the header's bird does ───────────────────────────────────────
 
 // Not set up: asleep, whatever else is true.
 assert.equal(headerAct({ ready: false, composing: true, turn: liveTurn('x', NOW) }, NOW), 'sleep')

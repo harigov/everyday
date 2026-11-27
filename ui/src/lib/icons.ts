@@ -357,6 +357,16 @@ export const ICONS = {
     '<path d="M11 3.5 12.8 8.2 17.5 10 12.8 11.8 11 16.5 9.2 11.8 4.5 10 9.2 8.2Z"/>' +
     '<path d="m18 15 .9 2.1L21 18l-2.1.9L18 21l-.9-2.1L15 18l2.1-.9Z"/>',
 
+  // Jatayu's wing, the application's mark, for the assistant itself -- the
+  // app bar, the button that opens it, what it made. Line art: the long front
+  // feather drawn whole, and the edges of three behind it fanning back. `sparkle`
+  // stays for the assistant doing a piece of work inside another app.
+  wing:
+    '<path d="M6.5 20.5c1.3-7.4 5.8-13.4 13.5-17-2.3 6.8-6.6 12.7-13.5 17Z"/>' +
+    '<path d="M6.5 20.5c-1.1-5.8 1-11.2 6.2-15"/>' +
+    '<path d="M6.5 20.5c-2.9-4.1-3.2-8.6-1.1-12.6"/>' +
+    '<path d="M6.5 20.5C3.6 18.8 2.4 16.2 2.6 13"/>',
+
   settings:
     '<path d="M20 7h-8"/><path d="M6 7H4"/><path d="M20 17h-2"/><path d="M12 17H4"/>' +
     '<circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',

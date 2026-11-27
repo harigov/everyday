@@ -15,49 +15,46 @@ use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-/// Which dog the assistant is: three words, each from a short list the
-/// interface keeps in `ui/src/lib/companion.ts`.
+/// What young Jatayu, the bird drawn beside the assistant, looks like: one
+/// word, from a short list the interface keeps in `ui/src/lib/companion.ts`.
 ///
-/// Words rather than enums, because nothing in the core draws a dog or needs
-/// to know what a corgi is -- and because an enum would make a breed added in
-/// a later build into a settings record an earlier build refuses to read,
-/// taking the model, the key and everything else with it. A word the
-/// interface does not know is drawn as its default; `None` is the same, so
-/// which dog is the default is decided in one place, the one that draws it.
+/// A word rather than an enum, because nothing in the core draws a bird or
+/// needs to know what "ember" looks like -- and because an enum would make a
+/// plumage added in a later build into a settings record an earlier build
+/// refuses to read, taking the model, the key and everything else with it. A
+/// word the interface does not know is drawn as its default; `None` is the
+/// same, so which plumage is the default is decided in one place, the one
+/// that draws it.
+///
+/// This was a dog once, kept as a breed, a coat and its markings. A record
+/// from then still has those keys; they are not read, so it opens as the
+/// default bird, and the next save writes it without them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Companion {
-    /// The shape: ears, snout, tail.
+    /// The colour of its feathers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub breed: Option<String>,
-    /// The main colour of the coat.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub coat: Option<String>,
-    /// What is painted on it: a white bib and socks, spots, a dark mask.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub markings: Option<String>,
+    pub plumage: Option<String>,
 }
 
-/// Longest one of a [`Companion`]'s words may be. They are identifiers from a
-/// list, not prose; this only stops the field from being a place to keep
+/// Longest a [`Companion`]'s word may be. It is an identifier from a list,
+/// not prose; this only stops the field from being a place to keep
 /// something else.
 pub const MAX_COMPANION_WORD_CHARS: usize = 24;
 
 impl Companion {
-    /// A dog with every choice left to the interface's default.
-    pub fn default_dog() -> Option<Self> {
+    /// The bird, with its plumage left to the interface's default.
+    pub fn default_companion() -> Option<Self> {
         Some(Self::default())
     }
 
     fn validate(&self) -> Result<()> {
-        for word in [&self.breed, &self.coat, &self.markings].into_iter().flatten() {
+        if let Some(word) = &self.plumage {
             let fits = !word.is_empty()
                 && word.chars().count() <= MAX_COMPANION_WORD_CHARS
                 && word.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
             if !fits {
-                return Err(Error::Invalid(format!(
-                    "{word:?} is not a kind of dog this app draws"
-                )));
+                return Err(Error::Invalid(format!("{word:?} is not a plumage this app draws")));
             }
         }
         Ok(())
@@ -91,24 +88,24 @@ pub struct AgentSettings {
     /// not choose, in the one place that is most theirs.
     #[serde(default)]
     pub name: String,
-    /// The dog drawn in the header of the rail and of the Assistant app, or
-    /// `None` for no dog at all.
+    /// Young Jatayu, the bird drawn in the header of the rail and of the
+    /// Assistant app, or `None` for no bird at all.
     ///
     /// Picked beside the name, and kept beside it for the same reason: it is
     /// who the assistant is, so it follows the vault to the next machine
     /// rather than staying behind in one browser's local storage.
     ///
     /// A record with no key at all -- every record written before there was
-    /// a dog -- reads as the default dog, and `null` reads as none. The two
-    /// must stay distinct, which is why this is not `skip_serializing_if`:
-    /// somebody who said "no dog" must not have one back the next time the
-    /// settings are saved.
+    /// a companion -- reads as the default bird, and `null` reads as none.
+    /// The two must stay distinct, which is why this is not
+    /// `skip_serializing_if`: somebody who said "no bird" must not have one
+    /// back the next time the settings are saved.
     ///
-    /// Unlike the name, a dog *is* offered by default. A name is the model
-    /// introducing itself, in every reply; the dog says nothing to anybody
+    /// Unlike the name, the bird *is* offered by default. A name is the model
+    /// introducing itself, in every reply; the bird says nothing to anybody
     /// and is the one place the rail shows, at a glance, that a turn is
     /// still working.
-    #[serde(default = "Companion::default_dog")]
+    #[serde(default = "Companion::default_companion")]
     pub companion: Option<Companion>,
     /// Which quick asks are allowed to run, by [`QuickAsk::name`].
     ///
@@ -384,7 +381,7 @@ impl Default for AgentSettings {
         Self {
             enabled: false,
             name: String::new(),
-            companion: Companion::default_dog(),
+            companion: Companion::default_companion(),
             quick_asks: QuickPolicy::default(),
             legacy_provider: None,
             legacy_assistant_model: None,
