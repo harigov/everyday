@@ -55,48 +55,101 @@ use std::sync::Arc;
 /// The colours are the ones mail's document uses, and those are
 /// `theme.css`'s, copied for the reason mail gives -- this document has no
 /// build step and cannot see a custom property defined outside it. What is
-/// different is the typography. An article is read for longer than a message
-/// is, so its code blocks keep their lines, its quotes are set apart, and its
-/// pictures and tables never push the page sideways.
+/// different is the typography, which is a reader's: an article is read for
+/// longer than a message is, so it is set larger and looser, its headings and
+/// quotes are set apart, its code blocks keep their lines, and its pictures
+/// never push the page sideways.
+///
+/// The face, the size and the spacing are custom properties with these as
+/// their defaults, because the window sets them from its reading settings
+/// (`ui/src/lib/reading.ts`), and so are the frame's colours. Everything
+/// else is relative to them: sizes in `em`, and the quieter greys as the
+/// text's own colour faded, so a sepia or a dark page needs nothing more.
+/// `estimateArticleHeight` in `ui/src/lib/feed.ts` sizes the frame from
+/// this type and this padding, so a change here is a change there.
 const STYLE: &str = r#"
-:root { color-scheme: light dark; }
-body {
-  margin: 0;
-  padding: 16px;
-  font-family: 'Source Sans 3 Variable', 'Source Sans Pro', 'Seravek', 'Ubuntu',
+:root {
+  color-scheme: light dark;
+  --read-font: 'Source Sans 3 Variable', 'Source Sans Pro', 'Seravek', 'Ubuntu',
     'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui,
     'Noto Sans', sans-serif;
-  font-size: 15px;
-  line-height: 1.65;
+  --read-size: 18px;
+  --read-leading: 1.6;
+}
+body {
+  margin: 0;
+  padding: 20px clamp(16px, 4vw, 28px) 28px;
+  font-family: var(--read-font);
+  font-size: var(--read-size);
+  line-height: var(--read-leading);
   color: #1c1a17;
   background: #f7f6f3;
   overflow-wrap: break-word;
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
-a { color: inherit; }
-h1, h2, h3, h4, h5, h6 { line-height: 1.3; }
+body > :first-child { margin-top: 0; }
+body > :last-child { margin-bottom: 0; }
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: rgba(128, 128, 128, 0.6);
+  text-underline-offset: 0.18em;
+}
+a:hover { text-decoration-color: currentColor; }
+h1, h2, h3, h4, h5, h6 {
+  margin: 1.5em 0 0.5em;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+h1 { font-size: 1.55em; }
+h2 { font-size: 1.3em; }
+h3 { font-size: 1.12em; }
+h4, h5, h6 { font-size: 1em; }
+ul, ol { padding-left: 1.5em; }
+li { margin: 0.3em 0; }
+li > p { margin: 0.3em 0; }
 img, video { max-width: 100%; height: auto; }
-figure { margin: 1em 0; }
-figcaption { font-size: 13px; color: #8b857c; }
-blockquote { margin: 1em 0; padding-left: 1em; border-left: 3px solid #d9d6cf; color: #5d5951; }
+figure { margin: 1.5em 0; }
+figure img, figure video, p > img:only-child { display: block; margin-inline: auto; }
+figure.lead { margin: 0 0 1.5em; }
+figcaption { margin-top: 0.5em; font-size: 0.8em; line-height: 1.45; opacity: 0.72; }
+blockquote {
+  margin: 1.25em 0;
+  padding-left: 1em;
+  border-left: 3px solid rgba(128, 128, 128, 0.4);
+  opacity: 0.88;
+}
+hr { margin: 2em 0; border: 0; border-top: 1px solid rgba(128, 128, 128, 0.35); }
 pre {
   overflow-x: auto;
-  padding: 12px;
+  padding: 12px 14px;
   border-radius: 6px;
   background: rgba(128, 128, 128, 0.12);
-  font-size: 13px;
+  font-size: 0.78em;
+  line-height: 1.5;
 }
-code { font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace; }
-table { max-width: 100%; border-collapse: collapse; }
-td, th { padding: 4px 8px; }
+code, kbd, samp {
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+pre code { font-size: inherit; }
+:not(pre) > code { padding: 0.1em 0.3em; border-radius: 4px; background: rgba(128, 128, 128, 0.12); }
+table { max-width: 100%; margin: 1.25em 0; border-collapse: collapse; font-size: 0.88em; line-height: 1.45; }
+td, th { padding: 6px 10px; border-bottom: 1px solid rgba(128, 128, 128, 0.25); text-align: left; vertical-align: top; }
+th { font-weight: 600; }
+sup, sub { line-height: 0; }
 .plain { white-space: pre-line; }
-.quiet { color: #8b857c; }
+.quiet { opacity: 0.7; }
 .said { margin: 0 0 1.1em; }
 .said p { margin: 0 0 0.5em; }
-.when { display: block; font-size: 12px; line-height: 1.4; font-variant-numeric: tabular-nums; color: #8b857c; }
+.when { display: block; font-size: 0.7em; line-height: 1.4; font-variant-numeric: tabular-nums; opacity: 0.7; }
 @media (prefers-color-scheme: dark) {
   body { color: #eceaf0; background: #17161a; }
-  figcaption, .quiet, .when { color: #7d7a86; }
-  blockquote { border-left-color: #3a3841; color: #b4b1bd; }
 }
 "#;
 
@@ -203,7 +256,7 @@ fn stored(vault: &Vault, story: &Story, body: Option<StoryBody>) -> CommandResul
     if let Some(body) = body.as_ref().filter(|b| !b.html.trim().is_empty()) {
         let source = vault.news_source(story.source_id)?;
         let images_hidden = !source.images && !body.images.is_empty();
-        return Ok(BodyDocument { html: wrap(&body.html, Some(body.origin)), images_hidden });
+        return Ok(BodyDocument { html: wrap_stored(body), images_hidden });
     }
 
     // An extraction that came out as text alone is still a body; a story
@@ -291,7 +344,7 @@ fn transcript(vault: &Vault, story: &Story) -> CommandResult<BodyDocument> {
     }
     // Not a body's origin, so a pane that says "written from the transcript"
     // of one does not say it of the transcript itself.
-    Ok(BodyDocument { html: wrap_as(&html, "transcriptFile"), images_hidden: false })
+    Ok(BodyDocument { html: wrap_as(&html, "transcriptFile", ""), images_hidden: false })
 }
 
 /// A story's file, read as text.
@@ -393,27 +446,45 @@ fn said_html(said: &[TimedText]) -> String {
 /// The document around `inner`: the policy, the style, and links that open
 /// outside the frame.
 fn wrap(inner: &str, origin: Option<BodyOrigin>) -> String {
-    // Where the body came from, for the window to say "written from the
-    // episode's transcript": a word of ours in the head, never the
-    // publisher's.
-    let origin = match origin {
+    wrap_as(inner, origin_word(origin), "")
+}
+
+/// Where the body came from, for the window to say "written from the
+/// episode's transcript": a word of ours in the head, never the publisher's.
+fn origin_word(origin: Option<BodyOrigin>) -> &'static str {
+    match origin {
         Some(BodyOrigin::Feed) => "feed",
         Some(BodyOrigin::Extracted) => "extracted",
         Some(BodyOrigin::HackerNews) => "hackerNews",
         Some(BodyOrigin::Transcript) => "transcript",
         None => "summary",
-    };
-    wrap_as(inner, origin)
+    }
 }
 
-/// [`wrap`] with the word for where it came from given.
-fn wrap_as(inner: &str, origin: &str) -> String {
+/// A stored body as [`wrap`] draws it, with who wrote it and what the
+/// publication calls itself in the head when the page said: the header above
+/// the frame shows them (`bodyAboutOf` in `ui/src/lib/feed.ts`). Read from the
+/// page, so escaped like anything else of a stranger's.
+fn wrap_stored(body: &StoryBody) -> String {
+    let mut about = String::new();
+    for (name, value) in [("news-byline", &body.byline), ("news-site", &body.site_name)] {
+        if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            about.push_str(&format!("<meta name=\"{name}\" content=\"{}\">\n", escape(value)));
+        }
+    }
+    wrap_as(&body.html, origin_word(Some(body.origin)), &about)
+}
+
+/// [`wrap`] with the word for where it came from given, and `about`, meta
+/// lines of ours, added to the head.
+fn wrap_as(inner: &str, origin: &str, about: &str) -> String {
     format!(
         "<!DOCTYPE html>\n\
          <html>\n\
          <head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"news-body-origin\" content=\"{origin}\">\n\
+         {about}\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\n\
          <base target=\"_blank\">\n\
          <style>{STYLE}</style>\n\
@@ -625,6 +696,8 @@ mod tests {
         );
         story.summary = summary.to_string();
         let body = html.map(|html| StoryBody {
+            byline: None,
+            site_name: None,
             story_id: story.id,
             html: html.to_string(),
             text: String::new(),
@@ -654,6 +727,31 @@ mod tests {
         assert!(doc.html.contains("<base target=\"_blank\">"));
         assert!(!doc.html.to_ascii_lowercase().contains("<script"), "{}", doc.html);
         assert!(!doc.images_hidden);
+    }
+
+    #[test]
+    fn who_wrote_an_article_and_where_ride_in_the_head_escaped() {
+        let (_dir, vault) = test_vault();
+        let (id, _) = seeded(&vault, true, Some("<p>Hello</p>"), "");
+        let plain = body_document(&vault, id, BodyPart::Whole).unwrap();
+        assert!(!plain.html.contains("news-byline"), "{}", plain.html);
+        assert!(!plain.html.contains("news-site"), "{}", plain.html);
+
+        let mut body = vault.story_body(id).unwrap().unwrap();
+        body.byline = Some("Ada \"Countess\" <Lovelace>".into());
+        body.site_name = Some("  ".into());
+        vault.save_story_body(&body).unwrap();
+        let doc = body_document(&vault, id, BodyPart::Whole).unwrap();
+        let head = &doc.html[..doc.html.find("</head>").unwrap()];
+        assert!(
+            head.contains(
+                "<meta name=\"news-byline\" content=\"Ada &quot;Countess&quot; &lt;Lovelace&gt;\">"
+            ),
+            "{head}"
+        );
+        assert!(!head.contains("news-site"), "a blank name is no name: {head}");
+        // The reader's type is what the window's settings change.
+        assert!(head.contains("--read-size:"), "{head}");
     }
 
     #[test]
@@ -697,6 +795,8 @@ mod tests {
         let (_dir, vault) = test_vault();
         let (id, _) = seeded(&vault, true, None, "");
         let body = StoryBody {
+            byline: None,
+            site_name: None,
             story_id: id,
             html: String::new(),
             text: "First.\n\nSecond <one>.".into(),
@@ -810,6 +910,8 @@ mod tests {
             None => "<h1>The article</h1><p>Written.</p>".to_string(),
         };
         let body = StoryBody {
+            byline: None,
+            site_name: None,
             story_id: id,
             html,
             text: String::new(),
@@ -883,6 +985,8 @@ mod tests {
         let (_dir, vault) = test_vault();
         let (id, _) = seeded(&vault, false, None, "");
         let body = StoryBody {
+            byline: None,
+            site_name: None,
             story_id: id,
             html: format!(
                 "<p>Written.</p>{SHOW_NOTES_MARKER}{SHOW_NOTES_HEADING}\

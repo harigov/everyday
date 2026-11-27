@@ -572,6 +572,8 @@ fn body_of(story: StoryId, markdown: &str, notes: Option<ShowNotes>) -> StoryBod
 
     let notes_text = jatayu_mail::text::html_to_text(&notes.html);
     StoryBody {
+        byline: None,
+        site_name: None,
         story_id: story,
         html: format!("{}{SHOW_NOTES_MARKER}{}", article.html, notes.html),
         text: format!("{}\n\n{}", article.text.trim_end(), notes_text.trim()),
@@ -922,6 +924,8 @@ mod tests {
 
     fn feed_body(story: StoryId) -> StoryBody {
         StoryBody {
+            byline: None,
+            site_name: None,
             story_id: story,
             html: "<p>Guest: Ada. <img src=\"jatayu://news/img/x/abc\"></p>".into(),
             text: "Guest: Ada.".into(),

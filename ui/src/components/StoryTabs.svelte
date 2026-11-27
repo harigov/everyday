@@ -31,6 +31,9 @@
   import { feed, type LoadedBody } from '../lib/feed.svelte'
   import { estimateArticleHeight } from '../lib/feed'
   import { applyPlatformOrigin } from '../lib/mailview'
+  import { readingType } from '../lib/reading'
+  import { reading } from '../lib/reading.svelte'
+  import { app } from '../lib/state.svelte'
   import {
     offerLabel,
     offerText,
@@ -146,13 +149,17 @@
   // story objects whenever the list reloads, and a refresh that changed nothing
   // about this one is no reason to fetch its documents again. The two files and
   // the stamp are the reasons: a transcript or a summary has arrived, or an
-  // article has been written over the body.
+  // article has been written over the body. So are the theme and the reading
+  // settings, which a document is drawn in as it is loaded (`feed.loadBody`).
   $effect(() => {
     const key = wanted
     const asked = part
     void transcriptFile
     void summaryFile
     void stamp
+    void app.dark
+    void app.frame
+    void reading.settings
     const mine = ++loads
     if (!fetching || asked === undefined) return
     brokenKey = null
@@ -175,12 +182,15 @@
   // ── Drawing it ────────────────────────────────────────────────────────
 
   /** Sizes the one iframe inside `node` from the document string, never from
-   *  what the iframe renders -- see `estimateArticleHeight`'s own doc. */
+   *  what the iframe renders -- see `estimateArticleHeight`'s own doc. In the
+   *  reading settings' type, which a story's document is set in; a
+   *  newsletter keeps mail's. */
   function autoSize(node: HTMLElement, html: string) {
     const iframe = node.querySelector('iframe')
     function apply() {
       if (!iframe) return
-      iframe.style.height = `${estimateArticleHeight(html, node.clientWidth)}px`
+      const type = story.mailMessage ? undefined : readingType(reading.settings)
+      iframe.style.height = `${estimateArticleHeight(html, node.clientWidth, type)}px`
     }
     apply()
     const ro = new ResizeObserver(apply)

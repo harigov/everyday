@@ -477,6 +477,8 @@ fn feed_with_a_story(svc: &Arc<Service>) {
         Story::new(source.id, vault.news_key("blog/chips").unwrap(), "Chips are late", hour_ago);
     story.summary = "The fab is a year behind.".into();
     let body = StoryBody {
+        byline: None,
+        site_name: None,
         story_id: story.id,
         html: "<p>x</p>".into(),
         text: "The fab says its new line will start a year late, after the tools arrived.".into(),

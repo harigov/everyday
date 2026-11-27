@@ -17,6 +17,7 @@ const {
   NOT_NEWSLETTER_DETAIL,
   alsoLine,
   alsoOn,
+  bodyAboutOf,
   bylineParts,
   clampDays,
   clampPoints,
@@ -715,6 +716,58 @@ assert.equal(clampPoints(150.4), 150)
   assert.ok(
     estimateArticleHeight(doc('<p>hi</p>'), 700) >= 160,
     'even a one-liner has a frame worth drawing',
+  )
+
+  // In a story's own type: larger and looser is taller, a wider padding a
+  // narrower column.
+  const type = (sizePx, leading, letterEm = 0.5) => ({
+    sizePx,
+    leading,
+    letterEm,
+    padX: (width) => Math.min(28, Math.max(16, width * 0.04)),
+    padY: 48,
+  })
+  const article = doc(para.repeat(20))
+  const reader = estimateArticleHeight(article, 700, type(18, 1.6))
+  assert.ok(reader > long / 2, 'twenty paragraphs at 18px are no shorter than forty at 15px halved')
+  assert.ok(estimateArticleHeight(article, 700, type(24, 1.6)) > reader, 'larger type is taller')
+  assert.ok(estimateArticleHeight(article, 700, type(18, 1.8)) > reader, 'looser lines are taller')
+  const essay = doc(`<p>${'word '.repeat(300)}</p>`.repeat(10))
+  assert.ok(
+    estimateArticleHeight(essay, 700, type(18, 1.6, 0.52)) >
+      estimateArticleHeight(essay, 700, type(18, 1.6)),
+    'a serif, which runs wider, is taller',
+  )
+  assert.ok(
+    estimateArticleHeight(article, 1000, type(18, 1.6)) < reader,
+    'a wider column is shorter',
+  )
+}
+
+// ── bodyAboutOf ──────────────────────────────────────────────────────────
+
+{
+  const head = (metas) =>
+    `<!DOCTYPE html><html><head><meta charset="utf-8">${metas}</head><body><p>x</p></body></html>`
+  assert.deepEqual(
+    bodyAboutOf(
+      head(
+        '<meta name="news-byline" content="Ada &quot;Countess&quot; &lt;L&gt; &amp; Co &#39;26">\n' +
+          '<meta name="news-site" content="The Gazette">',
+      ),
+    ),
+    { byline: 'Ada "Countess" <L> & Co \'26', site: 'The Gazette' },
+    "both read, with the service's escapes undone",
+  )
+  assert.deepEqual(
+    bodyAboutOf(head('')),
+    { byline: null, site: null },
+    'a document that does not say',
+  )
+  assert.deepEqual(
+    bodyAboutOf('<p><meta name="news-byline" content="In the body"></p>'),
+    { byline: null, site: null },
+    'only the head counts: a publisher cannot claim to be somebody else',
   )
 }
 

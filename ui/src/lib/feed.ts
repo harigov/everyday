@@ -18,6 +18,7 @@ import { friendlyDate } from './format'
 import type { IconName } from './icons'
 import { episodeProgress, type EpisodeProgress } from './podcast'
 import { isoDate } from './time'
+import type { ArticleType } from './reading'
 import type {
   Consumption,
   FeedKind,
@@ -628,6 +629,39 @@ export function bodyOriginOf(html: string): BodyOrigin | null {
   return BODY_ORIGINS.find((origin) => origin === found?.[1]) ?? null
 }
 
+/** What the page an article was read from says about it: see {@link bodyAboutOf}. */
+export interface BodyAbout {
+  /** Who wrote it, as a name. */
+  byline: string | null
+  /** What the publication calls itself. */
+  site: string | null
+}
+
+/** The five entities the service escapes a meta tag's content with, and nothing else. */
+function unescapeAttribute(value: string): string {
+  return value.replace(/&(amp|lt|gt|quot|#39);/g, (_, name: string) =>
+    name === 'amp' ? '&' : name === 'lt' ? '<' : name === 'gt' ? '>' : name === 'quot' ? '"' : "'",
+  )
+}
+
+/**
+ * Who wrote an article and what the publication calls itself, from the
+ * `news-byline` and `news-site` meta tags the service writes into the head of
+ * a body read from the page itself (`wrap_stored` in `news/view.rs`), for the
+ * same reason the origin rides there. Either is `null` when the document does
+ * not say.
+ */
+export function bodyAboutOf(html: string): BodyAbout {
+  const end = html.search(/<\/head>/i)
+  const head = end < 0 ? '' : html.slice(0, end)
+  const read = (name: string): string | null => {
+    const found = new RegExp(`<meta\\s+name="${name}"\\s+content="([^"]*)"`, 'i').exec(head)
+    const value = found ? unescapeAttribute(found[1]!).trim() : ''
+    return value || null
+  }
+  return { byline: read('news-byline'), site: read('news-site') }
+}
+
 // ── The reading pane ─────────────────────────────────────────────────────
 
 /** A body's visible words, without the document around them. */
@@ -812,16 +846,24 @@ export function topStories(stories: Story[], sources: SourceSummary[], count = 3
  * capped at 2400px -- and counts no pictures. An article is long and
  * illustrated, so this counts what an article has: each picture at its
  * stated size scaled to the column (or a guess for one that does not say),
- * headings, code blocks line by line, and the paragraph gaps, at the story
- * document's own type (15px, line-height 1.65, 16px padding -- `STYLE` in
- * `news/view.rs`). It errs long rather than short: a little blank under the
- * last line costs nothing, an inner scrollbar inside the page is the glitch.
+ * headings, code blocks line by line, and the paragraph gaps, in the type the
+ * document is set in -- a story's own is {@link readingType} of the reading
+ * settings, after `STYLE` in `news/view.rs`; without one, a newsletter's,
+ * which is mail's document at 15px. It errs long rather than short: a little
+ * blank under the last line costs nothing, an inner scrollbar inside the page
+ * is the glitch.
  */
-export function estimateArticleHeight(html: string, widthPx: number): number {
+export function estimateArticleHeight(
+  html: string,
+  widthPx: number,
+  type: ArticleType = MAIL_TYPE,
+): number {
   const body = html.replace(/^[\s\S]*<body[^>]*>/i, '').replace(/<\/body>[\s\S]*$/i, '')
-  const column = Math.max(200, widthPx - 32)
-  const charsPerLine = Math.max(20, Math.floor(column / 8))
-  const lineHeightPx = 25
+  const column = Math.max(200, widthPx - 2 * type.padX(widthPx))
+  const charsPerLine = Math.max(20, Math.floor(column / (type.sizePx * type.letterEm)))
+  const lineHeightPx = Math.ceil(type.sizePx * type.leading)
+  // At least the 16px a newsletter's paragraphs were always given.
+  const gapPx = Math.max(16, type.sizePx)
 
   // Code keeps its own lines, so it is counted apart from the prose.
   let codeLines = 0
@@ -829,17 +871,25 @@ export function estimateArticleHeight(html: string, widthPx: number): number {
     codeLines += block.replace(/<[^>]*>/g, '').split('\n').length
     return '\n'
   })
-  const textLines = prose
+  const textPx = prose
     .replace(/<(br|\/p|\/div|\/li|\/blockquote|\/h[1-6]|\/figcaption|\/tr)[ >/]/gi, (m) => `\n${m}`)
     .split('\n')
-    .map((s) =>
-      s
+    .reduce((sum, segment) => {
+      const text = segment
         .replace(/<[^>]*>/g, ' ')
         .replace(/\s+/g, ' ')
-        .trim(),
-    )
-    .filter((s) => s.length > 0)
-    .reduce((n, s) => n + Math.max(1, Math.ceil(s.length / charsPerLine)), 0)
+        .trim()
+      if (!text) return sum
+      // A heading is set larger than the text and a caption smaller (`STYLE`),
+      // so fewer or more of its letters fit a line.
+      const tag = /<(h[1-3]|figcaption)\b/i.exec(segment)?.[1]?.toLowerCase() ?? ''
+      const scale = TEXT_SCALE[tag] ?? 1
+      // A line ends at a word, so it holds a few letters fewer than would fit:
+      // little in a wide column, a sixth of it in a phone's at a large size.
+      const perLine = Math.max(8, charsPerLine / scale - 3)
+      const lineHeight = Math.max(lineHeightPx, Math.ceil(type.sizePx * scale * 1.25))
+      return sum + Math.max(1, Math.ceil(text.length / perLine)) * lineHeight
+    }, 0)
 
   const pictures = (body.match(/<img\b[^>]*>/gi) ?? []).reduce((sum, tag) => {
     const width = Number(/\bwidth\s*=\s*["']?(\d+)/i.exec(tag)?.[1] ?? 0)
@@ -851,12 +901,24 @@ export function estimateArticleHeight(html: string, widthPx: number): number {
   const blocks = (body.match(/<(p|blockquote|li|figure|pre|h[1-6])[\s>]/gi) ?? []).length
 
   const estimate =
-    textLines * lineHeightPx +
-    codeLines * 20 +
+    textPx +
+    codeLines * Math.ceil(type.sizePx * 1.35) +
     pictures +
-    headings * 16 +
-    blocks * 16 +
-    32 +
+    headings * Math.round(gapPx * 1.5) +
+    blocks * gapPx +
+    type.padY +
     2 * lineHeightPx
   return Math.min(60000, Math.max(160, estimate))
+}
+
+/** How much larger than the text a heading is set, or smaller a caption: `STYLE`'s `em`s. */
+const TEXT_SCALE: Record<string, number> = { h1: 1.55, h2: 1.3, h3: 1.12, figcaption: 0.8 }
+
+/** A newsletter's document: mail's, at 15px and 1.65, with 16px all round. */
+const MAIL_TYPE: ArticleType = {
+  sizePx: 15,
+  leading: 1.65,
+  letterEm: 0.533,
+  padX: () => 16,
+  padY: 32,
 }

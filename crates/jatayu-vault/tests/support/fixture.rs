@@ -655,6 +655,8 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
     story.score = Some(128);
     story.has_body = true;
     let body = StoryBody {
+        byline: None,
+        site_name: None,
         story_id,
         html: format!("<p>The whole of fixture story {tag}.</p>"),
         text: format!("The whole of fixture story {tag}."),

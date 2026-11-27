@@ -27,6 +27,8 @@ pub fn body(story: StoryId, html: &str, base_url: &str, origin: BodyOrigin) -> S
     let rewrite = Rewrite::news(story.to_string(), Some(base_url.to_string()));
     let clean = sanitize(html, &rewrite);
     StoryBody {
+        byline: None,
+        site_name: None,
         story_id: story,
         html: clean.html,
         text: html_to_text(html),

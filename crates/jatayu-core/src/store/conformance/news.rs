@@ -111,6 +111,8 @@ fn new_story(source: &NewsSource, key: &str, title: &str, published: Timestamp) 
 
 fn body_of(story: &Story, html: &str) -> StoryBody {
     StoryBody {
+        byline: None,
+        site_name: None,
         story_id: story.id,
         html: html.into(),
         text: html.into(),
@@ -821,6 +823,8 @@ fn bodies_round_trip_and_set_has_body(news: &dyn NewsStore) {
     news.set_saved(&[story.id], true).unwrap();
 
     let mut body = StoryBody {
+        byline: None,
+        site_name: None,
         story_id: story.id,
         html: "<p>Hello, <b>world</b>.</p>".into(),
         text: "Hello, world.".into(),

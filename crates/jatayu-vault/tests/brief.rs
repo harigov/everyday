@@ -494,6 +494,8 @@ fn arrive(
     story.url = format!("https://example.com/{}", title.replace(' ', "-"));
     story.summary = summary.into();
     let stored = body.map(|(text, origin)| StoryBody {
+        byline: None,
+        site_name: None,
         story_id: story.id,
         html: format!("<p>{text}</p>"),
         text: text.into(),
@@ -595,6 +597,8 @@ fn the_podcast_digest_is_what_arrived_in_the_feed_newest_first() {
     episode.media = Some(episode_of(50));
     episode.summary = "Show notes.".into();
     let article = StoryBody {
+        byline: None,
+        site_name: None,
         story_id: episode.id,
         html: "<p>x</p>".into(),
         text: "The guest explains why margins matter more than growth.".into(),

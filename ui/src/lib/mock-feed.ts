@@ -744,6 +744,8 @@ const bodies = new Map<StoryId, string>()
 const bodyOrigins = new Map<StoryId, BodyOrigin>()
 /** What an article's summary says, by story, once it is written: what its file holds. */
 const summaries = new Map<StoryId, { html: string; markdown: string }>()
+/** What the page an article was fetched from said about it: `StoryBody.byline` and `.siteName`. */
+const abouts = new Map<StoryId, { byline: string | null; site: string | null }>()
 for (const s of stories) {
   if (s.hasBody) bodies.set(s.id, s.media ? showNotes(s) : articleBody(s, 3))
 }
@@ -873,15 +875,20 @@ export function mockStoryBody(
   html: string
   imagesHidden: boolean
   origin: BodyOrigin
+  byline?: string | null
+  site?: string | null
 } {
   ensureSeeded()
   const s = find(id)
   if (part) return partOfBody(s, part)
-  return framed(
-    s,
-    bodies.get(id) ?? `<p>${escapeHtml(s.summary)}</p>`,
-    bodyOrigins.get(id) ?? 'feed',
-  )
+  return {
+    ...framed(
+      s,
+      bodies.get(id) ?? `<p>${escapeHtml(s.summary)}</p>`,
+      bodyOrigins.get(id) ?? 'feed',
+    ),
+    ...abouts.get(id),
+  }
 }
 
 /** `html` as the route serves it for `s`: with its pictures held back when its source says so. */
@@ -940,6 +947,12 @@ export function mockFetchFullArticle(id: StoryId): Story {
   if (!s.url) throw new VaultError('invalid', 'this story has no article to fetch')
   bodies.set(id, articleBody(s, 5))
   bodyOrigins.set(id, 'extracted')
+  // What a publisher's head says: a name for the publication, and who wrote it.
+  const name = hostOf(s.url).split('.')[0] ?? ''
+  abouts.set(id, {
+    byline: 'Morgan Ellis',
+    site: name ? `The ${name.charAt(0).toUpperCase()}${name.slice(1)}` : null,
+  })
   s.hasBody = true
   return structuredClone(s)
 }

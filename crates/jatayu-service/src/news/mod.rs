@@ -13,7 +13,8 @@
 //!   sanitize                  a story's HTML -> a `StoryBody`, through
 //!                             `jatayu-mail`'s sanitiser
 //!   extract                   "fetch the full article": the linked page,
-//!                             through a Readability port
+//!                             through FiveFilters' site rules (`rules`,
+//!                             `xpath`) and a Readability port
 //!   refresh                   one source's turn, and the supervised loop
 //!                             that gives every source its turn
 //!   newsletters               the mail-backed source: no network at all
@@ -50,11 +51,13 @@ pub mod queue;
 pub mod rank;
 pub mod refresh;
 mod route;
+mod rules;
 pub mod sanitize;
 pub mod summary;
 pub mod transcribe;
 pub mod view;
 pub mod work;
+mod xpath;
 
 use crate::events::{Change, Kind, Op};
 use crate::service::Service;

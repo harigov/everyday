@@ -246,6 +246,8 @@ mod tests {
         story.published_at =
             Timestamp::from_second(Timestamp::now().as_second() - hours_ago * 3_600).unwrap();
         let body = StoryBody {
+            byline: None,
+            site_name: None,
             story_id: story.id,
             html: format!("<p>The words of {title}.</p>"),
             text: format!("The words of {title}."),
